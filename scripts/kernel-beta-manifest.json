@@ -6,14 +6,14 @@
     { "id": "build", "argv": ["yarn", "build"] },
     { "id": "generated-artifacts", "argv": ["yarn", "workspace", "testing-suite", "vitest", "run", "test/artifact-freshness.test.ts"] },
     { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
-    { "id": "compiler-journal", "argv": ["yarn", "workspace", "solidc", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-journal", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+    { "id": "compiler-journal", "argv": ["yarn", "workspace", "@solidcash/solidc", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-journal", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
   ],
   "requiredKernelProofs": [
     {
       "id": "kernel-late-fence-route-binding",
-      "workspace": "solidc",
+      "workspace": "@solidcash/solidc",
       "file": "test/journal-message-bus/KernelLateFenceRouteBinding.test.ts",
       "tests": [
         "does not leave a late-fenced handler selector in the bound kernel route"
@@ -21,7 +21,7 @@
     },
     {
       "id": "kernel-loop-route",
-      "workspace": "solidc",
+      "workspace": "@solidcash/solidc",
       "file": "test/journal-message-bus/KernelLoopRoute.test.ts",
       "tests": [
         "copies the typed value rather than the enclosing carrier into an inline chunkable entry tail",
@@ -46,7 +46,7 @@
     },
     {
       "id": "kernel-observable-parity",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelLegacyObservableParity.test.ts",
       "tests": [
         "preserves payload event effects across fresh route compiles",
@@ -55,7 +55,7 @@
     },
     {
       "id": "compiler-callsite-result-identity",
-      "workspace": "solidc",
+      "workspace": "@solidcash/solidc",
       "file": "test/InvocationAnalysis.test.ts",
       "tests": [
         "emits the complete compiler-resolved graph footprint per callsite",
@@ -66,7 +66,7 @@
     },
     {
       "id": "kernel-graph-result-identity",
-      "workspace": "solidc",
+      "workspace": "@solidcash/solidc",
       "file": "test/journal-message-bus/KernelGraphResultDependency.test.ts",
       "tests": [
         "keeps identical result schemas separately addressable by stable callsite and component",
@@ -77,7 +77,7 @@
     },
     {
       "id": "kernel-multi-result-observable-parity",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelMultiResultGraphParity.test.ts",
       "tests": [
         "forwards authenticated tuple lanes with kernel and legacy observable parity"
@@ -85,7 +85,7 @@
     },
     {
       "id": "kernel-schema-name-isolation",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelSchemaNameIsolation.test.ts",
       "tests": [
         "treats historical Marketplace identifiers exactly like an alpha-renamed chunkable write"
@@ -93,7 +93,7 @@
     },
     {
       "id": "kernel-journal-ownership",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelJournalOwnershipCharacterization.test.ts",
       "tests": [
         "pins kernel and legacy bus boundaries while preserving exact stream topology",
@@ -104,7 +104,7 @@
     },
     {
       "id": "kernel-read-carrier-boundary",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelReadCarrierBoundary.test.ts",
       "tests": [
         "publishes repeated clean reads only with the authenticated carrier capability"
@@ -112,7 +112,7 @@
     },
     {
       "id": "kernel-read-carrier-rows",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelReadCarrierRows.test.ts",
       "tests": [
         "shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush"
@@ -120,7 +120,7 @@
     },
     {
       "id": "kernel-fixed-local-key-vector",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/FixedLocalArrayKeyVector.test.ts",
       "tests": [
         "matches legacy element order and preserves runtime index bounds"
@@ -128,7 +128,7 @@
     },
     {
       "id": "kernel-fixed-local-key-alias",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/FixedLocalArrayKeyAlias.test.ts",
       "tests": [
         "matches legacy alias order and preserves runtime index bounds"
@@ -136,7 +136,7 @@
     },
     {
       "id": "kernel-conditional-fixed-key-vector",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/ConditionalFixedKeyVector.test.ts",
       "tests": [
         "matches legacy branch choice and preserves runtime index bounds"
@@ -144,7 +144,7 @@
     },
     {
       "id": "kernel-switch-fixed-key-vector",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/SwitchFixedKeyVector.test.ts",
       "tests": [
         "matches legacy case/default choice and preserves runtime index bounds"
@@ -152,7 +152,7 @@
     },
     {
       "id": "kernel-pure-fixed-key-vector-producer",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/PureFixedKeyVectorProducer.test.ts",
       "tests": [
         "matches legacy producer results and preserves returned-array bounds"
@@ -160,7 +160,7 @@
     },
     {
       "id": "kernel-readonly-state-bound-keys",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/ReadOnlyStateBoundConstructedKeys.test.ts",
       "tests": [
         "matches legacy partial-fill semantics and preserves source out-of-bounds failure"
@@ -168,7 +168,7 @@
     },
     {
       "id": "kernel-fixed-array-length-keys",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/FixedArrayLengthConstructedKeys.test.ts",
       "tests": [
         "matches legacy semantics and preserves source allocation bounds"
@@ -176,7 +176,7 @@
     },
     {
       "id": "kernel-literal-bound-source-loop",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/LiteralBoundSourceLoopEscapes.test.ts",
       "tests": [
         "executes while and do-while selected ranks through the kernel row loop"
@@ -184,7 +184,7 @@
     },
     {
       "id": "kernel-runtime-allocation-length-keys",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/RuntimeAllocationLengthConstructedKeys.test.ts",
       "tests": [
         "matches legacy full and partial fills while preserving source bounds failures"
@@ -192,7 +192,7 @@
     },
     {
       "id": "kernel-straight-line-resized-allocation-length",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/StraightLineResizedAllocationLength.test.ts",
       "tests": [
         "matches the exact legacy length and preserves source bounds failures"
@@ -200,7 +200,7 @@
     },
     {
       "id": "kernel-exhaustive-resize-join-allocation-length",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/ExhaustiveResizeJoinAllocationLength.test.ts",
       "tests": [
         "matches legacy for either exact arm and preserves source bounds failures"
@@ -208,7 +208,7 @@
     },
     {
       "id": "kernel-exhaustive-resize-switch-allocation-length",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/ExhaustiveResizeSwitchAllocationLength.test.ts",
       "tests": [
         "matches legacy for every selected arm and preserves source bounds failures"
@@ -216,7 +216,7 @@
     },
     {
       "id": "kernel-fixed-loop-resized-allocation-length",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/FixedLoopResizeAllocationLength.test.ts",
       "tests": [
         "matches the exact legacy length and preserves source bounds failures"
@@ -224,7 +224,7 @@
     },
     {
       "id": "kernel-overloaded-pure-internal-call",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/OverloadedPureInternalCall.test.ts",
       "tests": [
         "executes the exact semantic overload on the kernel batch path",
@@ -233,7 +233,7 @@
     },
     {
       "id": "kernel-counter-dependent-bigint-recurrence",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/CounterDependentBigintRecurrence.test.ts",
       "tests": [
         "executes the authenticated source-order product and enforces the 64-rank bound"
@@ -241,7 +241,7 @@
     },
     {
       "id": "kernel-exact-additive-recurrence",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/ExactAdditiveRecurrenceSecurity.test.ts",
       "tests": [
         "authenticates scalar state, preserves checked source order, rejects tampering, and caps rank at 64"
@@ -249,7 +249,7 @@
     },
     {
       "id": "kernel-prestate-scalar-recurrence-coefficients",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/PreStateScalarRecurrenceCoefficients.test.ts",
       "tests": [
         "settles the exact 64-iteration boundary and rejects a forged coefficient-derived event"
@@ -257,7 +257,7 @@
     },
     {
       "id": "kernel-constructed-array-partial-fill",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelConstructedArrayPartialFill.test.ts",
       "tests": [
         "preserves default keys, complete fills, source OOB failure, and the authenticated domain"
@@ -265,7 +265,7 @@
     },
     {
       "id": "kernel-runtime-array-fill-keys",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelRuntimeArrayFillKeys.test.ts",
       "tests": [
         "executes the exact derived domain and rejects missing or extra iterations"
@@ -273,7 +273,7 @@
     },
     {
       "id": "kernel-affine-void-recursive-events",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/AffineVoidRecursiveEvents.test.ts",
       "tests": [
         "settles a guarded tail-call stream with an inert unwind suffix in recursive source order",
@@ -287,7 +287,7 @@
     },
     {
       "id": "kernel-journal-execution-schedule",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/unit/KernelJournalExecutionSchedule.test.ts",
       "tests": [
         "uses compiler coordinates rather than stream insertion order and interleaves sites within one loop",
@@ -297,7 +297,7 @@
     },
     {
       "id": "kernel-dirty-carrier-resolution",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/unit/KernelDirtyCarrierResolution.test.ts",
       "tests": [
         "accepts one complete body only after the caller binds it to the final global ordinal",
@@ -306,7 +306,7 @@
     },
     {
       "id": "kernel-journal-physical-settlement",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/unit/KernelJournalPhysicalSettlement.test.ts",
       "tests": [
         "binds a dirty final authority to one complete final body, not a legacy provisional output",
@@ -320,7 +320,7 @@
     },
     {
       "id": "kernel-lifecycle-boundary",
-      "workspace": "solidc",
+      "workspace": "@solidcash/solidc",
       "file": "test/journal-message-bus/KernelLifecycleTopology.test.ts",
       "tests": [
         "admits the exact split topology and publishes participant-local input and output spans",
@@ -330,7 +330,7 @@
     },
     {
       "id": "kernel-lifecycle-planning-boundary",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/AtomicMessageBusGraph.test.ts",
       "tests": [
         "plans a resource-free split row once the verifier advertises selector-derived lifecycle authority",
@@ -339,7 +339,7 @@
     },
     {
       "id": "kernel-upgrade-lifecycle",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelUpgradeCompose.test.ts",
       "tests": [
         "authenticates one final upgrade row and preserves the master NFT geometry",
@@ -348,7 +348,7 @@
     },
     {
       "id": "kernel-unsafe-tier2-lifecycle",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/KernelUnsafeTier2Compose.test.ts",
       "tests": [
         "executes a read-only validation row and rejects a forged state commitment"
@@ -356,7 +356,7 @@
     },
     {
       "id": "kernel-typed-deploy-lifecycle",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/AtomicMessageBusCompose.test.ts",
       "tests": [
         "materializes multiple heterogeneous child sites across two rows and rejects hostile genesis data",
@@ -365,7 +365,7 @@
     },
     {
       "id": "kernel-conditional-deploy-lifecycle",
-      "workspace": "solidcash",
+      "workspace": "@solidcash/solidcash",
       "file": "test/journal-message-bus/e2e/ConditionalChildDeploymentSecurity.test.ts",
       "tests": [
         "binds active and inactive genesis spans to the repeated row source predicate"

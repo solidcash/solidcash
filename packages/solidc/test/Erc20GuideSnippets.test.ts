@@ -8,8 +8,8 @@ import { compileString } from '../src/index.js';
  * The ERC-20 guide's import-bearing snippets.
  *
  * `scripts/release-docs-snippets.ts` skips a fenced block that imports, because a bare `compileString` cannot resolve
- * a package specifier. These two blocks inherit the shipped `@solidcash/solidcash/contracts/*.scash` base contracts, so the gate
- * cannot cover them; compile them here against the sources those imports name.
+ * a package specifier. These two blocks inherit the shipped `@solidcash/solidcash/contracts/*.scash` base contracts,
+ * so the gate cannot cover them; compile them here against the sources those imports name.
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const guide = readFileSync(resolve(here, '../../../website/docs/guides/erc20-tokens.md'), 'utf8');

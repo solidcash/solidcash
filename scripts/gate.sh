@@ -41,7 +41,7 @@ if [ "${1:-fast}" = "full" ]; then
   echo "== utils suite =="
   yarn workspace @solidcash/utils vitest run test/ 2>&1 | grep -E '^ +(Tests|Test Files) '
   echo "== solidc suite (expect 0 failed / 7366 passed of 7366) =="
-  yarn workspace solidc vitest run test/ 2>&1 | grep -E '^ +(Tests|Test Files) '
+  yarn workspace @solidcash/solidc vitest run test/ 2>&1 | grep -E '^ +(Tests|Test Files) '
 fi
 
 echo "== gate status: $status =="

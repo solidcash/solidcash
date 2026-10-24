@@ -2961,6 +2961,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
   // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
   discardedOpaqueReturn?: boolean;
+  // Expression form whose `data` the body never reads: a direct entry reads no record, so a void callee can answer
+  // it, and `data` is empty.
+  unreadOpaqueReturn?: boolean;
   // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
   // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
   rawValueTransferOnly?: boolean;

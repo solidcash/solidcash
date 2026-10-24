@@ -547,6 +547,15 @@ const BODY_WALK_SKIP_KEYS = new Set([
   'stateVariable', 'collection', 'sourceCallNode', 'sourceActivationConditions',
 ]);
 
+/**
+ * True when a node under `root` may read the local `name`: one carries it in a field, or assembly reads the stack by
+ * position. A conservative test.
+ */
+function mayReadLocal(root: Node, name: string): boolean {
+  return bodyHolds(root, (node) => node instanceof AssemblyStatementNode
+    || Object.values(node).some((value) => value === name));
+}
+
 /** True when `root` is, or holds, a node `matches` accepts. */
 function bodyHolds(root: Node | undefined, matches: (node: Node) => boolean, seen = new Set<Node>()): boolean {
   if (root === undefined || seen.has(root)) return false;
@@ -13110,6 +13119,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     );
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
+    this.markUnreadOpaqueReturns(unusedSymbols, node);
     for (const unused of unusedSymbols) {
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
@@ -13120,6 +13130,21 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     this.symbolTables.shift();
     return node;
+  }
+
+  /** A `data` binding of an opaque call that nothing in its scope may read leaves its call no record to read. */
+  private markUnreadOpaqueReturns(unused: readonly Symbol[], scope: Node): void {
+    for (const symbol of unused) {
+      const projection = symbol.definition instanceof VariableDefinitionNode ? symbol.definition.expression : undefined;
+      if (!(projection instanceof TupleIndexOpNode) || projection.index !== 1) continue;
+      if (!mayReadLocal(scope, symbol.name)) this.markUnreadOpaqueReturn(projection.tuple);
+    }
+  }
+
+  private markUnreadOpaqueReturn(call: Node | undefined): void {
+    if (call instanceof ExternalFunctionCallNode && call.opaqueReturn && !call.discardedOpaqueReturn) {
+      call.unreadOpaqueReturn = true;
+    }
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
@@ -13864,6 +13889,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e) as ExpressionNode);
     } else {
       node.tuple = this.visit(node.tuple);
+      if (node.elements[1]?.skip) this.markUnreadOpaqueReturn(node.tuple);
     }
 
     // The symbols above are installed before visiting the RHS so references in later statements can bind, but
@@ -15312,6 +15338,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.tryBlock.statements = this.visitOptionalList(node.tryBlock.statements) as StatementNode[];
 
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
+    this.markUnreadOpaqueReturns(unusedSymbols, node.tryBlock);
     for (const unused of unusedSymbols) {
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;

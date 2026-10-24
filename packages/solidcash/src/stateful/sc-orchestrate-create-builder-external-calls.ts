@@ -10,6 +10,8 @@ import {
   encodePushdataValue,
   parseChunkCommitment,
   type AbiFunction,
+  type Artifact,
+  type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
@@ -63,6 +65,17 @@ import {
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
+
+/**
+ * A raw call into a function that returns nothing answers with no record (D50), so its group plans no carrier and
+ * the caller's return witness stays -1, as late expansion plans it.
+ */
+function directGroupEcSlot(ec: ExternalCallAbi, group: ExternalCallUtxoGroup | undefined): ExternalCallAbi {
+  if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.compilerRoute) return ec;
+  const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+  const selected = artifact?.abi.find((entry) => entry.name === (group.logicalFunctionName ?? group.functionName));
+  return selected !== undefined && (selected.outputs?.length ?? 0) === 0 ? { ...ec, hasReturnValues: false } : ec;
+}
 
 export type OrchestrateCreateBuilderExternalCallsHost = {
   readonly categoryId: string;
@@ -617,7 +630,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     // Build metadata for direct groups
     for (let i = 0; i < directGroupCount; i++) {
       groupMetas.push({
-        ecSlot: externalCalls[i],
+        ecSlot: directGroupEcSlot(externalCalls[i], externalCallUtxoGroups[i]),
         callerCategoryId: externalCallUtxoGroups[i].callerIdentity?.categoryId ?? host.categoryId,
         parentGroupIndex: -1,
       });

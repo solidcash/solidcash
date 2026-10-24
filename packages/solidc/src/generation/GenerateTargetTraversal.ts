@@ -25696,6 +25696,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A discarded opaque result binds nothing the body uses, and a void callee pins no record to read. The
       // epilogue still checks the form of a carrier the witness names.
       if (node.discardedOpaqueReturn) return node;
+      // An unread one neither: the call succeeded and its data is empty.
+      if (node.unreadOpaqueReturn) {
+        this.emit(Op.OP_1, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.pushToStack('(success)');
+        this.pushToStack('(returnData)');
+        return node;
+      }
       if (!physicalSlot) {
         // X75. Fail closed with a named diagnostic rather than an internal sentinel. This is the single site
         // every unbound returning edge converges on, whichever upstream gate let it through.

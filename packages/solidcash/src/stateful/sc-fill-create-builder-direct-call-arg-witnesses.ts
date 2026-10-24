@@ -332,6 +332,11 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
           topLevelReturnWitnessGroups.push(i);
           finalArgs = [...finalArgs, BigInt(retOutputIdx)];
         }
+      } else if (externalCalls[i]?.hasReturnValues) {
+        // A returning slot whose callee answers with no record keeps its witness position, naming none.
+        topLevelReturnWitnessPlan.push(-1n);
+        topLevelReturnWitnessGroups.push(-1);
+        finalArgs = [...finalArgs, -1n];
       }
     }
   }

@@ -962,6 +962,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
 
 ### Open
 
+- Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
+  than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot
+  compute the D50 call digest, which made the compiler crash. Such a call now skips the digest check: its read is bound
+  by the record's category and the callee's single run, and by the selector only for a multi-function callee, which is
+  the pre-D50 binding. It cannot join a direct multi-call group, so a repeated callee with such a call stays refused.
+
 - Direct looped returning writer (found 2026-10-24 while building direct call ordinals): in a direct compile, a
   returning call to a fixed target inside a loop checked neither the callee nor the record's category, so its result
   was unbound. `9323f7bae` closes it for state-preserving calls, which are now counted and check the callee, the

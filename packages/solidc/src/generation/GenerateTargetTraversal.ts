@@ -6607,12 +6607,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     for (const [functionId, entries] of this.keccakEntryPointsReaching(node)) {
       const target = functionsById.get(functionId);
-      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_KECCAK === '1' && target?.keccakCompute) {
-        console.error('KECCAK-BASIS?', {
-          target: target?.name, hasLayout: target?.blockLayout !== undefined,
-          indirect: indirect.has(functionId), entries: entries.map((e) => e.name),
-        });
-      }
       if (!target || target.blockLayout || indirect.has(functionId) || entries.length === 0) continue;
       const sideCarOffsets = (fn: FunctionDefinitionNode): string => (fn.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'keccakSideCar').map((slot) => slot.offset).join(',');

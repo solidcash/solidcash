@@ -43,8 +43,10 @@ describe('MinimalNativeToken bytecode budget', () => {
     // its record, with one shared count of its carriers) added 154 B (7445 -> 7599), and their shared settlement (one
     // helper forms, pins and counts each record, and a standalone run's refusal is that count at zero, 18860c4fd)
     // took 67 B off (7599 -> 7532). The dispatcher handing each entry its record prefix, the digest hashed in that
-    // settlement and the count reading each output's lock first took 18 B off (7532 -> 7514).
-    expect(artifactBytes).toBe(7514);
+    // settlement and the count reading each output's lock first took 18 B off (7532 -> 7514). One helper per
+    // collection reading the master's category with its entry address, shared bounded-bytes parameter checks and
+    // the take-32 helper in the record carrier check took 159 B off (7514 -> 7355).
+    expect(artifactBytes).toBe(7355);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

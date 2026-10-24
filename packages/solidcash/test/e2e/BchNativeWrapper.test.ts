@@ -75,8 +75,10 @@ describe('BchNativeWrapper', () => {
     // BchNative's boundary with ERC20.scash's ledger kept private, and the 75-byte underlying() view; call records
     // (D50) added 178 B (7512 -> 7690), and their shared settlement (one helper forms, pins and counts each record,
     // 18860c4fd) took 47 B off (7690 -> 7643). The dispatcher handing each entry its record prefix, the digest hashed
-    // in that settlement and the count reading each output's lock first took 63 B off (7643 -> 7580).
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7580);
+    // in that settlement and the count reading each output's lock first took 63 B off (7643 -> 7580). One helper
+    // per collection reading the master's category with its entry address, shared bounded-bytes parameter checks
+    // and the take-32 helper in the record carrier check took 159 B off (7580 -> 7421).
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7421);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

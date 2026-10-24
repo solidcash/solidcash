@@ -2649,6 +2649,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dispatchHandsCallPrefix: boolean = false;
   /** The dispatched entry this body traversal compiles, which finds its call record's prefix on top. */
   private callPrefixEntry: FunctionDefinitionNode | undefined;
+  /** How far the last emitted elements read the executing input's category (trackExecutingCategoryRead). */
+  private executingCategoryReadState = 0;
   /**
    * The message-bus route's declared inputs, in push order (the SDK pushes `[blob, ...routeWitnesses]`). A route
    * handler shares the caller's stack, so these values are physically BELOW the handler's own argument block -
@@ -2771,6 +2773,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitTrapWindow: number[] = [];
 
   private emit(op: OpOrData | OpOrData[], locationData: SingleLocationData): void {
+    if (Array.isArray(op)) op.forEach((element) => this.trackExecutingCategoryRead(element));
+    else this.trackExecutingCategoryRead(op);
     // The usage probe only needs helper-site counts and compact-id allocation. Appending discarded
     // opcodes and location records dominated throwaway body generation on large contracts.
     if (this.isSubroutineUseProbe) return;
@@ -3024,8 +3028,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
     locationData: SingleLocationData,
   ): boolean {
+    const check = this.sharedStackHelper(key, emit);
+    return check?.id !== undefined && this.invokeSubroutineIfDefined(check.id, locationData);
+  }
+
+  /** The shared stack helper `key`, counting this site toward it; undefined where invokeSharedStackHelper refuses. */
+  private sharedStackHelper(
+    key: string,
+    emit: (t: GenerateTargetTraversalWithLocation, loc: SingleLocationData) => void,
+  ): SharedEntryCheck | undefined {
     if (this.framedMaster || !this.directConvention
-      || this.currentFunction?.name?.startsWith('__message_bus_verify_atomic')) return false;
+      || this.currentFunction?.name?.startsWith('__message_bus_verify_atomic')) return undefined;
     const fullKey = `stack|${key}`;
     let check = this.sharedEntryChecks.get(fullKey);
     if (check === undefined) {
@@ -3037,7 +3050,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.sharedEntryChecks.set(fullKey, check);
     }
     this.bumpSubroutineUse(check.useKey);
-    return check.id !== undefined && this.invokeSubroutineIfDefined(check.id, locationData);
+    return check;
   }
 
   /** Count this site toward a shared per-entry check; its helper id once defined, else undefined. */
@@ -10906,11 +10919,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (effectiveType instanceof BytesType && effectiveType.bound !== undefined) {
       // For bounded bytes, we copy it from the stack and *check* that it is the correct size
-      this.emit(Op.OP_PICK, { location: node.location, positionHint: PositionHint.START });
-      this.emit(Op.OP_SIZE, { location: node.location, positionHint: PositionHint.START });
-      this.emit(encodeInt(BigInt(effectiveType.bound)), { location: node.location, positionHint: PositionHint.START });
-      this.emit(Op.OP_EQUALVERIFY, { location: node.location, positionHint: PositionHint.START });
-      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
+      const bound = effectiveType.bound;
+      const sizeLoc = { location: node.location, positionHint: PositionHint.START };
+      // `[.., idx]`: a direct compile shares the check, which reads only the stack, per bound.
+      if (!this.sharesDirectEntryHelpers || !this.invokeSharedStackHelper(
+        `boundedBytesSize|${bound}`, (t, l) => t.emitBoundedBytesSizeCheckInline(bound, l), sizeLoc,
+      )) {
+        this.emitBoundedBytesSizeCheckInline(bound, sizeLoc);
+      }
 
       // We don't perform any stack operations, because these ops leave the original stack unchanged
     }
@@ -10933,6 +10949,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitFixedBoundsCheck(effectiveType, loc);
       this.emit(Op.OP_DROP, loc);
     }
+  }
+
+  /** `[.., idx]` -> `[..]`: the item at idx is exactly `bound` bytes long. */
+  private emitBoundedBytesSizeCheckInline(bound: number, loc: SingleLocationData): void {
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(BigInt(bound)), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DROP, loc);
   }
 
   /**
@@ -27997,6 +28022,79 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // ===== Mapping (Entry NFT) Support =====
 
   /**
+   * Where this body has just pushed the executing input's 32-byte category, a direct compile reads it inside one
+   * helper per collection with the address, `[..]` -> `[.., address]`: the same instructions, invoked. False, to go
+   * on as before, where the category came otherwise or no helper is defined.
+   */
+  private invokeMasterEntryAddress(collectionHash: Uint8Array, loc: SingleLocationData): boolean {
+    if (!this.sharesDirectEntryHelpers || this.sharedCheckBody !== undefined) return false;
+    const read = this.trailingExecutingCategoryRead();
+    if (read === 0) return false;
+    const check = this.sharedStackHelper(`masterEntryAddress|${binToHex(collectionHash)}`,
+      (t, l) => t.emitMasterEntryAddressInline(collectionHash, l));
+    if (check?.id === undefined || !this.subroutineDefined.get(check.id)) return false;
+    this.output.splice(this.output.length - read, read);
+    this.locationData.splice(this.locationData.length - read, read);
+    return this.invokeSubroutineIfDefined(check.id, loc);
+  }
+
+  /** `[..]` -> `[.., address]`: the executing input's category, then this collection's entry address of it. */
+  private emitMasterEntryAddressInline(collectionHash: Uint8Array, loc: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.pushToStack('(category)');
+    this.emitSortedEntryAddress(collectionHash, loc);
+    this.popFromStack();
+  }
+
+  /**
+   * The number of elements that end this body by pushing the executing input's 32-byte category (`OP_INPUTINDEX
+   * OP_UTXOTOKENCATEGORY` and the take-32 helper or its inline form), none of them a require or log site; else 0.
+   * The usage probe emits nothing, so it reads the emission tracker alone.
+   */
+  private trailingExecutingCategoryRead(): number {
+    const state = this.executingCategoryReadState;
+    const take32 = this.take32Slot.id;
+    const tail: Script | undefined = state === 5 ? [encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP]
+      : state === 7 && take32 !== undefined ? [encodeInt(take32), Op.OP_INVOKE] : undefined;
+    if (tail === undefined) return 0;
+    const read = tail.length + 2;
+    if (this.isSubroutineUseProbe) return read;
+    const emitted = this.output.slice(-read);
+    const expected: Script = [Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, ...tail];
+    if (emitted.length !== read || emitted.some((element, index) => (typeof element === 'number'
+      ? element !== expected[index]
+      : !(expected[index] instanceof Uint8Array) || binToHex(element) !== binToHex(expected[index] as Uint8Array)))) {
+      return 0;
+    }
+    const firstIp = this.output.length - read + this.constructorParameterCount;
+    const pinned = this.requires.some((entry) => entry.ip >= firstIp)
+      || this.consoleLogs.some((entry) => entry.ip >= firstIp
+        || entry.data.some((item) => typeof item !== 'string' && item.ip >= firstIp));
+    return pinned ? 0 : read;
+  }
+
+  /**
+   * Advances the executing-category tracker over one emitted element: 1 after `OP_INPUTINDEX`, 2 after
+   * `OP_UTXOTOKENCATEGORY`, then 3, 4, 5 through `32 OP_SPLIT OP_DROP` or 6, 7 through the take-32 helper's invoke.
+   */
+  private trackExecutingCategoryRead(element: OpOrData): void {
+    const state = this.executingCategoryReadState;
+    let next = 0;
+    if (element === Op.OP_INPUTINDEX) next = 1;
+    else if (state === 1) next = element === Op.OP_UTXOTOKENCATEGORY ? 2 : 0;
+    else if (state === 2 && element instanceof Uint8Array) {
+      const take32 = this.take32Slot.id;
+      if (element.length === 1 && element[0] === 32) next = 3;
+      else if (take32 !== undefined && binToHex(element) === binToHex(encodeInt(take32))) next = 6;
+    } else if (state === 3) next = element === Op.OP_SPLIT ? 4 : 0;
+    else if (state === 4) next = element === Op.OP_DROP ? 5 : 0;
+    else if (state === 6) next = element === Op.OP_INVOKE ? 7 : 0;
+    this.executingCategoryReadState = next;
+  }
+
+  /**
    * Transform the category id on top into this collection's entry P2SH32, sharing the baked covenant per contract.
    * `untracked` counts the items above the tracked frame, the category included when untracked: a handler picks
    * the proxy master by its distance from the top.
@@ -28006,6 +28104,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // which emitBoundEntryP2sh32 feeds.
     const id = this.recordsBelongToProxyMaster()
       ? undefined : this.sortedEntryAddressIds.get(binToHex(collectionHash));
+    if (id !== undefined && !this.lockParameterisedHelperIds.has(id)
+      && this.invokeMasterEntryAddress(collectionHash, loc)) return;
     if (id !== undefined) {
       this.bumpSubroutineUse(id);
       if (this.subroutineDefined.get(id)) {
@@ -48563,9 +48663,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Stack: [_returnOutputIdx, output_category] (2 untracked)
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData);
+    if (this.compactCallRecords) this.emitTakeFirst32(locationData);
+    else this.emitTakeFirst32Inline(locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
@@ -48611,6 +48710,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * are not smaller there.
    */
   private get compactCallRecords(): boolean {
+    return this.compilerOptions.messageBus !== true;
+  }
+
+  /**
+   * A direct compile shares its entries' bounded-bytes parameter checks, and the executing input's category read
+   * with the entry address that takes it, through helpers. Message-bus compiles keep their byte-pinned layout.
+   */
+  private get sharesDirectEntryHelpers(): boolean {
     return this.compilerOptions.messageBus !== true;
   }
 

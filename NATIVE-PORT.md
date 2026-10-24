@@ -111,7 +111,7 @@ The original contract tree and test suite are copied into `.parity-project`. The
 
 ```sh
 cd .parity-project
-node ../packages/testing/dist/cli.js compile   # 30 sources -> 41 artifacts
+node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
@@ -143,10 +143,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 20 / 37 | TransferHelper raw-return decoding (9); `TestFactory` runtime-code `create2` blocks `pairFor`/`getReserves`/`getAmounts*` (6); ETH value (2) |
-| `UniswapV2Router02` | 4 / 74 | `TestFactory` runtime-code `create2` blocks pair creation; then `msg.value`/WETH satoshi model |
-| `SushiRoll` | 0 / 16 | same ETH/value family; setup approves fail preflight |
-| **Total** | **79 / 192** | |
+| `Libraries` | 21 / 37 | TransferHelper raw-return decoding and absent-selector calls (11); `getReserves`/`getAmounts*` nested-return decode/loop composition (5); ETH value (2) |
+| `UniswapV2Router02` | 4 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy; the probe leaves `extcallMasterIdx -1`); then `msg.value`/WETH satoshi model |
+| `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, nested return decode, ETH value |
+| **Total** | **83 / 192** | |
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
@@ -189,22 +189,33 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `cashAddressToEthHex` resolves a registered deployment's value locking bytecode instead of decoding the
   CashAddress string (the logical and physical locks can differ), and an unpredicted `getCreate2Address`
   answers the EVM `keccak256(0xff ++ factory ++ salt ++ initCodeHash)[12:]` identity instead of an arbitrary
-  placeholder.
+  placeholder. When the caller supplies a canonical Uniswap/Sushi pair init-code hash, the EVM identity is
+  answered even if a BCH child can be predicted: that call is asking for `pairFor`'s value, not the child
+  address.
+- The deployment registry projects the canonical EVM CREATE2 identity for every factory child from its
+  recorded parent lock, salt and the canonical pair init hashes. `findDeploymentByAddressValue` and the chai
+  address matcher use that projection, so a contract that computes `pairFor` and stores/returns the identity
+  names the same deployed pair as its CashAddress.
+- `TestFactory` inherits `UniswapV2Factory` instead of storing the EVM pair creation code. Its `create2`
+  lowering then shares the production child template and constructor-placeholder substitution, and it no
+  longer carries a dormant multi-kilobyte `bytes` state variable.
 
 ### Remaining architectural gaps (captured failures)
 
-- **`create2` with a runtime code value.** `TestFactory.createPair` stores the pair creation code in a
-  `bytes` state variable and passes it to Yul `create2`. The compiler cannot publish a `deployTarget` for a
-  template that is only known at runtime, so no child is deployed and the returned address is empty; the
-  `PairCreated` address binding then fails `OP_VERIFY` at ip 3870 of `createPair`. The real
-  `UniswapV2Factory` (compile-time `type(UniswapV2Pair).creationCode`) passes all 15 tests, so the failure is
-  specific to the runtime-code form used by the shared test factory.
-- **`UniswapV2Library.pairFor` versus a BCH child address.** `pairFor` computes the EVM CREATE2 identity from
-  the token pair, while a BCH pair's address commits to its funding category, which the covenant cannot know
-  before creation. The pure hash now matches the EVM expectation, but the value the factory writes into
-  `getPair` is the deployed child, so the pre-creation assertion and the post-creation assertion cannot both
-  hold without a registry read (the native port's approach). The Router depends on this same value for
-  `mint`/`transferFrom`, so its liquidity paths inherit the gap.
+- **A Router-built transaction that deploys a pair through the factory.** `addLiquidity` calls
+  `factory.createPair` inside `_addLiquidity` when the pair is absent. The SDK's external-call probe cannot
+  derive the nested child deploy: the Router's `addLiquidity` probe reports `extcallMasterIdx -1` for the
+  first calls and then reads input `-1` ("Transaction input count: 5; requested index: -1"). A top-level
+  factory `createPair` passes all 15 Factory tests, so the gap is specifically a child deploy composed inside
+  another contract's transaction.
+- **`UniswapV2Library.pairFor` versus a BCH child address.** `pairFor` computes the EVM CREATE2 identity, while
+  a BCH pair's address commits to its funding category. The SDK now registers the canonical EVM CREATE2
+  projection for each factory child (from its recorded parent, salt and the canonical pair init hashes), so
+  the identity resolves to the deployed pair and the `pairFor` test passes. The projection is a session-local
+  alias; no on-chain value commits to it.
 - **Ether value.** The original tests pass wei (`parseEther("1")`) as `msg.value`; BCH satoshis cannot carry
   those magnitudes, and the contracts compare `msg.value` against wei-denominated token amounts. A value model
   must scale both sides or the Router/SushiRoll ETH paths cannot be expressed.
+- **Dormant large `bytes` state.** A factory that stores the pair creation code in `bytes` state (the old
+  `TestFactory`) makes every spend recreate its chunks; the broadcast VM then fails `OP_VERIFY` even though
+  the SDK preflight passed. `TestFactory` now inherits the production factory and stores nothing.

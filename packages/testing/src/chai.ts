@@ -10,7 +10,7 @@ import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodedAddressEncoding, decodedSolidityAddressIdentity } from '@solidcash/utils';
-import { findDeploymentByAddress } from '@solidcash/solidcash/stateful';
+import { findDeploymentByAddress, findDeploymentByAddressValue } from '@solidcash/solidcash/stateful';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -117,6 +117,17 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
         || (actualAlias && rightHex === actualAlias.identity)) {
         return [leftHex, leftHex];
       }
+      // Two different identities can name the same deployment: a factory child's deployed value identity and
+      // the EVM CREATE2 identity an unmodified `pairFor` projects onto it.
+      try {
+        const provider = getActiveProvider() as never;
+        const leftDeployment = findDeploymentByAddressValue(provider, leftIdentity);
+        const rightDeployment = findDeploymentByAddressValue(provider, rightIdentity);
+        if (leftDeployment !== undefined && rightDeployment !== undefined
+          && leftDeployment.address === rightDeployment.address) {
+          return [leftHex, leftHex];
+        }
+      } catch { /* no active provider: compare the identities themselves */ }
       return [leftHex, rightHex];
     }
   }

@@ -248,7 +248,7 @@ export {
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
   findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot, listDeployments,
-  registeredValueAddressLockingBytecode,
+  registeredValueAddressLockingBytecode, findDeploymentByAddressValue,
   type RegisteredDeployment, type DeploymentRegistrySnapshot,
 } from './deployment-registry.js';
 export { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';

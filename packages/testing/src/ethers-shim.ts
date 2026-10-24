@@ -285,6 +285,13 @@ export function getCreate2Address(
   const saltHex = (typeof salt === 'string' ? salt : binToHex(salt)).replace(/^0x/i, '').toLowerCase();
   if ((globalThis as any).process?.env?.DEBUG_CREATE2) console.error('GET_CREATE2_CALLED', from, saltHex);
   const codeHex = typeof initCodeHash === 'string' ? initCodeHash : binToHex(initCodeHash);
+  // An unmodified Solidity `UniswapV2Library.pairFor` hashes the canonical pair init-code hash. That caller is
+  // asking for the EVM CREATE2 *identity*, not for the BCH child a factory will deploy (whose address also
+  // commits to a funding category), so answer the identity directly.
+  const codeClean = codeHex.replace(/^0x/i, '').toLowerCase();
+  if (CANONICAL_PAIR_INIT_CODE_HASHES.includes(codeClean)) {
+    return evmCreate2Identity(from, saltHex, codeClean);
+  }
   try {
     const provider = getActiveProvider() as any;
     const parent = findDeploymentByAddress(provider, from);
@@ -312,6 +319,17 @@ export function getCreate2Address(
   // No deployment can be predicted yet: answer the EVM CREATE2 address itself, which is what an unmodified
   // Solidity `pairFor`/`create2` consumer derives from the factory and salt. This is the same 20-byte identity
   // lane the SDK decodes an address value to, so a contract-computed hash and its test-side expectation agree.
+  return evmCreate2Identity(from, saltHex, codeClean);
+}
+
+/** Canonical Uniswap/SushiSwap pair init-code hashes an EVM `pairFor` hard-codes. */
+const CANONICAL_PAIR_INIT_CODE_HASHES = [
+  'e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303',
+  '96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f',
+];
+
+/** `keccak256(0xff ++ factoryIdentity ++ salt ++ initCodeHash)[12:]` as a 20-byte hex identity. */
+function evmCreate2Identity(from: string, saltHex: string, codeHex: string): string {
   const fromHex = (() => {
     try {
       return cashAddressToEthHex(from).replace(/^0x/i, '').toLowerCase().padStart(40, '0').slice(-40);

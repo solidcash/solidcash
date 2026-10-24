@@ -4,6 +4,7 @@ import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { callRecordDigest, parseCallRecord } from '../../src/stateful/call-record.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
@@ -57,6 +58,21 @@ const READER = `${PRAGMA}interface IValues { function at(uint256 index) external
         result[i] = store.at(i + index);
       }
       return result;
+    }
+  }`;
+
+const PAIR_LOOP = `${PRAGMA}interface IValues { function at(uint256 index) external view returns (uint256); }
+  contract PairLoop(IValues store) {
+    uint256 public last;
+    function pairs(uint256 n) public {
+      uint256 acc = 0;
+      for (uint256 i = 0; i < n; i = i + 1) {
+        uint256 low = store.at(i);
+        uint256 high = store.at(i + 2);
+        acc = acc * 100 + low * 10 + high;
+      }
+      last = acc;
+      require(true);
     }
   }`;
 
@@ -136,10 +152,15 @@ const masterSpends = (builder: TransactionBuilder, contractName: string): string
     && input.unlocker.contract.artifact.contractName === contractName ? [input.unlocker.abiFunction.name] : [],
 );
 
+/** The commitments of the call records of `categoryId` the transaction carries, in output order. */
+const recordCommitments = (builder: TransactionBuilder, categoryId: string): Uint8Array[] => builder
+  .buildLibauthTransaction().outputs.flatMap((output) => (output.token !== undefined
+    && binToHex(output.token.category) === categoryId && output.token.nft?.capability === 'none'
+    && binToHex(output.lockingBytecode) === '51' ? [output.token.nft.commitment] : []));
+
 /** The call records of `categoryId` the transaction carries. */
-const records = (builder: TransactionBuilder, categoryId: string): number => builder.buildLibauthTransaction()
-  .outputs.filter((output) => output.token !== undefined && binToHex(output.token.category) === categoryId
-    && output.token.nft?.capability === 'none' && binToHex(output.lockingBytecode) === '51').length;
+const records = (builder: TransactionBuilder, categoryId: string): number => recordCommitments(builder, categoryId)
+  .length;
 
 /** (f) Inputs running a message-bus route: none, in every transaction here. */
 const busInputs = (builder: TransactionBuilder): string[] => builder.inputs.flatMap((input) => (
@@ -267,5 +288,31 @@ describe('direct multi-call', () => {
     await expect(spread.call.spread(1n, 2n).build()).rejects.toThrow(refusal);
     await expect(spread.call.spread(1n, 2n).send()).rejects.toThrow(refusal);
     expect((await spread.getState()).last).toBe(0n);
+  }, 300_000);
+
+  it('(g) gives two calls of one loop body, over two iterations, the frames of their execution order', async () => {
+    const provider = createTestProvider();
+    const valuesArtifact = compileString(VALUES, CALLEE);
+    const values = await deploy(provider, valuesArtifact, [], {});
+    for (const [index, value] of [1n, 2n, 3n, 4n].entries()) await values.call.put(BigInt(index), value).send();
+    const pairArtifact = compileString(PAIR_LOOP, DIRECT);
+    expect(pairArtifact.abi.find((fn) => fn.name === 'pairs')!.externalCalls!.map((call) => call.callOrdinal))
+      .toEqual([{ group: 0, counted: true }, { group: 0, counted: true }]);
+    const pairs = await deploy(provider, pairArtifact, [lockOf(values)], { last: 0n }, { IValues: values });
+
+    // at(0), at(2), at(1), at(3): frame k is the k-th call the loop makes, and its record the spend's k-th.
+    const builder = await pairs.call.pairs(2n).build() as TransactionBuilder;
+    expect(masterSpends(builder, 'Values')).toEqual(['callBatch']);
+    const at = valuesArtifact.abi.find((fn) => fn.name === 'at')!;
+    const digestOf = (index: bigint, ordinal: number): string => binToHex(callRecordDigest(
+      at, at.inputs.map((input) => (input.name === 'index' ? index : 0n)), {}, ordinal,
+    )!);
+    expect(recordCommitments(builder, values.categoryId).map((record) => binToHex(parseCallRecord(record)!.digest)))
+      .toEqual([0n, 2n, 1n, 3n].map((index, ordinal) => digestOf(index, ordinal)));
+    expect(busInputs(builder)).toEqual([]);
+    expect(vmAccepts(builder)).toBe(true);
+
+    await pairs.call.pairs(2n).send();
+    expect((await pairs.getState()).last).toBe(1324n);
   }, 300_000);
 });

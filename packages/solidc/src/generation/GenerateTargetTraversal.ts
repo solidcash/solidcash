@@ -6734,11 +6734,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The multi-call entry, `<sel> [frame K-1]..[frame 0] <K>`: a frame is an entry's standalone pushes, then its
-   * selector. It moves each frame to the alternate stack with a copy of the constructor parameters and its ordinal,
-   * then runs the frames one at a time on a stack holding that frame alone, the stack its standalone run sees. Each
-   * frame hands back proof that it took its ordinal and pinned its record; the entry then counts the spend's records
-   * and holds every other own-category record in place, the two checks the frames leave to it.
+   * The multi-call entry, `<sel> [frame 0]..[frame K-1] <K>`: a frame is an entry's standalone pushes, then its
+   * selector. It moves each frame to the alternate stack, the top one first, with a copy of the constructor
+   * parameters and its ordinal, then runs them from frame 0 up to a sentinel, each on a stack holding that frame
+   * alone, the stack its standalone run sees. Each frame hands back proof that it took its ordinal and pinned its
+   * record; the entry then counts the spend's records and holds the contract's mutable records to the spend's
+   * inputs, the checks the frames leave to it.
    */
   private emitCallBatchDefine(
     node: ContractNode, frames: readonly FunctionDefinitionNode[], loc: SingleLocationData,
@@ -6747,41 +6748,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const num = (value: number): Uint8Array => encodeInt(BigInt(value));
     // Each frame entry's selector and push count: a selector the table lacks fails its scan.
     const table = Uint8Array.from(frames.flatMap((fn) => [...fn.functionSelector!, fn.parameters.length]));
-    const constructorCopies = Array.from({ length: n }, (_, i) => [num(4 + i), Op.OP_PICK, Op.OP_TOALTSTACK]);
-    const dropCounts = [...Array.from({ length: (n + 2) >> 1 }, () => Op.OP_2DROP), ...((n & 1) ? [Op.OP_DROP] : [])];
+    const constructorCopies = Array.from({ length: n }, (_, i) => [num(3 + i), Op.OP_PICK, Op.OP_TOALTSTACK]);
+    const dropCounts = [...Array.from({ length: (n + 1) >> 1 }, () => Op.OP_2DROP), ...((n & 1) ? [] : [Op.OP_DROP])];
     const script: Script = [
       // A nested multi-call is refused: this run's own context is -1.
       Op.OP_FROMALTSTACK, Op.OP_1NEGATE, Op.OP_NUMEQUALVERIFY,
       ...(n > 0 ? [num(n), Op.OP_ROLL] : []),
       Op.OP_DUP, Op.OP_0, Op.OP_GREATERTHAN, Op.OP_VERIFY,
       Op.OP_DUP, Op.OP_TOALTSTACK, // alt: [K], the records the spend holds
-      Op.OP_0, // [frames.., ctor.., K, k]
+      Op.OP_0, Op.OP_TOALTSTACK, // alt: [K, 0], the sentinel the run stops at
       Op.OP_BEGIN,
-      num(n + 2), Op.OP_PICK, table, // frame k's selector
+      Op.OP_1SUB, // [frames.., ctor.., k]: the top frame is frame k
+      num(n + 1), Op.OP_PICK, table, // its selector
       Op.OP_BEGIN, Op.OP_5, Op.OP_SPLIT, Op.OP_SWAP, Op.OP_4, Op.OP_SPLIT, Op.OP_SWAP, Op.OP_3, Op.OP_PICK,
       Op.OP_EQUAL, Op.OP_DUP, Op.OP_NOTIF, Op.OP_NIP, Op.OP_ENDIF, Op.OP_UNTIL,
-      Op.OP_NIP, Op.OP_NIP, // [.., K, k, m]
-      Op.OP_DUP, num(n + 2), Op.OP_ADD, Op.OP_SWAP, // [.., K, k, count, m]
-      num(n + 4), Op.OP_ROLL, Op.OP_TOALTSTACK, // the selector
+      Op.OP_NIP, Op.OP_NIP, // [.., k, m]
+      Op.OP_DUP, num(n + 2), Op.OP_ADD, Op.OP_SWAP, // [.., k, count, m]
+      num(n + 3), Op.OP_ROLL, Op.OP_TOALTSTACK, // the selector
       ...constructorCopies.flat(),
-      Op.OP_BEGIN, num(n + 4), Op.OP_ROLL, Op.OP_TOALTSTACK, Op.OP_1SUB, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL,
+      Op.OP_BEGIN, num(n + 3), Op.OP_ROLL, Op.OP_TOALTSTACK, Op.OP_1SUB, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL,
       Op.OP_DROP, // its m pushes, last first
       Op.OP_OVER, Op.OP_TOALTSTACK, Op.OP_TOALTSTACK, // its ordinal, then its item count
-      Op.OP_1ADD, Op.OP_2DUP, Op.OP_NUMEQUAL,
+      Op.OP_DUP, Op.OP_NOT,
       Op.OP_UNTIL,
-      // Nothing is left beside the constructor parameters and the two counts.
-      Op.OP_DEPTH, num(n + 2), Op.OP_NUMEQUALVERIFY,
+      // Nothing is left beside the constructor parameters and the counter.
+      Op.OP_DEPTH, num(n + 1), Op.OP_NUMEQUALVERIFY,
       ...dropCounts,
+      Op.OP_FROMALTSTACK, // frame 0's item count
       Op.OP_BEGIN,
-      Op.OP_FROMALTSTACK,
       Op.OP_BEGIN, Op.OP_FROMALTSTACK, Op.OP_SWAP, Op.OP_1SUB, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
-      // [k, pushes.., ctor.., sel] -> [pushes.., ctor.., sel]; alt: [.., k == 0, k]
-      Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_DUP, Op.OP_NOT, Op.OP_TOALTSTACK, Op.OP_TOALTSTACK,
+      // [k, pushes.., ctor.., sel] -> [pushes.., ctor.., sel]; alt: [.., k]
+      Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_TOALTSTACK,
       Op.OP_INVOKE,
       Op.OP_VERIFY,
       Op.OP_FROMALTSTACK, Op.OP_1NEGATE, Op.OP_NUMEQUALVERIFY, // it took its ordinal and pinned its record
-      Op.OP_FROMALTSTACK,
+      Op.OP_FROMALTSTACK, Op.OP_DUP, Op.OP_NOT, // the next frame's item count, or the sentinel
       Op.OP_UNTIL,
+      Op.OP_DROP,
       // The spend holds exactly K records of this category: an `OP_TRUE` lock and no capability.
       Op.OP_FROMALTSTACK, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, num(32), Op.OP_SPLIT, Op.OP_DROP,
       Op.OP_0, Op.OP_TXOUTPUTCOUNT,
@@ -6789,8 +6792,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_OVER, Op.OP_OUTPUTBYTECODE, Uint8Array.of(0x51), Op.OP_EQUAL, Op.OP_BOOLAND,
       Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL,
       Op.OP_DROP, Op.OP_NIP, Op.OP_NUMEQUALVERIFY,
-      // Every own-category mutable input comes back at its own index unchanged.
+      // The own-category mutable outputs are the inputs: each sits at such an input's index, and every such input
+      // comes back at its own index unchanged.
       Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, num(32), Op.OP_SPLIT, Op.OP_DROP, num(1), Op.OP_CAT,
+      Op.OP_TXOUTPUTCOUNT,
+      Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_IF, Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_2, Op.OP_PICK, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
+      Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL,
+      Op.OP_DROP,
       Op.OP_TXINPUTCOUNT,
       Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL,
       Op.OP_IF,

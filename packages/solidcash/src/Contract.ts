@@ -982,7 +982,7 @@ export class Contract<
   /**
    * An unlocker for the multi-call entry (`artifact.callBatch`): one spend of the master runs `frames` in order,
    * frame k settling its call record under ordinal k. A frame names a `callBatchRow` entry and its complete ABI
-   * argument list, hidden witnesses included. The unlocking bytecode is `<sel> [frame K-1]..[frame 0] <K>`, a frame
+   * argument list, hidden witnesses included. The unlocking bytecode is `<sel> [frame 0]..[frame K-1] <K>`, a frame
    * being the entry's standalone pushes, then its selector.
    */
   createCallBatchUnlocker(
@@ -994,7 +994,7 @@ export class Contract<
     if (this.addressType === 'p2s') throw new Error('The multi-call entry is spent through its redeem script');
     const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
     const pushes: Uint8Array[] = [];
-    for (const { abiFunction, args } of [...frames].reverse()) {
+    for (const { abiFunction, args } of frames) {
       if (abiFunction.callBatchRow !== true || abiFunction.selector === undefined) {
         throw new Error(`'${abiFunction.name}' cannot run as a frame of the multi-call entry`);
       }

@@ -80,10 +80,11 @@ interface Batch { provider: Provider; book: StatefulContract<any>; tx: Tx; frame
 
 /**
  * A deployed book (total 9, prices 1 -> 100 and 2 -> 200) and one spend of its master running three frames: both
- * prices and the total. Inputs: the master, the data record, the entries of keys 1 and 2, a funder; the frames
- * read the entries one and two inputs past their layout slot, and pin their records at outputs 4, 5 and 6.
+ * prices and the total, or with `readers` the two prices alone. Inputs: the master, the data record, the entries of
+ * keys 1 and 2, a funder; the price frames read the entries one and two inputs past their layout slot, and the
+ * frames pin their records from output 4.
  */
-async function batch(): Promise<Batch> {
+async function batch(readers = false): Promise<Batch> {
   const provider = createTestProvider();
   const contract = new Contract(artifact(), [], { provider });
   const { categoryId } = await setupStatefulUtxos(
@@ -107,7 +108,7 @@ async function batch(): Promise<Batch> {
   const frames = [
     frame('priceOf', { key: 1n, __internal__returnOutputIdx: 4n, __internal__rowEntryShift: 1n }, 100n),
     frame('priceOf', { key: 2n, __internal__returnOutputIdx: 5n, __internal__rowEntryShift: 2n }, 200n),
-    frame('totalOf', { __internal__returnOutputIdx: 6n }, 9n),
+    ...(readers ? [] : [frame('totalOf', { __internal__returnOutputIdx: 6n }, 9n)]),
   ];
   const unlocker = book.inner.createCallBatchUnlocker(frames);
   const category = one.outputs[master]!.token!.category;
@@ -140,14 +141,15 @@ async function batch(): Promise<Batch> {
   return { provider, book, tx, frames, master };
 }
 
-/** Replace the selector of the frame pushed first (frame K-1), keeping its pushes. */
+/** Replace the selector of the frame pushed first (frame 0), keeping its pushes. */
 function withFirstFrameSelector(tx: Tx, master: number, selector: string): Tx {
   const copy = decode(encode(tx));
   const instructions = decodeAuthenticationInstructions(copy.inputs[master]!.unlockingBytecode) as Instruction[];
   expect(binToHex(instructions[0]!.data!)).toBe(CALL_BATCH_SELECTOR);
-  // Frame K-1 (`totalOf`) is its return index, then its selector.
-  expect(binToHex(instructions[2]!.data!)).toBe(abiOf('totalOf').selector);
-  instructions[2] = decodeAuthenticationInstructions(encodeDataPush(hexToBin(selector)))[0] as Instruction;
+  // Frame 0 (`priceOf`) is its pushes, then its selector.
+  const at = 1 + abiOf('priceOf').inputs.length;
+  expect(binToHex(instructions[at]!.data!)).toBe(abiOf('priceOf').selector);
+  instructions[at] = decodeAuthenticationInstructions(encodeDataPush(hexToBin(selector)))[0] as Instruction;
   copy.inputs[master]!.unlockingBytecode = encodeAuthenticationInstructions(instructions as any);
   return copy;
 }
@@ -169,6 +171,13 @@ describe('multi-call entry', () => {
 
   it('runs three calls in one spend of the master, each pinning its own record, and refuses the forgeries', async () => {
     const { provider, book, tx, frames, master } = await batch();
+
+    // Frame 0 is pushed first: `<sel> [frame 0]..[frame K-1] <K>`, a frame its arguments last first, then its selector.
+    const layout = [hexToBin(CALL_BATCH_SELECTOR), ...frames.flatMap((spec) => [
+      ...spec.args.map((arg) => bigIntToVmNumber(arg)).reverse(), hexToBin(spec.abiFunction.selector!),
+    ]), bigIntToVmNumber(BigInt(frames.length))].flatMap((push) => [...encodeDataPush(push)]);
+    expect(binToHex(tx.inputs[master]!.unlockingBytecode.slice(0, layout.length)))
+      .toBe(binToHex(Uint8Array.from(layout)));
 
     // A carrier of the callee's category beside the three records.
     const extra = decode(encode(tx));
@@ -197,5 +206,19 @@ describe('multi-call entry', () => {
     expect((await book.getState()).total).toBe(9n);
     // A standalone call still settles as one.
     await expect((book as any).priceOf(2n).send()).resolves.toBeDefined();
+  }, 300_000);
+
+  // No price frame counts the contract's mutable records in a batch: the entry holds them to the spend's inputs.
+  it.each([
+    ['data record', 1],
+    ['mapping node', 2],
+  ] as const)('refuses an extra %s at a lock the contract mints, beside a batch of reads', async (_kind, copied) => {
+    const { provider, tx, master } = await batch(true);
+    const forged = decode(encode(tx));
+    const change = forged.outputs.pop()!;
+    const extra = decode(encode(tx)).outputs[copied]!;
+    forged.outputs.push(extra, { ...change, valueSatoshis: change.valueSatoshis - extra.valueSatoshis });
+    expectScriptRejection(await outcomeOf(provider, encode(forged)), master);
+    expect(await outcomeOf(provider, encode(tx))).toBe('ACCEPTED');
   }, 300_000);
 });

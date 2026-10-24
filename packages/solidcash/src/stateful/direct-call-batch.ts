@@ -76,7 +76,7 @@ export interface PlanDirectCallBatchesHost {
     callerInputs?: readonly { type: string }[];
     executionSelfAddress?: FunctionArgument;
     externalReturns?: ReadonlyMap<string, FunctionArgument>;
-  }): Promise<readonly { args: readonly FunctionArgument[] }[]>;
+  }): Promise<readonly { args: readonly FunctionArgument[]; sourceIteration: number }[]>;
   resolveExternalExpressionReturns(
     sources: readonly ArgSource[], functionArgs: FunctionArgument[], state: Record<string, unknown>,
     callerInputs: readonly { type: string }[] | undefined, executionSelfAddress: FunctionArgument | undefined,
@@ -107,8 +107,9 @@ export function directCallBatchRefusal(caller: string, callee: string, count: nu
 /**
  * Expand each `callOrdinal` group of a direct caller into its reached calls in execution order: a fixed group keeps
  * its calls, a counted group resolves its loops' reached occurrences (domain, conditions and arguments) and its
- * conditions. A group reaching two or more frames marks its calls as units of one multi-call spend; one reaching a
- * single call keeps the standalone spend, with that call's own arguments.
+ * conditions, and numbers them as they run; a call inside nested loops is refused. A group reaching two or more
+ * frames marks its calls as units of one multi-call spend; one reaching a single call keeps the standalone spend,
+ * with that call's own arguments.
  */
 export async function planDirectCallBatches(
   host: PlanDirectCallBatchesHost,
@@ -155,7 +156,21 @@ export async function planDirectCallBatches(
   const planned = new Map<number, Array<{ call: DirectCallBatchCall; info: ResolvedCall }>>();
   for (const [group, positions] of positionsByGroup) {
     const units: Array<{ position: number; info: ResolvedCall; ordinal: number; witnessOffset: number }> = [];
-    let next = 0;
+    // A counted group numbers its reached calls as the caller's counter does, in execution order: by where each runs
+    // (a looped call where the first of the group's calls in its loop sits), its iteration, then its program point.
+    const reached: Array<{ position: number; info: ResolvedCall; anchor: number; iteration?: number }> = [];
+    const effectOf = (position: number): number => externalCalls[position]!.sourceEffectOrdinal ?? position;
+    const loopOf = (position: number): number | undefined => externalCalls[position]!.iterationDomain?.sourceLoopId;
+    const looped = positions.filter((position) => externalCalls[position]!.occurrence === 'loop');
+    const nested = looped.find((position) => (externalCalls[position]!.nestedIterationDomains?.length ?? 0) > 0);
+    if (nested !== undefined) {
+      throw new Error(`${caller}: callsite ${externalCalls[nested]!.callsiteId ?? nested} sits in nested loops, `
+        + 'whose calls do not run as frames of one multi-call spend yet.');
+    }
+    if (looped.length > 1 && looped.some((position) => loopOf(position) === undefined)) {
+      throw new Error(`${caller}: the loops of its calls to one callee are not published, so the calls cannot be `
+        + 'put in execution order as frames of one multi-call spend.');
+    }
     for (const position of positions) {
       const call = externalCalls[position]!;
       const info = resolvedExternalCalls[position]!;
@@ -165,7 +180,6 @@ export async function planDirectCallBatches(
         continue;
       }
       if (call.occurrence === 'loop') {
-        // A looped call reads its record at its return index plus the group's counter.
         const domain = call.iterationDomain;
         const expressions = [
           ...(domain ? [domain.initialValue, domain.stepValue, domain.continueCondition] : []),
@@ -176,13 +190,15 @@ export async function planDirectCallBatches(
           ...expressions.map((expression): ArgSource => ({ kind: 'expression', expression })),
           ...(call.argSources ?? []),
         ], state);
-        const reached = await host.planExternalCallOccurrences(call, {
+        const occurrences = await host.planExternalCallOccurrences(call, {
           functionArgs: args, artifact, state, callerInputs: abiFunction.inputs,
           executionSelfAddress: publicSelfAddress, externalReturns,
         });
-        for (const occurrence of reached) {
-          units.push({ position, info: { ...info, args: [...occurrence.args] }, ordinal: next, witnessOffset: 0 });
-          next += 1;
+        const anchor = Math.min(...looped.filter((other) => loopOf(other) === loopOf(position)).map(effectOf));
+        for (const occurrence of occurrences) {
+          reached.push({
+            position, info: { ...info, args: [...occurrence.args] }, anchor, iteration: occurrence.sourceIteration,
+          });
         }
         continue;
       }
@@ -197,8 +213,15 @@ export async function planDirectCallBatches(
           throw new Error(`${caller}: the condition of callsite ${call.callsiteId ?? position} is unresolved`);
         }
       }
-      units.push({ position, info, ordinal: next, witnessOffset: next });
-      next += 1;
+      reached.push({ position, info, anchor: effectOf(position) });
+    }
+    reached.sort((left, right) => left.anchor - right.anchor || (left.iteration ?? 0) - (right.iteration ?? 0)
+      || effectOf(left.position) - effectOf(right.position));
+    // A looped call reads its record at its return index plus the counter, any other at its ordinal.
+    for (const [ordinal, unit] of reached.entries()) {
+      units.push({
+        position: unit.position, info: unit.info, ordinal, witnessOffset: unit.iteration === undefined ? ordinal : 0,
+      });
     }
     const frameCount = new Set(units.map((unit) => unit.ordinal)).size;
     if (frameCount > 1) {

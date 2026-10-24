@@ -107,9 +107,10 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 at that commit, and the six residuals and five skips above stay non-blocking. `master` carries all the release work:
 the readiness and matrix fixes (merge `168a45b9d`), `feat/tether-bch-native` (merge `e974a00e4`),
 `solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). The most recent mocknet
-verification is 2026-10-23 at `0f7da2afa`, on `release-readiness/2026-10-22` taken from master `809de50f8`; its gate
-table, the re-pin it needed and the four green marketplace cells are in "The 2026-10-23 verification" below. Two
-items outside the gates are left for the release owner:
+verification is 2026-10-24 at `b7469b668` on master, with two `yarn test:e2e` expectations awaiting the owner's
+decision; its gate table and the re-pin it needed are in "The 2026-10-24 verification" below. The 2026-10-23 run at
+`0f7da2afa` and its four green marketplace cells are in "The 2026-10-23 verification". Two items outside the gates
+are left for the release owner:
 
 - `release-application-regtest` was not run: verification ran on mocknet only, by instruction. It last passed
   against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
@@ -256,6 +257,55 @@ move them, and no other does:
 The direct multi-call commits (`b05a11f83` to `9285c4f39`), `173951f2e`, `86f001741` and `63cd768a6` leave all four
 unchanged: these fixtures are message-bus compiles, and the compact call-record layout of `63cd768a6` applies to
 direct compiles only.
+
+### The 2026-10-24 verification
+
+Every mocknet gate was re-run from the isolated worktree `/Code/cashscript/.worktrees/release-gates`, one gate at a
+time, with `TESTS_USE_REGTEST` unset and no `SOLIDC_*` or `FRAMED_*` overrides; the tree was clean before and after
+each gate. The battery ran at `63cd768a6`, and the gates it left red were re-run at `b7469b668` after their fixes.
+Between the two commits only a test comment (`f449e2485`) and the pins and this record (`b7469b668`) changed, so no
+compiled code differs.
+
+| Gate | Commit | Result |
+|---|---|---|
+| `scripts/gate.sh full` | `b7469b668` | exit 0 (666 s): identity `{"routeBytes":44865,"fullBytes":246609,"fullHash":"30c4f5a157f93e83"}` matches; utils 525/525; solidc 475 files, 7439 passed, 0 failed |
+| `kernel-beta-gate` | `b7469b668` | exit 0 (40 min) without `--allow-dirty`: `diagnosticOnly: false`, `head b7469b668`, sourceFingerprints matched, all 39 required kernel proofs (87 titles) passed, each cold row's two fresh compiles agree |
+| `yarn test` | `63cd768a6` | exit 1 (41 min), one failure: solidhat's `ported-script-exit-code` timing bound, 32.5 s against 30 s while scratch compiles ran beside the suite; the file passed alone at `b7469b668` in 5 s. utils 525/525; solidc 7439 passed; solidcash 6003 passed, 5 expected failures, 186 skipped, 5 todo; testing 120/120; testing-suite 27/27; solidhat 71 passed, 1 skipped |
+| `yarn test:e2e` | `63cd768a6` | exit 1 (33 min): 617 files, 3807 passed, 24 skipped, 3 todo, 2 failed; both failures await the owner's decision, below |
+| `yarn lint` | `b7469b668` | exit 0 (320 s) |
+| `yarn spellcheck` | `b7469b668` | exit 0, no unknown words |
+| `check:source-tree` | `b7469b668` | exit 0 |
+| `check:doc-citations` | `b7469b668` | exit 0 |
+| `release-security-conformance` | `63cd768a6` | exit 0 (82 s) |
+| `release-package-smoke` | `63cd768a6` | exit 0 (295 s) |
+| `release-docs-snippets` | `63cd768a6` | exit 0 (9 s) |
+| `release-corpus-baseline` | `63cd768a6` | exit 0 against the retained scorecard |
+| `release-application-conformance` | `63cd768a6` | exit 0 (17 s) |
+| `release-generated-project-smoke` | `63cd768a6` | exit 0 (38 s) |
+| marketplace matrix | not run | not part of this round, by instruction; last green at `7e5c0f897` |
+| `release-application-regtest` | not run | mocknet-only verification, as in the earlier runs |
+
+The two `yarn test:e2e` failures, both waiting on the owner:
+
+- `KernelNestedTuplePool.test.ts`, "promotes a potentially repeated typed loop across zero, one and two rows",
+  expects `build()` of a looped call to refuse with "requires atomic composition". Since `a7e773d1d`, `build()` of a
+  message-bus compile plans the same bus rows as `send()` and returns the composition `send()` broadcasts; every
+  input passes the VM in its preflight. The expectation predates that change, and the file's later steps, which check
+  the state after zero, one and two rows, do not run while it stands.
+- `OzBchNativeInheritance.test.ts`, "composes with the unmodified OZ 5.0.2 implementation", holds the script under
+  9,450 bytes. It is 9,517 bytes: call records (D50) added 264 bytes to the 9,414 of D49, and `18860c4fd` and
+  `63cd768a6` took back 161. The honest `transferFrom` master input measures 9,987 bytes, under the 10,000-byte
+  limit; the same file asserts that, and it passes.
+
+What this run changed:
+
+- Package rename: the gate scripts and the kernel manifest name the `@solidcash/*` workspaces (`847f142c2`), and
+  two comments it lengthened were rewrapped (`847f142c2`, `f449e2485`).
+- Call-record (D50) follow-ups: `0e6f4414f` (two tests read D50 records), `862fd54ae` (two size pins),
+  `173951f2e` (a compile crash on a call that leaves its arguments to the callee; its pre-D50 binding is an open
+  residual in `docs/security/security-audit-2026-10-16.md`), `86f001741` (a raw call whose result is never read reads
+  no record), `63cd768a6` (the OZ `transferFrom` input back under the limit).
+- The bytecode identity and the kernel cold baselines, as recorded in "The 2026-10-24 re-pin" above.
 
 ### What closed the 2026-10-17 failures
 

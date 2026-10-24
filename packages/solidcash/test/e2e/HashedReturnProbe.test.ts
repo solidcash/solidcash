@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { callRecordCommitment, callRecordDigest } from '../../src/stateful/call-record.js';
 import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
@@ -37,17 +38,22 @@ describe('authenticated hashed return probes', () => {
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const expected = encodeEvmInvocationResult([[2n, 3n, 4n, 5n, 6n]], ['uint16[5]']);
-    const digest = sha256(expected);
+    // D50: the carrier is the record of this call, digest(project, input) || form 2 || SHA256(result).
+    const callDigest = callRecordDigest(artifact.abi.find((fn) => fn.name === 'project')!, [[1n, 2n, 3n, 4n, 5n]]);
+    if (!callDigest) throw new Error('project publishes no selector');
+    const record = callRecordCommitment(expected, callDigest);
     const output = transaction.outputs.find((candidate) => candidate.token?.nft
-      && binToHex(candidate.token.nft.commitment) === binToHex(digest));
+      && binToHex(candidate.token.nft.commitment) === binToHex(record));
     expect(output).toBeDefined();
-    // Direct dependency probes retain raw bytes for decoding. The physical return NFT carries the digest
-    // because the five-word EVM result exceeds the 128-byte commitment limit. Verify the published digest
-    // and a tampered commitment against the same covenant in the VM.
-    expect(output!.token!.nft!.commitment).toHaveLength(32);
+    // Direct dependency probes retain raw bytes for decoding. The physical return NFT carries the result's
+    // SHA256 because the five-word EVM result exceeds the record's 96-byte inline field. Verify the published
+    // record and a tampered result hash against the same covenant in the VM.
+    expect(expected.length).toBeGreaterThan(96);
+    expect(output!.token!.nft!.commitment).toHaveLength(64);
+    expect(output!.token!.nft!.commitment.slice(32)).toEqual(sha256(expected));
     const vm = createVirtualMachineBch2026ForProvider(provider);
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction }))).toBe(true);
-    output!.token!.nft!.commitment[0] ^= 1;
+    output!.token!.nft!.commitment[32] ^= 1;
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction }))).not.toBe(true);
   });
 });

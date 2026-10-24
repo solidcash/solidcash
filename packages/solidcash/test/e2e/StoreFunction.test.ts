@@ -12,6 +12,7 @@ import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { decodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
+import { callRecordDigest, parseCallRecord } from '../../src/stateful/call-record.js';
 
 // Every fixture here deploys a child through a deliberately unguarded deploy entry (these tests cover the
 // store_function mechanic, not caller authorization), so compile with the explicit permissionless opt-in.
@@ -455,13 +456,19 @@ describe('returning corpus form', () => {
       expect(out.tx.txid).toBeDefined();
 
       // Decode the return-event NFT commitment: t() must have returned addTwo(7) == 9. A Solidity import
-      // publishes its result as the ABI-encoded tuple.
+      // publishes its result as the ABI-encoded tuple. D50: the carrier is the record of t's call,
+      // digest(t) || form 1 || the result.
       const retOut = out.tx.outputs.find(
         (o) => o.token && Buffer.from(o.lockingBytecode).toString('hex') === '51' && o.token.nft,
       );
       expect(retOut).toBeDefined();
-      expect(arts.C.abi.find((fn) => fn.name === 't')!.resultEncoding).toBe('evm-abi-v1');
-      expect(decodeEvmInvocationResult(retOut!.token!.nft!.commitment, ['int256'], arts.C.structs)).toEqual([9n]);
+      const tAbi = arts.C.abi.find((fn) => fn.name === 't')!;
+      expect(tAbi.resultEncoding).toBe('evm-abi-v1');
+      const digest = callRecordDigest(tAbi, []);
+      if (!digest) throw new Error('t publishes no selector');
+      const record = parseCallRecord(retOut!.token!.nft!.commitment);
+      expect(record?.digest).toEqual(digest);
+      expect(decodeEvmInvocationResult(record?.raw ?? new Uint8Array(), ['int256'], arts.C.structs)).toEqual([9n]);
 
       // x holds the freshly-deployed Other's genesis address (store kept it received for later txs).
       expect(Buffer.from((await c.getState()).x as Uint8Array).toString('hex'))
@@ -529,9 +536,15 @@ describe('return-event x deploy', () => {
       expect([catHex, catRevHex]).toContain(c.categoryId);
       // Anyone-can-spend (OP_TRUE) return event, no capability, zero FT.
       expect(Buffer.from(retOut.lockingBytecode).toString('hex')).toBe('51');
-      // A Solidity import publishes its result as the ABI-encoded tuple.
-      expect(arts.C.abi.find((fn) => fn.name === 't')!.resultEncoding).toBe('evm-abi-v1');
-      expect(decodeEvmInvocationResult(retOut.token!.nft!.commitment, ['int256'], arts.C.structs)).toEqual([9n]);
+      // A Solidity import publishes its result as the ABI-encoded tuple. D50: the carrier is the record of t's
+      // call, digest(t) || form 1 || the result.
+      const tAbi = arts.C.abi.find((fn) => fn.name === 't')!;
+      expect(tAbi.resultEncoding).toBe('evm-abi-v1');
+      const digest = callRecordDigest(tAbi, []);
+      if (!digest) throw new Error('t publishes no selector');
+      const record = parseCallRecord(retOut.token!.nft!.commitment);
+      expect(record?.digest).toEqual(digest);
+      expect(decodeEvmInvocationResult(record?.raw ?? new Uint8Array(), ['int256'], arts.C.structs)).toEqual([9n]);
     });
   });
 });

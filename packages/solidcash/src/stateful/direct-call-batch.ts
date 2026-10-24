@@ -210,7 +210,7 @@ export async function planDirectCallBatches(
         const entry = callee.abi.find((candidate) => candidate.name === unit.info.functionName);
         if (entry?.callBatchRow !== true) {
           throw new Error(`${caller}: ${callee.contractName}.${unit.info.functionName}() cannot run as a frame of `
-            + `its multi-call entry, which runs only entries that return values and preserve all state.`);
+            + 'its multi-call entry, which runs only entries that return values and preserve all state.');
         }
       }
     }

@@ -60,7 +60,7 @@ const READER = `${PRAGMA}interface IValues { function at(uint256 index) external
     }
   }`;
 
-const IBOOK = `interface IBook {
+const BOOK_INTERFACE = `interface IBook {
     function priceOf(uint256 key) external view returns (uint256);
     function totalOf() external view returns (uint256);
   }
@@ -200,7 +200,7 @@ describe('direct multi-call', () => {
   it('(c) settles two calls with different arguments and a zero-argument alias in one spend', async () => {
     const provider = createTestProvider();
     // Compiled together, the callee takes its multi-call entry from the caller that repeats calls to it.
-    const artifacts = compileStringMulti(`${PRAGMA}${IBOOK}${BOOK}${SPREAD}`, DIRECT);
+    const artifacts = compileStringMulti(`${PRAGMA}${BOOK_INTERFACE}${BOOK}${SPREAD}`, DIRECT);
     expect(artifacts.Book.callBatch).toEqual(CALL_BATCH);
     expect(artifacts.Spread.messageBus).toBeUndefined();
     expect(artifacts.Spread.abi.find((fn) => fn.name === 'spread')!.externalCalls!
@@ -257,7 +257,7 @@ describe('direct multi-call', () => {
     const provider = createTestProvider();
     const bookArtifact = compileString(`${PRAGMA}${BOOK}`, DIRECT);
     expect(bookArtifact.callBatch).toBeUndefined();
-    const spreadArtifact = compileString(`${PRAGMA}${IBOOK}${SPREAD}`, DIRECT);
+    const spreadArtifact = compileString(`${PRAGMA}${BOOK_INTERFACE}${SPREAD}`, DIRECT);
     const book = await deploy(provider, bookArtifact, [], { total: 0n });
     await book.call.setTotal(4n).send();
     const spread = await deploy(provider, spreadArtifact, [lockOf(book)], { last: 0n }, { IBook: book });

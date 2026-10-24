@@ -143,10 +143,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 16 / 37 | SafeMath revert-reason mapping, TransferHelper selectors, ETH value |
+| `Libraries` | 20 / 37 | TransferHelper raw-return decoding (9), `pairFor`/`getReserves`/`getAmounts*` (6), ETH value (2) |
 | `UniswapV2Router02` | 4 / 74 | `msg.value`/WETH satoshi model, `.staticCall` now works |
 | `SushiRoll` | 0 / 16 | same ETH/value family; setup approves fail preflight |
-| **Total** | **75 / 192** | |
+| **Total** | **79 / 192** | |
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
@@ -174,3 +174,5 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - The compiler records a mapping key that is a tuple component of another call's return as a `producer` key
   source; the SDK resolves the producer's authenticated value before hashing the slot. This is the groundwork
   for the protocol-fee recipient entry, which still needs an inactive-lane batch path when the fee is zero.
+- A failing outlined library body is attributed from the trace's executed instructions even when the failing
+  step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.

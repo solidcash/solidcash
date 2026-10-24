@@ -6645,8 +6645,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             instructions?: Parameters<typeof encodeAuthenticationInstructions>[0];
             controlStack?: unknown[];
           });
-          const activeBodyHex = (activeInstructions.controlStack?.length ?? 0) > 0
-            && activeInstructions.instructions !== undefined
+          // An OP_INVOKE failure is addressed in the active outlined body. The trace carries that body's
+          // instructions even when the failing step exposes no control stack; using them lets the invoke table
+          // attribute a library `require` (SafeMath's messages live in the library body, not the caller's).
+          const activeBodyHex = activeInstructions.instructions !== undefined
             ? binToHex(encodeAuthenticationInstructions(activeInstructions.instructions)) : undefined;
           const requireMessage = probeRequireMessage(
             artifactCandidates, selector, ip, logicalFunctionNames, activeBodyHex,

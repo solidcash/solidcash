@@ -945,6 +945,13 @@ refusal (`packages/solidc/test/SecurityAudit202610*.test.ts`, `packages/solidcas
 `packages/testing/src/chai.ts` (missing args fail, addresses normalised, events that do not decode fail, `.reverted`
 needs VM evidence, `rejectedWith` has no source fallback).
 
+- **Direct multi-call census** (`9285c4f39`, found 2026-10-24 in the opt-in multi-call entry of `b05a11f83`). The
+  entry walked only its inputs, and a frame's data-record and collection censuses run only standalone, so beside a batch
+  of entry-reading frames an extra data record or mapping node of the contract was accepted (reproduced on mocknet: an
+  exact copy of an existing record, paid for by the funder). The entry now holds every own-category mutable output to
+  an input at its index, inside the callee's script. Only contracts compiled with `callBatch: true` (or an obvious
+  need) carried the entry; it never shipped in a release. Test: `CallBatch.test.ts`.
+
 ### Not changed, by decision
 
 - Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), view/static

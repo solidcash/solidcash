@@ -226,6 +226,37 @@ What this run changed:
 - Two ERC-20 guide snippets gained the imports they were missing, and the scaled snippet its hook implementations;
   `Erc20GuideSnippets.test.ts` compiles both against the shipped `solidcash/contracts` base contracts.
 
+### The 2026-10-24 re-pin
+
+The gates were re-run at master `1b5f53076` and `63cd768a6`, and the bytecode identity had moved since the 2026-10-22
+pin. Every pin was updated to the value measured at `63cd768a6`; no assertion or test filter changed.
+
+| Pin | Old | New |
+|---|---|---|
+| `scripts/gate.sh` identity | `{"routeBytes":44840,"fullBytes":247572,"fullHash":"bf00ad8f2b11dc1e"}` | `{"routeBytes":44865,"fullBytes":246609,"fullHash":"30c4f5a157f93e83"}` |
+| kernel manifest, marketplace-v1 legacy | 44840 / 247572 / `bf00ad8f` | 44865 / 246609 / `30c4f5a1` |
+| kernel manifest, marketplace-v1 kernel | 14824 / 309899 / `d71e2754` | 14850 / 308917 / `1305ee5e` |
+| kernel manifest, unicrow-claim kernel | 1092 / 15601 / `50af6a8a` | 1068 / 15869 / `74c05f87` |
+
+The route-size screens follow the kernel routes: the marketplace route (14850) still exceeds the 10,000-byte limit
+alone and the claim route (1068) does not. The fixture sources are untouched.
+
+Each value was measured at every first-parent commit from `c21639b6e` to `63cd768a6` that changes compiler sources,
+from a scratch build per commit; the measurement reproduces all four 2026-10-22 values at `c21639b6e`. Four commits
+move them, and no other does:
+
+| Commit | marketplace-v1 legacy | marketplace-v1 kernel | unicrow-claim kernel |
+|---|---|---|---|
+| `c21639b6e`, the 2026-10-22 pin | 44840 / 247572 | 14824 / 309899 | 1092 / 15601 |
+| `0639d52bd`, call records (D50) | 44840 / 249466 | 14824 / 311772 | 1113 / 15986 |
+| `6cece8511`, proxied route records pinned outside the window | 44914 / 249540 | 14899 / 311847 | 1113 / 15986 |
+| `c1883fb8e`, one owner distance per delegate entry | 44914 / 247254 | 14899 / 309561 | 1113 / 15986 |
+| `18860c4fd`, shared call-record settlement | 44865 / 246609 | 14850 / 308917 | 1068 / 15869 |
+
+The direct multi-call commits (`b05a11f83` to `9285c4f39`), `173951f2e`, `86f001741` and `63cd768a6` leave all four
+unchanged: these fixtures are message-bus compiles, and the compact call-record layout of `63cd768a6` applies to
+direct compiles only.
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

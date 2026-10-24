@@ -955,6 +955,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
 
 ### Open
 
+- Direct looped returning writer (found 2026-10-24 while building direct call ordinals): in a direct compile, a
+  returning call to a fixed target inside a loop checked neither the callee nor the record's category, so its result
+  was unbound. `9323f7bae` closes it for state-preserving calls, which are now counted and check the callee, the
+  record's category and its carrier form on every iteration; a looped returning call that changes state still reads
+  unbound until direct multi-call frames take writes (phase 4).
+
 - A forwarder with neither `delegateForwarding` nor a low-level call slot (artifacts from before 2026-09) still
   places a direct delegate after its full block, which the delegate now refuses (`c1883fb8e`): fail-closed.
 

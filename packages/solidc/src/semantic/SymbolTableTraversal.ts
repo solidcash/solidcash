@@ -4100,9 +4100,13 @@ export default class SymbolTableTraversal extends AstTraversal {
             // A message-bus route describes the union of every handler's writes. At runtime some of those slots
             // can be inactive, so its batch cardinality is not fixed and cannot use the dense linear row witness.
             // The general batch proof accepts the -2 inactive sentinel on a per-target basis.
+            // A key taken from another call's return is only known at build time; it can collapse onto a sibling
+            // target (a zero protocol recipient shares the MINIMUM_LIQUIDITY key), so the batch must use the
+            // general per-target witness rather than the dense linear row vector.
             ...(!node.messageBusRoute && slotIndices.length > 1 && slotIndices.every((batchSlot) => {
               const info = ordered.find((candidate) => candidate.slotIndex === batchSlot);
-              return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0;
+              return info?.aliasCondDeleteSlot === undefined && (info?.runtimeAliasPriorSlots?.length ?? 0) === 0
+                && !info?.keySources?.some((source) => source.producer !== undefined);
             }) && { linear: true }),
           }));
 
@@ -10831,7 +10835,42 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.currentFunction.messageBusRejectionReason = 'KERNEL_LAYOUT';
       }
       if (!addressSource) {
-        const resolvedAddressExpression = serializeExpression(resolveInitializer(node.addressExpression));
+        // A local declared with an initializer but reassigned by a dominating tuple destructure
+        // (`(_feeTo, _migrator) = f()`) holds the destructured component at this call, not the declaration's
+        // placeholder. Publish that producer component instead of the initializer, which can name a
+        // different (often zero) target and make the SDK unable to resolve the callee.
+        const dominatingTupleElement = (identifier: IdentifierNode): ExpressionNode | undefined => {
+          const prior = priorStatements ?? [];
+          for (let index = prior.length - 1; index >= 0; index -= 1) {
+            const statement = prior[index]!;
+            if (!(statement instanceof TupleAssignmentNode)) continue;
+            const element = statement.elements.find(
+              (candidate) => candidate.name === identifier.name && !candidate.skip,
+            );
+            if (!element) continue;
+            const position = statement.elements.indexOf(element);
+            const direct = statement.tupleExpressions?.[position];
+            if (direct) return direct;
+            if (!statement.tuple) return undefined;
+            const projection = new TupleIndexOpNode(statement.tuple, position);
+            projection.location = statement.location;
+            const definition = identifier.definition?.definition;
+            projection.type = (definition instanceof VariableDefinitionNode
+              || definition instanceof ParameterNode) ? definition.type ?? identifier.type : identifier.type;
+            return projection;
+          }
+          return undefined;
+        };
+        // `writtenInPrefix` is installed by the serializer and may still be the stub here; read the call's
+        // dominating statements directly.
+        let addressBase: ExpressionNode = node.addressExpression;
+        while (addressBase instanceof CastNode) addressBase = addressBase.expression;
+        const addressLocal = addressBase instanceof IdentifierNode
+          && (priorStatements ?? []).some((statement) => writesLocal(statement, addressBase.name, true))
+          ? dominatingTupleElement(addressBase) : undefined;
+        const resolvedAddressExpression = serializeExpression(
+          addressLocal ?? resolveInitializer(node.addressExpression),
+        );
         if (resolvedAddressExpression
           && resolvedAddressExpression.kind !== 'identifier'
           && resolvedAddressExpression.kind !== 'unsupported'
@@ -12709,6 +12748,27 @@ export default class SymbolTableTraversal extends AstTraversal {
     return undefined;
   }
 
+  /** A tuple component of an external call's result: `(feeTo, migrator) = factory.feeToAndMigrator()`. */
+  private producerKeyOf(expression: ExpressionNode): {
+    callsiteId?: number; resultIndex: number; sourceEffectOrdinal?: number; functionName?: string;
+  } | undefined {
+    if (!(expression instanceof TupleIndexOpNode)) return undefined;
+    const tuple = expression.tuple;
+    if (!(tuple instanceof ExternalFunctionCallNode)) return undefined;
+    const callsiteId = tuple.callInfo?.externalCallSlotIndex;
+    const functionName = tuple.callInfo?.functionName;
+    if (callsiteId !== undefined && callsiteId >= 0) {
+      return { callsiteId, resultIndex: expression.index, ...(functionName && { functionName }) };
+    }
+    // Callsite ids are assigned by the external-call pre-scan, which runs after entry accesses. Keep the
+    // source-effect ordinal, which is already stamped, and resolve it to the published callsite id at emission.
+    const sourceEffectOrdinal = (tuple as unknown as { sourceEffectOrdinal?: number }).sourceEffectOrdinal;
+    if (sourceEffectOrdinal !== undefined) {
+      return { resultIndex: expression.index, sourceEffectOrdinal, ...(functionName && { functionName }) };
+    }
+    return undefined;
+  }
+
   private classifyKeySource(key: ExpressionNode): KeySourceInfo {
     // A `msg.sender` / `tx.origin` key: for a direct call both resolve to tx.origin = the first native P2PKH input's
     // lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender. Distinct kind so the SDK
@@ -12755,7 +12815,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       // canonical so the SDK auto-derives the key (evalComputedKey) without a manual withEntryKey. A reassigned
       // local (localKeyDefs keeps the FIRST def) would inline a stale value -> the covenant's keyToSlot verify
       // rejects (fail closed), not silent corruption. Single-assignment computed locals (the common case) resolve.
-      if (def) return { kind: 'expression', canonical: this.canonicalizeExpression(def) };
+      if (def) {
+        const producer = this.producerKeyOf(def);
+        return {
+          kind: 'expression',
+          canonical: producer
+            ? `producer:${producer.callsiteId ?? `effect${producer.sourceEffectOrdinal}`}:${producer.resultIndex}`
+            : this.canonicalizeExpression(def),
+          ...(producer && { producer }),
+        };
+      }
       return { kind: 'expression', canonical: this.canonicalizeExpression(key) };
     }
     if (key instanceof StateAccessNode) {

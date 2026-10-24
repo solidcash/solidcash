@@ -264,6 +264,11 @@ export interface KeySourceInfo {
   // native P2PKH input's lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender.
   senderOp?: 'msg.sender' | 'tx.origin';
   canonical: string;       // canonical string for deduplication (all kinds)
+  /** The key is a component of another call's return (`(a, b) = f()`): the SDK resolves the producer's
+   * authenticated value before hashing the slot. */
+  producer?: {
+    callsiteId?: number; resultIndex: number; sourceEffectOrdinal?: number; functionName?: string;
+  };
   /** SDK-only key expression after a proven adjacent, unconditional mapping write. */
   postWriteExpressionLabel?: string;
   /** Mapping collections this key reads before any mutation in the source handler. */

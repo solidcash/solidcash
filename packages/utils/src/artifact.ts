@@ -1235,6 +1235,8 @@ export interface KeySourceAbi {
   postWriteExpressionLabel?: string;
   /** Authenticated mapping snapshots this key reads before the handler's first mutation. */
   preWriteMappingCollections?: readonly string[];
+  /** The key is a component of another call's return: the SDK resolves the producer's value before hashing. */
+  producer?: { callsiteId?: number; resultIndex: number; functionName?: string };
 }
 
 export interface EntryAccessAbi {

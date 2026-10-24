@@ -298,7 +298,13 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 ?? (typeof rawKeyValue === 'string' && (bCollection?.keyTypes?.[0] ?? bCollection?.keyType) === 'string'
                   ? utf8ToBin(rawKeyValue) : undefined)
                 ?? (rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
-                  || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined);
+                  || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined)
+                // A key the compiler states as an expression rather than a visible parameter (a literal
+                // address, `address(this)`, a sorted local) has no argument value; resolve it the same way
+                // the per-key encoding below does, or the slot's batch witnesses are never published.
+                ?? (bEntryAccess.keySources?.[0]?.kind === 'expression'
+                  ? evalComputedKey(bEntryAccess.keySources[0].expressionLabel, bRouteArgs, bAbiFunc!.inputs)
+                  : undefined);
               // The callee reconstructs msg.sender from the authenticated caller identity anchor. Its entry
               // witness must use that same locking bytecode, even when the caller executes at another lock.
               const callerAddress = hexToBin(publicSelfIdentity.lockingBytecode);

@@ -31,6 +31,15 @@ export type TransitiveExternalContract = {
   };
   _externalRegistry: Map<string, unknown>;
   _hydrateExternalPredicateState(...args: any[]): Promise<Record<string, unknown>>;
+  _resolveExternalExpressionReturns?(...args: any[]): Promise<Map<string, FunctionArgument>>;
+  _planExternalCallOccurrences?(call: ExternalCallAbi, frame: {
+    functionArgs: FunctionArgument[];
+    artifact: Artifact;
+    state?: Record<string, unknown>;
+    callerInputs?: readonly { type: string }[];
+    executionSelfAddress?: FunctionArgument;
+    externalReturns?: ReadonlyMap<string, FunctionArgument>;
+  }): Promise<readonly { args: readonly FunctionArgument[] }[]>;
   _resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
   _deriveReturnValue(...args: any[]): Promise<StateValue>;
 };
@@ -65,10 +74,33 @@ export async function resolveTransitiveExternalContract(
       [edge.addressSource.expression], [...args], caller.inner.artifact, state, abi.inputs,
       selfAddress,
     ) : state;
+  // A target taken from another call's return (`(_feeTo, _migrator) = factory.feeToAndMigrator()`) is a
+  // producerResult, not an argument or a state read. Resolve the producer's authenticated return value first;
+  // without it the edge cannot name a deployment even though the compiled frame reads it at run time.
+  const mentionsProducer = (expression: unknown): boolean => {
+    if (expression === null || typeof expression !== 'object') return false;
+    const value = expression as Record<string, unknown>;
+    if (value.kind === 'producerResult' || value.kind === 'externalCall') return true;
+    return Object.values(value).some((child) => (Array.isArray(child)
+      ? child.some(mentionsProducer) : mentionsProducer(child)));
+  };
+  const producerReturns = edge.addressSource.kind === 'expression'
+    && mentionsProducer(edge.addressSource.expression)
+    && typeof caller._resolveExternalExpressionReturns === 'function'
+    ? await caller._resolveExternalExpressionReturns(
+      [edge.addressSource], [...args], caller, hydrated, abi.inputs, selfAddress, abi.externalCalls,
+    )
+    : undefined;
   const target = caller._resolveExternalArgs(
     [edge.addressSource], [...args], caller.inner.artifact, hydrated, abi.inputs,
-    undefined, 0, false, selfAddress,
+    producerReturns, 0, false, selfAddress,
   )?.[0];
+  if ((globalThis as any).process?.env?.SOLIDC_DEBUG_TRANSITIVE === '1') {
+    console.error('TRANSITIVE', edge.interfaceName, edge.functionName,
+      target === undefined ? 'undefined'
+        : typeof target === 'string' ? target : target instanceof Uint8Array ? binToHex(target) : String(target),
+      'source', JSON.stringify(edge.addressSource)?.slice(0, 200));
+  }
   if (typeof target !== 'string' && !(target instanceof Uint8Array)) return undefined;
   const deployment = findDeploymentByAddressValue(caller.inner.provider, target);
   return deployment?.contract as TransitiveExternalContract | undefined;
@@ -98,6 +130,22 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     const bSelfAddress = bSelfIdentity?.unlocker.generateLockingBytecode() ?? hexToBin(bContract.inner.lockingBytecode);
 
     for (const bEc of bAbiFunc.externalCalls) {
+      // A conditional edge the authenticated frame can already prove unreachable does not need a callee group.
+      // Without this an `action == 0` callback still plans (and must resolve) every other branch's target.
+      if (typeof bContract._planExternalCallOccurrences === 'function') {
+        try {
+          const occurrences = await bContract._planExternalCallOccurrences(bEc, {
+            functionArgs: directGroup.functionArgs,
+            artifact: bContract.inner.artifact,
+            state: await bContract.getState(),
+            callerInputs: bAbiFunc.inputs,
+            executionSelfAddress: bSelfAddress,
+          });
+          if (occurrences.length === 0) continue;
+        } catch {
+          // An unresolvable guard retains the call; the callee still needs a group.
+        }
+      }
       // Resolve C from the exact compiler-published address when B has no connect-time interface binding.
       const cRegistered = await resolveTransitiveExternalContract(
         bContract, bEc, directGroup.functionArgs, bAbiFunc,

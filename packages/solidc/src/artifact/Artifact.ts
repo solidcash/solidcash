@@ -3797,6 +3797,15 @@ function buildFunctionAbiMetadata(
               ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
               ...((ks.kind === 'msgSender' || syntheticSender) && { senderOp: ks.senderOp ?? 'msg.sender' }),
               ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
+              ...(ks.producer && {
+                producer: {
+                  callsiteId: ks.producer.callsiteId
+                    ?? func.externalCalls?.find((call) =>
+                      call.sourceEffectOrdinal === ks.producer!.sourceEffectOrdinal)?.slotIndex,
+                  resultIndex: ks.producer.resultIndex,
+                  ...(ks.producer.functionName && { functionName: ks.producer.functionName }),
+                },
+              }),
               ...(ks.postWriteExpressionLabel && { postWriteExpressionLabel: ks.postWriteExpressionLabel }),
               ...(ks.preWriteMappingCollections?.length && {
                 preWriteMappingCollections: [...ks.preWriteMappingCollections],

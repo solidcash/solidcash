@@ -1748,6 +1748,21 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const statefulChildren = childContracts.map((child, index) => new SC(
     child, fundingUtxos[index]?.txid ?? childCategoryId,
   ) as ConnectedStatefulContract<T>);
+  // Replace the early address predictions with the connected handles: a later call that resolves a child by
+  // its address (an external call through a factory-created pair) needs the stateful surface, and a bare
+  // Contract has no `getFullState`.
+  for (const [index, child] of statefulChildren.entries()) {
+    registerDeployment(provider, {
+      contractName: childArtifact.contractName,
+      address: child.address,
+      lockingBytecode: child.inner.lockingBytecode,
+      contract: child,
+      parentAddress: factory.target,
+      parentLockingBytecode: factory.inner.lockingBytecode,
+      salt: childSalt ? binToHex(childSalt) : undefined,
+      category: fundingUtxos[index]?.txid,
+    });
+  }
   const childStateful = statefulChildren[0];
 
   return { factory, child: childStateful, tx, childCategoryId };

@@ -5370,6 +5370,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     probeCtx?: {
       masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
       frontRegionInputs?: UnlockableUtxo[]; trailingReadInputs?: readonly UnlockableUtxo[];
+      slotInputs?: ReadonlyArray<{ offset: number; utxo: Utxo; unlocker: Unlocker }>;
       firstDynamicReadInput?: Utxo; locktime?: number;
     },
   ): Promise<void> {
@@ -5393,9 +5394,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
     const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const lock = keccakComputeLockingBytecode(salt, true);
+    // Block slots after the keccak band that the master reads before the first side-car binding (entry proofs).
+    // Without them the probe aborts on `tx.inputs[k]` and can never reach the keccak read it needs to learn.
+    let fixedCursor = base + batchCount;
+    const laterSlots = [...(probeCtx.slotInputs ?? [])]
+      .filter((slot) => slot.offset >= fixedCursor)
+      .sort((a, b) => a.offset - b.offset);
+    let fillerSeq = 0;
+    const fillerInput = (): UnlockableUtxo => {
+      fillerSeq += 1;
+      return {
+        txid: `${'ef'.repeat(28)}${fillerSeq.toString(16).padStart(8, '0')}`,
+        vout: 0,
+        satoshis: 1000n,
+        unlocker: {
+          generateLockingBytecode: () => Uint8Array.of(0x51),
+          generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51),
+        },
+      };
+    };
+    const laterInputs: UnlockableUtxo[] = [];
+    for (const slot of laterSlots) {
+      while (fixedCursor < slot.offset) { laterInputs.push(fillerInput()); fixedCursor += 1; }
+      laterInputs.push({ ...slot.utxo, unlocker: slot.unlocker });
+      fixedCursor = slot.offset + 1;
+    }
     // A hashed chunk-backed value (string/bytes state) is read from the trailing run before its side-car.
     const trailing = keccakProbeTrailingRun(
-      abiFunction, stateInputUnlocker, base + batchCount, probeCtx.trailingReadInputs, probeCtx.firstDynamicReadInput,
+      abiFunction, stateInputUnlocker, fixedCursor, probeCtx.trailingReadInputs, probeCtx.firstDynamicReadInput,
     );
     let guard = 0;
     while (preimages.some((p) => p === null)) {
@@ -5415,6 +5441,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probe.addInput(scUtxos[batch], unlocker);
         recreates.push(recreate);
       }
+      probe.addInputs(laterInputs);
       probe.addInputs(trailing.inputs);
       probe.addOutput({
         to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
@@ -5424,6 +5451,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }));
       frontRegion.forEach((u) => probe.addOutput(this._frontRegionRecreate(u))); // self-preserving recreate
       for (const rec of recreates) probe.addOutput({ ...rec, to: lock });
+      laterInputs.forEach((u) => probe.addOutput(this._frontRegionRecreate(u)));
       trailing.inputs.forEach((u) => probe.addOutput(this._frontRegionRecreate(u)));
       const transaction = probe.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
@@ -6861,12 +6889,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const addressArg = typeof arg === 'object' && arg !== null && !(arg instanceof Uint8Array)
         && typeof (arg as { address?: unknown }).address === 'string'
         ? (arg as { address: string }).address : arg;
-      if (typeof addressArg !== 'string' || externalTargetNames.has(frameInputs[index].name)) {
-        return addressArg;
-      }
+      if (typeof addressArg !== 'string') return addressArg;
       // The registry distinguishes a plain contract's execution lock from a kernel participant's authenticated
       // public CREATE identity. Use that same value for ABI arguments and genesis state, so both paths agree.
-      return registeredValueAddressLockingBytecode(this.inner.provider, addressArg) ?? addressArg;
+      // An external-call target takes the same treatment: the covenant compares addresses as values, and a raw
+      // CashAddress string left in the frame reaches it as UTF-8 text instead of a lock.
+      const registered = registeredValueAddressLockingBytecode(this.inner.provider, addressArg);
+      if (registered !== undefined) return registered;
+      return tryCashAddressToLockScript(addressArg) ?? addressArg;
     });
     const structs = this.inner.artifact.structs ?? this.inner.artifact.stateLayout?.structs;
     frameInputs.forEach((input, index) => {
@@ -7383,6 +7413,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
         return entry?.value ?? getDefaultStateValue(mapped.valueType, stateLayout.structs);
       };
+
+      // A key that is a component of another call's return - `(feeTo, migrator) = factory.feeToAndMigrator()`
+      // then `balanceOf[feeTo]` - has no argument or state value. Resolve the producer's authenticated return
+      // off-chain before hashing the slot: the producer is a view call on a registered contract, and a value the
+      // on-chain frame would derive from its return event is exactly what the key recipe names.
+      const producerKeyAccesses = (entryAccesses ?? []).filter((access) =>
+        (access.keySources?.length ?? 0) === 1
+        && access.keySources?.[0].producer?.callsiteId !== undefined);
+      if (producerKeyAccesses.length > 0) {
+        const merged = new Map(overrides?.entryKeyOverrides ?? []);
+        for (const access of producerKeyAccesses) {
+          const slotIndex = access.slotIndex ?? 0;
+          if (merged.has(slotIndex)) continue;
+          const producer = access.keySources![0].producer!;
+          const expression = {
+            kind: 'producerResult', callsiteId: producer.callsiteId!, resultIndex: producer.resultIndex,
+          };
+          try {
+            const returns = await this._resolveExternalExpressionReturns(
+              [{ kind: 'expression', expression } as any], entryArgs, this as any, onChainState.state,
+              entryAbiFunction?.inputs, executionSelfAddress, entryAbiFunction?.externalCalls,
+            );
+            const value = returns.get(JSON.stringify(expression));
+            const encoded = value instanceof Uint8Array ? value
+              : typeof value === 'string' ? (value.includes(':') ? addressToLockScript(value) : hexToBin(value)) : undefined;
+            if (encoded !== undefined) merged.set(slotIndex, encoded);
+          } catch {
+            // Unresolved: leave the slot to its established placeholder path; the covenant fails closed.
+          }
+        }
+        overrides = { ...(overrides ?? {}), entryKeyOverrides: merged };
+      }
 
       // P5b value witnesses (__internal__valueWitness_N), collected in entryAccesses (slotIndex) order to match
       // the SymbolTable param injection; appended to finalArgs after this loop (between blockhash and iteration).
@@ -8982,7 +9044,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const inactiveFeeSlots = new Set<number>();
       for (const access of entryAbiFunction?.entryAccesses ?? []) {
         const label = access.keySources?.[0]?.expressionLabel ?? '';
-        if (!/functionName=feeTo\b/.test(label)) continue;
+        const feeProducer = access.keySources?.[0]?.producer?.functionName;
+        // The fee lane may come from a direct `factory.feeTo()` read or from a component of a combined
+        // `feeToAndMigrator()` return. Both name the same recipient; when it is zero the write is guarded off.
+        if (!/functionName=feeTo\b/.test(label) && feeProducer !== 'feeTo' && feeProducer !== 'feeToAndMigrator') continue;
         const slotIndex = access.slotIndex;
         const collection = stateLayout.collections.find((candidate) => candidate.name === access.collection);
         if (slotIndex === undefined || collection === undefined) continue;
@@ -8998,26 +9063,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           entry.exists = false;
           entry.utxo = undefined;
         }
-        runtimeMessageBusAliasSkipSlots.add(slotIndex);
-        // The inactive fee lane shares its target with the active MINIMUM_LIQUIDITY lane. Alias it to that lane
-        // so both bind one planned target and the inactive lane contributes no second witness/output.
-        const batch = (entryAbiFunction?.sortedBatchInfo ?? []).find((candidate) =>
-          candidate.slotIndices.includes(slotIndex));
-        const target = batchTargetSlots.get(slotIndex);
-        const owner = batch?.slotIndices.find((candidate) => candidate !== slotIndex
-          && !inactiveFeeSlots.has(candidate)
-          && target !== undefined && batchTargetSlots.has(candidate)
-          && bytesToSlotValue(batchTargetSlots.get(candidate)!) === bytesToSlotValue(target));
-        if (owner !== undefined) {
-          batchAliasOwners.set(slotIndex, owner);
-          batchAliasSkips.add(slotIndex);
-        }
+        // The inactive fee lane is a general-batch target with the `-2` sentinel; it must not alias the
+        // MINIMUM_LIQUIDITY lane, because the batch validates its (unused) slot witness against the others.
+        // The witness carries a neutral key; the covenant skips every check for a `-2` target.
       }
       for (const batch of entryAbiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown vmap batch collection: ${batch.collection}`);
         const inactiveBatchSlots = new Set(batch.slotIndices.filter((slotIndex) =>
-          inactiveMessageBusEntrySlots.has(slotIndex)));
+          inactiveMessageBusEntrySlots.has(slotIndex) || inactiveFeeSlots.has(slotIndex)));
         if (batch.linear && inactiveBatchSlots.size > 0) {
           throw new Error(`Linear vmap batch '${batch.collection}' cannot contain inactive message-bus slots`);
         }
@@ -9165,22 +9219,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && (batchSourceRows.length === 1
             || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;
-        const linearRows = batch.linear ? batch.slotIndices
+        // The ascending target chain. Linear batches publish it as an explicit row vector; every batch uses it
+        // to decide which of several inserts sharing one predecessor rewrites that predecessor.
+        const chainRows = batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !noOpSlots.has(slotIndex)
-            && !lentSlots.has(slotIndex))
+            && !lentSlots.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
           .map((slotIndex) => {
             const slot = batchTargetSlots.get(slotIndex)!;
             const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
-            if (!out) throw new Error(`vmap batch '${batch.collection}' has no linear row for slot ${slotIndex}`);
+            if (!out) throw new Error(`vmap batch '${batch.collection}' has no chain row for slot ${slotIndex}`);
             return { slotIndex, slot, next: decodeEntryCommitment(out.commitment).nextKey };
           })
-          .sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1) : [];
-        const linearRank = new Map(linearRows.map((row, rank) => [row.slotIndex, rank]));
-        const firstLinearPredSlot = new Map<string, number>();
-        for (const row of linearRows) {
+          .sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1);
+        const linearRows = batch.linear ? chainRows : [];
+        const linearRank = new Map(chainRows.map((row, rank) => [row.slotIndex, rank]));
+        const firstPredSlot = new Map<string, number>();
+        for (const row of chainRows) {
           const proof = list.find(row.slot) ?? list.predecessorOf(row.slot);
           const proofSlot = bytesToSlotValue(proof.slot).toString();
-          if (!firstLinearPredSlot.has(proofSlot)) firstLinearPredSlot.set(proofSlot, row.slotIndex);
+          if (!firstPredSlot.has(proofSlot)) firstPredSlot.set(proofSlot, row.slotIndex);
         }
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
@@ -9207,8 +9264,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               inactive.utxo = undefined;
             }
             const raw = this._rawVMapBatchWitness?.get(slotIndex);
-            batchWitnesses.push(raw?.slot ?? batchTargetSlots.get(slotIndex)!, raw?.proof ?? 0n,
-              raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
+            // An inactive fee lane's key can equal an active sibling's (zero fee recipient vs the
+            // MINIMUM_LIQUIDITY key); publish a neutral key so the batch's target list stays distinct.
+            const neutralFeeSlot = inactiveFeeSlots.has(slotIndex) ? new Uint8Array(32) : undefined;
+            batchWitnesses.push(raw?.slot ?? neutralFeeSlot ?? batchTargetSlots.get(slotIndex)!,
+              raw?.proof ?? 0n, raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
             continue;
           }
           if (batchAliasSkips.has(slotIndex)) {
@@ -9546,7 +9606,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           const proofSlot = bytesToSlotValue(proof.slot).toString();
           const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
-          const firstLinearPred = !batch.linear || firstLinearPredSlot.get(proofSlot) === slotIndex;
+          const firstLinearPred = firstPredSlot.get(proofSlot) === slotIndex;
           // The witness names the coordinate where THIS predecessor's rewritten node is published. A single-row
           // batch has no trailing predecessor lane: the predecessor is republished at the entry coordinate its
           // own co-spent NFT occupies, so the sentinel (-1) is not a readable output there - the route reads the
@@ -9561,7 +9621,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             console.error('pred-debug', JSON.stringify({
               functionName, slotIndex, target: binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array()).slice(0, 12),
               proofSlot: proofSlot.slice(0, 12), predOrdinal, firstLinearPred,
-              first: firstLinearPredSlot.get(proofSlot), predOutputs: predOutputs.map((o) => binToHex(o.slot).slice(0, 12)),
+              first: firstPredSlot.get(proofSlot), predOutputs: predOutputs.map((o) => binToHex(o.slot).slice(0, 12)),
             }));
           }
           const predOut = predOrdinal < 0 || !firstLinearPred
@@ -12714,7 +12774,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let keccakLoopRecreates: Output[] = [];
     // Front-region co-spends (read-only data NFTs then blockhash oracles, in block-layout slot order) sit before
     // the keccak side-cars; thread them into the probes so keccak works alongside external reads / blockhash.
-    const keccakFrontRegion = [...externalReadUtxos, ...blockhashCoSpendUtxos];
+    // Pad every compiler-declared slot between the data NFTs and the first keccak side-car (block-info oracle,
+    // value/token containers) with its real co-spend or a self-preserving stand-in, so the probe's side-cars land
+    // on the layout offsets even when the function also reads block info or holds value.
+    const fixedKeccakBase = abiFunction?.blockLayout?.slots
+      .find((slot) => slot.kind === 'keccakSideCar')?.offset ?? (1 + filteredDataNftUtxos.length);
+    const keccakProbeSlotInputs = (abiFunction?.blockLayout?.slots ?? [])
+      .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined)
+      .flatMap((slot) => {
+        const entry = entryNfts.find((candidate) => candidate.slotIndex === slot.slotIndex);
+        if (entry?.utxo === undefined) return [];
+        return [{ offset: slot.offset, utxo: entry.utxo, unlocker: entry.utxo.unlocker }];
+      });
+    const keccakFrontRegion = abiFunction === undefined
+      ? [...externalReadUtxos, ...blockhashCoSpendUtxos]
+      : this._padKeccakLoopFrontRegion(
+        abiFunction, filteredDataNftUtxos.length, fixedKeccakBase,
+        [...externalReadUtxos, ...blockhashCoSpendUtxos],
+        satoshiContainerUtxo, tokenContainers, blockInfoCoSpendUtxos,
+      );
     if (abiFunction?.keccakLoopReads && this.categoryId) {
       // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe. When a
       // mapping loop precedes the keccak loop in source order, its bracketing predecessors (and their exact
@@ -12757,7 +12835,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const resolution = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
-        frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
+        frontRegionInputs: keccakFrontRegion, slotInputs: keccakProbeSlotInputs,
+        locktime: maxBhLocktime,
       });
       keccakLoopSideCars = resolution.chain?.sideCars ?? [];
       keccakLoopRecreates = resolution.chain?.recreates ?? [];
@@ -12788,7 +12867,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const resolution = await this._resolveKeccakComputeCoSpends(keccakAbiFunction, keccakArgs, {
         masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
-        frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
+        frontRegionInputs: keccakFrontRegion, slotInputs: keccakProbeSlotInputs,
+        locktime: maxBhLocktime,
         trailingReadInputs: iterationEntryInputs, firstDynamicReadInput: dynamicReadChunkInputs[0],
         ecrecoverPreimages: ecrecoverEvmPreimages,
         plannedPreimages: (keccakAbiFunction as MessageBusRuntimeAbiFunction).messageBusKeccakPreimages,

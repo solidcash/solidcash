@@ -788,7 +788,11 @@ export default class MockNetworkProvider implements NetworkProvider {
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     const mineStartedAt = debugTiming ? Date.now() : 0;
-    this.indexer.mine();
+    // A transaction executes against the block oracle at the current tip time, so the block it is auto-mined
+    // into must carry that same timestamp. `mine()` with no argument advances the clock by one second, which
+    // makes `block.timestamp` inside the covenant one second behind the block the receipt reports (the
+    // Hardhat automine model executes at the block's own timestamp).
+    this.indexer.mine(this.getBlockTime());
     // A contract that reads `block.timestamp` holds the value in a register a block oracle updates; a mined block
     // is when that value moves, so the chain's time reaches the register before the next transaction is built.
     const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');

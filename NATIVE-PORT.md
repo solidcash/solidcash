@@ -141,12 +141,12 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | Suite | Passing / Total | Remaining blocker |
 |---|---|---|
 | `UniswapV2Factory` | 15 / 15 | — |
-| `UniswapV2ERC20` | 8 / 14 | six `permit` cases hit the nested-keccak side-car probe |
-| `UniswapV2Pair` | 23 / 36 | flash/reentrancy circular calls; migrator transitive probe; two timestamp accumulators; one `INVALID_TO` form |
+| `UniswapV2ERC20` | 14 / 14 | — |
+| `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
 | `Libraries` | 16 / 37 | SafeMath revert-reason mapping, TransferHelper selectors, ETH value |
 | `UniswapV2Router02` | 4 / 74 | `msg.value`/WETH satoshi model, `.staticCall` now works |
 | `SushiRoll` | 0 / 16 | same ETH/value family; setup approves fail preflight |
-| **Total** | **66 / 192** | |
+| **Total** | **75 / 192** | |
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
@@ -162,3 +162,15 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `getContractAt` now use the same salt/category identity the creator used.
 - ethers v6 call shape: `contract.fn.staticCall(...)` / `.send(...)` on the function property, with a trailing
   `{ value }` overrides object split out of the ABI arguments.
+- The stateful keccak probe now co-spends the block slots its master reads before the side-car binding (entry
+  proofs), so `permit` resolves all five nested preimages. Entry slots are padded from the compiler-declared
+  block layout and recreated in the probe transaction.
+- A deployed child is re-registered with its connected `StatefulContract` handle, so a later external call
+  through a factory-created pair has `getFullState`.
+- Address arguments for an external-call target are normalised to their locking bytecode like every other
+  address argument; leaving the CashAddress string made `require(to != token0)` compare UTF-8 text.
+- The mock provider auto-mines a transaction at the block-oracle timestamp instead of tip+1, so
+  `block.timestamp` inside the covenant equals the block the receipt reports (price accumulators).
+- The compiler records a mapping key that is a tuple component of another call's return as a `producer` key
+  source; the SDK resolves the producer's authenticated value before hashing the slot. This is the groundwork
+  for the protocol-fee recipient entry, which still needs an inactive-lane batch path when the fee is zero.

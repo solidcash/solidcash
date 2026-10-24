@@ -56,6 +56,9 @@ export type ResolveKeccakProbeCtx = {
   dataNftUtxos: Utxo[];
   dataNftUnlockers: Unlocker[];
   frontRegionInputs?: UnlockableUtxo[];
+  /** Physical block slots after the keccak band that the master reads before its side-car bindings (entry
+   * proofs, in particular). The probe must carry them, or the first `tx.inputs[k]` read aborts it. */
+  slotInputs?: ReadonlyArray<{ offset: number; utxo: Utxo; unlocker: Unlocker }>;
   /** Read-only trailing run in transaction order: collection-iteration entries, then dynamic chunk runs. */
   trailingReadInputs?: readonly UnlockableUtxo[];
   /** The first read-only dynamic chunk, which an explicit dynamic chunk base addresses. */

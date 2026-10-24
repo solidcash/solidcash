@@ -287,6 +287,9 @@ import {
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
+  CALL_BATCH_INPUT_RESERVE_FRACTION, CALL_BATCH_ROW_SHIFT, CALL_BATCH_SELECTOR_HEX,
+} from './semantic/CallBatch.js';
+import {
   analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, createFootprintAnalysisCache,
   directCallNames, emitsAnyEvent,
   visibleFreeFunctionsForContract,
@@ -2608,10 +2611,36 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       for (const [name, reason] of refusals) {
         if (!inherited?.has(name)) emitCompilerWarning(`Warning: function '${name}' is refused: ${reason}`);
       }
-      return artifact;
+      return settleCallBatch(code, compilerOptions, artifact);
     }
     for (const [name, reason] of fresh) refusals.set(name, reason);
   }
+}
+
+/**
+ * The multi-call entry stays where the contract with it leaves a tenth of the per-input limit (at most the consensus
+ * limit) for its spends' pushes. Otherwise the contract compiles without it, and says so. A compile whose frame
+ * candidates ended with no entry compiles without their shift witnesses, so its bytes are the plain contract's.
+ */
+function settleCallBatch(code: string, compilerOptions: CompileOptions, artifact: Artifact): Artifact {
+  if (compilerOptions.callBatch !== true) return artifact;
+  const carried = typeof artifact.callBatch === 'object';
+  if (!carried && !artifact.abi.some((fn) => fn.inputs.some((input) => input.name === CALL_BATCH_ROW_SHIFT))) {
+    return artifact;
+  }
+  const limit = Math.min(compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE, MAX_INPUT_BYTESIZE);
+  const room = Math.floor(limit * (1 - CALL_BATCH_INPUT_RESERVE_FRACTION));
+  const bytes = asmToBytecode(artifact.bytecode).length;
+  if (carried && bytes <= room) return artifact;
+  const options = { ...compilerOptions, callBatch: false } as InternalCompilerOptions;
+  delete options.__parsedAst;
+  const plain = withCompilerWarnings(true, () => compileStringUnchecked(code, options as CompileOptions));
+  if (!carried) return plain;
+  emitCompilerWarning(`Warning: contract '${artifact.contractName}' carries no multi-call entry: with it the contract `
+    + `is ${bytes} bytes, past the ${room} bytes that leave its spends room under the ${limit}-byte per-input `
+    + 'limit, so each call to it takes a spend of its own.');
+  plain.callBatch = false;
+  return plain;
 }
 
 function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOptions = {}): Artifact {
@@ -3624,7 +3653,7 @@ function compileDetachedMessageBusVerifierUncached(
     () => parseCode(source, undefined, false, chunkedArrays),
   );
   ast = ast.accept(new ValidateDataLocations(false)) as Ast;
-  ast = ast.accept(new SymbolTableTraversal({ ...compilerOptions, messageBus: false })) as Ast;
+  ast = ast.accept(new SymbolTableTraversal({ ...compilerOptions, messageBus: false, callBatch: false })) as Ast;
   ast = ast.accept(new TypeCheckTraversal(
     true, false, compilerOptions.rootFileId, compilerOptions.composition === 'framed',
   )) as Ast;
@@ -3632,6 +3661,7 @@ function compileDetachedMessageBusVerifierUncached(
   const traversal = new GenerateTargetTraversal({
     ...compilerOptions,
     messageBus: false,
+    callBatch: false,
     __cheapAdmissionCodegen: false,
     __detachedVerifierUnrollDeepReplace: unrollDeepReplace,
     optimizeForCompilationSpeed: true,
@@ -3688,6 +3718,27 @@ export function assertNoReservedMessageBusSelector(
     'source function selector collides with reserved message-bus selector 0x53434231',
     {
       selector: MESSAGE_BUS_SELECTOR_HEX,
+      functionName: collision.name,
+      sourceLocation: {
+        line: collision.location.start.line,
+        column: collision.location.start.column,
+      },
+    },
+  );
+}
+
+/** A source function's selector cannot be the multi-call entry's (semantic/CallBatch.ts). */
+export function assertNoReservedCallBatchSelector(
+  functions: readonly Pick<FunctionDefinitionNode, 'name' | 'functionSelector' | 'location'>[],
+): void {
+  const collision = functions.find((fn) => fn.functionSelector
+    && binToHex(fn.functionSelector) === CALL_BATCH_SELECTOR_HEX);
+  if (!collision) return;
+  throw new SolidcDiagnosticError(
+    'CALL_BATCH_RESERVED_SELECTOR_COLLISION',
+    `source function selector collides with the reserved multi-call selector 0x${CALL_BATCH_SELECTOR_HEX}`,
+    {
+      selector: CALL_BATCH_SELECTOR_HEX,
       functionName: collision.name,
       sourceLocation: {
         line: collision.location.start.line,
@@ -16370,6 +16421,9 @@ function compileResolvedAst(
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
+  if (ast.contract.functions.some((fn) => fn.callBatchCandidate === true)) {
+    assertNoReservedCallBatchSelector(ast.contract.functions);
+  }
   // Entry accesses are discovered by semantic analysis, so attach source-branch activation only after that
   // traversal has assigned their mutation ordinals. Route synthesis happens too early for this metadata.
   if (mergedCompilerOptions.messageBusKernel === true) {
@@ -18713,7 +18767,8 @@ function compileResolvedAst(
     .__synthesizeBoundRoutePlaceholder === true
     || (!!detachedVerifierProgram && !mergedCompilerOptions.__messageBusVerifierProgram
       && !solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER'));
-  if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate) {
+  // A contract over the limit with the multi-call entry is compiled again without it (settleCallBatch).
+  if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate && artifact.callBatch === undefined) {
     const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the configured `
       + `${maximumInputBytes}-byte input-script limit by ${artifactBytes - maximumInputBytes}. `
       + 'Every spend of it is invalid at consensus; it cannot be deployed without splitting '

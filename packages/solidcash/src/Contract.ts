@@ -402,9 +402,10 @@ export class Contract<
     // first argument in the dispatch-selector position and the covenant rejects before either function executes.
     // `available` is additive metadata. Older artifacts with `messageBus` omitted the field but still contain the
     // executable SCB1 selector, so only an explicit false means there is no hidden route in the redeem script.
-    const soleFnSharesCompilerRoute = artifact.messageBus !== undefined
+    // The multi-call entry is a second selector too.
+    const soleFnSharesCompilerRoute = (artifact.messageBus !== undefined
       && artifact.messageBus.available !== false
-      && artifact.messageBus.routeInBytecode !== false;
+      && artifact.messageBus.routeInBytecode !== false) || typeof artifact.callBatch === 'object';
     if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);
@@ -978,6 +979,48 @@ export class Contract<
     };
   }
 
+  /**
+   * An unlocker for the multi-call entry (`artifact.callBatch`): one spend of the master runs `frames` in order,
+   * frame k settling its call record under ordinal k. A frame names a `callBatchRow` entry and its complete ABI
+   * argument list, hidden witnesses included. The unlocking bytecode is `<sel> [frame K-1]..[frame 0] <K>`, a frame
+   * being the entry's standalone pushes, then its selector.
+   */
+  createCallBatchUnlocker(
+    frames: readonly { readonly abiFunction: AbiFunction; readonly args: readonly FunctionArgument[] }[],
+  ): ContractUnlocker {
+    const batch = this.artifact.callBatch;
+    if (typeof batch !== 'object') throw new Error(`${this.artifact.contractName} carries no multi-call entry`);
+    if (frames.length === 0) throw new Error('A multi-call spend runs at least one frame');
+    if (this.addressType === 'p2s') throw new Error('The multi-call entry is spent through its redeem script');
+    const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
+    const pushes: Uint8Array[] = [];
+    for (const { abiFunction, args } of [...frames].reverse()) {
+      if (abiFunction.callBatchRow !== true || abiFunction.selector === undefined) {
+        throw new Error(`'${abiFunction.name}' cannot run as a frame of the multi-call entry`);
+      }
+      if (args.length !== abiFunction.inputs.length) {
+        throw new Error(`A '${abiFunction.name}' frame takes all ${abiFunction.inputs.length} of its ABI arguments`);
+      }
+      const encoded = args.map((arg, index) => encodeFunctionArgument(arg, abiFunction.inputs[index].type, structs));
+      if (!encoded.every((value): value is Uint8Array => value instanceof Uint8Array)) {
+        throw new Error(`A '${abiFunction.name}' frame takes no signature`);
+      }
+      pushes.push(...encoded.reverse(), hexToBin(abiFunction.selector));
+    }
+    const unlockingBytecode = Uint8Array.from([
+      ...scriptToBytecode([hexToBin(batch.selector), ...pushes, bigIntToVmNumber(BigInt(frames.length))]),
+      ...scriptToBytecode([this.bytecodeBin]),
+    ]);
+    return {
+      generateUnlockingBytecode: (): Uint8Array => unlockingBytecode,
+      generateLockingBytecode: (): Uint8Array => addressToLockScript(this.address),
+      contract: this,
+      params: [],
+      abiFunction: { name: 'callBatch', selector: batch.selector, inputs: [] },
+      covenantUnlocker: true,
+    };
+  }
+
   /** @internal Construct an unlocker from an enriched ABI entry while preserving this artifact's
    * selector-dispatch policy. Stateful composition adds compiler-owned inputs after Contract construction,
    * so its final ABI entry can be newer than the name-based unlocker captured by the constructor. */
@@ -985,9 +1028,9 @@ export class Contract<
     const soleFn = this.artifact.abi.length === 1 ? this.artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
-    const soleFnSharesCompilerRoute = this.artifact.messageBus !== undefined
+    const soleFnSharesCompilerRoute = (this.artifact.messageBus !== undefined
       && this.artifact.messageBus.available !== false
-      && this.artifact.messageBus.routeInBytecode !== false;
+      && this.artifact.messageBus.routeInBytecode !== false) || typeof this.artifact.callBatch === 'object';
     const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute
       ? undefined
       : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;

@@ -184,6 +184,7 @@ import { analyzeAssemblyStack, getStackEffect } from '../asmStackEffects.js';
 import { ImportedLocations } from './ImportedLocations.js';
 import { generatedOriginOf } from '../ast/Location.js';
 import { emitCompilerWarning } from '../warnings.js';
+import { CALL_BATCH_ROW_SHIFT } from './CallBatch.js';
 
 /**
  * A sorted-batch operand of a framed master's own frame: the masked slot, the proof index, the successor, the
@@ -2648,13 +2649,17 @@ export default class TypeCheckTraversal extends AstTraversal {
           || p.name.startsWith('__internal__vmapCounter')
           || p.name.startsWith('__internal__vmapRuntime'));
     };
-    if (!pending.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
+    // An internal call runs no frame of the multi-call entry: its entry shift is 0.
+    const literalWitness = (name: string): bigint | undefined => (name === '__internal__returnOutputIdx' ? -1n
+      : name === CALL_BATCH_ROW_SHIFT ? 0n : undefined);
+    if (!pending.every((p) => literalWitness(p.name) !== undefined || canForwardByName(p))) return;
     for (const p of pending) {
-      if (p.name === '__internal__returnOutputIdx') {
-        const minusOne = new IntLiteralNode(-1n);
-        minusOne.location = node.location;
-        minusOne.type = PrimitiveType.INT;
-        node.parameters.push(minusOne);
+      const literal = literalWitness(p.name);
+      if (literal !== undefined) {
+        const value = new IntLiteralNode(literal);
+        value.location = node.location;
+        value.type = PrimitiveType.INT;
+        node.parameters.push(value);
       } else {
         const ref = new IdentifierNode(p.name);
         ref.location = node.location;

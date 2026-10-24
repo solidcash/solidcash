@@ -248,6 +248,7 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
 import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js';
 import { emitCompilerWarning } from '../warnings.js';
+import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js';
 
 export { getMaxPushdataEncodedSizeForType };
 
@@ -5375,6 +5376,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Compute 1:1 block layout for stateful entry-point functions.
     if (this.isStatefulContract && node.isEntryPoint) {
       node.blockLayout = this.computeBlockLayout(node);
+    }
+
+    // A direct entry that preserves all state may run as a frame of the multi-call entry. One that reads fixed
+    // entries takes their shift past its layout, so frames reading two keys of one mapping read two inputs.
+    if (this.isStatefulContract && node.isEntryPoint && this.callBatchCompile()
+      && isCallBatchFrameCandidate(node, () => this.hasStateWrite(node.body))) {
+      node.callBatchCandidate = true;
+      if ((node.entryAccesses?.length ?? 0) > 0) {
+        const shift = new ParameterNode(PrimitiveType.BIGINT, CALL_BATCH_ROW_SHIFT);
+        shift.location = node.location;
+        shift.syntheticallyUsed = true;
+        node.parameters.push(shift);
+        this.symbolTables[0].set(Symbol.variable(shift));
+        this.symbolTables[0].get(shift.name)?.references.push({ name: shift.name } as IdentifierNode);
+        this.pushToStack(shift);
+      }
     }
 
     // Prevent OP_ROLL optimization for split/merge count parameters:
@@ -11801,6 +11818,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (keyOf(declaration.init) === target) return candidate;
     }
     return undefined;
+  }
+
+  /** Whether this compile builds the multi-call entry: opted in, and a direct, unsplit, non-delegate, non-library
+   * contract. Simple contracts stay lean, so the entry is never added by default. */
+  private callBatchCompile(): boolean {
+    const options = this.compilerOptions;
+    return options.callBatch === true && options.messageBus !== true && options.composition !== 'framed'
+      && options.autoDelegate !== true && (options.split === undefined || options.split === 'off')
+      && this.currentContract !== undefined && !this.currentContract.isLibraryContract
+      && !this.currentContract.isSplitFacet;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A

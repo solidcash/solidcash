@@ -970,6 +970,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Codegen: this entry's return carrier is the record of the direct call it answers. */
   settlesCallRecord?: boolean;
 
+  /** Semantic analysis: this entry may run as a frame of the multi-call entry (semantic/CallBatch.ts). */
+  callBatchCandidate?: boolean;
+
+  /** Codegen: this entry was compiled as a frame of the multi-call entry. */
+  callBatchRow?: boolean;
+
   isFreeFunction: boolean = false;
   // True for a function declared inside a Solidity library, including the lowered primary-library contract
   // form. Library ABI rules uniquely permit storage-reference parameters and returns at public/external

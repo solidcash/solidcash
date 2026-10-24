@@ -39,6 +39,7 @@ import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
 import { stateNftPackingLimit } from '../semantic/maxEncodedSize.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
+import { CALL_BATCH_SELECTOR_HEX } from '../semantic/CallBatch.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
 } from '../deploymentRecipes.js';
@@ -4419,6 +4420,7 @@ export function generateArtifact(
         ? 'compact-pushdata-v1' : externalResultEncoding(func.returnTypes, compilerOptions),
     }),
     ...(func.settlesCallRecord === true && { callRecord: true }),
+    ...(func.callBatchRow === true && { callBatchRow: true }),
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
@@ -4729,6 +4731,8 @@ export function generateArtifact(
     ...(externalLibraries && { externalLibraries }),
     ...(contract.isLibraryContract && { isLibrary: true }),
     ...(contract.isBrandedLibrary && { brandedLibrary: true }),
+    // The multi-call entry is emitted exactly when an entry compiled as one of its frames.
+    ...(abi.some((func) => func.callBatchRow === true) && { callBatch: { selector: CALL_BATCH_SELECTOR_HEX } }),
     compiler: {
       name: 'solidc',
       version,

@@ -31,7 +31,8 @@ A direct return carrier becomes a call record (as built):
   the caller's and the callee's encodings of one value digest alike. `sig` arguments and compiler inputs are left out.
 - A 31-byte digest keeps a three-word EVM result (96 bytes) inline; its collision resistance is 2^124. The framed
   `canonicalPushScript` encoding was not reused: it costs about 80 bytes inline per argument.
-- `ordinal` is 0: a callee spent once runs one call, and identical reads share its record.
+- `ordinal` is 0 for a callee run once, and identical reads share its record; frame k of a multi-call spend
+  (section 3) digests k.
 - The carrier keeps today's form: the callee's category, no capability, no fungible amount, `OP_TRUE`, at most 1,200
   satoshis.
 
@@ -46,10 +47,22 @@ A direct return carrier becomes a call record (as built):
 - As built, the count is exact: one record for a run that pinned one, none otherwise, and a void entry of a contract
   with returning entries counts none. Entries that settle records publish `callRecord: true` in the ABI, which the SDK
   keys on.
-- One spend, several calls: not built in the direct convention. Auto mode puts a caller with repeated or looped calls
-  on the message bus, whose composer runs each call as a row and binds it under the verifier manifest; the direct
-  builder already refused a fixed callee repeated in a loop. A second distinct call to a callee spent once fails the
-  count (fail closed).
+- One spend, several calls: the callee side is built (semantic/CallBatch.ts, test `CallBatch.test.ts`). It is off
+  unless the contract is compiled with `callBatch: true`, so simple contracts stay lean (user, 2026-10-24); phase 2
+  also turns it on for a callee whose caller in the same compilation repeats calls to it. A direct,
+  unsplit callee with an entry that returns values and preserves all state (no value, delegate, msg.data, external
+  read or call, event, side-car or hidden witness but its return index) carries a multi-call entry under the reserved
+  selector `0x53434442`, published as `callBatch: { selector }` with `callBatchRow: true` on its frame entries.
+  Unlocking: `<sel> [frame K-1]..[frame 0] <K>`, a frame being the entry's standalone pushes, then its selector. The
+  entry moves the frames to the alternate stack with a copy of the constructor parameters each, then runs frame k on
+  a stack holding that frame alone, its context k on the alternate stack. A frame digests ordinal `max(k, 0)`, takes
+  its fixed entries `__internal__rowEntryShift` inputs past their slots, skips the collection and data-record counts
+  and the record count, and hands back `pinned - 2`; the entry requires -1 from each frame, then counts K records and
+  holds every other own-category mutable input in place. Ordinary dispatch pushes context -1, which keeps a standalone
+  run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch: false`, when the contract
+  with it would not leave a tenth of the per-input limit (at most 10,000 bytes). Message-bus compiles carry none: the
+  bus runs repeated calls as rows, and the conventions stay separate: a direct caller is never turned into a bus
+  composition. Callers that lay ordinals other than 0 are phase 2.
 
 ## 4. The caller
 

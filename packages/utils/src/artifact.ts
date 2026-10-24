@@ -203,6 +203,12 @@ export interface CompilerOptions {
    * Omitted on {@link compileStringSplit} means `size`. A boolean is not a mode.
    */
   split?: 'off' | 'size' | 'func';
+  /**
+   * The multi-call entry of a direct callee: one spend of its master runs several state-preserving calls. Off unless
+   * `true`, so simple contracts stay lean; `true` emits it when an entry can be a frame and the contract keeps room
+   * under the per-input limit, and otherwise compiles without it and warns.
+   */
+  callBatch?: boolean;
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
@@ -624,6 +630,8 @@ export interface AbiFunction {
    * over its selector and arguments, the result inline or its SHA256 (docs/wip/call-records/DESIGN.md).
    */
   callRecord?: boolean;
+  /** This entry can run as a frame of the contract's multi-call entry (`Artifact.callBatch`). */
+  callBatchRow?: boolean;
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
   /**
@@ -2142,6 +2150,12 @@ export interface Artifact {
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
+  /**
+   * The multi-call entry: one spend of the master runs the `callBatchRow` entries named by its frames, each settling
+   * its call record under its frame ordinal. `false`: the contract has such entries but left the entry out to keep
+   * room under the per-input limit.
+   */
+  callBatch?: { readonly selector: string } | false;
   /**
    * Every delegate entry point pins the exact number of outputs using the proxy's locking bytecode. This closes
    * duplicate proxy master/data-NFT outputs and allows a proxy to delegate mutable-NFT cardinality changes to

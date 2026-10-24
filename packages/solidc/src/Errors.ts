@@ -77,6 +77,8 @@ export type SolidcDiagnosticCode =
   | 'EVENT_PAYLOAD_EXCEEDS_COMMITMENT'
   // A returning entry whose body consumed the value its result is bound with: no record or carrier would bind it.
   | 'RETURN_RESULT_UNBOUND'
+  // A source function whose selector is the multi-call entry's reserved selector.
+  | 'CALL_BATCH_RESERVED_SELECTOR_COLLISION'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

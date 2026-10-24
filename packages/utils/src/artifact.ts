@@ -206,7 +206,8 @@ export interface CompilerOptions {
   /**
    * The multi-call entry of a direct callee: one spend of its master runs several state-preserving calls. Off unless
    * `true`, so simple contracts stay lean; `true` emits it when an entry can be a frame and the contract keeps room
-   * under the per-input limit, and otherwise compiles without it and warns.
+   * under the per-input limit, and otherwise compiles without it and warns. Omitted, a multi-contract compile still
+   * gives it to a contract whose interface a direct caller there calls several times; `false` keeps it off.
    */
   callBatch?: boolean;
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
@@ -1507,9 +1508,20 @@ export interface CallsiteCallerIdentityAbi {
  * `logicalIndex`; runtime occurrence is required and monotone per `(sourceCallsiteId, logicalIndex)`.
  * Do not invent source identity from proxy/delegate/locking bytecode.
  */
+/**
+ * A direct call's ordinal among one function's calls to one callee, the frame of the callee's multi-call spend whose
+ * record it reads: `ordinal` fixed at compile time, or `counted`, the value of the group's counter (0 at entry, one
+ * more after each executed call of the group) when the call runs. Calls of one `group` share one callee spend.
+ */
+export type ExternalCallOrdinalAbi =
+  | { readonly group: number; readonly ordinal: number }
+  | { readonly group: number; readonly counted: true };
+
 export interface ExternalCallAbi {
   /** Direct unconditional zero-argument readonly aliases share one authenticated return value. */
   readonlyReturnBinding?: { version: 1; selector: string };
+  /** The ordinal this call's record digests, for a callee the function calls several times. Absent: 0. */
+  callOrdinal?: ExternalCallOrdinalAbi;
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
   /** Compiler-authored function-local program point of this call effect. */

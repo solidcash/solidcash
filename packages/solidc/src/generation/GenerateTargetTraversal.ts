@@ -10066,6 +10066,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.isDefineSubTraversal && node.isEntryPoint) this.emitEntryFunctionIdChecks(node);
     // The digest of the call this entry executes, taken before the body consumes its parameters; its record pins it.
     if (!this.isDefineSubTraversal && this.settlesDirectCallRecord(node)) this.emitOwnCallRecordDigest(node);
+    // A callee called in a loop or a branch counts its calls from 0: each call takes the next ordinal.
+    const callOrdinalCounters = this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.countedCallOrdinalGroups();
+    for (const group of callOrdinalCounters) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(this.callOrdinalCounterName(group));
+    }
     this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
     this.emitRepeatedSortedUpsertLoopCensuses(node);
@@ -10133,6 +10139,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(idx);
       }
       this.inlineDeployActive = false;
+    }
+    for (const group of callOrdinalCounters) {
+      const idx = this.getStackIndex(this.callOrdinalCounterName(group));
+      this.emitRollAt(idx, { location: node.location, positionHint: PositionHint.END });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+      this.removeFromStack(idx);
     }
 
     // Mapping writes have advanced the shared trailing cursor by this point. Settle the function-local event
@@ -25705,12 +25717,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The record names the call it answers: the digest of this call's method and the arguments the source passes,
       // which the callee computes over the call it executed.
       const verifiesDigest = this.emitCallerCallRecordDigest(node, physicalSlot, locationData);
+      // A counted call in a loop has no epilogue: it binds its callee and its record's carrier where it runs, and
+      // reads its record at its return index plus its ordinal.
+      const counter = verifiesDigest ? this.liveCallOrdinalCounter(physicalSlot) : undefined;
+      const bindsInline = counter !== undefined && this.isExternalCallSlotLoopNested(physicalSlot);
+      if (bindsInline) this.emitLoopCallCalleeCategory(physicalSlot, node, locationData);
+      const untracked = bindsInline ? 1 : 0;
       const returnOutputIdxIdx = this.getStackIndex(returnParamName);
-      this.emit(encodeInt(BigInt(returnOutputIdxIdx)), locationData);
+      this.emit(encodeInt(BigInt(returnOutputIdxIdx + untracked)), locationData);
       this.emit(Op.OP_PICK, locationData);
-      // A rolled `for` over `tags_[i]` reuses one return-output ABI slot. Each iteration
-      // reads base+i so the SDK can publish one return event per element.
-      if (this.plainLoopDepth > 0) {
+      if (bindsInline) {
+        this.emitPickAt(this.getStackIndex(counter) + 2, locationData);
+        this.emit(Op.OP_ADD, locationData);
+      } else if (this.plainLoopDepth > 0) {
+        // A rolled `for` over `tags_[i]` reuses one return-output ABI slot. Each iteration
+        // reads base+i so the SDK can publish one return event per element.
         const loopIndexName = this.findLoopIndexName(node);
         const loopIndexDepth = loopIndexName === undefined ? -1 : this.getStackIndex(loopIndexName, true);
         if (loopIndexDepth >= 0) {
@@ -25719,6 +25740,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_ADD, locationData);
         }
       }
+      if (bindsInline) this.emitLoopCallRecordCarrierChecks(locationData);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [digest?, record] (record untracked): the call's digest, a form byte, then the result or its SHA256.
       this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), locationData);
@@ -25785,6 +25807,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           for (let i = 0; i < returnTypes.length; i++) this.pushToStack('(value)');
         }
       }
+      if (counter !== undefined) this.emitAdvanceCallOrdinal(counter, node, locationData);
     }
 
     return node;
@@ -48551,17 +48574,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * `[..]` -> `[.., digest]`: a call record's digest, the first 31 bytes of the SHA256 of the call's ordinal as two
    * little-endian bytes, its selector, and each argument as its length in two little-endian bytes and its bytes, a
-   * number minimally encoded. `emitArgument(i)` leaves argument i on top as one tracked value.
+   * number minimally encoded. `emitArgument(i)` leaves argument i on top as one tracked value. `emitLateOrdinal`
+   * pushes the ordinal once the arguments have run, so a call an argument makes takes its ordinal first.
    */
   private emitCallRecordDigest(
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
+    emitLateOrdinal?: () => void,
   ): void {
     if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
       emitOrdinal();
       this.emit(selector, loc);
       this.emit(Op.OP_CAT, loc);
+    } else if (emitLateOrdinal) {
+      this.emit(selector, loc);
     } else {
       const prefix = new Uint8Array(2 + selector.length);
       prefix[0] = ordinal & 0xff;
@@ -48582,6 +48609,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(record_preimage)');
     }
+    if (emitLateOrdinal) {
+      // [.., selector || arguments, ordinal u16le] -> [.., preimage]
+      emitLateOrdinal();
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc);
+    }
     this.emit(Op.OP_SHA256, loc);
     this.emit(encodeInt(BigInt(CALL_RECORD_DIGEST_BYTES)), loc);
     this.emit(Op.OP_SPLIT, loc);
@@ -48601,12 +48634,106 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (selector === undefined) return false;
     const declared = slot.callRecordParameterTypes ?? [];
     const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
-    this.emitCallRecordDigest(selector, 0, digested.map((index) => declared[index]), (position) => {
-      const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
-      this.markArrayArgumentBlobEncoded(argument);
-      this.visit(argument);
-    }, loc);
+    const ordinal = slot.callOrdinal;
+    const counter = this.liveCallOrdinalCounter(slot);
+    // A counted call digests the group's counter as two little-endian bytes, read once its arguments have run.
+    const emitLateOrdinal = counter === undefined ? undefined : (): void => {
+      this.emitPickAt(this.getStackIndex(counter), loc);
+      this.emit(Op.OP_2, loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+    };
+    this.emitCallRecordDigest(selector, ordinal !== undefined && 'ordinal' in ordinal ? ordinal.ordinal : 0,
+      digested.map((index) => declared[index]), (position) => {
+        const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
+        this.markArrayArgumentBlobEncoded(argument);
+        this.visit(argument);
+      }, loc, undefined, emitLateOrdinal);
     return true;
+  }
+
+  /** The counter on the stack whose value is a counted call's ordinal, if it has one. */
+  private liveCallOrdinalCounter(slot: ExternalCallSlot): string | undefined {
+    if (slot.callOrdinal === undefined || !('counted' in slot.callOrdinal)) return undefined;
+    const counter = this.callOrdinalCounterName(slot.callOrdinal.group);
+    return this.getStackIndex(counter, true) >= 0 ? counter : undefined;
+  }
+
+  /** Advances a counted call's counter once the call has read its record: the group's next call takes the next. */
+  private emitAdvanceCallOrdinal(counter: string, node: Node, loc: SingleLocationData): void {
+    this.emitPickAt(this.getStackIndex(counter), loc);
+    this.pushToStack('(ordinal)');
+    this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(counter), node);
+    this.popFromStack();
+  }
+
+  /**
+   * `[..]` -> `[.., category]` (untracked): the input at the call's master index is its target, whose category its
+   * record carries. A counted call in a loop has no epilogue, so it checks its callee each time it runs.
+   */
+  private emitLoopCallCalleeCategory(
+    slot: ExternalCallSlot, node: ExternalFunctionCallNode, loc: SingleLocationData,
+  ): void {
+    const stateTarget = slot.addressStateVar
+      ? this.stateVariables.find((variable) => variable.name === slot.addressStateVar) : undefined;
+    if (stateTarget) {
+      const access = new StateAccessNode(stateTarget.name);
+      access.stateVariable = stateTarget;
+      access.type = stateTarget.type;
+      access.location = node.location;
+      this.visitStateAccess(access);
+    } else if (slot.addressParam) {
+      this.emitPickAt(this.getStackIndex(slot.addressParam), loc);
+      this.pushToStack('(callee)');
+    } else if (slot.addressLiteral !== undefined) {
+      this.emit(hexToBin(slot.addressLiteral), loc);
+      this.pushToStack('(callee)');
+    } else {
+      throw new UnpinnedExternalCallTargetError(`${slot.interfaceName}.${slot.functionName}`, this.currentFunction.name);
+    }
+    this.emitSlotMasterIndex(slot, loc);   // [.., target, idx]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_ROT, loc);             // [.., idx, lock, target]
+    this.popFromStack();
+    this.emitPreferLockingBytecode(loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);     // [.., idx]
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+  }
+
+  /**
+   * `[.., category, idx]` -> `[.., idx]`: the output at idx is a record carrier of that category, with no capability
+   * (its category reads as 32 bytes only without one), no fungible amount, an `OP_TRUE` lock and at most 1,200 sats.
+   */
+  private emitLoopCallRecordCarrierChecks(loc: SingleLocationData): void {
+    this.emit(Op.OP_TUCK, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /** The runtime counter of a group of calls to one callee, whose value is the next call's ordinal. */
+  private callOrdinalCounterName(group: number): string {
+    return `__internal__callOrdinal${group}`;
+  }
+
+  /** The groups of this function's calls whose ordinals are counted at run time. */
+  private countedCallOrdinalGroups(): number[] {
+    return [...new Set(this.externalCallSlots.flatMap((slot) => (
+      slot.callOrdinal !== undefined && 'counted' in slot.callOrdinal ? [slot.callOrdinal.group] : [])))];
   }
 
   /**
@@ -48992,10 +49119,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !slot.optional && !slot.condition && !slot.batchInvocations && !slot.batchRepresentative
         && (slot.callMode === undefined || slot.callMode === ExternalCallMode.REGULAR
           || slot.callMode === ExternalCallMode.STATICCALL)
-        && slot.sourceCallNode?.parameters.length === 0);
+        && slot.sourceCallNode?.parameters.length === 0
+        && (slot.callOrdinal === undefined || 'ordinal' in slot.callOrdinal));
+      // Calls of one callee's multi-call spend share a record only under one ordinal.
+      const ordinalKey = (slot: ExternalCallSlot): string => (slot.callOrdinal !== undefined
+        && 'ordinal' in slot.callOrdinal ? `${slot.callOrdinal.group}:${slot.callOrdinal.ordinal}` : '');
       for (const [leftIndex, left] of aliases.entries()) {
         for (const right of aliases.slice(leftIndex + 1)) {
-          if (binToHex(left.readonlyReturnSelector!) !== binToHex(right.readonlyReturnSelector!)) continue;
+          if (binToHex(left.readonlyReturnSelector!) !== binToHex(right.readonlyReturnSelector!)
+            || ordinalKey(left) !== ordinalKey(right)) continue;
           left.readonlyReturnBindingSelector = left.readonlyReturnSelector;
           right.readonlyReturnBindingSelector = right.readonlyReturnSelector;
         }

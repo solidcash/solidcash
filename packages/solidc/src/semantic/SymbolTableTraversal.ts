@@ -4498,28 +4498,40 @@ export default class SymbolTableTraversal extends AstTraversal {
             // graph planner until the route format grows an authenticated zero-row representation.
             && group.some((slot) => !slot.condition && !callOccursInLoop(slot.sourceCallNode)));
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
+          // The direct convention runs repeated calls to one callee in one spend of its master, through the
+          // callee's multi-call entry, each call reading the record of its own frame; it never builds a bus batch.
+          const directConvention = messageBusExplicitlyDisabled && this.compilerOptions.composition !== 'framed';
+          const refusedRepeated = directConvention
+            ? knownRepeated.filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)))
+            : knownRepeated;
           // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
           // the selected contract require a graph route; enforce the opt-out on reachable functions only.
-          if (knownRepeated.length > 0 && messageBusExplicitlyDisabled
+          if (refusedRepeated.length > 0 && messageBusExplicitlyDisabled
             && (!this.sourceFreeFunctions.has(node) || this.reachableSourceFreeFunctions.has(node))
             && (!this.sourceContractFunctions.has(node) || this.reachableSourceContractFunctions.has(node))) {
-            const chains = knownRepeated.map((group) => group.map((slot) =>
+            const chains = refusedRepeated.map((group) => group.map((slot) =>
               `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
             throw new SolidcDiagnosticError(
               'MESSAGE_BUS_REQUIRED',
               `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
-              + 'A UTXO master can be spent only once, so this transaction cannot be built with '
+              + (directConvention
+                ? 'A UTXO master can be spent only once, and the direct convention runs several calls in one spend '
+                  + 'only through the callee\'s multi-call entry, whose calls are view or pure, return values and '
+                  + 'name a fixed method of a fixed target; this transaction cannot be built with '
+                : 'A UTXO master can be spent only once, so this transaction cannot be built with ')
               + (messageBusAutoNarrowed
                 ? 'the automatic direct path: the automatic selection did not read the repeated call as a '
                   + 'graph edge. State the option and set `messageBus: true`.'
-                : '`messageBus: false`; omit the option to infer message-bus support or set it to true.'),
+                : directConvention ? '`messageBus: false`.'
+                  : '`messageBus: false`; omit the option to infer message-bus support or set it to true.'),
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }
+          if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values());
           // V1 permits exactly one repeated callee group in a root invocation. A framed master carries one call
           // record per call and gives each call its own frame, so it has nothing to collapse: its sites are the
           // calls themselves and each binds its own descriptor.
-          if (repeated.length === 1 && this.compilerOptions.composition !== 'framed') {
+          if (repeated.length === 1 && this.compilerOptions.composition !== 'framed' && !directConvention) {
             const group = repeated[0];
             const hasCompleteSourceEffectOrder = group.every(
               (slot) => slot.sourceEffectOrdinal !== undefined,
@@ -11828,6 +11840,51 @@ export default class SymbolTableTraversal extends AstTraversal {
       && options.autoDelegate !== true && (options.split === undefined || options.split === 'off')
       && this.currentContract !== undefined && !this.currentContract.isLibraryContract
       && !this.currentContract.isSplitFacet;
+  }
+
+  /**
+   * True when a direct call can run as a frame of its callee's multi-call entry: a fixed method of a fixed target,
+   * declared view or pure, whose result its record binds.
+   */
+  private isDirectFrameCall(slot: ExternalCallSlot): boolean {
+    if (!slot.hasReturnValues || slot.opaqueReturn || slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector
+      || slot.selectorArrayVar || slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf
+      || slot.callValueEffect || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return false;
+    const iface = this.interfaceMap.get(slot.interfaceName);
+    const methods = iface ? this.getAllInterfaceFunctions(iface).filter((fn) => fn.name === slot.functionName) : [];
+    return methods.length === 1 && (methods[0].stateMutability === 'view' || methods[0].stateMutability === 'pure');
+  }
+
+  /**
+   * Gives each call of an entry to a callee it calls several times the ordinal of its frame in the callee's one
+   * spend. Straight-line calls take 0, 1, .. in source order; a group with a looped or conditional call counts at
+   * run time instead. A zero-argument readonly alias shares the first one's run, record and ordinal.
+   */
+  private assignDirectCallOrdinals(groups: Iterable<ExternalCallSlot[]>): void {
+    let group = 0;
+    for (const calls of groups) {
+      if (!calls.every((slot) => this.isDirectFrameCall(slot))) continue;
+      const looped = calls.some((slot) => slot.sourceCallNode !== undefined
+        && this.loopNestedExternalCalls.has(slot.sourceCallNode));
+      if (calls.length < 2 && !looped) continue;
+      // Its record binds each call's method: the callee's input may run the multi-call entry, whose selector is no
+      // method's, so the call checks no selector there.
+      for (const slot of calls) slot.needsSelectorVerification = false;
+      if (looped || calls.some((slot) => slot.condition !== undefined)) {
+        for (const slot of calls) slot.callOrdinal = { group, counted: true };
+      } else {
+        const aliases = new Map<string, number>();
+        let next = 0;
+        for (const slot of calls) {
+          const alias = slot.readonlyReturnSelector !== undefined && slot.sourceCallNode?.parameters.length === 0
+            ? binToHex(slot.readonlyReturnSelector) : undefined;
+          const shared = alias === undefined ? undefined : aliases.get(alias);
+          if (alias !== undefined && shared === undefined) aliases.set(alias, next);
+          slot.callOrdinal = { group, ordinal: shared ?? next++ };
+        }
+      }
+      group += 1;
+    }
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A

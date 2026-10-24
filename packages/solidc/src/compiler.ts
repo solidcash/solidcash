@@ -19093,6 +19093,9 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   });
   const allContracts = [...probe.importedContracts, probe.contract].filter(Boolean);
   const interfaces = probe.interfaceDefinitions ?? [];
+  // Taken from the pristine probe: the last primary's pipeline consumes it.
+  const implementers = artifactCompilerOptions.callBatch === undefined
+    ? interfaceImplementers(interfaces, allContracts) : new Map<string, string[]>();
 
   const map: ArtifactMap = {};
   const seen = new Set<string>();
@@ -19138,11 +19141,50 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
     });
   }
 
+  // A direct caller here that calls one callee several times runs those calls in one spend of it: a contract here
+  // implementing the interface it calls takes the multi-call entry, unless the options say otherwise.
+  for (const name of repeatedDirectCallees(map, implementers)) {
+    map[name] = compileStringUnchecked(code, {
+      ...artifactCompilerOptions, callBatch: true, errorListener, suppressWarnings, primaryContractName: name,
+    } as CompileOptions);
+  }
+
   if (multiCacheKey) {
     compileMultiCache.set(multiCacheKey, map);
     diskMultiCacheSet(multiCacheKey, map);
   }
   return map;
+}
+
+/**
+ * Per interface, the contracts implementing it: those naming it as a base, or declaring each of its methods by name
+ * and parameter types. A contract called through its own type implements itself.
+ */
+function interfaceImplementers(
+  interfaces: readonly InterfaceNode[], contracts: readonly ContractNode[],
+): Map<string, string[]> {
+  const signature = (fn: { name: string; parameters: readonly ParameterNode[] }): string =>
+    `${fn.name}(${fn.parameters.map((parameter) => parameter.type.toString()).join(',')})`;
+  const implementers = new Map(contracts.map((contract) => [contract.name, [contract.name]]));
+  for (const iface of interfaces) {
+    const methods = iface.functions.map(signature);
+    implementers.set(iface.name, contracts.filter((contract) => contract.implements.includes(iface.name)
+      || (methods.length > 0 && methods.every((method) => contract.functions.some((fn) => signature(fn) === method))))
+      .map((contract) => contract.name));
+  }
+  return implementers;
+}
+
+/** The contracts compiled here without the multi-call entry whose interface a direct caller here calls several times. */
+function repeatedDirectCallees(map: ArtifactMap, implementers: ReadonlyMap<string, readonly string[]>): string[] {
+  const callees = new Set<string>();
+  for (const artifact of Object.values(map)) {
+    for (const call of artifact.abi.flatMap((fn) => fn.externalCalls ?? [])) {
+      if (call.callOrdinal === undefined) continue;
+      for (const name of implementers.get(call.interfaceName) ?? []) callees.add(name);
+    }
+  }
+  return [...callees].filter((name) => map[name] !== undefined && map[name].callBatch === undefined);
 }
 
 type PlannedFunction = {

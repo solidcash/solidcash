@@ -62,7 +62,7 @@ A direct return carrier becomes a call record (as built):
   run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch: false`, when the contract
   with it would not leave a tenth of the per-input limit (at most 10,000 bytes). Message-bus compiles carry none: the
   bus runs repeated calls as rows, and the conventions stay separate: a direct caller is never turned into a bus
-  composition. Callers that lay ordinals other than 0 are phase 2.
+  composition. Callers that lay ordinals other than 0: section 4.
 
 ## 4. The caller
 
@@ -77,6 +77,21 @@ A direct return carrier becomes a call record (as built):
 - Conditional calls: an untaken call reads nothing. A taken one is bound like any other.
 - Identical readonly reads share the one run and its one record; the SDK lays one carrier for both.
 - Arguments are digested from copies of the call's argument expressions, so no final use is consumed.
+- Repeated calls (phase 2, as built, direct compiles only): an entry that calls one fixed target (a parameter, a state
+  variable or a literal, keyed with the interface) several times, or once in a loop, gives each call the ordinal of
+  its frame in that callee's one multi-call spend, published as `callOrdinal: { group, ordinal }` on the external call.
+  Straight-line calls take 0, 1, .. in source order; a group with a looped or conditional call is
+  `{ group, counted: true }`: a counter starts at 0 at entry, a call digests its value once its arguments have run (a
+  call an argument makes takes the earlier ordinal) and advances it after its read. A zero-argument readonly alias
+  takes the first one's ordinal and record (constant groups only). Each call of a group checks no selector on the
+  callee's input (`needsSelectorVerification: false`): its record's digest binds the method, and that input runs the
+  multi-call entry. A counted call in a loop, which has no epilogue, checks its callee's identity at its master index
+  and its record's carrier form where it runs, and reads the record at its return index plus its ordinal. Only calls
+  declared view or pure, returning values, regular, value-free and to a fixed method form groups; any other repeated
+  callee stays refused (`MESSAGE_BUS_REQUIRED`, worded after the multi-call entry's limits). A multi-contract compile
+  (`compileStringMulti`, `compileFileMulti`) gives a contract implementing a grouped call's interface (named as a base,
+  or declaring its methods) the multi-call entry unless `callBatch` is stated. Computed, array and pointer targets keep
+  ordinal 0. Test: `packages/solidc/test/DirectCallOrdinals.test.ts`.
 
 ## 5. Delegatecall, proxies and split facets
 
@@ -92,8 +107,9 @@ A direct return carrier becomes a call record (as built):
 - Framed: unchanged. It already binds `argsHash` and `result`.
 - Bus: unchanged. A route keeps its aggregate result carrier and pins no record; graph handlers read rows as before.
   Repeated returning calls go through the composer, which binds them per row.
-- With `messageBus: false` stated explicitly, a repeated callee stays refused (`MESSAGE_BUS_REQUIRED`), because only
-  the batch can spend one master for several calls. The automatic mode turns the bus on for such a function.
+- With `messageBus: false` stated explicitly, repeated readonly calls run through the callee's multi-call entry
+  (section 4) and never build a bus batch; a repeated state-changing callee stays refused (`MESSAGE_BUS_REQUIRED`).
+  The automatic mode turns the bus on for such a function, as before.
 
 ## 7. SDK
 

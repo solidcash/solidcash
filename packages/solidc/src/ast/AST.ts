@@ -1,5 +1,5 @@
 import { type Type, PrimitiveType, AddressBytesType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, type FunctionBlockLayout, type LibraryCallArg, type JournalSettlementIdentityAbi, type ConstructedKeyVectorV1Abi, type AffineRecursiveFrameV1Abi } from '@solidcash/utils';
-import type { AbiFunction } from '@solidcash/utils';
+import type { AbiFunction, ExternalCallOrdinalAbi } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
@@ -3122,6 +3122,11 @@ export interface ExternalCallSlot {
   /** A returning direct call's record: the callee method's selector and declared parameter types, for its digest. */
   callRecordSelector?: Uint8Array;
   callRecordParameterTypes?: Type[];
+  /**
+   * A direct call to a callee this function calls several times: the ordinal its record digests, fixed at compile
+   * time or counted at run time by the group's counter (docs/wip/call-records/DESIGN.md, section 4). Absent: 0.
+   */
+  callOrdinal?: ExternalCallOrdinalAbi;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;

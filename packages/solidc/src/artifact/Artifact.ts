@@ -3919,6 +3919,7 @@ function buildFunctionAbiMetadata(
           ...(compilerOptions.composition !== 'framed' && ec.readonlyReturnBindingSelector !== undefined && {
             readonlyReturnBinding: { version: 1 as const, selector: binToHex(ec.readonlyReturnBindingSelector) },
           }),
+          ...(ec.callOrdinal !== undefined && { callOrdinal: { ...ec.callOrdinal } }),
           ...(ec.sourceEffectOrdinal !== undefined && { sourceEffectOrdinal: ec.sourceEffectOrdinal }),
           ...(ec.sourceCallNode && {
             sourceLocation: {

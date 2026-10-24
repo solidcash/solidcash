@@ -654,8 +654,15 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         .deploy(...args, ...(overrides ? [overrides] : []));
     }
     return (async () => {
+      // A contract whose surface moves native value needs a satoshi container to spend, exactly like an
+      // account with a balance. Fund one at deployment (the deploy API's `initialBalance`) unless the caller
+      // asks for a specific balance; without it the first payable transfer aborts before the covenant runs.
+      const valueMoving = (loaded as Artifact).abi?.some((entry) => (entry.transferCount ?? 0) > 0
+        || (entry.blockLayout?.slots ?? []).some((slot) => slot.kind === 'satoshiContainer')) === true;
+      const initialBalance = overrides?.initialBalance ?? (valueMoving ? 200_000n : undefined);
       const deployed = await sdkDeployContract(
-        loaded as T, args, runner ?? defaultRunner(), { ...deployDefaults, ...overrides },
+        loaded as T, args, runner ?? defaultRunner(),
+        { ...deployDefaults, ...(initialBalance === undefined ? {} : { initialBalance }), ...overrides },
       );
       registerDeployTargetChildren(deployed as Registerable);
       return deployed;
@@ -673,6 +680,16 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     getBlockTime?: () => number;
     getBlockHash?: (height: number) => Promise<string>;
   };
+  if (typeof (ethersProvider as { getBalance?: unknown }).getBalance !== 'function') {
+    // ethers' native-balance read, as the UTXO sum at the address. Ported suites use it to assert an ETH
+    // transfer; on BCH the same value is the satoshi balance of the address's coins.
+    (ethersProvider as { getBalance?: (address: string | { address?: string }) => Promise<bigint> }).getBalance =
+      async (address: string | { address?: string }): Promise<bigint> => {
+        const value = typeof address === 'string' ? address : address?.address ?? String(address);
+        const utxos = await provider.getUtxos(value);
+        return utxos.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
+      };
+  }
   if (typeof ethersProvider.getBlockNumber !== 'function') {
     ethersProvider.getBlockNumber = async (): Promise<number> => ethersProvider.getBlockHeight();
   }

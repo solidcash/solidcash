@@ -11,9 +11,24 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 const isCashAddr = (x: unknown): x is string =>
   typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/i.test(x);
 
+/**
+ * Resolver for the value a registered contract presents as an ABI `address`. A stateful deployment may expose a
+ * logical address whose emitted locking bytecode differs from the physical execution lock the covenant sees, and
+ * the SDK feeds that same value to the contract. Test-side ethers coding must derive the identity from the same
+ * bytes, or an EVM-style `pairFor` expectation hashes a different address than the contract.
+ */
+let cashAddressLockResolver: ((addr: string) => Uint8Array | undefined) | undefined;
+
+export function setCashAddressLockResolver(
+  resolver: ((addr: string) => Uint8Array | undefined) | undefined,
+): void {
+  cashAddressLockResolver = resolver;
+}
+
 /** Map a BCH CashAddress to a synthetic 20-byte ETH-style hex address for ethers ABI coding. */
 export function cashAddressToEthHex(addr: string): string {
-  const decoded = cashAddressToLockingBytecode(addr);
+  const resolved = cashAddressLockResolver?.(addr);
+  const decoded = resolved === undefined ? cashAddressToLockingBytecode(addr) : { bytecode: resolved };
   if (typeof decoded === 'string') return addr;
   const bc = decoded.bytecode;
   if (bc.length === 25 && bc[0] === 0x76 && bc[1] === 0xa9 && bc[2] === 0x14) {

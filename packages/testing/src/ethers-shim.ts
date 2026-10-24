@@ -26,9 +26,10 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 // Reach the SDK through its named subpaths rather than through physical `dist` leaf files. The subpath is a
 // stable package entry a test can `vi.mock` back onto the sources, which is what keeps a test's reservations
 // and this shim's reads in one module instance; a `dist` leaf path can be neither redirected nor deduplicated.
-import { deriveLogicalAddressFromSeed, deriveLogicalCreateAddress } from '@solidcash/solidcash/stateful';
+import { deriveLogicalCreateAddress } from '@solidcash/solidcash/stateful';
 import {
   findDeploymentByAddress, genesisOutpointKey, isReservedGenesisOutpoint, listDeployments,
+  registeredValueAddressLockingBytecode,
 } from '@solidcash/solidcash/stateful';
 import { Contract as SolidCashContract } from '@solidcash/solidcash';
 import { bytecodeToScript, scriptToAsm } from '@solidcash/utils';
@@ -40,7 +41,19 @@ import { AbiCoder as CashAbiCoder, defaultAbiCoder as cashDefaultAbiCoder } from
 import { hexlify, toUtf8Bytes, toUtf8String, getBytes, concat, zeroPadValue, zeroPadBytes, isHexString, isBytesLike } from 'ethers/utils';
 import { getAddress as ethersGetAddress, isAddress } from 'ethers/address';
 import { id, solidityPacked as ethersSolidityPacked, solidityPackedKeccak256 } from 'ethers/hash';
-import { cashAddressToEthHex } from './cash-abi-coder.js';
+import { cashAddressToEthHex, setCashAddressLockResolver } from './cash-abi-coder.js';
+
+// The SDK presents a registered contract's ABI `address` as its value locking bytecode (the physical execution
+// lock for a plain contract, the logical CREATE lock for a kernel participant). Ethers-style expectations must
+// hash the same bytes, so route the synthetic identity through the deployment registry instead of decoding the
+// cash-address string, whose lock can differ from the value the covenant holds.
+setCashAddressLockResolver((addr) => {
+  try {
+    return registeredValueAddressLockingBytecode(getActiveProvider() as never, addr);
+  } catch {
+    return undefined;
+  }
+});
 import { keccak256, sha256, ripemd160 } from 'ethers/crypto';
 import { parseUnits, formatUnits, parseEther, formatEther } from 'ethers/utils';
 // units may live on ethers root in some versions — import carefully without bare `ethers` (aliased to this file).
@@ -238,15 +251,6 @@ export const utils = {
   AbiCoder: CashAbiCoder,
 };
 
-type Prefix = 'bitcoincash' | 'bchtest' | 'bchreg';
-function prefixOf(from: string): Prefix {
-  if (typeof from === 'string' && from.includes(':')) {
-    const p = from.split(':')[0];
-    if (p === 'bitcoincash' || p === 'bchtest' || p === 'bchreg') return p;
-  }
-  return 'bitcoincash';
-}
-
 /**
  * Predict the address exposed by the selected deployment convention. An unspecified standalone convention
  * retains a caller's explicit framed look-ahead; HRE connections always supply their resolved convention.
@@ -305,8 +309,20 @@ export function getCreate2Address(
     if ((globalThis as any).process?.env?.DEBUG_CREATE2) console.error('GET_CREATE2_ERROR', String(error));
     /* not a BCH deployment context: fall back to the deterministic placeholder */
   }
-  // CREATE2 remains a deterministic compatibility placeholder when no deployment context can predict the child.
-  return deriveLogicalAddressFromSeed(`create2:${from}:${saltHex}:${codeHex}`, prefixOf(from));
+  // No deployment can be predicted yet: answer the EVM CREATE2 address itself, which is what an unmodified
+  // Solidity `pairFor`/`create2` consumer derives from the factory and salt. This is the same 20-byte identity
+  // lane the SDK decodes an address value to, so a contract-computed hash and its test-side expectation agree.
+  const fromHex = (() => {
+    try {
+      return cashAddressToEthHex(from).replace(/^0x/i, '').toLowerCase().padStart(40, '0').slice(-40);
+    } catch {
+      return from.replace(/^0x/i, '').toLowerCase().padStart(40, '0').slice(-40);
+    }
+  })();
+  const saltWord = saltHex.padStart(64, '0').slice(-64);
+  const codeWord = codeHex.replace(/^0x/i, '').toLowerCase().padStart(64, '0').slice(-64);
+  const hash = keccak256(`0x${'ff'}${fromHex}${saltWord}${codeWord}`);
+  return `0x${hash.slice(-40)}`;
 }
 
 /**

@@ -143,8 +143,8 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 20 / 37 | TransferHelper raw-return decoding (9), `pairFor`/`getReserves`/`getAmounts*` (6), ETH value (2) |
-| `UniswapV2Router02` | 4 / 74 | `msg.value`/WETH satoshi model, `.staticCall` now works |
+| `Libraries` | 20 / 37 | TransferHelper raw-return decoding (9); `TestFactory` runtime-code `create2` blocks `pairFor`/`getReserves`/`getAmounts*` (6); ETH value (2) |
+| `UniswapV2Router02` | 4 / 74 | `TestFactory` runtime-code `create2` blocks pair creation; then `msg.value`/WETH satoshi model |
 | `SushiRoll` | 0 / 16 | same ETH/value family; setup approves fail preflight |
 | **Total** | **79 / 192** | |
 
@@ -176,3 +176,35 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   for the protocol-fee recipient entry, which still needs an inactive-lane batch path when the fee is zero.
 - A failing outlined library body is attributed from the trace's executed instructions even when the failing
   step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.
+- A keccak256 call inside an outlined free function (an imported `internal` library helper such as
+  `UniswapV2Library.pairFor`) now gets a compute side-car basis from the entry points that reach it. When every
+  reaching entry reserves the same side-car offsets the helper bakes that layout; when the offsets differ (a
+  handler without a block-info oracle packs the band one slot lower) the call edge threads the caller's
+  absolute side-car input index through the invocation frame. Before this the helper fell back to the
+  stateless count-relative read and named the funder, so `pairFor` failed at its first keccak binding.
+- `address(uint160(uint256(x)))` and every integer-to-address cast under `evmCompat` now produce exactly the
+  low 20 bytes of the big-endian word (the raw Solidity identity), while `address(0)` stays the empty value.
+  A short numeric identity previously took the P2PKH fallback and aborted at `OP_SPLIT`.
+- The test-side identity is now the same address value the SDK feeds to the covenant:
+  `cashAddressToEthHex` resolves a registered deployment's value locking bytecode instead of decoding the
+  CashAddress string (the logical and physical locks can differ), and an unpredicted `getCreate2Address`
+  answers the EVM `keccak256(0xff ++ factory ++ salt ++ initCodeHash)[12:]` identity instead of an arbitrary
+  placeholder.
+
+### Remaining architectural gaps (captured failures)
+
+- **`create2` with a runtime code value.** `TestFactory.createPair` stores the pair creation code in a
+  `bytes` state variable and passes it to Yul `create2`. The compiler cannot publish a `deployTarget` for a
+  template that is only known at runtime, so no child is deployed and the returned address is empty; the
+  `PairCreated` address binding then fails `OP_VERIFY` at ip 3870 of `createPair`. The real
+  `UniswapV2Factory` (compile-time `type(UniswapV2Pair).creationCode`) passes all 15 tests, so the failure is
+  specific to the runtime-code form used by the shared test factory.
+- **`UniswapV2Library.pairFor` versus a BCH child address.** `pairFor` computes the EVM CREATE2 identity from
+  the token pair, while a BCH pair's address commits to its funding category, which the covenant cannot know
+  before creation. The pure hash now matches the EVM expectation, but the value the factory writes into
+  `getPair` is the deployed child, so the pre-creation assertion and the post-creation assertion cannot both
+  hold without a registry read (the native port's approach). The Router depends on this same value for
+  `mint`/`transferFrom`, so its liquidity paths inherit the gap.
+- **Ether value.** The original tests pass wei (`parseEther("1")`) as `msg.value`; BCH satoshis cannot carry
+  those magnitudes, and the contracts compare `msg.value` against wei-denominated token amounts. A value model
+  must scale both sides or the Router/SushiRoll ETH paths cannot be expressed.

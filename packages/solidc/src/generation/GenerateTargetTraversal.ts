@@ -2352,6 +2352,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private static readonly OUTLINED_COMPUTE_BLOCK_BASE = '__internal__outlinedComputeBlockBase';
 
+  /**
+   * Outlined helpers whose reaching entries reserve keccak side-cars at DIFFERENT offsets. They receive the
+   * caller's first side-car slot (the batch base) through the invocation frame and add their batch index to it,
+   * so one shared body serves an entry that packs the band at offset 2 and another at offset 3.
+   */
+  private outlinedKeccakSlotFunctionIds: Set<number> = new Set();
+
+  private static readonly OUTLINED_KECCAK_SLOT = '__internal__outlinedKeccakSlot';
+
   /** Named helpers with recovery effects receive the exact physical A coordinate of their first formal effect.
    * Each call edge offsets that coordinate by its stable recoveryEffectOrdinal before OP_INVOKE. */
   private outlinedRecoveryInputFunctionIds: Set<number> = new Set();
@@ -4063,6 +4072,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (target.name !== '__message_bus_verify_atomic'
         && entries.some((entry) => this.ownsMessageBusParticipantBlock(entry))) {
         this.outlinedComputeBlockBaseFunctionIds.add(functionId);
+      }
+    }
+
+    // keccak256 side-car basis for FREE functions (imported/internal library helpers, which are flattened into
+    // namespaced free functions). Their bodies are OP_DEFINE'd below, before visitContract computes the ordinary
+    // helper bases, so establish the same conservative proof here: every reaching entry point must reserve the
+    // same keccak side-car offsets. Without this a library helper reads count-relative and names the funder in a
+    // stateful block. The helper's call i reads that layout's batch slot floor(i / 3), member i % 3.
+    this.keccakSideCarBasisByFunctionId = new Map();
+    this.outlinedKeccakSlotFunctionIds = new Set();
+    for (const [functionId, entries] of this.keccakEntryPointsReaching(node.contract, node.freeFunctions)) {
+      const target = functionsById.get(functionId);
+      if (!target || target.blockLayout || indirect.has(functionId) || entries.length === 0) continue;
+      // Only a body that computes (or forwards to) keccak reads the side-car band; its helpers do not.
+      if (target.keccakCompute !== true) continue;
+      const sideCarOffsets = (fn: FunctionDefinitionNode): readonly number[] => (fn.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'keccakSideCar').map((slot) => slot.offset);
+      const first = sideCarOffsets(entries[0]);
+      if (first.length === 0) continue;
+      // Every entry reserves the same slots: the helper bakes that single layout.
+      if (entries.every((entry) => sideCarOffsets(entry).join(',') === first.join(','))) {
+        this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
+      } else {
+        // The reaching entries reserve keccak slots at different offsets (a caller without a block-info oracle,
+        // for example, packs them one slot lower). The helper cannot bake one offset, so the call edge passes
+        // its ABSOLUTE first side-car input index through the invocation frame.
+        this.outlinedKeccakSlotFunctionIds.add(functionId);
       }
     }
 
@@ -6567,9 +6603,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // point. The helper's call i then reads that layout's batch slot floor(i / 3), member i % 3: the SDK funds a
     // dispatched handler's calls in exactly that order (its published call list, batched by three from the first
     // slot). A count-relative read in a stateful block names the funder, so no stateful shape keeps it on purpose.
-    this.keccakSideCarBasisByFunctionId = new Map();
+    // Free-function entries were already established before their OP_DEFINEs were emitted; keep them.
+
     for (const [functionId, entries] of this.keccakEntryPointsReaching(node)) {
       const target = functionsById.get(functionId);
+      if ((globalThis as any).process?.env?.SOLIDC_DEBUG_KECCAK === '1' && target?.keccakCompute) {
+        console.error('KECCAK-BASIS?', {
+          target: target?.name, hasLayout: target?.blockLayout !== undefined,
+          indirect: indirect.has(functionId), entries: entries.map((e) => e.name),
+        });
+      }
       if (!target || target.blockLayout || indirect.has(functionId) || entries.length === 0) continue;
       const sideCarOffsets = (fn: FunctionDefinitionNode): string => (fn.blockLayout?.slots ?? [])
         .filter((slot) => slot.kind === 'keccakSideCar').map((slot) => slot.offset).join(',');
@@ -7490,6 +7533,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.ecrecoverSideCarBasis = func.functionId === undefined
       ? undefined : this.ecrecoverSideCarBasisByFunctionId.get(func.functionId);
     subTraversal.outlinedComputeBlockBaseFunctionIds = this.outlinedComputeBlockBaseFunctionIds;
+    subTraversal.outlinedKeccakSlotFunctionIds = this.outlinedKeccakSlotFunctionIds;
     subTraversal.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
     subTraversal.intDecodeIntSlot = this.intDecodeIntSlot;
     subTraversal.intEncodeSlot = this.intEncodeSlot;
@@ -7899,6 +7943,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // argument. Dropping this set here compiled direct calls with the old arity while the shared helper was
       // compiled with the widened frame, shifting its declared parameters by one stack item.
       subTraversal.outlinedComputeBlockBaseFunctionIds = this.outlinedComputeBlockBaseFunctionIds;
+      subTraversal.outlinedKeccakSlotFunctionIds = this.outlinedKeccakSlotFunctionIds;
       subTraversal.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
       subTraversal.intDecodeIntSlot = this.intDecodeIntSlot;
       subTraversal.intEncodeSlot = this.intEncodeSlot;
@@ -9327,6 +9372,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
       if (node.functionId !== undefined && this.outlinedDynamicReadThreadedFunctionIds.has(node.functionId)) {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
+      }
+      if (node.functionId !== undefined && this.outlinedKeccakSlotFunctionIds.has(node.functionId)) {
+        // The call edge pushes the compute base, then this slot (base below slot physically). Hidden declarations
+        // are appended bottom-first, so declare the slot before the base to model the same physical order.
+        this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, true);
       }
       if (node.functionId !== undefined && this.outlinedComputeBlockBaseFunctionIds.has(node.functionId)) {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_COMPUTE_BLOCK_BASE, true);
@@ -15202,6 +15252,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const batchIndex = batchable ? Math.floor(i / 3) : i;
     const withinBatch = batchable ? i % 3 : 0;
     const layoutBasis = fn.blockLayout ? fn : this.keccakSideCarBasis;
+    // A shared helper invoked from entries whose side-car band sits at different offsets receives the caller's
+    // first keccak slot through the hidden frame; its own address is that slot plus its batch index.
+    const threadedKeccakSlot = fn.functionId !== undefined
+      && this.outlinedKeccakSlotFunctionIds.has(fn.functionId)
+      && this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, true) >= 0;
     // Stateful EVM recovery appends each verified uncompressed public key to the ordinary keccak call order, so
     // both consumers agree on one batched side-car width. Stateless recovery retains its historical trailing
     // side-car family below; it has no block layout to share.
@@ -15311,6 +15366,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, loc);
         return;
       }
+      if (threadedKeccakSlot) {
+        // The call edge passed the caller's ABSOLUTE first side-car index; add this call's batch.
+        this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, loc);
+        if (batchIndex > 0) {
+          this.emit(encodeInt(BigInt(batchIndex)), loc);
+          this.emit(Op.OP_ADD, loc);
+        }
+        return;
+      }
       this.emit(countOp, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_SUB, loc);
@@ -15379,7 +15443,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
     // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
     const absoluteForward = this.framedMaster || fn.blockLayout != null || this.keccakLoopActive
-      || basisSlot !== undefined;
+      || basisSlot !== undefined || threadedKeccakSlot;
     if (this.keccakLoopActive) {
       // Dynamic loop: compare the revealed covenant bytes. Hashing the covenant each iteration blows the
       // per-input hash budget. The revealed redeem is what the side-car lock commits to, including a
@@ -17058,6 +17122,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitComputeBaseSiteMarker(locationData, pushSite);
       this.emitComputeSidecarBlockBase(locationData);
       this.pushToStack(`(__outlined_compute_block_base_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+    // A keccak-side-car helper shared by entries that pack the band at different offsets receives the caller's
+    // first side-car slot; it adds its batch index. Nested helpers forward the value they received.
+    if (targetFunc.functionId !== undefined
+      && this.outlinedKeccakSlotFunctionIds.has(targetFunc.functionId)) {
+      const inherited = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, true);
+      if (inherited >= 0) {
+        this.emit(encodeInt(BigInt(inherited)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+      } else {
+        if (!(this.currentFunction.blockLayout?.slots ?? [])
+          .some((slot) => slot.kind === 'keccakSideCar')) {
+          throw new Error(`Missing keccak side-car slot at call to '${targetFunc.name}'`);
+        }
+        // The caller's own absolute input coordinate for its first keccak side-car.
+        this.emitBlockSlotIndex('keccakSideCar', 0, locationData);
+      }
+      this.pushToStack(`(__outlined_keccak_slot_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     // X203. An outlined dynamic reader can be reached from entry points with different fixed block sizes.

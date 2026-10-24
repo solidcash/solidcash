@@ -134,8 +134,14 @@ export async function resolveKeccakComputeCoSpends(
   probeCtx?: ResolveKeccakProbeCtx,
 ): Promise<ResolveKeccakComputeCoSpendsResult> {
   const params = abiFunction.keccakPreimageParams ?? [];
+  // An entry point whose keccak calls live in an outlined helper publishes no per-call preimage list (codegen
+  // records it in the helper body), while the compiler still counted the closure's calls and reserved the
+  // block-layout side-cars for them. Use the larger count so those preimages are learned by the VM probe
+  // instead of silently omitting the co-spends the covenant expects.
+  const declaredKeccakCalls = Number(abiFunction.externalLibraryCalls?.keccak256 ?? 0);
+  const keccakCallCount = Math.max(params.length, declaredKeccakCalls);
   const recoveryPreimages = probeCtx?.ecrecoverPreimages ?? [];
-  const totalCallCount = params.length + recoveryPreimages.length;
+  const totalCallCount = keccakCallCount + recoveryPreimages.length;
   if (totalCallCount === 0 || !host.categoryId) {
     return { coSpends: [], preimages: [], salt: new Uint8Array(32), legacy: false };
   }
@@ -224,12 +230,13 @@ export async function resolveKeccakComputeCoSpends(
   // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
   // are resolved by a VM probe of the master (mirrors the stateless resolveKeccakPreimages, but positioned
   // at the block-layout keccakSideCar slots).
-  if (probeCtx?.plannedPreimages && probeCtx.plannedPreimages.length !== params.length) {
+  if (probeCtx?.plannedPreimages && probeCtx.plannedPreimages.length !== keccakCallCount) {
     throw new Error('message-bus keccak recipe count does not match the selected compute calls');
   }
-  const preimages: (Uint8Array | null)[] = params.map((p, index) => {
+  const preimages: (Uint8Array | null)[] = Array.from({ length: keccakCallCount }, (_, index) => {
     const planned = probeCtx?.plannedPreimages?.[index];
     if (planned instanceof Uint8Array) return planned.slice();
+    const p = params[index];
     const value = p ? args[visible.findIndex((x) => x.name === p)] : undefined;
     return value instanceof Uint8Array ? value : null;
   });

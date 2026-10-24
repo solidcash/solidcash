@@ -11,6 +11,7 @@ import type {
   ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
+import type { DirectCallBatch, DirectCallBatchFrameBlock, DirectCallBatchUnit } from './direct-call-batch.js';
 
 export interface EntryNftInfo {
   slotIndex: number;
@@ -256,6 +257,12 @@ export interface ExternalCallUtxoGroup {
   delegateEmbeddedInBlock?: boolean;
   /** Reuses another group's single master/data input/output block for repeated calls to one UTXO contract. */
   sharedGroupIndex?: number;
+  /** One reached call of a direct multi-call (direct-call-batch.ts): the frame its record answers. */
+  callBatchUnit?: DirectCallBatchUnit;
+  /** The unit spending the callee master through its multi-call entry: the frames that spend runs. */
+  callBatch?: DirectCallBatch;
+  /** The block this unit's own call assembled, the source of its frame's entries and record funder. */
+  callBatchFrameBlock?: DirectCallBatchFrameBlock;
   /** Honest SDK probe result for a read fused into another call sharing this master input. */
   precomputedReturnCommitment?: Uint8Array;
   /** Consecutive return-event commitments for a rolled loop (meceTags(tags_[i])). */

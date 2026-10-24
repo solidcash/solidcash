@@ -17,6 +17,13 @@ export const CALL_BATCH_ROW_SHIFT = '__internal__rowEntryShift';
 export const CALL_BATCH_CONTEXT = '__internal__callContext';
 
 /**
+ * The most frames one multi-call spend can run: each holds at least its selector, ordinal and item count on the
+ * alternate stack, within the VM's 1,000-item stack limit. A looped call of a direct caller's counted group
+ * publishes it as its iteration ceiling, so the SDK resolves the frames a spend runs before building it.
+ */
+export const CALL_BATCH_MAXIMUM_FRAMES = Math.floor(1000 / 3);
+
+/**
  * The share of the per-input limit a contract leaves its spends when it carries the entry. A multi-call spend
  * pushes every frame's arguments, and a script grown to the limit leaves its other spends no room for theirs.
  */

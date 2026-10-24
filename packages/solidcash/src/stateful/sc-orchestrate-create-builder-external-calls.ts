@@ -15,6 +15,9 @@ import type { FunctionArgument } from '../Argument.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 import { createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress } from './covenant-helpers.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
@@ -275,6 +278,31 @@ export async function orchestrateCreateBuilderExternalCalls(
   const loopIdxRanges = expandedExternal.loopIdxRanges;
   let callerStateSnapshot = expandedExternal.callerStateSnapshot;
   let resolvedExternalCalls = expandedExternal.resolvedExternalCalls as ExternalCallInfo[] | undefined;
+  // A direct caller's grouped calls run as frames of one multi-call spend of their callee, in execution order.
+  const directBatches = await planDirectCallBatches(
+    {
+      planExternalCallOccurrences: (call, frame) => host.callerContract._planExternalCallOccurrences(call, frame),
+      resolveExternalExpressionReturns: (sources, functionArgs, state, callerInputs, self, producerCalls) =>
+        host.callerContract._resolveExternalExpressionReturns(
+          sources, functionArgs, host.callerContract, state, callerInputs, self, producerCalls, false,
+        ),
+      evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
+      hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
+      getFullState: () => host.getFullState(),
+    },
+    {
+      abiFunction,
+      args,
+      artifact: host.inner.artifact,
+      externalCalls,
+      resolvedExternalCalls: resolvedExternalCalls as any,
+      callerState: callerStateSnapshot,
+      publicSelfAddress,
+    },
+  );
+  externalCalls = directBatches.externalCalls;
+  resolvedExternalCalls = directBatches.resolvedExternalCalls as ExternalCallInfo[] | undefined;
+  callerStateSnapshot = directBatches.callerState;
 
   let externalCallUtxoGroups: ExternalCallUtxoGroup[] = [];
   // Total return event count including transitive chains (updated in external call block)
@@ -559,6 +587,29 @@ export async function orchestrateCreateBuilderExternalCalls(
       }
     }
 
+    await consolidateDirectCallBatches({
+      deriveFrameResult: async (group, frameFunction, frameArgs) => {
+        const callee = group.externalContract;
+        const calleeArtifact = callee.inner.artifact;
+        const output = frameFunction.outputs?.length === 1 ? frameFunction.outputs[0]! : undefined;
+        if (output === undefined) {
+          throw new Error(`A multi-call frame of ${calleeArtifact.contractName}.${frameFunction.name}() must return `
+            + 'one value');
+        }
+        const value = await callee._deriveReturnValue(
+          frameFunction.name, [...frameArgs], undefined, frameFunction, undefined,
+          publicSelfAddress, host.categoryId, host.callerContract,
+        );
+        return encodeExternalReturnValue(
+          value, output.type, calleeArtifact.structs ?? calleeArtifact.stateLayout?.structs,
+          resolveExternalResultEncoding(
+            frameFunction.resultEncoding, calleeArtifact, [output.type], `function '${frameFunction.name}' result`,
+          ) === 'evm-abi-v1',
+          calleeArtifact.enums,
+        );
+      },
+    }, externalCallUtxoGroups);
+
     // Track per-group metadata (direct + transitive)
     const groupMetas: ExternalGroupMeta[] = [];
     const directGroupCount = externalCallUtxoGroups.length;
@@ -717,10 +768,19 @@ export async function orchestrateCreateBuilderExternalCalls(
     if (externalCallOutputStart >= 0) {
       let cursor = externalCallOutputStart;
       let tailRank = 0;
+      // A multi-call unit reads its frame's record in the batch block of the unit spending the callee master.
+      const batchCursors = new Map<number, number>();
       for (let i = 0; i < externalCallUtxoGroups.length; i++) {
         const g = externalCallUtxoGroups[i];
         const offset = g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset;
-        if (groupMetas[i].ecSlot.hasReturnValues) {
+        if (g.callBatch !== undefined) batchCursors.set(i, cursor);
+        const batchUnit = g.callBatchUnit;
+        const batchPhysical = batchUnit?.physical === undefined ? undefined : externalCallUtxoGroups[batchUnit.physical];
+        if (batchUnit !== undefined && batchPhysical?.callBatch !== undefined
+          && batchCursors.has(batchUnit.physical!)) {
+          returnEventIndexMap.set(i, batchCursors.get(batchUnit.physical!)! + batchPhysical.callBatch.recordOffset
+            + batchUnit.witnessOffset);
+        } else if (groupMetas[i].ecSlot.hasReturnValues) {
           returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
             ? cursor + offset
             : returnEventOutputBase + tailRank++);

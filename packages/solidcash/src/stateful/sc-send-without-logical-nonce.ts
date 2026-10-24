@@ -15,7 +15,7 @@ import {
   softOracleRate,
 } from './soft-state-overlays.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
-import { plansRepeatedBusRows } from './sc-expand-resolve-create-builder-external-calls.js';
+import { isBusCompiledEntry, plansRepeatedBusRows } from './sc-expand-resolve-create-builder-external-calls.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
@@ -73,10 +73,8 @@ async function prepareTypedCallbackGraph(
   const entry = artifact.abi.find((candidate) => root.selector !== undefined
     ? candidate.selector?.toLowerCase() === root.selector.toLowerCase()
     : candidate.name === root.functionName);
-  if (!entry?.externalCalls?.length || artifact.messageBus?.handlers.some((handler) =>
-    handler.selector.toLowerCase() === entry.selector?.toLowerCase() && handler.eligible) !== true) {
-    return undefined;
-  }
+  // A direct compile is never promoted to the bus: it publishes no eligible route handler.
+  if (!entry?.externalCalls?.length || !isBusCompiledEntry(artifact, entry.selector)) return undefined;
   // A callback needs an onward edge, while a source loop or two edges to one owner can repeat that owner's
   // master without ever returning to the root. Most ordinary single calls still use the legacy builder.
   // An unregistered/dynamic target is unknown, not proof of a leaf, so it still enters exact discovery.

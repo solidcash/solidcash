@@ -119,6 +119,21 @@ A direct return carrier becomes a call record (as built):
 - Probes still yield the pinned commitment; `rawOfReturnRecord` unwraps it to the raw result, a hashed one by finding
   its preimage on the probe's recorded stacks (the sparse trace keeps no SHA256 step).
 - Readonly aliases resolve to the record of the physical call they share (`returnRecordGroupIndex`).
+- Direct multi-call (phase 3, as built, `src/stateful/direct-call-batch.ts`, test `DirectMultiCall.test.ts`): a direct
+  caller's `callOrdinal` group is expanded into its reached calls in execution order before the callee blocks are
+  assembled. A fixed group keeps its calls; a counted group resolves each loop's reached occurrences, their arguments
+  and its conditions from the published iteration domain (`_planExternalCallOccurrences`, with producer results
+  resolved first). A group reaching two or more frames spends the callee master once: the first call's group carries
+  the batch block `[master, data records, each frame's entries in frame order, one record slot per frame]` and
+  `Contract.createCallBatchUnlocker` with the frames in ordinal order, each frame's `__internal__returnOutputIdx` its
+  master input plus its record slot and its `__internal__rowEntryShift` its entries' distance past their slots; a
+  frame reading entries an earlier frame reads shares their inputs. Every other call of the group is a member: it
+  names the same master and reads its frame's record at the batch's first record plus its ordinal (0 in a loop,
+  which adds the counter), and lays no record. Frame k's record is `callRecordCommitment(result, digest(fn, args,
+  k))`, the result taken from the frame's own probe. A group reaching one call keeps the standalone spend with that
+  call's own arguments. A callee without the entry is refused, naming `callBatch: true` and the multi-contract
+  compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never builds a bus batch
+  (`buildRepeatedExternalBatch`), never reads through the composer, and is never promoted at send.
 
 ## 8. Cost and compatibility
 

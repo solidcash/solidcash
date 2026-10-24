@@ -12,6 +12,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import type { DirectCallBatchCall } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
@@ -171,11 +172,13 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   );
   const sharedPhysical = directSharedGroupIndex < 0
     ? undefined : externalCallUtxoGroups[directSharedGroupIndex];
+  // A unit of a direct multi-call runs as one frame of its callee's multi-call spend (direct-call-batch.ts).
+  const directBatch = (ec as DirectCallBatchCall).directBatch;
   // A direct caller can share a physical block with a view/writer pair, but two distinct returning methods
   // cannot both execute from its one master input unless the compiler published one authenticated batch route.
   // Without that route the second return output is only a placeholder, and deriving it would turn an invalid
   // transaction into a late VM failure (or, for some schemas, an ambiguous provisional result).
-  if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical
+  if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical && !directBatch
     && sharedPhysical.functionName !== callInfo.functionName
     && !compilerRoute && !sharedPhysical.compilerRoute) {
     const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
@@ -259,7 +262,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   }
   // A return probe admits a repeated typed loop only because this group resolves each occurrence's result;
   // without that resolver every row of the result array would decode iteration 0's value.
-  if (returnProbeOnly === true && isRepeatedTypedLoopCallsite(ec) && resolveLoopReturnCommitment === undefined) {
+  // A direct grouped call is one reached occurrence already (direct-call-batch.ts).
+  if (returnProbeOnly === true && isRepeatedTypedLoopCallsite(ec) && resolveLoopReturnCommitment === undefined
+    && ec.callOrdinal === undefined) {
     throw repeatedTypedLoopRefusal(ec);
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -321,6 +326,18 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       // this logical alias while retaining the callsite's own ABI/layout metadata.
       blockInputs: [] as UnlockableUtxo[],
     }),
+    ...(directBatch && {
+      callBatchUnit: { ...directBatch },
+      ...(bBlockInputs && bBlockLayout && {
+        callBatchFrameBlock: {
+          inputs: [...bBlockInputs],
+          layout: bBlockLayout,
+          returnEventInBlock: bReturnEventInBlock,
+          dataNftUtxos: [...bDataNfts],
+          requiredDataNftIndices: [...bRequiredNftIndices],
+        },
+      }),
+    }),
     ...(bReturnEventInBlock && { returnEventInBlock: true }),
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
@@ -363,7 +380,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   // denser writer block must therefore replace the shape an earlier callsite contributed - otherwise the
   // physical block keeps the narrower layout, the writer's planned inserts name block offsets that do not
   // exist, and derivation aborts before any participant state is resolved.
-  if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined) {
+  if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined && !directBatch) {
     const physicalOwner = externalCallUtxoGroups[directSharedGroupIndex];
     if (physicalOwner !== undefined
       && bBlockLayout.slots.length > (physicalOwner.blockLayout?.slots.length ?? 0)) {

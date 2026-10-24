@@ -30,6 +30,7 @@ import { parseEventCommitment } from './StateReader.js';
 import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
 import { callRecordDigest, callRecordHashesResult, parseCallRecord } from './call-record.js';
+import { isCallBatchMember } from './direct-call-batch.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
@@ -121,6 +122,7 @@ export type { CompilerTokenWriterGroup };
 import {
   groupOwnsInBlockReturnEvent,
   logicalReturnGroupIndex,
+  parseExternalCallReturnCoordinate,
   selectMaterializedTailReturnEvents,
   isCompilerDescribedMintingBandWriter,
   shouldReplaceReturnEventCommitment,
@@ -5429,14 +5431,15 @@ export class StatefulTransactionBuilder {
       const returns = returning[groupIdx]?.hasReturnValues === true
         || group.precomputedReturnCommitment !== undefined
         || (group.loopReturnCommitments?.length ?? 0) > 0;
-      if (!returns) continue;
+      if (!returns || isCallBatchMember(group, groupIdx)) continue;
       const physicalGroupIdx = group.sharedGroupIndex ?? groupIdx;
       if (initialized.has(physicalGroupIdx)) continue;
       initialized.add(physicalGroupIdx);
       const family = this.externalCallUtxoGroups
         .map((candidate, candidateIdx) => ({ candidate, candidateIdx }))
         .filter(({ candidate, candidateIdx }) => (
-          (candidate.sharedGroupIndex ?? candidateIdx) === physicalGroupIdx
+          !isCallBatchMember(candidate, candidateIdx)
+          && (candidate.sharedGroupIndex ?? candidateIdx) === physicalGroupIdx
           && (returning[candidateIdx]?.hasReturnValues === true
             || candidate.precomputedReturnCommitment !== undefined
             || (candidate.loopReturnCommitments?.length ?? 0) > 0)
@@ -5536,6 +5539,16 @@ export class StatefulTransactionBuilder {
    */
   private groupCallRecordDigest(group: ExternalCallUtxoGroup, occurrence = 0): Uint8Array | undefined {
     const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+    // A multi-call unit answers its frame's call, digested under the frame's ordinal; the spending unit's parts
+    // are its frames in order.
+    const batchUnit = group.callBatchUnit;
+    const batch = batchUnit?.physical === undefined ? undefined : this.externalCallUtxoGroups[batchUnit.physical]?.callBatch;
+    if (batchUnit !== undefined && batch !== undefined) {
+      const frame = batch.frames[group.callBatch !== undefined ? occurrence : batchUnit.ordinal];
+      return frame === undefined ? undefined : callRecordDigest(frame.abiFunction, frame.args, {
+        structs: artifact?.structs ?? artifact?.stateLayout?.structs, enums: artifact?.enums,
+      }, frame.ordinal);
+    }
     const functionName = group.logicalFunctionName ?? group.functionName;
     const abiFunction = artifact?.abi.find((entry) => entry.name === functionName);
     if (!artifact || abiFunction?.callRecord !== true) return undefined;
@@ -5583,6 +5596,10 @@ export class StatefulTransactionBuilder {
     categoryId: string, commitment: Uint8Array, identity = categoryId, provisional = false,
     trace?: readonly AuthenticationProgramStateCommon[],
   ): this {
+    // A multi-call unit reads its frame's record in the spending unit's block and lays none of its own.
+    const coordinate = parseExternalCallReturnCoordinate(identity);
+    if (coordinate !== undefined
+      && isCallBatchMember(this.externalCallUtxoGroups[coordinate.groupIndex], coordinate.groupIndex)) return this;
     // eslint-disable-next-line no-param-reassign
     commitment = this.rawOfReturnRecord(identity, commitment, trace);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
@@ -5650,8 +5667,23 @@ export class StatefulTransactionBuilder {
       ?? -1;
   }
 
+  /**
+   * The output a multi-call unit's return witness names: the spend's first record plus the unit's offset (its
+   * ordinal, or 0 for a looped call, which adds the group's counter). Undefined outside a multi-call.
+   */
+  private callBatchReturnOutputIndex(groupIdx: number): number | undefined {
+    const unit = this.externalCallUtxoGroups[groupIdx]?.callBatchUnit;
+    const physical = unit?.physical === undefined ? undefined : this.externalCallUtxoGroups[unit.physical];
+    if (unit === undefined || physical?.callBatch === undefined) return undefined;
+    const master = this.findMintingInputIndex(physical.categoryId);
+    const base = master >= 0 ? master : this.getExternalCallOutputBase(unit.physical!);
+    return base < 0 ? -1 : base + physical.callBatch.recordOffset + unit.witnessOffset;
+  }
+
   /** Physical output index recorded by the most recent build for an external-call group's first return. */
   getBuiltExternalCallReturnEventOutputIndex(groupIdx: number): number {
+    const batchReturn = this.callBatchReturnOutputIndex(groupIdx);
+    if (batchReturn !== undefined) return batchReturn;
     const group = this.externalCallUtxoGroups[groupIdx];
     if (group && this.isInBlockReturnEventGroup(groupIdx)) {
       const physical = this.externalCallUtxoGroups[group.sharedGroupIndex ?? groupIdx];
@@ -7069,6 +7101,8 @@ export class StatefulTransactionBuilder {
    * callee carries a full block, otherwise its rank in the appended tail band.
    */
   getExternalCallReturnEventOutputIndex(groupIdx: number): number {
+    const batchReturn = this.callBatchReturnOutputIndex(groupIdx);
+    if (batchReturn !== undefined) return batchReturn;
     const group = this.externalCallUtxoGroups[groupIdx];
     if (!group) return -1;
     // A shared participant owns no layout of its own - both the block layout and the minting input belong to the

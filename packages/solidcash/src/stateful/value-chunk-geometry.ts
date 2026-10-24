@@ -21,6 +21,7 @@ export type InBlockReturnGroup = {
   compilerRoute?: { abiFunction?: AbiFunction };
   externalContract?: { inner?: { artifact?: Artifact } };
   loopReturnCommitments?: Uint8Array[];
+  callBatchUnit?: { readonly physical?: number };
 };
 
 export function groupOwnsInBlockReturnEvent(
@@ -142,6 +143,8 @@ export function selectMaterializedTailReturnEvents(
 
   for (const [groupIndex, group] of groups.entries()) {
     if (groupOwnsInBlockReturnEvent(groups, groupIndex)) continue;
+    // A multi-call unit reads its frame's record in the block of the unit spending the callee master.
+    if (group.callBatchUnit?.physical !== undefined && group.callBatchUnit.physical !== groupIndex) continue;
     const candidates = parsed.filter((entry) => entry.groupIndex === groupIndex);
     // Authoritative precomputed / rolled-loop commitments must materialize even when pending was
     // cleared between seedPrecomputedReturnEvents and build.

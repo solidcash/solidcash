@@ -7,6 +7,7 @@ import type { AbiFunction, Artifact } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import Signer from '../Signer.js';
 import {
+  isBusCompiledEntry,
   isRepeatedTypedLoopCallsite,
   plansRepeatedBusRows,
 } from './sc-expand-resolve-create-builder-external-calls.js';
@@ -47,8 +48,8 @@ export async function deriveComposedReturnBlob(
   const edges = abiFunction.externalCalls ?? [];
   const selector = abiFunction.selector;
   const loopsOverCallee = edges.some(isRepeatedTypedLoopCallsite);
-  const routed = selector !== undefined && artifact.messageBus?.handlers.some((handler) =>
-    handler.selector.toLowerCase() === selector.toLowerCase() && handler.eligible) === true;
+  // A direct compile reads its repeated calls through the callee's multi-call spend, never the composer.
+  const routed = isBusCompiledEntry(artifact, selector);
   // A framed contract reads through its own call handle; this composer does not compose framed masters.
   if (artifact.composition?.convention === 'framed' || (edges.length < 2 && !loopsOverCallee)
     || selector === undefined || !routed) {

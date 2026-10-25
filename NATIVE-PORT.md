@@ -128,7 +128,7 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
 | `Libraries` | 30 / 37 | reverting-callee message translation (3); multi-entry `transferFrom` state commitment (1); absent-selector `safeApprove` call (1); ETH value (2) |
-| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
+| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); factory `getPair` probe return carrier; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
 | **Total** | **99 / 192** | |
 
@@ -214,6 +214,18 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   (the hoisted `UniswapV2Library.pairFor`) is evaluated before the deadline require
   (`KeccakMissingSidecarGuard.test.ts` asserts the shipped body bytes for both an outlined helper and an
   entry body).
+- A conditional external call whose target cannot be resolved is now stated as not taken instead of failing
+  the build. The caller's own covenant keeps the guard, so a spend that reaches the call fails closed at the
+  call site, while an unreached branch (the pair's `if (msg.sender == migrator)` guard, where `migrator` is
+  another call's return) needs no callee UTXO. A transitive group that targets a participant a direct call
+  already co-spends (the Router's token `transferFrom` and the pair's `balanceOf`) now shares that physical
+  block instead of registering a duplicate master input.
+- A two-step Router path (create the pair with `factory.createPair`, then `router.addLiquidity`) now reaches
+  the factory `getPair` probe: the Router's `_addLiquidity` guard reads it, and the probe seeds a placeholder
+  record (`af56c512…01 00`) where the factory covenant expects the mapped pair address (evidence:
+  `router-twostep-probe.log`). Ethereum's own `addLiquidity` creates the pair inside the
+  Router transaction; a BCH output cannot be spent by the transaction that creates it, so the fresh-pair
+  shape remains unsupported.
 - A raw low-level call (`token.call(payload)`) whose callee declares no return value now reads its returndata
   from the record's *absence* instead of a synthesized carrier. A contract whose entries return values refuses
   every unpinned carrier of its own category (a void entry emits a record count of zero), so seeding a

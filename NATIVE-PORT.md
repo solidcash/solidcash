@@ -195,16 +195,20 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - The SDK can batch two *different* returning methods of one callee into one message-bus route
   (`sc-build-shared-method-external-batch.ts`): the transitive discovery hook builds rows for the shared direct
   call and the new transitive call, attaches the route to both logical groups, and the shared group keeps the
-  physical input. The repeated-batch witness resolver also understands a swappable `balanceOf` key pool, so
+  physical input. A **single** direct call to a bus-compiled callee uses the same route with one row
+  (`buildSingleMethodExternalBatch`, wired in the nested-callee prelude), so the callee's direct entry is not on
+  the path. The repeated-batch witness resolver also understands a swappable `balanceOf` key pool, so
   `transferFrom(owner, pair)` plus `balanceOf(pair)` can share a route. Regression:
   `packages/solidcash/test/unit/SharedMethodExternalBatch.test.ts`.
-  This path currently cannot be enabled end to end: compiling a token or factory with `messageBus: true`
-  rewrites its **direct** entry behaviour. A bus-enabled `TestERC20` (after making its emitting helper void)
-  passes `safeTransfer` into an `OP_VERIFY` failure at preflight, and a bus-enabled factory emits `PairCreated`'s
-  `token0` as a 35-byte locking bytecode instead of the 20-byte ABI identity (2 Factory tests). Those compiles are
-  kept out of the parity project, so the counts above are the direct-artifact counts. Evidence:
-  `twostep-bus7.log` (factory route build), `twostep-bus10.log` (route VM failure), `lib-transfer-after.log`,
-  `factory-restored.log`, `factory-bus-suite.log`.
+  This path cannot be enabled end to end: compiling a token or factory with `messageBus: true` rewrites its
+  **direct** entries. A bus-compiled `TestERC20` (after making its emitting helper void) cannot be resolved by
+  `getContractAt` after `pair.token0()` returns its 20-byte identity (the Pair fixture stops at deployment
+  lookup), and a raw `safeTransfer` fails preflight comparing a 64-byte entry/event commitment with an 8-byte
+  witness at input 1; the legacy `messageBusKernel: false` lowering fails the same comparison (ip 908). A
+  bus-compiled factory emits `PairCreated.token0` as a 35-byte locking bytecode instead of the 20-byte ABI
+  identity (2 Factory tests). Those compiles are kept out of the parity project, so the counts above are the
+  direct-artifact counts. Evidence: `pair-typedbus1.log`, `lib-legacybus-tail.log`, `lib-single-route1.log`,
+  `twostep-bus7.log`, `twostep-bus10.log`, `factory-bus-suite.log`.
 - A failing outlined library body is attributed from the trace's executed instructions even when the failing
   step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.
 - A keccak256 call inside an outlined free function (an imported `internal` library helper such as

@@ -1,13 +1,14 @@
 /**
- * Build one authenticated message-bus route that executes several *different* returning methods of one callee from
- * a single master input.
+ * Build one authenticated message-bus route that executes one or more methods of a callee from a single master
+ * input.
  *
  * A token invoked by the Router's `transferFrom` and, transitively, the pair's `balanceOf` has one state owner but
  * two returning calls. The callee's own message-bus route already dispatches rows by selector, so the two logical
- * calls become two rows of that route; neither needs a second carrier.
+ * calls become two rows of that route; neither needs a second carrier. A single call to a bus-compiled callee uses
+ * the same route with one row, which keeps the callee's direct entry out of the path.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth';
 import type { AbiFunction, AbiInput, ArgSource, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -23,6 +24,9 @@ export type SharedMethodBatchCaller = {
   selfAddress?: FunctionArgument;
   identity?: { categoryId: string; lockingBytecode: string };
 };
+
+/** One logical call reduced to the row the callee's route dispatches. */
+export type MethodBatchCall = { functionName: string; args: readonly FunctionArgument[] };
 
 /** A literal argument source round-trips the already-resolved value through `resolveExternalArgs`. */
 function literalSource(value: FunctionArgument, input: AbiInput): ArgSource | undefined {
@@ -48,24 +52,23 @@ function eligibleHandler(artifact: Artifact, functionName: string): AbiFunction 
 }
 
 /**
- * Return a route for `shared` + `next`, or undefined when the callee cannot batch both methods. The route is
- * attached to both logical groups; the shared group owns the physical input.
+ * Build a route for the given calls, or undefined when the callee cannot dispatch them. Every call must name an
+ * eligible handler and its resolved arguments must be expressible as literals.
  */
-export function buildSharedMethodExternalBatch(
+export function buildMethodExternalBatch(
   host: SharedMethodBatchHost,
-  shared: ExternalCallUtxoGroup,
-  next: ExternalCallUtxoGroup,
+  calls: readonly MethodBatchCall[],
   callee: { inner: { artifact: Artifact } },
   caller: SharedMethodBatchCaller,
 ): NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined {
   const artifact = callee.inner.artifact;
   const capability = artifact.messageBus;
-  if (!capability || capability.version !== 1 || capability.selector !== '53434231') return undefined;
-  if (shared.functionName === next.functionName) return undefined;
-  const rows = [shared, next].map((group, logicalIndex) => {
-    const handler = eligibleHandler(artifact, group.functionName);
-    if (handler === undefined || handler.inputs.length !== group.functionArgs.length) return undefined;
-    const argSources = group.functionArgs.map((value, index) => literalSource(value, handler.inputs[index]!));
+  if (!capability || capability.version !== 1 || capability.selector !== '53434231'
+    || capability.available === false || calls.length === 0) return undefined;
+  const rows = calls.map((call, logicalIndex) => {
+    const handler = eligibleHandler(artifact, call.functionName);
+    if (handler === undefined || handler.inputs.length !== call.args.length) return undefined;
+    const argSources = call.args.map((value, index) => literalSource(value, handler.inputs[index]!));
     if (argSources.some((source) => source === undefined)) return undefined;
     return {
       selector: handler.selector,
@@ -78,9 +81,8 @@ export function buildSharedMethodExternalBatch(
   });
   if (rows.some((row) => row === undefined)) return undefined;
   const synthetic: ExternalCallAbi = {
-    interfaceName: shared.externalContract?.inner?.artifact?.contractName
-      ?? next.externalContract?.inner?.artifact?.contractName ?? '',
-    functionName: shared.functionName,
+    interfaceName: artifact.contractName,
+    functionName: calls[0]!.functionName,
     occurrence: 'once',
     requiredDataNftIndices: [],
     hasReturnValues: true,
@@ -104,4 +106,32 @@ export function buildSharedMethodExternalBatch(
     // A row the route cannot materialize is a limit, not a reason to assemble a second placeholder carrier.
     return undefined;
   }
+}
+
+/** A single call to a bus-compiled callee: one route row instead of the callee's direct entry. */
+export function buildSingleMethodExternalBatch(
+  host: SharedMethodBatchHost,
+  call: MethodBatchCall,
+  callee: { inner: { artifact: Artifact } },
+  caller: SharedMethodBatchCaller,
+): NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined {
+  return buildMethodExternalBatch(host, [call], callee, caller);
+}
+
+/**
+ * Return a route for `shared` + `next`, or undefined when the callee cannot batch both methods. The route is
+ * attached to both logical groups; the shared group owns the physical input.
+ */
+export function buildSharedMethodExternalBatch(
+  host: SharedMethodBatchHost,
+  shared: ExternalCallUtxoGroup,
+  next: ExternalCallUtxoGroup,
+  callee: { inner: { artifact: Artifact } },
+  caller: SharedMethodBatchCaller,
+): NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined {
+  if (shared.functionName === next.functionName) return undefined;
+  return buildMethodExternalBatch(host, [
+    { functionName: shared.functionName, args: shared.functionArgs },
+    { functionName: next.functionName, args: next.functionArgs },
+  ], callee, caller);
 }

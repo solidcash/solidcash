@@ -18,6 +18,7 @@ import {
   selectGraphBlockhashReads,
 } from './sc-batch-raw.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
+import { buildSingleMethodExternalBatch } from './sc-build-shared-method-external-batch.js';
 import type { OnChainState } from './StateReader.js';
 import {
   deriveValueChunkProducerChildPath,
@@ -102,7 +103,7 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // Resolve external category ID from the resolved external contract (address model: A's args
   // bake the callee address, so its category comes from the registered external instance).
   const externalCategoryId = callInfo.externalContract.categoryId;
-  const compilerRoute = host.buildRepeatedExternalBatch(
+  let compilerRoute = host.buildRepeatedExternalBatch(
     ec, args, callInfo.externalContract,
     artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
     false, publicSelfAddress, undefined, publicSelfIdentity,
@@ -116,6 +117,24 @@ export async function loadCreateBuilderNestedCalleePrelude(
       sourceEffectOrdinal: row.sourceEffectOrdinal,
     }),
   );
+  // A bus-compiled callee's direct entry is compiled through the route lowering: its vmap batch witnesses no
+  // longer match the direct-call witnesses the SDK derives. Send every such call through the callee's route as a
+  // one-row batch instead. A raw call has no concrete method name to dispatch, so it stays on the direct path.
+  if (compilerRoute === undefined && ec.interfaceName !== '__raw__'
+    && callInfo.externalContract.inner.artifact.messageBus !== undefined) {
+    compilerRoute = buildSingleMethodExternalBatch(
+      { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
+      { functionName: callInfo.functionName, args: callInfo.args },
+      callInfo.externalContract,
+      {
+        artifact,
+        state: callerStateSnapshot,
+        inputs: abiFunction?.inputs ?? [],
+        selfAddress: publicSelfAddress,
+        identity: publicSelfIdentity,
+      },
+    );
+  }
   const bGraphBlockhashSelections = compilerRoute
     ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
     : [];

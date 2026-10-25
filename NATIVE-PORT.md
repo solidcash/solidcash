@@ -143,8 +143,8 @@ and `mints proportional liquidity`, `clears kLast when fees are turned off`, `bu
 underlying tokens`, `skips the fee mint when the fee amount rounds to zero` and `mints the first liquidity` stay
 green.
 | `Libraries` | 32 / 37 | reverting-callee message translation (2); absent-selector `safeApprove` call (1); ETH value (2) |
-| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); factory `getPair` probe return carrier; `msg.value`/WETH satoshi model |
-| `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
+| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); one token invoked by `transferFrom` and `balanceOf` in the same transaction; `msg.value`/WETH satoshi model |
+| `SushiRoll` | 3 / 16 | the pair created inside the roll transaction; one token invoked by two returning methods; the migrator-style circular `A->B->A` read |
 | **Total** | **102 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is order-dependent: it passes in the
@@ -178,6 +178,10 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `block.timestamp` inside the covenant equals the block the receipt reports (price accumulators).
 - The compiler records a mapping key that is a tuple component of another call's return as a `producer` key
   source; the SDK resolves the producer's authenticated value before hashing the slot.
+- A 20-byte address value whose own deployment lock narrows to it is a lock-derived identity, not an unowned
+  CREATE2 projection. `isCreate2ProjectedAddressValue` now uses the same payload match as
+  `findDeploymentByAddressValue`, so a factory-created pair addressed as a runtime argument resolves to its
+  co-spendable child. This removes the misleading CREATE2 refusal from the Pair migrator and SushiRoll paths.
 - A merged fixed entry can publish `alternatives: [{ key, activation? }]`. The compiler derives the alternative
   from the other write sites' key labels and the branch guards each site runs under; the SDK evaluates the
   activation with `evalComputedKey` and uses the alternative key when it holds. The key label language gained

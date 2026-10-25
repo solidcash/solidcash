@@ -136,7 +136,7 @@ describe('direct call ordinals', () => {
     expect(message).not.toMatch(/omit the option/);
   });
 
-  it('refuses a looped returning call to a fixed target that cannot run as a frame', () => {
+  it('refuses a looped call that reads a result unless it runs as a frame or its target changes per iteration', () => {
     // The callee master is spent once and pins one record: further iterations would read records it never pinned.
     const looped = (body: string): string => `pragma solidcash >=0.8.0;
 interface ICounter { function inc(bigint by) external returns (bigint); }
@@ -144,7 +144,7 @@ contract LoopedWriter(address counter) {
   bigint last;
   bytes stored;
   function one(bigint by) internal returns (bigint) { return ICounter(counter).inc(by); }
-  function run(bigint n, bool take) public { bigint acc = 0; ${body} this.last = acc; }
+  function run(bigint n, bool take, address other, address[] all) public { bigint acc = 0; ${body} this.last = acc; }
 }`;
     const bodies = [
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(counter).inc(i); }',
@@ -152,6 +152,7 @@ contract LoopedWriter(address counter) {
       'for (bigint i = 0; i < n; i = i + 1) { if (take) { acc = acc + ICounter(counter).inc(i); } }',
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + one(i); }',
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(this.stored).inc(i); }',
+      'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(take ? counter : other).inc(i); }',
     ];
     for (const body of bodies) {
       expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body)
@@ -159,8 +160,25 @@ contract LoopedWriter(address counter) {
       // The bus binds each row; a lone call stays a direct call bound by its record.
       expect(() => compileString(looped(body), { messageBus: true, suppressWarnings: true }), body).not.toThrow();
     }
-    expect(() => compileString(looped('acc = ICounter(counter).inc(n);'), { messageBus: false, suppressWarnings: true }))
-      .not.toThrow();
+    for (const body of ['acc = ICounter(counter).inc(n);',
+      'for (bigint i = 0; i < all.length; i = i + 1) { acc = acc + ICounter(all[i]).inc(i); }']) {
+      expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body).not.toThrow();
+    }
+    // An opaque call reads its data from the record at its index plus the iteration: refused once the data is read.
+    const raw = (body: string): string => `contract RawLoop() {
+  bigint n;
+  function go(address t, address[] ts, bytes[] ps) public { bigint s = 0; ${body} this.n = s; }
+}`;
+    const read = 'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); '
+      + 's = s + r.length; }';
+    expect(() => compileString(raw(read), { messageBus: false, suppressWarnings: true }))
+      .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`\.$/);
+    for (const body of [
+      'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); s = s + 1; }',
+      'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, ) = t.call(ps[i]); require(ok); s = s + 1; }',
+      'for (bigint i = 0; i < ts.length; i = i + 1) { (bool ok, bytes memory r) = ts[i].call(ps[i]); require(ok); '
+        + 's = s + r.length; }',
+    ]) expect(() => compileString(raw(body), { messageBus: false, suppressWarnings: true }), body).not.toThrow();
   });
 
   it('leaves a message-bus compile as it was', () => {

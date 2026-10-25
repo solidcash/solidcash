@@ -956,18 +956,41 @@ needs VM evidence, `rejectedWith` has no source fallback).
   category, so every iteration after the first read a record its callee, spent once, never pinned. `9323f7bae`
   counts state-preserving calls, which check the callee, the record's category and its carrier form on every
   iteration. `76d31b1ce` refuses the rest (`MESSAGE_BUS_REQUIRED`): a looped returning call that changes state, or
-  cannot be a frame for another reason, no longer compiles direct. The bus binds the same shapes per row. Test:
-  `DirectCallOrdinals.test.ts`.
+  cannot be a frame for another reason, no longer compiles direct. `f27311797` does the same for an opaque
+  `target.call(payload)` to a fixed target in a loop once its data is read (a Multicall over array targets checks
+  each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
+  target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
+  reads no record, so the bus binds the same shapes per row. Test: `DirectCallOrdinals.test.ts`.
 
 ### Not changed, by decision
 
 - Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), view/static
-  calls in regular mode (kernel alignment). Typed calls binding only the selector, and the held callee-side return
-  binding `ce51b6f18`: superseded by call records (D50), below.
+  calls in regular mode (kernel alignment). Typed calls binding only the selector: superseded by call records (D50),
+  below, for calls whose record digests their arguments; the others are open (below). The held callee-side return
+  binding `ce51b6f18`: superseded by D50.
 - DX-9 in the bus, model B, D48, the opt-in `initializeAs: 'hop'` (SDKFRAMED-2), X1 (D11): user decisions.
 - `unsafe` tiers and an authorized upgrade's new code: by design.
 
 ### Open
+
+- Direct void call arguments (found 2026-10-25, source-traced and compile-checked). A direct entry's typed call to a
+  method that returns nothing binds the callee's lock, master and method (its unlocking's selector) but not the
+  arguments: a void run pins no record, and the caller reads nothing else of the callee's invocation. Under
+  `messageBus: false`, `ISink(c).put(x)`, `put(x + 1)` and `put(7)` compile to one caller bytecode. The direct entries
+  of message-bus artifacts (automatic mode and `messageBus: true`) are the same: only the bus route's emission binds
+  the arguments, and the SDK sends a single call through the direct entry. A spender can therefore run the callee's
+  method on other arguments beside a genuine caller run, for example sending a permissionless caller's
+  `deposit{value: v}(id)` to another `id`. Framed records and bus rows bind them. Fix in progress: the caller checks
+  the callee's unlocking pushes for the arguments it names, as D8 does for a compat raw call (callers only; a void
+  record in every void entry would cost about 150-200 B on a contract without returning entries).
+
+- One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
+  selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
+  transaction that make the same returning call to one callee therefore both accept the callee's single run and
+  record; with a state-changing callee each caller takes an effect that ran once (two "withdrawals" credited for one
+  payment). It follows from the direct call edge being presence-based (F1, above): the callee does not bind which
+  caller it answers. Framed records and bus rows bind the caller. A fix needs the caller to bind the callee's call
+  edge, for example the callee's `msg.sender` witness, which reopens the F1 decision.
 
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot

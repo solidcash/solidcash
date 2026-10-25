@@ -951,6 +951,13 @@ needs VM evidence, `rejectedWith` has no source fallback).
   exact copy of an existing record, paid for by the funder). The entry now holds every own-category mutable output to
   an input at its index, inside the callee's script. Only contracts compiled with `callBatch: true` (or an obvious
   need) carried the entry; it never shipped in a release. Test: `CallBatch.test.ts`.
+- **Direct looped returning writer** (found 2026-10-24 while building direct call ordinals, closed 2026-10-25). In a
+  direct compile, a returning call to a fixed target inside a loop checked neither the callee nor the record's
+  category, so every iteration after the first read a record its callee, spent once, never pinned. `9323f7bae`
+  counts state-preserving calls, which check the callee, the record's category and its carrier form on every
+  iteration. `76d31b1ce` refuses the rest (`MESSAGE_BUS_REQUIRED`): a looped returning call that changes state, or
+  cannot be a frame for another reason, no longer compiles direct. The bus binds the same shapes per row. Test:
+  `DirectCallOrdinals.test.ts`.
 
 ### Not changed, by decision
 
@@ -967,12 +974,6 @@ needs VM evidence, `rejectedWith` has no source fallback).
   compute the D50 call digest, which made the compiler crash. Such a call now skips the digest check: its read is bound
   by the record's category and the callee's single run, and by the selector only for a multi-function callee, which is
   the pre-D50 binding. It cannot join a direct multi-call group, so a repeated callee with such a call stays refused.
-
-- Direct looped returning writer (found 2026-10-24 while building direct call ordinals): in a direct compile, a
-  returning call to a fixed target inside a loop checked neither the callee nor the record's category, so its result
-  was unbound. `9323f7bae` closes it for state-preserving calls, which are now counted and check the callee, the
-  record's category and its carrier form on every iteration; a looped returning call that changes state still reads
-  unbound until direct multi-call frames take writes (phase 4).
 
 - A forwarder with neither `delegateForwarding` nor a low-level call slot (artifacts from before 2026-09) still
   places a direct delegate after its full block, which the delegate now refuses (`c1883fb8e`): fail-closed.

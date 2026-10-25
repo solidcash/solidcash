@@ -94,8 +94,10 @@ A direct return carrier becomes a call record (as built):
   identity at its master index and its record's carrier form where it runs, and reads the record at its return index
   plus its ordinal. Only calls declared view or pure, returning values, regular, value-free and to a fixed method form
   groups; any other repeated callee stays refused (`MESSAGE_BUS_REQUIRED`, worded after the multi-call entry's
-  limits). A multi-contract compile (`compileStringMulti`, `compileFileMulti`) gives a contract implementing a grouped
-  call's interface (named as a base, or declaring its methods) the multi-call entry unless `callBatch` is stated.
+  limits). A looped returning call to a fixed target repeats its callee too: one that cannot be a frame is refused
+  (`76d31b1ce`; before, it compiled, and every iteration after the first read a record its callee never pinned).
+  A multi-contract compile (`compileStringMulti`, `compileFileMulti`) gives a contract implementing a grouped call's
+  interface (named as a base, or declaring its methods) the multi-call entry unless `callBatch` is stated.
   Computed, array and pointer targets keep ordinal 0. Test: `packages/solidc/test/DirectCallOrdinals.test.ts`.
 
 ## 5. Delegatecall, proxies and split facets

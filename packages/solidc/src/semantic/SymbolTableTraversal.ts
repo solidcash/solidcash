@@ -8394,8 +8394,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     gather(body, new Set());
     for (const [localName, calls] of byLocal) {
-      if (calls.length < 2
-        || (!this.findLocalInit(body, localName) && !this.findAssignmentValue(body, localName))) continue;
+      // A witness may stand only for a view of a callee the caller chooses: one the contract fixes keeps its calls.
+      const receiver = this.findLocalInit(body, localName) ?? this.findAssignmentValue(body, localName);
+      if (calls.length < 2 || !receiver || !this.loopTargetIsCallerChosen(receiver, fn)) continue;
       // Classify by return: a VOID call is the state-changing mutate (the co-spend); a RETURNING call is a view
       // whose result becomes a caller witness. (The interface AST does not track `view`; hasReturnValues is the
       // sound proxy - the one void mutate's covenant bounds a wrong witness, and a misclassified returning-mutate
@@ -8562,6 +8563,58 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     walk(expr);
     return found;
+  }
+
+  /**
+   * True when a per-iteration loop target reads its varying part only from elements of `fn`'s parameters, so the
+   * caller chooses it (`IPair(pairFor(factory, path[i], path[i + 1]))`) and a caller-supplied witness may stand for
+   * it. A target read from a local or state array, a mapping or another contract's result is the contract's own:
+   * its witness must equal the value computed on chain.
+   */
+  private loopTargetIsCallerChosen(expr: Node, fn: FunctionDefinitionNode | undefined): boolean {
+    const body = fn?.body;
+    const parameters = new Set(fn?.parameters.map((parameter) => parameter.name) ?? []);
+    const seen = new Set<string>();
+    let elements = 0;
+    let chosen = true;
+    const walk = (n: unknown): void => {
+      if (!chosen || !n || typeof n !== 'object') return;
+      if (n instanceof MappingAccessNode || n instanceof ExternalFunctionCallNode) {
+        chosen = false;
+        return;
+      }
+      if (n instanceof ArrayAccessNode) {
+        // Follow bare-identifier aliases of the array (`address[] memory ps = path`) to a parameter.
+        let array = n.array instanceof IdentifierNode ? this.resolveInlineAliasName(n.array.name, body) : undefined;
+        const aliases = new Set<string>();
+        while (array !== undefined && !parameters.has(array) && !aliases.has(array)) {
+          aliases.add(array);
+          const init = this.findLocalInit(body, array);
+          array = init instanceof IdentifierNode ? this.resolveInlineAliasName(init.name, body) : undefined;
+        }
+        if (array === undefined) {
+          chosen = false;
+          return;
+        }
+        elements += 1;
+        walk(n.index);
+        return;
+      }
+      if (n instanceof IdentifierNode && !seen.has(n.name)) {
+        seen.add(n.name);
+        const init = this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name)
+          ?? this.findAssignmentValue(body, n.name);
+        if (init) walk(init);
+        return;
+      }
+      for (const k of Object.keys(n as Record<string, unknown>)) {
+        if (RESOLVED_BACKREF_KEYS.has(k) || BODY_WALK_SKIP_KEYS.has(k) || k === 'references') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) v.forEach(walk); else if (v instanceof Node) walk(v);
+      }
+    };
+    walk(expr);
+    return chosen && elements > 0;
   }
 
   private findAssignmentValue(node: Node | undefined, name: string,
@@ -9180,11 +9233,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const legacyInterfaceCast = initExpr instanceof FunctionCallNode && initExpr.parameters.length === 1
           && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
-        const canNeutralize = initExpr instanceof CastNode || legacyInterfaceCast
-          || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0);
-        // A loop may receive its per-iteration callee from another contract or decode it from the current action
-        // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
-        // binds that witness to the live runtime local before verifying the co-spent callee.
+        // Only a target the caller chooses may be replaced by its witness.
+        const canNeutralize = (initExpr instanceof CastNode || legacyInterfaceCast
+          || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0))
+          && resolvedInit !== undefined && this.loopTargetIsCallerChosen(resolvedInit, this.currentFunction);
+        // A loop may receive its per-iteration callee from another contract, decode it from the current action
+        // payload or read it from the contract's own values. The local cannot survive to the epilogue, so give it a
+        // per-iteration witness; inline dispatch binds that witness to the live runtime local before verifying the
+        // co-spent callee.
         if (resolvedInit && this.loopDeclaredLocals.has(addressParam) && !canNeutralize) {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
@@ -9294,9 +9350,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           // to read the callee address from a synthesized witness array `__internal__loopTargets<n>[i]` (the SDK
           // derives it from the loop array via the computed expression at build time), so the typed inline-loop
           // dispatch co-spends each. The loop index is the bare-identifier index of an array access in the target
-          // (path[i]); a target with none (no per-iteration leaf) is left unmatched and fails closed downstream.
+          // (path[i]); a target with none (no per-iteration leaf), or one the caller does not choose, is left
+          // unmatched and fails closed downstream.
           const loopIdx = this.findLoopIndexInComputedTarget(ae, this.currentFunction?.body);
-          if (loopIdx) {
+          if (loopIdx && this.loopTargetIsCallerChosen(ae, this.currentFunction)) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);

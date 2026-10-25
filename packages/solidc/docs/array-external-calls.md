@@ -190,7 +190,10 @@ opaque MultiCall builder). Layout: input 0 = caller (preserved at output 0); inp
 Soundness: the witness is caller-chosen and identity-verified per iteration (`input[base+i].bytecode ==
 witness[i]`), so a mismatching claim is rejected by the covenant. This is caller-permissive - the same argument
 as `extcall-target-pinning.md` and the array-element form: the caller routes its own funds through targets it
-chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted.
+chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted: a witness
+stands for a target only when the target's per-iteration part reads elements of the function's parameters. A target
+read from a local or state array, a mapping or another contract's result keeps its on-chain value, which the
+witness must equal, and a multi-use receiver of such a target runs its views as calls instead of view witnesses.
 
 A loop-body LOCAL receiver `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()` (SEAL leaves the local
 un-hoisted - a loop-body local is not single-assign - and it is loop-consumed, so unreadable at the epilogue) is

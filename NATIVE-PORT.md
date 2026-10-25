@@ -209,11 +209,14 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `factory.createPair` inside `_addLiquidity` when the pair is absent, then immediately calls
   `IUniswapV2Pair(pair).getReserves()` and `pair.mint()` on the pair it just created. A BCH transaction cannot
   spend an output it creates, so the new pair has no co-spendable master and the planner reports
-  `External call planning could not pin the callee for IUniswapV2Pair.getReserves …` (`extcallMasterIdx` stays
-  unresolved in the probe). This is a composition limit independent of the CREATE2 identity limit that blocks
-  the same calls once the pair exists: even a two-transaction split still targets `pairFor`'s CREATE2 value,
-  which no lock projects to. A top-level factory `createPair` passes all 15 Factory tests, so the gap is
-  specifically a child used by its creator in the same transaction.
+  `External call planning could not pin the callee for IUniswapV2Pair.getReserves …`.
+  A two-step split was tested explicitly: a top-level `factory.createPair` succeeds (15/15 Factory), and a
+  following `router.addLiquidity` on the now-existing pair still fails with
+  `External call to IUniswapV2Pair.getReserves targets CREATE2 identity '<20 bytes>', which no Bitcoin Cash
+  locking bytecode commits to`. Giving the child a genesis binding NFT was also tested: the factory covenant
+  rejects the extra output at broadcast (`mandatory-script-verify-flag-failed`, 4 createPair cases), so no
+  on-chain anchor can carry the CREATE2 value. A top-level factory `createPair` passes all 15 Factory tests,
+  so the gap is specifically a child used by its creator in the same transaction.
 - **`UniswapV2Library.pairFor` versus a BCH child address.** `pairFor` computes the EVM CREATE2 identity, while
   a BCH pair's address commits to its funding category. The SDK now registers the canonical EVM CREATE2
   projection for each factory child (from its recorded parent, salt and the canonical pair init hashes), so

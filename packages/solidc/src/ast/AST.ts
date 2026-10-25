@@ -3125,6 +3125,8 @@ export interface ExternalCallSlot {
   /** A returning direct call's record: the callee method's selector and declared parameter types, for its digest. */
   callRecordSelector?: Uint8Array;
   callRecordParameterTypes?: Type[];
+  /** The fixed method a call names: its selector and declared parameter types, for binding the call's arguments. */
+  calleeMethod?: { selector: Uint8Array; parameterTypes: Type[] };
   /**
    * A direct call to a callee this function calls several times: the ordinal its record digests, fixed at compile
    * time or counted at run time by the group's counter (docs/wip/call-records/DESIGN.md, section 4). Absent: 0.

@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **99 passed, 93 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **101 passed, 91 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -127,10 +127,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 30 / 37 | reverting-callee message translation (2); multi-entry `transferFrom` state commitment (2); absent-selector `safeApprove` call (1); ETH value (2) |
+| `Libraries` | 32 / 37 | reverting-callee message translation (2); absent-selector `safeApprove` call (1); ETH value (2) |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); factory `getPair` probe return carrier; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
-| **Total** | **99 / 192** | |
+| **Total** | **101 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is occasionally order-dependent in a
 narrow run (a `-t` filter or a whole-project run can report `nrt.balanceOf(other) == 0`); it passes in the full
@@ -226,6 +226,14 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `router-twostep-probe.log`). Ethereum's own `addLiquidity` creates the pair inside the
   Router transaction; a BCH output cannot be spent by the transaction that creates it, so the fresh-pair
   shape remains unsupported.
+- A three-entry sorted batch (`transferFrom`: allowance + owner balance UPDATEs and a cold recipient balance
+  INSERT) now keeps the insert's NEW node at its entry slot. A repair that reordered "predecessor at the entry
+  slot, successor at a later entry" matched a *mirrored predecessor co-spend* whose next key happened to point
+  at the owner UPDATE, and swapped that update into the NEW's coordinate. The next probe then never revealed the
+  NEW node, so the final spend compared the entry against the owner update. The reorder now requires the
+  candidate's next key to be the `insertedSlot` the compiler descriptor publishes
+  (`ThreeEntryTransferFromInsert.test.ts` drives the shipped compiler + SDK through `approve` then a nested
+  `transferFrom` whose recipient has no entry yet). This settled both multi-entry `transferFrom` Library cases.
 - A raw low-level call (`token.call(payload)`) whose callee declares no return value now reads its returndata
   from the record's *absence* instead of a synthesized carrier. A contract whose entries return values refuses
   every unpinned carrier of its own category (a void entry emits a record count of zero), so seeding a

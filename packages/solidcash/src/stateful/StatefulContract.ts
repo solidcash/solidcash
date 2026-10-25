@@ -11976,6 +11976,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolveExternalKeccakSideCars: (...a: any[]) => (this as any)._resolveExternalKeccakSideCars(...a),
         resolveExternalBlockhashCoSpends: (...a: any[]) => (this as any)._resolveExternalBlockhashCoSpends(...a),
         keysMatch: (...a: any[]) => (this as any)._keysMatch(...a),
+        probeRawCallee: async (contract: unknown, calleeFunction: string, calleeArgs: any[]) => {
+          const candidate = (contract as { implementation?: unknown } | undefined)?.implementation
+            ?? contract;
+          const derive = (candidate as { _deriveReturnValue?: unknown } | undefined)?._deriveReturnValue;
+          if (typeof derive !== 'function') return { ok: true as const };
+          const calleeAbi = (candidate as {
+            inner?: { artifact?: { abi?: Array<{ name?: string; outputs?: unknown[] }> } };
+          }).inner?.artifact?.abi;
+          if ((calleeAbi?.find((entry) => entry.name === calleeFunction)?.outputs?.length ?? 0) === 0) {
+            // A void callee has no value to decode, so the read probe cannot run it. Its covenant still executes
+            // when the call is co-spent; an unsupported probe is not evidence of a revert.
+            return { ok: true as const };
+          }
+          try {
+            await (derive as (...a: any[]) => Promise<unknown>).call(
+              candidate, calleeFunction, calleeArgs, undefined, undefined, undefined,
+              this.inner.lockingBytecode, this.categoryId, this,
+            );
+            return { ok: true as const };
+          } catch (error) {
+            // Only a covenant/require failure proves the low-level call answered `false`. A planner refusal on an
+            // unsupported probe shape leaves the call in the ordinary co-spend path, where the final preflight
+            // remains the authority (as it was before this probe existed).
+            const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+            const unsupported = /could not be auto-derived|Cannot send stateful transaction|state commitments could not|no return value to read/i
+              .test(text);
+            const executionFailure = !unsupported
+              && /OP_VERIFY|FailedRequire|VM failed|failed a require|require:/i.test(text);
+            return { ok: false as const, error, executionFailure };
+          }
+        },
       },
       {
         abiFunction,

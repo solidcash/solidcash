@@ -25809,7 +25809,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (guardSlot && !guardSlot.inlineLoopDispatch && !guardSlot.loopArrayVar && !guardSlot.batchInvocations
         && !this.isExternalCallSlotLoopNested(guardSlot)) {
         this.emitSlotMasterIndex(guardSlot, locationData);
-        this.emit(encodeInt(0n), locationData);
+        // A raw low-level call may have no co-spent callee at all: its target can be a plain account (a value
+        // transfer) or a contract without the requested function (`success = false`). Both are stated as a
+        // negative master-index witness; every other slot still requires a materialized callee here.
+        const absentMayBeZero = guardSlot.interfaceName === '__raw__' && guardSlot.opaqueReturn === true;
+        this.emit(encodeInt(absentMayBeZero ? -1n : 0n), locationData);
         this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
         this.emit(Op.OP_VERIFY, locationData);
       }
@@ -25819,12 +25823,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // parameters are still live; the epilogue pins the target. Stack-neutral.
     if (batchRow === undefined && node.callInfo && physicalSlot
       && this.isDirectRawCompatBindingSlot(physicalSlot)) {
+      // The payload is built unconditionally so the runtime stack keeps the compiler's model shape even when the
+      // callee is absent and the binding below is skipped.
       const data = node.parameters[0];
       const binding = this.compatCallArguments(data, locationData);
       this.visit(data);
-      this.popFromStack();                                   // [.., data] (untracked)
-      this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., data, idx]
-      this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [.., data, idx] -> [..]
+      this.popFromStack();                                   // [.., payload] (untracked)
+      // The binding reads the co-spent callee's script and unlocking bytecode. A negative master index states a
+      // call with no callee, so the binding is skipped and the payload dropped; the opaque return read answers
+      // from the sentinel.
+      this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., payload, idx]
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);                     // [.., payload]
+      this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., payload, idx]
+      this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [.., payload, idx] -> [..]
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
     }
 
     // Handle {value: X} call option - emit a transfer to the callee's address
@@ -25904,9 +25920,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(0n), locationData);
         this.emit(Op.OP_LESSTHAN, locationData);
         this.emit(Op.OP_IF, locationData);
+        // A return coordinate below -1 states a call that did not execute its callee: EVM's low-level call
+        // answers `(false, "")` (absent selector, reverting callee). -1 keeps the void-callee answer
+        // `(true, "")`. Both leave `[success, returnData]` with the empty blob on top.
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(encodeInt(-1n), locationData);
+        this.emit(Op.OP_LESSTHAN, locationData);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.emit(Op.OP_0, locationData);    // success = false
+        this.emit(Op.OP_0, locationData);    // empty returndata
+        this.emit(Op.OP_ELSE, locationData);
         this.emit(Op.OP_DROP, locationData);
         this.emit(Op.OP_1, locationData);    // success
         this.emit(Op.OP_0, locationData);    // empty returndata
+        this.emit(Op.OP_ENDIF, locationData);
         this.emit(Op.OP_ELSE, locationData);
       }
       if (bindsInline) this.emitLoopCallRecordCarrierChecks(locationData);

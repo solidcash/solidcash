@@ -4907,7 +4907,12 @@ export default class SymbolTableTraversal extends AstTraversal {
               }
               continue;
             }
-            if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
+            // A raw low-level call is the one shape whose callee may legitimately be absent: Solidity `call`
+            // to an address with no matching function returns success=false and to a plain account returns
+            // success=true, both without executing a callee covenant. The SDK states either as a negative
+            // master index, so even a single straight-line raw call needs the runtime witness.
+            const rawOpaque = slot.interfaceName === '__raw__' && slot.opaqueReturn === true;
+            if (!slot.fnPtrCall && !rawOpaque && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
             const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
             const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
             idxParam.location = node.location;

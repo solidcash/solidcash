@@ -21,6 +21,12 @@ export type CreateBuilderResolvedExternalCall = {
   functionName: string;
   args: FunctionArgument[];
   stateOverrides?: Record<string, unknown>;
+  /**
+   * A raw low-level call with no co-spent callee. EVM answers a call to an account (or to a contract without the
+   * requested function) without executing a callee covenant: `fails: false` is `(true, "")`, `fails: true` is
+   * `(false, "")`. The published ABI slot stays in place, but no participant block is co-spent.
+   */
+  absentCallee?: { fails: boolean };
 };
 
 export type CreateBuilderLoopIdxRange = {
@@ -58,6 +64,13 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
   /** True when the value reaches its deployment only through the child's off-chain CREATE2 projection. */
   isCreate2ProjectedAddressValue?(value: string | Uint8Array): boolean;
   getFullState(): Promise<{ state: Record<string, StateValue> }>;
+  /**
+   * Ask a pinned raw callee whether this invocation can execute. `executionFailure` is true only for a proven
+   * covenant/require failure: an unsupported probe shape is not evidence that the call reverts.
+   */
+  probeRawCallee?(contract: unknown, functionName: string, args: FunctionArgument[]): Promise<
+    { ok: true } | { ok: false; error: unknown; executionFailure: boolean }
+  >;
 }
 
 export interface ExpandResolveCreateBuilderExternalCallsResult {
@@ -66,6 +79,8 @@ export interface ExpandResolveCreateBuilderExternalCallsResult {
   loopIdxRanges: CreateBuilderLoopIdxRange[];
   resolvedExternalCalls: CreateBuilderResolvedExternalCall[] | undefined;
   callerStateSnapshot: Record<string, StateValue> | undefined;
+  /** Published ABI slots whose raw call co-spends no callee, and whether the call answered `success = false`. */
+  absentCalleeSlots?: ReadonlyMap<number, boolean>;
 }
 
 /**
@@ -152,6 +167,11 @@ export async function expandResolveCreateBuilderExternalCalls(
   let presetResolved: (CreateBuilderResolvedExternalCall | undefined)[] | undefined;
   const loopIdxRanges: CreateBuilderLoopIdxRange[] = [];
   let callerStateSnapshot: Record<string, StateValue> | undefined;
+  // The covenant addresses a raw call's witnesses by its PUBLISHED ABI slot, which is its position in the
+  // artifact's list - not its position after loop expansion.
+  const abiSlotByCall = new Map<ExternalCallAbi, number>();
+  (abiFunction?.externalCalls ?? []).forEach((call, index) => abiSlotByCall.set(call, index));
+  const absentCalleeSlots = new Map<number, boolean>();
 
   // A zero-trip affine loop reaches none of its nested callees. Check each published pre-test before registry
   // lookup or argument evaluation: two loops in one handler may have different argument-array lengths.
@@ -415,6 +435,28 @@ export async function expandResolveCreateBuilderExternalCalls(
         );
       }
       if (!registered) {
+        // A raw low-level call with an EMPTY payload and no deployment at its target is a plain value transfer
+        // to an account. EVM executes no callee and answers `(true, "")`; the covenant already models the
+        // recipient and amount as a transfer output, so state the call without a co-spent participant.
+        const rawArgs = ec.rawArgSources ?? ec.argSources ?? [];
+        const emptyPayload = rawArgs.length === 0
+          || (rawArgs.length === 1 && rawArgs[0].kind === 'literal'
+            && rawArgs[0].type === 'bytes0' && rawArgs[0].value === '');
+        const valueOnlyRawCall = ec.interfaceName === '__raw__'
+          && ec.rawSelector === undefined
+          && emptyPayload
+          && ec.loopArrayVar === undefined;
+        if (valueOnlyRawCall) {
+          const abiSlot = abiSlotByCall.get(ec);
+          if (abiSlot !== undefined) absentCalleeSlots.set(abiSlot, false);
+          autoResolved.push({
+            externalContract: undefined,
+            functionName: ec.functionName,
+            args: [],
+            absentCallee: { fails: false },
+          });
+          continue;
+        }
         // A conditional call whose published target resolves to the zero identity has no callee. A *returning*
         // call there cannot succeed (empty returndata fails the ABI decode), so a successful execution never
         // takes it: drop the callsite the way a proven-false condition is dropped. Failing the whole fan-out
@@ -453,7 +495,21 @@ export async function expandResolveCreateBuilderExternalCalls(
           || (ec.rawSelector !== undefined && candidate.selector?.toLowerCase() === ec.rawSelector.toLowerCase())
         ));
         if (matches.length !== 1) {
-          throw new Error(`Raw external call selector '${ec.rawSelector ?? '<unknown>'}' has no unique pinned callee`);
+          // EVM answers a call to a contract that has no matching function (and no fallback) with
+          // `(false, "")`; the caller's own `require(success)` then decides the outcome. There is no callee
+          // entry to co-spend, so state the slot's negative sentinels and let the caller's covenant speak.
+          const abiSlot = abiSlotByCall.get(ec);
+          if (abiSlot === undefined || ec.loopArrayVar !== undefined) {
+            throw new Error(`Raw external call selector '${ec.rawSelector ?? '<unknown>'}' has no unique pinned callee`);
+          }
+          absentCalleeSlots.set(abiSlot, true);
+          autoResolved.push({
+            externalContract: registered,
+            functionName: ec.functionName,
+            args: [],
+            absentCallee: { fails: true },
+          });
+          continue;
         }
         functionName = matches[0].name;
       }
@@ -497,6 +553,24 @@ export async function expandResolveCreateBuilderExternalCalls(
           + 'that cannot be auto-resolved. Use withExternalCall() to provide args explicitly.',
         );
       }
+      // A raw call does not propagate a callee revert: the caller observes `success = false` and its own
+      // `require` decides the outcome. Prove the invocation on the callee's own covenant now; when it fails,
+      // state the slot as a failed call with no co-spent participant instead of planning a spend that cannot pass.
+      if (ec.interfaceName === '__raw__' && registered !== undefined && resolvedArgs !== undefined
+        && host.probeRawCallee !== undefined) {
+        const probe = await host.probeRawCallee(registered, functionName, resolvedArgs);
+        const abiSlot = abiSlotByCall.get(ec);
+        if (!probe.ok && probe.executionFailure && abiSlot !== undefined && ec.loopArrayVar === undefined) {
+          absentCalleeSlots.set(abiSlot, true);
+          autoResolved.push({
+            externalContract: registered,
+            functionName: ec.functionName,
+            args: [],
+            absentCallee: { fails: true },
+          });
+          continue;
+        }
+      }
       autoResolved.push({
         externalContract: registered,
         functionName,
@@ -504,11 +578,15 @@ export async function expandResolveCreateBuilderExternalCalls(
       });
     }
     if (canAutoResolve && autoResolved.length === externalCalls.length) {
-      const kept = autoResolved.filter((call): call is CreateBuilderResolvedExternalCall => call !== undefined);
+      // An absent raw callee keeps its published ABI slot (the covenant's witness names it) but co-spends no
+      // participant, so it plans like an omitted callsite rather than a group.
+      const participates = (call: CreateBuilderResolvedExternalCall | undefined): call is CreateBuilderResolvedExternalCall =>
+        call !== undefined && call.absentCallee === undefined;
+      const kept = autoResolved.filter(participates);
       if (kept.length !== autoResolved.length) {
-        externalCalls = externalCalls.filter((_call, index) => autoResolved[index] !== undefined);
+        externalCalls = externalCalls.filter((_call, index) => participates(autoResolved[index]));
         if (presetResolved) {
-          presetResolved = presetResolved.filter((_call, index) => autoResolved[index] !== undefined);
+          presetResolved = presetResolved.filter((_call, index) => participates(autoResolved[index]));
         }
       }
       resolvedExternalCalls = kept;
@@ -521,5 +599,6 @@ export async function expandResolveCreateBuilderExternalCalls(
     loopIdxRanges,
     resolvedExternalCalls,
     callerStateSnapshot,
+    ...(absentCalleeSlots.size > 0 ? { absentCalleeSlots } : {}),
   };
 }

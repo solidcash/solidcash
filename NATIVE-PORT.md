@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **102 passed, 90 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **107 passed, 85 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -142,10 +142,10 @@ cases in the earlier split-slot experiment. `mints protocol fees after reserve g
 and `mints proportional liquidity`, `clears kLast when fees are turned off`, `burns liquidity and returns the
 underlying tokens`, `skips the fee mint when the fee amount rounds to zero` and `mints the first liquidity` stay
 green.
-| `Libraries` | 32 / 37 | reverting-callee message translation (2); absent-selector `safeApprove` call (1); ETH value (2) |
+| `Libraries` | 37 / 37 | — |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); one token invoked by `transferFrom` and `balanceOf` in the same transaction; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | the pair created inside the roll transaction; one token invoked by two returning methods; the migrator-style circular `A->B->A` read |
-| **Total** | **102 / 192** | |
+| **Total** | **107 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is order-dependent: it passes in the
 full Pair file in roughly two of three runs and reports `nrt.balanceOf(other) == 0` otherwise (and always under a
@@ -429,3 +429,27 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
 - **Dormant large `bytes` state.** A factory that stores the pair creation code in `bytes` state (the old
   `TestFactory`) makes every spend recreate its chunks; the broadcast VM then fails `OP_VERIFY` even though
   the SDK preflight passed. `TestFactory` now inherits the production factory and stores nothing.
+
+## Raw low-level calls without a callee
+
+A raw `address.call(...)` does not propagate a callee failure: EVM answers `(success, returndata)` and the
+caller's own `require` decides the outcome. Three shapes have no co-spendable callee covenant, and all three are
+now modelled on the caller's frame instead of refused:
+
+- a call to a contract that has no matching function (and no fallback) answers `(false, "")`;
+- a call whose callee covenant would fail answers `(false, "")` (probed on the callee's own covenant with the
+  caller's identity; unsupported probe shapes keep the ordinary co-spend path);
+- a value-only call to a plain account answers `(true, "")` and produces the payment as a transfer output.
+
+The compiler publishes `__internal__extcallMasterIdx<slot>` for every raw opaque call, so the SDK can state an
+absent callee as a negative master index. The callsite binding and the epilogue identity/preservation checks are
+skipped for that sentinel, and `__internal__externalReturnOutputIdx` states the answer: `-1` is `(true, "")` and
+`-2` is `(false, "")`. A return coordinate below `-1` is read by an emitted branch that pushes
+`success = false` and an empty blob, so the caller's `require` raises its own reason (for example
+`TransferHelper: TRANSFER_FAILED`) rather than the callee's.
+
+Regressions: `packages/solidcash/test/e2e/RawCallEmptyReturn.test.ts` adds the absent-selector and
+reverting-callee cases through the shipped planner (deployment registration, no `withExternalCall`), and the
+original TransferHelper block in `Libraries` covers the value-only account case. `Libraries` is 37/37;
+`Factory` 15/15, `ERC20` 14/14, `Pair` 27/36, `Router` 11/74, `SushiRoll` 3/16 are unchanged. The BCH-native
+suite is 28/28 and the original Hardhat suite 192/192.

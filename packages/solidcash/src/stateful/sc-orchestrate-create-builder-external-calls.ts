@@ -401,6 +401,8 @@ export async function orchestrateCreateBuilderExternalCalls(
       isCreate2ProjectedAddressValue: (value) =>
         isCreate2ProjectedAddressValue(host.inner.provider, value),
       getFullState: () => host.getFullState(),
+      probeRawCallee: host.probeRawCallee === undefined
+        ? undefined : (...a: any[]) => host.probeRawCallee!(...a),
     },
     abiFunction,
     args,
@@ -410,6 +412,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     overrides?.returnProbeOnly === true,
   );
   let externalCalls = expandedExternal.externalCalls;
+  const absentCalleeSlots = expandedExternal.absentCalleeSlots;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
     console.error('extcall-expanded', JSON.stringify({
       calls: externalCalls?.length, resolved: expandedExternal.resolvedExternalCalls?.length,
@@ -459,7 +462,10 @@ export async function orchestrateCreateBuilderExternalCalls(
     embeddedFunderUtxos.set(key, utxo);
   };
 
-  if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
+  // A raw call with no co-spent callee still publishes witnesses (its negative sentinels and, for a value
+  // transfer, the transfer's output coordinate), so the witness fill must run even when no group exists.
+  const hasAbsentCalleeSlots = (absentCalleeSlots?.size ?? 0) > 0;
+  if (externalCalls && (externalCalls.length > 0 || hasAbsentCalleeSlots) && resolvedExternalCalls) {
 
     // Count total funders needed across all B blocks and snapshot the signer pool once.
     if (host.signer) {
@@ -1018,6 +1024,7 @@ export async function orchestrateCreateBuilderExternalCalls(
         topLevelAnchorFillPositions,
         topLevelReturnWitnessPlan,
         topLevelReturnWitnessGroups,
+        absentCalleeSlots,
       },
     );
   }

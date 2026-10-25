@@ -962,12 +962,24 @@ needs VM evidence, `rejectedWith` has no source fallback).
 ### Not changed, by decision
 
 - Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), view/static
-  calls in regular mode (kernel alignment). Typed calls binding only the selector, and the held callee-side return
-  binding `ce51b6f18`: superseded by call records (D50), below.
+  calls in regular mode (kernel alignment). Typed calls binding only the selector: superseded by call records (D50),
+  below, for calls whose record digests their arguments; the others are open (below). The held callee-side return
+  binding `ce51b6f18`: superseded by D50.
 - DX-9 in the bus, model B, D48, the opt-in `initializeAs: 'hop'` (SDKFRAMED-2), X1 (D11): user decisions.
 - `unsafe` tiers and an authorized upgrade's new code: by design.
 
 ### Open
+
+- Direct void call arguments (found 2026-10-25, source-traced and compile-checked). A direct entry's typed call to a
+  method that returns nothing binds the callee's lock, master and method (its unlocking's selector) but not the
+  arguments: a void run pins no record, and the caller reads nothing else of the callee's invocation. Under
+  `messageBus: false`, `ISink(c).put(x)`, `put(x + 1)` and `put(7)` compile to one caller bytecode. The direct entries
+  of message-bus artifacts (automatic mode and `messageBus: true`) are the same: only the bus route's emission binds
+  the arguments, and the SDK sends a single call through the direct entry. A spender can therefore run the callee's
+  method on other arguments beside a genuine caller run, for example sending a permissionless caller's
+  `deposit{value: v}(id)` to another `id`. Framed records and bus rows bind them. Fix in progress: the caller checks
+  the callee's unlocking pushes for the arguments it names, as D8 does for a compat raw call (callers only; a void
+  record in every void entry would cost about 150-200 B on a contract without returning entries).
 
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot

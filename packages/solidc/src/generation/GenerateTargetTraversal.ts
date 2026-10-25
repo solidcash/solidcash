@@ -48316,6 +48316,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * (a frame group, looped or not, a readonly alias, a batch row) share their callee's input.
    */
   private emitDistinctCalleeInputs(locationData: SingleLocationData): void {
+    // A message-bus route's calls are rows its manifest binds one by one.
+    if (this.isCompilerMessageBusRoute()) return;
     const index = (slot: ExternalCallSlot): string => `__internal__extcallMasterIdx${slot.slotIndex}`;
     const target = (slot: ExternalCallSlot): string | undefined => (slot.addressParam ? `param:${slot.addressParam}`
       : slot.addressStateVar ? `state:${slot.addressStateVar}`
@@ -48348,6 +48350,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * input too, and one run would serve both calls: the loop's inputs must stay below it.
    */
   private loopCalleeRegionEnd(slot: ExternalCallSlot): number | undefined {
+    if (this.isCompilerMessageBusRoute()) return undefined;
     const later = this.externalCallSlots.filter((other) => other !== slot && other.computedOffset > slot.computedOffset
       && !other.sourceCallNode?.rawValueTransferOnly).map((other) => other.computedOffset);
     return later.length > 0 ? Math.min(...later) : undefined;

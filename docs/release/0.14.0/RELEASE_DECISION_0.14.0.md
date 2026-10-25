@@ -408,7 +408,8 @@ marketplace fixtures' direct entries, so the pins moved:
 Measured from a clean build at `4f7fea498`, where the fixture sources are untouched. Handler counts, conventions and
 the marketplace route hashes are unchanged. The claim route grows 5 bytes and its hash moves without a new operation:
 the bytecode outliner splits one shared helper, five `OP_0 <33> OP_NUM2BIN OP_CAT` blocks, into two that run the same
-five blocks.
+five blocks. Its route-size screen in the kernel manifest moves with it (1068 -> 1073 bytes, still under the
+10,000-byte limit alone).
 
 ### What closed the 2026-10-17 failures
 

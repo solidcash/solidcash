@@ -237,7 +237,10 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   - The loop-declared counter is no longer treated as a fixed alias by `SynthesizeExternalAddressLocals`,
     which had hoisted the `pairFor(factory, path[i], path[i+1])` target to the body top and evaluated it
     (with `i` frozen at its initializer) before the deadline `require`.
-  The entry-time alt-stack anchor remains reverted; the loop-index threading replaces it. Measured effect:
+  The entry-time alt-stack anchor is part of the scheme: an outlined body captures the hidden slot at its own
+  entry (where its depth is exact), `emitKeccakComputeCall` reads that copy non-destructively per batch, and
+  the epilogue restores the alt stack. The earlier standalone anchor experiment failed only because the
+  resolver still gave the batch its own side-car per read. Measured effect:
   Router 6/74 → 11/74 and Libraries 21/37 → 23/37. Regressions: `KeccakResultNft.test.ts` ("groups a batched
   helper body by side-car and keeps each call's member", "reads a dynamic-loop call by its side-car index").
 - **A computed external target's ABI return inside a dynamic loop.** `UniswapV2Library.getAmountsOut` calls

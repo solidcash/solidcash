@@ -2653,6 +2653,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * a batch hands it, or standalone its own records' commitments. Its state reads and writes go through them.
    */
   private callBatchRecordViews: boolean = false;
+  /** Per data record, the control paths (openControlPath) of the body's decodes of its input, which verify its tag. */
+  private recordInputDecodePaths = new Map<number, string[][]>();
   /** The selector dispatcher hands each entry it invokes its call record's prefix (CALL_RECORD_PREFIX). */
   private dispatchHandsCallPrefix: boolean = false;
   /** The dispatched entry this body traversal compiles, which finds its call record's prefix on top. */
@@ -9050,6 +9052,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // index (its length) accumulates across passes and the second pass reads a nonexistent block slot (2*i overflow).
     if (node.ecrecoverCompute) { node.ecrecoverArgParams = []; node.ecrecoverEvmFlags = []; }
     this.pendingStateWrites = new Map();
+    this.recordInputDecodePaths = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
     this.framedCallsMadeActive = false;
@@ -34122,6 +34125,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       firstField = false;
     }
+    this.emitRebuiltRecordInputTag(nftIdx, offset, loc);
     this.emitDataNftOutputCommitment(offset, loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_EQUALVERIFY, loc);
@@ -36265,6 +36269,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.popFromStack(2);
           this.pushToStack('(value)');
         }
+        this.emitRebuiltRecordInputTag(nftIdx, compactOffset, locationData);
 
         if (this.callBatchRecordViews) {
           // A frame's rebuilt record becomes its view; the run settles the views once its writes are all made.
@@ -42505,6 +42510,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return field.isDynamic ? new IntType(false, 32) : field.type;
   }
 
+  /**
+   * The IF arms and loops open at the end of the output, outermost first. Code emitted under a path that prefixes
+   * another's runs on every run that reaches the other.
+   */
+  private openControlPath(): string[] {
+    const path: string[] = [];
+    this.output.forEach((element, index) => {
+      if (element === Op.OP_IF || element === Op.OP_NOTIF || element === Op.OP_BEGIN) path.push(`${index}`);
+      else if (element === Op.OP_ELSE) path.push(`${path.pop()}'`);
+      else if (element === Op.OP_ENDIF || element === Op.OP_UNTIL) path.pop();
+    });
+    return path;
+  }
+
+  /** A tagged layout with sibling records: they share one lock and category, and only the tag tells them apart. */
+  private recordsTellApartByTag(): boolean {
+    return this.dataNftCount > 1 && this.hasDataNftIndexTags();
+  }
+
+  /** Notes a decode of record `nftIndex`'s input (a frame's view of it), which verifies its tag, where it runs. */
+  private noteRecordInputDecode(nftIndex: number): void {
+    if (!this.recordsTellApartByTag()) return;
+    const paths = this.recordInputDecodePaths.get(nftIndex) ?? [];
+    if (paths.some((path) => path.length === 0)) return;
+    paths.push(this.openControlPath());
+    this.recordInputDecodePaths.set(nftIndex, paths);
+  }
+
+  /**
+   * Holds the input a rebuilt record replaces (a frame's view of it) to the record's tag, unless a decode of its
+   * fields on every path to here verified it: otherwise a sibling record laid there would be consumed and re-created
+   * as a second copy of this one. Stack neutral.
+   */
+  private emitRebuiltRecordInputTag(nftIdx: number, compactOffset: number, loc: SingleLocationData): void {
+    if (!this.recordsTellApartByTag()) return;
+    const here = this.openControlPath();
+    const decoded = this.recordInputDecodePaths.get(nftIdx) ?? [];
+    if (decoded.some((path) => path.length <= here.length && path.every((frame, index) => frame === here[index]))) {
+      return;
+    }
+    if (this.callBatchRecordViews) {
+      this.emitPickAt(this.getStackIndex(this.callBatchRecordView(nftIdx)), loc);
+    } else {
+      if (this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase()) this.emitMasterInputIndex(loc);
+      else this.emitRecordBlockBase('in', loc);
+      this.emit(encodeInt(BigInt(compactOffset)), loc);
+      this.emit(Op.OP_ADD, loc);
+      // A framed frame's declared views chain from this spent input, and every rewrite keeps the tag it verified.
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    }
+    const tag = encodeNftIndexTag(nftIdx);
+    this.emit(encodeInt(BigInt(tag.length)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(tag, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.recordInputDecodePaths.set(nftIdx, [...decoded, here]);
+  }
+
   /** Decode one physical data-NFT field of the record's commitment: its view in a frame, else its input's. */
   private emitStateFieldRead(
     sv: StateVariableNode,
@@ -42514,6 +42578,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     extraStackOffset = 0,
     side: RecordSide = 'in',
   ): void {
+    if (side === 'in') this.noteRecordInputDecode(sv.nftIndex);
     if (this.callBatchRecordViews && side === 'in') {
       this.emitPickAt(this.getStackIndex(this.callBatchRecordView(sv.nftIndex)) + extraStackOffset, loc);
       this.emitStateFieldDecode(sv, targetType, fieldsInNft, loc);

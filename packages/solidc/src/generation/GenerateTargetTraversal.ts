@@ -48283,6 +48283,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    this.emitDistinctCalleeInputs(locationData);
+
     // Drop the msg.sender temp (each slot's verification is stack-neutral, so it is back on top here).
     if (msgSenderTemp) {
       this.emit(Op.OP_DROP, locationData);
@@ -48304,6 +48306,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // identity was checked above. They are now dead and must not widen the function's final stack frame.
     for (const stackName of this.externalCallReceiverStateWrites(node)) {
       this.emitDropSettlementValue(stackName, locationData, node);
+    }
+  }
+
+  /**
+   * Requires calls on different targets to name different callee inputs once both run (an untaken call's index is
+   * -1). Each call's input index is a witness its identity check binds to its own target only, so with `a == b`
+   * `IVault(a).deposit(x)` and `IVault(b).deposit(x)` could both accept one run of that callee. Calls on one target
+   * (a frame group, a readonly alias, a batch row) share their callee's input.
+   */
+  private emitDistinctCalleeInputs(locationData: SingleLocationData): void {
+    const index = (slot: ExternalCallSlot): string => `__internal__extcallMasterIdx${slot.slotIndex}`;
+    const target = (slot: ExternalCallSlot): string | undefined => (slot.addressParam ? `param:${slot.addressParam}`
+      : slot.addressStateVar ? `state:${slot.addressStateVar}`
+        : slot.addressLiteral ? `literal:${slot.addressLiteral}` : undefined);
+    const claims = this.externalCallSlots.filter((slot) => !slot.inlineLoopDispatch && !slot.loopArrayVar
+      && !this.isExternalCallSlotLoopNested(slot) && this.getStackIndex(index(slot), true) >= 0);
+    for (const [at, left] of claims.entries()) {
+      for (const right of claims.slice(at + 1)) {
+        if (target(left) !== undefined && target(left) === target(right)) continue;
+        this.emitPickTrackedFromBottom(index(left), locationData);
+        this.emitPickTrackedFromBottom(index(right), locationData);
+        this.emit(Op.OP_2DUP, locationData);
+        this.emit(Op.OP_NUMNOTEQUAL, locationData);              // [l, r, l != r]
+        this.emit(Op.OP_ROT, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_LESSTHAN, locationData);
+        this.emit(Op.OP_BOOLOR, locationData);                   // [r, l != r || l < 0]
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_LESSTHAN, locationData);
+        this.emit(Op.OP_BOOLOR, locationData);
+        this.emit(Op.OP_VERIFY, locationData);
+      }
     }
   }
 
@@ -49277,7 +49312,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private liveCallOrdinalCounter(slot: ExternalCallSlot): string | undefined {
     if (slot.callOrdinal === undefined || !('counted' in slot.callOrdinal)) return undefined;
     const counter = this.callOrdinalCounterName(slot.callOrdinal.group);
-    return this.getStackIndex(counter, true) >= 0 ? counter : undefined;
+    // Without its counter a counted call would digest ordinal 0 and skip the checks a loop makes inline.
+    if (this.getStackIndex(counter, true) < 0) {
+      throw new Error(`Counted call ${slot.interfaceName}.${slot.functionName} has no ordinal counter in scope`);
+    }
+    return counter;
   }
 
   /** Advances a counted call's counter once the call has read its record: the group's next call takes the next. */

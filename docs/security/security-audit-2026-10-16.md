@@ -995,6 +995,17 @@ needs VM evidence, `rejectedWith` has no source fallback).
   read `after` from the frame before the write and the stale value was accepted. `1f6aa9bb1` ends the run of reads
   sharing a record at each call that may write. No other view-call test source changes bytes. Test:
   `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts` (k).
+- **Loop targets the contract fixes** (found 2026-10-25 reviewing the view witnesses of R11; accepted on master at the
+  VM). A loop's per-iteration callee is read from a caller-supplied witness. For a loop-local receiver
+  (`IPair p = IPair(ps[i])`), a computed target and R11's multi-use view witnesses, the compiler replaced the target
+  with that witness whenever the receiver indexed a loop array, so a target the contract fixes (a local array of
+  constructor addresses, a state array, a mapping or another contract's result) was the spender's choice: a spend
+  through callees the spender picked was accepted at the caller's input, and R11 dropped such callees altogether,
+  leaving their view results to the spender. `b6c2e106d` lets a witness stand for a target only when its
+  per-iteration part reads elements of the function's parameters, the caller's choice (Router02's
+  `pairFor(factory, path[i], path[i + 1])`); otherwise the witness must equal the value computed on chain, and a
+  multi-use receiver runs its views as calls (a direct compile refuses two calls on one such callee). No test source
+  changes bytes. Test: `LoopTargetProvenance.test.ts`.
 
 ### Not changed, by decision
 
@@ -1018,7 +1029,10 @@ needs VM evidence, `rejectedWith` has no source fallback).
   fallback runs where a short first push meets a multi-function callee, while the caller's selector check skips such a
   push; with the anchor witness `>= 0` the selector compared is a witness. A void record pinned by the callee
   (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract without returning
-  entries.
+  entries. A void call in a loop over per-iteration targets (array elements, computed targets) binds neither its
+  arguments nor its method: MD1 bakes the compile-time selector only outside loops, and in a loop the selector is a
+  witness the co-spent unlocking must repeat. The SDK fills a proxy's route selector there, so baking it would refuse
+  loop calls into proxies; a returning call in such a loop is bound by its record's digest.
 
 - One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
   selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
@@ -1074,7 +1088,8 @@ Design: `docs/wip/call-records/DESIGN.md`.
 - An opaque read (`call`, Multicall-style loops) checks no digest, as its payload is opaque: its result is bound by
   the exact count and by D8's argument binding. A Multicall over arbitrary non-SolidCash targets stays
   caller-permissive (`loop-call.ts`).
-- R11's view witnesses in a loop stay caller-permissive, as before.
+- R11's view witnesses in a loop stay caller-permissive for a callee the caller chooses (an element of a
+  parameter); a callee the contract fixes runs its views as calls (`b6c2e106d`).
 - A callee spent once runs one call. A fixed callee repeated in a loop is refused by the direct builder; two calls with
   different arguments to one callee fail the count on a direct path. Both run through the atomic composer (message
   bus), which binds each row. Two master threads of one callee in one transaction are refused by the count.

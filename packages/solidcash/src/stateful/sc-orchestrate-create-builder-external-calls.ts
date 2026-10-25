@@ -22,7 +22,7 @@ import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { ensureOrdinarySelfIdentityBand } from './ordinary-self-identity.js';
-import { findDeploymentByAddressValue } from './deployment-registry.js';
+import { findDeploymentByAddressValue, isCreate2ProjectedAddressValue } from './deployment-registry.js';
 import {
   deriveValueChunkProducerChildPath,
   type ValueChunkProducerPathDisposition,
@@ -265,6 +265,8 @@ export async function orchestrateCreateBuilderExternalCalls(
       getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
       getExternalDeploymentByAddressValue: (value) =>
         findDeploymentByAddressValue(host.inner.provider, value)?.contract,
+      isCreate2ProjectedAddressValue: (value) =>
+        isCreate2ProjectedAddressValue(host.inner.provider, value),
       getFullState: () => host.getFullState(),
     },
     abiFunction,

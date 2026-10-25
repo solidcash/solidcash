@@ -55,6 +55,8 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
   ): Promise<Record<string, unknown>>;
   getExternalRegistryEntry(interfaceName: string): unknown | undefined;
   getExternalDeploymentByAddressValue(value: string | Uint8Array): unknown | undefined;
+  /** True when the value reaches its deployment only through the child's off-chain CREATE2 projection. */
+  isCreate2ProjectedAddressValue?(value: string | Uint8Array): boolean;
   getFullState(): Promise<{ state: Record<string, StateValue> }>;
 }
 
@@ -397,6 +399,21 @@ export async function expandResolveCreateBuilderExternalCalls(
       }
       const registered = pinned ?? registeredAtAddress
         ?? (hasPublishedTarget ? undefined : host.getExternalRegistryEntry(ec.interfaceName));
+      if (registered && hasPublishedTarget
+        && (typeof address === 'string' || address instanceof Uint8Array)
+        && host.isCreate2ProjectedAddressValue?.(address) === true) {
+        // A CREATE2 address is an EVM init-code hash, not a BCH lock identity. No locking bytecode hashes to
+        // it and an SCID anchor cannot carry it (the anchor must be spendable), so the caller's on-chain
+        // identity check can never pass. Report the limit here instead of assembling a doomed transaction.
+        const projected = typeof address === 'string'
+          ? address : [...address].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        throw new Error(
+          `External call to ${ec.interfaceName}.${ec.functionName} targets CREATE2 identity '${projected}', `
+          + 'which no Bitcoin Cash locking bytecode commits to. The caller covenant authenticates a callee '
+          + 'by its lock-derived identity or a co-spent SCID identity anchor, and neither can name a CREATE2 '
+          + 'address; address the callee through a lock-derived value instead.',
+        );
+      }
       if (!registered) {
         // A conditional call whose published target resolves to the zero identity has no callee. A *returning*
         // call there cannot succeed (empty returndata fails the ABI decode), so a successful execution never

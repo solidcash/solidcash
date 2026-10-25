@@ -1346,4 +1346,32 @@ describe('conditional external-call topology', () => {
     expect(resolveAt(0)).toEqual(['test']);
     expect(resolveAt(2)).toEqual(['test']);
   });
+
+  it('refuses a callee that only an off-chain CREATE2 projection names', async () => {
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
+    const fn = {
+      name: 'run', inputs: [{ name: 'pair', type: 'address' }], externalCalls: [{
+        interfaceName: 'IUniswapV2Pair', functionName: 'getReserves', requiredDataNftIndices: [],
+        addressSource: { kind: 'expression', expression: source(0) },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const host = {
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => undefined,
+      getExternalDeploymentByAddressValue: () => callee,
+      isCreate2ProjectedAddressValue: () => true,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    };
+
+    await expect(expandResolveCreateBuilderExternalCalls(
+      host, fn, [Uint8Array.from({ length: 20 }, (_unused, index) => index + 1)], artifact,
+      undefined, undefined,
+    )).rejects.toThrow(/CREATE2 identity/);
+  });
 });

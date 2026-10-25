@@ -120,7 +120,7 @@ Result: **107 passed, 85 failed (192 total)**. See the per-suite table under "Or
 ## Original EVM suite parity
 
 `.parity-project` compiles the original SushiSwap V2 contracts and runs the original six test files under
-SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
+SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`: 107 passed, 85 failed of 192):
 
 | Suite | Passing / Total | Remaining blocker |
 |---|---|---|
@@ -448,6 +448,18 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   projection, then refuses the call with a named error (identity, and the on-chain requirement) instead of
   assembling a transaction that fails `OP_VERIFY`. This is the shared limit behind the `getReserves`/
   `getAmounts*` cases, the Router pair targets and the SushiRoll pair targets.
+- **The pair's writers cannot join a route, so a Router transaction cannot co-spend one pair twice.** The
+  Router's `addLiquidity` calls `IUniswapV2Pair.getReserves` (view) and then `IUniswapV2Pair.mint`, both
+  returning, on one pair master. The direct convention refuses two returning methods on one state owner
+  ("Direct external calls to getReserves and mint share one state owner but both return values"). A route is
+  the documented way out, and `getReserves` is routable, but `mint` is refused as
+  `conditional-scalar-collection-event-settlement`: the fee-mint arm writes `totalSupply` (a scalar) beside
+  `balanceOf` rows and a `Transfer` event, and the kernel journal has no row-local settlement identity for
+  that scalar. `burn` is refused because the `Burn` event is wider than one commitment, and `swap` because
+  its effect set shrinks the route. `removeLiquidity` (burn) and every token swap hit the same two refusals.
+  A pre-created pair does not change this: the manual two-step still fails at the same direct-call refusal.
+  The Router's route (which now admits `addLiquidity`, `factory`, `quote` and the amount getters) is a
+  prerequisite but cannot substitute for a routable pair writer.
 - **A contract cannot call itself in one transaction.** The pair's `migrator.desiredLiquidity()` and the flash
   callback's reentrant `mint`/`burn`/`swap`/`skim`/`sync` target the primary contract, whose master UTXO is
   already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not

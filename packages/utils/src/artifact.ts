@@ -1248,6 +1248,12 @@ export interface EntryAccessAbi {
   operations: readonly string[];
   /** Compiler-authored mutation identities; not a control-flow reachability or terminality proof. */
   mutationEffectOrdinals?: readonly number[];
+  /**
+   * A merged entry's other write sites: a runtime key and the (decidable) condition it runs under, both in the
+   * SDK's key-label language (`producer:<callsite>:<result>`, `state:`, `call:sqrt`, `binop:`). The SDK uses the
+   * alternative key when its activation evaluates true; otherwise the primary `keyParams` key applies.
+   */
+  alternatives?: readonly { key: string; activation?: string }[];
   /** Compiler proof that this entry stores a dynamic-array value in authenticated continuation chunks. */
   chunkableArrayValue?: true;
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).

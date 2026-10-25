@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **101 passed, 91 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **102 passed, 90 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -126,30 +126,32 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 |---|---|---|
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
-| `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
+| `UniswapV2Pair` | 27 / 36 | flash/reentrancy circular calls (6); migrator circular call (3) |
 
-The protocol-fee lane's root cause is in entry-key classification. `_mintFee` writes `balanceOf[_feeTo]`, where
-`_feeTo` is a local declared `address(0)` and reassigned from `factory.feeToAndMigrator()`. Key collection keeps
-the declaration initializer, so that write's canonical key is `cast:address(lit:0)` and it merges with the
-first-mint `balanceOf[address(0)]` write into one entry slot. The SDK therefore publishes
-`vmapBatchSlot_1 = H(20 zero bytes)` while the covenant's fee-site emission hashes the runtime recipient
-(`H(47d9fe…)` in the test) and the batch key check fails at input 0. Publishing the tuple-result producer key
-splits the slot correctly (3 entries) and the key check passes, but the extra conditional target then exposes
-three separate gaps: the direct multi-target batch refuses the `-2` inactive sentinel, its output census counts
-read-only targets naively, and the SDK's event/external-return output geometry shifts when both conditional
-lanes are read-only. An attempted fix (producer key + decidable activation recipes + read-only lanes + duplicate
-census subtraction) made this test pass but regressed `mints proportional liquidity`, `clears kLast when fees are
-turned off` and `burns liquidity and returns the underlying tokens`, so it was reverted. The next step is to
-publish the producer key plus a runtime key/value alternative on the merged slot (or allocate conditional write
-flags for direct multi-slot batches) rather than splitting the slot.
+The protocol-fee lane now passes. `_mintFee` writes `balanceOf[_feeTo]`, where `_feeTo` is a local declared
+`address(0)` and reassigned from `factory.feeToAndMigrator()`. Key collection keeps the declaration initializer,
+so that write's canonical key is `cast:address(lit:0)` and it merges with the first-mint
+`balanceOf[address(0)]` write into one entry slot. The compiler now keeps that merged slot and publishes the fee
+site's producer key as an **alternative** on the entry: `{ key: 'producer:2:0', activation: … }`. The activation is
+a decidable recipe over frame facts, `feeTo != 0 && kLast != 0 && sqrt(reserve0·reserve1) > sqrt(kLast) &&
+totalSupply·(rootK − rootKLast) / (rootK·5 + rootKLast) > 0`. The SDK evaluates it with the authenticated external
+return for `producer:2:0`; when it holds, the alternative key replaces the literal key, otherwise the primary
+`cast:address(lit:0)` key applies. The entry's value stays trace-derived, so the census and event geometry are
+unchanged. The producer key is not added as a separate key param, which is what regressed the three mint/burn/kLast
+cases in the earlier split-slot experiment. `mints protocol fees after reserve growth when feeTo is set` passes,
+and `mints proportional liquidity`, `clears kLast when fees are turned off`, `burns liquidity and returns the
+underlying tokens`, `skips the fee mint when the fee amount rounds to zero` and `mints the first liquidity` stay
+green.
 | `Libraries` | 32 / 37 | reverting-callee message translation (2); absent-selector `safeApprove` call (1); ETH value (2) |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); factory `getPair` probe return carrier; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
-| **Total** | **101 / 192** | |
+| **Total** | **102 / 192** | |
 
-`UniswapV2Pair > swap > accepts tokens that return no data on transfer` is occasionally order-dependent in a
-narrow run (a `-t` filter or a whole-project run can report `nrt.balanceOf(other) == 0`); it passes in the full
-Pair file, so the per-suite table above is the reproducible count.
+`UniswapV2Pair > swap > accepts tokens that return no data on transfer` is order-dependent: it passes in the
+full Pair file in roughly two of three runs and reports `nrt.balanceOf(other) == 0` otherwise (and always under a
+`-t` filter). The 27/36 count above is the passing order; the whole-project run reports 101/192 when this case
+falls in its failing order. The case is not related to the merged-slot alternative: the no-data token artifact has
+no alternatives.
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
@@ -175,8 +177,14 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - The mock provider auto-mines a transaction at the block-oracle timestamp instead of tip+1, so
   `block.timestamp` inside the covenant equals the block the receipt reports (price accumulators).
 - The compiler records a mapping key that is a tuple component of another call's return as a `producer` key
-  source; the SDK resolves the producer's authenticated value before hashing the slot. This is the groundwork
-  for the protocol-fee recipient entry, which still needs an inactive-lane batch path when the fee is zero.
+  source; the SDK resolves the producer's authenticated value before hashing the slot.
+- A merged fixed entry can publish `alternatives: [{ key, activation? }]`. The compiler derives the alternative
+  from the other write sites' key labels and the branch guards each site runs under; the SDK evaluates the
+  activation with `evalComputedKey` and uses the alternative key when it holds. The key label language gained
+  `producer:<callsite>:<result>`, `call:sqrt/min/max`, division, modulo and address-versus-zero equality for this.
+  This resolves the protocol-fee recipient entry without splitting the slot. Focused regressions:
+  `packages/solidc/test/MergedEntryKeyAlternative.test.ts` and
+  `packages/solidcash/test/unit/EntryKeyAlternativeActivation.test.ts`.
 - A failing outlined library body is attributed from the trace's executed instructions even when the failing
   step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.
 - A keccak256 call inside an outlined free function (an imported `internal` library helper such as

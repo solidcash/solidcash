@@ -46,6 +46,7 @@ import {
   hash160 as hash160Sync,
   hash256 as hash256Sync,
   parseArrayTypeString,
+  addressToGraphEmissionBytes,
   type FixedBchTransferAbi,
   
   peekPushdataEncodedLength,
@@ -2094,6 +2095,19 @@ export function selectAuthenticatedPreValueWitness(
   return authenticatedCollectionValueSelector(valueType, structs)(items, storedRoots, storedRoots);
 }
 
+/** Floor integer square root, matching the Solidity helper's result for a non-negative input. */
+function integerSqrt(value: bigint): bigint | undefined {
+  if (value < 0n) return undefined;
+  if (value < 2n) return value;
+  let current = value;
+  let next = (current + 1n) / 2n;
+  while (next < current) {
+    current = next;
+    next = (current + value / current) / 2n;
+  }
+  return current;
+}
+
 export function evalComputedKey(
   label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string; type?: string }[],
   state?: Readonly<Record<string, StateValue>>,
@@ -2101,6 +2115,8 @@ export function evalComputedKey(
   mappingValue?: (collection: string, key: unknown) => StateValue | undefined,
   /** The calling covenant's own physical lock, for keys spelled `address(this)`. */
   selfLockingBytecode?: Uint8Array,
+  /** Authenticated external-call results, for `producer:<callsite>:<result>` labels. */
+  producerValues?: ReadonlyMap<string, Uint8Array>,
 ): Uint8Array | undefined {
   if (!label) return undefined;
   const encode = (value: unknown): Uint8Array | undefined => {
@@ -2121,6 +2137,8 @@ export function evalComputedKey(
     return undefined;
   };
   const evalValue = (s: string): unknown => {
+    const produced = s.match(/^producer:(-?\d+):(\d+)$/);
+    if (produced) return producerValues?.get(`${produced[1]}:${produced[2]}`);
     let m = s.match(/^id:(.+)$/);
     if (m) {
       const idx = inputs.findIndex((i) => i.name === m![1]);
@@ -2247,16 +2265,26 @@ export function evalComputedKey(
       const right = evalValue(pair[1]);
       if (left === undefined || right === undefined) return undefined;
       if (m[1] === '==' || m[1] === '!=') {
+        // A native address key can reach a comparison as its 20-byte identity (`producer`, ABI bytes) or as the
+        // numeric zero of `address(0)`. Both name the same address only when every byte is zero.
+        const zeroAddress = (value: unknown): boolean => value instanceof Uint8Array
+          && [0, 20, 32].includes(value.length) && value.every((byte) => byte === 0);
         const equal = left instanceof Uint8Array && right instanceof Uint8Array
           ? binsAreEqual(left, right)
-          : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
-            ? left === right : undefined;
+          : left instanceof Uint8Array && (typeof right === 'bigint' || typeof right === 'number')
+            ? zeroAddress(left) && BigInt(right) === 0n
+            : right instanceof Uint8Array && (typeof left === 'bigint' || typeof left === 'number')
+              ? zeroAddress(right) && BigInt(left) === 0n
+              : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
+                ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
       }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
       if (m[1] === '-') return left - right;
       if (m[1] === '*') return left * right;
+      if (m[1] === '/') return right === 0n ? undefined : left / right;
+      if (m[1] === '%') return right === 0n ? undefined : left % right;
       if (m[1] === '<') return left < right;
       if (m[1] === '<=') return left <= right;
       if (m[1] === '>') return left > right;
@@ -2276,6 +2304,19 @@ export function evalComputedKey(
     }
     m = s.match(/^call:(\w+)\((.*)\)$/);
     if (m) {
+      if (m[1] === 'sqrt' || m[1] === 'min' || m[1] === 'max') {
+        const parts = m[1] === 'sqrt' ? [m[2]] : splitTopLevel(m[2]);
+        if (parts === undefined || (m[1] !== 'sqrt' && !parts[1])) return undefined;
+        const numbers = parts.map((part) => {
+          const value = evalValue(part);
+          return typeof value === 'bigint' ? value : typeof value === 'number' ? BigInt(value) : undefined;
+        });
+        if (numbers.some((value) => value === undefined)) return undefined;
+        if (m[1] === 'sqrt') return integerSqrt(numbers[0]!);
+        return m[1] === 'min'
+          ? (numbers[0]! < numbers[1]! ? numbers[0]! : numbers[1]!)
+          : (numbers[0]! > numbers[1]! ? numbers[0]! : numbers[1]!);
+      }
       const inner = encode(evalValue(m[2]));
       if (!inner) return undefined;
       switch (m[1]) {
@@ -7448,6 +7489,44 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         overrides = { ...(overrides ?? {}), entryKeyOverrides: merged };
       }
 
+      // A merged entry publishes alternative runtime keys with a decidable activation
+      // (`balanceOf[_feeTo]` alongside the locked `balanceOf[address(0)]`). Resolve every producer the
+      // alternatives mention once, as the 20-byte identity the covenant hashes.
+      const alternativeProducerValues = new Map<string, Uint8Array>();
+      {
+        const producers = new Map<string, { callsiteId: number; resultIndex: number }>();
+        for (const access of entryAccesses ?? []) {
+          for (const alternative of access.alternatives ?? []) {
+            for (const label of [alternative.activation, alternative.key]) {
+              for (const match of (label ?? '').matchAll(/producer:(-?\d+):(\d+)/g)) {
+                const callsiteId = Number(match[1]);
+                const resultIndex = Number(match[2]);
+                if (Number.isSafeInteger(callsiteId) && callsiteId >= 0 && Number.isSafeInteger(resultIndex)) {
+                  producers.set(`${callsiteId}:${resultIndex}`, { callsiteId, resultIndex });
+                }
+              }
+            }
+          }
+        }
+        for (const [key, producer] of producers) {
+          const expression = { kind: 'producerResult', callsiteId: producer.callsiteId, resultIndex: producer.resultIndex };
+          try {
+            const returns = await this._resolveExternalExpressionReturns(
+              [{ kind: 'expression', expression } as any], entryArgs, this as any, onChainState.state,
+              entryAbiFunction?.inputs, executionSelfAddress, entryAbiFunction?.externalCalls,
+            );
+            const value = returns.get(JSON.stringify(expression));
+            const encoded = value instanceof Uint8Array ? value
+              : typeof value === 'string' ? (value.includes(':') ? addressToLockScript(value) : hexToBin(value)) : undefined;
+            if (encoded !== undefined) {
+              alternativeProducerValues.set(key, addressToGraphEmissionBytes(encoded).slice(12));
+            }
+          } catch {
+            // Unresolved: the alternative stays unused and the primary key applies.
+          }
+        }
+      }
+
       // P5b value witnesses (__internal__valueWitness_N), collected in entryAccesses (slotIndex) order to match
       // the SymbolTable param injection; appended to finalArgs after this loop (between blockhash and iteration).
       // Each witness is recorded under its entry-slot ordinal, which is the physical route slot for an aggregate
@@ -7626,6 +7705,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }));
                 }
                 return addressToLockScript(senderSigner.getAddress());
+              }
+              // A merged entry publishes its other write site's runtime key with a decidable activation
+              // (`balanceOf[_feeTo]` next to the locked `balanceOf[address(0)]`). When that site ran, its key is
+              // the one the covenant hashes; otherwise the primary key below applies.
+              for (const alternative of access.alternatives ?? []) {
+                if (alternative.activation === undefined) continue;
+                const active = evalComputedKey(
+                  alternative.activation, entryArgs, entryAbiFunction!.inputs,
+                  onChainState.state, undefined, undefined, undefined, alternativeProducerValues);
+                // A boolean true encodes as the one-byte VM number 1; false/undefined leave the primary key.
+                if (active === undefined || active.length !== 1 || active[0] !== 1) continue;
+                const alternativeKey = evalComputedKey(
+                  alternative.key, entryArgs, entryAbiFunction!.inputs,
+                  onChainState.state, undefined,
+                  (name, key) => mappingKeyValue(name, key),
+                  hexToBin(publicSelfIdentity.lockingBytecode), alternativeProducerValues);
+                if (alternativeKey !== undefined) return alternativeKey;
               }
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
               const auto = evalComputedKey(

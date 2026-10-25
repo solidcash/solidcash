@@ -12,6 +12,7 @@ import {
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { version } from '../version.js';
+import { directWriteAlternative } from '../framed/master/write-activation.js';
 import {
   type Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
@@ -2840,6 +2841,7 @@ function argumentFieldUpdatesOf(func: FunctionDefinitionNode): AbiFunction['argu
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
+  constants: ReadonlyMap<string, ExpressionNode> = new Map(),
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract, compilerOptions);
   const dynamicWriteGrowth = dynamicWriteGrowthOf(func, contract, compilerOptions);
@@ -3784,6 +3786,17 @@ function buildFunctionAbiMetadata(
         slotIndex: ea.slotIndex,
         collection: ea.collection,
         keyParams: ea.keyParams,
+        // A merged entry can have several write sites with different runtime keys (`balanceOf[_feeTo]` and the
+        // locked `balanceOf[address(0)]`). Publish each site whose key differs from the primary key so the SDK can
+        // switch to it when that site's decidable activation holds.
+        ...(ea.operations.includes('write') && (ea.mutationEffectOrdinals?.length ?? 0) > 1 && (() => {
+          const alternatives = (ea.mutationEffectOrdinals ?? [])
+            .map((ordinal) => directWriteAlternative(func, ordinal, constants, ea.keyParams))
+            .filter((alternative): alternative is NonNullable<typeof alternative> => alternative !== undefined)
+            .filter((alternative, index, all) =>
+              all.findIndex((candidate) => candidate.key === alternative.key) === index);
+          return alternatives.length > 0 ? { alternatives } : {};
+        })()),
         ...(ea.keySources && (ea.keySources.some((ks) => ks.kind !== 'param')
           || ea.keyParams.some((name) => /_sender(?:_|$)/.test(name))) && {
           keySources: ea.keySources.map((ks, index) => {
@@ -4435,7 +4448,8 @@ export function generateArtifact(
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
     ...(func.nativeSelfBatchDispatcher && { nativeSelfBatchDispatcher: true }),
-    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions, compilerOptions),
+    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions, compilerOptions,
+      new Map(ast.constantDefinitions.map((constant) => [constant.name, constant.expression]))),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));

@@ -132,6 +132,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
 | **Total** | **85 / 192** | |
 
+`UniswapV2Pair > swap > accepts tokens that return no data on transfer` is occasionally order-dependent in a
+narrow run (a `-t` filter or a whole-project run can report `nrt.balanceOf(other) == 0`); it passes in the full
+Pair file, so the per-suite table above is the reproducible count.
+
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
 ### Parity fixes in the compiler/SDK

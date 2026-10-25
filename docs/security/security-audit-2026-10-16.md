@@ -1015,6 +1015,21 @@ needs VM evidence, `rejectedWith` has no source fallback).
   Nine contracts in five test files change bytes; their stand-in callees now push the call's selector and arguments.
   Test: `TypedLoopDispatch.test.ts` (a callee run on another argument is refused), `MultiUseViewMutate.test.ts`
   (another selector).
+- **Two call sites on one callee run** (found 2026-10-25 by a review of the multi-call frames; accepted on master at
+  the VM). In a function with several direct calls each call's callee input index is a witness its identity check
+  binds to its own target only, so two calls on different target expressions that are equal at run time
+  (`ISink(a).put(x); ISink(b).put(x)` with `a == b`) both named the one callee input and accepted one run of it: the
+  caller counted two calls for one. The SDK builds that spend itself, sharing one master by outpoint. `29d652dad`
+  requires pairwise different inputs for calls on different targets once both run, and for calls on `msg.sender`,
+  `this` or a computed target, which no target key groups; calls on one target (a frame group, a readonly alias, a
+  batch row) still share theirs. A counted call whose ordinal counter is not in scope now fails to compile instead of
+  digesting ordinal 0 without its inline checks (unreachable today). The same holds for a loop over targets: its
+  callee for iteration i sits at `base + offset + i * stride`, while the call slot after it (or a second such loop)
+  sits at the next fixed offset, which the loop's second iteration also took, so a loop target equal to that call's
+  target served both calls with one run (accepted at the VM), and an honest spend of two or more iterations could not
+  be laid out. `a074dcabb` keeps each iteration's input below the first callee laid out after the loop, in the inline
+  and the state-array forms, and adds looped frame calls to the distinct-input check. Test:
+  `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 
@@ -1041,6 +1056,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   pinned by the callee (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract
   without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) but not its
   arguments: the callees are checked after the loop, where per-iteration arguments are gone.
+
+- A call through an external function pointer takes its callee input from a witness that is not compared with the
+  fixed-offset inputs of a function with a loop over targets: a loop over a state array of pointers reads a witness
+  list (strictly increasing, but not compared with the function's other calls), and a single pointer call there a
+  witness index (found 2026-10-25 beside the two call sites, source-traced). A pointer target equal to another call's
+  target could serve both calls with one run.
 
 - One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
   selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one

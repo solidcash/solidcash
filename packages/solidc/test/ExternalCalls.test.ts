@@ -741,8 +741,11 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
     expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
-    // The lowered loop repeats the lookup on one callee: a state-changing one would read records it never pinned.
-    expect(() => compileString(src(''), { evmCompat: true, messageBus: false })).toThrow(/MESSAGE_BUS_REQUIRED.*F\.pair/);
+    // The lowered loop repeats the lookup on one callee: a state-changing one runs as counted frames of the factory's
+    // multi-call spend, each iteration bound to its own frame's record.
+    const writer = compileString(src(''), { evmCompat: true, messageBus: false });
+    expect(writer.abi.find((entry) => entry.name === 'run')?.externalCalls?.[0]?.callOrdinal)
+      .toEqual({ group: 0, counted: true });
   });
 
   it('rewrites a cast receiver introduced by nested helpers inside a lowered tail loop', () => {

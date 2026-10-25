@@ -409,7 +409,11 @@ Measured from a clean build at `4f7fea498`, where the fixture sources are untouc
 the marketplace route hashes are unchanged. The claim route grows 5 bytes and its hash moves without a new operation:
 the bytecode outliner splits one shared helper, five `OP_0 <33> OP_NUM2BIN OP_CAT` blocks, into two that run the same
 five blocks. Its route-size screen in the kernel manifest moves with it (1068 -> 1073 bytes, still under the
-10,000-byte limit alone).
+10,000-byte limit alone). With the re-pin (`820d8a658`, `74bd23e56`), `kernel-beta-gate` passes in full at
+`74bd23e56` (33 min) without `--allow-dirty`: `diagnosticOnly: false`, source fingerprints matched, all 39 required
+kernel proofs passed, and each cold compile gave its pinned value in two fresh processes. The 28 test files whose
+contracts change bytes passed once: solidc 8 files (1,273 tests), SDK e2e 11 files (113), framed, journal and unit 9
+files (100).
 
 ### What closed the 2026-10-17 failures
 

@@ -41,6 +41,7 @@ export function decorateStateAccessorResult(
   name: string,
   indexCount: number,
   artifact: Artifact,
+  resolveDeployedAddress?: (identity: Uint8Array) => string | undefined,
 ): StateValue | undefined {
   if (value === undefined) return value;
   const variable = artifact.stateLayout?.variables.find((entry) => entry.name === name);
@@ -55,6 +56,15 @@ export function decorateStateAccessorResult(
     if (!array) throw new Error(`State variable '${name}' is not indexable at this depth.`);
     type = array.elementType;
   }
-  return decorateDecodedResult(value, type, artifact.structs ?? artifact.stateLayout?.structs,
+  const decorated = decorateDecodedResult(value, type, artifact.structs ?? artifact.stateLayout?.structs,
     artifactUsesSolidityAbi(artifact) ? 'evm-abi-v1' : 'compact-pushdata-v1', artifactAddressForm(artifact));
+  // A `public address` variable stores the 20-byte Solidity identity. An unmodified Solidity test compares the
+  // getter with `contract.getAddress()`, which names the deployed contract, so present the registered
+  // deployment's address when the identity names one. Raw `getState()`/entry reads keep their storage form.
+  if (type === 'address' && resolveDeployedAddress !== undefined && decorated instanceof Uint8Array
+    && decorated.length === 20) {
+    const resolved = resolveDeployedAddress(decorated);
+    if (resolved !== undefined) return resolved;
+  }
+  return decorated;
 }

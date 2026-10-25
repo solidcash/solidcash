@@ -10,7 +10,11 @@ import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address
 import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodedAddressEncoding, decodedSolidityAddressIdentity } from '@solidcash/utils';
-import { findDeploymentByAddress, findDeploymentByAddressValue } from '@solidcash/solidcash/stateful';
+import {
+  findDeploymentByAddress,
+  findDeploymentByAddressValue,
+  findDeploymentByLockingBytecode,
+} from '@solidcash/solidcash/stateful';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -48,6 +52,47 @@ function deploymentValueIdentity(cashAddress: string): { lock: string; identity:
   }
 }
 
+/**
+ * One deployed contract has a logical address (the CREATE identity a test names it by) and a physical address
+ * (the P2SH of the covenant lock its state stores). A test may hold either: a state getter resolves to the
+ * logical address while a helper's sort order uses the physical one. Equate the two when both name the same
+ * registered deployment; anything else keeps its exact comparison.
+ */
+function sameDeploymentForAddresses(left: string, right: string): boolean {
+  try {
+    const provider = getActiveProvider() as never;
+    const resolve = (address: string): string | undefined => {
+      const direct = findDeploymentByAddress(provider, address);
+      if (direct?.address !== undefined) return direct.address;
+      const decoded = cashAddressToLockingBytecode(address);
+      if (typeof decoded === 'string') return undefined;
+      const physical = findDeploymentByLockingBytecode(provider, binToHex(decoded.bytecode));
+      return physical?.address;
+    };
+    const leftDeployment = resolve(left);
+    return leftDeployment !== undefined && leftDeployment === resolve(right);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * An `address` read back from state names a deployed contract by its address, while a Solidity helper (or an
+ * unmodified `pairFor`) names the same contract by its EVM projection identity. Resolve both through the
+ * registry and equate them when they name one deployment.
+ */
+function addressNamesSameDeploymentAsIdentity(address: string, identity: Uint8Array): boolean {
+  try {
+    const provider = getActiveProvider() as never;
+    const fromAddress = findDeploymentByAddress(provider, address);
+    if (fromAddress === undefined) return false;
+    const fromIdentity = findDeploymentByAddressValue(provider, identity);
+    return fromIdentity !== undefined && fromIdentity.address === fromAddress.address;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeAddressPair(actual: any, expected: any): [any, any] {
   if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
     console.error('NORMALIZE_ADDRESS', actual?.constructor?.name, expected?.constructor?.name,
@@ -56,6 +101,11 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   }
   if (isEmptyAddress(actual) && isEmptyAddress(expected)) return ['', ''];
   const isCashAddr = (x: any): x is string => typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/.test(x);
+  // A logical address and the physical address of the same deployed contract name one identity to the suite.
+  if (isCashAddr(actual) && isCashAddr(expected) && actual !== expected
+    && sameDeploymentForAddresses(actual, expected)) {
+    return [actual, actual];
+  }
   const addressBytes = (x: any): Uint8Array | undefined => {
     if (x instanceof Uint8Array) return x;
     if (typeof x !== 'string') return undefined;
@@ -139,6 +189,9 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
         || binToHex(actualBytes) === alias.lock)) {
         return [binToHex(actualBytes), binToHex(actualBytes)];
       }
+      if (actualBytes.length === 20 && addressNamesSameDeploymentAsIdentity(expected, actualBytes)) {
+        return [binToHex(actualBytes), binToHex(actualBytes)];
+      }
       // Solidity event decoders return an EVM address string, while deployed BCH contracts expose a CashAddress.
       // A P2SH32 script has no direct 20-byte payload: its Solidity identity is hash160(full script).
       // Keep raw byte arrays exact unless they carry ABI address typing (handled above).
@@ -153,6 +206,9 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
       const alias = deploymentValueIdentity(actual);
       if (alias && ((expectedBytes.length === 20 && binToHex(expectedBytes) === alias.identity)
         || binToHex(expectedBytes) === alias.lock)) {
+        return [binToHex(expectedBytes), binToHex(expectedBytes)];
+      }
+      if (expectedBytes.length === 20 && addressNamesSameDeploymentAsIdentity(actual, expectedBytes)) {
         return [binToHex(expectedBytes), binToHex(expectedBytes)];
       }
       const projected = typeof expected === 'string' && expectedBytes.length === 20

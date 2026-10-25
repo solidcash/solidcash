@@ -7,6 +7,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Contract } from '../Contract.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type { AbiToFunctionMap } from '../types/type-inference.js';
+import { findDeploymentByAddressValue } from './deployment-registry.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
 import { addressMappingKeyCandidates } from './sc-address-mapping-key-candidates.js';
 import {
@@ -76,6 +77,14 @@ export function buildNamespaces<TArtifact extends Artifact>(
   host: BuildNamespacesHost<TArtifact>,
   contract: Contract<TArtifact>,
 ): void {
+  // A stored `address` is the 20-byte Solidity identity under `addressForm: 'hash'`. Public getters present the
+  // deployed contract's own address when one is registered, so a source comparison against `getAddress()` names
+  // the same value. Raw state/entry APIs keep the identity.
+  const resolveDeployedAddress = (identity: Uint8Array): string | undefined => {
+    const deployment = findDeploymentByAddressValue(contract.provider, identity);
+    return deployment?.address !== undefined && deployment.address.includes(':')
+      ? deployment.address : undefined;
+  };
   host.state = {} as StateGetterMap<TArtifact>;
   for (const variable of contract.stateLayout!.variables) {
     // @ts-ignore - dynamic property assignment for type-safe getters
@@ -83,7 +92,9 @@ export function buildNamespaces<TArtifact extends Artifact>(
     // whose declared type is address. The raw getState() snapshot must not acquire public-result metadata.
     host.state[variable.name] = async (...indices: Array<bigint | number | string>): Promise<any> => {
       const value = indexStateAccessorValue((await host.getState())[variable.name], indices, variable.name);
-      return decorateStateAccessorResult(value as StateValue | undefined, variable.name, indices.length, contract.artifact);
+      return decorateStateAccessorResult(
+        value as StateValue | undefined, variable.name, indices.length, contract.artifact, resolveDeployedAddress,
+      );
     };
   }
   // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
@@ -116,7 +127,9 @@ export function buildNamespaces<TArtifact extends Artifact>(
       }
       if (match) {
         const value = indexStateAccessorValue(match.value, keys.slice(keyTypes.length), coll.name);
-        return decorateStateAccessorResult(value as StateValue, coll.name, keys.length, contract.artifact);
+        return decorateStateAccessorResult(
+          value as StateValue, coll.name, keys.length, contract.artifact, resolveDeployedAddress,
+        );
       }
       // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
       // rather than an SDK-level missing value. Strings/bytes must be empty sequences so

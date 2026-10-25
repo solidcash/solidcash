@@ -65,6 +65,21 @@ describe('addressForm presentation', () => {
     expect(presentedState(P2SH32, { addressForm: 'hash' })).toBe(identity);
   });
 
+  it('presents a state address through a registered deployment when a resolver is supplied', () => {
+    // A `public address` getter must compare strictly with `contract.getAddress()`, which names the deployed
+    // contract. The resolver supplies that address for the identity the decorated value carries.
+    const deployed = 'bchtest:qqysjzgfpyysjzgfpyysjzgfpyysjzgfpynsmzst5t';
+    expect(decorateStateAccessorResult(
+      P2SH32, 'owner', 0, artifact({ evmCompat: true }), () => deployed,
+    )).toBe(deployed);
+    // Without a resolver the identity is the published form, and a non-address value never reaches it.
+    expect(decorateStateAccessorResult(P2SH32, 'owner', 0, artifact({ evmCompat: true })))
+      .toMatchObject({ length: 20 });
+    expect(decorateStateAccessorResult(
+      P2SH32, 'owner', 0, artifact({}), () => deployed,
+    )).toMatchObject({ length: 35 });
+  });
+
   it('resolves the form a project did not state, and reports the one it did', () => {
     expect(artifactAddressForm(artifact({ evmCompat: true }))).toBe('hash');
     expect(artifactAddressForm(artifact({}))).toBe('bytecode');

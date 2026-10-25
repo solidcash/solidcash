@@ -147,11 +147,13 @@ green.
 | `SushiRoll` | 3 / 16 | the pair created inside the roll transaction; the pair address derived from a live `oldRouter.factory()` result; the migrator-style circular `A->B->A` read |
 | **Total** | **107 / 192** | |
 
-`UniswapV2Pair > swap > accepts tokens that return no data on transfer` is order-dependent: it passes in the
-full Pair file in roughly two of three runs and reports `nrt.balanceOf(other) == 0` otherwise (and always under a
-`-t` filter). The 27/36 count above is the passing order; the whole-project run reports 101/192 when this case
-falls in its failing order. The case is not related to the merged-slot alternative: the no-data token artifact has
-no alternatives.
+`UniswapV2Pair > swap > accepts tokens that return no data on transfer` used to be order-dependent: it took
+`customPair.token0() === nrt.getAddress()` to choose which token to swap. The getter returned the 20-byte Solidity
+identity while `getAddress()` names the deployed contract, so the comparison was false and the test moved the
+wrong token whenever the no-data token was `token0`. A `public address` state getter now resolves a registered
+deployment's address (`decorateStateAccessorResult` with a resolver from `buildNamespaces`), and the harness
+equality bridge equates a logical address, a physical address, and an EVM projection identity that name one
+deployment. The test now passes deterministically in each order; the whole-project run is 107/192.
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 

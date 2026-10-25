@@ -153,6 +153,14 @@ const TALLY = `${PRAGMA}interface ICounter {
       total = total + n;
       require(true);
     }
+    function around(uint256 a) public {
+      uint256 before = ICounter(counter).get();
+      ICounter(counter).add(a);
+      uint256 after = ICounter(counter).get();
+      uint256 again = ICounter(counter).get();
+      total = before * 100 + after * 10 + again;
+      require(true);
+    }
   }`;
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -435,5 +443,25 @@ describe('direct multi-call', () => {
       expect((await counter.getState()).count).toBe(count);
     }
     expect((await tally.getState()).total).toBe(3n);
+  }, 300_000);
+
+  it('(k) reads the state a write left: a read after it runs a frame of its own', async () => {
+    const { counter, tally, tallyArtifact } = await tallied();
+    expect(tallyArtifact.abi.find((fn) => fn.name === 'around')!.externalCalls!
+      .map((call) => [call.functionName, call.callOrdinal])).toEqual([
+      ['get', { group: 0, ordinal: 0 }], ['add', { group: 0, ordinal: 1 }], ['get', { group: 0, ordinal: 2 }],
+      ['get', { group: 0, ordinal: 2 }],
+    ]);
+
+    // get(), add(5), get(): the second read is the count after the write, and the third shares its record.
+    const builder = await tally.call.around(5n).build() as TransactionBuilder;
+    expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
+    expect(records(builder, counter.categoryId)).toBe(3);
+    expect(busInputs(builder)).toEqual([]);
+    expect(vmAccepts(builder)).toBe(true);
+
+    await tally.call.around(5n).send();
+    expect((await tally.getState()).total).toBe(55n);
+    expect((await counter.getState()).count).toBe(5n);
   }, 300_000);
 });

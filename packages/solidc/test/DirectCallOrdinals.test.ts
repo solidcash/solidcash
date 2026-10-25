@@ -123,6 +123,32 @@ describe('direct call ordinals', () => {
     expect(TotalReader.bytecode).not.toContain(`0200${selector('totalOf')}`);
   });
 
+  it('ends a zero-argument readonly alias at a call that may write', () => {
+    const around = compileString(`pragma solidcash >=0.8.0;\n${BOOK}
+contract Around(address book) {
+  bigint last;
+  function bump(bigint v) public {
+    bigint before = IBook(book).totalOf();
+    IBook(book).setTotal(v);
+    bigint after = IBook(book).totalOf();
+    bigint again = IBook(book).totalOf();
+    this.last = before * 100 + after * 10 + again;
+  }
+}`, { messageBus: false, suppressWarnings: true });
+    const binding = { version: 1, selector: selector('totalOf') };
+    // The read after the write runs a frame of its own; the one after it shares that frame's record.
+    expect(calls(around, 'bump').map((call) => [call.functionName, call.callOrdinal, call.readonlyReturnBinding]))
+      .toEqual([
+        ['totalOf', { group: 0, ordinal: 0 }, undefined],
+        ['setTotal', { group: 0, ordinal: 1 }, undefined],
+        ['totalOf', { group: 0, ordinal: 2 }, binding],
+        ['totalOf', { group: 0, ordinal: 2 }, binding],
+      ]);
+    expect(around.bytecode).toContain(`0000${selector('totalOf')}`);
+    expect(around.bytecode).toContain(`0200${selector('totalOf')}`);
+    expect(around.bytecode).not.toContain(`0300${selector('totalOf')}`);
+  });
+
   it('numbers repeated state-changing calls as frames, a void one reading `digest || 0x01`', () => {
     const writer = compileString(WRITER, { messageBus: false, suppressWarnings: true });
     expect(calls(writer, 'twice').map((call) => [call.functionName, call.callOrdinal, call.hasReturnValues,

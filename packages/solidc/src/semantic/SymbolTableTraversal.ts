@@ -11903,7 +11903,8 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Gives each call of an entry to a callee it calls several times the ordinal of its frame in the callee's one
    * spend. Straight-line calls take 0, 1, .. in execution order (`sourceEffectOrdinal`); a group with a looped or
    * conditional call counts at run time instead. A zero-argument readonly alias shares the first one's run, record
-   * and ordinal. A void call of a group reads its frame's record, `digest || 0x01`, through a return slot.
+   * and ordinal unless a call that may write runs between them. A void call of a group reads its frame's record,
+   * `digest || 0x01`, through a return slot.
    */
   private assignDirectCallOrdinals(
     groups: Iterable<ExternalCallSlot[]>, inLoop: (slot: ExternalCallSlot) => boolean,
@@ -11930,6 +11931,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         const executed = calls.every((slot) => slot.sourceEffectOrdinal !== undefined)
           ? [...calls].sort((left, right) => left.sourceEffectOrdinal! - right.sourceEffectOrdinal!) : calls;
         for (const slot of executed) {
+          // A frame that may write leaves a later read another state than the record before it.
+          if (slot.readonlyReturnSelector === undefined) aliases.clear();
           const alias = slot.readonlyReturnSelector !== undefined && slot.sourceCallNode?.parameters.length === 0
             ? binToHex(slot.readonlyReturnSelector) : undefined;
           const shared = alias === undefined ? undefined : aliases.get(alias);

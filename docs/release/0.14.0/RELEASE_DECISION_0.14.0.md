@@ -415,6 +415,12 @@ kernel proofs passed, and each cold compile gave its pinned value in two fresh p
 contracts change bytes passed once: solidc 8 files (1,273 tests), SDK e2e 11 files (113), framed, journal and unit 9
 files (100).
 
+A second review of the day's loop fixes then found two more ways to share or redirect a loop's callee, both accepted at
+the VM before `671dc23f1` (recorded in the security ledger as "Loop receiver resolved by name" and "Loop iterations
+naming one callee input"). That fix leaves the pins as above: the gate identity and the three kernel cold baselines
+measure unchanged, and the 13 test files whose contracts change bytes passed once (solidc 4 files, 448 tests; SDK e2e 9
+files, 51).
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

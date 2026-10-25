@@ -1030,6 +1030,20 @@ needs VM evidence, `rejectedWith` has no source fallback).
   be laid out. `a074dcabb` keeps each iteration's input below the first callee laid out after the loop, in the inline
   and the state-array forms, and adds looped frame calls to the distinct-input check. Test:
   `AliasedCalleeSites.test.ts`.
+- **Loop receiver resolved by name** (found 2026-10-25 by a review of the day's loop fixes; accepted at the VM).
+  `b6c2e106d` judged a loop receiver's target by the first declaration of its name in the function, so a second
+  loop declaring `IPair pair` over the contract's own addresses took the first loop's caller-chosen initializer, and
+  its target was replaced by an unbound witness again; R11 grouped both loops' view calls under the one name. `671dc23f1`
+  resolves a receiver to the declaration in force at the call, lifts a target only through locals the body defines
+  once and through parameter arrays no local shadows, gives a receiver name defined more than once no view
+  witnesses, and groups a loop's calls by their receiver's declaration. Test: `LoopTargetProvenance.test.ts`.
+- **Loop iterations naming one callee input** (same review; accepted at the VM; older than the day's fixes). A loop
+  over targets took its callee input from the index its target reads (`base + offset + index * stride`), not from
+  its counter, so `ts[which[i]]` with a repeated index, a loop-invariant `ts[k]`, or a state-array body
+  `subscribers[which[i]]` (whose callees are checked once per element after the loop) let several calls accept one
+  callee run. `671dc23f1` makes each call of such a loop claim an input, or a state-array element, above the one the loop
+  claimed last, as pointer lists already did; a loop that walks its targets backwards is refused now. Test:
+  `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 

@@ -5038,6 +5038,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(preimageParam);
         }
       }
+      // The method a call to a fixed method runs, whose arguments a direct caller binds where no record digests them.
+      for (const slot of node.externalCalls) {
+        if (slot.runtimeSelector || slot.selectorArrayVar) continue;
+        const methods = (this.getCalleeFunctions(slot.interfaceName) ?? [])
+          .filter((candidate) => candidate.name === slot.functionName);
+        if (methods.length !== 1) continue;
+        const parameterTypes = methods[0]!.parameters
+          .filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => parameter.type);
+        slot.calleeMethod = { parameterTypes };
+      }
     }
 
     // Token container access pre-scan: collect all token container accesses and assign slot indices

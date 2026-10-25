@@ -12788,13 +12788,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (entry?.utxo === undefined) return [];
         return [{ offset: slot.offset, utxo: entry.utxo, unlocker: entry.utxo.unlocker }];
       });
-    const keccakFrontRegion = abiFunction === undefined
-      ? [...externalReadUtxos, ...blockhashCoSpendUtxos]
+    const keccakFrontBase = [...externalReadUtxos, ...blockhashCoSpendUtxos];
+    // Pad the compiler-declared front-region slots for the base actually used. A build resolves the fixed
+    // keccak band and, when the function has a dynamic loop, the loop's trailing band; padding the already
+    // padded list a second time duplicated block-info/container slots and pushed the loop's side-cars past
+    // their layout offsets.
+    const padKeccakFront = (base: number): UnlockableUtxo[] => (abiFunction === undefined
+      ? keccakFrontBase
       : this._padKeccakLoopFrontRegion(
-        abiFunction, filteredDataNftUtxos.length, fixedKeccakBase,
-        [...externalReadUtxos, ...blockhashCoSpendUtxos],
+        abiFunction, filteredDataNftUtxos.length, base, keccakFrontBase,
         satoshiContainerUtxo, tokenContainers, blockInfoCoSpendUtxos,
-      );
+      ));
+    const keccakFrontRegion = padKeccakFront(fixedKeccakBase);
     if (abiFunction?.keccakLoopReads && this.categoryId) {
       // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe. When a
       // mapping loop precedes the keccak loop in source order, its bracketing predecessors (and their exact
@@ -12803,10 +12808,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const loopSidecarBase = abiFunction.blockLayout?.trailingBase
         ?? abiFunction.blockLayout?.slots.find((slot) => slot.kind === 'keccakSideCar')?.offset
         ?? loopBlockSize;
-      const keccakLoopFrontRegion = this._padKeccakLoopFrontRegion(
-        abiFunction, filteredDataNftUtxos.length, loopSidecarBase, keccakFrontRegion,
-        satoshiContainerUtxo, tokenContainers, blockInfoCoSpendUtxos,
-      );
+      const keccakLoopFrontRegion = padKeccakFront(loopSidecarBase);
       const reversedTrailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] };
       if (abiFunction.keccakLoopPrecedesTrailingUser !== true) {
         let predecessorCursor = 0;

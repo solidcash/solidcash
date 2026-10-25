@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **83 passed, 109 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **85 passed, 107 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -128,9 +128,9 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
 | `Libraries` | 21 / 37 | CREATE2-identity targets (5); TransferHelper raw-return decoding and absent-selector calls (11); ETH value (2) |
-| `UniswapV2Router02` | 4 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy; the probe leaves `extcallMasterIdx -1`); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
+| `UniswapV2Router02` | 6 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy; the probe leaves `extcallMasterIdx -1`); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
-| **Total** | **83 / 192** | |
+| **Total** | **85 / 192** | |
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
@@ -202,8 +202,32 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - The harness exposes `provider.getBalance(address)` as the address's UTXO sum, and a deployment whose ABI
   moves native value (a `transferCount` or a satoshi-container slot) is funded with an initial container
   balance. A payable helper can then reach its own covenant before failing on the transfer itself.
+- A straight-line keccak256 read whose side-car coordinate is negative now fails closed instead of reading
+  `tx.inputs[-1]`: it drops the preimage argument and produces a 32-byte zero digest. The coordinate is the
+  SDK's marker for an absent side-car (a pruned call) or a borrowed slot read from the wrong frame item. A
+  reached use then projects an address no deployment matches, while the contract's own earlier require stays
+  the authority. This settled the Router/SushiRoll expired-deadline paths, whose external-call argument
+  (the hoisted `UniswapV2Library.pairFor`) is evaluated before the deadline require
+  (`KeccakMissingSidecarGuard.test.ts` asserts the shipped body bytes for both an outlined helper and an
+  entry body).
+- A dynamic stateful keccak256 loop now mints deterministic compute side-car stand-ins when the provider
+  exposes `addUtxo` (the mock network), matching the fixed-slot resolver, and probes with synthetic
+  placeholders first so an early-abort path can prove the loop is never reached. On a real provider it still
+  requires explicitly deployed mutable-NFT side-cars
+  (`Keccak256.test.ts`, "provisions the dynamic keccak256 side-cars on a provider that supports it").
 
 ### Remaining architectural gaps (captured failures)
+
+- **An outlined keccak helper inside a runtime loop.** `UniswapV2Library.getAmountsOut` hashes in a
+  `for` loop over the path, so the Router entry flags `keccakLoopReads` and the SDK provisions one
+  preimage-per-iteration side-car from the trailing band. The hoisted `pairFor` target is an outlined body
+  that batches its two keccak calls into one fixed `keccakSideCar` slot instead. When both are present the
+  probe mistakes the body's two batched reads for two loop iterations, and the final bind compares the
+  body's batched preimage against a one-preimage commitment. Reading the helper's borrowed slot through an
+  entry-time anchor (instead of the bottom ordinal) was implemented and measured: the index became correct
+  and the preimages resolved, but the transaction then failed the same preimage bind (ip 227), so the
+  anchor was reverted. The remaining fix belongs in one shared scheme for batched outlined reads inside a
+  loop.
 
 - **A Router-built transaction that deploys a pair through the factory.** `addLiquidity` calls
   `factory.createPair` inside `_addLiquidity` when the pair is absent, then immediately calls

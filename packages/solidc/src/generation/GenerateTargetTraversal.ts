@@ -15388,6 +15388,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(i + 1)), loc);
       this.emit(Op.OP_SWAP, loc);
     }
+    // A helper body borrows its caller's side-car slot through a hidden frame item, and the SDK binds that item to
+    // -1 when the call that would consume this hash has been pruned (a pre-call require that cannot run for this
+    // spend, so no compute side-car is co-spent). The same slot can also be mis-picked when untracked operands sit
+    // above the borrowed value. Both leave a negative coordinate: read no side-car, consume the preimage argument,
+    // and produce a digest no real lock matches, so a reached use fails closed while an earlier require still
+    // reverts with its own message. Only the single straight-line read has the [arg, ordinal, index] frame this
+    // guard consumes.
+    const guardMissingSidecar = !this.keccakLoopActive && !chainEligible;
+    if (guardMissingSidecar) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);              // index
+      this.emit(Op.OP_DROP, loc);              // ordinal
+      this.emit(Op.OP_DROP, loc);              // arg
+      this.emit(new Uint8Array(32), loc);      // no side-car -> a digest no address projection matches
+      this.emit(Op.OP_ELSE, loc);
+    }
     // Save the side-car index. The loop used to read only the unlocking, so a bare lock could carry the real
     // covenant bytes and choose the digest. The index is consumed after the preimage bind, the same way the
     // ecrecover loop compares that input's lock to the shared stateful keccak lock.
@@ -15483,6 +15502,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     }
     this.dropCapturedComputeSidecarBlockBase(capturedComputeBase, node);
+    if (guardMissingSidecar) this.emit(Op.OP_ENDIF, loc);
     return node;
   }
 

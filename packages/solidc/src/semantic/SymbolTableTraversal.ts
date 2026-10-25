@@ -5405,11 +5405,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.blockLayout = this.computeBlockLayout(node);
     }
 
-    // A direct entry that preserves all state may run as a frame of the multi-call entry. One that reads fixed
-    // entries takes their shift past its layout, so frames reading two keys of one mapping read two inputs.
+    // A direct entry that writes at most fixed state fields may run as a frame of the multi-call entry. A void one
+    // takes the record witness a frame pins its call's record at; one that reads fixed entries takes their shift
+    // past its layout, so frames reading two keys of one mapping read two inputs.
     if (this.isStatefulContract && node.isEntryPoint && this.callBatchCompile()
-      && isCallBatchFrameCandidate(node, () => this.hasStateWrite(node.body))) {
+      && isCallBatchFrameCandidate(node, () => this.writesBeyondFixedScalarState(node.body))) {
       node.callBatchCandidate = true;
+      if (!node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
+        const record = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
+        record.location = node.location;
+        record.syntheticallyUsed = true;
+        node.parameters.push(record);
+        this.symbolTables[0].set(Symbol.variable(record));
+        this.symbolTables[0].get(record.name)?.references.push({ name: record.name } as IdentifierNode);
+        this.pushToStack(record);
+      }
       if ((node.entryAccesses?.length ?? 0) > 0) {
         const shift = new ParameterNode(PrimitiveType.BIGINT, CALL_BATCH_ROW_SHIFT);
         shift.location = node.location;
@@ -11909,6 +11919,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       group += 1;
     }
+  }
+
+  /** Whether this subtree writes contract state other than a fixed (non-dynamic) state field. Cycle-safe. */
+  private writesBeyondFixedScalarState(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if ((node instanceof StateAssignNode || node instanceof DeleteStateNode)
+      && (node.stateVariable === undefined || node.stateVariable.isDynamic)) return true;
+    if (node instanceof MappingAssignNode || node instanceof StateArrayAssignNode
+      || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
+      || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+      || node instanceof StateArrayDeleteNode) return true;
+    for (const key in node) {
+      const v = node[key as keyof Node];
+      if (v instanceof Node) {
+        if (this.writesBeyondFixedScalarState(v, seen)) return true;
+      } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.writesBeyondFixedScalarState(e, seen)) return true;
+      }
+    }
+    return false;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A

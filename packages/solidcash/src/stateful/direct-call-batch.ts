@@ -2,7 +2,8 @@
  * Direct multi-call (docs/wip/call-records/DESIGN.md, sections 3, 4 and 7). A direct caller's calls in one
  * `callOrdinal` group run in one spend of the callee's master, through its multi-call entry: frame k is the k-th
  * reached call, it reads its entries `rowEntryShift` inputs past its layout slots, and its record sits in the batch
- * block at the k-th record slot. A group reaching one call keeps the standalone spend.
+ * block at the k-th record slot. The batch block holds every data record of the callee, which the entry carries
+ * through its frames. A group reaching one call keeps the standalone spend.
  */
 
 import type {
@@ -56,6 +57,8 @@ export interface DirectCallBatchFrameBlock {
   readonly returnEventInBlock: boolean;
   readonly dataNftUtxos: readonly UnlockableUtxo[];
   readonly requiredDataNftIndices: readonly number[];
+  /** Every data record of the callee, record j at index j: the band a multi-call spend lays after its master. */
+  readonly dataRecords: readonly UnlockableUtxo[];
 }
 
 /** The unit marker a planned call carries into group assembly. */
@@ -233,7 +236,8 @@ export async function planDirectCallBatches(
         const entry = callee.abi.find((candidate) => candidate.name === unit.info.functionName);
         if (entry?.callBatchRow !== true) {
           throw new Error(`${caller}: ${callee.contractName}.${unit.info.functionName}() cannot run as a frame of `
-            + 'its multi-call entry, which runs only entries that return values and preserve all state.');
+            + 'its multi-call entry, which runs only entries that write at most fixed state fields and take no '
+            + 'value, event, transfer or external call.');
         }
       }
     }
@@ -278,8 +282,10 @@ const slotsOf = (layout: FunctionBlockLayout, kind: string): BlockLayoutSlot[] =
 
 /**
  * Turn each multi-call's units into one spend of the callee master: the first unit's group carries the batch block
- * (master, data records, every frame's entries in frame order, one record slot per frame) and the frames, and every
- * other unit reads its frame's record from that block. Each frame's result comes from its own probe.
+ * (master, every data record, every frame's entries in frame order, one record slot per frame) and the frames, and
+ * every other unit reads its frame's record from that block. Each frame's result comes from its own probe; a void
+ * frame's record carries an empty result. A frame that writes state runs on the records the frames before it left,
+ * which a standalone probe does not see, so it is refused here.
  */
 export async function consolidateDirectCallBatches(
   host: {
@@ -314,24 +320,15 @@ export async function consolidateDirectCallBatches(
       }
       return block;
     });
-    // Every frame reads its data records at its own slots, so they must agree on the shared ones.
-    const reference = blocks.reduce((widest, block) => (
-      slotsOf(block.layout, 'dataNft').length > slotsOf(widest.layout, 'dataNft').length ? block : widest
-    ));
-    const dataSlots = slotsOf(reference.layout, 'dataNft');
-    for (const block of blocks) {
-      if (!slotsOf(block.layout, 'dataNft').every((slot, index) => slot.offset === 1 + index
-        && dataSlots[index]?.nftIndex === slot.nftIndex)) throw unsupported('its frames read different data records');
-    }
+    // The entry reads data record j at master + 1 + j, whichever records the frames touch.
+    const dataRecords = blocks[0]!.dataRecords;
     const masterSlot = slotsOf(blocks[0]!.layout, 'master')[0];
     const master = masterSlot === undefined ? undefined : blocks[0]!.inputs[masterSlot.offset];
     if (master === undefined) throw unsupported('the first frame has no master input');
-    const inputs: UnlockableUtxo[] = [master, ...dataSlots.map((slot) => reference.inputs[slot.offset]!)];
+    const inputs: UnlockableUtxo[] = [master, ...dataRecords];
     const slots: BlockLayoutSlot[] = [
       { kind: 'master', offset: 0 },
-      ...dataSlots.map((slot, index): BlockLayoutSlot => ({
-        kind: 'dataNft', offset: 1 + index, nftIndex: slot.nftIndex,
-      })),
+      ...dataRecords.map((_, nftIndex): BlockLayoutSlot => ({ kind: 'dataNft', offset: 1 + nftIndex, nftIndex })),
     ];
     const shifts: bigint[] = [];
     for (const block of blocks) {
@@ -372,6 +369,10 @@ export async function consolidateDirectCallBatches(
       const unit = groups[index]!;
       const abiFunction = callee.abi.find((candidate) => candidate.name === unit.functionName);
       if (abiFunction?.callBatchRow !== true) throw unsupported(`'${unit.functionName}' is no frame entry`);
+      if (abiFunction.writesState === true) {
+        throw unsupported(`its frame '${unit.functionName}' writes state, which its probe does not run on the records `
+          + 'the frames before it leave yet');
+      }
       frames.push({
         abiFunction,
         args: [...unit.functionArgs],
@@ -383,8 +384,8 @@ export async function consolidateDirectCallBatches(
     }
     physical.blockInputs = inputs;
     physical.blockLayout = { blockSize: inputs.length, slots };
-    physical.dataNftUtxos = [...reference.dataNftUtxos];
-    physical.requiredDataNftIndices = [...reference.requiredDataNftIndices];
+    physical.dataNftUtxos = [...dataRecords];
+    physical.requiredDataNftIndices = dataRecords.map((_, nftIndex) => nftIndex);
     physical.returnEventInBlock = true;
     physical.callBatch = { frames, recordOffset };
     physical.precomputedReturnCommitment = frames[0]!.result;

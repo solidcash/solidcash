@@ -983,6 +983,14 @@ needs VM evidence, `rejectedWith` has no source fallback).
   the callee's unlocking pushes for the arguments it names, as D8 does for a compat raw call (callers only; a void
   record in every void entry would cost about 150-200 B on a contract without returning entries).
 
+- One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
+  selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
+  transaction that make the same returning call to one callee therefore both accept the callee's single run and
+  record; with a state-changing callee each caller takes an effect that ran once (two "withdrawals" credited for one
+  payment). It follows from the direct call edge being presence-based (F1, above): the callee does not bind which
+  caller it answers. Framed records and bus rows bind the caller. A fix needs the caller to bind the callee's call
+  edge, for example the callee's `msg.sender` witness, which reopens the F1 decision.
+
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot
   compute the D50 call digest, which made the compiler crash. Such a call now skips the digest check: its read is bound

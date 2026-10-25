@@ -17,6 +17,7 @@ export default defineConfig({
     forceStateful: true,
     commitmentLimit: 128,
     suppressWarnings: true,
+    messageBusByContract: { UniswapV2Pair: false, SushiSwapPair: false },
   },
   composition: 'direct',
   typegen: { jsonArtifactModules: true, targets: [{ target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts' }] },

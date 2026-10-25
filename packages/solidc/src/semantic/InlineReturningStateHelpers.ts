@@ -782,10 +782,17 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE))) return false;
     const stmts = this.effectiveStmts(fn.body.statements ?? []);
     const last = stmts[stmts.length - 1];
-    if (!isSourceReturn(last)) return false;
-    if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
     for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
+    if (!isSourceReturn(last)) {
+      // A message-bus route clone can be taken from a body snapshot made before NamedReturnTransformation
+      // appended the implicit named-return tail. Solidity returns the named values on fall-through, so such a
+      // body is still a single-return helper; `inlineCall` reads the named locals directly. Without this the
+      // clone stays behind OP_INVOKE and code generation refuses its event (X118, `_mintFee` -> `_mint`).
+      return returns === 0 && fn.returnNames.length > 0
+        && fn.returnNames.length === fn.returnTypes.length;
+    }
+    if (last.expressions.length !== fn.returnTypes.length) return false;
     return returns === 1;
   }
 
@@ -1800,6 +1807,25 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         }
       }
     });
+    // Implicit named returns: a body without a tail `return` reads its named-return locals at fall-through.
+    // Give those locals stable per-inline names and declare the ones the body does not declare itself. Every
+    // other helper keeps the established explicit-return lowering byte-for-byte.
+    const calleeStmts = this.effectiveStmts(callee.body?.statements ?? []);
+    const implicitTail = !isSourceReturn(calleeStmts[calleeStmts.length - 1]);
+    const implicitReturnDecls: VariableDefinitionNode[] = [];
+    if (implicitTail) {
+      for (let index = 0; index < callee.returnNames.length; index += 1) {
+        const name = callee.returnNames[index];
+        if (callee.parameters.some((parameter) => parameter.name === name)) continue;
+        if (rename.has(name)) continue;
+        const local = `${PREFIX}${n}_${name}`;
+        rename.set(name, local);
+        const definition = new VariableDefinitionNode(callee.returnTypes[index], [], local);
+        definition.location = callee.location;
+        definition.allowUnused = true;
+        implicitReturnDecls.push(definition);
+      }
+    }
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
     // An inherited helper's body may legitimately touch its own contract's PRIVATE state; tag the inlined
@@ -1822,12 +1848,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const processed = this.effectiveStmts((this.visit(cloned.body) as BlockNode).statements ?? []);
     this.stack = savedStack;
 
-    const ret = processed[processed.length - 1] as ReturnNode;
+    const tail = processed[processed.length - 1];
+    const retExpressions: ExpressionNode[] = isSourceReturn(tail) && !implicitTail
+      ? tail.expressions as ExpressionNode[]
+      : callee.returnNames.map((name) => {
+        const id = new IdentifierNode(rename.get(name) ?? name);
+        id.location = callee.location;
+        return id;
+      });
     const retDefs: VariableDefinitionNode[] = [];
     const ids: IdentifierNode[] = [];
-    for (let k = 0; k < ret.expressions.length; k++) {
+    for (let k = 0; k < retExpressions.length; k++) {
       const retName = `${PREFIX}${n}__ret${k}`;
-      const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
+      const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, retExpressions[k]);
       retDef.location = callee.location;
       retDef.inlinedReturningHelperPure = callee.modifiers.includes(FunctionModifier.PURE);
       retDef.inlinedReturningHelperSeparableEvent = this.hasOnlySeparableEventEffects(callee);
@@ -1836,7 +1869,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       id.location = callee.location;
       ids.push(id);
     }
-    this.hoists.push(...bindings, ...rmwPrologue, ...processed.slice(0, -1), ...retDefs, ...rmwEpilogue);
+    this.hoists.push(...bindings, ...implicitReturnDecls, ...rmwPrologue,
+      ...(isSourceReturn(tail) && !implicitTail ? processed.slice(0, -1) : processed), ...retDefs, ...rmwEpilogue);
     return ids;
   }
 

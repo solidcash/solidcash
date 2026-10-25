@@ -2653,6 +2653,14 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
   const {
     errorListener, warningListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
+  // A contract opted out of route synthesis compiles as if `messageBus` were false for it: it keeps the direct
+  // lowering it had before the project enabled the bus and publishes no route or refusal stub. Every other
+  // declaration in the same project still compiles with its own route.
+  if (primaryContractName !== undefined
+    && artifactCompilerOptions.messageBusByContract?.[primaryContractName] === false) {
+    artifactCompilerOptions.messageBus = false;
+    delete artifactCompilerOptions.messageBusHandlersByContract;
+  }
   const internalOptions = artifactCompilerOptions as InternalCompilerOptions;
   if (((internalOptions.messageBusKernel ?? DEFAULT_COMPILER_OPTIONS.messageBusKernel) === true
       || internalOptions.__strictNoInternalRecovery)
@@ -5958,8 +5966,10 @@ function synthesizeMessageBusRoute(
       ...(contract.receiveDef ? [contract.receiveDef] : []),
     ]
     : contract.functions;
+  const requestedHandlers = compilerOptions.messageBusHandlersByContract?.[contract.name]
+    ?? compilerOptions.messageBusHandlers;
   const functions = entryFunctions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
-    && messageBusHandlerSelected(fn, compilerOptions.messageBusHandlers, compilerOptions.evmCompat === true));
+    && messageBusHandlerSelected(fn, requestedHandlers, compilerOptions.evmCompat === true));
   // Record every entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
   for (const fn of functions) {
@@ -15162,7 +15172,8 @@ function compileResolvedAst(
   // options and iterated low-level calls today and must keep doing so.
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
-    const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
+    const requestedHandlers = mergedCompilerOptions.messageBusHandlersByContract?.[ast.contract.name]
+      ?? mergedCompilerOptions.messageBusHandlers;
     if (solidcEnvFlagEnabled('SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK')) {
       console.error('message-bus required validation surface', ast.contract.name, requestedHandlers);
     }
@@ -15293,7 +15304,8 @@ function compileResolvedAst(
   // than the count diagnostic the bus loop expansions would produce for it here.
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
-    const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
+    const requestedHandlers = mergedCompilerOptions.messageBusHandlersByContract?.[ast.contract.name]
+      ?? mergedCompilerOptions.messageBusHandlers;
     if (requestedHandlers === undefined) {
       validateLowLevelCallShapes(ast.contract);
     } else {

@@ -143,8 +143,8 @@ and `mints proportional liquidity`, `clears kLast when fees are turned off`, `bu
 underlying tokens`, `skips the fee mint when the fee amount rounds to zero` and `mints the first liquidity` stay
 green.
 | `Libraries` | 37 / 37 | — |
-| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); one token invoked by `transferFrom` and `balanceOf` in the same transaction; `msg.value`/WETH satoshi model |
-| `SushiRoll` | 3 / 16 | the pair created inside the roll transaction; one token invoked by two returning methods; the migrator-style circular `A->B->A` read |
+| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); `msg.value`/WETH satoshi model. The Router now publishes a route (see below), so its own `factory`/`quote`/amount getters are co-spendable |
+| `SushiRoll` | 3 / 16 | the pair created inside the roll transaction; the pair address derived from a live `oldRouter.factory()` result; the migrator-style circular `A->B->A` read |
 | **Total** | **107 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is order-dependent: it passes in the
@@ -154,6 +154,36 @@ falls in its failing order. The case is not related to the merged-slot alternati
 no alternatives.
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
+
+### Message-bus route admission for the pair and the router
+
+The pair's returning state readers were the last shape without a route. Three compiler changes land together:
+
+- `messageBusHandlersByContract` selects a route's entry points per contract. The pair's default selection
+  admits its collection getters (`allowance`, `balanceOf`, `nonces`), so the scalar `getReserves` reader is
+  refused as `mixed-scalar-and-collection-route-not-enabled`. Selecting `['getReserves']` for the pair publishes
+  a scalar-only route with `getReserves` eligible. `mint` still cannot join: a conditional scalar write beside
+  mapping rows and an event has no row-local settlement, and it stays `KERNEL_LAYOUT`
+  (`conditional-scalar-collection-event-settlement`). Regression:
+  `packages/solidc/test/journal-message-bus/PairRouteAdmission.test.ts`.
+- `InlineReturningStateHelpers` accepts an implicit named-return body (a route clone is snapshotted before
+  `NamedReturnTransformation` appends its tail). This is what removes the X118 refusal of `_mintFee` -> `_mint`.
+  The explicit-return path is unchanged byte-for-byte; only fall-through bodies take the new lowering.
+- A route clone that reaches a call target selected by an internal loop index has no row binding for the
+  direct-function witness array. SymbolTable now refuses that handler by name
+  (`GraphHandlerShapeError`, attributed to the clone) instead of leaving an untyped
+  `__internal__loopTargets<n>` access that failed the whole contract's final typecheck. Regression:
+  `packages/solidc/test/journal-message-bus/GraphLoopTargetAdmission.test.ts`. This is what lets
+  `UniswapV2Router02` publish a route at all; it admits `WETH`, `__receive`, `addLiquidity`, `factory`,
+  `getAmountIn`, `getAmountOut`, `quote`, `removeLiquidity` and `removeLiquidityWithPermit`.
+
+Publishing a pair route changes the pair's direct-entry ABI: the vmap batch for `transferFrom` is split
+differently, and the ERC20-via-pair `transferFrom` then fails preflight (`OP_VERIFY`), 14 -> 13. The parity
+project therefore keeps the pair on its established direct lowering with `messageBusByContract`
+(`UniswapV2Pair: false`, `SushiSwapPair: false`). A regression
+(`PairRouteAdmission.test.ts > per-contract message-bus opt-out`) asserts the opted-out contract's bytecode is
+identical to a `messageBus: false` build while a sibling still publishes its route. The route capability stays
+available for a participant whose direct entries do not change.
 
 ### Parity fixes in the compiler/SDK
 

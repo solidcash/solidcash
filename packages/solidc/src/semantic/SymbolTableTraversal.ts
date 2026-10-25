@@ -8341,6 +8341,26 @@ export default class SymbolTableTraversal extends AstTraversal {
     return { access, arrayId };
   }
 
+  /**
+   * A graph row carries its call targets as pinned parameters or state; a target selected by an internal loop
+   * index has no row binding. The direct-function lowering would synthesize the loop target witness here, but a
+   * handler clone has no parameter to carry it, leaving an unresolved array access that the final typecheck
+   * rejects for the whole contract. Refuse the handler by name so route synthesis quarantines exactly it and
+   * still publishes every independently valid row.
+   */
+  private assertGraphHandlerLoopWitness(node: Node): void {
+    const fn = this.currentFunction;
+    if (fn === undefined) return;
+    // Every route clone has a compiler-owned parameter frame; the direct source handler is the only place a
+    // loop-target witness array can be threaded in from its caller.
+    if (fn.graphEmissionHandler !== true && !fn.name.startsWith('__message_bus_')) return;
+    throw new GraphHandlerShapeError(
+      node,
+      `Graph handler '${fn.name}' requires a pinned call target: a target selected by a loop index has no row `
+      + 'binding',
+    );
+  }
+
   private viewReturnCounter = 0;
 
   // These fields point outside the lexical body currently being rewritten. Following one while replacing a
@@ -9309,6 +9329,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
+            this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
@@ -9324,6 +9345,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
+            this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const call = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
@@ -9417,6 +9439,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // (path[i]); a target with none (no per-iteration leaf) is left unmatched and fails closed downstream.
           const loopIdx = this.findLoopIndexInComputedTarget(ae, this.currentFunction?.body);
           if (loopIdx) {
+            this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);

@@ -168,6 +168,19 @@ export interface CompilerOptions {
   // Omitted means all eligible entry points. This avoids cloning dozens of unrelated external handlers when one
   // atomic DAG needs a few.
   messageBusHandlers?: readonly (string | AbiFunctionReference)[];
+  /**
+   * Per-contract override of `messageBusHandlers`, keyed by contract name. A project whose participants need
+   * different atomic methods can select each contract's handlers separately; a contract with no entry falls back
+   * to `messageBusHandlers`. Selecting a subset also changes the route's shape, so a contract whose collection
+   * getters would otherwise claim the route can publish a scalar-only route for just its state reader.
+   */
+  messageBusHandlersByContract?: Readonly<Record<string, readonly (string | AbiFunctionReference)[]>>;
+  /**
+   * Per-contract opt-out of route synthesis, keyed by contract name. Only the listed contract skips the route;
+   * every other participant keeps its route. Use this for a participant whose direct entry points must keep the
+   * lowering they had before the project enabled `messageBus`.
+   */
+  messageBusByContract?: Readonly<Record<string, boolean>>;
   // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.

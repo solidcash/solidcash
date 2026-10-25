@@ -391,19 +391,19 @@
         "legacy": {
           "convention": "legacy-unroll",
           "routeBytes": 44865,
-          "fullBytes": 248241,
+          "fullBytes": 249861,
           "routeHash": "8b23a047b9518cb5f01b07fc72fce24dbed71babb5bc023a1937aee656f1486b",
-          "fullHash": "db972feff1d49396d1797f52b28117e7f46bb5794cffe2f25d8882bef4b20e7e",
-          "metadataHash": "1f0eb8c2d31cf6eb36106d683e4760f364d37bf97a5580eb17bf8ef315c3edd1",
+          "fullHash": "c2dda8e5d5c1a9859f3336b2821b7ac5fc7ec45ca0983d0fc475780ea88d8c97",
+          "metadataHash": "3fdbb41e59ee72dc74f1dd55bb65ce925b11708efae0740a8211079984799147",
           "handlers": { "total": 38, "eligible": 28, "refused": 10 }
         },
         "kernel": {
           "convention": "kernel-row-loop",
           "routeBytes": 14850,
-          "fullBytes": 312137,
+          "fullBytes": 314117,
           "routeHash": "756b40df2ee1a36ef8b0fb70b59f1ebd61fdfad96c60f767f32e1b9a78dd2f59",
-          "fullHash": "948b071656d394af1d2e1173a73a84dc7dbb492f2be99aae72f41ab0feaa6ab8",
-          "metadataHash": "9dad32df2e083af83a0326df29d962a65b74a982e47d72f799e087549ebce58b",
+          "fullHash": "d66cead36f12130aa2950fa12c8dce1c67076345b7005f9a4019dd43dead7a65",
+          "metadataHash": "11695379144966cec471e3d1cc380e4591cca69d9d3dedc9fd1dabc2446d54e0",
           "handlers": { "total": 38, "eligible": 38, "refused": 0 }
         }
       }
@@ -425,11 +425,11 @@
       "modes": {
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 1068,
-          "fullBytes": 16251,
-          "routeHash": "54e76c411170ca021f64d2d3291851698ee7d42bdf164b1dbdc4ab6a040b28b7",
-          "fullHash": "3be25c1767924419e6e18cef130861419965e038f68fc1b10f284d02638fda4a",
-          "metadataHash": "b454c12fe17e52deda2b4a358af774ff5d94a914846140141670080640182394",
+          "routeBytes": 1073,
+          "fullBytes": 16665,
+          "routeHash": "33d033e70695d4ae0898b10e535bd98370dd74f8ade2f852f17ac5a0780ce810",
+          "fullHash": "30a99be7d2422b3f01168de3cb742be77a4d0b43fe235d991648a79d9a8c5f9d",
+          "metadataHash": "afc67ded990fb87bdf79b61b096d7be5a44a3e67efbf458b3b8138092aa41460",
           "handlers": { "total": 10, "eligible": 10, "refused": 0 }
         }
       }

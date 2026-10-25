@@ -127,6 +127,21 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
+
+The protocol-fee lane's root cause is in entry-key classification. `_mintFee` writes `balanceOf[_feeTo]`, where
+`_feeTo` is a local declared `address(0)` and reassigned from `factory.feeToAndMigrator()`. Key collection keeps
+the declaration initializer, so that write's canonical key is `cast:address(lit:0)` and it merges with the
+first-mint `balanceOf[address(0)]` write into one entry slot. The SDK therefore publishes
+`vmapBatchSlot_1 = H(20 zero bytes)` while the covenant's fee-site emission hashes the runtime recipient
+(`H(47d9fe…)` in the test) and the batch key check fails at input 0. Publishing the tuple-result producer key
+splits the slot correctly (3 entries) and the key check passes, but the extra conditional target then exposes
+three separate gaps: the direct multi-target batch refuses the `-2` inactive sentinel, its output census counts
+read-only targets naively, and the SDK's event/external-return output geometry shifts when both conditional
+lanes are read-only. An attempted fix (producer key + decidable activation recipes + read-only lanes + duplicate
+census subtraction) made this test pass but regressed `mints proportional liquidity`, `clears kLast when fees are
+turned off` and `burns liquidity and returns the underlying tokens`, so it was reverted. The next step is to
+publish the producer key plus a runtime key/value alternative on the merged slot (or allocate conditional write
+flags for direct multi-slot batches) rather than splitting the slot.
 | `Libraries` | 32 / 37 | reverting-callee message translation (2); absent-selector `safeApprove` call (1); ETH value (2) |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); factory `getPair` probe return carrier; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |

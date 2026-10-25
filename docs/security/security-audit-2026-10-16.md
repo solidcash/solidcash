@@ -989,6 +989,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   refuses a padded redeem too: it compared a one-argument payload with the pad, leaving the real argument free.
   Test: `VoidCallArguments.test.ts` (a forged callee argument is refused by the caller's input, and the same
   transaction with the caller agreeing is accepted).
+- **Readonly alias across a write** (found 2026-10-25 reviewing the multi-call writer frames of `87384e849`; never
+  released). In a direct multi-call group a zero-argument view call shared the record and ordinal of the first
+  identical call even when a call that may write ran between them, so `before = c.get(); c.add(a); after = c.get()`
+  read `after` from the frame before the write and the stale value was accepted. `1f6aa9bb1` ends the run of reads
+  sharing a record at each call that may write. No other view-call test source changes bytes. Test:
+  `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts` (k).
 
 ### Not changed, by decision
 

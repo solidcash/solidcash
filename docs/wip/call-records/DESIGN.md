@@ -50,18 +50,25 @@ A direct return carrier becomes a call record (as built):
 - One spend, several calls: the callee side is built (semantic/CallBatch.ts, test `CallBatch.test.ts`). It is off
   unless the contract is compiled with `callBatch: true`, so simple contracts stay lean (user, 2026-10-24); phase 2
   also turns it on for a callee whose caller in the same compilation repeats calls to it. A direct, unsplit callee
-  with an entry that returns values and preserves all state (no value, delegate, msg.data, external read or call,
-  event, side-car or hidden witness but its return index) carries a multi-call entry under the reserved selector
-  `0x53434442`, published as `callBatch: { selector }` with `callBatchRow: true` on its frame entries. Unlocking:
-  `<sel> [frame 0]..[frame K-1] <K>`, a frame being the entry's standalone pushes, then its selector. The entry moves
-  the frames to the alternate stack with a copy of the constructor parameters each, then runs them from frame 0 up to
-  a sentinel, frame k on a stack holding that frame alone, its context k on the alternate stack. A frame digests
-  ordinal `max(k, 0)`, takes its fixed entries `__internal__rowEntryShift` inputs past their slots, skips the
-  collection and data-record counts and the record count, and hands back `pinned - 2`; the entry requires -1 from each
-  frame, then counts K records and holds the own-category mutable outputs to the inputs: each sits at such an input's
-  index, and every such input comes back at its own index unchanged (before 2026-10-24 it walked the inputs only, so
-  an extra data record or mapping node beside a batch of entry readers passed). Ordinary dispatch pushes context -1,
-  which keeps a standalone run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch:
+  with an entry, void or returning, that writes at most fixed state fields (no mapping or dynamic write, value,
+  delegate, msg.data, external read or call, event, transfer, deploy, side-car, `this.outState`, invoked body that
+  reads state, or hidden witness but its record index) carries a multi-call entry under the reserved selector
+  `0x53434442`, published as `callBatch: { selector }` with `callBatchRow: true` on its frame entries; a void frame
+  takes `__internal__returnOutputIdx` too. Unlocking: `<sel> [frame 0]..[frame K-1] <K>`, a frame being the entry's
+  standalone pushes, then its selector. The entry moves the frames to the alternate stack with a copy of the
+  constructor parameters each, reads the record vector (data record j's commitment, input master + 1 + j, for every
+  j < D), then runs the frames from frame 0 up to a sentinel, frame k on a stack holding that frame alone, the vector
+  and its context k under it on the alternate stack. A frame digests ordinal `max(k, 0)`, takes its fixed entries
+  `__internal__rowEntryShift` inputs past their slots, and, when it touches records, holds the vector as views (in a
+  batch the items, standalone its records' commitments and 0 for the rest): its reads decode them, a rebuilt record
+  replaces its view, and its input pins run at master + 1 + j in a batch. In a batch it skips its record outputs, the
+  collection, data-record and C3 counts and the outside-block pins, then hands back the views and `pinned - 2`, a void
+  frame pinning `digest || 0x01`; standalone it settles its records as before and a void run pins none. The entry
+  requires -1 from each frame, pins the vector's final items at outputs master + 1 + j, counts K records and holds the
+  own-category mutable outputs to the inputs: each sits at such an input's index, and every such input comes back at
+  its own index unchanged, a record of the band with its item (before 2026-10-24 it walked the inputs only, so an extra
+  data record or mapping node beside a batch of entry readers passed). Ordinary dispatch pushes context -1, which keeps
+  a standalone run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch:
   false`, when the contract with it would not leave a tenth of the per-input limit (at most 10,000 bytes). Message-bus
   compiles carry none: the bus runs repeated calls as rows, and the conventions stay separate: a direct caller is
   never turned into a bus composition. Callers that lay ordinals other than 0: section 4.
@@ -135,13 +142,14 @@ A direct return carrier becomes a call record (as built):
   looped call's anchor the first of the group's calls in its loop (`iterationDomain.sourceLoopId`), so two calls of
   one loop body interleave. A call in nested loops (`nestedIterationDomains`) is refused for now, as are two looped
   calls whose loops are not published. A group reaching two or more frames spends the callee master once: the first
-  call's group carries the batch block `[master, data records, each frame's entries in frame order, one record slot
-  per frame]` and `Contract.createCallBatchUnlocker` with the frames in ordinal order, each frame's
+  call's group carries the batch block `[master, every data record, each frame's entries in frame order, one record
+  slot per frame]` and `Contract.createCallBatchUnlocker` with the frames in ordinal order, each frame's
   `__internal__returnOutputIdx` its master input plus its record slot and its `__internal__rowEntryShift` its entries'
   distance past their slots; a frame reading entries an earlier frame reads shares their inputs. Every other call of
   the group is a member: it names the same master and reads its frame's record at the batch's first record plus its
   ordinal (0 in a loop, which adds the counter), and lays no record. Frame k's record is `callRecordCommitment(result,
-  digest(fn, args, k))`, the result taken from the frame's own probe. A group reaching one call keeps the standalone
+  digest(fn, args, k))`, the result taken from the frame's own probe; a frame that writes state is refused here
+  until its probe runs on the records the frames before it left. A group reaching one call keeps the standalone
   spend with that call's own arguments. A callee without the entry is refused, naming `callBatch: true` and the
   multi-contract compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
   builds a bus batch (`buildRepeatedExternalBatch`), never reads through the composer, and is never promoted at send.

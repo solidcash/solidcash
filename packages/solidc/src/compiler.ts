@@ -2625,9 +2625,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
 function settleCallBatch(code: string, compilerOptions: CompileOptions, artifact: Artifact): Artifact {
   if (compilerOptions.callBatch !== true) return artifact;
   const carried = typeof artifact.callBatch === 'object';
-  if (!carried && !artifact.abi.some((fn) => fn.inputs.some((input) => input.name === CALL_BATCH_ROW_SHIFT))) {
-    return artifact;
-  }
+  // A frame candidate's witnesses: an entry shift, or a void entry's record index.
+  const takesFrameWitness = artifact.abi.some((fn) => fn.inputs.some((input) => input.name === CALL_BATCH_ROW_SHIFT
+    || (input.name === '__internal__returnOutputIdx' && (fn.outputs?.length ?? 0) === 0)));
+  if (!carried && !takesFrameWitness) return artifact;
   const limit = Math.min(compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE, MAX_INPUT_BYTESIZE);
   const room = Math.floor(limit * (1 - CALL_BATCH_INPUT_RESERVE_FRACTION));
   const bytes = asmToBytecode(artifact.bytecode).length;

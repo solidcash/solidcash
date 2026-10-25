@@ -12,6 +12,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { DirectCallBatchCall } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -63,7 +64,7 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bCompilerInternalArgs: Record<string, FunctionArgument>;
   bPlannedEntryInserts: NonNullable<ExternalCallUtxoGroup['plannedEntryInserts']>;
   bRelativeOutputInternalArgs: Set<string>;
-  bState: { masterUtxo: Utxo };
+  bState: { masterUtxo: Utxo; dataNftUtxos?: readonly Utxo[] };
   bStatelayout: StateLayout;
   bDataNfts: UnlockableUtxo[];
   bRequiredNftIndices: number[];
@@ -335,6 +336,10 @@ export async function pushCreateBuilderDirectExternalCallGroup(
           returnEventInBlock: bReturnEventInBlock,
           dataNftUtxos: [...bDataNfts],
           requiredDataNftIndices: [...bRequiredNftIndices],
+          // Placeholder unlockers, re-created at the batch master's index as every data record's are.
+          dataRecords: (bState.dataNftUtxos ?? []).map((utxo) => ({
+            ...utxo, unlocker: createDataNftUnlocker(callInfo.externalContract.inner, 0, externalCategoryId),
+          })),
         },
       }),
     }),

@@ -2639,12 +2639,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
   private currentContractHasMessageBus: boolean = false;
-  /** An entry of this contract returns values, so every direct run of it accounts for its call records. */
+  /**
+   * An entry of this contract returns values, or it carries the multi-call entry, so every direct run of it accounts
+   * for its call records.
+   */
   private currentContractSettlesCallRecords: boolean = false;
   /** The contract carries the multi-call entry: its frame candidates compile as frames (semantic/CallBatch.ts). */
   private currentContractCarriesCallBatch: boolean = false;
   /** The entry being compiled is a frame: it holds its call context, digests its ordinal and hands back its pin. */
   private callBatchFrame: boolean = false;
+  /**
+   * The frame touches data records, so it holds the record vector as tracked views (callBatchRecordView): the items
+   * a batch hands it, or standalone its own records' commitments. Its state reads and writes go through them.
+   */
+  private callBatchRecordViews: boolean = false;
   /** The selector dispatcher hands each entry it invokes its call record's prefix (CALL_RECORD_PREFIX). */
   private dispatchHandsCallPrefix: boolean = false;
   /** The dispatched entry this body traversal compiles, which finds its call record's prefix on top. */
@@ -5390,16 +5398,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('__internal__redeemPushSize');
     }
 
-    // The multi-call entry's frames: candidates that settle a record and read no call data or value of their own.
+    // The multi-call entry's frames: candidates that settle a record and read no call data or value of their own. A
+    // frame reads its records through the vector the entry carries, which a body it invokes cannot reach.
     for (const fn of node.functions) {
       if (fn.callBatchCandidate !== true) continue;
       const value = new MsgValueUsageCollector();
       value.visit(fn);
-      if (value.found || this.contractUsesMsgData || this.blockEndsWithRevert(fn.body)) fn.callBatchCandidate = false;
+      if (value.found || this.contractUsesMsgData || this.blockEndsWithRevert(fn.body)
+        || (this.dataNftCount > 0 && this.invokesStateAccess(fn.body))) fn.callBatchCandidate = false;
     }
     this.currentContractCarriesCallBatch = this.directConvention && !this.framedMaster
       && this.compilerOptions.callBatch === true && this.compilerOptions.__cheapAdmissionCodegen !== true
       && !node.fallbackDef && !node.receiveDef && node.functions.some((fn) => fn.callBatchCandidate === true);
+    // A void frame pins a record in a batch, so every run of a contract with the entry counts its records.
+    if (this.currentContractCarriesCallBatch) this.currentContractSettlesCallRecords = true;
 
     // Inline (<=1 use) vs shared OP_DEFINE subroutine (>=2 uses) per registered subroutine,
     // chosen by a usage-count probe. Defines must precede the bodies that invoke them.
@@ -6762,9 +6774,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The multi-call entry, `<sel> [frame 0]..[frame K-1] <K>`: a frame is an entry's standalone pushes, then its
    * selector. It moves each frame to the alternate stack, the top one first, with a copy of the constructor
    * parameters and its ordinal, then runs them from frame 0 up to a sentinel, each on a stack holding that frame
-   * alone, the stack its standalone run sees. Each frame hands back proof that it took its ordinal and pinned its
-   * record; the entry then counts the spend's records and holds the contract's mutable records to the spend's
-   * inputs, the checks the frames leave to it.
+   * alone, the stack its standalone run sees. The record vector, data record j's commitment read once from input
+   * master + 1 + j, rides the alternate stack under each frame's context, and a frame that touches a record reads
+   * and rewrites it there. Each frame hands back proof that it took its ordinal and pinned its record; the entry
+   * then pins the vector's final items at outputs master + 1 + j, counts the spend's records and holds the contract's
+   * other mutable records to the spend's inputs, the checks the frames leave to it.
    */
   private emitCallBatchDefine(
     node: ContractNode, frames: readonly FunctionDefinitionNode[], loc: SingleLocationData,
@@ -6775,6 +6789,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const table = Uint8Array.from(frames.flatMap((fn) => [...fn.functionSelector!, fn.parameters.length]));
     const constructorCopies = Array.from({ length: n }, (_, i) => [num(3 + i), Op.OP_PICK, Op.OP_TOALTSTACK]);
     const dropCounts = [...Array.from({ length: (n + 1) >> 1 }, () => Op.OP_2DROP), ...((n & 1) ? [] : [Op.OP_DROP])];
+    const records = this.dataNftCount;
+    const recordIndex = (j: number): Script => [Op.OP_INPUTINDEX, ...(j === 0 ? [Op.OP_1ADD] : [num(1 + j), Op.OP_ADD])];
+    // [] -> [item 0 .. item D-1]
+    const loadRecords = Array.from({ length: records }, (_, j) => [...recordIndex(j), Op.OP_UTXOTOKENCOMMITMENT]);
+    // The items at the bottom go to the alternate stack, the last first, so a frame pops item 0 first.
+    const parkRecords = Array.from({ length: records }, (_, s) => [
+      Op.OP_DEPTH, ...(records - s === 1 ? [Op.OP_1SUB] : [num(records - s), Op.OP_SUB]), Op.OP_ROLL, Op.OP_TOALTSTACK,
+    ]);
+    // [item 0 .. item D-1] -> []: output master + 1 + j carries item j.
+    const settleRecords = Array.from({ length: records }, (_, s) => [
+      ...recordIndex(records - 1 - s), Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    ]);
+    // [.., i] -> [.., i, in the record band]
+    const inRecordBand: Script = records === 1 ? [Op.OP_DUP, Op.OP_INPUTINDEX, Op.OP_1ADD, Op.OP_NUMEQUAL]
+      : [Op.OP_DUP, Op.OP_INPUTINDEX, Op.OP_1ADD, Op.OP_DUP, num(records), Op.OP_ADD, Op.OP_WITHIN];
+    const keepCommitment: Script = [Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OVER, Op.OP_OUTPUTTOKENCOMMITMENT,
+      Op.OP_EQUALVERIFY];
     const script: Script = [
       // A nested multi-call is refused: this run's own context is -1.
       Op.OP_FROMALTSTACK, Op.OP_1NEGATE, Op.OP_NUMEQUALVERIFY,
@@ -6799,17 +6830,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Nothing is left beside the constructor parameters and the counter.
       Op.OP_DEPTH, num(n + 1), Op.OP_NUMEQUALVERIFY,
       ...dropCounts,
+      ...loadRecords.flat(),
       Op.OP_FROMALTSTACK, // frame 0's item count
       Op.OP_BEGIN,
       Op.OP_BEGIN, Op.OP_FROMALTSTACK, Op.OP_SWAP, Op.OP_1SUB, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
-      // [k, pushes.., ctor.., sel] -> [pushes.., ctor.., sel]; alt: [.., k]
+      // [items.., k, pushes.., ctor.., sel] -> [pushes.., ctor.., sel]; alt: [.., item D-1 .. item 0, k]
+      ...parkRecords.flat(),
       Op.OP_DEPTH, Op.OP_1SUB, Op.OP_ROLL, Op.OP_TOALTSTACK,
       Op.OP_INVOKE,
       Op.OP_VERIFY,
       Op.OP_FROMALTSTACK, Op.OP_1NEGATE, Op.OP_NUMEQUALVERIFY, // it took its ordinal and pinned its record
+      ...Array.from({ length: records }, () => Op.OP_FROMALTSTACK), // the items it left
       Op.OP_FROMALTSTACK, Op.OP_DUP, Op.OP_NOT, // the next frame's item count, or the sentinel
       Op.OP_UNTIL,
       Op.OP_DROP,
+      ...settleRecords.flat(),
       // The spend holds exactly K records of this category: an `OP_TRUE` lock and no capability.
       Op.OP_FROMALTSTACK, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, num(32), Op.OP_SPLIT, Op.OP_DROP,
       Op.OP_0, Op.OP_TXOUTPUTCOUNT,
@@ -6818,7 +6853,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP, Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL,
       Op.OP_DROP, Op.OP_NIP, Op.OP_NUMEQUALVERIFY,
       // The own-category mutable outputs are the inputs: each sits at such an input's index, and every such input
-      // comes back at its own index unchanged.
+      // comes back at its own index unchanged, a data record of the band with the item settled above.
       Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, num(32), Op.OP_SPLIT, Op.OP_DROP, num(1), Op.OP_CAT,
       Op.OP_TXOUTPUTCOUNT,
       Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL,
@@ -6831,7 +6866,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...([
         [Op.OP_UTXOBYTECODE, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY],
         [Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY],
-        [Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY],
+      ] as const).flatMap(([input, output, compare]) => [Op.OP_DUP, input, Op.OP_OVER, output, compare]),
+      ...(records === 0 ? keepCommitment : [...inRecordBand, Op.OP_NOTIF, ...keepCommitment, Op.OP_ENDIF]),
+      ...([
         [Op.OP_UTXOVALUE, Op.OP_OUTPUTVALUE, Op.OP_NUMEQUALVERIFY],
         [Op.OP_UTXOTOKENAMOUNT, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NUMEQUALVERIFY],
       ] as const).flatMap(([input, output, compare]) => [Op.OP_DUP, input, Op.OP_OVER, output, compare]),
@@ -8923,6 +8960,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
     this.callBatchFrame = false;
+    this.callBatchRecordViews = false;
     // A nested loop that does not own a new upsert must keep the enclosing loop's stream. Each function starts
     // from an empty map so a previous function's stream cannot satisfy this one.
     this.sortedUpsertLoopContexts = new Map();
@@ -9436,7 +9474,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.callPrefixEntry === node) this.pushToStack(CALL_RECORD_PREFIX);
       // A frame of the multi-call entry takes its call context before anything else uses the alternate stack.
       if (node.callBatchCandidate === true) {
-        this.callBatchFrame = this.currentContractCarriesCallBatch && this.settlesDirectCallRecord(node);
+        this.callBatchFrame = this.currentContractCarriesCallBatch && this.settlesCallBatchFrameRecord(node);
         node.callBatchRow = this.callBatchFrame;
         this.emitCallBatchFramePrologue(node);
       }
@@ -10110,7 +10148,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (!this.isDefineSubTraversal && node.isEntryPoint) this.emitEntryFunctionIdChecks(node);
     // The digest of the call this entry executes, taken before the body consumes its parameters; its record pins it.
-    if (!this.isDefineSubTraversal && this.settlesDirectCallRecord(node)) this.emitOwnCallRecordDigest(node);
+    if (!this.isDefineSubTraversal && (this.settlesDirectCallRecord(node)
+      || (this.callBatchFrame && node.returnTypes.length === 0))) this.emitOwnCallRecordDigest(node);
     // A callee called in a loop or a branch counts its calls from 0: each call takes the next ordinal.
     const callOrdinalCounters = this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.countedCallOrdinalGroups();
     for (const group of callOrdinalCounters) {
@@ -10569,6 +10608,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (this.framedReturnsValue) this.emitFramedReturnCheck(node);
         } else if (node.returnTypes.length > 0) {
           this.emitReturnEventCovenantVerification(node);
+        } else if (this.callBatchFrame) {
+          this.emitVoidFrameRecordSettlement({ location: node.location, positionHint: PositionHint.END });
         } else if (!this.isDefineSubTraversal && this.contractSettlesCallRecords()
           && !this.isCompilerMessageBusRoute(node)) {
           // A void run of a contract whose entries return values leaves no record of its category.
@@ -10704,8 +10745,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const skipRetirement = this.beginAtomicSelfdestructExclusion(
           { location: node.body.location, positionHint: PositionHint.END },
         );
+        // A frame counts standalone only: in a batch the entry holds the records, which other frames rewrite.
+        const frameGated = this.callBatchFrame && this.dataNftCount > 0;
+        if (frameGated) this.emitIfStandaloneRun({ location: node.body.location, positionHint: PositionHint.END });
         // The count alone still balances a record rewritten in place, or destroyed and re-emitted at another lock.
         this.emitOwnCategoryMutableNftConservation(node, false, this.countedRecordPin(node, settlesDataRecords));
+        if (frameGated) this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         if (skipRetirement) {
           this.emit(Op.OP_ENDIF, { location: node.body.location, positionHint: PositionHint.END });
         }
@@ -36187,19 +36232,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // one authority for the base, which is the active input or the authenticated owner of a frame that has one.
       if (this.readsRecordsFromFrame) this.emitRecordBlockBase('in', locationData);
       else this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
+      if (this.callBatchRecordViews) this.emitFrameRecordOffset(nftIdx, compactOffset, 1, locationData);
+      else this.emit(encodeInt(BigInt(compactOffset)), locationData);
       this.emit(Op.OP_ADD, locationData);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
       this.emitVerifyCatBaseEqMaster(locationData);
       // Category base is not the record. An own-category mutable NFT at another lock must not satisfy the read.
       if (!this.framedMaster && !this.readsRecordsFromFrame) {
-        this.emitDataNftInputLockPin(compactOffset, locationData);
+        this.emitDataNftInputLockPin(compactOffset, locationData, nftIdx);
       }
     }
   }
 
-  /** The data NFT at `compactOffset` is locked to this contract's data-NFT covenant. Stack neutral. */
-  private emitDataNftInputLockPin(compactOffset: number, loc: SingleLocationData): void {
+  /**
+   * `[..]` -> `[.., offset]` for a frame's record: its compact offset standalone, 1 + nftIndex in a batch, whose
+   * block holds every data record. `untracked` items sit above the tracked stack.
+   */
+  private emitFrameRecordOffset(nftIdx: number, compactOffset: number, untracked: number, loc: SingleLocationData): void {
+    if (compactOffset === 1 + nftIdx) {
+      this.emit(encodeInt(BigInt(compactOffset)), loc);
+      return;
+    }
+    this.emitPickAt(this.getStackIndex(CALL_BATCH_CONTEXT) + untracked, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(BigInt(compactOffset)), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(encodeInt(BigInt(1 + nftIdx)), loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * The data NFT at `compactOffset` is locked to this contract's data-NFT covenant; a frame's record `nftIdx` sits
+   * at its batch offset in a batch. Stack neutral.
+   */
+  private emitDataNftInputLockPin(compactOffset: number, loc: SingleLocationData, nftIdx?: number): void {
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
@@ -36211,7 +36279,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     else this.emitDataNftLbc(loc);
     this.stack[0] = '(__dnft_pin)';
     this.emitMasterInputIndex(loc);
-    if (compactOffset > 0) {
+    if (this.callBatchRecordViews && nftIdx !== undefined) {
+      this.emitFrameRecordOffset(nftIdx, compactOffset, 1, loc);
+      this.emit(Op.OP_ADD, loc);
+    } else if (compactOffset > 0) {
       this.emit(encodeInt(BigInt(compactOffset)), loc);
       this.emit(Op.OP_ADD, loc);
     }
@@ -36430,14 +36501,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.pushToStack('(value)');
         }
 
-        // Verify output commitment matches reconstructed commitment
-        this.emitDataNftOutputCommitment(compactOffset, locationData);
-        this.pushToStack('(value)');
+        if (this.callBatchRecordViews) {
+          // A frame's rebuilt record becomes its view; the run settles the views once its writes are all made.
+          const view = this.callBatchRecordView(nftIdx);
+          const viewIdx = this.getStackIndex(view);
+          if (viewIdx === 1) {
+            this.emit(Op.OP_NIP, locationData);
+          } else {
+            this.emitRollAt(viewIdx, locationData);
+            this.emit(Op.OP_DROP, locationData);
+          }
+          this.removeFromStack(viewIdx);
+          this.stack[0] = view;
+        } else {
+          // Verify output commitment matches reconstructed commitment
+          this.emitDataNftOutputCommitment(compactOffset, locationData);
+          this.pushToStack('(value)');
 
-        this.emit(Op.OP_EQUALVERIFY, locationData);
-        this.popFromStack(2);
+          this.emit(Op.OP_EQUALVERIFY, locationData);
+          this.popFromStack(2);
+        }
         this.framedReadSegment = previousReadSegment;
 
+      } else if (this.callBatchRecordViews) {
+        // A record the frame only reads keeps its view.
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
         if (node.messageBusUpgradeRoute === true && compactOffset === this.dataNftCount) {
@@ -36468,8 +36555,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
 
-      this.emitDataNftPreservation(compactOffset, locationData);
+      if (!this.callBatchRecordViews) this.emitDataNftPreservation(compactOffset, locationData);
     }
+    if (this.callBatchRecordViews) this.emitStandaloneFrameRecordSettlement(locationData);
 
     // Clean up pending state-write values from the stack. A contract-typed state field can also be the expected
     // receiver of a later external-call identity check (`target = replacement; target.f()`). Keep exactly those
@@ -36480,6 +36568,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (externalCallReceivers.has(stackName)) continue;
       this.emitDropSettlementValue(stackName, locationData, node);
     }
+  }
+
+  /**
+   * A frame's standalone settlement of its records: each record it touches is its view at the output its compact
+   * block names, and keeps its lock and category there. A batch leaves its views to the multi-call entry, which
+   * pins the vector's final items once the last frame has run. Stack neutral.
+   */
+  private emitStandaloneFrameRecordSettlement(loc: SingleLocationData): void {
+    this.emitIfStandaloneRun(loc);
+    for (const [nftIdx, compactOffset] of this.compactOffsetMap) {
+      this.emitPickAt(this.getStackIndex(this.callBatchRecordView(nftIdx)), loc);
+      this.pushToStack('(value)');
+      this.emitDataNftOutputCommitment(compactOffset, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+      this.emitDataNftPreservation(compactOffset, loc);
+    }
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -42633,7 +42740,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return field.isDynamic ? new IntType(false, 32) : field.type;
   }
 
-  /** Decode one physical data-NFT field from a commitment already on top of the stack. */
+  /** Decode one physical data-NFT field of the record's commitment: its view in a frame, else its input's. */
   private emitStateFieldRead(
     sv: StateVariableNode,
     targetType: Type,
@@ -42642,6 +42749,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     extraStackOffset = 0,
     side: RecordSide = 'in',
   ): void {
+    if (this.callBatchRecordViews && side === 'in') {
+      this.emitPickAt(this.getStackIndex(this.callBatchRecordView(sv.nftIndex)) + extraStackOffset, loc);
+      this.emitStateFieldDecode(sv, targetType, fieldsInNft, loc);
+      return;
+    }
     if (this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase()) {
       this.emitMasterInputIndex(loc, extraStackOffset);
       this.emit(encodeInt(BigInt(this.compactOffsetMap.get(sv.nftIndex)!)), loc);
@@ -49217,7 +49329,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * A frame of the multi-call entry pops its call context into a tracked local: its ordinal, or -1 for a standalone
-   * run, whose entries take no shift. A candidate compiled standalone only takes no shift either.
+   * run, whose entries take no shift. A candidate compiled standalone only takes no shift either. A frame that
+   * touches data records then holds the record vector as views, item 0 deepest: in a batch the items the entry
+   * parked under its context, standalone the commitment of each record it touches and 0 for any other.
    */
   private emitCallBatchFramePrologue(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
@@ -49225,18 +49339,59 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.pushToStack(CALL_BATCH_CONTEXT);
     }
+    this.callBatchRecordViews = this.callBatchFrame && this.hasStateAccess && this.dataNftCount > 0
+      && this.compactOffsetMap.size > 0;
     const shift = this.getStackIndex(CALL_BATCH_ROW_SHIFT, true);
-    if (shift < 0) return;
+    if (shift < 0 && !this.callBatchRecordViews) return;
     if (this.callBatchFrame) {
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_LESSTHAN, loc);
       this.emit(Op.OP_IF, loc);
     }
-    this.emitPickAt(shift, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_VERIFY, loc);
+    if (shift >= 0) {
+      this.emitPickAt(shift, loc);
+      this.emit(Op.OP_NOT, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    }
+    if (this.callBatchRecordViews) {
+      const before = [...this.stack];
+      for (let j = 0; j < this.dataNftCount; j += 1) {
+        const offset = this.compactOffsetMap.get(j);
+        if (offset === undefined) {
+          this.emit(Op.OP_0, loc);
+        } else {
+          this.emitMasterInputIndex(loc);
+          this.emit(encodeInt(BigInt(offset)), loc);
+          this.emit(Op.OP_ADD, loc);
+          this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+        }
+        this.pushToStack(this.callBatchRecordView(j));
+      }
+      this.emit(Op.OP_ELSE, loc);
+      this.stack = before;
+      for (let j = 0; j < this.dataNftCount; j += 1) {
+        this.emit(Op.OP_FROMALTSTACK, loc);
+        this.pushToStack(this.callBatchRecordView(j));
+      }
+    }
     if (this.callBatchFrame) this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /** The tracked view a frame holds of data record `nftIndex`, its item of the record vector. */
+  private callBatchRecordView(nftIndex: number): string {
+    return `__internal__callBatchRecord${nftIndex}`;
+  }
+
+  /**
+   * True when `node` settles a record as a frame of the multi-call entry: a returning entry that settles a direct
+   * call record, or a void entry with the record witness, which pins `digest || 0x01` in a batch.
+   */
+  private settlesCallBatchFrameRecord(node: FunctionDefinitionNode): boolean {
+    if (node.returnTypes.length > 0) return this.settlesDirectCallRecord(node);
+    return !this.framedMaster && node.isEntryPoint && !node.graphEmissionHandler
+      && !this.isCompilerMessageBusRoute(node) && !this.functionHasDelegatecall && !this.blockEndsWithRevert(node.body)
+      && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
   }
 
   /** `<index> OP_PICK` in its one-byte forms: an entry body can ship without the peephole pass. */
@@ -49323,9 +49478,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emitCallRecordCount(loc);
     this.emit(Op.OP_ELSE, loc);
+    this.emitCallBatchHandOff(loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * `[.., expected]` -> `[..]` in a batch: the record vector a frame holds goes back under its hand-back, item D-1
+   * first, so the entry pops item 0 first. A frame without views left the items where the entry parked them.
+   */
+  private emitCallBatchHandOff(loc: SingleLocationData): void {
     this.emit(Op.OP_2, loc);
     this.emit(Op.OP_SUB, loc);
+    if (this.callBatchRecordViews) {
+      for (let j = this.dataNftCount - 1; j >= 0; j -= 1) {
+        this.emitPickAt(this.getStackIndex(this.callBatchRecordView(j)) + 1, loc);
+        this.emit(Op.OP_TOALTSTACK, loc);
+      }
+    }
     this.emit(Op.OP_TOALTSTACK, loc);
+  }
+
+  /**
+   * A void frame's record: in a batch it pins `digest || 0x01`, the inline form of an empty result, at its witness
+   * and hands back as a returning frame does. A standalone run pins none, so it holds no record of this category.
+   */
+  private emitVoidFrameRecordSettlement(loc: SingleLocationData): void {
+    this.registerCallRecordCount();
+    this.emitIfStandaloneRun(loc);
+    this.emit(Op.OP_0, loc);
+    this.emitCallRecordCount(loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emitPickAt(this.getStackIndex('__internal__callDigest'), loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc, 1);
+    this.emitCallRecordPin(loc);
+    this.emitCallBatchHandOff(loc);
     this.emit(Op.OP_ENDIF, loc);
   }
 
@@ -53842,10 +54030,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...this.entrySlots.filter((slot) => slot.inLoop).map((slot) => slot.collection),
       ...handlerManaged,
     ]);
-    // A frame of the multi-call entry counts these records only standalone: in a batch, the entry holds every
-    // own-category record of the spend in place, and the frames' counts would each see the others' records.
+    // A frame of the multi-call entry counts and pins these records only standalone: in a batch, the entry holds
+    // every own-category record of the spend to its inputs and the vector, and the frames' counts would each see the
+    // others' records. Without data records no frame changes one, so the pins below hold in a batch too.
     const gated = this.callBatchFrame && (this.dataNftCount > 0 || this.collectionDefinitions
       .some((collection) => collection.sorted && !counted.has(collection.name)));
+    const pinsGated = gated && this.dataNftCount > 0;
     if (gated) this.emitIfStandaloneRun(loc);
     for (const collection of this.collectionDefinitions) {
       if (!collection.sorted || counted.has(collection.name)) continue;
@@ -53865,7 +54055,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.invokeSharedEntryCheck(`dataRecordCount:${expected}`,
         (t, l) => t.emitDataRecordCensus(expected, l), loc)) this.emitDataRecordCensus(expected, loc);
     }
-    if (gated) this.emit(Op.OP_ENDIF, loc);
+    if (gated && !pinsGated) this.emit(Op.OP_ENDIF, loc);
     // A dynamic variable the function does not write still sits at its own entry address. The entry covenant
     // spends it beside any master, so pin the input count at that address to the output count.
     for (const sv of this.stateVariables) {
@@ -53887,6 +54077,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A compiler-owned route's handlers rewrite records across its whole block, so it pins only past the block.
     if (!this.isCompilerMessageBusRoute(node)) this.emitPreserveOutsideLayoutOwnMutable(node, loc);
     else this.emitRouteOutsideBlockRecordPin(node, loc);
+    if (pinsGated) this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

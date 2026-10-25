@@ -956,8 +956,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   category, so every iteration after the first read a record its callee, spent once, never pinned. `9323f7bae`
   counts state-preserving calls, which check the callee, the record's category and its carrier form on every
   iteration. `76d31b1ce` refuses the rest (`MESSAGE_BUS_REQUIRED`): a looped returning call that changes state, or
-  cannot be a frame for another reason, no longer compiles direct. The bus binds the same shapes per row. Test:
-  `DirectCallOrdinals.test.ts`.
+  cannot be a frame for another reason, no longer compiles direct. `f27311797` does the same for an opaque
+  `target.call(payload)` to a fixed target in a loop once its data is read (a Multicall over array targets checks
+  each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
+  target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
+  reads no record, so the bus binds the same shapes per row. Test: `DirectCallOrdinals.test.ts`.
 - **Direct void call arguments** (found 2026-10-25, `0b94c0f13`). A direct entry's typed call bound its callee's
   lock, master and method but its arguments only through the D50 record digest, so a call to a method returning
   nothing, one naming fewer arguments than its method declares, and a returning call to a contract-typed target (no
@@ -965,10 +968,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   could run the callee on other arguments beside a genuine caller run. The caller now checks each argument it names
   against the unlocking that runs the call, from the redeem end after parsing every push from the first, in the
   encoding the digest takes (`sig` arguments and the ones a call does not name stay free). It fails closed on a
-  non-script-hash lock, too few pushes or a redeem that drops a budget pad; a forwarding proxy's frame names the
-  implementation input it binds. Callees and already-bound callers keep their bytes; a one-call caller grows about
-  155 B, three calls sharing the helper about 213 B. Test: `VoidCallArguments.test.ts` (a forged callee argument is
-  refused by the caller's input, and the same transaction with the caller agreeing is accepted).
+  non-script-hash lock, too few pushes or a redeem that drops a budget pad, and so on a call into a forwarding proxy,
+  whose frame names another input the caller cannot tie to the proxy. Callees and already-bound callers keep their
+  bytes; a one-call caller grows about 155 B, three calls sharing the helper about 213 B. D8's compat binding now
+  refuses a padded redeem too: it compared a one-argument payload with the pad, leaving the real argument free.
+  Test: `VoidCallArguments.test.ts` (a forged callee argument is refused by the caller's input, and the same
+  transaction with the caller agreeing is accepted).
 
 ### Not changed, by decision
 
@@ -982,13 +987,25 @@ needs VM evidence, `rejectedWith` has no source fallback).
 ### Open
 
 - Direct call argument binding, residuals (2026-10-25, `0b94c0f13`). A callee whose redeem drops a budget pad (a user
-  external library) refuses such calls instead of binding them. A CREATE identity backed by a proxy (anchor witness
-  `>= 0`) is left to the compiler route it runs. A proxy frame is told from a direct unlocking by shape, so a
-  single-function callee whose entry takes exactly two stack values could run with its first argument equal to the
-  method's selector bytes while the caller binds another input's pushes. Loops, repeated or grouped calls, pointers,
-  self calls and `staticcall`/`call` modes are unchanged. Found beside it, not changed: a single-function interface
-  checks no selector, so a callee with more methods than its interface runs any of them; a fallback runs where a short
-  first push meets a multi-function callee; with the anchor witness `>= 0` the selector compared is a witness.
+  external library) and a forwarding proxy, whose frame names another input the caller cannot tie to the proxy,
+  refuse such calls instead of binding them (fail closed). A CREATE identity backed by a proxy (anchor witness `>= 0`)
+  is left to the compiler route it runs; a spender cannot take that branch for an ordinary target, whose anchor would
+  need the target's category at the target's lock. Loops, repeated or grouped calls, pointers, self calls and
+  `staticcall`/`call` modes are unchanged. Found beside it, method binding of a call no record digests (not changed;
+  beside presence-based `msg.sender`, F1, a spender can already make a callee run any method for a co-spent caller): a
+  single-function interface checks no selector, so a callee with more methods than its interface runs any of them; a
+  fallback runs where a short first push meets a multi-function callee, while the caller's selector check skips such a
+  push; with the anchor witness `>= 0` the selector compared is a witness. A void record pinned by the callee
+  (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract without returning
+  entries.
+
+- One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
+  selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
+  transaction that make the same returning call to one callee therefore both accept the callee's single run and
+  record; with a state-changing callee each caller takes an effect that ran once (two "withdrawals" credited for one
+  payment). It follows from the direct call edge being presence-based (F1, above): the callee does not bind which
+  caller it answers. Framed records and bus rows bind the caller. A fix needs the caller to bind the callee's call
+  edge, for example the callee's `msg.sender` witness, which reopens the F1 decision.
 
 - Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
   than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot

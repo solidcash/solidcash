@@ -390,6 +390,26 @@ passed its own test files. A compile of the affected test sources changed no byt
 third only the nine loop contracts whose five test files were updated and run. With all three, the gate identity and
 the three kernel cold baselines measure as pinned (44865 / 248241 / `db972fef`; 14850 / 312137; 1068 / 16251).
 
+### The second 2026-10-25 re-pin
+
+A review of the multi-call frames found that two calls on different targets that are equal at run time could both
+accept one run of their callee, and that a loop over targets shared its later callees' inputs with the call after
+it. Both were accepted at the VM before the fix (`29d652dad`, `a074dcabb`, `4f7fea498`; recorded in
+`docs/security/security-audit-2026-10-16.md` as "Two call sites on one callee run"). The checks enter the
+marketplace fixtures' direct entries, so the pins moved:
+
+| Pin | Old | New |
+|---|---|---|
+| `scripts/gate.sh` identity | `{"routeBytes":44865,"fullBytes":248241,"fullHash":"db972feff1d49396"}` | `{"routeBytes":44865,"fullBytes":249861,"fullHash":"c2dda8e5d5c1a985"}` |
+| kernel manifest, marketplace-v1 legacy | 44865 / 248241 / `db972fef` | 44865 / 249861 / `c2dda8e5` |
+| kernel manifest, marketplace-v1 kernel | 14850 / 312137 / `948b0716` | 14850 / 314117 / `d66cead3` |
+| kernel manifest, unicrow-claim kernel | 1068 / 16251 / `3be25c17` | 1073 / 16665 / `30a99be7` |
+
+Measured from a clean build at `4f7fea498`, where the fixture sources are untouched. Handler counts, conventions and
+the marketplace route hashes are unchanged. The claim route grows 5 bytes and its hash moves without a new operation:
+the bytecode outliner splits one shared helper, five `OP_0 <33> OP_NUM2BIN OP_CAT` blocks, into two that run the same
+five blocks.
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

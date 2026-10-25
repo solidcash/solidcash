@@ -261,11 +261,15 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
     straight-line call uses, instead of reading the tuple as native compact pushes (which collapsed it into the
     first `uint112` and failed its range check on a 95-byte number).
   Measured on a two-token path against a seeded pair: `getAmountsOut` returns `[1000, 906]` through the shipped
-  compiler and builder. The three-token path (two loop-expanded callees) still fails while deriving the **second**
-  callee's data-NFT state: `extractCommitmentsFromTrace` observes a 20-byte category-like expected commitment for
-  that callee's data output instead of the pair state (`decodeGenericPushdata: non-canonical pushdata byte 0xa4`).
-  That is the next blocker; `getAmountsIn` shares it. Both library chained tests use a three-token path, so the
-  Libraries count is unchanged at 23/37.
+  compiler and builder. A fifth fix was needed for the two-callee layout: the planned return-event index counted
+  only the caller's master + data NFTs, so a caller with a keccak/ecrecover side-car or its own return event put
+  the first loop-expanded return event on top of the second callee's data NFT. Counting those fixed block slots
+  now lays the caller at outputs 0-2, the two callee blocks at 3-6 and the two return events at 7-8. The
+  three-token path then fails at the caller's call-record digest check (ip 256 in the caller body): both seeded
+  return events carry the **same** 128-byte record (`<record digest> || <96-byte tuple>`), so iteration 1 cannot
+  match the digest the caller derives from its own `path[i], path[i+1]` arguments. Giving each loop-expanded
+  occurrence its own record digest is the next blocker; `getAmountsIn` shares it. Both library chained tests use
+  a three-token path, so the Libraries count is unchanged at 23/37.
 
 - **A Router-built transaction that deploys a pair through the factory.** `addLiquidity` calls
   `factory.createPair` inside `_addLiquidity` when the pair is absent, then immediately calls

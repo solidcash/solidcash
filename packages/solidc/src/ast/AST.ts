@@ -3046,11 +3046,14 @@ export interface ExternalCallExpression {
   fields?: string[];
   parameters?: string[];
   statements?: ExternalCallStatement[];
+  /** Declared result types of the helper; names are present when the source named every result. */
+  returnTypes?: string[];
+  returnNames?: string[];
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block'
-  | 'require';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'tupleAssign' | 'while' | 'branch' | 'return'
+  | 'expression' | 'block' | 'require';
   name?: string;
   type?: string;
   index?: ExternalCallExpression;
@@ -3058,6 +3061,12 @@ export interface ExternalCallStatement {
   condition?: ExternalCallExpression;
   statements?: ExternalCallStatement[];
   elseStatements?: ExternalCallStatement[];
+  /** One slot per tuple component; `null` is a discarded `(, x)` slot. */
+  names?: (string | null)[];
+  /** Declared component types for a tuple that introduces its names, one slot per component. */
+  types?: (string | null)[];
+  /** Per-slot right-hand sides when the source wrote `(a, b) = (x, y)` instead of a tuple-valued call. */
+  args?: ExternalCallExpression[];
 }
 
 export interface ExternalCallSlot {

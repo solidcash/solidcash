@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash160 } from '@solidcash/utils';
 import type {
   ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression,
@@ -768,6 +769,62 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(evaluator._evaluateExternalExpression(
       expression, [`0x${binToHex(lock)}`], artifact, undefined, [{ type: 'address' }],
     )).toEqual(hash160(lock));
+  });
+
+  it('evaluates a library CREATE2 helper used as an external-call target', () => {
+    // The shape `UniswapV2Library.pairFor` publishes on a call target: a pure helper whose body sorts its
+    // arguments through a tuple assignment and hashes the packed result. Resolving it pins the callee; the
+    // evaluator must reproduce the digest the covenant computes, including the big-endian word casts.
+    const targetArtifact = compileString(`
+      pragma solidity >=0.8.0;
+      library PairMath {
+        function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+          require(tokenA != tokenB, 'PairMath: IDENTICAL_ADDRESSES');
+          (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+          require(token0 != address(0), 'PairMath: ZERO_ADDRESS');
+        }
+        function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {
+          (address token0, address token1) = sortTokens(tokenA, tokenB);
+          pair = address(uint160(uint256(keccak256(abi.encodePacked(
+            hex'ff',
+            factory,
+            keccak256(abi.encodePacked(token0, token1)),
+            hex'e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303'
+          )))));
+        }
+      }
+      interface IPing { function ping() external; }
+      contract Caller(address target) {
+        function run(address factory, address tokenA, address tokenB) public {
+          IPing(address(PairMath.pairFor(factory, tokenA, tokenB))).ping();
+        }
+      }
+    `, { evmCompat: true, forceStateful: true });
+    const run = targetArtifact.abi.find((candidate) => candidate.name === 'run')!;
+    const addressSource = run.externalCalls?.[0].addressSource;
+    expect(addressSource?.kind).toBe('expression');
+
+    const caller = new StatefulContract(
+      '00'.repeat(32), targetArtifact, createTestProvider(),
+      { constructorArgs: [new Uint8Array(20)] },
+    ) as unknown as PredicateEvaluator;
+    const factory = Uint8Array.from({ length: 20 }, (_unused, index) => index + 1);
+    const tokenA = Uint8Array.from({ length: 20 }, (_unused, index) => 0x40 + index);
+    const tokenB = Uint8Array.from({ length: 20 }, (_unused, index) => 0x20 + index);
+    const resolved = caller._resolveExternalArgs(
+      [addressSource!], [factory, tokenA, tokenB], targetArtifact, undefined, run.inputs,
+    )?.[0];
+
+    const sorted = [tokenA, tokenB].sort((left, right) => (
+      binToHex(left) < binToHex(right) ? -1 : 1
+    ));
+    const salt = keccak_256(Uint8Array.from([...sorted[0]!, ...sorted[1]!]));
+    const digest = keccak_256(Uint8Array.from([
+      0xff, ...factory, ...salt,
+      ...hexToBin('e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303'),
+    ]));
+    // An EVM CREATE2 identity is the low 160 bits of the digest, i.e. its last twenty bytes.
+    expect(resolved).toEqual(digest.slice(12));
   });
 });
 

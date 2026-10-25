@@ -10675,13 +10675,22 @@ export default class SymbolTableTraversal extends AstTraversal {
             ? declaredStruct.name : undefined;
           let parameters: string[] | undefined;
           let statements: ExternalCallStatement[] | undefined;
+          let returnTypes: string[] | undefined;
+          let returnNames: string[] | undefined;
           if (helper?.modifiers.includes(FunctionModifier.PURE)
             && !serializingPureHelpers.has(helper)) {
             const localNames = new Set(helper.parameters.map((parameter) => parameter.name));
+            // A named return variable is a local of the helper's frame; a body that assigns it and falls
+            // through returns its value, exactly as Solidity's implicit epilogue does.
+            for (const name of helper.returnNames) if (name) localNames.add(name);
             const collectLocals = (block: BlockNode): void => {
               for (const statement of block.statements ?? []) {
                 if (statement instanceof VariableDefinitionNode) localNames.add(statement.name);
-                else if (statement instanceof WhileNode) collectLocals(statement.block);
+                else if (statement instanceof TupleAssignmentNode) {
+                  for (const element of statement.elements) {
+                    if (element.name && element.type !== undefined) localNames.add(element.name);
+                  }
+                } else if (statement instanceof WhileNode) collectLocals(statement.block);
                 else if (statement instanceof BranchNode) {
                   collectLocals(statement.ifBlock);
                   if (statement.elseBlock) collectLocals(statement.elseBlock);
@@ -10711,6 +10720,34 @@ export default class SymbolTableTraversal extends AstTraversal {
                   serialized.push({
                     kind: 'arrayAssign', name: statement.name, index, expression: value,
                   });
+                } else if (statement instanceof TupleAssignmentNode) {
+                  // `(a, b) = f()` distributes one tuple value; `(a, b) = (x, y)` publishes one program per
+                  // slot. Empty slots are discarded, and a slot that only assigns an existing local must name
+                  // one this program introduced - a state write is outside a pure helper's frame.
+                  const names = statement.elements.map((element) => element.name ?? null);
+                  const types = statement.elements.map((element) => element.type?.toString() ?? null);
+                  const declares = statement.elements.some((element) => (
+                    element.type !== undefined && element.existing !== true
+                  ));
+                  if (!declares && names.some((name) => name !== null && !localNames.has(name))) {
+                    return undefined;
+                  }
+                  const slots = statement.tupleExpressions
+                    ? statement.tupleExpressions.map((item) => serializeExpression(item))
+                    : undefined;
+                  const tuple = slots === undefined && statement.tuple
+                    ? serializeExpression(statement.tuple) : undefined;
+                  if (slots !== undefined ? slots.some((slot) => slot === undefined)
+                    : tuple === undefined) {
+                    return undefined;
+                  }
+                  serialized.push(slots !== undefined
+                    ? {
+                      kind: 'tupleAssign', names, types,
+                      args: slots as ExternalCallExpression[],
+                    }
+                    : { kind: 'tupleAssign', names, types, expression: tuple });
+                  for (const name of names) if (name !== null) localNames.add(name);
                 } else if (statement instanceof WhileNode) {
                   const condition = serializeExpression(statement.condition);
                   const body = serializeBlock(statement.block);
@@ -10724,9 +10761,12 @@ export default class SymbolTableTraversal extends AstTraversal {
                   serialized.push({
                     kind: 'branch', condition, statements: ifBody, elseStatements: elseBody,
                   });
-                } else if (statement instanceof ReturnNode && statement.expressions.length === 1) {
-                  const value = serializeExpression(statement.expressions[0]);
-                  if (!value) return undefined;
+                } else if (statement instanceof ReturnNode && statement.expressions.length > 0) {
+                  const values = statement.expressions.map((item) => serializeExpression(item));
+                  if (values.some((value) => value === undefined)) return undefined;
+                  const value = values.length === 1
+                    ? values[0]
+                    : { kind: 'tuple', args: values as ExternalCallExpression[] };
                   serialized.push({ kind: 'return', expression: value });
                 } else if (statement instanceof ExpressionStatementNode) {
                   const value = serializeExpression(statement.expression);
@@ -10740,6 +10780,12 @@ export default class SymbolTableTraversal extends AstTraversal {
                   serialized.push({ kind: 'require', condition });
                 } else if (statement instanceof BlockNode) {
                   const body = serializeBlock(statement);
+                  if (!body) return undefined;
+                  serialized.push({ kind: 'block', statements: body });
+                } else if (statement instanceof UncheckedNode) {
+                  // An unchecked block is a scope around its statements; the helper's program carries them in
+                  // place, and its arithmetic already follows the guard the helper's source wrote.
+                  const body = serializeBlock(statement.block);
                   if (!body) return undefined;
                   serialized.push({ kind: 'block', statements: body });
                 } else {
@@ -10756,6 +10802,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (body) {
                 parameters = helper.parameters.map((parameter) => parameter.name);
                 statements = body;
+                returnTypes = helper.returnTypes.map((type) => type.toString());
+                returnNames = helper.returnNames.filter((name) => name.length > 0);
               }
             } finally {
               serializedProgramLocals = priorLocals;
@@ -10773,6 +10821,8 @@ export default class SymbolTableTraversal extends AstTraversal {
             ...(expression.type || declaredStructType
               ? { type: expression.type?.toString() ?? declaredStructType } : {}),
             ...(parameters && statements && { parameters, statements }),
+            ...(returnTypes && returnTypes.length > 0 && { returnTypes }),
+            ...(returnNames && returnNames.length > 0 && { returnNames }),
           };
         }
         if (expression instanceof IdentifierNode) {

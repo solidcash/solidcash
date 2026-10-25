@@ -4,6 +4,7 @@
 
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   decodePushdataValue,
   hash160 as hash160Sync,
@@ -534,6 +535,23 @@ export function evaluateExternalExpression(
       if (expression.operator === '>') return a > b;
       if (expression.operator === '>=') return a >= b;
     }
+    // A pure helper such as `sortTokens` orders two addresses. The covenant compares their bytes as one
+    // unsigned big-endian number, so a shorter lock orders below a longer one whose first byte is larger.
+    if (left instanceof Uint8Array && right instanceof Uint8Array
+      && ['<', '<=', '>', '>='].includes(expression.operator ?? '')) {
+      const width = Math.max(left.length, right.length);
+      const numeric = (value: Uint8Array): bigint => {
+        const padded = new Uint8Array(width);
+        padded.set(value, width - value.length);
+        return padded.reduce((number, byte) => (number << 8n) | BigInt(byte), 0n);
+      };
+      const a = numeric(left);
+      const b = numeric(right);
+      if (expression.operator === '<') return a < b;
+      if (expression.operator === '<=') return a <= b;
+      if (expression.operator === '>') return a > b;
+      return a >= b;
+    }
     return undefined;
   }
   if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
@@ -555,7 +573,17 @@ export function evaluateExternalExpression(
         : [...bytes].reverse().reduce((number, byte) => (number << 8n) | BigInt(byte), 0n);
     }
     if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) {
-      if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+      if (typeof value === 'bigint' || typeof value === 'number') {
+        const wide = BigInt(value);
+        // Solidity's explicit downcast keeps the low N bits. A digest read as `uint160` is exactly that.
+        if (evmCompat) {
+          const width = expression.type.match(/^u?int(\d+)$/)?.[1];
+          if (width !== undefined && Number(width) < 256) {
+            return wide & ((1n << BigInt(width)) - 1n);
+          }
+        }
+        return wide;
+      }
       if (value instanceof Uint8Array) {
         let bytes = value;
         if (expression.type === 'uint160') {
@@ -565,13 +593,32 @@ export function evaluateExternalExpression(
           else bytes = value.slice(3, 23);
         }
         let result = 0n;
-        for (let i = bytes.length - 1; i >= 0; i--) {
-          result = (result << 8n) | BigInt(bytes[i]);
+        if (evmCompat) {
+          // Solidity reads a byte string as an unsigned big-endian integer.
+          for (let i = 0; i < bytes.length; i++) {
+            result = (result << 8n) | BigInt(bytes[i]);
+          }
+        } else {
+          for (let i = bytes.length - 1; i >= 0; i--) {
+            result = (result << 8n) | BigInt(bytes[i]);
+          }
         }
         return result;
       }
     }
+    if (evmCompat && (expression.type === 'address' || expression.type === 'address payable')) {
+      // `address(uint160(h))` names the 20-byte identity by its numeric value; an ABI word narrows the same way.
+      if (typeof value === 'bigint' || typeof value === 'number') {
+        return numberBe(BigInt(value) & ((1n << 160n) - 1n), 20);
+      }
+      if (value instanceof Uint8Array && value.length === 32) return value.slice(12);
+    }
     return value;
+  }
+  if (expression.kind === 'tuple' && expression.args) {
+    const values = expression.args.map(evaluate);
+    return values.every((value) => value !== undefined)
+      ? values as unknown as FunctionArgument : undefined;
   }
   if (expression.kind === 'array') {
     const values = (expression.args ?? []).map(evaluate);
@@ -633,6 +680,16 @@ export function evaluateExternalExpression(
   if (expression.kind === 'call') {
     const values = (expression.args ?? []).map(evaluate);
     if (values.some((value) => value === undefined)) return undefined;
+    // A pure helper body can hash its own packed operand. The covenant carries the digest as a result
+    // side-car, so the same preimage computes the same identity here.
+    if (expression.name === 'keccak256' && values.length === 1) {
+      const packed = asBytes(
+        values[0]!,
+        expression.fields?.[0] || inferredType(expression.args?.[0]!) || packedReadType(expression.args?.[0]),
+        expression.args?.[0],
+      );
+      return packed === undefined ? undefined : keccak_256(packed);
+    }
     if (expression.parameters && expression.statements
       && expression.parameters.length === values.length) {
       const bindings = new Map(localBindings);
@@ -717,6 +774,24 @@ export function evaluateExternalExpression(
               return { returned: false };
             }
             array[position] = value;
+          } else if (statement.kind === 'tupleAssign' && statement.names) {
+            // `(a, b) = f()` takes the components of the one tuple value; `(a, b) = (x, y)` evaluates each
+            // slot of the source tuple. A discarded slot is published as `null` and binds nothing.
+            let components: readonly FunctionArgument[] | undefined;
+            if (statement.expression) {
+              const tuple = evaluateWith(statement.expression);
+              if (Array.isArray(tuple)) components = tuple as FunctionArgument[];
+            } else if (statement.args) {
+              const slots = statement.args.map((item) => evaluateWith(item));
+              if (slots.every((slot) => slot !== undefined)) components = slots as FunctionArgument[];
+            }
+            if (components === undefined || components.length !== statement.names.length) {
+              invalid = true;
+              return { returned: false };
+            }
+            statement.names.forEach((name, index) => {
+              if (name !== null) bindings.set(name, localValue(components![index]!));
+            });
           } else if (statement.kind === 'while' && statement.condition && statement.statements) {
             while (true) {
               const condition = evaluateWith(statement.condition);
@@ -758,6 +833,24 @@ export function evaluateExternalExpression(
       };
       const result = execute(expression.statements);
       if (!invalid && result.returned) return result.value;
+      if (!invalid && ((expression.returnNames?.length ?? 0) > 0
+        || (expression.returnTypes?.length ?? 0) > 0)) {
+        // A named result assigned in the body and then falling off its end is the helper's value, exactly as
+        // Solidity's implicit epilogue returns it. An unnamed result falls back to its declared default.
+        const names = expression.returnNames ?? [];
+        const types = expression.returnTypes ?? [];
+        const results: FunctionArgument[] = [];
+        for (let index = 0; index < types.length; index += 1) {
+          const name = names[index];
+          const value = name ? bindings.get(name) : defaultValue(types[index]);
+          if (value === undefined) { invalid = true; break; }
+          results.push(value);
+        }
+        if (!invalid) {
+          return results.length === 1
+            ? results[0] : results as unknown as FunctionArgument;
+        }
+      }
     }
     // Library arithmetic (`SafeMath.mul/add/sub/div`) is serialized as a call without an inline helper body.
     // Evaluate the four checked-arithmetic primitives from their operands; the covenant enforces the same

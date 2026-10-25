@@ -1356,6 +1356,9 @@ export interface ExternalCallExpression {
   parameters?: readonly string[];
   /** Bounded statement program for a compiler-published pure helper body. */
   statements?: readonly ExternalCallStatement[];
+  /** Declared result types of the helper; names are present when the source named every result. */
+  returnTypes?: readonly string[];
+  returnNames?: readonly string[];
 }
 
 /**
@@ -1457,8 +1460,8 @@ export interface AffineRecursiveFrameV1Abi {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block'
-  | 'require';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'tupleAssign' | 'while' | 'branch' | 'return'
+  | 'expression' | 'block' | 'require';
   name?: string;
   type?: string;
   index?: ExternalCallExpression;
@@ -1466,6 +1469,12 @@ export interface ExternalCallStatement {
   condition?: ExternalCallExpression;
   statements?: readonly ExternalCallStatement[];
   elseStatements?: readonly ExternalCallStatement[];
+  /** One slot per tuple component; `null` is a discarded `(, x)` slot. */
+  names?: readonly (string | null)[];
+  /** Declared component types for a tuple that introduces its names, one slot per component. */
+  types?: readonly (string | null)[];
+  /** Per-slot right-hand sides when the source wrote `(a, b) = (x, y)` instead of a tuple-valued call. */
+  args?: readonly ExternalCallExpression[];
 }
 
 /**

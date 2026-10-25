@@ -961,6 +961,16 @@ needs VM evidence, `rejectedWith` has no source fallback).
   each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
   target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
   reads no record, so the bus binds the same shapes per row. Test: `DirectCallOrdinals.test.ts`.
+- **Blind-written record tag** (found 2026-10-25 reviewing the multi-call writer frames; accepted on master at the VM
+  for a direct entry, a standalone frame, a multi-call batch and a framed master). In a layout of two or more data
+  records, an entry that wrote every field of a record and read none never decoded that record's input, so its
+  nftIndex tag went unchecked: the data-NFT covenant reads no commitment, and the input pins hold only the record's
+  lock and category. A spender could lay a sibling record at that input; the sibling was consumed and replaced by a
+  record carrying the written record's tag, and the genuine record stayed unspent, duplicated. `a6e7307d6` requires a
+  rebuilt record's input to carry its tag unless a decode of that input already runs on every path to the rebuild
+  (about 9-22 B per blind write; partial writes, read-modify-write and single-record layouts keep their bytes). The
+  kernel route's journal pre-reads already check each written record's tag. Test:
+  `packages/solidc/test/BlindWriteRecordTag.test.ts`.
 
 ### Not changed, by decision
 

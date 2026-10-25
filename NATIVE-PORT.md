@@ -172,6 +172,10 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `IUniswapV2Pair(address(pairFor(factory, a, b))).getReserves()` therefore resolves to the same digest the
   covenant computes instead of dropping the callee (`ExternalCallPredicate.test.ts` compiles a CREATE2 helper
   and compares the evaluated target with an independently computed digest).
+- An unset synthesized array witness (`__internal__loopTargets<n>`, `__internal__viewReturn<n>`) now defaults
+  to the zero-length pushdata array (`00`) rather than `0n`. A build whose pre-call guard proves a loop call
+  unreachable no longer stops at argument encoding ("Value for type address[] should be a Uint8Array or hex
+  string"); its unlocking script stays well formed so the covenant's own require remains the authority.
 - `address(uint160(uint256(x)))` and every integer-to-address cast under `evmCompat` now produce exactly the
   low 20 bytes of the big-endian word (the raw Solidity identity), while `address(0)` stays the empty value.
   A short numeric identity previously took the P2PKH fallback and aborted at `OP_SPLIT`.
@@ -224,6 +228,11 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not
   supported"), and the reentrancy tests cannot express the callback's revert as a co-spent call. Both are
   UTXO-geometry limits, not codegen defects.
+- **A false pre-call guard removes the call block that positions the trailing keccak band.** For an expired
+  deadline the Router's calls are provably unreachable, so the planner drops every external-call group. The
+  build then stops with "stateful dynamic keccak256 loop: the front-region inputs ... do not fill the slots
+  before the trailing side-car region". Keeping the calls instead would demand co-spends for CREATE2 pair
+  targets, so the deadline paths remain blocked between the two limits.
 - **Dormant large `bytes` state.** A factory that stores the pair creation code in `bytes` state (the old
   `TestFactory`) makes every spend recreate its chunks; the broadcast VM then fails `OP_VERIFY` even though
   the SDK preflight passed. `TestFactory` now inherits the production factory and stores nothing.

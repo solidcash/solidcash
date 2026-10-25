@@ -190,7 +190,21 @@ describe('stateful RETURNING computed-target loop (s += IFoo(pairFor(..)).tally(
     pubSc.registerExternalArray('IFoo', [sub1Sc, sub2Sc]);
 
     const path = [hexToBin('aa'.repeat(35)), hexToBin('bb'.repeat(35)), hexToBin('cc'.repeat(35))];
-    await pubSc.notify(path, 10n, alicePub, sig()).send();
+    // The loop-expanded callee is a stateful participant, so one occurrence occupies its master AND its data
+    // NFT. Iteration 1's master must therefore advance by two inputs, not one; a stride of 1 would resolve to
+    // the first callee's data NFT and fail its identity check.
+    const notifyAbi = pubArt.abi.find((fn) => fn.name === 'notify')!;
+    const strideIndex = notifyAbi.inputs.findIndex((input) => (
+      input.name.startsWith('__internal__loopTargetStride')
+    ));
+    expect(strideIndex).toBeGreaterThanOrEqual(0);
+    const call = pubSc.notify(path, 10n, alicePub, sig());
+    const built = await call.build();
+    const callerUnlocker = built.inputs
+      .map((input) => input.unlocker as { params?: unknown[] } | undefined)
+      .find((unlocker) => (unlocker?.params?.length ?? 0) === notifyAbi.inputs.length);
+    expect(callerUnlocker?.params?.[strideIndex]).toBe(2n);
+    await call.send();
     // each callee tally(10) -> received 0->10, returns 10; s = 10 + 10 = 20
     expect((await sub1Sc.getState()).received).toBe(10n);
     expect((await sub2Sc.getState()).received).toBe(10n);

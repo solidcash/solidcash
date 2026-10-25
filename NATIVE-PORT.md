@@ -211,6 +211,13 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   `twostep-bus7.log`, `twostep-bus10.log`, `factory-bus-suite.log`.
 - A failing outlined library body is attributed from the trace's executed instructions even when the failing
   step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.
+- A loop-expanded callee's master advances by its whole physical width. A stateful pair co-spends its master
+  **and** the data NFT holding its reserves, so the compiler publishes `__internal__loopTargetStride<n>` and the
+  SDK fills it from the resolved group's `blockInputs.length` (fallback `1 + dataNftUtxos.length`). Iteration 1+
+  therefore lands on the next callee's master instead of the first callee's data NFT. The stateful returning-loop
+  e2e test now asserts the built caller's stride witness is `2` for a two-callee path, in addition to the
+  behaviour check that both callees receive the value. Library `pairFor`, `getReserves`, `getAmountsOut` and
+  `getAmountsIn` all pass.
 - A keccak256 call inside an outlined free function (an imported `internal` library helper such as
   `UniswapV2Library.pairFor`) now gets a compute side-car basis from the entry points that reach it. When every
   reaching entry reserves the same side-car offsets the helper bakes that layout; when the offsets differ (a

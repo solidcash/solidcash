@@ -210,6 +210,43 @@ describe('stateful RETURNING computed-target loop (s += IFoo(pairFor(..)).tally(
     expect((await sub2Sc.getState()).received).toBe(10n);
     expect((await pubSc.getState()).total).toBe(20n);
   });
+
+  it('advances a three-callee route by the full block width on every iteration', async () => {
+    const pubArt = compileString(PUBLISHER_RET);
+    const subArt = compileString(SUBSCRIBER_RET);
+    const subs: StatefulContract[] = [];
+    for (let index = 0; index < 3; index++) {
+      const sub = new Contract(subArt, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, sub, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+      );
+      subs.push(StatefulContract.withCategory(sub, categoryId));
+    }
+    const pub = new Contract(pubArt, [], { provider });
+    const { categoryId: pc } = await setupStatefulUtxos(
+      provider, pub, pubArt.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const pubSc = StatefulContract.withCategory(pub, pc);
+    pubSc.registerExternalArray('IFoo', subs);
+
+    // Four tokens -> three iterations. Iteration 2 must read the THIRD callee's master, four inputs past the first
+    // (two per occupied block); a stride of one would resolve to the first callee's data NFT by then.
+    const path = ['aa', 'bb', 'cc', 'dd'].map((token) => hexToBin(token.repeat(35)));
+    const notifyAbi = pubArt.abi.find((fn) => fn.name === 'notify')!;
+    const strideIndex = notifyAbi.inputs.findIndex((input) => (
+      input.name.startsWith('__internal__loopTargetStride')
+    ));
+    const call = pubSc.notify(path, 10n, alicePub, sig());
+    const built = await call.build();
+    const callerUnlocker = built.inputs
+      .map((input) => input.unlocker as { params?: unknown[] } | undefined)
+      .find((unlocker) => (unlocker?.params?.length ?? 0) === notifyAbi.inputs.length);
+    expect(callerUnlocker?.params?.[strideIndex]).toBe(2n);
+    await call.send();
+    // Each callee returns 10, so the accumulated total proves every iteration read its own return event.
+    for (const sub of subs) expect((await sub.getState()).received).toBe(10n);
+    expect((await pubSc.getState()).total).toBe(30n);
+  });
 });
 
 describe('stateful computed-target loop (IFoo(pairFor(path[i], path[i+1])).m() on a stateful caller)', () => {

@@ -288,6 +288,23 @@ export async function orchestrateCreateBuilderExternalCalls(
   let callerStateSnapshot = expandedExternal.callerStateSnapshot;
   let resolvedExternalCalls = expandedExternal.resolvedExternalCalls as ExternalCallInfo[] | undefined;
 
+  // A published callsite that the planner reaches but cannot pin has no co-spendable callee. Building anyway
+  // leaves its topology witnesses at their defaults (every master index 0), which the caller covenant rejects
+  // with an unrelated `OP_VERIFY`. A probe intentionally tolerates unresolved groups; a real build must not.
+  if (externalCalls && externalCalls.length > 0 && !resolvedExternalCalls) {
+    const reached = externalCalls.filter((call) => call.occurrence !== 'conditional');
+    if (reached.length > 0) {
+      const names = reached.slice(0, 4).map((call) => `${call.interfaceName}.${call.functionName}`).join(', ');
+      throw new Error(
+        `External call planning could not pin the callee for ${names}`
+        + `${reached.length > 4 ? ` and ${reached.length - 4} more` : ''}. Each callee needs a live, `
+        + 'co-spendable deployment whose locking bytecode projects to the published address; a target created '
+        + 'in this same transaction has no spendable UTXO yet, and an EVM CREATE2 identity has no BCH lock '
+        + 'projection. Supply the callees with withExternalCall() only when a real co-spend exists.',
+      );
+    }
+  }
+
   let externalCallUtxoGroups: ExternalCallUtxoGroup[] = [];
   // Total return event count including transitive chains (updated in external call block)
   // Combined metadata for all groups (direct + transitive); used by _deriveFullTransactionState

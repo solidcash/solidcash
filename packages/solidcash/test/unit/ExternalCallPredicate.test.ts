@@ -27,6 +27,7 @@ import {
   expandResolveCreateBuilderExternalCalls,
   type ExpandResolveCreateBuilderExternalCallsHost,
 } from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
+import { orchestrateCreateBuilderExternalCalls } from '../../src/stateful/sc-orchestrate-create-builder-external-calls.js';
 import { fillCreateBuilderDirectCallArgWitnesses } from '../../src/stateful/sc-fill-create-builder-direct-call-arg-witnesses.js';
 
 type PredicateEvaluator = {
@@ -1373,5 +1374,56 @@ describe('conditional external-call topology', () => {
       host, fn, [Uint8Array.from({ length: 20 }, (_unused, index) => index + 1)], artifact,
       undefined, undefined,
     )).rejects.toThrow(/CREATE2 identity/);
+  });
+
+  it('refuses to assemble a transaction whose reached callee cannot be pinned', async () => {
+    // A Router `addLiquidity` call reaches `IUniswapV2Pair.getReserves` on a pair created in the same
+    // transaction. The planner has no co-spendable deployment, and leaving the topology witnesses at their
+    // defaults would fail an unrelated `OP_VERIFY`. The build must name the real problem instead.
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        callsiteId: 0, interfaceName: 'IUniswapV2Pair', functionName: 'getReserves',
+        requiredDataNftIndices: [], occurrence: 'once', argSources: [], hasReturnValues: true,
+        returnTypes: ['uint112', 'uint112', 'uint32'],
+      }],
+    } as unknown as Artifact['abi'][number];
+    const provider = createTestProvider();
+    const host = {
+      categoryId: '00'.repeat(32),
+      inner: {
+        provider, artifact, lockingBytecode: '51', encodedConstructorArgs: [],
+        blockOracleLock: undefined, getExternalTargetEntriesByInterface: () => [],
+      },
+      signer: undefined,
+      externalRegistry: new Map(),
+      callerContract: {
+        _evaluateExternalExpression: (...values: any[]) => (
+          evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+        )(...values),
+        _resolveExternalExpressionReturns: async () => new Map(),
+        _hydrateExternalPredicateState: async () => ({}),
+      },
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      buildRepeatedExternalBatch: () => undefined,
+      resolveExternalKeccakSideCars: () => undefined,
+      resolveExternalBlockhashCoSpends: () => undefined,
+      keysMatch: () => false,
+    } as never;
+    const params = {
+      abiFunction: fn, args: [], finalArgs: [], overrides: {}, onChainState: { state: {} },
+      requiredNftIndices: [], externalReadUtxos: [], outStateInputCount: 0,
+      externalOutStateUtxoGroups: [], earlySignerUtxos: undefined,
+      publicSelfAddress: undefined, publicSelfIdentity: undefined,
+      physicalSelfAddress: new Uint8Array(35), timing: () => undefined,
+      valueChunkWriteStagingSession: undefined, iterationEntryInputs: [], entryNfts: [],
+      condSoftDeleteSlots: new Set<number>(), entryDeleteSlots: new Set<number>(),
+      selectorParamSlot: undefined, isComputedBlockhashKey: () => false, maxBhLocktime: 0,
+    };
+
+    await expect(orchestrateCreateBuilderExternalCalls(host, params as never))
+      .rejects.toThrow(/could not pin the callee for IUniswapV2Pair\.getReserves/);
   });
 });

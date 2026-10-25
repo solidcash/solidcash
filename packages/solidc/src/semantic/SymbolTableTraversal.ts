@@ -4511,16 +4511,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           // callee's multi-call entry, each call reading the record of its own frame; it never builds a bus batch.
           const directConvention = messageBusExplicitlyDisabled && this.compilerOptions.composition !== 'framed';
           // A loop repeats its call while a callee master is spent once. Only a per-iteration target (an array
-          // element or witness, checked where it runs) or a frame of the callee's multi-call spend reads its own
-          // record; any other looped call whose result is read would read records its callee never pinned.
-          const readsResult = (slot: ExternalCallSlot, call: ExternalFunctionCallNode): boolean => (call.opaqueReturn
-            ? !call.discardedOpaqueReturn && !call.unreadOpaqueReturn : slot.hasReturnValues === true);
+          // element or witness, checked where it runs) or a frame of the callee's multi-call spend runs once per
+          // iteration; any other looped call would take results and effects of runs its callee never made.
           const inLoop = (slot: ExternalCallSlot): boolean => slot.sourceCallNode !== undefined
             && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode));
           const groupedSlots = new Set(knownRepeated.flat());
           const loopedCalls = directConvention ? logicalCallSlots.filter((slot) => !groupedSlots.has(slot)
-            && !slot.loopArrayVar && slot.sourceCallNode !== undefined && readsResult(slot, slot.sourceCallNode)
-            && inLoop(slot)).map((slot) => [slot]) : [];
+            && !slot.loopArrayVar && inLoop(slot)).map((slot) => [slot]) : [];
           if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values(), inLoop);
           // An entry's repeated or looped call reads its own record only as a numbered frame.
           const refusedRepeated = directConvention

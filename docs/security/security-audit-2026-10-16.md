@@ -962,7 +962,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
   reads no record, so the bus binds the same shapes per row. Since phase 4 of the direct multi-call, a looped
   state-changing call to a fixed target runs as counted frames of the callee's multi-call spend, each iteration bound
-  to its own frame's record, instead of being refused; a looped call that can be no frame stays refused. Test:
+  to its own frame's record, instead of being refused; a looped call that can be no frame stays refused, a void one
+  included, since its callee runs once however many times the loop calls it (a call carrying value, a raw call to one
+  target whatever its data, a loop-invariant computed target). Test:
   `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts`.
 - **Blind-written record tag** (found 2026-10-25 reviewing the multi-call writer frames; accepted on master at the VM
   for a direct entry, a standalone frame, a multi-call batch and a framed master). In a layout of two or more data

@@ -169,6 +169,7 @@ contract Payer(address paid) {
     const looped = (body: string): string => `pragma solidcash >=0.8.0;
 interface ICounter { function inc(bigint by) external returns (bigint); }
 interface IPaid { function pay(bigint by) external payable returns (bigint); }
+interface ISink { function put(bigint by) external; function fund(bigint by) external payable; }
 contract LoopedWriter(address counter) {
   bigint last;
   bytes stored;
@@ -194,6 +195,9 @@ contract LoopedWriter(address counter) {
     for (const [body, chain] of [
       [ternary, 'ICounter\\.inc'],
       ['for (bigint i = 0; i < n; i = i + 1) { acc = acc + IPaid(counter).pay{value: 1000}(i); }', 'IPaid\\.pay'],
+      // A void call runs once as well: a loop of them is a frame group or refused.
+      ['for (bigint i = 0; i < n; i = i + 1) { ISink(take ? counter : other).put(i); }', 'ISink\\.put'],
+      ['for (bigint i = 0; i < n; i = i + 1) { ISink(counter).fund{value: 1000}(i); }', 'ISink\\.fund'],
     ] as const) {
       expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body)
         .toThrow(new RegExp(`MESSAGE_BUS_REQUIRED.*\\(${chain}\\).*cannot be built with \`messageBus: false\`\\.$`));
@@ -206,21 +210,28 @@ contract LoopedWriter(address counter) {
       'for (bigint i = 0; i < all.length; i = i + 1) { acc = acc + ICounter(all[i]).inc(i); }']) {
       expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body).not.toThrow();
     }
-    // An opaque call reads its data from the record at its index plus the iteration: refused once the data is read.
+    const voidLoop = compileString(looped('for (bigint i = 0; i < n; i = i + 1) { ISink(counter).put(i); }'),
+      { messageBus: false, suppressWarnings: true });
+    expect(calls(voidLoop, 'run').map((call) => [call.functionName, call.callOrdinal]))
+      .toEqual([['put', { group: 0, counted: true }]]);
+    // An opaque call to one target runs once whatever its payloads: refused in a loop, its data read or not.
     const raw = (body: string): string => `contract RawLoop() {
   bigint n;
   function go(address t, address[] ts, bytes[] ps) public { bigint s = 0; ${body} this.n = s; }
 }`;
-    const read = 'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); '
-      + 's = s + r.length; }';
-    expect(() => compileString(raw(read), { messageBus: false, suppressWarnings: true }))
-      .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`\.$/);
     for (const body of [
+      'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); '
+        + 's = s + r.length; }',
       'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); s = s + 1; }',
       'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, ) = t.call(ps[i]); require(ok); s = s + 1; }',
-      'for (bigint i = 0; i < ts.length; i = i + 1) { (bool ok, bytes memory r) = ts[i].call(ps[i]); require(ok); '
-        + 's = s + r.length; }',
-    ]) expect(() => compileString(raw(body), { messageBus: false, suppressWarnings: true }), body).not.toThrow();
+    ]) {
+      expect(() => compileString(raw(body), { messageBus: false, suppressWarnings: true }), body)
+        .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`\.$/);
+    }
+    // A Multicall over array targets checks each iteration's callee and record where it runs.
+    expect(() => compileString(raw('for (bigint i = 0; i < ts.length; i = i + 1) { (bool ok, bytes memory r) = '
+      + 'ts[i].call(ps[i]); require(ok); s = s + r.length; }'), { messageBus: false, suppressWarnings: true }))
+      .not.toThrow();
   });
 
   it('leaves a message-bus compile as it was', () => {

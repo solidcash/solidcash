@@ -12805,9 +12805,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // mapping loop precedes the keccak loop in source order, its bracketing predecessors (and their exact
       // recreated chain outputs) occupy the front of the trailing band, so the probe co-spends them first.
       const loopBlockSize = abiFunction.blockLayout?.blockSize ?? 1;
-      const loopSidecarBase = abiFunction.blockLayout?.trailingBase
-        ?? abiFunction.blockLayout?.slots.find((slot) => slot.kind === 'keccakSideCar')?.offset
-        ?? loopBlockSize;
+      // A dynamic loop reads master + blockSize + counter; its band does not use the layout's fixed
+      // keccakSideCar slot (a function can reserve both), so the trailing base starts after the fixed block.
+      const loopSidecarBase = abiFunction.blockLayout?.trailingBase ?? loopBlockSize;
       const keccakLoopFrontRegion = padKeccakFront(loopSidecarBase);
       const reversedTrailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] };
       if (abiFunction.keccakLoopPrecedesTrailingUser !== true) {

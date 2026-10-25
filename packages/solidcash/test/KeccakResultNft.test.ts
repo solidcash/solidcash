@@ -9,7 +9,7 @@ import {
 } from '../src/index.js';
 import { MockNetworkProvider } from '../src/network/mock/index.js';
 import { randomUtxo } from '../src/utils.js';
-import { extractKeccakPreimageFromTrace } from '../src/keccak/keccakComputeSidecar.js';
+import { extractKeccakPreimageFromTrace, scanKeccakBatchReads } from '../src/keccak/keccakComputeSidecar.js';
 
 const K = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x44 : 0xbb)); // side-car own NFT category
 const evm = (b: Uint8Array): Uint8Array => keccak_256(b);
@@ -38,6 +38,45 @@ async function deploySidecars(provider: MockNetworkProvider, count: number): Pro
 }
 
 describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
+  it('groups a batched helper body by side-car and keeps each call\'s member', () => {
+    // A pairFor-style body calls keccak twice per invocation: emission ordinals 1 and 2 name members 0 and 1 of
+    // the SAME side-car (slot 5). Reading them as two loop iterations gave each call its own side-car and made
+    // the body slice a one-preimage commitment at 32 bytes.
+    const state = (preimage: number[], ordinal: number): unknown => ({
+      ip: 0,
+      instructions: [{ opcode: 0xca }],
+      controlStack: [],
+      stack: [Uint8Array.from(preimage), Uint8Array.of(ordinal), Uint8Array.of(5)],
+    });
+    expect(scanKeccakBatchReads([state([0x22], 2), state([0x11], 1)], 5, 1)).toEqual([
+      { slot: 0, member: 1, preimage: Uint8Array.of(0x22) },
+      { slot: 0, member: 0, preimage: Uint8Array.of(0x11) },
+    ]);
+    // The fourth call of the body starts a second side-car (slot 6), member 0.
+    const secondBatch: unknown = {
+      ip: 0,
+      instructions: [{ opcode: 0xca }],
+      controlStack: [],
+      stack: [Uint8Array.of(0x33), Uint8Array.of(4), Uint8Array.of(6)],
+    };
+    expect(scanKeccakBatchReads([secondBatch], 5, 2)).toEqual([
+      { slot: 1, member: 0, preimage: Uint8Array.of(0x33) },
+    ]);
+  });
+
+  it('reads a dynamic-loop call by its side-car index, with no emission ordinal', () => {
+    const state = (preimage: number[], idx: number): unknown => ({
+      ip: 0,
+      instructions: [{ opcode: 0xca }],
+      controlStack: [],
+      stack: [Uint8Array.from(preimage), Uint8Array.of(idx)],
+    });
+    expect(scanKeccakBatchReads([state([0x10], 5), state([0x11], 6)], 5, 2)).toEqual([
+      { slot: 0, member: 0, preimage: Uint8Array.of(0x10) },
+      { slot: 1, member: 0, preimage: Uint8Array.of(0x11) },
+    ]);
+  });
+
   it('selects the last unresolved call when batched sidecar reads include an already-resolved call', () => {
     const state = (marker: number, preimage: number[]): unknown => ({
       ip: 0,
@@ -71,7 +110,9 @@ describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
     const lib = SINGLE.externalLibraries?.find((l) => l.name === 'keccak256');
     expect(lib?.resultNft).toBe(true);
     expect(SINGLE.abi.find((f) => f.name === 'f')?.keccakPreimageParams).toEqual(['x']);
-    expect(SINGLE.bytecode.length / 2).toBeLessThan(1200);
+    // The negative-coordinate guard adds a few instructions; an inlined Keccak-256 implementation would be
+    // thousands of bytes, so this still separates the compute model from a blob.
+    expect(SINGLE.bytecode.length / 2).toBeLessThan(1400);
   });
 
   it('transparent send() co-spends the side-car for ANY preimage length, matching EVM (VM e2e)', async () => {

@@ -104,6 +104,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // every use, so an interface-cast intermediary is safe to trace through. A
   // reassignable local is excluded (it could be rebound to a caller value between decl and the call = forgery).
   private singleAssignLocals: Set<string> = new Set();
+  /**
+   * Locals whose value changes within the body: declared inside a loop (re-run each iteration) or reassigned.
+   * An inliner alias spelled `__rh*` in a loop is still position-dependent, so tracing it to its initializer
+   * would pin the loop counter's first value (`path[i]` becoming `path[0]`).
+   */
+  private positionDependentLocals: Set<string> = new Set();
   // Storage-reference locals keep pointing at their initializer even when assignments through them update the
   // referenced struct. They are safe provenance aliases despite looking "reassigned" to a generic AST scan.
   private storagePointerLocals: Set<string> = new Set();
@@ -922,6 +928,9 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   private substituteAliasesInPlace(node: Node, inlineOnly = false): void {
     const resolve = (id: IdentifierNode): Node | undefined => {
       if (!this.localInits.has(id.name)) return undefined;
+      // A local declared inside a loop or reassigned anywhere is not a fixed alias: its inliner spelling still
+      // matches `__rh*`, but tracing it would freeze the loop counter's initial value (`path[i]` -> `path[0]`).
+      if (this.positionDependentLocals.has(id.name)) return undefined;
       // inlineOnly (transitive case): resolve ONLY inliner SSA aliases, keeping a user single-assign local intact.
       if (!(SYNTH_ALIAS.test(id.name) || (!inlineOnly && this.singleAssignLocals.has(id.name)))) return undefined;
       const clone = cloneNode(this.localInits.get(id.name)!) as Node;
@@ -980,6 +989,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       return this.llReceiverRoot(expr.parameters[0], depth + 1); // interface/contract cast `IFoo(x)` -> x
     }
     if (expr instanceof IdentifierNode && this.localInits.has(expr.name)
+      && !this.positionDependentLocals.has(expr.name)
       && (SYNTH_ALIAS.test(expr.name) || this.singleAssignLocals.has(expr.name))) {
       return this.llReceiverRoot(this.localInits.get(expr.name)!, depth + 1);
     }
@@ -1037,6 +1047,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   }
 
   private computeSingleAssignLocals(body: BlockNode): Set<string> {
+    this.positionDependentLocals = new Set<string>();
     const declCount = new Map<string, number>();
     const reassigned = new Set<string>();
     const seen = new WeakSet<object>();
@@ -1073,6 +1084,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       }
     };
     scan(body, 0);
+    this.positionDependentLocals = new Set(reassigned);
     const safe = new Set<string>();
     for (const [name, count] of declCount) if (count === 1 && !reassigned.has(name)) safe.add(name);
     return safe;

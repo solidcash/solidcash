@@ -2561,6 +2561,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
   private isDefineSubTraversal: boolean = false;
+  /** An outlined body copied its borrowed keccak side-car slot to the alt stack for the duration of the body. */
+  private keccakSlotAltAnchored: boolean = false;
   /** Sorted collections owned by the enclosing compiler route rather than the current helper. */
   private routePhysicalSortedBatchCollections: Set<string> = new Set();
   // True when the current function has a `return` nested inside a loop (the raw-return stack cleanup can't
@@ -10117,7 +10119,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(this.callOrdinalCounterName(group));
     }
     this.refuseStaleSortedReads(node);
+    // A helper body borrows its keccak side-car slot through a hidden bottom frame item. Addressing that item by
+    // a bottom ordinal counts the caller's live frame on the shared OP_INVOKE stack as if it were the body's own,
+    // and a top-relative pick misses it once the body pushes untracked temporaries above its model. Capture the
+    // value once here, where its depth is exact (nothing above the argument vector remains), and keep it on the
+    // alternate stack: no later main-stack push shifts it. The body's own alt-stack use is balanced, and the
+    // epilogue drops this copy.
+    if (this.isDefineSubTraversal
+      && this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, true) >= 0) {
+      const anchorLoc = { location: node.body.location, positionHint: PositionHint.START } as SingleLocationData;
+      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT))),
+        anchorLoc);
+      this.emit(Op.OP_PICK, anchorLoc);
+      this.emit(Op.OP_TOALTSTACK, anchorLoc);
+      this.keccakSlotAltAnchored = true;
+    }
     node.body = this.visit(node.body) as BlockNode;
+    if (this.keccakSlotAltAnchored) {
+      this.emit(Op.OP_FROMALTSTACK, { location: node.body.location, positionHint: PositionHint.END });
+      this.emit(Op.OP_DROP, { location: node.body.location, positionHint: PositionHint.END });
+      this.keccakSlotAltAnchored = false;
+    }
     this.emitRepeatedSortedUpsertLoopCensuses(node);
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
     // fields packed after semantic Instantiation). Expand deployDataNft layout slots so vmap tails and
@@ -15362,6 +15384,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (threadedKeccakSlot) {
         // The call edge passed the caller's ABSOLUTE first side-car index; add this call's batch.
+        if (this.keccakSlotAltAnchored) {
+          // The body captured the borrowed slot at its own entry, where its depth was exact. Read the copy
+          // non-destructively: the alt stack is unaffected by the body's untracked temporaries.
+          this.emit(Op.OP_FROMALTSTACK, loc);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(Op.OP_TOALTSTACK, loc);
+          if (batchIndex > 0) {
+            this.emit(encodeInt(BigInt(batchIndex)), loc);
+            this.emit(Op.OP_ADD, loc);
+          }
+          return;
+        }
         this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, loc);
         if (batchIndex > 0) {
           this.emit(encodeInt(BigInt(batchIndex)), loc);
@@ -17146,6 +17180,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (inherited >= 0) {
         this.emit(encodeInt(BigInt(inherited)), locationData);
         this.emit(Op.OP_PICK, locationData);
+      } else if (this.keccakLoopActive) {
+        // The call sits inside a runtime keccak loop, whose reads come from the trailing band at
+        // master + blockSize + counter. The block layout's fixed keccakSideCar slot is not where the loop's
+        // side-cars live (a function can reserve both), so thread THIS iteration's trailing coordinate; the
+        // callee's fixed-slot read would otherwise address a container or a funder pad.
+        const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+        this.emitComputeSidecarBlockBase(locationData);
+        this.emit(encodeInt(BigInt(blockSize)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+        const counterIndex = this.getStackIndex(this.keccakLoopCounterName);
+        this.emit(encodeInt(BigInt(counterIndex + 1)), locationData); // +1: the partial index on top
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_ADD, locationData);
       } else {
         if (!(this.currentFunction.blockLayout?.slots ?? [])
           .some((slot) => slot.kind === 'keccakSideCar')) {

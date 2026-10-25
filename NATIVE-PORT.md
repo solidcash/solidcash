@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **85 passed, 107 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **92 passed, 100 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -127,10 +127,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 21 / 37 | CREATE2-identity targets (5); TransferHelper raw-return decoding and absent-selector calls (11); ETH value (2) |
-| `UniswapV2Router02` | 6 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy; the probe leaves `extcallMasterIdx -1`); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
+| `Libraries` | 23 / 37 | CREATE2-identity target (1); TransferHelper raw-return decoding and absent-selector calls (9); ETH value (2); computed-target `getReserves` return decode inside a dynamic loop (2) |
+| `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
-| **Total** | **85 / 192** | |
+| **Total** | **92 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is occasionally order-dependent in a
 narrow run (a `-t` filter or a whole-project run can report `nrt.balanceOf(other) == 0`); it passes in the full
@@ -222,16 +222,31 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
 ### Remaining architectural gaps (captured failures)
 
-- **An outlined keccak helper inside a runtime loop.** `UniswapV2Library.getAmountsOut` hashes in a
-  `for` loop over the path, so the Router entry flags `keccakLoopReads` and the SDK provisions one
-  preimage-per-iteration side-car from the trailing band. The hoisted `pairFor` target is an outlined body
-  that batches its two keccak calls into one fixed `keccakSideCar` slot instead. When both are present the
-  probe mistakes the body's two batched reads for two loop iterations, and the final bind compares the
-  body's batched preimage against a one-preimage commitment. Reading the helper's borrowed slot through an
-  entry-time anchor (instead of the bottom ordinal) was implemented and measured: the index became correct
-  and the preimages resolved, but the transaction then failed the same preimage bind (ip 227), so the
-  anchor was reverted. The remaining fix belongs in one shared scheme for batched outlined reads inside a
-  loop.
+- **An outlined keccak helper inside a runtime loop (resolved).** `UniswapV2Library.getAmountsOut` hashes in
+  a `for` loop over the path, so the entry flags `keccakLoopReads` and the SDK provisions preimages from the
+  trailing band at `master + blockSize + counter`. The hoisted `pairFor` target is an outlined body that
+  batches two keccak calls into one side-car, so a call inside the loop must thread *this iteration's*
+  trailing coordinate and keep the member ordinal instead of re-reading the fixed `keccakSideCar` slot.
+  Three changes made the two schemes agree:
+  - `GenerateTargetTraversal` emits the trailing coordinate (`block base + blockSize + counter`) as the
+    call-edge slot when `keccakLoopActive`, so the callee's fixed-slot read no longer addresses a container
+    or a funder pad.
+  - `scanKeccakBatchReads` derives `(slot, member)` from the trace's `[arg, ordinal, index]` shape, and
+    `sc-resolve-stateful-keccak-loop`/`StatefulContract` key side-cars by their trailing base
+    (`blockLayout.trailingBase`) rather than the fixed slot offset.
+  - The loop-declared counter is no longer treated as a fixed alias by `SynthesizeExternalAddressLocals`,
+    which had hoisted the `pairFor(factory, path[i], path[i+1])` target to the body top and evaluated it
+    (with `i` frozen at its initializer) before the deadline `require`.
+  The entry-time alt-stack anchor remains reverted; the loop-index threading replaces it. Measured effect:
+  Router 6/74 → 11/74 and Libraries 21/37 → 23/37. Regressions: `KeccakResultNft.test.ts` ("groups a batched
+  helper body by side-car and keeps each call's member", "reads a dynamic-loop call by its side-car index").
+- **A computed external target's ABI return inside a dynamic loop.** `UniswapV2Library.getAmountsOut` calls
+  `IUniswapV2Pair(pairFor(factory, path[i], path[i + 1])).getReserves()`. With `pairFor` now resolving, the
+  loop reaches the external call, whose static tuple decode fails the `length > index` guard at ip 121 in the
+  `getAmountsOut` frame (both a one-iteration path and the three-token path fail identically, so it is the
+  first iteration and not an extra loop pass). `getAmountsIn` fails the same way at ip 127. The standalone
+  `getReserves` case still stops earlier at the CREATE2 identity, so the return-decode path has no passing
+  reference yet; this is the next computed-target class rather than a keccak-band issue.
 
 - **A Router-built transaction that deploys a pair through the factory.** `addLiquidity` calls
   `factory.createPair` inside `_addLiquidity` when the pair is absent, then immediately calls

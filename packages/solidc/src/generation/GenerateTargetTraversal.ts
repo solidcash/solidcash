@@ -48313,7 +48313,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Requires calls on different targets to name different callee inputs once both run (an untaken call's index is
    * -1). Each call's input index is a witness its identity check binds to its own target only, so with `a == b`
    * `IVault(a).deposit(x)` and `IVault(b).deposit(x)` could both accept one run of that callee. Calls on one target
-   * (a frame group, a readonly alias, a batch row) share their callee's input.
+   * (a frame group, looped or not, a readonly alias, a batch row) share their callee's input.
    */
   private emitDistinctCalleeInputs(locationData: SingleLocationData): void {
     const index = (slot: ExternalCallSlot): string => `__internal__extcallMasterIdx${slot.slotIndex}`;
@@ -48321,7 +48321,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       : slot.addressStateVar ? `state:${slot.addressStateVar}`
         : slot.addressLiteral ? `literal:${slot.addressLiteral}` : undefined);
     const claims = this.externalCallSlots.filter((slot) => !slot.inlineLoopDispatch && !slot.loopArrayVar
-      && !this.isExternalCallSlotLoopNested(slot) && this.getStackIndex(index(slot), true) >= 0);
+      && this.getStackIndex(index(slot), true) >= 0);
     for (const [at, left] of claims.entries()) {
       for (const right of claims.slice(at + 1)) {
         if (target(left) !== undefined && target(left) === target(right)) continue;
@@ -48340,6 +48340,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_VERIFY, locationData);
       }
     }
+  }
+
+  /**
+   * The offset of the first callee laid out after a loop over targets' first callee. The loop's callee for
+   * iteration i sits at `base + offset + i * stride`, so from its second iteration on it would take that callee's
+   * input too, and one run would serve both calls: the loop's inputs must stay below it.
+   */
+  private loopCalleeRegionEnd(slot: ExternalCallSlot): number | undefined {
+    const later = this.externalCallSlots.filter((other) => other !== slot && other.computedOffset > slot.computedOffset
+      && !other.sourceCallNode?.rawValueTransferOnly).map((other) => other.computedOffset);
+    return later.length > 0 ? Math.min(...later) : undefined;
   }
 
   /**
@@ -48488,6 +48499,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_MUL, loc);                       // [elem, base, i*stride]
       }
       this.emit(Op.OP_ADD, loc);                         // [elem, idx]
+      const end = this.loopCalleeRegionEnd(slot);
+      if (end !== undefined) {
+        this.emit(Op.OP_DUP, loc);                       // [elem, idx, idx]
+        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase') + 3)), loc);
+        this.emit(Op.OP_PICK, loc);                      // [elem, idx, idx, base]
+        this.emit(encodeInt(BigInt(end)), loc);
+        this.emit(Op.OP_ADD, loc);
+        this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_VERIFY, loc);                    // [elem, idx]
+      }
     }
 
     // 1. IDENTITY: callee master LBC == arr[i] (elem at depth 2 under [idx, callee_bc])
@@ -48646,6 +48667,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_ADD, loc);            // [..., i, addr, inputidx]
     this.pushToStack('(ilc_inidx)');
+    const end = this.loopCalleeRegionEnd(slot);
+    if (end !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
+      this.emit(Op.OP_PICK, loc);         // [..., inputidx]
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalCallInputBase') + 1)), loc);
+      this.emit(Op.OP_PICK, loc);         // [..., inputidx, base]
+      this.emit(encodeInt(BigInt(end)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_VERIFY, loc);       // the next callee's input is not this loop's
+    }
 
     // 1. IDENTITY: callee master UTXO bytecode == targets[i]
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);

@@ -1,11 +1,14 @@
-import { defineConfig, mergeConfig } from 'vitest/config';
+import { defineConfig } from 'vitest/config';
 import baseConfig from './vitest.config.js';
 
 // A dedicated watch config avoids passing `test/e2e` as a positional filter.
 // That filter is OR-ed with a developer's file filter and accidentally runs the
 // entire e2e suite; an include pattern composes correctly with CLI file filters.
-export default mergeConfig(baseConfig, defineConfig({
+// The include replaces the base one: mergeConfig would append it to the base's pattern for every test file.
+export default defineConfig({
+  ...baseConfig,
   test: {
+    ...baseConfig.test,
     include: ['test/e2e/**/*.{test,spec}.?(c|m)ts?(x)'],
   },
-}));
+});

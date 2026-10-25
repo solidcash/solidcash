@@ -4510,8 +4510,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           // The direct convention runs repeated calls to one callee in one spend of its master, through the
           // callee's multi-call entry, each call reading the record of its own frame; it never builds a bus batch.
           const directConvention = messageBusExplicitlyDisabled && this.compilerOptions.composition !== 'framed';
+          // A loop repeats its call while the callee master is spent once: a looped returning call to a fixed target
+          // that cannot run as a frame of that spend would read results its callee never pinned.
+          const loopedCalls = directConvention ? [...allByTarget.values()].filter((group) => group.length === 1
+            && group[0].hasReturnValues && group[0].interfaceName !== '__raw__' && group[0].sourceCallNode !== undefined
+            && (this.loopNestedExternalCalls.has(group[0].sourceCallNode) || callOccursInLoop(group[0].sourceCallNode)))
+            : [];
           const refusedRepeated = directConvention
-            ? knownRepeated.filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)))
+            ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)))
             : knownRepeated;
           // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
           // the selected contract require a graph route; enforce the opt-out on reachable functions only.

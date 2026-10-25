@@ -136,6 +136,33 @@ describe('direct call ordinals', () => {
     expect(message).not.toMatch(/omit the option/);
   });
 
+  it('refuses a looped returning call to a fixed target that cannot run as a frame', () => {
+    // The callee master is spent once and pins one record: further iterations would read records it never pinned.
+    const looped = (body: string): string => `pragma solidcash >=0.8.0;
+interface ICounter { function inc(bigint by) external returns (bigint); }
+contract LoopedWriter(address counter) {
+  bigint last;
+  bytes stored;
+  function one(bigint by) internal returns (bigint) { return ICounter(counter).inc(by); }
+  function run(bigint n, bool take) public { bigint acc = 0; ${body} this.last = acc; }
+}`;
+    const bodies = [
+      'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(counter).inc(i); }',
+      'bigint i = 0; while (i < n) { acc = acc + ICounter(counter).inc(i); i = i + 1; }',
+      'for (bigint i = 0; i < n; i = i + 1) { if (take) { acc = acc + ICounter(counter).inc(i); } }',
+      'for (bigint i = 0; i < n; i = i + 1) { acc = acc + one(i); }',
+      'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(this.stored).inc(i); }',
+    ];
+    for (const body of bodies) {
+      expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body)
+        .toThrow(/MESSAGE_BUS_REQUIRED.*\(ICounter\.inc\).*cannot be built with `messageBus: false`\.$/);
+      // The bus binds each row; a lone call stays a direct call bound by its record.
+      expect(() => compileString(looped(body), { messageBus: true, suppressWarnings: true }), body).not.toThrow();
+    }
+    expect(() => compileString(looped('acc = ICounter(counter).inc(n);'), { messageBus: false, suppressWarnings: true }))
+      .not.toThrow();
+  });
+
   it('leaves a message-bus compile as it was', () => {
     const bus = compileStringMulti(SOURCE, { messageBus: true, suppressWarnings: true });
     const all = Object.values(bus).flatMap((artifact) => artifact.abi.flatMap((entry) => entry.externalCalls ?? []));

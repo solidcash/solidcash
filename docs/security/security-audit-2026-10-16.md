@@ -960,7 +960,10 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `target.call(payload)` to a fixed target in a loop once its data is read (a Multicall over array targets checks
   each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
   target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
-  reads no record, so the bus binds the same shapes per row. Test: `DirectCallOrdinals.test.ts`.
+  reads no record, so the bus binds the same shapes per row. Since phase 4 of the direct multi-call, a looped
+  state-changing call to a fixed target runs as counted frames of the callee's multi-call spend, each iteration bound
+  to its own frame's record, instead of being refused; a looped call that can be no frame stays refused. Test:
+  `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts`.
 
 ### Not changed, by decision
 

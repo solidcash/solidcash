@@ -16,7 +16,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleeDeclaresNoReturnValue, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 import { createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress } from './covenant-helpers.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
@@ -925,9 +925,15 @@ export async function orchestrateCreateBuilderExternalCalls(
         const g = externalCallUtxoGroups[i];
         const offset = g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset;
         if (groupMetas[i].ecSlot.hasReturnValues) {
-          returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
-            ? cursor + offset
-            : returnEventOutputBase + tailRank++);
+          // A callee that declares no return value carries no record, even though a raw call's slot declares
+          // `(bool, bytes)`. State the absent coordinate so the caller reads empty returndata; it must not claim
+          // a tail slot another group's carrier occupies.
+          if (calleeDeclaresNoReturnValue(g)) returnEventIndexMap.set(i, -1);
+          else {
+            returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
+              ? cursor + offset
+              : returnEventOutputBase + tailRank++);
+          }
         }
         cursor += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
       }

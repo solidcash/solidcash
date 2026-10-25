@@ -25895,6 +25895,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_ADD, locationData);
         }
       }
+      // A callee that declares no return value pins no record for this call, and the SDK states that as a negative
+      // return coordinate. An EVM low-level call to such a function answers with empty returndata, so an opaque read
+      // must not touch the output introspection ops at a negative index: they abort the spend.
+      const opaqueMayHaveNoRecord = node.opaqueReturn && !bindsInline && this.plainLoopDepth === 0;
+      if (opaqueMayHaveNoRecord) {
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(encodeInt(0n), locationData);
+        this.emit(Op.OP_LESSTHAN, locationData);
+        this.emit(Op.OP_IF, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.emit(Op.OP_1, locationData);    // success
+        this.emit(Op.OP_0, locationData);    // empty returndata
+        this.emit(Op.OP_ELSE, locationData);
+      }
       if (bindsInline) this.emitLoopCallRecordCarrierChecks(locationData);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [digest?, record] (record untracked): the call's digest, a form byte, then the result or its SHA256.
@@ -25939,8 +25953,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // `data` (opaque, no typed decode); `success` is always true (integrity failures fail the spend).
         this.emit(Op.OP_1, locationData);    // [data, true]
         this.emit(Op.OP_SWAP, locationData); // [true, data]
-        this.pushToStack('(success)');
-        this.pushToStack('(returnData)');
+        if (!opaqueMayHaveNoRecord) {
+          this.pushToStack('(success)');
+          this.pushToStack('(returnData)');
+        }
       } else {
         // Decode return values from blob
         if ((this.compilerOptions.evmCompat)
@@ -25961,6 +25977,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // pushes leave the rightmost result on top, matching tuple assignment and internal-call returns.
           for (let i = 0; i < returnTypes.length; i++) this.pushToStack('(value)');
         }
+      }
+      if (opaqueMayHaveNoRecord) {
+        this.emit(Op.OP_ENDIF, locationData);
+        this.pushToStack('(success)');
+        this.pushToStack('(returnData)');
       }
       if (counter !== undefined) this.emitAdvanceCallOrdinal(counter, node, locationData);
     }

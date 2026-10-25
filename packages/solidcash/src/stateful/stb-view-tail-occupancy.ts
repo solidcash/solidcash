@@ -8,6 +8,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import {
   isOpReturnLockingBytecode,
@@ -50,6 +51,8 @@ export interface ViewTailOccupancyHost {
   restoreDeclaredMutableEntrySlots(builder: TransactionBuilder): void;
   reassertInBlockWriterReturns(builder: TransactionBuilder): void;
   applyDerivedValueChunks(builder: TransactionBuilder): void;
+  /** The call record's digest, when this identity is a direct call whose record the caller verifies. */
+  callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
 /**
@@ -199,7 +202,10 @@ export function writeViewTailsAfterWriterOccupancy(
     }
     outputIndex = redirected;
     const rawCommitment = binToHex(event.commitment);
-    const commitment = rawCommitment === '' ? '0101' : rawCommitment;
+    const recordDigest = host.callRecordDigest?.(event.identity);
+    // Mirror tail placement: an empty raw with a call-record digest is a record, not the legacy `0101` sentinel.
+    const commitment = rawCommitment === '' && recordDigest === undefined ? '0101'
+      : returnEventNftCommitment(event.commitment, recordDigest);
     const output: Output = {
       to: Uint8Array.of(0x51),
       amount: 800n,

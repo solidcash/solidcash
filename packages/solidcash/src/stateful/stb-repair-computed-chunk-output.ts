@@ -78,6 +78,7 @@ export interface RepairComputedChunkOutputHost {
     categoryId: string;
     commitment: Uint8Array;
     identity?: string;
+    provisional?: boolean;
   }[];
   readonly readOnlyDataNftUtxos: readonly UnlockableUtxo[];
   findMintingInputIndex(categoryId: string): number;
@@ -670,6 +671,7 @@ export function repairComputedChunkOutput(
       writesState: true,
       evmBool,
       returnsBool: true,
+      authenticated: pending?.provisional === false,
     })));
   }
   let changed = false;

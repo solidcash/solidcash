@@ -99,6 +99,7 @@ export function reassertInBlockWriterReturns(
       writesState: writerAbi?.writesState === true,
       evmBool,
       returnsBool: writerReturnsBool,
+      authenticated: pending?.provisional === false || occupantRecord?.raw !== undefined,
     })), digest);
     if (isViewReturnTailOutput({
       to: occupant?.to instanceof Uint8Array ? occupant.to : undefined,

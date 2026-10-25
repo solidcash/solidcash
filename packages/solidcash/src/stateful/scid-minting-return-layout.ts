@@ -301,7 +301,8 @@ export function matchMaterializedReturnOutputs(
     if (output.token?.category?.toLowerCase() !== expected.categoryId.toLowerCase()) return false;
     const raw = typeof expected.commitment === 'string'
       ? hexToBin(commitmentHexOf(expected.commitment)) : expected.commitment;
-    const wanted = raw.length === 0 ? '0101' : returnEventNftCommitment(raw, expected.digest);
+    const wanted = raw.length === 0 && expected.digest === undefined ? '0101'
+      : returnEventNftCommitment(raw, expected.digest);
     return commitmentHexOf(output.token.nft?.commitment).toLowerCase() === wanted;
   };
 

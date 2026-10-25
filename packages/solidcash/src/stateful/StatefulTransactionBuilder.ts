@@ -29,7 +29,9 @@ import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js
 import { parseEventCommitment } from './StateReader.js';
 import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
-import { callRecordDigest, callRecordHashesResult, parseCallRecord } from './call-record.js';
+import {
+  CALL_RECORD_DIGEST_BYTES, callRecordCommitment, callRecordDigest, callRecordHashesResult, parseCallRecord,
+} from './call-record.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
@@ -755,6 +757,7 @@ import {
   type TokenContainerTransferNftData,
   type RuntimeLoopTransferOutput,
   type ExternalCallUtxoGroup,
+  calleeDeclaresNoReturnValue,
 } from './external-call-utxo-group.js';
 
 export {
@@ -1559,6 +1562,7 @@ export class StatefulTransactionBuilder {
       applyDerivedValueChunks: (builder) => {
         this._applyDerivedValueChunks(builder);
       },
+      callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -5424,12 +5428,24 @@ export class StatefulTransactionBuilder {
         return undefined;
       }
     };
+    // A raw low-level call reads the callee's `bytes` returndata, and a function that declares no outputs
+    // returns none: the caller reads that from the record's absence. Seeding a placeholder carrier would both
+    // give it a byte to ABI-decode and make the callee refuse an unpinned record of its own category.
+    const emptyReturn = (group: ExternalCallUtxoGroup, identity?: string): Uint8Array => {
+      if (!calleeDeclaresNoReturnValue(group)) return new Uint8Array([0]);
+      // The direct reader always strips a 31-byte call-record digest (it only skips the comparison for a raw
+      // selector), so a void callee's empty returndata is carried as a record whose field is empty. A zero digest
+      // is never compared; a real one (when the callee pins a record) is re-wrapped on materialization.
+      return callRecordCommitment(new Uint8Array(),
+        this.callRecordDigestFor(identity ?? '') ?? new Uint8Array(CALL_RECORD_DIGEST_BYTES));
+    };
     const initialized = new Set<number>();
     for (const [groupIdx, group] of this.externalCallUtxoGroups.entries()) {
       const returns = returning[groupIdx]?.hasReturnValues === true
         || group.precomputedReturnCommitment !== undefined
         || (group.loopReturnCommitments?.length ?? 0) > 0;
-      if (!returns) continue;
+      // A callee that declares no return value pins no record, whatever its caller's slot declares.
+      if (!returns || calleeDeclaresNoReturnValue(group)) continue;
       const physicalGroupIdx = group.sharedGroupIndex ?? groupIdx;
       if (initialized.has(physicalGroupIdx)) continue;
       initialized.add(physicalGroupIdx);
@@ -5443,8 +5459,16 @@ export class StatefulTransactionBuilder {
         ));
       const physical = this.externalCallUtxoGroups[physicalGroupIdx];
       const complete = family.every(({ candidate }) => candidate.precomputedReturnCommitment !== undefined);
+      const emptyReturn = (group: ExternalCallUtxoGroup, identity?: string): Uint8Array => {
+        if (!calleeDeclaresNoReturnValue(group)) return new Uint8Array([0]);
+        // The direct reader always strips a 31-byte call-record digest (it only skips the comparison for a raw
+        // selector), so a void callee's empty returndata is carried as a record whose field is empty. A zero digest
+        // is never compared; a real one (when the callee pins a record) is re-wrapped on materialization.
+        return callRecordCommitment(new Uint8Array(),
+          this.callRecordDigestFor(identity ?? '') ?? new Uint8Array(CALL_RECORD_DIGEST_BYTES));
+      };
       const fallback = physical.precomputedReturnCommitment
-        ?? typedArrayPlaceholder(physical) ?? new Uint8Array([0]);
+        ?? typedArrayPlaceholder(physical) ?? emptyReturn(physical, `external-call:${physicalGroupIdx}`);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_RETURN === '1') {
         console.error('seed-precomputed-returns', {
@@ -5460,7 +5484,8 @@ export class StatefulTransactionBuilder {
             loopWidth: candidate.loopReturnCommitments?.length,
             parts: (candidate.loopReturnCommitments?.length
               ? candidate.loopReturnCommitments
-              : [candidate.precomputedReturnCommitment ?? typedArrayPlaceholder(candidate) ?? fallback]
+              : [candidate.precomputedReturnCommitment
+                ?? typedArrayPlaceholder(candidate) ?? emptyReturn(candidate, `external-call:${candidateIdx}`)]
             ).map((part) => ({
               bytes: part.length,
               hasDigital: binToHex(part).includes('44494749'),
@@ -5472,14 +5497,17 @@ export class StatefulTransactionBuilder {
       for (const { candidate, candidateIdx } of family) {
         const parts = candidate.loopReturnCommitments?.length
           ? candidate.loopReturnCommitments
-          : [candidate.precomputedReturnCommitment ?? typedArrayPlaceholder(candidate) ?? fallback];
+          : [candidate.precomputedReturnCommitment
+            ?? typedArrayPlaceholder(candidate) ?? emptyReturn(candidate, `external-call:${candidateIdx}`)];
         for (const [partIndex, part] of parts.entries()) {
           this.setReturnEventOutput(
             physical.categoryId,
             part,
             `external-call:${candidateIdx}:${partIndex}`,
+            // A void callee's empty returndata is exact, not a provisional guess.
             candidate.precomputedReturnCommitment === undefined
-              && !(candidate.loopReturnCommitments?.length),
+              && !(candidate.loopReturnCommitments?.length)
+              && !calleeDeclaresNoReturnValue(candidate),
           );
         }
       }

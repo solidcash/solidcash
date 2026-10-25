@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **95 passed, 97 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **99 passed, 93 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -127,10 +127,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 26 / 37 | TransferHelper raw-return decoding and absent-selector calls (9); ETH value (2) |
+| `Libraries` | 30 / 37 | reverting-callee message translation (3); multi-entry `transferFrom` state commitment (1); absent-selector `safeApprove` call (1); ETH value (2) |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
-| **Total** | **95 / 192** | |
+| **Total** | **99 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is occasionally order-dependent in a
 narrow run (a `-t` filter or a whole-project run can report `nrt.balanceOf(other) == 0`); it passes in the full
@@ -214,6 +214,15 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   (the hoisted `UniswapV2Library.pairFor`) is evaluated before the deadline require
   (`KeccakMissingSidecarGuard.test.ts` asserts the shipped body bytes for both an outlined helper and an
   entry body).
+- A raw low-level call (`token.call(payload)`) whose callee declares no return value now reads its returndata
+  from the record's *absence* instead of a synthesized carrier. A contract whose entries return values refuses
+  every unpinned carrier of its own category (a void entry emits a record count of zero), so seeding a
+  placeholder made the callee abort with `OP_NUMEQUALVERIFY` (0 records expected, 1 present). The SDK now
+  states the return coordinate as `-1` for such a callee and seeds no event; the compiler's opaque return read
+  branches on a negative index and yields `(success = true, data = empty)`. This settled
+  `safeApprove`/`safeTransfer`/`safeTransferFrom` "accepts a token that returns no data"
+  (`RawCallEmptyReturn.test.ts` sends a real raw call to a void `set` and asserts the callee state and the
+  caller's empty-returndata branch).
 - A dynamic stateful keccak256 loop now mints deterministic compute side-car stand-ins when the provider
   exposes `addUtxo` (the mock network), matching the fixed-slot resolver, and probes with synthetic
   placeholders first so an early-abort path can prove the loop is never reached. On a real provider it still

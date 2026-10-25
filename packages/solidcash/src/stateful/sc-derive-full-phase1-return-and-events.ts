@@ -222,6 +222,10 @@ export function deriveFullPhase1ReturnAndEvents(
         calleeReturnArtifact.enums)) {
       returnCommitments = undefined;
     }
+    // A void callee declares no return value, so its returndata is empty. A probe that aborts inside the callee
+    // can leave `true` (the covenant's success push) or a key word on the stack; neither is return data, and
+    // publishing it makes a raw caller skip its `data.length == 0` branch and ABI-decode a non-word.
+    if (calleeReturnTypes.length === 0) returnCommitments = undefined;
     if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
       console.error('route-return-derivation', {
@@ -676,6 +680,11 @@ export function deriveFullPhase1ReturnAndEvents(
       const pending = extractPendingReturnCommitment(returnTrace, routeReturnPushes, routeReturnTypes);
       if (pending) returnCommitments = [pending];
     }
+    // The same rule as the pre-event derivation: a void callee returns no bytes, so the covenant's success push
+    // (`01`) or a stack key is not returndata. Publishing one makes a raw caller skip `data.length == 0`.
+    const postEventCalleeAbi = (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+      .find((candidate) => candidate.name === group.functionName);
+    if ((postEventCalleeAbi?.outputs?.length ?? 0) === 0) returnCommitments = undefined;
     if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
       (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
       console.error('route-return-after-events', {

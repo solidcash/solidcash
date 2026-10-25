@@ -588,11 +588,13 @@ export function materializeExternalCallOutputs(
           // default to false so a missing precompute cannot admit an unregistered party.
           // A fused zero seed is unset, not false — SafeERC20 abi.decode(00) fails VERIFY.
           const identity = re?.identity ?? returnIdentity;
+          const writerPendingHex = re && re.commitment.length > 0 ? binToHex(re.commitment) : '';
           const returnCommitment = returnEventNftCommitment(hexToBin(canonicalWriterReturnCommitment({
-            pendingHex: re && re.commitment.length > 0 ? binToHex(re.commitment) : '',
+            pendingHex: writerPendingHex,
             writesState: writerAbi?.writesState === true,
             evmBool,
             returnsBool: writerReturnsBool,
+            authenticated: re?.provisional === false,
           })), host.callRecordDigest?.(identity));
           addReturnOutput(builder, identity, {
             to: new Uint8Array([0x51]),

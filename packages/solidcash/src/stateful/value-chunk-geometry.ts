@@ -289,13 +289,19 @@ export function canonicalWriterReturnCommitment(parts: {
   writesState?: boolean;
   evmBool?: boolean;
   returnsBool?: boolean;
+  /**
+   * The pending value came from an authenticated observation (not the zero seed). A canonical all-zero boolean is
+   * then a legitimate `false`, which must not be replaced by the state-writing success default.
+   */
+  authenticated?: boolean;
 }): string {
   const evmBool = parts.evmBool === true;
   const boolTrue = evmBool ? `${'00'.repeat(31)}01` : '51';
-  const boolFalse = evmBool ? `${'00'.repeat(31)}00` : '00';
+  const boolFalse = evmBool ? `${'00'.repeat(32)}` : '00';
   const defaultBool = parts.writesState === true ? boolTrue : boolFalse;
   const pending = (parts.pendingHex ?? '').toLowerCase();
   if (parts.returnsBool !== true) return pending || '00';
+  if (parts.authenticated === true && pending === boolFalse) return boolFalse;
   if (pending === '' || /^0+$/.test(pending)) return defaultBool;
   if (evmBool) {
     if (pending === boolFalse || pending === boolTrue) return pending;

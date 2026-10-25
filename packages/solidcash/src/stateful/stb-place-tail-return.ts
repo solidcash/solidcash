@@ -213,8 +213,13 @@ export function placeTailReturnAfterSwappedTokenBlock(
         placedIndex = nextIndex;
       }
       const rawCommitment = binToHex(event.commitment);
-      const commitment = rawCommitment === '' ? '0101'
-        : returnEventNftCommitment(event.commitment, host.callRecordDigest?.(event.identity));
+      // A direct call's carrier is its call record, and a raw call's *empty* returndata is still a record:
+      // `<31-byte digest> || form || <empty field>`. The compiler always splits the 31-byte digest (it only skips
+      // the comparison for a raw selector), so replacing an empty raw with the legacy `0101` sentinel made it
+      // split a 2-byte value. Keep the sentinel only where no record digest pins the call.
+      const recordDigest = host.callRecordDigest?.(event.identity);
+      const commitment = rawCommitment === '' && recordDigest === undefined ? '0101'
+        : returnEventNftCommitment(event.commitment, recordDigest);
       const output: Output = {
         to: Uint8Array.of(0x51),
         amount: 800n,

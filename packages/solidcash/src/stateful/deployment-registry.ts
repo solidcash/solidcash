@@ -352,12 +352,12 @@ export function isCreate2ProjectedAddressValue(
     ? findDeploymentByExactAddress(provider, value) ?? findDeploymentByLockingBytecode(provider, value)
     : findDeploymentByLockingBytecode(provider, binToHex(value));
   if (exact) return false;
-  const wanted = binToHex(payload);
   // One unambiguous projection IS resolvable: `findDeploymentByAddressValue` returns that child, whose real BCH
   // lock the witness carries and a co-spent input can present. Only zero or several matches are a dead end.
-  return deploymentsOf(provider).filter((deployment) => (
-    create2ChildIdentities(deployment).includes(wanted)
-  )).length !== 1;
+  // A deployment whose own locking bytecode narrows to the payload is not a projection at all - the value is the
+  // lock-derived identity the covenant checks, which is how a factory-created pair is addressed through an
+  // interface that never saw its deployment. `matchingDeploymentsBySolidityAddressPayload` covers both forms.
+  return findDeploymentBySolidityAddressPayload(provider, payload) === undefined;
 }
 
 /** Resolve a compiler-typed address value, preserving exact BCH identities before Solidity ABI projection. */

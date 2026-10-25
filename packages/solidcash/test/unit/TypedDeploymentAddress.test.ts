@@ -68,7 +68,7 @@ describe('typed deployment address resolution', () => {
     expect(registeredAddressValueLockingBytecode(provider, lock)).toEqual(lock);
   });
 
-  it('distinguishes a lock-derived child identity from its off-chain CREATE2 projection', () => {
+  it('resolves a lock-derived child identity and a unique off-chain CREATE2 projection', () => {
     const provider = createTestProvider();
     const parentLock = hexToBin(`76a914${'11'.repeat(20)}88ac`);
     const parent = lockingBytecodeToCashAddress({ bytecode: parentLock, prefix: 'bchtest' });
@@ -89,11 +89,20 @@ describe('typed deployment address resolution', () => {
     ]);
     const projected = keccak_256(preimage).slice(12);
     expect(findDeploymentByAddressValue(provider, projected)?.contractName).toBe('Child');
-    expect(isCreate2ProjectedAddressValue(provider, projected)).toBe(true);
+    // One owning child is resolvable: the SDK substitutes that child's real lock for the witness.
+    expect(isCreate2ProjectedAddressValue(provider, projected)).toBe(false);
 
     // The identity the child's own locking bytecode projects to is the one the covenant can authenticate.
     const physical = hash160(childLock);
     expect(findDeploymentByAddressValue(provider, physical)?.contractName).toBe('Child');
     expect(isCreate2ProjectedAddressValue(provider, physical)).toBe(false);
+
+    // Without an owner, or with several, there is no callee the caller can authenticate.
+    expect(isCreate2ProjectedAddressValue(provider, keccak_256(new Uint8Array(64).fill(7)).slice(12))).toBe(true);
+    registerDeployment(provider, {
+      contractName: 'Sibling', address: 'sibling', lockingBytecode: binToHex(childLock),
+      parentAddress: parent.address, parentLockingBytecode: binToHex(parentLock), salt, contract: {},
+    });
+    expect(isCreate2ProjectedAddressValue(provider, projected)).toBe(true);
   });
 });

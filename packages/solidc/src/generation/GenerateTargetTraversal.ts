@@ -48234,7 +48234,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc); // +1: untracked base
     this.emit(Op.OP_PICK, loc);           // [..., i, addr, base, i]
-    if (stride !== 1) {
+    const runtimeStrideName = slot.loopArrayVar?.startsWith('__internal__loopTargets')
+      ? `__internal__loopTargetStride${slot.loopArrayVar.slice('__internal__loopTargets'.length)}`
+      : undefined;
+    if (runtimeStrideName !== undefined) {
+      // The SDK knows the block each occurrence co-spends (a pair's getReserves() includes its data NFT), so the
+      // per-iteration master index is base + i*witnessStride. Reading it keeps the covenant aligned with the layout
+      // without teaching the compiler a callee's private state footprint.
+      this.emit(encodeInt(BigInt(this.getStackIndex(runtimeStrideName) + 2)), loc); // +2: base, i
+      this.emit(Op.OP_PICK, loc);         // [..., base, i, stride]
+      this.emit(Op.OP_MUL, loc);          // [..., base, i*stride]
+    } else if (stride !== 1) {
       this.emit(encodeInt(BigInt(stride)), loc);
       this.emit(Op.OP_MUL, loc);
     }

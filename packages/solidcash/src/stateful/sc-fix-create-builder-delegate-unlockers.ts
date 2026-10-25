@@ -803,6 +803,39 @@ export async function fixCreateBuilderDelegateUnlockers(
           }
           return callInputIndex;
         }
+        const computedTargetWitness = inp.name.match(/^__internal__computedCallTarget(\d+)$/);
+        if (computedTargetWitness) {
+          // A straight-line computed target in this callee is authenticated against the exact lock of the callee it
+          // resolved to. Supply that child group's locking bytecode; the on-chain expression is only an EVM identity.
+          const slot = Number(computedTargetWitness[1]);
+          const nestedGroupIndex = nestedGroupIndexForSlot(slot);
+          const nested = nestedGroupIndex === undefined ? undefined
+            : externalCallUtxoGroups[nestedGroupIndex];
+          const physical = nested?.sharedGroupIndex === undefined ? nested
+            : externalCallUtxoGroups[nested.sharedGroupIndex] ?? nested;
+          const lock = physical?.externalContract?.inner?.lockingBytecode;
+          return typeof lock === 'string' ? hexToBin(lock)
+            : lock instanceof Uint8Array ? lock : new Uint8Array();
+        }
+        const loopTargetStride = inp.name.match(/^__internal__loopTargetStride(\d+)$/);
+        if (loopTargetStride) {
+          // A computed-target loop in this callee expands into one child group per occurrence. Its stride is the
+          // physical width of one such block (master + the state data NFTs the call reads). Prefer the group the
+          // published callsite owns; fall back to the first expanded child for older artifacts without callsite IDs.
+          const witnessName = `__internal__loopTargets${loopTargetStride[1]}`;
+          const published = (bFunc as AbiFunction).externalCalls?.find(
+            (call) => call.loopArrayVar === witnessName,
+          );
+          const children = nestedGroups.map((idx) => externalCallUtxoGroups[idx]);
+          const matching = published?.callsiteId === undefined ? []
+            : children.filter((child) => child.sourceCallsiteId === published.callsiteId);
+          const candidate = matching.find((child) => (child.blockInputs?.length ?? 0) > 0)
+            ?? matching[0] ?? children[0];
+          const physical = candidate?.sharedGroupIndex === undefined ? candidate
+            : externalCallUtxoGroups[candidate.sharedGroupIndex] ?? candidate;
+          return physical === undefined ? 1n
+            : BigInt(physical.blockInputs ? physical.blockInputs.length : 1 + physical.dataNftUtxos.length);
+        }
         const runtimeCardinality = resolveDelegateRuntimeCardinality(inp.name, activeEntryDelegate);
         if (runtimeCardinality !== undefined) return runtimeCardinality;
         if (inp.name === '__internal__blockOracleInputIndex') {

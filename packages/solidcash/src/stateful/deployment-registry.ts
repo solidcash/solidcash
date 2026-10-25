@@ -334,12 +334,14 @@ export function findDeploymentBySolidityAddressPayload(
 }
 
 /**
- * True when a value names a registered child only through its off-chain CREATE2 projection.
+ * True when a value names a child only through an off-chain CREATE2 projection that no single deployment owns.
  *
  * A BCH covenant authenticates a callee against the identity its locking bytecode projects to, or against a
- * co-spent SCID identity anchor. No lock commits to a CREATE2 address derived from an EVM init-code hash, and an
- * anchor would need a lock whose hash equals that address, so a call to this identity cannot pass the caller's
- * on-chain identity check. Callers use this to report the limit instead of assembling a transaction that fails.
+ * co-spent SCID identity anchor. No lock commits to a CREATE2 address derived from an EVM init-code hash, so the
+ * SDK substitutes the co-spent child's lock for the witness. That substitution is only sound when exactly one
+ * registered child projects to the value (the child records its salt and parent); with no owning child, or with
+ * several, there is no callee to authenticate and the caller reports the limit instead of assembling a doomed
+ * transaction.
  */
 export function isCreate2ProjectedAddressValue(
   provider: NetworkProvider, value: string | Uint8Array,
@@ -351,9 +353,11 @@ export function isCreate2ProjectedAddressValue(
     : findDeploymentByLockingBytecode(provider, binToHex(value));
   if (exact) return false;
   const wanted = binToHex(payload);
+  // One unambiguous projection IS resolvable: `findDeploymentByAddressValue` returns that child, whose real BCH
+  // lock the witness carries and a co-spent input can present. Only zero or several matches are a dead end.
   return deploymentsOf(provider).filter((deployment) => (
     create2ChildIdentities(deployment).includes(wanted)
-  )).length === 1;
+  )).length !== 1;
 }
 
 /** Resolve a compiler-typed address value, preserving exact BCH identities before Solidity ABI projection. */

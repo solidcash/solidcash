@@ -338,6 +338,11 @@ export function assertKernelReadCarrierAuthenticatedRows(
 /** Fill missing trailing internal ABI slots with protocol defaults. */
 export function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
+  // A witness-filled stride always advances by at least one co-spent input per occurrence. Keeping the sentinel at
+  // one reproduces the pre-witness assumption wherever no composed block pins the real width.
+  if (name.startsWith('__internal__loopTargetStride')) return 1n;
+  // A computed target's lock witness: an empty value matches no co-spent input, so an unreached call fails closed.
+  if (name.startsWith('__internal__computedCallTarget')) return new Uint8Array();
   if (name === '__internal__dynamicChunkOutputBase' || name === '__internal__graphSelfIdentityInput') return -1n;
   if (kernelEntryJournalRecordSegmentIndex(name) !== undefined) {
     return encodeKernelEntryJournalRecordSegment([]);

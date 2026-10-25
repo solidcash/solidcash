@@ -5,6 +5,7 @@
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   encodePushdataValue,
@@ -12,6 +13,7 @@ import {
   type AbiFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -21,9 +23,11 @@ import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { sortedAddressPairPacked } from './solidityAbi.js';
 import { ensureOrdinarySelfIdentityBand } from './ordinary-self-identity.js';
 import {
-  findDeploymentByAddressValue, isCreate2ProjectedAddressValue, listDeployments,
+  findDeploymentByAddress, findDeploymentByAddressValue, isCreate2ProjectedAddressValue, listDeployments,
+  registeredExecutionLockingBytecode,
 } from './deployment-registry.js';
 import {
   deriveValueChunkProducerChildPath,
@@ -255,11 +259,30 @@ export async function orchestrateCreateBuilderExternalCalls(
   // `__internal__loopTargets<n>[i]` witness the SDK fills from the interface's registered instances. A legacy
   // caller (an original EVM test, a plain `getContractAt` user) never calls registerExternalArray, so without a
   // fallback the witness stays empty and every reached iteration fails its bounds check with an opaque
-  // `OP_VERIFY`. Fall back to the session's deployment registry: every deployment whose artifact implements the
-  // interface, in registration order. The caller covenant binds each co-spent input to its own witness element, so
-  // a candidate set cannot forge a callee; explicit registration still controls the order when present.
+  // `OP_VERIFY`. Derive the candidates from the computed shape itself: a factory-created pair's CREATE2 salt is
+  // `keccak256(sort(tokenA, tokenB))`, so each adjacent pair of the loop's source array names exactly one child.
+  // Selecting by salt (rather than "every pair ever deployed") keeps a session with several factories and pairs
+  // from silently feeding a later test's loop with an earlier test's pairs.
+  // The loop's source array: the iteration domain's continue condition measures the forwarded `path`. Fall back to
+  // the only `address[]` input when the domain is elided.
+  const forwardedParams = new Set<number>();
+  const collectForwardedParams = (value: unknown, depth = 0): void => {
+    if (depth > 8 || !value || typeof value !== 'object') return;
+    const record = value as { kind?: unknown; paramIndex?: unknown; [key: string]: unknown };
+    if (record.kind === 'forward' && typeof record.paramIndex === 'number') {
+      forwardedParams.add(record.paramIndex);
+    }
+    for (const [key, child] of Object.entries(record)) {
+      if (key === 'kind') continue;
+      if (Array.isArray(child)) child.forEach((entry) => collectForwardedParams(entry, depth + 1));
+      else if (child && typeof child === 'object') collectForwardedParams(child, depth + 1);
+    }
+  };
+  const addressArrayInputs = (abiFunction?.inputs ?? [])
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => String(input.type).replace(/\s/gu, '').startsWith('address[]'));
   for (const loopSlot of abiFunction?.externalCalls ?? []) {
-    if (!loopSlot.loopArrayVar
+    if (!loopSlot.loopArrayVar?.startsWith('__internal__loopTargets')
       || host.inner.getExternalTargetEntriesByInterface(loopSlot.interfaceName).length > 0) continue;
     const iface = host.inner.artifact?.externalInterfaces?.find(
       (entry: { name?: string }) => entry.name === loopSlot.interfaceName,
@@ -268,20 +291,83 @@ export async function orchestrateCreateBuilderExternalCalls(
       .map((fn: { selector?: string }) => fn.selector)
       .filter((selector: string | undefined): selector is string => typeof selector === 'string'));
     if (required.size === 0) continue;
-    const seenLocks = new Set<string>();
-    const instances: unknown[] = [];
-    for (const deployment of listDeployments(host.inner.provider)) {
-      // Restrict the fallback to factory-created children: the shape it exists for is a computed target
-      // (`IFoo(pairFor(.., path[i], ..)).m()`) whose callees are the children of the factory the expression
-      // names. An unrelated top-level deployment that happens to share the interface is not a candidate.
-      if (deployment.parentAddress === undefined) continue;
+    const implementsInterface = (deployment: (ReturnType<typeof listDeployments>)[number]): boolean => {
       const instance = deployment.contract as {
-        inner?: { lockingBytecode?: Uint8Array | string; artifact?: { abi?: Array<{ selector?: string }> } };
+        inner?: { artifact?: { abi?: Array<{ selector?: string }> } };
       } | undefined;
       const available = new Set((instance?.inner?.artifact?.abi ?? [])
         .map((fn) => fn.selector)
         .filter((selector): selector is string => typeof selector === 'string'));
-      if (![...required].every((selector) => available.has(selector))) continue;
+      return [...required].every((selector) => available.has(selector));
+    };
+    const deployments = listDeployments(host.inner.provider)
+      .filter((deployment) => deployment.parentAddress !== undefined && implementsInterface(deployment));
+
+    // Adjacent pairs of the source array, in path order, are the order the compiler indexes the witness by.
+    forwardedParams.clear();
+    collectForwardedParams(loopSlot.iterationDomain);
+    const sourceInput = addressArrayInputs.find(({ index }) => forwardedParams.has(index))
+      ?? (addressArrayInputs.length === 1 ? addressArrayInputs[0] : undefined);
+    const sourceValues = sourceInput === undefined ? undefined : args?.[sourceInput.index];
+    const nativeLock = (value: unknown): Uint8Array | undefined => {
+      if (value instanceof Uint8Array) return value;
+      if (typeof value !== 'string') return undefined;
+      // A Solidity `address` argument minted from a contract handle names that deployment's LOGICAL identity. The
+      // factory hashed the callee's execution lock when it salted the child (the scalar address encoder resolves
+      // the handle the same way), so use the registered execution lock here rather than the identity lock the
+      // cashaddr string spells.
+      const deployment = findDeploymentByAddress(host.inner.provider, value);
+      const execution = deployment === undefined ? undefined : registeredExecutionLockingBytecode(deployment);
+      if (execution !== undefined) return hexToBin(execution.replace(/^0x/iu, ''));
+      try {
+        return /^(bchtest|bitcoincash|bchreg|chipnet):/iu.test(value)
+          ? addressToLockScript(value) : hexToBin(value.replace(/^0x/iu, ''));
+      } catch {
+        return undefined;
+      }
+    };
+    const pairSaltSets: Set<string>[] | undefined = (() => {
+      if (!Array.isArray(sourceValues) || sourceValues.length < 2) return undefined;
+      const locks = sourceValues.map(nativeLock);
+      if (locks.some((lock) => lock === undefined)) return undefined;
+      const sets: Set<string>[] = [];
+      for (let index = 0; index + 1 < locks.length; index += 1) {
+        const left = locks[index]!;
+        const right = locks[index + 1]!;
+        const salts = new Set<string>();
+        // `createPair` salts `keccak256(abi.encodePacked(token0, token1))`. The covenant sorts the native
+        // addresses and packs them by the factory artifact's address form; try both forms so this resolution does
+        // not have to guess which factory variant deployed the child.
+        for (const hashAddresses of [true, false]) {
+          const packed = sortedAddressPairPacked(left, right, hashAddresses);
+          if (packed !== undefined) salts.add(binToHex(keccak_256(packed)));
+        }
+        sets.push(salts);
+      }
+      return sets;
+    })();
+
+    const bySalt = new Map<string, (typeof deployments)[number]>();
+    for (const deployment of deployments) {
+      const salt = deployment.salt?.replace(/^0x/iu, '').toLowerCase();
+      if (salt !== undefined) bySalt.set(salt, deployment);
+    }
+    const ordered = pairSaltSets?.map((salts) => {
+      for (const salt of salts) {
+        const deployment = bySalt.get(salt);
+        if (deployment !== undefined) return deployment;
+      }
+      return undefined;
+    }).filter((deployment): deployment is (typeof deployments)[number] => deployment !== undefined)
+      ?? [];
+    const candidates = pairSaltSets === undefined || ordered.length === 0 ? deployments : ordered;
+
+    const seenLocks = new Set<string>();
+    const instances: unknown[] = [];
+    for (const deployment of candidates) {
+      const instance = deployment.contract as {
+        inner?: { lockingBytecode?: Uint8Array | string };
+      } | undefined;
       const lock = instance?.inner?.lockingBytecode;
       const lockHex = typeof lock === 'string'
         ? lock
@@ -708,6 +794,41 @@ export async function orchestrateCreateBuilderExternalCalls(
     // target array is read on-chain, but this synthesized witness is a param the SDK derives and fills here.
     // Ordered by the ABI (externalCallInputBase then loopTargets<n> then selectors), matching the covenant.
     for (const inp of abiFunction?.inputs ?? []) {
+      if (inp.name.startsWith('__internal__loopTargetStride')) {
+        // One occurrence's physical input width: a pair's getReserves() co-spends its master and the data NFT that
+        // holds the reserves, so the next occurrence's master is this far past the previous one. The compiler cannot
+        // see a callee's private state footprint, so it multiplies the loop index by this witness instead.
+        const witnessName = `__internal__loopTargets${inp.name.slice('__internal__loopTargetStride'.length)}`;
+        const wSlot = abiFunction?.externalCalls?.find((ec) => ec.loopArrayVar === witnessName);
+        const callsiteGroups = wSlot?.callsiteId === undefined ? []
+          : externalCallUtxoGroups.filter((group) => group.sourceCallsiteId === wSlot.callsiteId);
+        const candidate = callsiteGroups.find((group) => (group.blockInputs?.length ?? 0) > 0)
+          ?? callsiteGroups[0];
+        const physical = candidate?.sharedGroupIndex === undefined ? candidate
+          : externalCallUtxoGroups[candidate.sharedGroupIndex] ?? candidate;
+        const stride = physical === undefined
+          ? 1 + (wSlot?.requiredDataNftIndices?.length ?? 0)
+          : physical.blockInputs ? physical.blockInputs.length
+            : 1 + physical.dataNftUtxos.length;
+        finalArgs = [...finalArgs, BigInt(stride)];
+        continue;
+      }
+      if (inp.name.startsWith('__internal__computedCallTarget')) {
+        // A straight-line computed target (`IFoo(pairFor(..)).m()`) evaluates on-chain to an EVM identity (a keccak
+        // CREATE2 address for pairFor), which no BCH locking bytecode projects to. The compiler therefore pins the
+        // co-spent callee against this witness; supply the resolved deployment's exact lock. The callee itself was
+        // resolved from the same callsite's address source above, so this is the deployment the call names.
+        const slotIndex = Number(inp.name.slice('__internal__computedCallTarget'.length));
+        const ec = abiFunction?.externalCalls?.[slotIndex];
+        const group = ec?.callsiteId === undefined ? undefined
+          : externalCallUtxoGroups.find((candidate) => candidate.sourceCallsiteId === ec.callsiteId);
+        const physical = group?.sharedGroupIndex === undefined ? group
+          : externalCallUtxoGroups[group.sharedGroupIndex] ?? group;
+        const lock = physical?.externalContract?.inner?.lockingBytecode;
+        finalArgs = [...finalArgs, typeof lock === 'string' ? hexToBin(lock)
+          : lock instanceof Uint8Array ? lock : new Uint8Array()];
+        continue;
+      }
       if (!inp.name.startsWith('__internal__loopTargets')) continue;
       const wSlot = abiFunction?.externalCalls?.find((ec) => ec.loopArrayVar === inp.name);
       const wEntries = wSlot ? host.inner.getExternalTargetEntriesByInterface(wSlot.interfaceName) : [];

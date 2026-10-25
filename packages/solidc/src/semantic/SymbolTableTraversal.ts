@@ -4796,7 +4796,50 @@ export default class SymbolTableTraversal extends AstTraversal {
                 for (const arrayId of slot.loopWitnessArrayIds ?? []) arrayId.definition = wSym;
               }
               this.pushToStack(witnessParam);
+
+              // A computed target's co-spent block width is not visible in the interface: `getReserves()` on a pair
+              // co-spends a master AND the data NFT that holds its reserves, so iteration i's master sits at
+              // `base + i*2`, not `base + i`. Keep the stride a runtime witness filled from the block the SDK
+              // actually composes; the typed inline-loop dispatch multiplies the loop index by it.
+              const strideName = `__internal__loopTargetStride${slot.loopArrayVar
+                .slice('__internal__loopTargets'.length)}`;
+              if (!node.parameters.some((p) => p.name === strideName)) {
+                const strideParam = new ParameterNode(PrimitiveType.BIGINT, strideName);
+                strideParam.location = node.location;
+                node.parameters.push(strideParam);
+                this.symbolTables[0].set(Symbol.variable(strideParam));
+                const strideSymbol = this.symbolTables[0].get(strideName);
+                if (strideSymbol) strideSymbol.references.push({ name: strideName } as IdentifierNode);
+                this.pushToStack(strideParam);
+              }
             }
+          }
+
+          // A straight-line COMPUTED target (`IFoo(pairFor(factory, a, b)).m()`) is hoisted into an `__extaddr_`
+          // local by SynthesizeExternalAddressLocals. Its on-chain value is an EVM identity (pairFor returns a keccak
+          // CREATE2 address), while a co-spent callee is authenticated by its BCH locking bytecode; no lock projects
+          // to that identity, so the epilogue's identity check can never pass. Let the SDK supply the resolved
+          // callee's exact lock through a witness, exactly as a computed loop target does. The local stays declared
+          // and evaluated; only the pin reads the witness.
+          const computedAddressWitnesses = new Map<string, string>();
+          for (const slot of externalCallSlots) {
+            const addressParam = slot.addressParam;
+            if (!addressParam?.startsWith('__extaddr_') || slot.loopArrayVar || slot.addressStateVar
+              || slot.addressLiteral !== undefined || this.loopDeclaredLocals.has(addressParam)) continue;
+            if (!this.isComputedAddressLocal(node.body, addressParam)) continue;
+            let witnessName = computedAddressWitnesses.get(addressParam);
+            if (!witnessName) {
+              witnessName = `__internal__computedCallTarget${slot.slotIndex}`;
+              const witnessParam = new ParameterNode(new AddressType(false), witnessName);
+              witnessParam.location = node.location;
+              node.parameters.push(witnessParam);
+              this.symbolTables[0].set(Symbol.variable(witnessParam));
+              const witnessSymbol = this.symbolTables[0].get(witnessName);
+              if (witnessSymbol) witnessSymbol.references.push({ name: witnessName } as IdentifierNode);
+              this.pushToStack(witnessParam);
+              computedAddressWitnesses.set(addressParam, witnessName);
+            }
+            slot.addressParam = witnessName;
           }
 
           // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
@@ -8279,13 +8322,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   // route's co-spend targets). Returns the access + its array identifier (back-linked to the fresh symbol during
   // witness-param synthesis). `witnessName` lets a caller build a SECOND access on the SAME witness (a loop-body
   // local receiver reuses one witness for both the call target and its neutralized initializer).
-  private buildLoopWitnessAccess(loopIdx: IdentifierNode, witnessName: string, loc: Node['location']):
+  private buildLoopWitnessAccess(loopIdx: ExpressionNode, witnessName: string, loc: Node['location']):
   { access: ArrayAccessNode; arrayId: IdentifierNode } {
     const arrayId = new IdentifierNode(witnessName);
     arrayId.location = loc;
-    const idxCopy = new IdentifierNode(loopIdx.name); // fresh ref to the loop counter (i)
+    // The index is an array POSITION, not necessarily the loop counter: `pairFor(.., path[i-1], path[i])` walks
+    // backwards while the witness array holds pairs in path order, so its position is `i-1`. Clone the resolved
+    // expression (its identifiers keep their definitions) instead of rebuilding a bare counter name.
+    const idxCopy = cloneNode(loopIdx) as ExpressionNode;
     idxCopy.location = loc;
-    idxCopy.definition = loopIdx.definition; // reuse the already-resolved loop-var symbol
     const access = new ArrayAccessNode(arrayId, idxCopy);
     access.location = loc;
     return { access, arrayId };
@@ -8520,15 +8565,101 @@ export default class SymbolTableTraversal extends AstTraversal {
     return out;
   }
 
-  private findLoopIndexInComputedTarget(expr: Node, body: Node | undefined): IdentifierNode | undefined {
-    let found: IdentifierNode | undefined;
+  /**
+   * True when the expression (or a resolved helper body it calls) hashes with `keccak256`.
+   *
+   * Only a CREATE2-style identity is unresolvable on-chain; a pure helper that returns an address (for example an
+   * identity `passthrough(state)`) computes a real locking bytecode, and the covenant must keep pinning it so a
+   * caller cannot substitute a different co-spend.
+   */
+  private containsEvmHash(node: Node | undefined, seen = new Set<Node>(), depth = 0): boolean {
+    if (node === undefined || depth > 24 || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof FunctionCallNode) {
+      if (node.identifier.name === 'keccak256') return true;
+      if (node.resolvedFunction?.body !== undefined
+        && this.containsEvmHash(node.resolvedFunction.body, seen, depth + 1)) return true;
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'resolvedFunction' || key === 'definition' || key === 'symbolTable'
+        || key === 'references' || key === 'functionReference' || key === 'type' || key === 'location'
+        || key === 'referencedContract' || key === 'stateVariable' || key === 'collection') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (Array.isArray(value)) {
+        if (value.some((child) => child instanceof Node
+          && this.containsEvmHash(child, seen, depth + 1))) return true;
+      } else if (value instanceof Node && this.containsEvmHash(value, seen, depth + 1)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when a hoisted `__extaddr_` local is initialized from a CREATE2-style computed expression rather than a
+   * pinned value (a parameter, a state read, a struct field or an array element) or a pure lock computation.
+   * Only a keccak CREATE2 identity has no BCH locking bytecode projecting to it (`pairFor`); every other value is
+   * either a canonical ABI address word or an author-computed lock, both of which the covenant already compares.
+   */
+  private isComputedAddressLocal(body: Node | undefined, localName: string): boolean {
+    let expression: ExpressionNode | undefined = this.findLocalInit(body, localName)
+      ?? this.findAssignmentValue(body, localName);
+    const seen = new Set<Node>();
+    while (expression !== undefined) {
+      if (seen.has(expression)) break;
+      seen.add(expression);
+      if (expression instanceof CastNode) { expression = expression.expression; continue; }
+      if (expression instanceof ContractReferenceNode && expression.constructorArgs.length === 1) {
+        expression = expression.constructorArgs[0]; continue;
+      }
+      if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+        && (this.interfaceMap.has(expression.identifier.name)
+          || this.contractMap.has(expression.identifier.name))) {
+        expression = expression.parameters[0]; continue;
+      }
+      break;
+    }
+    return this.containsEvmHash(expression);
+  }
+
+  /**
+   * The witness-array position of a computed target's callee, as a source expression.
+   *
+   * A pair target names two adjacent path elements. The witness holds one entry per pair in PATH order, so the
+   * position is the LOWER of the two element indices: `path[i], path[i+1]` -> `i`, while the backward chain's
+   * `path[i-1], path[i]` -> `i-1`. Returning the raw loop counter for the second shape reads one element past the
+   * witness on the first iteration and shifts every co-spend (master, return event) by one.
+   */
+  private findLoopIndexInComputedTarget(expr: Node, body: Node | undefined): ExpressionNode | undefined {
+    let best: { offset: bigint; index: ExpressionNode } | undefined;
     const seen = new Set<string>();
+    const literalOffset = (node: Node): bigint | undefined => (
+      node instanceof IntLiteralNode ? node.value
+        : node instanceof CastNode ? literalOffset(node.expression)
+          : undefined
+    );
+    const consider = (index: ExpressionNode): void => {
+      let offset: bigint | undefined;
+      if (index instanceof IdentifierNode) {
+        offset = 0n;
+      } else if (index instanceof BinaryOpNode
+        && (index.operator === BinaryOperator.PLUS || index.operator === BinaryOperator.MINUS)) {
+        const leftOffset = literalOffset(index.left);
+        const rightOffset = literalOffset(index.right);
+        const leftIdent = index.left instanceof IdentifierNode;
+        const rightIdent = index.right instanceof IdentifierNode;
+        if (leftIdent && rightOffset !== undefined) {
+          offset = index.operator === BinaryOperator.PLUS ? rightOffset : -rightOffset;
+        } else if (rightIdent && leftOffset !== undefined && index.operator === BinaryOperator.PLUS) {
+          offset = leftOffset;
+        }
+      }
+      if (offset === undefined) return;
+      if (best === undefined || offset < best.offset) best = { offset, index };
+    };
     const walk = (n: unknown): void => {
-      if (found || !n || typeof n !== 'object') return;
-      if (n instanceof ArrayAccessNode && n.index instanceof IdentifierNode
-        && n.index.name !== '__message_bus_row') {
-        found = n.index;
-        return;
+      if (!n || typeof n !== 'object') return;
+      if (n instanceof ArrayAccessNode && n.index instanceof ExpressionNode
+        && !(n.index instanceof IdentifierNode && n.index.name === '__message_bus_row')) {
+        consider(n.index);
       }
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
         seen.add(n.name);
@@ -8545,7 +8676,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     walk(expr);
-    return found;
+    return best?.index;
   }
 
   private findAssignmentValue(node: Node | undefined, name: string,

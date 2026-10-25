@@ -255,6 +255,12 @@ function isExternalCallParameter(name: string): boolean {
     || /^__internal__extcallAnchorIdx\d+$/.test(name)
     || /^__internal__extcallMasterIdx\d+$/.test(name)
     || /^__internal__loopTargets\d+$/.test(name)
+    // The direct path multiplies a computed loop index by the physical width of one co-spent occurrence. A framed
+    // body co-spends its callees through the frame's records, so it takes no such operand.
+    || /^__internal__loopTargetStride\d+$/.test(name)
+    // The direct path pins a straight-line computed target against this lock witness. A framed body takes the
+    // callee from its frame records instead.
+    || /^__internal__computedCallTarget\d+$/.test(name)
     // The direct path names the output that carries a call's return event through this operand, one per returning
     // slot (the bare name when there is one, an indexed name per slot when there are several). It reads the value
     // back from that output, which a framed master does not write: its frame records the returned value in

@@ -115,7 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **92 passed, 100 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
+Result: **95 passed, 97 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -127,10 +127,10 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 23 / 37 | CREATE2-identity target (1); TransferHelper raw-return decoding and absent-selector calls (9); ETH value (2); computed-target `getReserves` return decode inside a dynamic loop (2) |
+| `Libraries` | 26 / 37 | TransferHelper raw-return decoding and absent-selector calls (9); ETH value (2) |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
-| **Total** | **92 / 192** | |
+| **Total** | **95 / 192** | |
 
 `UniswapV2Pair > swap > accepts tokens that return no data on transfer` is occasionally order-dependent in a
 narrow run (a `-t` filter or a whole-project run can report `nrt.balanceOf(other) == 0`); it passes in the full
@@ -219,6 +219,38 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   placeholders first so an early-abort path can prove the loop is never reached. On a real provider it still
   requires explicitly deployed mutable-NFT side-cars
   (`Keccak256.test.ts`, "provisions the dynamic keccak256 side-cars on a provider that supports it").
+
+### Computed external targets (resolved)
+
+A computed target's on-chain value is an EVM identity, while a co-spent callee is authenticated by its BCH
+locking bytecode. `UniswapV2Library.pairFor` returns a keccak CREATE2 address, so no lock projects to it and
+the epilogue's identity check could never pass. Both shapes now take a compiler-published witness that the SDK
+fills from the deployment it co-spends, and the loop's per-iteration coordinates follow the physical layout:
+
+- **Loop stride.** `__internal__loopTargetStride<n>` is a `bigint` witness beside the `__internal__loopTargets<n>`
+  array. The compiler cannot see a callee's private state footprint, and a pair's `getReserves()` co-spends its
+  master *and* the data NFT holding the reserves: iteration `i`'s master is `base + i*2`, not `base + i`. The SDK
+  fills the stride from the composed block width (`blockInputs.length`, else `1 + dataNftUtxos.length`), and the
+  inline-loop dispatch multiplies the loop index by it. One-hop chains looked correct because iteration 0's
+  offset is zero; the second hop read the first callee's data NFT and failed the identity compare.
+- **Pair position.** The witness holds one entry per pair in path order, so the index is the *lower* of the two
+  element indices: `path[i], path[i+1]` -> `i`, and the backward chain's `path[i-1], path[i]` -> `i-1`.
+  `findLoopIndexInComputedTarget` now chooses the expression with the smallest literal offset instead of the
+  first bare loop counter; `getAmountsIn` walks backwards and previously read one element past the witness,
+  shifting every co-spend and return event by one.
+- **Straight-line targets.** An `__extaddr_` local hoisted from `IFoo(pairFor(..)).m()` still evaluates the
+  computed address, but the pin now reads `__internal__computedCallTarget<n>`, a lock witness the SDK fills from
+  the resolved deployment's execution lock. This settled `UniswapV2Library.getReserves` and removed the
+  `CREATE2 identity … no Bitcoin Cash locking bytecode commits to it` refusal for a factory-created pair.
+- **Candidate scope.** The legacy-caller fallback for `__internal__loopTargets<n>` derives its candidates from
+  the loop's own source array: each adjacent pair is `keccak256(sort(tokenA, tokenB))` under the factory's
+  address form, matched against registered children's salts. Previously it registered every factory child that
+  implemented the interface, so a second test in the same process fed its loop the first test's pairs (the
+  suite passed in isolation and failed at the return decode in the full file). The path values name logical
+  deployments, so the salt uses each deployment's execution lock.
+- **CREATE2 projection.** `isCreate2ProjectedAddressValue` now returns false when exactly one registered child
+  projects to the value: the SDK substitutes that child's lock and the co-spend authenticates it. Only zero or
+  several owners remain a dead end.
 
 ### Remaining architectural gaps (captured failures)
 

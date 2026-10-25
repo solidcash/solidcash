@@ -155,6 +155,14 @@ deployment's address (`decorateStateAccessorResult` with a resolver from `buildN
 equality bridge equates a logical address, a physical address, and an EVM projection identity that name one
 deployment. The test now passes deterministically in each order; the whole-project run is 107/192.
 
+The counts above were re-measured from a **clean rebuild** of every package (`rm -rf packages/*/dist
+packages/*/tsconfig.build.tsbuildinfo`, `tsc -b`) and a clean parity compile. A package `dist` left partially stale by an
+abandoned experiment can produce a false failure that a clean build does not reproduce (it showed an extra
+`UniswapV2ERC20 > transferFrom > decrements a finite allowance and transfers` failure whose failing require was the
+conditional allowance check); re-run a clean build before attributing a single case to the compiler.
+Evidence: `final5-parity-all-clean.log` (107/192), `final5-native-clean.log` (28/28),
+`final5-hardhat-clean.log` (192/192).
+
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 
 ### Message-bus route admission for the pair and the router
@@ -466,11 +474,22 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   conditional-scalar gate disabled for one compile, route synthesis throws
   `Message-bus kernel admission retained a non-kernel route shape (mint)` because the fee recipient is a
   per-row key sourced from `factory.feeToAndMigrator()` and `kernelFixedEntryAlternatives` cannot fix it.
-  Bypassing the wide-event gate for `burn` instead lands on the same
-  `conditional-scalar-collection-event-settlement` refusal. Each writer therefore needs two new kernel
-  journal mechanisms: a row key sourced from a runtime external return, and a conditional scalar settlement.
-  Without them the Router ceiling is the 11 tests that never seed a pair (address getters, two deadline
-  guards, four pure library-math cases), and the SushiRoll ceiling is its 3 non-pair tests.
+  Widening those alternatives to accept one parameter key beside one expression key per collection admits the
+  pair-shaped unit-test participant (`PairRouteAdmission.test.ts`). It does not admit the real pair: its
+  contract compile then stops at `{"handler":"mint","gate":"conditional-scalar-collection-event-settlement"}`
+  (`writer-final-pair-admission.log`), because the first-mint arm writes `totalSupply` beside a `balanceOf` row
+  and a `Transfer` event. A compile-time select desugaring (lift `if (c) x = v;` to `x = c ? v : x`) was also
+  implemented and measured: it removes the `_mintFee`/`_update` scalar writes, but the first-mint arm
+  interleaves a `require`, an external result, a `log2` call and the row/event settlement, so moving that write
+  to a join needs code motion across the settlement (and a value that depends on which arm ran). Bypassing the
+  wide-event gate for `burn` instead lands on the same `conditional-scalar-collection-event-settlement`
+  refusal. Each writer therefore needs two new kernel journal mechanisms: a row key sourced from a runtime
+  external return, and a conditional scalar settlement. Without them the Router ceiling is the 11 tests that
+  never seed a pair (address getters, two deadline guards, four pure library-math cases), and the SushiRoll
+  ceiling is its 3 non-pair tests.
+  The pair-writer route alone would not raise either count: `addLiquidity` also deploys the pair through the
+  factory inside the same transaction, and BCH cannot spend an output it creates, so the 63 Router and 13
+  SushiRoll failures each need that child-creation gap closed first (see the two bullets below).
 - **A contract cannot call itself in one transaction.** The pair's `migrator.desiredLiquidity()` and the flash
   callback's reentrant `mint`/`burn`/`swap`/`skim`/`sync` target the primary contract, whose master UTXO is
   already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not

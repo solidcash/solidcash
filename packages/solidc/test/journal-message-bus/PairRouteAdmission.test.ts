@@ -95,11 +95,16 @@ describe('pair-shaped participant route admission', () => {
     expect(mint?.eligible).toBe(false);
     expect(mint?.rejectionReason).toBe('KERNEL_LAYOUT');
     expect(artifact.messageBus?.available ?? false).toBe(false);
-    // The compiler must never emit a route for this writer. Measured with the conditional-scalar refusal
-    // disabled for one experiment, route synthesis then throws `Message-bus kernel admission retained a
-    // non-kernel route shape (mint)`: the fee recipient row key is a `factory.feeToAndMigrator()` producer
-    // result, which the kernel's fixed entry alternatives cannot represent. A route therefore needs both a
-    // runtime-return-keyed row and a conditional scalar settlement.
+    // The compiler must never emit a route for this writer. Three experiments measured the remaining work. With
+    // the conditional-scalar refusal disabled, route synthesis throws `Message-bus kernel admission retained a
+    // non-kernel route shape (mint)` because the fee recipient row key is a `factory.feeToAndMigrator()` producer
+    // result, which the fixed entry alternatives cannot represent. Widening those alternatives to accept one
+    // parameter key beside one expression key admits this participant, but the real pair is then refused at
+    // `conditional-scalar-collection-event-settlement`: its first-mint arm writes `totalSupply` beside a
+    // `balanceOf` row and a `Transfer` event, and that arm also holds a `require`, an external result and a
+    // `log2` call, so the write cannot move to a select without code motion across the row/event settlement.
+    // A route therefore needs both a runtime-return-keyed row and a kernel settlement for a branch-selected
+    // scalar write.
   });
 });
 

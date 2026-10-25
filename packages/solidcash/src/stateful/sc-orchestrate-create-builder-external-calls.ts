@@ -774,12 +774,20 @@ export async function orchestrateCreateBuilderExternalCalls(
         (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendRecreates?.length ?? 0)
           + (g.keccakRecreates?.length ?? 0), 0,
       );
+      // Fixed block slots realized as outputs between the caller's data NFTs and the participant region: a keccak
+      // side-car recreation, an ecrecover side-car, and the caller's own return event. The master + data-NFT
+      // prefix below does not count them, so a caller that hashes before its external calls used to place the
+      // callee blocks - and the planned return-event index - early enough to collide with a callee's data NFT.
+      const fixedExtraBlockSlotCount = (abiFunction?.blockLayout?.slots ?? []).filter((slot) => (
+        slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar' || slot.kind === 'returnEvent'
+      )).length;
       const baseOutputOffset = 1 + requiredNftIndices.length
-      + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount;
+      + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount
+      + fixedExtraBlockSlotCount;
       returnEventOutputBase = baseOutputOffset + entryOutputCount + iterationEntryInputs.length
       + satoshiContainerOutputCount + transferCount + tokenContainerTransferCount + emitCount;
       externalCallOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
-      + outStateOutputCount + chunkRunBeforeCallees;
+      + outStateOutputCount + chunkRunBeforeCallees + fixedExtraBlockSlotCount;
     }
 
     // Build return-event-index map: groupIndex -> return event output index.

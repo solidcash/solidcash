@@ -250,6 +250,14 @@ export class ContractStorageTooLargeError extends SolidCashError {
   }
 }
 
+/** A typed call sends value to a function its interface does not declare payable, as solc refuses. */
+export class NonPayableCallValueError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, functionName: string) {
+    super(node, `Cannot set option "value" on a non-payable function type: '${interfaceName}.${functionName}' `
+      + 'is not declared payable');
+  }
+}
+
 /** A source declaration takes a name prefix the compiler reserves for the declarations it generates. */
 export class ReservedIdentifierPrefixError extends SolidCashError {
   constructor(node: Node, name: string, prefix: string) {

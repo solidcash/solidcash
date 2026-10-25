@@ -376,7 +376,8 @@ possible.
 ## Call options and value
 
 `{value: amount}` creates an authenticated BCH transfer output to the target. It is not an in-memory balance
-transfer. `gas` is accepted for source compatibility but has no EVM meaning; BCH applies transaction and per-input
+transfer. In Solidity source, as with solc, a typed call sends value only to a function its interface declares
+`payable`. `gas` is accepted for source compatibility but has no EVM meaning; BCH applies transaction and per-input
 operation-density limits. Deployment `salt` belongs to contract-creation flows.
 
 ```solidity

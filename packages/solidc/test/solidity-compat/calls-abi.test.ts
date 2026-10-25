@@ -626,6 +626,18 @@ describe('call options on function-pointer identifiers', () => {
       + ' function f() public { x{value: 2}(1); } }',
     { evmCompat: true, forceStateful: true }).contractName).toBe('C');
   });
+
+  it('rejects value sent to an interface function that is not payable, in every composition mode', () => {
+    const caller = (mutability: string): string => `interface IVault { function deposit(uint256 id) external${
+      mutability}; } contract C { address vault; uint256 n; function go(uint256 id) public {`
+      + ' IVault(vault).deposit{value: 1000}(id); n = n + 1; } }';
+    for (const messageBus of [false, undefined]) {
+      expect(() => compileString(caller(''), { evmCompat: true, forceStateful: true, messageBus }))
+        .toThrow(/Cannot set option "value" on a non-payable function type: 'IVault\.deposit'/);
+      expect(compileString(caller(' payable'), { evmCompat: true, forceStateful: true, messageBus }).contractName)
+        .toBe('C');
+    }
+  });
 });
 
 describe('Solidity function-type mutability conversions', () => {

@@ -226,6 +226,7 @@ import {
   AbiEncodeCallArgCountError,
   GraphEmissionEffectError,
   GraphHandlerShapeError,
+  NonPayableCallValueError,
   SolidcDiagnosticError,
   UpgradeStrandsBoundStateError,
 } from '../Errors.js';
@@ -4328,6 +4329,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         const matches = iface && this.getAllInterfaceFunctions(iface)
           .filter((candidate) => candidate.name === slot.functionName);
         const target = matches?.length === 1 ? matches[0] : undefined;
+        // Solidity sends value only to a function its interface declares payable (as for function pointers).
+        if (this.compilerOptions.evmCompat && target && target.stateMutability !== 'payable'
+          && !slot.interfaceName.startsWith('__')
+          && slot.sourceCallNode && hasEffectiveCallValue(slot.sourceCallNode.callOptions?.value)) {
+          throw new NonPayableCallValueError(slot.sourceCallNode, slot.interfaceName, slot.functionName);
+        }
         if (target && (target.stateMutability === 'view' || target.stateMutability === 'pure')
           && !slot.runtimeSelector && !slot.batchInvocations) {
           slot.readonlyReturnSelector = this.computeAbiSelector(this.selectorSignatureFor(

@@ -343,6 +343,10 @@ export function defaultInternalFunctionArg(input: { name: string; type?: string 
     return encodeKernelEntryJournalRecordSegment([]);
   }
   if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS) return [];
+  // A synthesized array witness (for example `__internal__loopTargets<n>` for a computed loop target) is
+  // carried pushdata-encoded, not as a host array. Its empty value is the zero-length array encoding, which
+  // keeps an unreachable call's unlocking script well formed so the covenant's own require can revert.
+  if (type.endsWith('[]')) return new Uint8Array([0]);
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
   if (name.includes('Category') || name.includes('BatchSlot')
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);

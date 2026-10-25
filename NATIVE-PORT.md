@@ -115,23 +115,7 @@ node ../packages/testing/dist/cli.js compile   # 30 sources -> 40 artifacts
 node ../packages/testing/dist/cli.js test
 ```
 
-Result: **29 passed, 163 failed (192 total)**.
-
-| Suite | Passed / total | Dominant blocker |
-| --- | ---: | --- |
-| `UniswapV2Factory` | 11 / 15 | `createPair` child-address covenant |
-| `UniswapV2ERC20` | 0 / 14 | `createPair`, then `pair.mint` |
-| `UniswapV2Pair` | 0 / 36 | `createPair`, then `mint`/`burn` |
-| `Libraries` | 15 / 37 | `TestFactory.createPair`, EVM `pairFor` |
-| `SushiRoll` | 0 / 16 | ETH transfer / roll semantics |
-| `UniswapV2Router02` | 3 / 74 | `createPair`, ETH overloads, value container |
-
-Harness parity added for this run: `artifacts.readArtifact` returns Hardhat-shaped hex bytecode, and
-`ethers.solidityPacked` accepts CashAddresses. Those fixes moved the Factory suite from 10/15 to 11/15.
-
-The two core blockers are the factory's unpatched constructor placeholder (see above) and the pair's
-`mint`/`burn` state derivation, which reports an identity-output collision when the pair co-spends its two
-token covenants. Router and SushiRoll additionally need an ETH/value model that BCH does not have.
+Result: **83 passed, 109 failed (192 total)**. See the per-suite table under "Original EVM suite parity".
 
 ## Original EVM suite parity
 
@@ -143,9 +127,9 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 21 / 37 | TransferHelper raw-return decoding and absent-selector calls (11); `getReserves`/`getAmounts*` nested-return decode/loop composition (5); ETH value (2) |
-| `UniswapV2Router02` | 4 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy; the probe leaves `extcallMasterIdx -1`); then `msg.value`/WETH satoshi model |
-| `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, nested return decode, ETH value |
+| `Libraries` | 21 / 37 | CREATE2-identity targets (5); TransferHelper raw-return decoding and absent-selector calls (11); ETH value (2) |
+| `UniswapV2Router02` | 4 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy; the probe leaves `extcallMasterIdx -1`); CREATE2-identity pair targets; `msg.value`/WETH satoshi model |
+| `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
 | **Total** | **83 / 192** | |
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
@@ -182,6 +166,12 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   handler without a block-info oracle packs the band one slot lower) the call edge threads the caller's
   absolute side-car input index through the invocation frame. Before this the helper fell back to the
   stateless count-relative read and named the funder, so `pairFor` failed at its first keccak binding.
+- The external-call expression evaluator executes a compiler-published pure-helper program, including tuple
+  assignments and tuple returns, implicit named returns, unchecked blocks, `keccak256` over a packed operand,
+  address ordering and Solidity's big-endian `uint`/`address` casts. A target shaped
+  `IUniswapV2Pair(address(pairFor(factory, a, b))).getReserves()` therefore resolves to the same digest the
+  covenant computes instead of dropping the callee (`ExternalCallPredicate.test.ts` compiles a CREATE2 helper
+  and compares the evaluated target with an independently computed digest).
 - `address(uint160(uint256(x)))` and every integer-to-address cast under `evmCompat` now produce exactly the
   low 20 bytes of the big-endian word (the raw Solidity identity), while `address(0)` stays the empty value.
   A short numeric identity previously took the P2PKH fallback and aborted at `OP_SPLIT`.
@@ -219,11 +209,21 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - **Ether value.** The original tests pass wei (`parseEther("1")`) as `msg.value`; BCH satoshis cannot carry
   those magnitudes, and the contracts compare `msg.value` against wei-denominated token amounts. A value model
   must scale both sides or the Router/SushiRoll ETH paths cannot be expressed.
-- **Internal-call expression as an external-call target.** `getReserves` calls
-  `IUniswapV2Pair(address(UniswapV2Library.pairFor(factory, a, b))).getReserves()`. The SDK's expression
-  evaluator cannot evaluate the nested pure `pairFor` call, so the external call is unresolved and the
-  caller's return decode reads an empty item (`OP_SPLIT` index 31 on a zero-length stack item). Resolving
-  that expression would let the create2 projection reach the pair.
+- **A CREATE2 identity cannot be authenticated on-chain.** `pairFor` returns
+  `keccak256(0xff ++ factory ++ salt ++ initCodeHash)[12:]`. The caller covenant checks the co-spent callee as
+  either the lock-derived identity (`hash160`/payload of its locking bytecode) or a co-spent SCID identity
+  anchor whose canonical lock and commitment name that callee. A CREATE2 address commits to an EVM init-code
+  hash, so no BCH lock projects to it, and an anchor cannot carry it: the anchor's lock must hash to the
+  identity, and a raw 20-byte lock equal to the identity is not spendable. The SDK now evaluates the nested
+  `pairFor` expression (see the pure-helper bullet) and pins the registered child through its CREATE2
+  projection, then refuses the call with a named error (identity, and the on-chain requirement) instead of
+  assembling a transaction that fails `OP_VERIFY`. This is the shared limit behind the `getReserves`/
+  `getAmounts*` cases, the Router pair targets and the SushiRoll pair targets.
+- **A contract cannot call itself in one transaction.** The pair's `migrator.desiredLiquidity()` and the flash
+  callback's reentrant `mint`/`burn`/`swap`/`skim`/`sync` target the primary contract, whose master UTXO is
+  already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not
+  supported"), and the reentrancy tests cannot express the callback's revert as a co-spent call. Both are
+  UTXO-geometry limits, not codegen defects.
 - **Dormant large `bytes` state.** A factory that stores the pair creation code in `bytes` state (the old
   `TestFactory`) makes every spend recreate its chunks; the broadcast VM then fails `OP_VERIFY` even though
   the SDK preflight passed. `TestFactory` now inherits the production factory and stores nothing.

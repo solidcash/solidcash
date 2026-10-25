@@ -72,8 +72,8 @@ export function buildRepeatedExternalBatch(
 ): BuiltRepeatedExternalBatchRoute | undefined {
   const publishedRows = externalCall.batchInvocations;
   if (!publishedRows) return undefined;
-  if (publishedRows.length < 1) {
-    throw new Error('External message-bus batch must contain at least one source callsite');
+  if (publishedRows.length < 2) {
+    throw new Error('Repeated external message-bus batch must contain at least two source callsites');
   }
 
   const routeArtifact = calleeRouteArtifact ?? callerArtifact;

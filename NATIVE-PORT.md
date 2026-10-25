@@ -195,11 +195,11 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 - The SDK can batch two *different* returning methods of one callee into one message-bus route
   (`sc-build-shared-method-external-batch.ts`): the transitive discovery hook builds rows for the shared direct
   call and the new transitive call, attaches the route to both logical groups, and the shared group keeps the
-  physical input. A **single** direct call to a bus-compiled callee uses the same route with one row
-  (`buildSingleMethodExternalBatch`, wired in the nested-callee prelude), so the callee's direct entry is not on
-  the path. The repeated-batch witness resolver also understands a swappable `balanceOf` key pool, so
-  `transferFrom(owner, pair)` plus `balanceOf(pair)` can share a route. Regression:
-  `packages/solidcash/test/unit/SharedMethodExternalBatch.test.ts`.
+  physical input. A **single** direct call has the same row builder available (`buildSingleMethodExternalBatch`),
+  but wiring it into the nested-callee prelude regressed the native registry read (a bus-direct `getPair` route
+  aliased entry slots 0 and 1), so it stays unwired. The repeated-batch witness resolver also understands a
+  swappable `balanceOf` key pool, so `transferFrom(owner, pair)` plus `balanceOf(pair)` can share a route.
+  Regression: `packages/solidcash/test/unit/SharedMethodExternalBatch.test.ts`.
   This path cannot be enabled end to end: compiling a token or factory with `messageBus: true` rewrites its
   **direct** entries. A bus-compiled `TestERC20` (after making its emitting helper void) cannot be resolved by
   `getContractAt` after `pair.token0()` returns its 20-byte identity (the Pair fixture stops at deployment

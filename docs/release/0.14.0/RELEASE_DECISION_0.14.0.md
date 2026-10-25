@@ -107,9 +107,9 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 at that commit, and the six residuals and five skips above stay non-blocking. `master` carries all the release work:
 the readiness and matrix fixes (merge `168a45b9d`), `feat/tether-bch-native` (merge `e974a00e4`),
 `solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). The most recent mocknet
-verification ran at `e3d85e0b4` on master, 2026-10-24 to 2026-10-25: every gate passes once `a0883f157`, a test-only
-commit, re-pins two e2e byte-identity hashes. Its gate table and the re-pins it needed are in "The 2026-10-24
-verification" below. The 2026-10-23 run at `0f7da2afa` and its four green marketplace cells are in "The 2026-10-23
+verification ran at `f6f34c883` on master, 2026-10-25: every gate passes, see "The 2026-10-25 verification" below.
+Before it, `e3d85e0b4` passed every gate once `a0883f157`, a test-only commit, re-pinned two e2e byte-identity
+hashes; its gate table and the re-pins it needed are in "The 2026-10-24 verification" below. The 2026-10-23 run at `0f7da2afa` and its four green marketplace cells are in "The 2026-10-23
 verification". Two items outside the gates are left for the release owner:
 
 - `release-application-regtest` was not run: verification ran on mocknet only, by instruction. It last passed
@@ -356,6 +356,37 @@ agree, so the argument binding moves all four values and the tag check none. Rou
 route-size screens are unchanged; the route hashes move. The fixture sources are untouched. With the re-pin
 (`f2da21c0e`), the kernel gate's cold-only check passes: source fingerprints matched, and each cold compile gave the
 pinned value in two fresh processes. The other release gates have not been re-run at this head.
+
+### The 2026-10-25 verification
+
+The 2026-10-25 security fixes and the direct multi-call's writer and void frames (phase 4, steps 2 and 3) ran
+through one mocknet battery at `f6f34c883` on 2026-10-25, in a built checkout under `/Code`, one gate at a time, the
+tree clean before and after each. Every step exits 0.
+
+| Gate | Commit | Result |
+|---|---|---|
+| `check:source-tree` | `f6f34c883` | exit 0 |
+| `check:doc-citations` | `f6f34c883` | exit 0 |
+| `yarn spellcheck` | `f6f34c883` | exit 0 (68 s) |
+| `yarn lint` | `f6f34c883` | exit 0 (448 s) |
+| `scripts/gate.sh full` | `f6f34c883` | exit 0 (857 s): identity `{"routeBytes":44865,"fullBytes":248241,"fullHash":"db972feff1d49396"}` matches; utils 525/525; solidc 476 files, 7445 passed, 0 failed |
+| `release-security-conformance` | `f6f34c883` | exit 0 (105 s) |
+| `release-docs-snippets` | `f6f34c883` | exit 0 (13 s): 346 blocks, 160 compiled, 0 failed |
+| `release-corpus-baseline` | `f6f34c883` | exit 0 against the retained scorecard |
+| `release-application-conformance` | `f6f34c883` | exit 0 (23 s) |
+| `release-generated-project-smoke` | `f6f34c883` | exit 0 (53 s) |
+| `release-package-smoke` | `f6f34c883` | exit 0 (449 s) |
+| `kernel-beta-gate` | `f6f34c883` | exit 0 (40 min) without `--allow-dirty`: `diagnosticOnly: false`, head `f6f34c883`, sourceFingerprints matched |
+| `yarn test` | `f6f34c883` | pass, run per package: testing 120/120; solidhat 72 passed, 1 skipped; create-solidhat and testing-suite (27/27) exit 0; solidcash in eight file chunks, 6003 passed, 5 expected failures, 186 skipped, 5 todo; utils and solidc ran in `gate.sh full` |
+| `yarn test:e2e` | `f6f34c883` | pass, in five file chunks: 618 files (4 skipped), 3820 passed, 24 skipped, 3 todo, 0 failed |
+| marketplace matrix | not run | by instruction |
+| `release-application-regtest` | not run | mocknet-only verification |
+
+Two fixes landed after the battery, each recorded in `docs/security/security-audit-2026-10-16.md`: a zero-argument
+view call of a direct multi-call group no longer shares the record of an identical call before a write
+(`1f6aa9bb1`), and a loop target the contract fixes stays bound to its on-chain value (`b6c2e106d`). Each passed its
+own test files, a compile of the affected test sources changed no bytes, and with both the gate identity and the
+three kernel cold baselines measure as pinned (44865 / 248241 / `db972fef`; 14850 / 312137; 1068 / 16251).
 
 ### What closed the 2026-10-17 failures
 

@@ -48348,14 +48348,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // read the record + TYPED-decode its result by the return types (mirrors the non-loop returning read)
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., digest?, record]
         this.emitInlineCallRecordField(verifiesDigest, loc); // [..., blob]
-        for (let k = 0; k < slot.returnTypes.length; k++) {
-          if (k === slot.returnTypes.length - 1) {
-            this.emitPushdataDecodeLastField(slot.returnTypes[k], loc);
-          } else {
-            this.emitPushdataDecode(slot.returnTypes[k], loc);
-            this.emit(Op.OP_SWAP, loc);
+        if (this.compilerOptions.evmCompat
+          && isEvmExternalResultSchemaDecodable(slot.returnTypes)) {
+          // A Solidity-compatible callee's `result` is one ABI tuple (`getReserves` -> three words), exactly as
+          // the straight-line call decodes it; reading it as native compact pushes collapses the whole tuple
+          // into the first value (a uint112 range check then fails on a 95-byte number).
+          this.pushToStack('(returnBlob)');
+          this.emitEvmExternalResultDecode(slot.returnTypes, loc);
+        } else {
+          for (let k = 0; k < slot.returnTypes.length; k++) {
+            if (k === slot.returnTypes.length - 1) {
+              this.emitPushdataDecodeLastField(slot.returnTypes[k], loc);
+            } else {
+              this.emitPushdataDecode(slot.returnTypes[k], loc);
+              this.emit(Op.OP_SWAP, loc);
+            }
+            this.pushToStack('(value)');
           }
-          this.pushToStack('(value)');
         }
         // cleanup the loop temps BELOW the decoded values (keep the values on top)
         for (const tmp of ['(ilc_inidx)', '(ilc_addr)', '(ilc_i)']) {

@@ -243,13 +243,29 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   resolver still gave the batch its own side-car per read. Measured effect:
   Router 6/74 → 11/74 and Libraries 21/37 → 23/37. Regressions: `KeccakResultNft.test.ts` ("groups a batched
   helper body by side-car and keeps each call's member", "reads a dynamic-loop call by its side-car index").
-- **A computed external target's ABI return inside a dynamic loop.** `UniswapV2Library.getAmountsOut` calls
-  `IUniswapV2Pair(pairFor(factory, path[i], path[i + 1])).getReserves()`. With `pairFor` now resolving, the
-  loop reaches the external call, whose static tuple decode fails the `length > index` guard at ip 121 in the
-  `getAmountsOut` frame (both a one-iteration path and the three-token path fail identically, so it is the
-  first iteration and not an extra loop pass). `getAmountsIn` fails the same way at ip 127. The standalone
-  `getReserves` case still stops earlier at the CREATE2 identity, so the return-decode path has no passing
-  reference yet; this is the next computed-target class rather than a keccak-band issue.
+- **A computed external target's ABI return inside a dynamic loop (one hop resolved; two hops open).**
+  `UniswapV2Library.getAmountsOut` calls
+  `IUniswapV2Pair(pairFor(factory, path[i], path[i + 1])).getReserves()`. The earlier ip 121/127 `length > index`
+  failure was **not** a return decode: the compiler rewrites the computed target to a synthesized
+  `__internal__loopTargets<n>[i]` witness, and the SDK left that witness empty (no external-target instances were
+  registered for `IUniswapV2Pair`), so the first iteration failed the witness bounds check. Four fixes make the
+  one-hop form work end to end:
+  - the orchestrator falls back to the session's deployment registry for a loop slot with no explicit entries,
+    registering the interface-implementing **factory children** in registration order (the caller covenant binds
+    every co-spent input to its own witness element, so a candidate set cannot forge a callee);
+  - a return probe now precomputes the callee's return for **any** returning loop occurrence, not only when the
+    result is stored into an array, and it does so for calls whose return event is a dedicated output band as well
+    as an in-block event;
+  - that precompute encodes the whole ABI result vector for a multi-output call (`getReserves` -> three words);
+  - the inline-loop typed-return path decodes an `evm-abi-v1` result with the same ABI tuple decoder the
+    straight-line call uses, instead of reading the tuple as native compact pushes (which collapsed it into the
+    first `uint112` and failed its range check on a 95-byte number).
+  Measured on a two-token path against a seeded pair: `getAmountsOut` returns `[1000, 906]` through the shipped
+  compiler and builder. The three-token path (two loop-expanded callees) still fails while deriving the **second**
+  callee's data-NFT state: `extractCommitmentsFromTrace` observes a 20-byte category-like expected commitment for
+  that callee's data output instead of the pair state (`decodeGenericPushdata: non-canonical pushdata byte 0xa4`).
+  That is the next blocker; `getAmountsIn` shares it. Both library chained tests use a three-token path, so the
+  Libraries count is unchanged at 23/37.
 
 - **A Router-built transaction that deploys a pair through the factory.** `addLiquidity` calls
   `factory.createPair` inside `_addLiquidity` when the pair is absent, then immediately calls

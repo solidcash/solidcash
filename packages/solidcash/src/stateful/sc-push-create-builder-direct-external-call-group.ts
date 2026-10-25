@@ -13,7 +13,7 @@ import type {
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { encodeExternalReturnValue, encodeExternalReturnValues } from './external-return-encoding.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
 import {
   isRepeatedTypedLoopCallsite,
@@ -195,7 +195,10 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   let directPrecomputedReturn: Uint8Array | undefined;
   let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
   let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
-  if (returnProbeOnly === true && bReturnEventInBlock) {
+  // The probe is the only frame that reads the callee's return without executing its covenant, so its result must
+  // be precomputed whether the return event lives inside the callee's block (a state-writing callee) or in the
+  // caller's dedicated return-output band (a view callee such as `pair.getReserves()`).
+  if (returnProbeOnly === true) {
     const precomputeArtifact = callInfo.externalContract.inner.artifact as Artifact;
     const rawCall = ec as { rawFunctionName?: string; rawSelector?: string };
     const precomputeName = callInfo.functionName === '__raw__'
@@ -208,19 +211,34 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     const precomputeAbi = precomputeName === undefined ? undefined
       : (precomputeArtifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === precomputeName);
-    if (precomputeAbi?.outputs?.length === 1 && precomputeName !== undefined) {
-      const encode = (value: StateValue): Uint8Array => encodeExternalReturnValue(
-        value,
-        precomputeAbi.outputs![0].type,
-        precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
-        resolveExternalResultEncoding(
-          precomputeAbi.resultEncoding,
+    if ((precomputeAbi?.outputs?.length ?? 0) >= 1 && precomputeName !== undefined) {
+      const returnAbi = precomputeAbi!;
+      const returnTypes = returnAbi.outputs!.map((output) => output.type);
+      // A lone output is encoded as one native value; a tuple decode (`(uint,uint,uint32) = pair.getReserves()`)
+      // takes the whole ABI result vector, so encode every declared output.
+      const encode = (value: StateValue): Uint8Array => {
+        const solidityAbi = resolveExternalResultEncoding(
+          returnAbi.resultEncoding,
           precomputeArtifact,
-          precomputeAbi.outputs!.map((output) => output.type),
-          `function '${precomputeAbi.name}' result`,
-        ) === 'evm-abi-v1',
-        precomputeArtifact.enums,
-      );
+          returnTypes,
+          `function '${returnAbi.name}' result`,
+        ) === 'evm-abi-v1';
+        if (returnTypes.length === 1) {
+          return encodeExternalReturnValue(
+            value, returnTypes[0],
+            precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
+            solidityAbi,
+            precomputeArtifact.enums,
+          );
+        }
+        return encodeExternalReturnValues(
+          value as StateValue[],
+          returnTypes,
+          precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
+          solidityAbi,
+          precomputeArtifact.enums,
+        );
+      };
       try {
         // This frame is the CALLER of `callInfo.externalContract`, so the callee's `msg.sender` is exactly
         // this frame's authenticated identity. Without it the nested probe keys every `msg.sender`-derived
@@ -235,7 +253,11 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       } catch {
         directPrecomputedReturn = undefined;
       }
-      if (ec.occurrence === 'loop' && ec.resultArrayOutput !== undefined) {
+      if (ec.occurrence === 'loop') {
+        // Every iteration of a returning loop needs its OWN result in a probe: the callee's covenant does not
+        // execute there, so its return event keeps the neutral placeholder. Resolve the per-iteration arguments
+        // and derive that iteration's return value. This is not limited to a result array (`r[i] = f[i]()`):
+        // `(a, b) = pair.getReserves()` in `getAmountsOut` feeds its iteration's array write the same way.
         resolveLoopReturnValue = async (occurrenceIndex: number): Promise<StateValue> => {
           const occurrenceArgs = host.resolveLoopArgs(occurrenceIndex);
           if (!occurrenceArgs) {

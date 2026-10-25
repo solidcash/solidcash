@@ -22,7 +22,9 @@ import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { ensureOrdinarySelfIdentityBand } from './ordinary-self-identity.js';
-import { findDeploymentByAddressValue, isCreate2ProjectedAddressValue } from './deployment-registry.js';
+import {
+  findDeploymentByAddressValue, isCreate2ProjectedAddressValue, listDeployments,
+} from './deployment-registry.js';
 import {
   deriveValueChunkProducerChildPath,
   type ValueChunkProducerPathDisposition,
@@ -248,6 +250,50 @@ export async function orchestrateCreateBuilderExternalCalls(
     tokenGroup?: ExternalCallUtxoGroup;
     categoryId: string;
   }[] = [];
+
+  // A computed loop target (`IFoo(pairFor(.., path[i], ..)).m()`) is rewritten by the compiler to a synthesized
+  // `__internal__loopTargets<n>[i]` witness the SDK fills from the interface's registered instances. A legacy
+  // caller (an original EVM test, a plain `getContractAt` user) never calls registerExternalArray, so without a
+  // fallback the witness stays empty and every reached iteration fails its bounds check with an opaque
+  // `OP_VERIFY`. Fall back to the session's deployment registry: every deployment whose artifact implements the
+  // interface, in registration order. The caller covenant binds each co-spent input to its own witness element, so
+  // a candidate set cannot forge a callee; explicit registration still controls the order when present.
+  for (const loopSlot of abiFunction?.externalCalls ?? []) {
+    if (!loopSlot.loopArrayVar
+      || host.inner.getExternalTargetEntriesByInterface(loopSlot.interfaceName).length > 0) continue;
+    const iface = host.inner.artifact?.externalInterfaces?.find(
+      (entry: { name?: string }) => entry.name === loopSlot.interfaceName,
+    );
+    const required = new Set<string>((iface?.abi ?? [])
+      .map((fn: { selector?: string }) => fn.selector)
+      .filter((selector: string | undefined): selector is string => typeof selector === 'string'));
+    if (required.size === 0) continue;
+    const seenLocks = new Set<string>();
+    const instances: unknown[] = [];
+    for (const deployment of listDeployments(host.inner.provider)) {
+      // Restrict the fallback to factory-created children: the shape it exists for is a computed target
+      // (`IFoo(pairFor(.., path[i], ..)).m()`) whose callees are the children of the factory the expression
+      // names. An unrelated top-level deployment that happens to share the interface is not a candidate.
+      if (deployment.parentAddress === undefined) continue;
+      const instance = deployment.contract as {
+        inner?: { lockingBytecode?: Uint8Array | string; artifact?: { abi?: Array<{ selector?: string }> } };
+      } | undefined;
+      const available = new Set((instance?.inner?.artifact?.abi ?? [])
+        .map((fn) => fn.selector)
+        .filter((selector): selector is string => typeof selector === 'string'));
+      if (![...required].every((selector) => available.has(selector))) continue;
+      const lock = instance?.inner?.lockingBytecode;
+      const lockHex = typeof lock === 'string'
+        ? lock
+        : lock === undefined ? deployment.lockingBytecode : binToHex(lock);
+      if (lockHex === undefined || seenLocks.has(lockHex)) continue;
+      seenLocks.add(lockHex);
+      instances.push(instance);
+    }
+    if (instances.length > 0) {
+      host.callerContract.registerExternalArray(loopSlot.interfaceName, instances as never);
+    }
+  }
 
   const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
     {

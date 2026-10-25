@@ -176,6 +176,12 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   to the zero-length pushdata array (`00`) rather than `0n`. A build whose pre-call guard proves a loop call
   unreachable no longer stops at argument encoding ("Value for type address[] should be a Uint8Array or hex
   string"); its unlocking script stays well formed so the covenant's own require remains the authority.
+- A reached (non-conditional) callsite that cannot be pinned now fails with
+  `External call planning could not pin the callee for …` instead of skipping group materialization and leaving
+  every caller topology witness at its default (`extcallMasterIdx = 0`), which surfaced as an unrelated
+  `OP_VERIFY`. The message names the co-spend requirement, a target created in the same transaction, and the
+  absent lock projection of a CREATE2 identity (`ExternalCallPredicate.test.ts` drives the orchestrator entry
+  point).
 - `address(uint160(uint256(x)))` and every integer-to-address cast under `evmCompat` now produce exactly the
   low 20 bytes of the big-endian word (the raw Solidity identity), while `address(0)` stays the empty value.
   A short numeric identity previously took the P2PKH fallback and aborted at `OP_SPLIT`.
@@ -200,11 +206,14 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 ### Remaining architectural gaps (captured failures)
 
 - **A Router-built transaction that deploys a pair through the factory.** `addLiquidity` calls
-  `factory.createPair` inside `_addLiquidity` when the pair is absent. The SDK's external-call probe cannot
-  derive the nested child deploy: the Router's `addLiquidity` probe reports `extcallMasterIdx -1` for the
-  first calls and then reads input `-1` ("Transaction input count: 5; requested index: -1"). A top-level
-  factory `createPair` passes all 15 Factory tests, so the gap is specifically a child deploy composed inside
-  another contract's transaction.
+  `factory.createPair` inside `_addLiquidity` when the pair is absent, then immediately calls
+  `IUniswapV2Pair(pair).getReserves()` and `pair.mint()` on the pair it just created. A BCH transaction cannot
+  spend an output it creates, so the new pair has no co-spendable master and the planner reports
+  `External call planning could not pin the callee for IUniswapV2Pair.getReserves …` (`extcallMasterIdx` stays
+  unresolved in the probe). This is a composition limit independent of the CREATE2 identity limit that blocks
+  the same calls once the pair exists: even a two-transaction split still targets `pairFor`'s CREATE2 value,
+  which no lock projects to. A top-level factory `createPair` passes all 15 Factory tests, so the gap is
+  specifically a child used by its creator in the same transaction.
 - **`UniswapV2Library.pairFor` versus a BCH child address.** `pairFor` computes the EVM CREATE2 identity, while
   a BCH pair's address commits to its funding category. The SDK now registers the canonical EVM CREATE2
   projection for each factory child (from its recorded parent, salt and the canonical pair init hashes), so

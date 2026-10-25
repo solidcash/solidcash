@@ -958,8 +958,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   iteration. `76d31b1ce` refuses the rest (`MESSAGE_BUS_REQUIRED`): a looped returning call that changes state, or
   cannot be a frame for another reason, no longer compiles direct. `f27311797` does the same for an opaque
   `target.call(payload)` to a fixed target in a loop once its data is read (a Multicall over array targets checks
-  each iteration's callee and record inline, and is unchanged). In message-bus artifacts a looped call's direct
-  entry is a stub that reads no record, so the bus binds the same shapes per row. Test: `DirectCallOrdinals.test.ts`.
+  each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
+  target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
+  reads no record, so the bus binds the same shapes per row. Test: `DirectCallOrdinals.test.ts`.
 
 ### Not changed, by decision
 

@@ -1006,6 +1006,15 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `pairFor(factory, path[i], path[i + 1])`); otherwise the witness must equal the value computed on chain, and a
   multi-use receiver runs its views as calls (a direct compile refuses two calls on one such callee). No test source
   changes bytes. Test: `LoopTargetProvenance.test.ts`.
+- **Looped void call method and arguments** (found 2026-10-25 beside the loop targets). A void call in a loop over
+  per-iteration targets compared its callee's selector with a witness the spender sets, so MD1's compile-time selector
+  held only outside loops, and it bound no argument: each co-spent callee could run another method on other arguments
+  while the caller assumed its own call ran. `ca737ef32` checks the compile-time selector in both loop forms and, in a
+  loop over a parameter array or computed targets, each argument the call names against that iteration's callee
+  unlocking, as outside loops. A looped call into a forwarding proxy now fails closed under `messageBus: false`.
+  Nine contracts in five test files change bytes; their stand-in callees now push the call's selector and arguments.
+  Test: `TypedLoopDispatch.test.ts` (a callee run on another argument is refused), `MultiUseViewMutate.test.ts`
+  (another selector).
 
 ### Not changed, by decision
 
@@ -1029,10 +1038,8 @@ needs VM evidence, `rejectedWith` has no source fallback).
   fallback runs where a short first push meets a multi-function callee, while the caller's selector check skips such a
   push; with the anchor witness `>= 0` the selector compared is a witness. A void record pinned by the callee
   (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract without returning
-  entries. A void call in a loop over per-iteration targets (array elements, computed targets) binds neither its
-  arguments nor its method: MD1 bakes the compile-time selector only outside loops, and in a loop the selector is a
-  witness the co-spent unlocking must repeat. The SDK fills a proxy's route selector there, so baking it would refuse
-  loop calls into proxies; a returning call in such a loop is bound by its record's digest.
+  entries. A void call in a loop over a state array binds its method (`ca737ef32`) but not its arguments: the
+  callees are checked after the loop, where per-iteration arguments are gone.
 
 - One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
   selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one

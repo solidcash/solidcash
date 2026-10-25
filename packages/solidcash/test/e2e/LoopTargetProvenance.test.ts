@@ -4,6 +4,7 @@ import { encodePushdataValue } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, TransactionBuilder } from '../../src/index.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
+import { trivialCallee } from '../trivial-callee.js';
 
 // A loop's per-iteration callee is read from a witness, since a loop-local receiver cannot reach the epilogue. Only a
 // target the caller chooses (an element of a parameter) may be replaced by that witness; one the contract fixes keeps
@@ -19,9 +20,6 @@ contract Fixed(address a, address b) {
   }
 }`;
 
-// `OP_DROP OP_1` and `OP_DROP OP_1 OP_NOP`: two trivial callees that drop the selector their unlocking pushes.
-const TARGET = hexToBin('7551');
-const OTHER = hexToBin('755161');
 const OP_TRUE = hexToBin('51');
 
 const swapSelector = (): Uint8Array => {
@@ -30,10 +28,15 @@ const swapSelector = (): Uint8Array => {
   return hexToBin(pair.abi.find((entry) => entry.name === 'swap')!.selector!);
 };
 
-function unlocker(lock: Uint8Array, selector: Uint8Array): never {
+// Two trivial callees that run `swap(1)`: the contract's own, and one more `OP_NOP` the spender might pick.
+const CALLEE = trivialCallee([1n], swapSelector());
+const TARGET = CALLEE.lock;
+const OTHER = Uint8Array.of(...CALLEE.lock, 0x61);
+
+function unlocker(lock: Uint8Array): never {
   return {
     generateLockingBytecode: (): Uint8Array => lock,
-    generateUnlockingBytecode: (): Uint8Array => new Uint8Array([0x04, ...selector]),
+    generateUnlockingBytecode: (): Uint8Array => CALLEE.unlocking,
   } as never;
 }
 
@@ -42,13 +45,12 @@ async function spend(callee: Uint8Array): Promise<TransactionBuilder> {
   const provider = createTestProvider();
   const artifact = compileString(FIXED);
   const contract = new Contract(artifact, [TARGET, TARGET], { provider });
-  const selector = swapSelector();
   const funder = await createFeeFunder(provider, 10000n);
   const builder = new TransactionBuilder({ provider });
   builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
-    contract.unlock.go(1n, encodePushdataValue([callee, callee], 'address[]'), selector) as never);
-  builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee, selector));
-  builder.addInput({ txid: '02'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee, selector));
+    contract.unlock.go(1n, encodePushdataValue([callee, callee], 'address[]'), swapSelector()) as never);
+  builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee));
+  builder.addInput({ txid: '02'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee));
   builder.addInput(funder.utxo, funder.unlocker);
   builder.addOutput({ to: contract.address, amount: 100000n });
   builder.addOutput({ to: callee, amount: 1500n });

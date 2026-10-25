@@ -27774,18 +27774,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * The declared types of the arguments a direct typed call names, `undefined` for a `sig`, when no record digest
    * binds them: a call to a method that returns nothing, one naming fewer arguments than its method declares, or a
-   * returning call whose record the caller does not digest (a contract-typed target). Loops, repeated or grouped
-   * calls, pointers, self calls and the bus are bound otherwise or out of scope.
+   * returning call whose record the caller does not digest (a contract-typed target). `inLoop` is a call a loop over
+   * per-iteration targets dispatches where it runs. Repeated or grouped calls, pointers, self calls and the bus are
+   * bound otherwise or out of scope.
    */
   private directCallArgumentBinding(
-    node: ExternalFunctionCallNode, slot: ExternalCallSlot,
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, inLoop = false,
   ): { types: (Type | undefined)[] } | undefined {
     const method = slot.calleeMethod;
     if (method === undefined || !this.directConvention || node.opaqueReturn || slot.interfaceName === '__raw__'
       || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
-    if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.loopArrayVar || slot.inlineLoopDispatch
+    if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar
+      || (!inLoop && (slot.loopArrayVar || slot.inlineLoopDispatch))
       || slot.batchInvocations || slot.addressIsSelf || slot.callOrdinal !== undefined) return undefined;
-    if (this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot) || this.isCompilerMessageBusRoute()
+    if ((!inLoop && (this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)))
+      || this.isCompilerMessageBusRoute()
       || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
     // A returning call whose record digests its arguments (emitCallerCallRecordDigest) is bound there.
@@ -27800,11 +27803,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Requires each argument `binding` names, encoded as its record digest would take it, to be the matching push of
    * the unlocking that runs the call. A CREATE identity backed by a proxy runs it through the proxy's compiler route
-   * instead, which binds it there. The arguments are visited as copies, before that choice. Stack-neutral.
+   * instead, which binds it there. The arguments are visited as copies, before that choice. `emitIndex` pushes the
+   * callee's input index untracked. Stack-neutral.
    */
   private emitDirectCallArgumentBinding(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot,
     binding: { types: (Type | undefined)[] }, loc: SingleLocationData,
+    emitIndex: () => void = () => this.emitSlotMasterIndex(slot, loc),
   ): void {
     const anchor = `__internal__extcallAnchorIdx${slot.slotIndex}`;
     const anchored = this.getStackIndex(anchor, true) >= 0;
@@ -27832,7 +27837,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
     }
     const count = binding.types.length;
-    this.emitSlotMasterIndex(slot, loc);                    // [.., idx]
+    emitIndex();                                            // [.., idx]
     if (!this.invokeSharedStackHelper(
       `directCallArguments|${count}`, (t, l) => t.emitDirectCallArgumentPushes(count, l), loc,
     )) {
@@ -48511,6 +48516,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPushdataDecode(new BytesType(), loc);   // [..., sel_i, new_sel_rem]
         this.emitReplace(this.getStackIndex('(aec_sel_rem)') + 5, this.currentFunction); // (aec_sel_rem):=new_rem
         this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx]
+      } else if (slot.compileTimeSelector !== undefined && !slot.runtimeSelector) {
+        // MD1: the method is the call's, not a witness the co-spent unlocking repeats.
+        this.emit(slot.compileTimeSelector, loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx]
       } else {
         const slotsNeedingSelector = this.externalCallSlots.filter(
           (s) => s.needsSelectorVerification && !s.selectorArrayVar,
@@ -48643,13 +48652,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_PICK, loc);           // [..., inidx]
         this.emit(Op.OP_INPUTBYTECODE, loc);  // [..., inBC]
         this.emitExtractUnlockingSelector(loc); // [..., co-spent selector] (1 untracked)
-        const slotsNeedingSelector = this.externalCallSlots.filter(
-          (s) => s.needsSelectorVerification && !s.selectorArrayVar,
-        );
-        const selectorName = slotsNeedingSelector.length === 1
-          ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
-        this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 1)), loc); // +1: co-spent selector
-        this.emit(Op.OP_PICK, loc);           // [..., co-spent selector, expected selector]
+        if (slot.compileTimeSelector !== undefined) {
+          // MD1: the method is the call's, not a witness the co-spent unlocking repeats.
+          this.emit(slot.compileTimeSelector, loc);
+        } else {
+          const slotsNeedingSelector = this.externalCallSlots.filter(
+            (s) => s.needsSelectorVerification && !s.selectorArrayVar,
+          );
+          const selectorName = slotsNeedingSelector.length === 1
+            ? '__internal__externalCallSelector' : `__internal__externalCallSelector${slot.slotIndex}`;
+          this.emit(encodeInt(BigInt(this.getStackIndex(selectorName) + 1)), loc); // +1: co-spent selector
+          this.emit(Op.OP_PICK, loc);         // [..., co-spent selector, expected selector]
+        }
         this.emit(Op.OP_EQUALVERIFY, loc);    // [...]
       }
       // Typed RETURNING call in a loop (e.g. IUniswapV2Pair(pairFor(..)).getReserves()): read the per-iteration
@@ -48728,6 +48742,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.removeFromStack(idx);
         }
         return;
+      }
+      // A void call binds the arguments it names against this iteration's callee unlocking, as outside a loop.
+      const binding = this.directCallArgumentBinding(node, slot, true);
+      if (binding) {
+        this.emitDirectCallArgumentBinding(node, slot, binding, loc, () => {
+          this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
+          this.emit(Op.OP_PICK, loc);
+        });
       }
       for (const tmp of ['(ilc_inidx)', '(ilc_addr)', '(ilc_i)']) {
         const idx = this.getStackIndex(tmp);

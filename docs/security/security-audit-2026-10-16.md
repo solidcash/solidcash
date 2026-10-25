@@ -1028,18 +1028,19 @@ needs VM evidence, `rejectedWith` has no source fallback).
 ### Open
 
 - Direct call argument binding, residuals (2026-10-25, `0b94c0f13`). A callee whose redeem drops a budget pad (a user
-  external library) and a forwarding proxy, whose frame names another input the caller cannot tie to the proxy,
-  refuse such calls instead of binding them (fail closed). A CREATE identity backed by a proxy (anchor witness `>= 0`)
-  is left to the compiler route it runs; a spender cannot take that branch for an ordinary target, whose anchor would
-  need the target's category at the target's lock. Loops, repeated or grouped calls, pointers, self calls and
-  `staticcall`/`call` modes are unchanged. Found beside it, method binding of a call no record digests (not changed;
-  beside presence-based `msg.sender`, F1, a spender can already make a callee run any method for a co-spent caller): a
-  single-function interface checks no selector, so a callee with more methods than its interface runs any of them; a
-  fallback runs where a short first push meets a multi-function callee, while the caller's selector check skips such a
-  push; with the anchor witness `>= 0` the selector compared is a witness. A void record pinned by the callee
-  (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract without returning
-  entries. A void call in a loop over a state array binds its method (`ca737ef32`) but not its arguments: the
-  callees are checked after the loop, where per-iteration arguments are gone.
+  external library) and a forwarding proxy, whose frame names another input the caller cannot tie to the proxy, refuse
+  such calls instead of binding them (fail closed). A CREATE identity backed by a proxy (anchor witness `>= 0`) is
+  left to the compiler route it runs; a spender cannot take that branch for an ordinary target, whose anchor would
+  need the target's category at the target's lock. Repeated or grouped calls run as frames their records bind, and a
+  loop over a parameter array or computed targets binds each callee's method and arguments (`ca737ef32`); pointers,
+  self calls and `staticcall`/`call` modes are unchanged. Found beside it, method binding of a call no record digests
+  (not changed; beside presence-based `msg.sender`, F1, a spender can already make a callee run any method for a
+  co-spent caller): a single-function interface checks no selector, so a callee with more methods than its interface
+  runs any of them; a fallback runs where a short first push meets a multi-function callee, while the caller's
+  selector check skips such a push; with the anchor witness `>= 0` the selector compared is a witness. A void record
+  pinned by the callee (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract
+  without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) but not its
+  arguments: the callees are checked after the loop, where per-iteration arguments are gone.
 
 - One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
   selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one

@@ -15,6 +15,7 @@ import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
 import { resolveOrdinarySelfIdentity } from './ordinary-self-identity.js';
+import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
 
 export type TransitiveExternalContract = {
   categoryId: string;
@@ -151,6 +152,10 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         bContract, bEc, directGroup.functionArgs, bAbiFunc,
       );
       if (!cRegistered) {
+        // A conditional edge the planner could not prove reachable is stated as not taken: the caller's own
+        // covenant keeps its guard, so a spend that does reach the call fails closed at the call site, while an
+        // unreached branch (the `if (migrator != 0)` shape) needs no callee UTXO to exist.
+        if (bEc.occurrence === 'conditional') continue;
         throw new DeferredTransitiveReturnProbeError(
           `Transitive external call: ${bEc.interfaceName}.${bEc.functionName} not found `
           + `in ${directGroup.functionName}'s connect-time externals. `
@@ -263,10 +268,33 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         });
       }
 
+      // A callsite may target a participant another direct call already co-spends (the Router's token
+      // `transferFrom` and the pair's `balanceOf` on the same token). Keep this logical group for its own
+      // selector, arguments and return witness, but let the first group own the physical input block.
+      const existingPhysicalIndex = physicalExternalCallGroupIndexByMasterOutpoint(
+        externalCallUtxoGroups, cState.masterUtxo,
+      );
+      const sharedPhysical = existingPhysicalIndex < 0
+        ? undefined : externalCallUtxoGroups[existingPhysicalIndex];
+      // The same rule a direct callsite applies: two distinct methods that both return cannot execute from one
+      // master input unless the compiler published an authenticated batch route; a second carrier would be a
+      // placeholder. At most one side of a shared pair may return.
+      if (sharedPhysical !== undefined && (cAbiFunction.outputs?.length ?? 0) > 0
+        && sharedPhysical.functionName !== cFunctionName) {
+        const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+          ?.find((candidate) => candidate.name === sharedPhysical.functionName);
+        if ((priorAbi?.outputs?.length ?? 0) > 0) {
+          throw new Error(
+            `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
+            + `owner but both return values. Use messageBus.compose() to authenticate both logical invocations.`,
+          );
+        }
+      }
       externalCallUtxoGroups.push({
         categoryId: cCategoryId,
         stateLayout: cStateLayout,
         masterUtxo: cState.masterUtxo,
+        ...(existingPhysicalIndex >= 0 && { sharedGroupIndex: existingPhysicalIndex }),
         dataNftUtxos: cDataNfts,
         requiredDataNftIndices: cRequiredNftIndices,
         functionName: cFunctionName,

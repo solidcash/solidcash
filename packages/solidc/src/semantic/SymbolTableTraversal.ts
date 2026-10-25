@@ -5046,10 +5046,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (methods.length !== 1) continue;
         const parameterTypes = methods[0]!.parameters
           .filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => parameter.type);
-        slot.calleeMethod = {
-          selector: this.computeAbiSelector(this.selectorSignatureFor(slot.functionName, parameterTypes)),
-          parameterTypes,
-        };
+        slot.calleeMethod = { parameterTypes };
       }
     }
 

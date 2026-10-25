@@ -6,7 +6,7 @@ import {
 import { compileString as compileAutomatic } from '@solidcash/solidc';
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
-import { StatefulContract, getSatoshiContainerAddress } from '../../src/stateful/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 
@@ -150,20 +150,6 @@ describe('direct void call arguments', () => {
     await expect(label(5n, 6n)).rejects.toThrow(refusedByCaller);
     await label(5n, 5n);
     expect((await d.sink.getState()).last).toBe(5n);
-  }, 300_000);
-
-  it('binds the argument of a void call that carries value', async () => {
-    const d = await deploy();
-    // The caller pays the value from its satoshi container.
-    await (d.provider as any).addUtxo(getSatoshiContainerAddress(d.source.inner, d.sourceCat), {
-      txid: '5c'.repeat(32), vout: 0, satoshis: 100_000n,
-    });
-    const fund = (id: bigint, named: bigint): Promise<unknown> => (d.source as any).fund(d.sinkAddr, id)
-      .withExternalCall(d.sink, 'deposit', [named]).send();
-    await expect(fund(3n, 4n)).rejects.toThrow(refusedByCaller);
-    await fund(3n, 3n);
-    expect((await d.sink.getState()).last).toBe(3n);
-    expect((await d.source.getState()).count).toBe(1n);
   }, 300_000);
 });
 

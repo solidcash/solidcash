@@ -27648,7 +27648,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(count + 1)), loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_2DROP, loc);                             // [data, a(n-1) .. a0]: '' and the redeem dropped
+    this.emit(Op.OP_DROP, loc);                              // [data, a(n-1) .. a0, redeem]
+    this.emitRedeemPadRefusal(loc);                          // [data, a(n-1) .. a0]
     this.emit(encodeInt(BigInt(count)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(4n), loc);
@@ -27741,7 +27742,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private directCallArgumentBinding(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot,
-  ): { selector: Uint8Array; types: (Type | undefined)[] } | undefined {
+  ): { types: (Type | undefined)[] } | undefined {
     const method = slot.calleeMethod;
     if (method === undefined || !this.directConvention || node.opaqueReturn || slot.interfaceName === '__raw__'
       || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
@@ -27756,7 +27757,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const types: (Type | undefined)[] = method.parameterTypes.slice(0, node.parameters.length)
       .map((type) => (type === PrimitiveType.SIG ? undefined : type));
     while (types.length > 0 && types[types.length - 1] === undefined) types.pop();
-    return types.length > 0 ? { selector: method.selector, types } : undefined;
+    return types.length > 0 ? { types } : undefined;
   }
 
   /**
@@ -27766,7 +27767,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitDirectCallArgumentBinding(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot,
-    binding: { selector: Uint8Array; types: (Type | undefined)[] }, loc: SingleLocationData,
+    binding: { types: (Type | undefined)[] }, loc: SingleLocationData,
   ): void {
     const anchor = `__internal__extcallAnchorIdx${slot.slotIndex}`;
     const anchored = this.getStackIndex(anchor, true) >= 0;
@@ -27794,8 +27795,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
     }
     const count = binding.types.length;
-    this.emit(binding.selector, loc);
-    this.emitSlotMasterIndex(slot, loc);                    // [.., selector, idx]
+    this.emitSlotMasterIndex(slot, loc);                    // [.., idx]
     if (!this.invokeSharedStackHelper(
       `directCallArguments|${count}`, (t, l) => t.emitDirectCallArgumentPushes(count, l), loc,
     )) {
@@ -27828,44 +27828,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[.., selector, idx]` -> `[.., a(n-1) .. a0]`: the last `count` argument pushes of the unlocking that runs the call
-   * at input idx, parsed from its first push. A forwarding proxy's frame, exactly `<delegate index> <selector>
-   * <redeem>` with this method's selector, names the input it forwards to. That unlocking must spend a script-hash
-   * lock and push at least `count + 1` items, and its redeem must drop no budget pad.
+   * `[.., idx]` -> `[.., a(n-1) .. a0]`: the last `count` argument pushes of the callee's unlocking at input idx,
+   * parsed from its first push. That unlocking must spend a script-hash lock and push at least `count + 1` items, and
+   * its redeem must drop no budget pad. A forwarding proxy's frame names another input, which nothing here ties to
+   * the proxy, so a call into one fails closed.
    */
   private emitDirectCallArgumentPushes(count: number, loc: SingleLocationData): void {
     const bytes = new BytesType();
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_INPUTBYTECODE, loc);
-    this.emitGenericPushdataDecode(bytes, loc);
-    this.emitGenericPushdataDecode(bytes, loc);
-    this.emitGenericPushdataDecode(bytes, loc);             // [sel, idx, p0, p1, p2, rest]
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_BOOLAND, loc);                           // [sel, idx, p0, p1, threePushes]
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(encodeInt(4n), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_BOOLAND, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(encodeInt(4n), loc);
-    this.emit(Op.OP_NUMEQUAL, loc);
-    this.emit(Op.OP_NOT, loc);
-    this.emit(Op.OP_BOOLAND, loc);                           // [sel, idx, p0, forwarded]
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_BIN2NUM, loc);
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_NIP, loc);                               // [idx]
     // Only a script-hash lock (23 or 35 bytes) makes the last push a redeem script.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);

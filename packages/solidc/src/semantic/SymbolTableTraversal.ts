@@ -4510,14 +4510,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           // The direct convention runs repeated calls to one callee in one spend of its master, through the
           // callee's multi-call entry, each call reading the record of its own frame; it never builds a bus batch.
           const directConvention = messageBusExplicitlyDisabled && this.compilerOptions.composition !== 'framed';
-          // A loop repeats its call while the callee master is spent once: a looped call to a fixed target whose
-          // result is read and that cannot run as a frame of that spend would read results its callee never pinned.
+          // A loop repeats its call while a callee master is spent once. Only a per-iteration target (an array
+          // element or witness, checked where it runs) or a frame of the callee's multi-call spend reads its own
+          // record; any other looped call whose result is read would read records its callee never pinned.
           const readsResult = (slot: ExternalCallSlot, call: ExternalFunctionCallNode): boolean => (call.opaqueReturn
             ? !call.discardedOpaqueReturn && !call.unreadOpaqueReturn : slot.hasReturnValues === true);
-          const loopedCalls = directConvention ? [...allByTarget.values()].filter((group) => group.length === 1
-            && group[0].sourceCallNode !== undefined && readsResult(group[0], group[0].sourceCallNode)
-            && (this.loopNestedExternalCalls.has(group[0].sourceCallNode) || callOccursInLoop(group[0].sourceCallNode)))
-            : [];
+          const groupedSlots = new Set(knownRepeated.flat());
+          const loopedCalls = directConvention ? logicalCallSlots.filter((slot) => !groupedSlots.has(slot)
+            && !slot.loopArrayVar && slot.sourceCallNode !== undefined && readsResult(slot, slot.sourceCallNode)
+            && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode)))
+            .map((slot) => [slot]) : [];
           const refusedRepeated = directConvention
             ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)))
             : knownRepeated;

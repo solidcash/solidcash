@@ -107,10 +107,10 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 at that commit, and the six residuals and five skips above stay non-blocking. `master` carries all the release work:
 the readiness and matrix fixes (merge `168a45b9d`), `feat/tether-bch-native` (merge `e974a00e4`),
 `solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). The most recent mocknet
-verification is 2026-10-24 at `b7469b668` on master, with two `yarn test:e2e` expectations awaiting the owner's
-decision; its gate table and the re-pin it needed are in "The 2026-10-24 verification" below. The 2026-10-23 run at
-`0f7da2afa` and its four green marketplace cells are in "The 2026-10-23 verification". Two items outside the gates
-are left for the release owner:
+verification ran at `e3d85e0b4` on master, 2026-10-24 to 2026-10-25: every gate passes once `a0883f157`, a test-only
+commit, re-pins two e2e byte-identity hashes. Its gate table and the re-pins it needed are in "The 2026-10-24
+verification" below. The 2026-10-23 run at `0f7da2afa` and its four green marketplace cells are in "The 2026-10-23
+verification". Two items outside the gates are left for the release owner:
 
 - `release-application-regtest` was not run: verification ran on mocknet only, by instruction. It last passed
   against stock BCHN v29.0.0 at `88cc906ec` (`docs/framed/REGTEST_AT_HEAD.md`).
@@ -262,42 +262,58 @@ direct compiles only.
 
 Every mocknet gate was re-run from the isolated worktree `/Code/cashscript/.worktrees/release-gates`, one gate at a
 time, with `TESTS_USE_REGTEST` unset and no `SOLIDC_*` or `FRAMED_*` overrides; the tree was clean before and after
-each gate. The battery ran at `63cd768a6`, and the gates it left red were re-run at `b7469b668` after their fixes.
-Between the two commits only a test comment (`f449e2485`) and the pins and this record (`b7469b668`) changed, so no
-compiled code differs.
+each gate. The final battery ran at `e3d85e0b4` from 2026-10-24 to 2026-10-25. It follows a battery at `63cd768a6`
+and a re-run of that battery's red gates at `b7469b668`, both in this file's history. `e3d85e0b4` changes the
+compiler, so every gate was run again on it. The one file the battery left red was re-pinned in `a0883f157`, which
+changes only that test file.
 
 | Gate | Commit | Result |
 |---|---|---|
-| `scripts/gate.sh full` | `b7469b668` | exit 0 (666 s): identity `{"routeBytes":44865,"fullBytes":246609,"fullHash":"30c4f5a157f93e83"}` matches; utils 525/525; solidc 475 files, 7439 passed, 0 failed |
-| `kernel-beta-gate` | `b7469b668` | exit 0 (40 min) without `--allow-dirty`: `diagnosticOnly: false`, `head b7469b668`, sourceFingerprints matched, all 39 required kernel proofs (87 titles) passed, each cold row's two fresh compiles agree |
-| `yarn test` | `63cd768a6` | exit 1 (41 min), one failure: solidhat's `ported-script-exit-code` timing bound, 32.5 s against 30 s while scratch compiles ran beside the suite; the file passed alone at `b7469b668` in 5 s. utils 525/525; solidc 7439 passed; solidcash 6003 passed, 5 expected failures, 186 skipped, 5 todo; testing 120/120; testing-suite 27/27; solidhat 71 passed, 1 skipped |
-| `yarn test:e2e` | `63cd768a6` | exit 1 (33 min): 617 files, 3807 passed, 24 skipped, 3 todo, 2 failed; both failures await the owner's decision, below |
-| `yarn lint` | `b7469b668` | exit 0 (320 s) |
-| `yarn spellcheck` | `b7469b668` | exit 0, no unknown words |
-| `check:source-tree` | `b7469b668` | exit 0 |
-| `check:doc-citations` | `b7469b668` | exit 0 |
-| `release-security-conformance` | `63cd768a6` | exit 0 (82 s) |
-| `release-package-smoke` | `63cd768a6` | exit 0 (295 s) |
-| `release-docs-snippets` | `63cd768a6` | exit 0 (9 s) |
-| `release-corpus-baseline` | `63cd768a6` | exit 0 against the retained scorecard |
-| `release-application-conformance` | `63cd768a6` | exit 0 (17 s) |
-| `release-generated-project-smoke` | `63cd768a6` | exit 0 (38 s) |
+| `scripts/gate.sh full` | `e3d85e0b4` | exit 0 (817 s): identity `{"routeBytes":44865,"fullBytes":246609,"fullHash":"30c4f5a157f93e83"}` matches; utils 525/525; solidc 475 files, 7439 passed, 0 failed |
+| `kernel-beta-gate` | `e3d85e0b4` | exit 0 (43 min) without `--allow-dirty`: `diagnosticOnly: false`, `head e3d85e0b4`, sourceFingerprints matched, all 39 required kernel proofs (87 titles) passed |
+| `yarn test` | `e3d85e0b4` | pass, run per package (53 min, see below): utils 525/525; solidc 7439 passed (the `gate.sh full` run); solidcash 6003 passed, 5 expected failures, 186 skipped, 5 todo; testing 120/120; testing-suite 27/27; solidhat 72 passed, 1 skipped |
+| `yarn test:e2e` | `e3d85e0b4`, one file at `a0883f157` | pass after a test-only re-pin: in five file chunks (37 min, see below), 617 files, 3808 passed, 24 skipped, 3 todo, 2 failed, both byte-identity pins in `IfConvertRepeatedEntryWrite.test.ts`; re-pinned in `a0883f157`, where the file passes 7/7 |
+| `yarn lint` | `e3d85e0b4` | exit 0 (488 s) |
+| `yarn spellcheck` | `e3d85e0b4` | exit 0, no unknown words |
+| `check:source-tree` | `e3d85e0b4` | exit 0 |
+| `check:doc-citations` | `e3d85e0b4` | exit 0 |
+| `release-security-conformance` | `e3d85e0b4` | exit 0 (90 s) |
+| `release-package-smoke` | `e3d85e0b4` | exit 0 (380 s) |
+| `release-docs-snippets` | `e3d85e0b4` | exit 0 (11 s): 346 blocks, 160 compiled, 0 failed |
+| `release-corpus-baseline` | `e3d85e0b4` | exit 0 against the retained scorecard |
+| `release-application-conformance` | `e3d85e0b4` | exit 0 (18 s) |
+| `release-generated-project-smoke` | `e3d85e0b4` | exit 0 (48 s) |
 | marketplace matrix | not run | not part of this round, by instruction; last green at `7e5c0f897` |
 | `release-application-regtest` | not run | mocknet-only verification, as in the earlier runs |
 
-The two `yarn test:e2e` failures, both waiting on the owner:
+The host's memory guard stopped the first `yarn test` attempt after its first package, while the shared host's swap
+was full; that attempt is not a gate result. `yarn test` and `yarn test:e2e` then ran as one vitest process per
+package or file chunk, with two workers instead of the configured three. The chunks are vitest's own file lists
+(`vitest list --filesOnly`): the SDK suite's 1,013 files in eight chunks and the 617 e2e files in five. The counts
+above are their sums. The utils and solidc suites were not run again: utils passed in the stopped attempt (525/525),
+and `gate.sh full` ran solidc's identical suite at the same commit.
 
-- `KernelNestedTuplePool.test.ts`, "promotes a potentially repeated typed loop across zero, one and two rows",
-  expects `build()` of a looped call to refuse with "requires atomic composition". Since `a7e773d1d`, `build()` of a
-  message-bus compile plans the same bus rows as `send()` and returns the composition `send()` broadcasts; every
-  input passes the VM in its preflight. The expectation predates that change, and the file's later steps, which check
-  the state after zero, one and two rows, do not run while it stands.
-- `OzBchNativeInheritance.test.ts`, "composes with the unmodified OZ 5.0.2 implementation", holds the script under
-  9,450 bytes. It is 9,517 bytes: call records (D50) added 264 bytes to the 9,414 of D49, and `18860c4fd` and
-  `63cd768a6` took back 161. The honest `transferFrom` master input measures 9,987 bytes, under the 10,000-byte
-  limit; the same file asserts that, and it passes.
+`IfConvertRepeatedEntryWrite.test.ts` pins seven small direct-convention mapping contracts, by sha256, to the bytes
+of the builds before its two if-convert fixes. `e3d85e0b4` encodes them 28 to 51 bytes shorter. Measured from
+scratch builds: at `d1ae4038e` all seven reproduce the old pins. At `e3d85e0b4`, with every constant-id `OP_INVOKE`
+expanded, each entry and the dispatcher is instruction-identical to `d1ae4038e` under both conventions, and no
+top-level instruction lies outside the define table. `a0883f157` changes only the seven expected hashes and two
+comments.
 
-What this run changed:
+The owner's two `yarn test:e2e` decisions from the `63cd768a6` battery:
+
+- `KernelNestedTuplePool.test.ts`: the title now expects `build()` of a looped call with a signer to return the bus
+  composition `send()` broadcasts, and requires every input of it to pass the VM (`d1ae4038e`). Its state checks
+  after zero, one and two rows now run. The refusal without a signer, in the title before it, stays.
+- `OzBchNativeInheritance.test.ts`: the 9,450-byte budget stays. Measuring the real limit found an honest
+  `transferFrom` of an 8-byte amount from a P2PKH holder to a P2SH32 lock whose master input was 10,005 bytes, over
+  the 10,000-byte input limit, which mocknet does not enforce. `e3d85e0b4` cuts the script from 9,517 to 9,350 bytes
+  without removing or reordering a check: each collection's entry-address helper reads the master's category
+  itself, bounded-bytes parameter checks are shared, and the record carrier's category check uses the take-32
+  helper. That input is now 9,838 bytes, and a new title holds it under 10,000; the P2PKH-to-P2PKH input went from
+  9,987 to 9,820 bytes.
+
+What this round changed:
 
 - Package rename: the gate scripts and the kernel manifest name the `@solidcash/*` workspaces (`847f142c2`), and
   two comments it lengthened were rewrapped (`847f142c2`, `f449e2485`).
@@ -305,7 +321,11 @@ What this run changed:
   `173951f2e` (a compile crash on a call that leaves its arguments to the callee; its pre-D50 binding is an open
   residual in `docs/security/security-audit-2026-10-16.md`), `86f001741` (a raw call whose result is never read reads
   no record), `63cd768a6` (the OZ `transferFrom` input back under the limit).
-- The bytecode identity and the kernel cold baselines, as recorded in "The 2026-10-24 re-pin" above.
+- The bytecode identity and the kernel cold baselines, as recorded in "The 2026-10-24 re-pin" above. `e3d85e0b4`
+  leaves them unchanged.
+- The two decisions above: `d1ae4038e`, and `e3d85e0b4`, which also re-pins MinimalNativeToken (7,514 to 7,355
+  bytes) and the BchNative wrapper (7,580 to 7,421 bytes).
+- `a0883f157`: the if-convert byte-identity pins, as above.
 
 ### What closed the 2026-10-17 failures
 

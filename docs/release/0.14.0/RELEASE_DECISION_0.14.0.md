@@ -382,11 +382,13 @@ tree clean before and after each. Every step exits 0.
 | marketplace matrix | not run | by instruction |
 | `release-application-regtest` | not run | mocknet-only verification |
 
-Two fixes landed after the battery, each recorded in `docs/security/security-audit-2026-10-16.md`: a zero-argument
-view call of a direct multi-call group no longer shares the record of an identical call before a write
-(`1f6aa9bb1`), and a loop target the contract fixes stays bound to its on-chain value (`b6c2e106d`). Each passed its
-own test files, a compile of the affected test sources changed no bytes, and with both the gate identity and the
-three kernel cold baselines measure as pinned (44865 / 248241 / `db972fef`; 14850 / 312137; 1068 / 16251).
+Three fixes landed after the battery, each recorded in `docs/security/security-audit-2026-10-16.md`: a
+zero-argument view call of a direct multi-call group no longer shares the record of an identical call before a write
+(`1f6aa9bb1`); a loop target the contract fixes stays bound to its on-chain value (`b6c2e106d`); and a void call in a
+loop binds its callee's method and, over a parameter array or computed targets, its arguments (`ca737ef32`). Each
+passed its own test files. A compile of the affected test sources changed no bytes for the first two, and for the
+third only the nine loop contracts whose five test files were updated and run. With all three, the gate identity and
+the three kernel cold baselines measure as pinned (44865 / 248241 / `db972fef`; 14850 / 312137; 1068 / 16251).
 
 ### What closed the 2026-10-17 failures
 

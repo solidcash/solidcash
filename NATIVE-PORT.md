@@ -460,6 +460,15 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   A pre-created pair does not change this: the manual two-step still fails at the same direct-call refusal.
   The Router's route (which now admits `addLiquidity`, `factory`, `quote` and the amount getters) is a
   prerequisite but cannot substitute for a routable pair writer.
+  Measured, not assumed: with `messageBusHandlersByContract: { UniswapV2Pair: ['mint'] }` and the
+  conditional-scalar gate disabled for one compile, route synthesis throws
+  `Message-bus kernel admission retained a non-kernel route shape (mint)` because the fee recipient is a
+  per-row key sourced from `factory.feeToAndMigrator()` and `kernelFixedEntryAlternatives` cannot fix it.
+  Bypassing the wide-event gate for `burn` instead lands on the same
+  `conditional-scalar-collection-event-settlement` refusal. Each writer therefore needs two new kernel
+  journal mechanisms: a row key sourced from a runtime external return, and a conditional scalar settlement.
+  Without them the Router ceiling is the 11 tests that never seed a pair (address getters, two deadline
+  guards, four pure library-math cases), and the SushiRoll ceiling is its 3 non-pair tests.
 - **A contract cannot call itself in one transaction.** The pair's `migrator.desiredLiquidity()` and the flash
   callback's reentrant `mint`/`burn`/`swap`/`skim`/`sync` target the primary contract, whose master UTXO is
   already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not

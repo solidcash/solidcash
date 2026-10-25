@@ -88,6 +88,19 @@ describe('pair-shaped participant route admission', () => {
     expect(mint?.eligible).toBe(false);
     expect(mint?.rejectionReason).toMatch(/^KERNEL_/);
   });
+
+  it('publishes no route when the pair writer is the only selected handler', { timeout: 30_000 }, () => {
+    const artifact = compile(['mint']);
+    const mint = artifact.messageBus?.handlers?.find((handler) => handler.name === 'mint');
+    expect(mint?.eligible).toBe(false);
+    expect(mint?.rejectionReason).toBe('KERNEL_LAYOUT');
+    expect(artifact.messageBus?.available ?? false).toBe(false);
+    // The compiler must never emit a route for this writer. Measured with the conditional-scalar refusal
+    // disabled for one experiment, route synthesis then throws `Message-bus kernel admission retained a
+    // non-kernel route shape (mint)`: the fee recipient row key is a `factory.feeToAndMigrator()` producer
+    // result, which the kernel's fixed entry alternatives cannot represent. A route therefore needs both a
+    // runtime-return-keyed row and a conditional scalar settlement.
+  });
 });
 
 describe('per-contract message-bus opt-out', () => {

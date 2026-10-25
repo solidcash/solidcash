@@ -136,7 +136,7 @@ describe('direct call ordinals', () => {
     expect(message).not.toMatch(/omit the option/);
   });
 
-  it('refuses a looped returning call to a fixed target that cannot run as a frame', () => {
+  it('refuses a looped call to a fixed target that reads a result and cannot run as a frame', () => {
     // The callee master is spent once and pins one record: further iterations would read records it never pinned.
     const looped = (body: string): string => `pragma solidcash >=0.8.0;
 interface ICounter { function inc(bigint by) external returns (bigint); }
@@ -161,6 +161,21 @@ contract LoopedWriter(address counter) {
     }
     expect(() => compileString(looped('acc = ICounter(counter).inc(n);'), { messageBus: false, suppressWarnings: true }))
       .not.toThrow();
+    // An opaque call reads its data from the record at its index plus the iteration: refused once the data is read.
+    const raw = (body: string): string => `contract RawLoop() {
+  bigint n;
+  function go(address t, address[] ts, bytes[] ps) public { bigint s = 0; ${body} this.n = s; }
+}`;
+    const read = 'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); '
+      + 's = s + r.length; }';
+    expect(() => compileString(raw(read), { messageBus: false, suppressWarnings: true }))
+      .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`\.$/);
+    for (const body of [
+      'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, bytes memory r) = t.call(ps[i]); require(ok); s = s + 1; }',
+      'for (bigint i = 0; i < ps.length; i = i + 1) { (bool ok, ) = t.call(ps[i]); require(ok); s = s + 1; }',
+      'for (bigint i = 0; i < ts.length; i = i + 1) { (bool ok, bytes memory r) = ts[i].call(ps[i]); require(ok); '
+        + 's = s + r.length; }',
+    ]) expect(() => compileString(raw(body), { messageBus: false, suppressWarnings: true }), body).not.toThrow();
   });
 
   it('leaves a message-bus compile as it was', () => {

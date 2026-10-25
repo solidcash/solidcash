@@ -225,7 +225,8 @@ export function materializeExternalCallOutputs(
       const nftHasUpdate = !nftIsImmutable
       && stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
       const inputCommitment = nftUtxo.token?.nft?.commitment;
-      const commitment = (nftHasUpdate ? undefined
+      // A multi-call spend whose frames write leaves the records its probe settled.
+      const commitment = group.callBatch?.dataCommitments?.[i] ?? (nftHasUpdate ? undefined
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
       ?? (nftHasUpdate || !inputCommitment
         ? buildPushdataCommitment(

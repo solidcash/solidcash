@@ -25919,8 +25919,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (counter !== undefined) this.emitAdvanceCallOrdinal(counter, node, locationData);
     }
+    if (physicalSlot?.voidCallRecord && batchRow === undefined) this.emitVoidCallRecordRead(node, physicalSlot, locationData);
 
     return node;
+  }
+
+  /**
+   * A grouped void call's read: its frame's record is the digest of the call it made, its ordinal, method and
+   * arguments, then the inline form of an empty result. A counted call in a loop checks its callee and the record's
+   * carrier where it runs; any other leaves the carrier to the epilogue.
+   */
+  private emitVoidCallRecordRead(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): void {
+    if (!this.emitCallerCallRecordDigest(node, slot, loc)) {
+      throw new Error(`${node.interfaceName}.${node.functionName}() in '${this.currentFunction.name}' runs as a frame `
+        + 'of its callee\'s multi-call spend but has no call digest to read its record by');
+    }
+    const returnParamName = this.externalCallSlots.filter((candidate) => candidate.hasReturnValues).length === 1
+      ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
+    const counter = this.liveCallOrdinalCounter(slot);
+    const bindsInline = counter !== undefined && this.isExternalCallSlotLoopNested(slot);
+    if (bindsInline) this.emitLoopCallCalleeCategory(slot, node, loc);
+    this.emitPickAt(this.getStackIndex(returnParamName) + (bindsInline ? 1 : 0), loc);
+    if (bindsInline) {
+      this.emitPickAt(this.getStackIndex(counter) + 2, loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emitLoopCallRecordCarrierChecks(loc);
+    }
+    // [digest, record] -> []: the record is `digest || 0x01`.
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack();
+    if (counter !== undefined) this.emitAdvanceCallOrdinal(counter, node, loc);
   }
 
   private appendExternalBatchRow(

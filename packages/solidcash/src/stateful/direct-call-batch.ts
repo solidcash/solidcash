@@ -3,19 +3,29 @@
  * `callOrdinal` group run in one spend of the callee's master, through its multi-call entry: frame k is the k-th
  * reached call, it reads its entries `rowEntryShift` inputs past its layout slots, and its record sits in the batch
  * block at the k-th record slot. The batch block holds every data record of the callee, which the entry carries
- * through its frames. A group reaching one call keeps the standalone spend.
+ * through its frames. A group reaching one returning call keeps the standalone spend; a void call always runs as a
+ * frame, since a standalone void run pins no record.
  */
 
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type {
   AbiFunction, ArgSource, Artifact, BlockLayoutSlot, ExternalCallAbi, ExternalCallExpression, FunctionBlockLayout,
   StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Contract } from '../Contract.js';
-import type { ContractUnlocker, GenerateUnlockingBytecodeOptions, UnlockableUtxo } from '../interfaces.js';
+import type {
+  ContractUnlocker, GenerateUnlockingBytecodeOptions, Output, UnlockableUtxo,
+} from '../interfaces.js';
+import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { generateLibauthSourceOutputs, solidCashOutputToLibauthOutput } from '../utils.js';
+import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
+import { parseCallRecord } from './call-record.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { evaluateProbeTrace } from './faithful-probe-trace.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import { containsReturningExpression } from './sc-expand-resolve-create-builder-external-calls.js';
+import { extractExpectedOutputCommitmentFromTrace } from './trace-commitment-helpers.js';
 
 const ROW_ENTRY_SHIFT = '__internal__rowEntryShift';
 const RETURN_OUTPUT_INDEX = '__internal__returnOutputIdx';
@@ -49,6 +59,8 @@ export interface DirectCallBatch {
   readonly frames: readonly DirectCallBatchFrame[];
   /** Block offset of frame 0's record; frame k's sits k past it. */
   readonly recordOffset: number;
+  /** The commitments the spend leaves on its data records, record j at index j, once a frame writes state. */
+  readonly dataCommitments?: readonly string[];
 }
 
 export interface DirectCallBatchFrameBlock {
@@ -99,20 +111,36 @@ const calleeArtifact = (call: ResolvedCall): Artifact | undefined => (
   call.externalContract as { inner?: { artifact?: Artifact } } | undefined
 )?.inner?.artifact;
 
+/** The callee entry a resolved call runs. */
+const calleeEntry = (call: ResolvedCall): AbiFunction | undefined => calleeArtifact(call)?.abi
+  .find((candidate) => candidate.name === call.functionName);
+
+/** Whether a serialized expression reads the result of one of `callsites`. */
+function readsResultOf(value: unknown, callsites: ReadonlySet<number>, seen = new Set<object>()): boolean {
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  const { kind, callsiteId } = value as { kind?: string; callsiteId?: number };
+  if ((kind === 'producerResult' || kind === 'externalCall') && callsiteId !== undefined
+    && callsites.has(callsiteId)) return true;
+  return Object.values(value).some((child) => (Array.isArray(child)
+    ? child.some((item) => readsResultOf(item, callsites, seen)) : readsResultOf(child, callsites, seen)));
+}
+
 /** A callee asked to run several calls in one spend without its multi-call entry. */
 export function directCallBatchRefusal(caller: string, callee: string, count: number): Error {
-  return new Error(`${caller} makes ${count} calls to ${callee} in one transaction. A direct callee runs several `
-    + `calls in one spend of its master only through its multi-call entry, which ${callee} was compiled without: `
-    + 'compile it with `callBatch: true`, or compile caller and callee together with compileStringMulti or '
-    + 'compileFileMulti.');
+  return new Error(`${caller} makes ${count} call${count === 1 ? '' : 's'} to ${callee} in one transaction. A `
+    + 'direct callee runs several calls, or a void one its caller reads the record of, in one spend of its master '
+    + `only through its multi-call entry, which ${callee} was compiled without: compile it with \`callBatch: true\`, `
+    + 'or compile caller and callee together with compileStringMulti or compileFileMulti.');
 }
 
 /**
  * Expand each `callOrdinal` group of a direct caller into its reached calls in execution order: a fixed group keeps
  * its calls, a counted group resolves its loops' reached occurrences (domain, conditions and arguments) and its
- * conditions, and numbers them as they run; a call inside nested loops is refused. A group reaching two or more
- * frames marks its calls as units of one multi-call spend; one reaching a single call keeps the standalone spend,
- * with that call's own arguments.
+ * conditions, and numbers them as they run; a call inside nested loops is refused, as is a group whose frames change
+ * state where a loop bound, condition or argument reads one of its results. A group reaching two or more frames, or a
+ * void call, marks its calls as units of one multi-call spend; one reaching a single returning call keeps the
+ * standalone spend, with that call's own arguments.
  */
 export async function planDirectCallBatches(
   host: PlanDirectCallBatchesHost,
@@ -174,6 +202,27 @@ export async function planDirectCallBatches(
       throw new Error(`${caller}: the loops of its calls to one callee are not published, so the calls cannot be `
         + 'put in execution order as frames of one multi-call spend.');
     }
+    // A frame that writes state changes the results of the frames after it, which their standalone probes do not
+    // see: a loop bound, condition or argument that reads one of the group's own results is refused.
+    if (positions.some((position) => calleeEntry(resolvedExternalCalls[position]!)?.writesState === true)) {
+      const own = new Set(positions.flatMap((position) => {
+        const id = externalCalls[position]!.callsiteId;
+        return id === undefined ? [] : [id];
+      }));
+      for (const position of positions) {
+        const call = externalCalls[position]!;
+        const domain = call.iterationDomain;
+        const reads = (value: unknown): boolean => readsResultOf(value, own);
+        const part = domain && [domain.initialValue, domain.stepValue, domain.continueCondition].some(reads)
+          ? 'the bound of its loop' : call.condition !== undefined && reads(call.condition) ? 'its condition'
+            : (call.argSources ?? []).some(reads) ? 'an argument' : undefined;
+        if (part !== undefined) {
+          throw new Error(`${caller}: ${part} of callsite ${call.callsiteId ?? position} reads a result of a call `
+            + 'to the same callee, whose calls change state; the frames of a multi-call spend are planned from their '
+            + 'standalone results, so such a spend is refused.');
+        }
+      }
+    }
     for (const position of positions) {
       const call = externalCalls[position]!;
       const info = resolvedExternalCalls[position]!;
@@ -227,7 +276,12 @@ export async function planDirectCallBatches(
       });
     }
     const frameCount = new Set(units.map((unit) => unit.ordinal)).size;
-    if (frameCount > 1) {
+    // A void call reads its frame's record, which only a multi-call spend pins.
+    const batched = frameCount > 1 || units.some((unit) => {
+      const entry = calleeEntry(unit.info);
+      return entry !== undefined && (entry.outputs?.length ?? 0) === 0;
+    });
+    if (batched) {
       for (const unit of units) {
         const callee = calleeArtifact(unit.info);
         if (typeof callee?.callBatch !== 'object') {
@@ -248,7 +302,7 @@ export async function planDirectCallBatches(
       const isFrame = !seen.has(unit.ordinal);
       seen.add(unit.ordinal);
       planned.get(unit.position)!.push({
-        call: frameCount > 1 ? {
+        call: batched ? {
           ...call,
           directBatch: { group, ordinal: unit.ordinal, witnessOffset: unit.witnessOffset, isFrame },
         } : call,
@@ -273,6 +327,22 @@ export async function planDirectCallBatches(
   return { externalCalls: nextCalls, resolvedExternalCalls: nextResolved, callerState };
 }
 
+/**
+ * The block a unit of a multi-call spend co-spends: its entry's, and for a void frame a record slot past it. A
+ * standalone void run lays no record, so its entry's layout has none; the spend pins `digest || 0x01` there.
+ */
+export function callBatchFrameLayout(
+  layout: FunctionBlockLayout | undefined, call: ExternalCallAbi,
+): FunctionBlockLayout | undefined {
+  if (layout === undefined || (call as DirectCallBatchCall).directBatch === undefined
+    || layout.slots.some((slot) => slot.kind === 'returnEvent')) return layout;
+  return {
+    ...layout,
+    blockSize: layout.blockSize + 1,
+    slots: [...layout.slots, { kind: 'returnEvent', offset: layout.blockSize, slotIndex: 0 }],
+  };
+}
+
 const sameOutpoint = (left: UnlockableUtxo, right: UnlockableUtxo): boolean => (
   left.txid.toLowerCase() === right.txid.toLowerCase() && left.vout === right.vout
 );
@@ -283,9 +353,9 @@ const slotsOf = (layout: FunctionBlockLayout, kind: string): BlockLayoutSlot[] =
 /**
  * Turn each multi-call's units into one spend of the callee master: the first unit's group carries the batch block
  * (master, every data record, every frame's entries in frame order, one record slot per frame) and the frames, and
- * every other unit reads its frame's record from that block. Each frame's result comes from its own probe; a void
- * frame's record carries an empty result. A frame that writes state runs on the records the frames before it left,
- * which a standalone probe does not see, so it is refused here.
+ * every other unit reads its frame's record from that block. A void frame's record carries an empty result. Where
+ * every frame preserves state, each result comes from its own probe; once one writes, frame k runs on the records
+ * the frames before it left, so the results and the records the spend leaves come from a probe of the spend.
  */
 export async function consolidateDirectCallBatches(
   host: {
@@ -364,22 +434,27 @@ export async function consolidateDirectCallBatches(
       inputs.push(funder);
       slots.push({ kind: 'returnEvent', offset: recordOffset + frameIndex, slotIndex: frameIndex });
     }
-    const frames: DirectCallBatchFrame[] = [];
-    for (const [frameIndex, index] of frameUnits.entries()) {
+    const specs = frameUnits.map((index, frameIndex) => {
       const unit = groups[index]!;
       const abiFunction = callee.abi.find((candidate) => candidate.name === unit.functionName);
       if (abiFunction?.callBatchRow !== true) throw unsupported(`'${unit.functionName}' is no frame entry`);
-      if (abiFunction.writesState === true) {
-        throw unsupported(`its frame '${unit.functionName}' writes state, which its probe does not run on the records `
-          + 'the frames before it leave yet');
-      }
+      return { unit, abiFunction, args: [...unit.functionArgs], rowEntryShift: shifts[frameIndex]! };
+    });
+    // A frame that writes state changes what the frames after it read: every result, and the records the spend
+    // leaves, come from a probe of the spend itself.
+    const probed = specs.some((spec) => spec.abiFunction.writesState === true)
+      ? probeCallBatch(physical.externalContract.inner as Contract, inputs, specs, recordOffset, dataRecords.length,
+        unsupported) : undefined;
+    const frames: DirectCallBatchFrame[] = [];
+    for (const [frameIndex, spec] of specs.entries()) {
+      const { unit, abiFunction } = spec;
       frames.push({
         abiFunction,
-        args: [...unit.functionArgs],
+        args: spec.args,
         ordinal: frameIndex,
-        result: unit.precomputedReturnCommitment
-          ?? await host.deriveFrameResult(unit, abiFunction, unit.functionArgs),
-        rowEntryShift: shifts[frameIndex]!,
+        result: probed?.results[frameIndex] ?? ((abiFunction.outputs?.length ?? 0) === 0 ? new Uint8Array()
+          : unit.precomputedReturnCommitment ?? await host.deriveFrameResult(unit, abiFunction, unit.functionArgs)),
+        rowEntryShift: spec.rowEntryShift,
       });
     }
     physical.blockInputs = inputs;
@@ -387,7 +462,7 @@ export async function consolidateDirectCallBatches(
     physical.dataNftUtxos = [...dataRecords];
     physical.requiredDataNftIndices = dataRecords.map((_, nftIndex) => nftIndex);
     physical.returnEventInBlock = true;
-    physical.callBatch = { frames, recordOffset };
+    physical.callBatch = { frames, recordOffset, ...(probed && { dataCommitments: probed.dataCommitments }) };
     physical.precomputedReturnCommitment = frames[0]!.result;
     for (const index of indices) {
       const group = groups[index]!;
@@ -414,6 +489,95 @@ export function isCallBatchMember(
   return group?.callBatchUnit?.physical !== undefined && group.callBatchUnit.physical !== index;
 }
 
+type FrameCall = Pick<DirectCallBatchFrame, 'abiFunction' | 'args' | 'rowEntryShift'>;
+
+/** A frame's ABI arguments: its visible ones, the output its record sits at and its entries' shift. */
+function frameAbiArgs(frame: FrameCall, recordIndex: number): FunctionArgument[] {
+  let visible = 0;
+  return frame.abiFunction.inputs.map((input): FunctionArgument => {
+    if (input.name === RETURN_OUTPUT_INDEX) return BigInt(recordIndex);
+    if (input.name === ROW_ENTRY_SHIFT) return frame.rowEntryShift;
+    if (input.name.startsWith('__internal__')) return defaultInternalFunctionArg(input);
+    return frame.args[visible++] as FunctionArgument;
+  });
+}
+
+/**
+ * Run a multi-call spend of `contract` alone, its master at input 0, and read what it settles: each frame's
+ * result from the record it pins, and the data records the entry leaves from its final pins. A failed pin names
+ * the value it expected, so the probe learns them one at a time until the spend passes.
+ */
+function probeCallBatch(
+  contract: Contract, inputs: readonly UnlockableUtxo[], frames: readonly FrameCall[], recordOffset: number,
+  dataRecordCount: number, unsupported: (detail: string) => Error,
+): { results: Uint8Array[]; dataCommitments: string[] } {
+  const master = inputs[0]!;
+  const category = master.token?.category;
+  if (category === undefined) throw unsupported('its master carries no token');
+  const unlocker = contract.createCallBatchUnlocker(frames.map((frame, frameIndex) => ({
+    abiFunction: frame.abiFunction, args: frameAbiArgs(frame, recordOffset + frameIndex),
+  })));
+  // The entry's pushes do not depend on the transaction.
+  const unlocking = unlocker.generateUnlockingBytecode({} as GenerateUnlockingBytecodeOptions);
+  // Only the master runs: every other input contributes its lock and token.
+  const probeInputs: UnlockableUtxo[] = inputs.map((input, index) => {
+    const lock = input.unlocker.generateLockingBytecode();
+    return { ...input, unlocker: index === 0 ? unlocker : {
+      generateLockingBytecode: (): Uint8Array => lock, generateUnlockingBytecode: (): Uint8Array => new Uint8Array(),
+    } };
+  });
+  const records = frames.map(() => '');
+  const data = inputs.slice(1, 1 + dataRecordCount).map((input) => input.token?.nft?.commitment ?? '');
+  const program = (): Parameters<typeof evaluateProbeTrace>[1] => {
+    const outputs: Output[] = probeInputs.map((input, index): Output => {
+      const lock = input.unlocker.generateLockingBytecode();
+      if (index >= recordOffset) {
+        return { to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS, token: {
+          amount: 0n, category, nft: { capability: 'none', commitment: records[index - recordOffset]! },
+        } };
+      }
+      if (index >= 1 && index <= dataRecordCount && input.token?.nft !== undefined) {
+        return { to: lock, amount: input.satoshis, token: {
+          ...input.token, nft: { ...input.token.nft, commitment: data[index - 1]! },
+        } };
+      }
+      return { to: lock, amount: input.satoshis, ...(input.token && { token: input.token }) };
+    });
+    const transaction = {
+      version: 2,
+      locktime: 0,
+      inputs: probeInputs.map((input, index) => ({
+        outpointTransactionHash: hexToBin(input.txid), outpointIndex: input.vout, sequenceNumber: 0xffffffff,
+        unlockingBytecode: index === 0 ? unlocking : new Uint8Array(),
+      })),
+      outputs: outputs.map(solidCashOutputToLibauthOutput),
+    };
+    return { inputIndex: 0, sourceOutputs: generateLibauthSourceOutputs(probeInputs), transaction };
+  };
+  for (let round = 0; round <= frames.length + dataRecordCount; round += 1) {
+    const trace = evaluateProbeTrace(contract.provider, program());
+    let learned = false;
+    const learn = (values: string[], index: number, outputIndex: number): void => {
+      const expected = extractExpectedOutputCommitmentFromTrace(trace, outputIndex, values[index]!);
+      if (expected === undefined || expected === values[index]) return;
+      values[index] = expected;
+      learned = true;
+    };
+    records.forEach((_, frameIndex) => learn(records, frameIndex, recordOffset + frameIndex));
+    data.forEach((_, nftIndex) => learn(data, nftIndex, 1 + nftIndex));
+    if (!learned) break;
+  }
+  const vm = createVirtualMachineBch2026ForProvider(contract.provider);
+  const outcome = vm.stateSuccess(vm.evaluate(program()));
+  if (outcome !== true) throw unsupported(`a probe of the spend fails (${String(outcome)})`);
+  const results = records.map((record, frameIndex) => {
+    const raw = parseCallRecord(hexToBin(record))?.raw;
+    if (raw === undefined) throw unsupported(`frame ${frameIndex} pins no inline result`);
+    return raw;
+  });
+  return { results, dataCommitments: data };
+}
+
 /**
  * The multi-call entry's unlocker for a consolidated batch. Frame k's record index is its master input's index plus
  * the record slot's offset, so the unlocking bytecode follows the input it is generated for.
@@ -422,18 +586,9 @@ export function directCallBatchUnlocker(group: ExternalCallUtxoGroup): ContractU
   const contract = group.externalContract.inner as Contract;
   const batch = group.callBatch!;
   const unlockerAt = (masterInputIndex: number): ContractUnlocker => contract.createCallBatchUnlocker(
-    batch.frames.map((frame, frameIndex) => {
-      let visible = 0;
-      return {
-        abiFunction: frame.abiFunction,
-        args: frame.abiFunction.inputs.map((input): FunctionArgument => {
-          if (input.name === RETURN_OUTPUT_INDEX) return BigInt(masterInputIndex + batch.recordOffset + frameIndex);
-          if (input.name === ROW_ENTRY_SHIFT) return frame.rowEntryShift;
-          if (input.name.startsWith('__internal__')) return defaultInternalFunctionArg(input);
-          return frame.args[visible++] as FunctionArgument;
-        }),
-      };
-    }),
+    batch.frames.map((frame, frameIndex) => ({
+      abiFunction: frame.abiFunction, args: frameAbiArgs(frame, masterInputIndex + batch.recordOffset + frameIndex),
+    })),
   );
   return {
     ...unlockerAt(0),

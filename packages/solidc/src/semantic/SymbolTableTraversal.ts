@@ -4515,13 +4515,17 @@ export default class SymbolTableTraversal extends AstTraversal {
           // record; any other looped call whose result is read would read records its callee never pinned.
           const readsResult = (slot: ExternalCallSlot, call: ExternalFunctionCallNode): boolean => (call.opaqueReturn
             ? !call.discardedOpaqueReturn && !call.unreadOpaqueReturn : slot.hasReturnValues === true);
+          const inLoop = (slot: ExternalCallSlot): boolean => slot.sourceCallNode !== undefined
+            && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode));
           const groupedSlots = new Set(knownRepeated.flat());
           const loopedCalls = directConvention ? logicalCallSlots.filter((slot) => !groupedSlots.has(slot)
             && !slot.loopArrayVar && slot.sourceCallNode !== undefined && readsResult(slot, slot.sourceCallNode)
-            && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode)))
-            .map((slot) => [slot]) : [];
+            && inLoop(slot)).map((slot) => [slot]) : [];
+          if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values(), inLoop);
+          // An entry's repeated or looped call reads its own record only as a numbered frame.
           const refusedRepeated = directConvention
-            ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)))
+            ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)
+              && (!node.isEntryPoint || slot.callOrdinal !== undefined)))
             : knownRepeated;
           // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
           // the selected contract require a graph route; enforce the opt-out on reachable functions only.
@@ -4535,8 +4539,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
               + (directConvention
                 ? 'A UTXO master can be spent only once, and the direct convention runs several calls in one spend '
-                  + 'only through the callee\'s multi-call entry, whose calls are view or pure, return values and '
-                  + 'name a fixed method of a fixed target; this transaction cannot be built with '
+                  + 'only through the callee\'s multi-call entry, whose calls are regular and value-free, name a '
+                  + 'fixed method of a fixed target and pass every argument their records digest; this transaction '
+                  + 'cannot be built with '
                 : 'A UTXO master can be spent only once, so this transaction cannot be built with ')
               + (messageBusAutoNarrowed
                 ? 'the automatic direct path: the automatic selection did not read the repeated call as a '
@@ -4546,7 +4551,6 @@ export default class SymbolTableTraversal extends AstTraversal {
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }
-          if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values());
           // V1 permits exactly one repeated callee group in a root invocation. A framed master carries one call
           // record per call and gives each call its own frame, so it has nothing to collapse: its sites are the
           // calls themselves and each binds its own descriptor.
@@ -11872,18 +11876,16 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * True when a direct call can run as a frame of its callee's multi-call entry: a fixed method of a fixed target,
-   * declared view or pure, whose result its record binds by the arguments the call names.
+   * True when a direct call can run as a frame of its callee's multi-call entry: a regular, value-free call to one
+   * fixed method of a fixed target, whose record binds it by the arguments the call names.
    */
   private isDirectFrameCall(slot: ExternalCallSlot): boolean {
-    if (!slot.hasReturnValues || slot.opaqueReturn || slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector
+    if (slot.opaqueReturn || slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector
       || slot.selectorArrayVar || slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf
       || slot.callValueEffect || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return false;
     const iface = this.interfaceMap.get(slot.interfaceName);
     const methods = iface ? this.getAllInterfaceFunctions(iface).filter((fn) => fn.name === slot.functionName) : [];
-    if (methods.length !== 1 || (methods[0].stateMutability !== 'view' && methods[0].stateMutability !== 'pure')) {
-      return false;
-    }
+    if (methods.length !== 1) return false;
     // Frames are told apart by their records' digests: a call leaving its arguments to the callee digests none.
     return slot.sourceCallNode === undefined || namesCallRecordArguments(
       methods[0].parameters.map((parameter) => parameter.type), slot.sourceCallNode.parameters.length,
@@ -11894,18 +11896,25 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Gives each call of an entry to a callee it calls several times the ordinal of its frame in the callee's one
    * spend. Straight-line calls take 0, 1, .. in execution order (`sourceEffectOrdinal`); a group with a looped or
    * conditional call counts at run time instead. A zero-argument readonly alias shares the first one's run, record
-   * and ordinal.
+   * and ordinal. A void call of a group reads its frame's record, `digest || 0x01`, through a return slot.
    */
-  private assignDirectCallOrdinals(groups: Iterable<ExternalCallSlot[]>): void {
+  private assignDirectCallOrdinals(
+    groups: Iterable<ExternalCallSlot[]>, inLoop: (slot: ExternalCallSlot) => boolean,
+  ): void {
     let group = 0;
     for (const calls of groups) {
       if (!calls.every((slot) => this.isDirectFrameCall(slot))) continue;
-      const looped = calls.some((slot) => slot.sourceCallNode !== undefined
-        && this.loopNestedExternalCalls.has(slot.sourceCallNode));
+      const looped = calls.some(inLoop);
       if (calls.length < 2 && !looped) continue;
       // Its record binds each call's method: the callee's input may run the multi-call entry, whose selector is no
       // method's, so the call checks no selector there.
-      for (const slot of calls) slot.needsSelectorVerification = false;
+      for (const slot of calls) {
+        slot.needsSelectorVerification = false;
+        if (!slot.hasReturnValues) {
+          slot.hasReturnValues = true;
+          slot.voidCallRecord = true;
+        }
+      }
       if (looped || calls.some((slot) => slot.condition !== undefined)) {
         for (const slot of calls) slot.callOrdinal = { group, counted: true };
       } else {

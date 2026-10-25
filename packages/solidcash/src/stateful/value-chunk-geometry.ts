@@ -39,6 +39,8 @@ export function groupOwnsInBlockReturnEvent(
   // single physical returnEvent cannot represent a multi-part result family.
   const logicalOwner = groups[child.fusedReturnGroupIndex ?? groupIdx] ?? child;
   if ((logicalOwner.loopReturnCommitments?.length ?? 0) > 1) return false;
+  // Each frame of a multi-call spend reads its own record slot: only the spending unit stands for frame 0's.
+  if (child.callBatchUnit !== undefined) return groupIdx === physicalIdx;
   const writesState = (group: InBlockReturnGroup): boolean => {
     // A fused group's logical name can describe a later writer, while this group's own function is a view.
     // Use the source ABI of this callsite first; `__forward` is only a proxy dispatcher, not its effect.

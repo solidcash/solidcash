@@ -2,8 +2,9 @@
  * phase-boundary extract: SC _createBuilder extract — pre-allocate shared signer funders for nested B blocks.
  */
 
-import type { ExternalCallAbi } from '@solidcash/utils';
+import type { ExternalCallAbi, FunctionBlockLayout } from '@solidcash/utils';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import { callBatchFrameLayout } from './direct-call-batch.js';
 
 export type CreateBuilderSharedFunderExternalCall = {
   functionName?: string;
@@ -55,7 +56,7 @@ export async function allocateCreateBuilderSharedFunders(
       totalBFunders += 1;
     }
     const bAbiFunc = bArt.abi.find((f) => f.name === (ci.functionName ?? ecSlot.functionName));
-    const bLayout = bAbiFunc?.blockLayout;
+    const bLayout = callBatchFrameLayout(bAbiFunc?.blockLayout as FunctionBlockLayout | undefined, ecSlot);
     if (!bLayout) continue;
     const fullBlockKinds = new Set(
       ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'returnEvent',

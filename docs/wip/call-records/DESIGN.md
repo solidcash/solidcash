@@ -71,7 +71,8 @@ A direct return carrier becomes a call record (as built):
   a standalone run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch:
   false`, when the contract with it would not leave a tenth of the per-input limit (at most 10,000 bytes). Message-bus
   compiles carry none: the bus runs repeated calls as rows, and the conventions stay separate: a direct caller is
-  never turned into a bus composition. Callers that lay ordinals other than 0: section 4.
+  never turned into a bus composition. Callers that lay ordinals other than 0, their void and state-changing calls
+  among them: section 4.
 
 ## 4. The caller
 
@@ -99,10 +100,16 @@ A direct return carrier becomes a call record (as built):
   checks no selector on the callee's input (`needsSelectorVerification: false`): its record's digest binds the method,
   and that input runs the multi-call entry. A counted call in a loop, which has no epilogue, checks its callee's
   identity at its master index and its record's carrier form where it runs, and reads the record at its return index
-  plus its ordinal. Only calls declared view or pure, returning values, regular, value-free and to a fixed method form
-  groups; any other repeated callee stays refused (`MESSAGE_BUS_REQUIRED`, worded after the multi-call entry's
-  limits). A looped returning call to a fixed target repeats its callee too: one that cannot be a frame is refused
-  (`76d31b1ce`; before, it compiled, and every iteration after the first read a record its callee never pinned).
+  plus its ordinal. Calls that are regular, value-free, to one fixed method and name every argument their records
+  digest form groups, readonly or state-changing, returning or void (phase 4). A void call of a group takes a return
+  witness of its own and requires its record to be `digest || 0x01`, the inline form of an empty result; in a loop it
+  checks the callee and the carrier where it runs, otherwise the epilogue checks the carrier. A lone void call outside
+  a loop keeps its standalone spend and its bytes. Any other repeated callee stays refused (`MESSAGE_BUS_REQUIRED`,
+  worded after the multi-call entry's limits). A looped call to a fixed target repeats its callee too, so it is a
+  counted group of one; a looped call that reads a result and gets no ordinal, because it can be no frame or its target
+  is computed, is refused (`76d31b1ce`, `08d816ded`; before, it compiled, and every iteration after the first read a
+  record its callee never pinned). A looped void call compiled unbound before phase 4 (1,206 B for one `add(i)` loop);
+  it reads its frames' records now (1,424 B).
   A multi-contract compile (`compileStringMulti`, `compileFileMulti`) gives a contract implementing a grouped call's
   interface (named as a base, or declaring its methods) the multi-call entry unless `callBatch` is stated.
   Computed, array and pointer targets keep ordinal 0. Test: `packages/solidc/test/DirectCallOrdinals.test.ts`.
@@ -121,8 +128,8 @@ A direct return carrier becomes a call record (as built):
 - Framed: unchanged. It already binds `argsHash` and `result`.
 - Bus: unchanged. A route keeps its aggregate result carrier and pins no record; graph handlers read rows as before.
   Repeated returning calls go through the composer, which binds them per row.
-- With `messageBus: false` stated explicitly, repeated readonly calls run through the callee's multi-call entry
-  (section 4) and never build a bus batch; a repeated state-changing callee stays refused (`MESSAGE_BUS_REQUIRED`).
+- With `messageBus: false` stated explicitly, repeated calls run through the callee's multi-call entry (section 4)
+  and never build a bus batch; a repeated callee whose calls can be no frame stays refused (`MESSAGE_BUS_REQUIRED`).
   The automatic mode turns the bus on for such a function, as before.
 
 ## 7. SDK
@@ -147,10 +154,16 @@ A direct return carrier becomes a call record (as built):
   distance past their slots; a frame reading entries an earlier frame reads shares their inputs. Every other call of
   the group is a member: it names the same master and reads its frame's record at the batch's first record plus its
   ordinal (0 in a loop, which adds the counter), and lays no record. Frame k's record is `callRecordCommitment(result,
-  digest(fn, args, k))`, the result taken from the frame's own probe; a frame that writes state is refused here
-  until its probe runs on the records the frames before it left. A group reaching one call keeps the standalone
-  spend with that call's own arguments. A callee without the entry is refused, naming `callBatch: true` and the
-  multi-contract compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
+  digest(fn, args, k))`. While every frame preserves state, the result comes from the frame's own probe. Once one
+  writes, frame k runs on the records the frames before it left, so the SDK runs the spend itself as a probe, its
+  master alone at input 0: each pin it fails names the value it expects, so it learns every frame's record, then the
+  records the entry leaves, which the batch block's data-record outputs carry (`DirectCallBatch.dataCommitments`). A
+  void frame's record is `digest || 0x01`; its entry's layout has no record slot, so its unit takes one past the
+  layout (`callBatchFrameLayout`). A group reaching a void call always runs as a multi-call spend, since a standalone
+  void run pins no record; a group reaching one returning call keeps the standalone spend with that call's own
+  arguments. In a group whose calls change state, a loop bound, condition or argument that reads one of the group's
+  own results is refused, since the frames are planned from standalone results. A callee without the entry is
+  refused, naming `callBatch: true` and the multi-contract compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
   builds a bus batch (`buildRepeatedExternalBatch`), never reads through the composer, and is never promoted at send.
 
 ## 8. Cost and compatibility

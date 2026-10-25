@@ -13,6 +13,7 @@ import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, parseChunkCommitment } from '@solidc
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
+import { callBatchFrameLayout } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   selectGraphBlockhashReads,
@@ -179,7 +180,7 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // Build B's full block inputs when B's function has entries/events/transfers
   const bSc = callInfo.externalContract;
   const bAbiFunc = compilerRoute?.abiFunction ?? selectedConcreteAbi;
-  const bBlockLayout = bAbiFunc?.blockLayout;
+  const bBlockLayout = callBatchFrameLayout(bAbiFunc?.blockLayout, ec);
   const directDynamicWrites = new Set(compilerRoute ? [] : bAbiFunc?.dynamicWrites ?? []);
   const bDynamicChunkInputs = bStatelayout.variables
     .filter((variable) => variable.dynamic && directDynamicWrites.has(variable.name))

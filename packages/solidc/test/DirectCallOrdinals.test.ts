@@ -123,40 +123,82 @@ describe('direct call ordinals', () => {
     expect(TotalReader.bytecode).not.toContain(`0200${selector('totalOf')}`);
   });
 
-  it('still refuses a repeated state-changing call, naming the multi-call entry\'s limits', () => {
+  it('numbers repeated state-changing calls as frames, a void one reading `digest || 0x01`', () => {
+    const writer = compileString(WRITER, { messageBus: false, suppressWarnings: true });
+    expect(calls(writer, 'twice').map((call) => [call.functionName, call.callOrdinal, call.hasReturnValues,
+      call.needsSelectorVerification, call.returnTypes])).toEqual([
+      ['setTotal', { group: 0, ordinal: 0 }, true, false, undefined],
+      ['setTotal', { group: 0, ordinal: 1 }, true, false, undefined],
+    ]);
+    expect(writer.messageBus).toBeUndefined();
+    // Each digests its own ordinal and reads its record at a return witness of its own.
+    expect(writer.bytecode).toContain(`0000${selector('setTotal')}`);
+    expect(writer.bytecode).toContain(`0100${selector('setTotal')}`);
+    expect(fn(writer, 'twice').inputs.map((input) => input.name).filter((name) => name.includes('ReturnOutput')))
+      .toEqual(['__internal__externalReturnOutputIdx0', '__internal__externalReturnOutputIdx1']);
+    // A lone void call keeps its standalone spend: it reads no record.
+    const lone = compileString(WRITER.replace('IBook(book).setTotal(a + 1);', ''),
+      { messageBus: false, suppressWarnings: true });
+    expect(calls(lone, 'twice').map((call) => [call.callOrdinal, call.hasReturnValues]))
+      .toEqual([[undefined, undefined]]);
+    expect(lone.bytecode).not.toContain(`0000${selector('setTotal')}`);
+    expect(fn(lone, 'twice').inputs.some((input) => input.name.includes('ReturnOutput'))).toBe(false);
+  });
+
+  it('still refuses a repeated call that cannot be a frame, naming the multi-call entry\'s limits', () => {
     let message = '';
     try {
-      compileString(WRITER, { messageBus: false, suppressWarnings: true });
+      compileString(`pragma solidcash >=0.8.0;
+interface IPaid { function pay(bigint by) external payable returns (bigint); }
+contract Payer(address paid) {
+  bigint last;
+  function twice() public { this.last = IPaid(paid).pay{value: 1000}(1) + IPaid(paid).pay(2); }
+}`, { messageBus: false, suppressWarnings: true });
     } catch (error) {
       message = (error as Error).message;
     }
-    expect(message).toMatch(/MESSAGE_BUS_REQUIRED.*\(IBook\.setTotal -> IBook\.setTotal\)/);
-    expect(message).toMatch(/multi-call entry, whose calls are view or pure, return values and name a fixed method/);
-    expect(message).toMatch(/of a fixed target; this transaction cannot be built with `messageBus: false`\.$/);
+    expect(message).toMatch(/MESSAGE_BUS_REQUIRED.*\(IPaid\.pay -> IPaid\.pay\)/);
+    expect(message).toMatch(/multi-call entry, whose calls are regular and value-free, name a fixed method of a /);
+    expect(message).toMatch(/fixed target and pass every argument their records digest; this transaction cannot be /);
+    expect(message).toMatch(/built with `messageBus: false`\.$/);
     expect(message).not.toMatch(/omit the option/);
   });
 
-  it('refuses a looped call that reads a result unless it runs as a frame or its target changes per iteration', () => {
-    // The callee master is spent once and pins one record: further iterations would read records it never pinned.
+  it('counts a looped state-changing call as frames and refuses a looped call that can be no frame', () => {
+    // The callee master is spent once: each iteration reads the record of its own frame of the callee's spend.
     const looped = (body: string): string => `pragma solidcash >=0.8.0;
 interface ICounter { function inc(bigint by) external returns (bigint); }
+interface IPaid { function pay(bigint by) external payable returns (bigint); }
 contract LoopedWriter(address counter) {
   bigint last;
   bytes stored;
   function one(bigint by) internal returns (bigint) { return ICounter(counter).inc(by); }
   function run(bigint n, bool take, address other, address[] all) public { bigint acc = 0; ${body} this.last = acc; }
 }`;
-    const bodies = [
+    const counted = [
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(counter).inc(i); }',
       'bigint i = 0; while (i < n) { acc = acc + ICounter(counter).inc(i); i = i + 1; }',
       'for (bigint i = 0; i < n; i = i + 1) { if (take) { acc = acc + ICounter(counter).inc(i); } }',
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + one(i); }',
       'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(this.stored).inc(i); }',
-      'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(take ? counter : other).inc(i); }',
     ];
-    for (const body of bodies) {
+    for (const body of counted) {
+      const artifact = compileString(looped(body), { messageBus: false, suppressWarnings: true });
+      expect(calls(artifact, 'run').map((call) => [call.functionName, call.callOrdinal]), body)
+        .toEqual([['inc', { group: 0, counted: true }]]);
+      // With no epilogue, the looped call checks its record's carrier where it runs.
+      expect(artifact.bytecode, body).toContain('OP_TUCK OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY');
+    }
+    // A loop-invariant computed target and a value call can be no frame.
+    const ternary = 'for (bigint i = 0; i < n; i = i + 1) { acc = acc + ICounter(take ? counter : other).inc(i); }';
+    for (const [body, chain] of [
+      [ternary, 'ICounter\\.inc'],
+      ['for (bigint i = 0; i < n; i = i + 1) { acc = acc + IPaid(counter).pay{value: 1000}(i); }', 'IPaid\\.pay'],
+    ] as const) {
       expect(() => compileString(looped(body), { messageBus: false, suppressWarnings: true }), body)
-        .toThrow(/MESSAGE_BUS_REQUIRED.*\(ICounter\.inc\).*cannot be built with `messageBus: false`\.$/);
+        .toThrow(new RegExp(`MESSAGE_BUS_REQUIRED.*\\(${chain}\\).*cannot be built with \`messageBus: false\`\\.$`));
+    }
+    for (const body of [...counted, ternary]) {
       // The bus binds each row; a lone call stays a direct call bound by its record.
       expect(() => compileString(looped(body), { messageBus: true, suppressWarnings: true }), body).not.toThrow();
     }

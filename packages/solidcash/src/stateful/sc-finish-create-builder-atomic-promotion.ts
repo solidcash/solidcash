@@ -86,7 +86,7 @@ export function finishCreateBuilderAtomicPromotion(params: {
       && !isBusCompiledEntry(rootArtifact, rootNode.selector)) {
       throw new Error(`${rootArtifact.contractName}.${functionName}() reaches one state owner more than once `
         + 'through the calls its callees make. A direct compile runs repeated calls only through a callee\'s '
-        + 'multi-call entry, for the view or pure calls a caller makes itself, and is never composed on the '
+        + 'multi-call entry, for the calls a caller makes itself, and is never composed on the '
         + 'message bus.');
     }
     const unrouteableNodes = orderedNodes.flatMap((node) => {

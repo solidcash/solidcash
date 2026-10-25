@@ -3130,6 +3130,8 @@ export interface ExternalCallSlot {
    * time or counted at run time by the group's counter (docs/wip/call-records/DESIGN.md, section 4). Absent: 0.
    */
   callOrdinal?: ExternalCallOrdinalAbi;
+  /** A grouped void call: it reads its frame's record, `digest || 0x01`, through a return slot of its own. */
+  voidCallRecord?: boolean;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;

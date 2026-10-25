@@ -122,7 +122,41 @@ const COORDINATOR = `${PRAGMA}interface ISink { function echo(uint16 value) exte
     }
   }`;
 
+const COUNTER = `${PRAGMA}contract Counter {
+    uint256 count;
+    function inc() public returns (uint256) { count = count + 1; require(true); return count; }
+    function add(uint256 value) public { count = count + value; require(true); }
+    function get() public view returns (uint256) { return count; }
+  }`;
+
+const TALLY = `${PRAGMA}interface ICounter {
+    function inc() external returns (uint256);
+    function add(uint256 value) external;
+    function get() external view returns (uint256);
+  }
+  contract Tally(address counter) {
+    uint256 public total;
+    function tally(uint256 n) public {
+      uint256 acc = 0;
+      for (uint256 i = 0; i < n; i = i + 1) { acc = acc + ICounter(counter).inc(); }
+      total = acc;
+      require(true);
+    }
+    function bump(uint256 a, uint256 b) public {
+      ICounter(counter).add(a);
+      ICounter(counter).add(b);
+      total = ICounter(counter).get();
+      require(true);
+    }
+    function fill(uint256 n) public {
+      for (uint256 i = 0; i < n; i = i + 1) { ICounter(counter).add(i + 1); }
+      total = total + n;
+      require(true);
+    }
+  }`;
+
 type Provider = ReturnType<typeof createTestProvider>;
+type LibauthTransaction = ReturnType<TransactionBuilder['buildLibauthTransaction']>;
 
 async function deploy(
   provider: Provider, artifact: Artifact, args: Uint8Array[], state: Record<string, bigint>,
@@ -137,14 +171,25 @@ async function deploy(
 
 const lockOf = (contract: { inner: { lockingBytecode: string } }): Uint8Array => hexToBin(contract.inner.lockingBytecode);
 
-const vmAccepts = (builder: TransactionBuilder): boolean => {
+/** Each input's VM outcome, after `mutate` changes the transaction. */
+const vmOutcomes = (
+  builder: TransactionBuilder, mutate?: (transaction: LibauthTransaction) => void,
+): Array<true | string> => {
   const transaction = builder.buildLibauthTransaction();
+  mutate?.(transaction);
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
-  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+  return transaction.inputs.map((_input, inputIndex) => vm.stateSuccess(
     vm.evaluate({ inputIndex, sourceOutputs, transaction }),
-  ) === true);
+  ));
 };
+
+const vmAccepts = (builder: TransactionBuilder): boolean => vmOutcomes(builder).every((outcome) => outcome === true);
+
+/** The outputs of the call records of `categoryId`, in output order. */
+const recordOutputs = (transaction: LibauthTransaction, categoryId: string): LibauthTransaction['outputs'] => transaction
+  .outputs.filter((output) => output.token !== undefined && binToHex(output.token.category) === categoryId
+    && output.token.nft?.capability === 'none' && binToHex(output.lockingBytecode) === '51');
 
 /** The entries the inputs spending `contractName`'s master run, in input order. */
 const masterSpends = (builder: TransactionBuilder, contractName: string): string[] => builder.inputs.flatMap(
@@ -314,5 +359,81 @@ describe('direct multi-call', () => {
 
     await pairs.call.pairs(2n).send();
     expect((await pairs.getState()).last).toBe(1324n);
+  }, 300_000);
+
+  /** A Counter with the multi-call entry, its count at 0, and a Tally calling it. */
+  async function tallied(): Promise<{ counter: any; tally: any; counterArtifact: Artifact; tallyArtifact: Artifact }> {
+    const provider = createTestProvider();
+    const counterArtifact = compileString(COUNTER, CALLEE);
+    expect(counterArtifact.callBatch).toEqual(CALL_BATCH);
+    const counter = await deploy(provider, counterArtifact, [], { count: 0n });
+    const tallyArtifact = compileString(TALLY, DIRECT);
+    expect(tallyArtifact.messageBus).toBeUndefined();
+    const tally = await deploy(provider, tallyArtifact, [lockOf(counter)], { total: 0n }, { ICounter: counter });
+    return { counter, tally, counterArtifact, tallyArtifact };
+  }
+
+  it('(h) runs a looped state-changing call as frames: acc += inc() three times gives 6, the callee 3', async () => {
+    const { counter, tally, tallyArtifact } = await tallied();
+    expect(tallyArtifact.abi.find((fn) => fn.name === 'tally')!.externalCalls!
+      .map((call) => [call.functionName, call.callOrdinal])).toEqual([['inc', { group: 0, counted: true }]]);
+
+    // inc(), inc(), inc() are the three frames of one spend: records 1, 2 and 3, each on the count the one before left.
+    const builder = await tally.call.tally(3n).build() as TransactionBuilder;
+    expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
+    expect(records(builder, counter.categoryId)).toBe(3);
+    expect(busInputs(builder)).toEqual([]);
+    const master = builder.inputs.findIndex((input) => 'contract' in input.unlocker
+      && input.unlocker.abiFunction.name === 'callBatch');
+    expect(master).toBeGreaterThanOrEqual(0);
+    expect(vmAccepts(builder)).toBe(true);
+    // A record of the callee's category answering frame 1 with another result: the callee refuses it.
+    const forged = vmOutcomes(builder, (transaction) => {
+      const nft = recordOutputs(transaction, counter.categoryId)[1]!.token!.nft!;
+      nft.commitment = Uint8Array.of(...nft.commitment.slice(0, -1), nft.commitment.at(-1)! ^ 1);
+    });
+    expect(forged[master]).not.toBe(true);
+
+    await tally.call.tally(3n).send();
+    expect((await tally.getState()).total).toBe(6n);
+    expect((await counter.getState()).count).toBe(3n);
+  }, 300_000);
+
+  it('(i) runs two void calls and a read in one spend', async () => {
+    const { counter, tally, counterArtifact, tallyArtifact } = await tallied();
+    expect(tallyArtifact.abi.find((fn) => fn.name === 'bump')!.externalCalls!
+      .map((call) => [call.functionName, call.callOrdinal])).toEqual([
+      ['add', { group: 0, ordinal: 0 }], ['add', { group: 0, ordinal: 1 }], ['get', { group: 0, ordinal: 2 }],
+    ]);
+
+    const builder = await tally.call.bump(2n, 5n).build() as TransactionBuilder;
+    expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
+    // A void frame's record is the digest of its call and the inline form of an empty result.
+    const add = counterArtifact.abi.find((fn) => fn.name === 'add')!;
+    const voidRecord = (value: bigint, ordinal: number): string => `${binToHex(callRecordDigest(
+      add, add.inputs.map((input) => (input.name === 'value' ? value : 0n)), {}, ordinal,
+    )!)}01`;
+    const commitments = recordCommitments(builder, counter.categoryId).map((record) => binToHex(record));
+    expect(commitments).toHaveLength(3);
+    expect(commitments.slice(0, 2)).toEqual([voidRecord(2n, 0), voidRecord(5n, 1)]);
+    expect(busInputs(builder)).toEqual([]);
+    expect(vmAccepts(builder)).toBe(true);
+
+    await tally.call.bump(2n, 5n).send();
+    expect((await tally.getState()).total).toBe(7n);
+    expect((await counter.getState()).count).toBe(7n);
+  }, 300_000);
+
+  it('(j) runs a looped void call through the multi-call entry, even for one iteration', async () => {
+    const { counter, tally } = await tallied();
+    for (const [n, count] of [[1n, 1n], [2n, 4n]] as const) {
+      const builder = await tally.call.fill(n).build() as TransactionBuilder;
+      expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
+      expect(records(builder, counter.categoryId)).toBe(Number(n));
+      expect(vmAccepts(builder)).toBe(true);
+      await tally.call.fill(n).send();
+      expect((await counter.getState()).count).toBe(count);
+    }
+    expect((await tally.getState()).total).toBe(3n);
   }, 300_000);
 });

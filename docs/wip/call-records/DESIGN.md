@@ -89,7 +89,8 @@ A direct return carrier becomes a call record (as built):
 - Arguments are digested from copies of the call's argument expressions, so no final use is consumed.
 - A call naming fewer arguments than its method digests (`IFoo(a).f()` for `f(pubkey, sig)`) leaves them to the
   callee's own witness: it reads its record with no digest check, bound by the carrier's category and the callee's
-  run, and is no frame of a multi-call spend (before 2026-10-24 its compile threw in `cloneNode`).
+  run, and is no frame of a multi-call spend (before 2026-10-24 its compile threw in `cloneNode`). The arguments it
+  names are checked against the callee's unlocking pushes, as are a void call's (`0b94c0f13`, security ledger).
 - Repeated calls (phase 2, as built, direct compiles only): an entry that calls one fixed target (a parameter, a state
   variable or a literal, keyed with the interface) several times, or once in a loop, gives each call the ordinal of
   its frame in that callee's one multi-call spend, published as `callOrdinal: { group, ordinal }` on the external

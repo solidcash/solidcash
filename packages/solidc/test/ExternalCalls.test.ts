@@ -729,18 +729,20 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   });
 
   it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
-    const src = 'interface P { function swap(uint x) external; }'
-      + ' interface F { function pair(address a) external returns (P); }'
+    const src = (mutability: string): string => 'interface P { function swap(uint x) external; }'
+      + ` interface F { function pair(address a) external${mutability} returns (P); }`
       + ' contract C(F factory) { uint total;'
       + ' function step(address a, uint n) internal returns (uint result) {'
       + ' P p = factory.pair(a); p.swap(n);'
       + ' if (n == 0) result = n; else result = step(a, n - 1); }'
       + ' function run(address a, uint n) public {'
       + ' total = step(a, n); require(true); } }';
-    const artifact = compileString(src, { evmCompat: true, messageBus: false });
+    const artifact = compileString(src(' view'), { evmCompat: true, messageBus: false });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
     expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+    // The lowered loop repeats the lookup on one callee: a state-changing one would read records it never pinned.
+    expect(() => compileString(src(''), { evmCompat: true, messageBus: false })).toThrow(/MESSAGE_BUS_REQUIRED.*F\.pair/);
   });
 
   it('rewrites a cast receiver introduced by nested helpers inside a lowered tail loop', () => {

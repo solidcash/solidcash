@@ -964,28 +964,53 @@ needs VM evidence, `rejectedWith` has no source fallback).
   state-changing call to a fixed target runs as counted frames of the callee's multi-call spend, each iteration bound
   to its own frame's record, instead of being refused; a looped call that can be no frame stays refused. Test:
   `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts`.
+- **Blind-written record tag** (found 2026-10-25 reviewing the multi-call writer frames; accepted on master at the VM
+  for a direct entry, a standalone frame, a multi-call batch and a framed master). In a layout of two or more data
+  records, an entry that wrote every field of a record and read none never decoded that record's input, so its
+  nftIndex tag went unchecked: the data-NFT covenant reads no commitment, and the input pins hold only the record's
+  lock and category. A spender could lay a sibling record at that input; the sibling was consumed and replaced by a
+  record carrying the written record's tag, and the genuine record stayed unspent, duplicated. `a6e7307d6` requires a
+  rebuilt record's input to carry its tag unless a decode of that input already runs on every path to the rebuild
+  (about 9-22 B per blind write; partial writes, read-modify-write and single-record layouts keep their bytes). The
+  kernel route's journal pre-reads already check each written record's tag. Test:
+  `packages/solidc/test/BlindWriteRecordTag.test.ts`.
+- **Direct void call arguments** (found 2026-10-25, `0b94c0f13`). A direct entry's typed call bound its callee's
+  lock, master and method but its arguments only through the D50 record digest, so a call to a method returning
+  nothing, one naming fewer arguments than its method declares, and a returning call to a contract-typed target (no
+  selector to digest) left them free: `ISink(c).put(x)`, `put(x + 1)` and `put(7)` compiled to one caller, and a spender
+  could run the callee on other arguments beside a genuine caller run. The caller now checks each argument it names
+  against the unlocking that runs the call, from the redeem end after parsing every push from the first, in the
+  encoding the digest takes (`sig` arguments and the ones a call does not name stay free). It fails closed on a
+  non-script-hash lock, too few pushes or a redeem that drops a budget pad, and so on a call into a forwarding proxy,
+  whose frame names another input the caller cannot tie to the proxy. Callees and already-bound callers keep their
+  bytes; a one-call caller grows about 155 B, three calls sharing the helper about 213 B. D8's compat binding now
+  refuses a padded redeem too: it compared a one-argument payload with the pad, leaving the real argument free.
+  Test: `VoidCallArguments.test.ts` (a forged callee argument is refused by the caller's input, and the same
+  transaction with the caller agreeing is accepted).
 
 ### Not changed, by decision
 
 - Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), view/static
   calls in regular mode (kernel alignment). Typed calls binding only the selector: superseded by call records (D50),
-  below, for calls whose record digests their arguments; the others are open (below). The held callee-side return
-  binding `ce51b6f18`: superseded by D50.
+  below, for calls whose record digests their arguments, and by the caller's argument binding for the others (Fixed,
+  above; its residuals are open, below). The held callee-side return binding `ce51b6f18`: superseded by D50.
 - DX-9 in the bus, model B, D48, the opt-in `initializeAs: 'hop'` (SDKFRAMED-2), X1 (D11): user decisions.
 - `unsafe` tiers and an authorized upgrade's new code: by design.
 
 ### Open
 
-- Direct void call arguments (found 2026-10-25, source-traced and compile-checked). A direct entry's typed call to a
-  method that returns nothing binds the callee's lock, master and method (its unlocking's selector) but not the
-  arguments: a void run pins no record, and the caller reads nothing else of the callee's invocation. Under
-  `messageBus: false`, `ISink(c).put(x)`, `put(x + 1)` and `put(7)` compile to one caller bytecode. The direct entries
-  of message-bus artifacts (automatic mode and `messageBus: true`) are the same: only the bus route's emission binds
-  the arguments, and the SDK sends a single call through the direct entry. A spender can therefore run the callee's
-  method on other arguments beside a genuine caller run, for example sending a permissionless caller's
-  `deposit{value: v}(id)` to another `id`. Framed records and bus rows bind them. Fix in progress: the caller checks
-  the callee's unlocking pushes for the arguments it names, as D8 does for a compat raw call (callers only; a void
-  record in every void entry would cost about 150-200 B on a contract without returning entries).
+- Direct call argument binding, residuals (2026-10-25, `0b94c0f13`). A callee whose redeem drops a budget pad (a user
+  external library) and a forwarding proxy, whose frame names another input the caller cannot tie to the proxy,
+  refuse such calls instead of binding them (fail closed). A CREATE identity backed by a proxy (anchor witness `>= 0`)
+  is left to the compiler route it runs; a spender cannot take that branch for an ordinary target, whose anchor would
+  need the target's category at the target's lock. Loops, repeated or grouped calls, pointers, self calls and
+  `staticcall`/`call` modes are unchanged. Found beside it, method binding of a call no record digests (not changed;
+  beside presence-based `msg.sender`, F1, a spender can already make a callee run any method for a co-spent caller): a
+  single-function interface checks no selector, so a callee with more methods than its interface runs any of them; a
+  fallback runs where a short first push meets a multi-function callee, while the caller's selector check skips such a
+  push; with the anchor witness `>= 0` the selector compared is a witness. A void record pinned by the callee
+  (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract without returning
+  entries.
 
 - One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
   selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
@@ -1000,6 +1025,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   compute the D50 call digest, which made the compiler crash. Such a call now skips the digest check: its read is bound
   by the record's category and the callee's single run, and by the selector only for a multi-function callee, which is
   the pre-D50 binding. It cannot join a direct multi-call group, so a repeated callee with such a call stays refused.
+  The arguments it names are bound at the caller since `0b94c0f13` (Fixed, above).
 
 - A forwarder with neither `delegateForwarding` nor a low-level call slot (artifacts from before 2026-09) still
   places a direct delegate after its full block, which the delegate now refuses (`c1883fb8e`): fail-closed.

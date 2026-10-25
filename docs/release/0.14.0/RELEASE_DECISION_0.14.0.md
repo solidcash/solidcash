@@ -327,6 +327,36 @@ What this round changed:
   bytes) and the BchNative wrapper (7,580 to 7,421 bytes).
 - `a0883f157`: the if-convert byte-identity pins, as above.
 
+### The 2026-10-25 re-pin (master, after the 0.14.0-beta.1 cut)
+
+These security fixes landed on `master` after the 2026-10-24 verification. The release branch
+`release/0.14.0-beta.1` (`7fc4b156b`) does not carry them; each is recorded in
+`docs/security/security-audit-2026-10-16.md`:
+
+- In a direct compile, a looped call that reads a result and cannot run as a frame of its callee's multi-call spend
+  is refused (`76d31b1ce`, `f27311797`, `08d816ded`); before, every iteration after the first read a record the
+  callee, spent once, never pinned.
+- A direct call that no call record digests checks the arguments it names against its callee's unlocking
+  (`0b94c0f13`, `f6f38efd6`), and D8's compat binding refuses a padded redeem.
+- A blind-written data record's input must carry the record's tag (`a6e7307d6`).
+- Also landed: the direct multi-call writer and void frames (`94c2d3555`), for contracts that carry the multi-call
+  entry only.
+
+The argument binding changes the message-bus fixtures' direct entries, so the pins moved:
+
+| Pin | Old | New |
+|---|---|---|
+| `scripts/gate.sh` identity | `{"routeBytes":44865,"fullBytes":246609,"fullHash":"30c4f5a157f93e83"}` | `{"routeBytes":44865,"fullBytes":248241,"fullHash":"db972feff1d49396"}` |
+| kernel manifest, marketplace-v1 legacy | 44865 / 246609 / `30c4f5a1` | 44865 / 248241 / `db972fef` |
+| kernel manifest, marketplace-v1 kernel | 14850 / 308917 / `1305ee5e` | 14850 / 312137 / `948b0716` |
+| kernel manifest, unicrow-claim kernel | 1068 / 15869 / `74c05f87` | 1068 / 16251 / `3be25c17` |
+
+Measured from clean builds at `e4f80b5fa` (the argument binding alone) and `8081061fd` (with the tag check). The two
+agree, so the argument binding moves all four values and the tag check none. Route lengths, handler counts and the
+route-size screens are unchanged; the route hashes move. The fixture sources are untouched. With the re-pin
+(`f2da21c0e`), the kernel gate's cold-only check passes: source fingerprints matched, and each cold compile gave the
+pinned value in two fresh processes. The other release gates have not been re-run at this head.
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

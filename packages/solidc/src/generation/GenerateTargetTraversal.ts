@@ -2653,6 +2653,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * a batch hands it, or standalone its own records' commitments. Its state reads and writes go through them.
    */
   private callBatchRecordViews: boolean = false;
+  /** Per data record, the control paths (openControlPath) of the body's decodes of its input, which verify its tag. */
+  private recordInputDecodePaths = new Map<number, string[][]>();
   /** The selector dispatcher hands each entry it invokes its call record's prefix (CALL_RECORD_PREFIX). */
   private dispatchHandsCallPrefix: boolean = false;
   /** The dispatched entry this body traversal compiles, which finds its call record's prefix on top. */
@@ -9050,6 +9052,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // index (its length) accumulates across passes and the second pass reads a nonexistent block slot (2*i overflow).
     if (node.ecrecoverCompute) { node.ecrecoverArgParams = []; node.ecrecoverEvmFlags = []; }
     this.pendingStateWrites = new Map();
+    this.recordInputDecodePaths = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
     this.framedCallsMadeActive = false;
@@ -25774,6 +25777,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [.., data, idx] -> [..]
     }
 
+    // A typed call no record digest binds checks the arguments it names against its callee's unlocking.
+    if (batchRow === undefined && physicalSlot) {
+      const binding = this.directCallArgumentBinding(node, physicalSlot);
+      if (binding) this.emitDirectCallArgumentBinding(node, physicalSlot, binding, locationData);
+    }
+
     // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
@@ -27676,7 +27685,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(count + 1)), loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_2DROP, loc);                             // [data, a(n-1) .. a0]: '' and the redeem dropped
+    this.emit(Op.OP_DROP, loc);                              // [data, a(n-1) .. a0, redeem]
+    this.emitRedeemPadRefusal(loc);                          // [data, a(n-1) .. a0]
     this.emit(encodeInt(BigInt(count)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(4n), loc);
@@ -27759,6 +27769,203 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, loc);                     // [.., rest]
     }
     this.emit(Op.OP_DROP, loc);                              // [data]
+  }
+
+  /**
+   * The declared types of the arguments a direct typed call names, `undefined` for a `sig`, when no record digest
+   * binds them: a call to a method that returns nothing, one naming fewer arguments than its method declares, or a
+   * returning call whose record the caller does not digest (a contract-typed target). Loops, repeated or grouped
+   * calls, pointers, self calls and the bus are bound otherwise or out of scope.
+   */
+  private directCallArgumentBinding(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot,
+  ): { types: (Type | undefined)[] } | undefined {
+    const method = slot.calleeMethod;
+    if (method === undefined || !this.directConvention || node.opaqueReturn || slot.interfaceName === '__raw__'
+      || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
+    if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar || slot.loopArrayVar || slot.inlineLoopDispatch
+      || slot.batchInvocations || slot.addressIsSelf || slot.callOrdinal !== undefined) return undefined;
+    if (this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot) || this.isCompilerMessageBusRoute()
+      || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
+        && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
+    // A returning call whose record digests its arguments (emitCallerCallRecordDigest) is bound there.
+    if (slot.hasReturnValues && slot.callRecordSelector !== undefined
+      && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], node.parameters.length)) return undefined;
+    const types: (Type | undefined)[] = method.parameterTypes.slice(0, node.parameters.length)
+      .map((type) => (type === PrimitiveType.SIG ? undefined : type));
+    while (types.length > 0 && types[types.length - 1] === undefined) types.pop();
+    return types.length > 0 ? { types } : undefined;
+  }
+
+  /**
+   * Requires each argument `binding` names, encoded as its record digest would take it, to be the matching push of
+   * the unlocking that runs the call. A CREATE identity backed by a proxy runs it through the proxy's compiler route
+   * instead, which binds it there. The arguments are visited as copies, before that choice. Stack-neutral.
+   */
+  private emitDirectCallArgumentBinding(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot,
+    binding: { types: (Type | undefined)[] }, loc: SingleLocationData,
+  ): void {
+    const anchor = `__internal__extcallAnchorIdx${slot.slotIndex}`;
+    const anchored = this.getStackIndex(anchor, true) >= 0;
+    if (!anchored && this.currentFunction.parameters.some((parameter) => parameter.name === anchor)) return;
+    const named = new Map<number, string>();
+    binding.types.forEach((type, index) => {
+      if (type === undefined) return;
+      const argument = cloneNode(node.parameters[index]!) as ExpressionNode;
+      this.markArrayArgumentBlobEncoded(argument);
+      this.visit(argument);
+      if (this.isNumericCallRecordType(type)) this.emit(Op.OP_BIN2NUM, loc);
+      this.stack[0] = `(call_argument_${slot.slotIndex}_${index})`;
+      named.set(index, this.stack[0]);
+    });
+    // Rolls a named argument to the top from under `above` untracked items, and takes it out of `tracked`.
+    const rollOut = (tracked: string[], name: string, above: number): void => {
+      const at = tracked.indexOf(name);
+      this.emitRollAt(at + above, loc);
+      tracked.splice(at, 1);
+    };
+    if (anchored) {
+      this.emitPickTrackedFromBottom(anchor, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+    }
+    const count = binding.types.length;
+    this.emitSlotMasterIndex(slot, loc);                    // [.., idx]
+    if (!this.invokeSharedStackHelper(
+      `directCallArguments|${count}`, (t, l) => t.emitDirectCallArgumentPushes(count, l), loc,
+    )) {
+      this.emitDirectCallArgumentPushes(count, loc);
+    }                                                        // [.., a(n-1) .. a0]
+    const tracked = [...this.stack];
+    binding.types.forEach((type, index) => {
+      const name = named.get(index);
+      if (type === undefined || name === undefined) {
+        this.emit(Op.OP_DROP, loc);
+        return;
+      }
+      rollOut(tracked, name, count - index);                // [.., a(n-1) .. ai, argument]
+      if (this.isNumericCallRecordType(type)) {
+        this.emit(Op.OP_SWAP, loc);
+        this.emit(Op.OP_BIN2NUM, loc);
+      }
+      this.emit(Op.OP_EQUALVERIFY, loc);
+    });
+    if (anchored) {
+      this.emit(Op.OP_ELSE, loc);
+      const unbound = [...this.stack];
+      for (const name of named.values()) {
+        rollOut(unbound, name, 0);
+        this.emit(Op.OP_DROP, loc);
+      }
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    for (const name of named.values()) this.removeFromStack(this.getStackIndex(name));
+  }
+
+  /**
+   * `[.., idx]` -> `[.., a(n-1) .. a0]`: the last `count` argument pushes of the callee's unlocking at input idx,
+   * parsed from its first push. That unlocking must spend a script-hash lock and push at least `count + 1` items, and
+   * its redeem must drop no budget pad. A forwarding proxy's frame names another input, which nothing here ties to
+   * the proxy, so a call into one fails closed.
+   */
+  private emitDirectCallArgumentPushes(count: number, loc: SingleLocationData): void {
+    const bytes = new BytesType();
+    // Only a script-hash lock (23 or 35 bytes) makes the last push a redeem script.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(36n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_INPUTBYTECODE, loc);                     // [ubc]
+    for (let slot = 0; slot <= count; slot += 1) this.emit(Op.OP_0, loc);
+    this.emit(encodeInt(BigInt(count + 1)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_0, loc);                                 // [w0..wn, rest, pushes]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emitGenericPushdataDecode(bytes, loc);              // [w0..wn, pushes, push, rest]
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_NOT, loc);                               // [w0..wn, push, rest, pushes, done]
+    this.emit(encodeInt(BigInt(count + 4)), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);                              // the window slides past its oldest push
+    this.emit(Op.OP_UNTIL, loc);                             // [w0..wn, '', pushes]
+    this.emit(encodeInt(BigInt(count + 1)), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_DROP, loc);                              // [a(n-1) .. a0, redeem]
+    this.emitRedeemPadRefusal(loc);
+  }
+
+  /**
+   * `[.., redeem]` -> `[..]`: fails when the redeem drops a budget pad, the push on top of its arguments. The SDK
+   * places that OP_DROP straight after its `<salt> OP_DROP` and category pin (`<33 bytes> OP_INPUTINDEX
+   * OP_UTXOTOKENCATEGORY OP_EQUALVERIFY`) prologue.
+   */
+  private emitRedeemPadRefusal(loc: SingleLocationData): void {
+    const drop = Uint8Array.of(0x75);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Uint8Array.of(0x00), loc);
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(0x61n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);                          // [redeem, opensWithPush]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emitGenericPushdataDecode(new BytesType(), loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(drop, loc);
+    this.emit(Op.OP_EQUAL, loc);                             // [redeem, afterSalt, salted]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_ENDIF, loc);                             // [prologue]
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(drop, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);                            // [tail, op]
+    this.emit(Uint8Array.of(0x21), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(37n), loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);                           // [tail, pinned]
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(33n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(hexToBin('c0ce8875'), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -34156,6 +34363,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       firstField = false;
     }
+    this.emitRebuiltRecordInputTag(nftIdx, offset, loc);
     this.emitDataNftOutputCommitment(offset, loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_EQUALVERIFY, loc);
@@ -36299,6 +36507,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.popFromStack(2);
           this.pushToStack('(value)');
         }
+        this.emitRebuiltRecordInputTag(nftIdx, compactOffset, locationData);
 
         if (this.callBatchRecordViews) {
           // A frame's rebuilt record becomes its view; the run settles the views once its writes are all made.
@@ -42539,6 +42748,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return field.isDynamic ? new IntType(false, 32) : field.type;
   }
 
+  /**
+   * The IF arms and loops open at the end of the output, outermost first. Code emitted under a path that prefixes
+   * another's runs on every run that reaches the other.
+   */
+  private openControlPath(): string[] {
+    const path: string[] = [];
+    this.output.forEach((element, index) => {
+      if (element === Op.OP_IF || element === Op.OP_NOTIF || element === Op.OP_BEGIN) path.push(`${index}`);
+      else if (element === Op.OP_ELSE) path.push(`${path.pop()}'`);
+      else if (element === Op.OP_ENDIF || element === Op.OP_UNTIL) path.pop();
+    });
+    return path;
+  }
+
+  /** A tagged layout with sibling records: they share one lock and category, and only the tag tells them apart. */
+  private recordsTellApartByTag(): boolean {
+    return this.dataNftCount > 1 && this.hasDataNftIndexTags();
+  }
+
+  /** Notes a decode of record `nftIndex`'s input (a frame's view of it), which verifies its tag, where it runs. */
+  private noteRecordInputDecode(nftIndex: number): void {
+    if (!this.recordsTellApartByTag()) return;
+    const paths = this.recordInputDecodePaths.get(nftIndex) ?? [];
+    if (paths.some((path) => path.length === 0)) return;
+    paths.push(this.openControlPath());
+    this.recordInputDecodePaths.set(nftIndex, paths);
+  }
+
+  /**
+   * Holds the input a rebuilt record replaces (a frame's view of it) to the record's tag, unless a decode of its
+   * fields on every path to here verified it: otherwise a sibling record laid there would be consumed and re-created
+   * as a second copy of this one. Stack neutral.
+   */
+  private emitRebuiltRecordInputTag(nftIdx: number, compactOffset: number, loc: SingleLocationData): void {
+    if (!this.recordsTellApartByTag()) return;
+    const here = this.openControlPath();
+    const decoded = this.recordInputDecodePaths.get(nftIdx) ?? [];
+    if (decoded.some((path) => path.length <= here.length && path.every((frame, index) => frame === here[index]))) {
+      return;
+    }
+    if (this.callBatchRecordViews) {
+      this.emitPickAt(this.getStackIndex(this.callBatchRecordView(nftIdx)), loc);
+    } else {
+      if (this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase()) this.emitMasterInputIndex(loc);
+      else this.emitRecordBlockBase('in', loc);
+      this.emit(encodeInt(BigInt(compactOffset)), loc);
+      this.emit(Op.OP_ADD, loc);
+      // A framed frame's declared views chain from this spent input, and every rewrite keeps the tag it verified.
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    }
+    const tag = encodeNftIndexTag(nftIdx);
+    this.emit(encodeInt(BigInt(tag.length)), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(tag, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.recordInputDecodePaths.set(nftIdx, [...decoded, here]);
+  }
+
   /** Decode one physical data-NFT field of the record's commitment: its view in a frame, else its input's. */
   private emitStateFieldRead(
     sv: StateVariableNode,
@@ -42548,6 +42816,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     extraStackOffset = 0,
     side: RecordSide = 'in',
   ): void {
+    if (side === 'in') this.noteRecordInputDecode(sv.nftIndex);
     if (this.callBatchRecordViews && side === 'in') {
       this.emitPickAt(this.getStackIndex(this.callBatchRecordView(sv.nftIndex)) + extraStackOffset, loc);
       this.emitStateFieldDecode(sv, targetType, fieldsInNft, loc);

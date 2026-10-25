@@ -3098,6 +3098,8 @@ export interface ExternalCallSlot {
   // Carried so witness-param synthesis can back-link each `.definition` to the freshly created symbol (the nodes
   // are created in the collect phase, before the param symbol exists).
   loopWitnessArrayIds?: IdentifierNode[];
+  /** The declaration of a loop's receiver local (`name#k`, its k-th declaration of that name), its owner key. */
+  loopReceiver?: string;
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;

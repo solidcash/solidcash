@@ -4482,9 +4482,12 @@ export default class SymbolTableTraversal extends AstTraversal {
                 inferredSelectors.set(slot, this.computeAbiSelector(signature));
               }
             }
-            const identity = slot.addressParam ? `param:${slot.addressParam}`
+            // A loop over targets calls a callee per iteration through its receiver declaration: two loops may
+            // each declare `pair` for callees of their own.
+            const fixedIdentity = slot.addressParam ? `param:${slot.addressParam}`
               : slot.addressStateVar ? `state:${slot.addressStateVar}`
                 : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+            const identity = slot.loopArrayVar ? (slot.loopReceiver ? `loop:${slot.loopReceiver}` : '') : fixedIdentity;
             if (identity !== '') {
               const ownerKey = `${identity}|${slot.interfaceName}`;
               const allGroup = allByTarget.get(ownerKey) ?? [];
@@ -8402,7 +8405,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     gather(body, new Set());
     for (const [localName, calls] of byLocal) {
       // A witness may stand only for a view of a callee the caller chooses: one the contract fixes keeps its calls.
-      const receiver = this.findLocalInit(body, localName) ?? this.findAssignmentValue(body, localName);
+      // A receiver name defined more than once groups calls on several locals and keeps them too.
+      const receiver = this.localDefinitionCount(body, localName) === 1
+        ? this.findLocalInit(body, localName) ?? this.findAssignmentValue(body, localName) : undefined;
       if (calls.length < 2 || !receiver || !this.loopTargetIsCallerChosen(receiver, fn)) continue;
       // Classify by return: a VOID call is the state-changing mutate (the co-spend); a RETURNING call is a view
       // whose result becomes a caller witness. (The interface AST does not track `view`; hasReturnValues is the
@@ -8576,7 +8581,8 @@ export default class SymbolTableTraversal extends AstTraversal {
    * True when a per-iteration loop target reads its varying part only from elements of `fn`'s parameters, so the
    * caller chooses it (`IPair(pairFor(factory, path[i], path[i + 1]))`) and a caller-supplied witness may stand for
    * it. A target read from a local or state array, a mapping or another contract's result is the contract's own:
-   * its witness must equal the value computed on chain.
+   * its witness must equal the value computed on chain. A local the body defines more than once, or one that shadows
+   * a parameter, is not followed: the definition in force at the call cannot be told by its name.
    */
   private loopTargetIsCallerChosen(expr: Node, fn: FunctionDefinitionNode | undefined): boolean {
     const body = fn?.body;
@@ -8591,26 +8597,32 @@ export default class SymbolTableTraversal extends AstTraversal {
         return;
       }
       if (n instanceof ArrayAccessNode) {
-        // Follow bare-identifier aliases of the array (`address[] memory ps = path`) to a parameter.
+        // Follow bare-identifier aliases of the array (`address[] memory ps = path`) to a parameter. Any element of
+        // a parameter array is the caller's choice, so its index decides nothing here.
         let array = n.array instanceof IdentifierNode ? this.resolveInlineAliasName(n.array.name, body) : undefined;
         const aliases = new Set<string>();
-        while (array !== undefined && !parameters.has(array) && !aliases.has(array)) {
+        while (array !== undefined && !(parameters.has(array) && this.localDefinitionCount(body, array) === 0)
+          && !aliases.has(array)) {
           aliases.add(array);
-          const init = this.findLocalInit(body, array);
+          const init = this.localDefinitionCount(body, array) === 1 ? this.findLocalInit(body, array) : undefined;
           array = init instanceof IdentifierNode ? this.resolveInlineAliasName(init.name, body) : undefined;
         }
-        if (array === undefined) {
+        if (array === undefined || aliases.has(array)) {
           chosen = false;
           return;
         }
         elements += 1;
-        walk(n.index);
         return;
       }
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
         seen.add(n.name);
-        const init = this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name)
-          ?? this.findAssignmentValue(body, n.name);
+        const definitions = this.localDefinitionCount(body, n.name);
+        if (definitions > 1) {
+          chosen = false;
+          return;
+        }
+        const init = definitions === 1 ? this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name)
+          ?? this.findAssignmentValue(body, n.name) : undefined;
         if (init) walk(init);
         return;
       }
@@ -8622,6 +8634,82 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     walk(expr);
     return chosen && elements > 0;
+  }
+
+  /** How many statements of `body` define local `name`: declarations, tuple binds and assignments. */
+  private localDefinitionCount(body: Node | undefined, name: string): number {
+    let count = 0;
+    const seen = new Set<Node>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === name) count += 1;
+      if (node instanceof TupleAssignmentNode) {
+        count += node.elements.filter((element) => element.name === name && !element.skip).length;
+      }
+      if (node instanceof AssignNode && node.identifier.name === name) count += 1;
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
+    return count;
+  }
+
+  /**
+   * The declaration of local `name` in force at `at`: the last one a block enclosing `at` makes before it, so two
+   * loops that each declare a receiver of one name resolve to their own.
+   */
+  private findLocalDeclarationAt(body: Node | undefined, name: string, at: Node): VariableDefinitionNode | undefined {
+    let result: VariableDefinitionNode | undefined;
+    let found = false;
+    const seen = new Set<Node>();
+    const visit = (node: Node | undefined, scope: (VariableDefinitionNode | undefined)[]): void => {
+      if (found || !node || seen.has(node)) return;
+      seen.add(node);
+      if (node === at) {
+        result = [...scope].reverse().find((declaration) => declaration !== undefined);
+        found = true;
+        return;
+      }
+      if (node instanceof BlockNode) {
+        const frame = [...scope, undefined];
+        for (const statement of node.statements ?? []) {
+          visit(statement, frame);
+          if (found) return;
+          if (statement instanceof VariableDefinitionNode && statement.name === name) frame[frame.length - 1] = statement;
+        }
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+        if (value instanceof Node) visit(value, scope);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, scope);
+        if (found) return;
+      }
+    };
+    visit(body, []);
+    return result;
+  }
+
+  /** The declarations of local `name` in `body`, in source order. */
+  private localDeclarations(body: Node | undefined, name: string): VariableDefinitionNode[] {
+    const declarations: VariableDefinitionNode[] = [];
+    const seen = new Set<Node>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === name) declarations.push(node);
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
+    return declarations;
   }
 
   private findAssignmentValue(node: Node | undefined, name: string,
@@ -9221,6 +9309,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       let loopArrayElemStructType: StructType | undefined;
       let loopArrayElemFieldName: string | undefined;
       let loopWitnessArrayIds: IdentifierNode[] = [];
+      let loopReceiver: string | undefined;
       // A loop-body LOCAL receiver holding a per-iteration computed target
       // `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()`: addressParam is the raw local (SEAL left it
       // un-hoisted - a loop-body local is not single-assign), which the co-spend epilogue cannot read (the local
@@ -9230,7 +9319,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       // keep its cheap source initializer intact so every call can still recover the common loop index.
       if (addressParam && !addressStateVar
         && directAddressIdentifier(node.addressExpression)?.name === addressParam) {
-        const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
+        // Two loops may each declare a receiver of one name: take the declaration in force at this call.
+        const receiverDefinitions = this.localDefinitionCount(this.currentFunction?.body, addressParam);
+        const receiverDeclaration = this.findLocalDeclarationAt(this.currentFunction?.body, addressParam, node);
+        const initExpr = receiverDefinitions > 1 ? receiverDeclaration?.expression
+          : this.findLocalInit(this.currentFunction?.body, addressParam);
+        if (receiverDeclaration) {
+          loopReceiver = `${addressParam}#${this.localDeclarations(this.currentFunction?.body, addressParam)
+            .indexOf(receiverDeclaration)}`;
+        }
         let resolvedInit = initExpr;
         const resolvedNames = new Set<string>();
         while (resolvedInit instanceof IdentifierNode && !resolvedNames.has(resolvedInit.name)) {
@@ -9240,8 +9337,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const legacyInterfaceCast = initExpr instanceof FunctionCallNode && initExpr.parameters.length === 1
           && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
-        // Only a target the caller chooses may be replaced by its witness.
-        const canNeutralize = (initExpr instanceof CastNode || legacyInterfaceCast
+        // Only a target the caller chooses, held by a receiver defined once, may be replaced by its witness.
+        const canNeutralize = receiverDefinitions === 1 && (initExpr instanceof CastNode || legacyInterfaceCast
           || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0))
           && resolvedInit !== undefined && this.loopTargetIsCallerChosen(resolvedInit, this.currentFunction);
         // A loop may receive its per-iteration callee from another contract, decode it from the current action
@@ -11255,6 +11352,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         loopArrayVar,
         ...(loopIndexExpression && { loopIndexExpression }),
         ...(loopWitnessArrayIds.length > 0 && { loopWitnessArrayIds }),
+        ...(loopArrayVar !== undefined && loopReceiver !== undefined && { loopReceiver }),
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral !== undefined && { addressLiteral }),

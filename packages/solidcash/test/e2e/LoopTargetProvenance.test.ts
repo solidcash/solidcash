@@ -71,6 +71,42 @@ describe('loop targets a contract fixes', () => {
     expect(() => verifyTransaction(forged)).toThrow();
   });
 
+  it('binds the contract\'s own loop when an earlier loop declared a receiver of the same name', async () => {
+    // The receiver `pair` is declared again for the second loop; only that declaration says whose callees it runs.
+    const twoLoops = (first: string): string => `pragma solidcash >=0.8.0;
+${IFACE}
+contract Fixed(address a, address b) {
+  function go(address[] chosen) {
+    for (uint i = 0; i < chosen.length; i++) { IPair ${first} = IPair(chosen[i]); ${first}.swap(1); }
+    address[2] memory ps = [a, b];
+    for (uint i = 0; i < 2; i++) { IPair pair = IPair(ps[i]); pair.swap(1); }
+  }
+}`;
+    const run = async (source: string, second: Uint8Array): Promise<TransactionBuilder> => {
+      const provider = createTestProvider();
+      const contract = new Contract(compileString(source), [TARGET, TARGET], { provider });
+      const selector = swapSelector();
+      const funder = await createFeeFunder(provider, 10000n);
+      const builder = new TransactionBuilder({ provider });
+      builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
+        contract.unlock.go(encodePushdataValue([TARGET], 'address[]'), 1n, encodePushdataValue([TARGET], 'address[]'),
+          encodePushdataValue([second, second], 'address[]'), selector, selector) as never);
+      const locks = [TARGET, second, second];
+      locks.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n },
+        unlocker(lock)));
+      builder.addInput(funder.utxo, funder.unlocker);
+      builder.addOutput({ to: contract.address, amount: 100000n });
+      for (const lock of locks) builder.addOutput({ to: lock, amount: 1500n });
+      builder.addOutput({ to: OP_TRUE, amount: 7000n });
+      return builder;
+    };
+    for (const first of ['pair', 'other']) {
+      verifyTransaction(await run(twoLoops(first), TARGET));
+      const forged = await run(twoLoops(first), OTHER);
+      expect(() => verifyTransaction(forged), first).toThrow();
+    }
+  });
+
   it('keeps view witnesses for a callee the caller chooses and runs a fixed callee\'s views as calls', () => {
     const body = (target: string): string => `pragma solidcash >=0.8.0;
 ${IFACE}

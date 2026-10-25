@@ -10159,6 +10159,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(this.callOrdinalCounterName(group));
     }
+    // A loop over targets dispatched where it runs claims its callee inputs in increasing order, from -1.
+    const loopInputFloors = this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.externalCallSlots.filter(
+      (slot) => slot.loopArrayVar !== undefined && (!slot.fnPtrCall
+        || node.parameters.some((parameter) => parameter.name === slot.loopArrayVar)),
+    );
+    for (const slot of loopInputFloors) {
+      this.emit(encodeInt(-1n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(this.loopInputFloorName(slot));
+    }
     this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
     this.emitRepeatedSortedUpsertLoopCensuses(node);
@@ -10229,6 +10238,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (const group of callOrdinalCounters) {
       const idx = this.getStackIndex(this.callOrdinalCounterName(group));
+      this.emitRollAt(idx, { location: node.location, positionHint: PositionHint.END });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+      this.removeFromStack(idx);
+    }
+    for (const slot of loopInputFloors) {
+      const idx = this.getStackIndex(this.loopInputFloorName(slot));
       this.emitRollAt(idx, { location: node.location, positionHint: PositionHint.END });
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
       this.removeFromStack(idx);
@@ -25712,6 +25727,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const ilcAe = unwrapInlineLoopTarget(node.addressExpression);
     if (node.callInfo) {
       const loopSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
+      // A loop over a state array checks each element once after the loop: each call here claims its element in
+      // increasing order, so two calls cannot share one element's run.
+      if (loopSlot?.loopArrayVar && !loopSlot.fnPtrCall
+        && !this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
+        this.emitLoopElementFloor(node, loopSlot, ilcAe, locationData);
+      }
       const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
         || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode)
         || !!loopSlot?.loopIndexExpression;
@@ -48681,6 +48702,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_LESSTHAN, loc);
       this.emit(Op.OP_VERIFY, loc);       // the next callee's input is not this loop's
     }
+    // Each iteration claims an input above the one the loop claimed last: two iterations naming one index
+    // (`ts[which[i]]`, a loop-invariant `ts[k]`) would otherwise both accept one run of that callee.
+    const floor = this.loopInputFloorName(slot);
+    if (this.getStackIndex(floor, true) < 0) {
+      throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no input floor in scope`);
+    }
+    this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
+    this.emitPickAt(this.getStackIndex(floor) + 1, loc);    // [..., inputidx, floor]
+    this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc);
+    this.pushToStack('(ilc_floor)');
+    this.emitReplace(this.getStackIndex(floor), node);
+    this.popFromStack();
 
     // 1. IDENTITY: callee master UTXO bytecode == targets[i]
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
@@ -49424,6 +49459,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** The runtime counter of a group of calls to one callee, whose value is the next call's ordinal. */
   private callOrdinalCounterName(group: number): string {
     return `__internal__callOrdinal${group}`;
+  }
+
+  /** The callee input (or state-array element) a loop over targets claimed last (-1 before its first iteration). */
+  private loopInputFloorName(slot: ExternalCallSlot): string {
+    return `__internal__loopInputFloor${slot.slotIndex}`;
+  }
+
+  /** Requires a call on a state-array element to take an element above the one its loop took last. Stack-neutral. */
+  private emitLoopElementFloor(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, target: ExpressionNode, loc: SingleLocationData,
+  ): void {
+    const element = (expression: ExpressionNode): ExpressionNode | undefined => (expression instanceof MappingAccessNode
+      ? expression.keys[0] : expression instanceof ArrayAccessNode ? expression.index
+        : expression instanceof FieldAccessNode ? element(expression.expression) : undefined);
+    const index = element(target);
+    const floor = this.loopInputFloorName(slot);
+    if (index === undefined || this.getStackIndex(floor, true) < 0) {
+      throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no element index or floor in scope`);
+    }
+    this.visit(cloneNode(index) as ExpressionNode);           // [.., k]
+    this.emit(Op.OP_DUP, loc);                                // [.., k, k]
+    this.emitPickAt(this.getStackIndex(floor) + 1, loc);      // [.., k, k, floor]
+    this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);                             // [.., k]
+    this.emitReplace(this.getStackIndex(floor), node);
+    this.popFromStack();
   }
 
   /** The groups of this function's calls whose ordinals are counted at run time. */

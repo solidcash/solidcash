@@ -6,6 +6,8 @@ import { Contract, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createFeeFunder, createTestProvider, setupStatefulUtxos, verifyTransaction } from '../test-util.js';
 import { trivialCallee } from '../trivial-callee.js';
+import { SignatureTemplate } from '../../src/index.js';
+import { alicePriv, alicePub } from '../fixture/vars.js';
 
 /**
  * Two calls on different targets each claim their own callee input. Their targets are equal when the spender passes
@@ -120,4 +122,117 @@ describe('a loop over targets followed by a call', () => {
     const forged = await spend([X, A], [X, A]);
     expect(() => verifyTransaction(forged)).toThrow();
   });
+});
+
+// A loop's callee input follows the index its target reads, which need not be the loop counter.
+const PICKED = `pragma solidcash >=0.8.0;
+interface IFoo { function m(int x) external; }
+contract C {
+  function run(address[] ts, uint[] which, int x) {
+    for (uint i = 0; i < which.length; i++) { IFoo(ts[which[i]]).m(x); }
+  }
+}`;
+
+describe('loop iterations naming one callee', () => {
+  const callee = trivialCallee([7n]);
+  const A = callee.lock;
+  const OP_TRUE = hexToBin('51');
+
+  async function spend(which: bigint[], callees: Uint8Array[]): Promise<TransactionBuilder> {
+    const provider = createTestProvider();
+    const contract = new Contract(compileString(PICKED), [], { provider });
+    const funder = await createFeeFunder(provider, 10000n);
+    const builder = new TransactionBuilder({ provider });
+    builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
+      encodePushdataValue([A, A], 'address[]'), encodePushdataValue(which, 'uint256[]'), 7n, 1n,
+    ) as never);
+    callees.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n }, {
+      generateLockingBytecode: (): Uint8Array => lock,
+      generateUnlockingBytecode: (): Uint8Array => callee.unlocking,
+    } as never));
+    builder.addInput(funder.utxo, funder.unlocker);
+    builder.addOutput({ to: contract.address, amount: 100000n });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n });
+    builder.addOutput({ to: OP_TRUE, amount: 7000n });
+    return builder;
+  }
+
+  it('run one callee input per iteration', async () => {
+    verifyTransaction(await spend([0n, 1n], [A, A]));
+  });
+
+  it('refuse two iterations sharing one callee run', async () => {
+    // which = [0, 0]: both iterations name input 1, so one run of A would serve both.
+    const forged = await spend([0n, 0n], [A]);
+    expect(() => verifyTransaction(forged)).toThrow();
+  });
+});
+
+// A loop over a state array verifies each element once after the loop.
+const PUBLISHER = `pragma solidcash >=0.8.0;
+interface ISubscriber { public bigint received; function handle(uint256 value); }
+contract Publisher() {
+  address[] subscribers;
+  int count;
+  function setSubscribers(address a, address b, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.subscribers = [a, b];
+  }
+  function notifySome(uint256[] which, uint256 value, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    for (uint256 i = 0; i < which.length; i = i + 1) {
+      ISubscriber(subscribers[which[i]]).handle(value);
+      this.count = this.count + 1;
+    }
+  }
+}`;
+const SUBSCRIBER = `pragma solidcash >=0.8.0;
+contract Subscriber() {
+  bigint received;
+  function handle(uint256 value) {
+    this.received = this.received + int(value);
+    require(int(value) >= 0);
+  }
+}`;
+
+describe('a loop over a state array of callees', () => {
+  async function deployed(): Promise<{ publisher: any; subscribers: any[] }> {
+    const provider = createTestProvider();
+    const sub = compileString(SUBSCRIBER);
+    const subscribers: { lock: string; sc: StatefulContract<any> }[] = [];
+    for (let at = 0; at < 2; at++) {
+      const base = new Contract(sub, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, base, sub.stateLayout!, { received: 0n }, { saltContract: true },
+      );
+      subscribers.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
+        sc: StatefulContract.withCategory(base, categoryId) });
+    }
+    const pub = compileString(PUBLISHER);
+    const base = new Contract(pub, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, pub.stateLayout!, { subscribers: [], count: 0n }, { saltContract: true },
+    );
+    const publisher = StatefulContract.withCategory(base, categoryId) as any;
+    await publisher.setSubscribers(hexToBin(subscribers[0]!.lock), hexToBin(subscribers[1]!.lock), alicePub,
+      new SignatureTemplate(alicePriv)).send();
+    publisher.registerExternalArray('ISubscriber', subscribers.map((subscriber) => subscriber.sc));
+    return { publisher, subscribers: subscribers.map((subscriber) => subscriber.sc) };
+  }
+
+  it('calls each element once, in order', async () => {
+    const { publisher, subscribers } = await deployed();
+    await publisher.notifySome([0n, 1n], 10n, alicePub, new SignatureTemplate(alicePriv)).send();
+    expect((await publisher.getState()).count).toBe(2n);
+    for (const subscriber of subscribers) expect((await subscriber.getState()).received).toBe(10n);
+  }, 300_000);
+
+  it('refuses a body that calls one element twice', async () => {
+    // Each element runs once after the loop, so the second call on element 0 would have no run of its own.
+    const { publisher, subscribers } = await deployed();
+    await expect(publisher.notifySome([0n, 0n], 10n, alicePub, new SignatureTemplate(alicePriv)).send())
+      .rejects.toThrow();
+    expect((await publisher.getState()).count).toBe(0n);
+    expect((await subscribers[0].getState()).received).toBe(0n);
+  }, 300_000);
 });

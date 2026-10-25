@@ -127,7 +127,7 @@ SolidHat. Latest results (`vitest run --config vitest.solidhat.config.ts test`):
 | `UniswapV2Factory` | 15 / 15 | — |
 | `UniswapV2ERC20` | 14 / 14 | — |
 | `UniswapV2Pair` | 26 / 36 | flash/reentrancy circular calls (6); migrator circular call (3); protocol-fee entry lane (1) |
-| `Libraries` | 30 / 37 | reverting-callee message translation (3); multi-entry `transferFrom` state commitment (1); absent-selector `safeApprove` call (1); ETH value (2) |
+| `Libraries` | 30 / 37 | reverting-callee message translation (2); multi-entry `transferFrom` state commitment (2); absent-selector `safeApprove` call (1); ETH value (2) |
 | `UniswapV2Router02` | 11 / 74 | a Router-built transaction must deploy the pair through the factory (nested child deploy); factory `getPair` probe return carrier; `msg.value`/WETH satoshi model |
 | `SushiRoll` | 3 / 16 | factory participant authority in atomic composition, CREATE2-identity pair targets, ETH value |
 | **Total** | **99 / 192** | |

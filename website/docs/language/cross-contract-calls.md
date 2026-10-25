@@ -406,6 +406,13 @@ diagnostics. Direct calls remain the simpler path when every physical participan
 convention (`composition: 'framed'`) is a separate, also experimental, composition model; see
 [Framed Composition](/docs/guides/framed-composition).
 
+Under `messageBus: false`, a function may call one fixed target several times, or in a loop, without the bus: the
+calls run as frames of the callee's multi-call entry, in one spend of its master, each bound to its own call record.
+The callee carries that entry when it is compiled with `callBatch: true`, or in a multi-contract compile whose caller
+repeats calls to it; simple contracts stay without it. A frame is a call to a function that writes at most fixed state
+fields and takes no value, events, token effects, mapping writes or calls of its own. Any other repeated or looped
+call to one target is refused there with `MESSAGE_BUS_REQUIRED`; the automatic mode routes it through the bus.
+
 ## Practical limits
 
 - Every stateful participant adds real inputs, outputs, unlocking bytecode, and VM work.

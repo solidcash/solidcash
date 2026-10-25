@@ -205,6 +205,9 @@ export function buildRepeatedExternalBatch(
     value: FunctionArgument;
     encoded: Uint8Array;
   }>();
+  // A swappable key's pool is how the route represents both sides of a transfer. Remember the binding that
+  // last set each witness so a later non-swappable row can move the earlier value into that pool.
+  const keyWitnessSources = new Map<string, { swappable?: boolean; pool: string[] }>();
   // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
   // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
@@ -273,10 +276,37 @@ export function buildRepeatedExternalBatch(
         ? encodeFunctionArgument(value, 'address', structs) as Uint8Array
         : encoded[binding.inputIndex] as Uint8Array;
       const prior = keyWitnessValues.get(routeInput);
+      // A swappable `balanceOf` key admits either side of the transfer. A later row that fixes the key to the
+      // recipient (`balanceOf(pair)` after `transferFrom(owner, pair)`) therefore moves the earlier value into
+      // the sibling pool slot the route already ORs with, instead of rejecting the batch.
+      const poolFor = (swappable: boolean | undefined): string[] => {
+        if (swappable !== true) return [];
+        const sibling = (handler.batchKeyWitnesses ?? []).find((candidate) => candidate.keyPool !== undefined
+          && candidate.routeInput.startsWith(`${routeInput}_row`));
+        return sibling === undefined ? [] : [sibling.routeInput, ...(sibling.keyPool ?? [])];
+      };
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
-        throw new Error(`External message-bus batch collection witness '${routeInput}' is ambiguous`);
+        const priorSource = keyWitnessSources.get(routeInput);
+        const pools = priorSource?.swappable === true ? [priorSource.pool, poolFor(binding.swappable)]
+          : [poolFor(binding.swappable), priorSource?.pool ?? []];
+        const free = pools.flat().find((candidate) => candidate !== routeInput
+          && !keyWitnessValues.has(candidate));
+        if (free !== undefined) {
+          if (priorSource?.swappable === true) {
+            keyWitnessValues.delete(routeInput);
+            keyWitnessValues.set(free, prior);
+          } else {
+            keyWitnessValues.set(free, { value, encoded: encodedValue });
+            continue;
+          }
+        } else {
+          throw new Error(`External message-bus batch collection witness '${routeInput}' is ambiguous`);
+        }
       }
-      if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
+      if (!keyWitnessValues.has(routeInput)) {
+        keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
+        keyWitnessSources.set(routeInput, { swappable: binding.swappable, pool: poolFor(binding.swappable) });
+      }
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {

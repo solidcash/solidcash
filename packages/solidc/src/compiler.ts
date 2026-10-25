@@ -6071,6 +6071,13 @@ function synthesizeMessageBusRoute(
     if (expression instanceof HexLiteralNode) return `hex"${binToHex(expression.value)}"`;
     return undefined;
   };
+  /** A public constant's ABI getter publishes its folded literal; only literal initializers have a source form. */
+  const literalConstantSource = (expression: ExpressionNode): string | undefined => {
+    if (expression instanceof BoolLiteralNode) return expression.value ? 'true' : 'false';
+    if (expression instanceof IntLiteralNode) return expression.value.toString();
+    if (expression instanceof HexLiteralNode) return `hex"${binToHex(expression.value)}"`;
+    return undefined;
+  };
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   if (compilerOptions.messageBusKernel === true) {
     for (const state of contract.stateVariables) {
@@ -11569,6 +11576,23 @@ function synthesizeMessageBusRoute(
         const getterState = fn.parameters.length === 0
           ? contract.stateVariables.find((state) => state.name === fn.name)
           : undefined;
+        // A `public constant` reports a synthesized ABI getter but has no state variable, so the route's scalar
+        // getter branch below cannot see it and falls through to invoking a function that does not exist.
+        // Publish the folded literal instead: a constant has no runtime storage to read.
+        const constantGetter = fn.parameters.length === 0 && getterState === undefined
+          ? [...contract.constantDefinitions, ...ast.constantDefinitions].find((constant) => constant.name === fn.name
+            && (constant.visibility === StateVariableVisibility.PUBLIC
+              || constant.visibility === StateVariableVisibility.EXTERNAL))
+          : undefined;
+        const constantLiteral = constantGetter === undefined
+          ? undefined : literalConstantSource(constantGetter.expression);
+        if (constantLiteral !== undefined && fn.returnTypes.length === 1) {
+          if (!captureResults) return '';
+          const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
+          const local = fn.returnTypes[0].toString();
+          return `${local} ${name}; ${name} = ${constantLiteral}; `
+            + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
+        }
         const scalarGetter = fn.parameters.length === 0
           && getterState !== undefined
           && !(getterState.type instanceof StructType)

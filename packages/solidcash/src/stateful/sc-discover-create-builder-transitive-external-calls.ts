@@ -107,6 +107,13 @@ export async function resolveTransitiveExternalContract(
   return deployment?.contract as TransitiveExternalContract | undefined;
 }
 
+/** A callee that advertises a message-bus route can execute several returning methods from one spend. */
+export type SharedMethodBatchBuilder = (
+  shared: ExternalCallUtxoGroup,
+  next: ExternalCallUtxoGroup,
+  callee: TransitiveExternalContract,
+) => Promise<NonNullable<ExternalCallUtxoGroup['compilerRoute']> | undefined>;
+
 /**
  * For each direct nested callee with its own externalCalls, resolve C from B's
  * connect-time registry, load C's master/data NFTs, and append transitive groups.
@@ -117,6 +124,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
   externalCallUtxoGroups: ExternalCallUtxoGroup[],
   groupMetas: ExternalGroupMeta[],
   directGroupCount: number,
+  buildSharedMethodBatch?: SharedMethodBatchBuilder,
 ): Promise<void> {
   for (let directIdx = 0; directIdx < directGroupCount; directIdx++) {
     const directGroup = externalCallUtxoGroups[directIdx];
@@ -276,21 +284,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       );
       const sharedPhysical = existingPhysicalIndex < 0
         ? undefined : externalCallUtxoGroups[existingPhysicalIndex];
-      // The same rule a direct callsite applies: two distinct methods that both return cannot execute from one
-      // master input unless the compiler published an authenticated batch route; a second carrier would be a
-      // placeholder. At most one side of a shared pair may return.
-      if (sharedPhysical !== undefined && (cAbiFunction.outputs?.length ?? 0) > 0
-        && sharedPhysical.functionName !== cFunctionName) {
-        const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
-          ?.find((candidate) => candidate.name === sharedPhysical.functionName);
-        if ((priorAbi?.outputs?.length ?? 0) > 0) {
-          throw new Error(
-            `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
-            + `owner but both return values. Use messageBus.compose() to authenticate both logical invocations.`,
-          );
-        }
-      }
-      externalCallUtxoGroups.push({
+      const newGroup: ExternalCallUtxoGroup = {
         categoryId: cCategoryId,
         stateLayout: cStateLayout,
         masterUtxo: cState.masterUtxo,
@@ -307,7 +301,30 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
         logicalFunctionName: cFunctionName,
         ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
         ...(bEc.callMode && { callMode: bEc.callMode }),
-      });
+      };
+      // The same rule a direct callsite applies: two distinct methods that both return cannot execute from one
+      // master input unless an authenticated batch route executes both rows. A callee that advertises a
+      // message-bus route can batch them: the shared physical input runs both selectors in order, and every
+      // logical group keeps its own row's return event.
+      if (sharedPhysical !== undefined && (cAbiFunction.outputs?.length ?? 0) > 0
+        && sharedPhysical.functionName !== cFunctionName) {
+        const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
+          ?.find((candidate) => candidate.name === sharedPhysical.functionName);
+        if ((priorAbi?.outputs?.length ?? 0) > 0) {
+          const route = sharedPhysical.compilerRoute === undefined && buildSharedMethodBatch !== undefined
+            ? await buildSharedMethodBatch(sharedPhysical, newGroup, cContract)
+            : undefined;
+          if (route === undefined) {
+            throw new Error(
+              `Transitive external calls to ${sharedPhysical.functionName} and ${cFunctionName} share one state `
+              + 'owner but both return values. Use messageBus.compose() to authenticate both logical invocations.',
+            );
+          }
+          sharedPhysical.compilerRoute = route;
+          newGroup.compilerRoute = route;
+        }
+      }
+      externalCallUtxoGroups.push(newGroup);
 
       groupMetas.push({
         ecSlot: bEc,

@@ -6696,6 +6696,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           );
           return `VM failed at ip ${ip ?? '?'}`
             + `${opcode !== undefined ? ` opcode ${opcode}` : ''}: ${detail}`
+            + `; input ${executedInputIndex}`
             + `${requireMessage ? `; require: ${requireMessage}` : ''}`;
         })()) : undefined;
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

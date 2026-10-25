@@ -54,6 +54,7 @@ import {
 import {
   discoverCreateBuilderTransitiveExternalCalls as discoverCreateBuilderTransitiveExternalCallsImpl,
 } from './sc-discover-create-builder-transitive-external-calls.js';
+import { buildSharedMethodExternalBatch } from './sc-build-shared-method-external-batch.js';
 import {
   finalizeCreateBuilderNestedBasesUnlockers as finalizeCreateBuilderNestedBasesUnlockersImpl,
 } from './sc-finalize-create-builder-nested-bases-unlockers.js';
@@ -741,6 +742,19 @@ export async function orchestrateCreateBuilderExternalCalls(
       externalCallUtxoGroups,
       groupMetas,
       directGroupCount,
+      async (shared, next, callee) => buildSharedMethodExternalBatch(
+        { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
+        shared,
+        next,
+        callee,
+        {
+          artifact: host.inner.artifact,
+          state: callerStateSnapshot ?? onChainState?.state,
+          inputs: abiFunction?.inputs ?? [],
+          selfAddress: publicSelfAddress,
+          identity: publicSelfIdentity,
+        },
+      ),
     );
 
     // _externalCallInputBase: runtime param (needed for mutual A<->B calls)

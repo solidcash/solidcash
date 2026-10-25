@@ -734,6 +734,11 @@ export async function deployFromStatefulContract<T extends Artifact>(
   if (useBatch) {
     const trailingBase = deployAbi.blockLayout?.trailingBase
       ?? deployAbi.blockLayout?.blockSize ?? 1;
+    // The message-bus path injects the shared trailing-width witness into the source parameters before route
+    // synthesis, so it precedes the per-batch slot witnesses in the ABI. A direct artifact appends it after them.
+    // Insert at the ABI position rather than assuming either order.
+    const trailingCountIndex = deployAbi.inputs
+      .findIndex((input) => input.name === '__internal__vmapBatchTrailingCount');
     // NEW nodes trail the full fixed block when deployDataNft slots authenticate the child data region.
     let batchPredOutputBase = trailingBase;
     let batchTrailingCount = 0;
@@ -797,7 +802,11 @@ export async function deployFromStatefulContract<T extends Artifact>(
       batchPredOutputBase += predOutputs.length;
       batchTrailingCount += predOutputs.length;
     }
-    finalArgs = [...finalArgs, BigInt(batchTrailingCount)];
+    finalArgs.splice(
+      trailingCountIndex >= 0 && trailingCountIndex <= finalArgs.length ? trailingCountIndex : finalArgs.length,
+      0,
+      BigInt(batchTrailingCount),
+    );
   }
 
   // returnOutputIdx is the last hidden input when present (after vmap batch witnesses).

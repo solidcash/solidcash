@@ -189,6 +189,22 @@ The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
   This resolves the protocol-fee recipient entry without splitting the slot. Focused regressions:
   `packages/solidc/test/MergedEntryKeyAlternative.test.ts` and
   `packages/solidcash/test/unit/EntryKeyAlternativeActivation.test.ts`.
+- A public `constant` has an ABI getter but no state variable, so the message-bus route's scalar-getter branch
+  emitted a call to a function that does not exist (`decimals`). The route now publishes the folded literal.
+  Regression: `packages/solidc/test/journal-message-bus/PublicConstantGetterRoute.test.ts`.
+- The SDK can batch two *different* returning methods of one callee into one message-bus route
+  (`sc-build-shared-method-external-batch.ts`): the transitive discovery hook builds rows for the shared direct
+  call and the new transitive call, attaches the route to both logical groups, and the shared group keeps the
+  physical input. The repeated-batch witness resolver also understands a swappable `balanceOf` key pool, so
+  `transferFrom(owner, pair)` plus `balanceOf(pair)` can share a route. Regression:
+  `packages/solidcash/test/unit/SharedMethodExternalBatch.test.ts`.
+  This path currently cannot be enabled end to end: compiling a token or factory with `messageBus: true`
+  rewrites its **direct** entry behaviour. A bus-enabled `TestERC20` (after making its emitting helper void)
+  passes `safeTransfer` into an `OP_VERIFY` failure at preflight, and a bus-enabled factory emits `PairCreated`'s
+  `token0` as a 35-byte locking bytecode instead of the 20-byte ABI identity (2 Factory tests). Those compiles are
+  kept out of the parity project, so the counts above are the direct-artifact counts. Evidence:
+  `twostep-bus7.log` (factory route build), `twostep-bus10.log` (route VM failure), `lib-transfer-after.log`,
+  `factory-restored.log`, `factory-bus-suite.log`.
 - A failing outlined library body is attributed from the trace's executed instructions even when the failing
   step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.
 - A keccak256 call inside an outlined free function (an imported `internal` library helper such as

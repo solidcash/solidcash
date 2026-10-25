@@ -920,6 +920,10 @@ target.staticcall(payload);                           // low-level read-only; de
 - `messageBus: false` compiles direct-only and fails with `MESSAGE_BUS_REQUIRED` when the source needs a bus. The
   default convention is the kernel row loop (`artifact.messageBus.convention === 'kernel-row-loop'`);
   `messageBusKernel: false` (legacy unroll) is for compatibility tests only.
+- Under `messageBus: false`, repeated or looped calls to one fixed target run as frames of the callee's multi-call
+  entry (`artifact.callBatch`), one spend of its master with one call record per frame. Compile the callee with
+  `callBatch: true`, or in one `compileStringMulti` / `compileFileMulti` with its caller. A frame writes at most fixed
+  state fields: value, events, token effects, mapping writes and nested calls stay refused.
 - Compose only when `artifact.messageBus.available` is true and each selected `artifact.messageBus.handlers` entry is
   `eligible`, and check `artifact.messageBus.deployability` (`assertDeployabilityCertificate` from
   `@solidcash/utils`) before broadcasting: a compiled route can exceed the 10,000-byte limit. Handlers using `split`,

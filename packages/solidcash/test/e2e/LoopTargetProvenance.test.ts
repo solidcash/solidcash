@@ -140,6 +140,7 @@ describe('loop targets held by locals and written arrays', () => {
   /** `go(chosen)` of `source` built from `args` by input name, with `callees` co-spent from input 1 on. */
   async function spendGo(
     source: string, ctor: Uint8Array[], chosen: Uint8Array[], witnesses: Uint8Array[][], callees: Uint8Array[],
+    extra: Record<string, unknown> = {},
   ): Promise<TransactionBuilder> {
     const provider = createTestProvider();
     const artifact = compileString(source);
@@ -152,6 +153,7 @@ describe('loop targets held by locals and written arrays', () => {
       const witness = /^__internal__loopTargets(\d+)$/.exec(input.name);
       if (witness) return encodePushdataValue(witnesses[Number(witness[1])]!, 'address[]');
       if (input.name.startsWith('__internal__externalCallSelector')) return selector;
+      if (input.name in extra) return extra[input.name];
       throw new Error(`no value for ${input.name}`);
     });
     const funder = await createFeeFunder(provider, 10000n);
@@ -197,6 +199,39 @@ contract T(address a) {
     verifyTransaction(await spendGo(source, [A], [X], [[X], [A]], [X, A]));
     // The second loop's callee is the contract's own `a`, whatever the first loop's caller-chosen element.
     const forged = await spendGo(source, [A], [X], [[X], [X]], [X, X]);
+    expect(() => verifyTransaction(forged)).toThrow();
+  });
+
+  it('checks an inlined helper\'s array parameter that the helper reassigns', async () => {
+    const source = `pragma solidcash >=0.8.0;
+${IFACE}
+contract H(address a) {
+  function callAt(address[] memory path, address[] memory fb, uint i) internal {
+    if (path.length == 0) path = fb;
+    IPair pair = IPair(path[i]);
+    pair.swap(1);
+  }
+  function go(address[] chosen) {
+    address[1] memory own = [a];
+    for (uint i = 0; i < 1; i++) { callAt(chosen, own, i); }
+  }
+}`;
+    // chosen is empty, so the helper calls the contract's own `a`.
+    verifyTransaction(await spendGo(source, [A], [], [[A]], [A]));
+    const forged = await spendGo(source, [A], [], [[X]], [X]);
+    expect(() => verifyTransaction(forged)).toThrow();
+  });
+
+  it('calls a deleted local as deleted, not the element it was declared with', async () => {
+    const source = `pragma solidcash >=0.8.0;
+${IFACE}
+contract D() {
+  function go(address[] chosen, bool c) {
+    for (uint i = 0; i < chosen.length; i++) { address p = chosen[i]; if (c) delete p; IPair(p).swap(1); }
+  }
+}`;
+    verifyTransaction(await spendGo(source, [], [X], [[X]], [X], { c: false }));
+    const forged = await spendGo(source, [], [X], [[X]], [X], { c: true });
     expect(() => verifyTransaction(forged)).toThrow();
   });
 

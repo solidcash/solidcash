@@ -102,8 +102,9 @@ branch is load-bearing; a real `mapping(k=>address)` reaches it too and is rejec
 Codegen: `emitArrayExternalCallLoop` (GTT) reads the whole array to a blob (`emitReadStateArrayBlob`, which
 co-spends the array's chunks once), decodes the count, then loops `OP_BEGIN..OP_UNTIL` decoding each framed
 element and verifying `callee[externalCallInputBase + i*stride].master.LBC == arr[i]` plus master/category
-preservation and the selector. The source `for` loop is left as harmless iteration; this epilogue is the
-real check. Strict: count pinned to N, each callee verified against arr[i].
+preservation and the selector. Each call the source loop makes claims its element, above the one claimed before it
+(two calls cannot share one element's run), and after the loop the last claim must be below the count; this epilogue
+then checks every element. Strict: count pinned to N, each callee verified against arr[i].
 
 SDK: `registerExternalArray(interfaceName, instances)` lists the callee instances (array order);
 `_createBuilder` expands the one loop slot into N concrete calls (`presetResolved`) so the existing
@@ -137,9 +138,11 @@ semantics:
   `address __fnelem = fns[idx];` (+ `bytes4 __fnelemsel = bytes4(__fnsel_fns[idx]);` as a runtime selector
   when per-element methods exist) and emits one computed-receiver external call. Value-returning calls work
   in this form.
-- **`fns[i](args)` inside a loop is the notify-all idiom** and maps to the broadcast covenant above (the
-  epilogue co-spends and verifies EVERY element; the source loop is harmless iteration). A broadcast cannot
-  return a value (compile error).
+- **`fns[i](args)` inside a loop is the notify-all idiom** and maps to the broadcast covenant above: the
+  epilogue co-spends and verifies EVERY element once, in order, so the loop's calls must take the elements in turn
+  (each call the element after the previous call's, the last call the table's last element; a spend that stops
+  early, skips or repeats an element, or runs past the end fails). Any index expression and loop form works. A
+  broadcast cannot return a value (compile error).
 - Mutations stay in lockstep with the selector array: element assign / `pop()` / `delete fns[i]` rewrite to
   two-statement blocks mutating both arrays.
 - An unclassifiable fn-ptr array (never written, or written an unsupported value form) is a specific

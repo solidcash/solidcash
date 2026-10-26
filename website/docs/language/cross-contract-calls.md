@@ -300,8 +300,10 @@ element, and preserves or advances each callee under its own covenant. A wrong o
 contract fails validation.
 
 Function-pointer arrays use the same machinery. `fns[index](args)` outside a loop calls just that element and can
-return a value. `fns[i](args)` in the compiler-recognized loop form is a broadcast and must be void. For a varying-
-method table, pass the method names aligned with the instances:
+return a value. `fns[i](args)` inside a loop is a broadcast and must be void. Every element's callee runs once, in table
+order, so the loop must call the elements one by one from the first to the last: a spend that stops early, skips or
+repeats an element, or runs past the end fails validation. For a varying-method table, pass the method names aligned
+with the instances:
 
 ```ts
 router.registerExternalArray('IHandler', handlers, ['deposit', 'withdraw']);

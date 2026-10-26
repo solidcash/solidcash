@@ -8597,15 +8597,16 @@ export default class SymbolTableTraversal extends AstTraversal {
         return;
       }
       if (n instanceof ArrayAccessNode) {
-        // Follow bare-identifier aliases of the array (`address[] memory ps = path`) to a parameter. Any element of
-        // a parameter array is the caller's choice, so its index decides nothing here.
-        let array = n.array instanceof IdentifierNode ? this.resolveInlineAliasName(n.array.name, body) : undefined;
+        // Follow bare-identifier aliases of the array (`address[] memory ps = path`, an inlined helper's parameter)
+        // to a parameter, each defined once. Any element of a parameter array is the caller's choice, so its index
+        // decides nothing here.
+        let array = n.array instanceof IdentifierNode ? n.array.name : undefined;
         const aliases = new Set<string>();
         while (array !== undefined && !(parameters.has(array) && this.parameterArrayUnwritten(body, array))
           && !aliases.has(array)) {
           aliases.add(array);
           const init = this.localDefinitionCount(body, array) === 1 ? this.findLocalInit(body, array) : undefined;
-          array = init instanceof IdentifierNode ? this.resolveInlineAliasName(init.name, body) : undefined;
+          array = init instanceof IdentifierNode ? init.name : undefined;
         }
         if (array === undefined || aliases.has(array)) {
           chosen = false;
@@ -8685,7 +8686,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     return !written;
   }
 
-  /** How many statements of `body` define local `name`: declarations, tuple binds and assignments. */
+  /** How many statements of `body` define local `name`: declarations, tuple binds, assignments and deletes. */
   private localDefinitionCount(body: Node | undefined, name: string): number {
     let count = 0;
     const seen = new Set<Node>();
@@ -8697,6 +8698,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         count += node.elements.filter((element) => element.name === name && !element.skip).length;
       }
       if (node instanceof AssignNode && node.identifier.name === name) count += 1;
+      if (node instanceof DeleteLocalNode && node.identifier.name === name) count += 1;
       for (const [key, value] of Object.entries(node)) {
         if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
         if (value instanceof Node) walk(value);

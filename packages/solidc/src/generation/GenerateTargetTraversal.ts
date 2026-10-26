@@ -2554,6 +2554,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
   private isDefineSubTraversal: boolean = false;
+  /** A define body compiled only for its diagnostics: nothing invokes it, so its code never reaches the script. */
+  private isUnemittedDefine: boolean = false;
   /** Sorted collections owned by the enclosing compiler route rather than the current helper. */
   private routePhysicalSortedBatchCollections: Set<string> = new Set();
   // True when the current function has a `return` nested inside a loop (the raw-return stack cleanup can't
@@ -7505,6 +7507,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.nativeLegacyMathFunctions = this.nativeLegacyMathFunctions;
     subTraversal.userFunctionDefs = this.userFunctionDefs;
     subTraversal.isDefineSubTraversal = true;
+    subTraversal.isUnemittedDefine = !emitDefinition;
     subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
     subTraversal.forceFullStateLayout = true;
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
@@ -48418,7 +48421,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(aec_rem)');
     this.pushToStack('(aec_count)');
     // The body's calls took increasing elements: the last one must be an element, or that call ran on nothing. A
-    // pointer table's broadcast counted its calls instead, which must be one per element.
+    // pointer table's broadcast took each element in turn, and must have taken the last.
     const floor = this.loopInputFloorName(slot);
     if (this.getStackIndex(floor, true) >= 0) {
       this.emitPickAt(this.getStackIndex(floor), loc);
@@ -48708,17 +48711,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Each iteration claims an input above the one the loop claimed last: two iterations naming one index
     // (`ts[which[i]]`, a loop-invariant `ts[k]`) would otherwise both accept one run of that callee.
     const floor = this.loopInputFloorName(slot);
-    if (this.getStackIndex(floor, true) < 0) {
+    if (this.getStackIndex(floor, true) >= 0) {
+      this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
+      this.emitPickAt(this.getStackIndex(floor) + 1, loc);    // [..., inputidx, floor]
+      this.emit(Op.OP_GREATERTHAN, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc);
+      this.pushToStack('(ilc_floor)');
+      this.emitReplace(this.getStackIndex(floor), node);
+      this.popFromStack();
+    } else if (this.isUnemittedDefine) {
+      // A helper body its callers inlined is still compiled, for its diagnostics only: it fails if it ever runs.
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    } else {
       throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no input floor in scope`);
     }
-    this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc); // [..., inputidx]
-    this.emitPickAt(this.getStackIndex(floor) + 1, loc);    // [..., inputidx, floor]
-    this.emit(Op.OP_GREATERTHAN, loc);
-    this.emit(Op.OP_VERIFY, loc);
-    this.emitPickAt(this.getStackIndex('(ilc_inidx)'), loc);
-    this.pushToStack('(ilc_floor)');
-    this.emitReplace(this.getStackIndex(floor), node);
-    this.popFromStack();
 
     // 1. IDENTITY: callee master UTXO bytecode == targets[i]
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);
@@ -49385,8 +49393,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private liveCallOrdinalCounter(slot: ExternalCallSlot): string | undefined {
     if (slot.callOrdinal === undefined || !('counted' in slot.callOrdinal)) return undefined;
     const counter = this.callOrdinalCounterName(slot.callOrdinal.group);
-    // Without its counter a counted call would digest ordinal 0 and skip the checks a loop makes inline.
+    // Without its counter a counted call would digest ordinal 0 and skip the checks a loop makes inline. A helper
+    // body its callers inlined is still compiled, for its diagnostics only: it fails if it ever runs.
     if (this.getStackIndex(counter, true) < 0) {
+      if (this.isUnemittedDefine) {
+        this.emit(Op.OP_0, { location: slot.sourceCallNode?.location ?? this.currentFunction.location,
+          positionHint: PositionHint.START });
+        this.emit(Op.OP_VERIFY, { location: slot.sourceCallNode?.location ?? this.currentFunction.location,
+          positionHint: PositionHint.START });
+        return undefined;
+      }
       throw new Error(`Counted call ${slot.interfaceName}.${slot.functionName} has no ordinal counter in scope`);
     }
     return counter;
@@ -49469,7 +49485,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return `__internal__loopInputFloor${slot.slotIndex}`;
   }
 
-  /** Requires a call on a state-array element to take an element above the one its loop took last. Stack-neutral. */
+  /**
+   * Requires a call on a state-array element to take an element above the one its loop took last (on a received
+   * pointer table, the next one: its broadcast runs every element once). Stack-neutral.
+   */
   private emitLoopElementFloor(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, target: ExpressionNode, loc: SingleLocationData,
   ): void {
@@ -49477,25 +49496,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? expression.keys[0] : expression instanceof ArrayAccessNode ? expression.index
         : expression instanceof FieldAccessNode ? element(expression.expression) : undefined);
     const floor = this.loopInputFloorName(slot);
-    if (slot.fnPtrCall && this.getStackIndex(floor, true) >= 0) {
-      // A received pointer table's call is a broadcast that runs every element once after the loop, whatever its
-      // index: count the calls, which must come to the table's length.
-      this.emitPickAt(this.getStackIndex(floor), loc);
-      this.pushToStack('(loop_calls)');
-      this.emit(Op.OP_1ADD, loc);
-      this.emitReplace(this.getStackIndex(floor), node);
-      this.popFromStack();
-      return;
-    }
     const index = element(target);
     if (index === undefined || this.getStackIndex(floor, true) < 0) {
+      // A helper body its callers inlined is still compiled, for its diagnostics only: it fails if it ever runs.
+      if (this.isUnemittedDefine) {
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_VERIFY, loc);
+        return;
+      }
       throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no element index or floor in scope`);
     }
     this.visit(cloneNode(index) as ExpressionNode);           // [.., k]
     this.emit(Op.OP_DUP, loc);                                // [.., k, k]
     this.emitPickAt(this.getStackIndex(floor) + 1, loc);      // [.., k, k, floor]
-    this.emit(Op.OP_GREATERTHAN, loc);
-    this.emit(Op.OP_VERIFY, loc);                             // [.., k]
+    if (slot.fnPtrCall) {
+      this.emit(Op.OP_1ADD, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);                   // [.., k]
+    } else {
+      this.emit(Op.OP_GREATERTHAN, loc);
+      this.emit(Op.OP_VERIFY, loc);                           // [.., k]
+    }
     this.emitReplace(this.getStackIndex(floor), node);
     this.popFromStack();
   }

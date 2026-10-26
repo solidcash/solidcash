@@ -265,6 +265,17 @@ contract Table() {
     for (uint256 i = 0; i < n; i = i + 1) { fns[i](v); }
     this.bumps = this.bumps + 1;
   }
+  function fireSome(uint256[] which, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (uint256 i = 0; i < which.length; i = i + 1) { fns[which[i]](v); }
+    this.bumps = this.bumps + 1;
+  }
+  function fireFirst(uint256 m, uint256 v) internal { for (uint256 i = 0; i < m; i = i + 1) { fns[i](v); } }
+  function fireNested(uint256 n, uint256 m, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (uint256 k = 0; k < n; k = k + 1) { fireFirst(m, v); }
+    this.bumps = this.bumps + 1;
+  }
 }`;
 
 describe('a loop over a table of function pointers', () => {
@@ -295,24 +306,32 @@ describe('a loop over a table of function pointers', () => {
     return { table, handlers: handlers.map((entry) => entry.sc) };
   }
 
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+
   it('calls each pointer once, in order', async () => {
     const { table, handlers } = await deployed();
-    await table.fireN(2n, 3n, alicePub, new SignatureTemplate(alicePriv)).send();
+    await table.fireN(2n, 3n, alicePub, sig()).send();
     for (const handler of handlers) expect((await handler.getState()).counter).toBe(3n);
+    const again = await deployed();
+    await again.table.fireSome([0n, 1n], 3n, alicePub, sig()).send();
+    for (const handler of again.handlers) expect((await handler.getState()).counter).toBe(3n);
   }, 300_000);
 
-  it('refuses a broadcast whose calls are not one per pointer', async () => {
-    // The table runs each of its two callees once, so three calls (past its end) or one would not match the source.
-    for (const n of [3n, 1n]) {
-      const { table, handlers } = await deployed();
-      await expect(table.fireN(n, 3n, alicePub, new SignatureTemplate(alicePriv)).send(), String(n)).rejects.toThrow();
-      expect((await handlers[0].getState()).counter).toBe(0n);
-    }
+  it('refuses a broadcast that stops early, skips a pointer or runs past the end', async () => {
+    // Every pointer's callee runs once after the loop, so the calls must take each pointer in turn. Two pointers: a
+    // third call has no pointer, where Solidity would revert.
+    const { table, handlers } = await deployed();
+    await expect(table.fireN(1n, 3n, alicePub, sig()).send()).rejects.toThrow();
+    await expect(table.fireSome([1n], 3n, alicePub, sig()).send()).rejects.toThrow();
+    await expect(table.fireN(3n, 3n, alicePub, sig()).send()).rejects.toThrow();
+    for (const handler of handlers) expect((await handler.getState()).counter).toBe(0n);
   }, 300_000);
 
-  it('refuses a call that indexes the table by anything but its loop counter', () => {
-    const picked = TABLE.replace('function fireN(uint256 n,', 'function fireN(uint256[] which, uint256 n,')
-      .replace('fns[i](v)', 'fns[which[i]](v)');
-    expect(() => compileString(picked)).toThrow(/must index it by that loop's counter/);
-  });
+  it('refuses two calls through one pointer, directly or through a helper in a loop', async () => {
+    // Each pointer's callee runs once after the loop, so a second call on pointer 0 would share its run.
+    const { table, handlers } = await deployed();
+    await expect(table.fireSome([0n, 0n], 3n, alicePub, sig()).send()).rejects.toThrow();
+    await expect(table.fireNested(2n, 1n, 3n, alicePub, sig()).send()).rejects.toThrow();
+    expect((await handlers[0].getState()).counter).toBe(0n);
+  }, 300_000);
 });

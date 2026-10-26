@@ -1156,10 +1156,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   none of them and they run on the SDK's arguments. A function writing the array inside such a loop, or on both sides
   of it, does not compile in any mode (liveness). Assembly anywhere in such a function counts as a write of the array,
   and a loop whose element callee is a forwarding proxy or drops a budget pad is refused, as a direct call into one
-  is (fail closed). An honest spend whose function writes the loop's array through an internal function pointer
-  fails at preflight (`OP_SPLIT` on an empty item), while the direct call's twin settles: seen by the sixth review,
-  and by the seventh with the array read placed correctly, so it is an older failure of the pointer-invoked write,
-  not of that read (fail closed, open). A received pointer's selector is a run-time value: the method it names may
+  is (fail closed). Any state write a direct build makes through a function value (an internal pointer or a self
+  value `this.f`), a scalar as well as an array, fails at preflight (the invoked body reads a state frame the call
+  through the value never pushes: an invalid stack index or `OP_SPLIT` on an empty item), while the same call by name
+  settles; `StructFunctionValueCalls.test.ts` keeps it as an open gap. It is older than the loop fixes and fails
+  closed (open, liveness): supporting it needs a state frame shared by every function a value can name. A received pointer's selector is a run-time value: the method it names may
   take more parameters than the table's type, and those are not bound (EVM reverts on the short calldata).
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,

@@ -18,6 +18,8 @@ import {
 import { FunctionType, AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { FunctionPointerTypeError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 /**
  * FOREIGN external function-pointer STRUCT FIELDS that hold a fixed method on a runtime address (the nested
@@ -35,6 +37,7 @@ import { cloneNode } from '../ast/clone.js';
  * name is left unclassified for the general blob case - future). v1: fixed-method struct fields.
  */
 export default class LowerForeignFunctionPointerStructFields extends AstTraversal {
+  private members?: ForeignMemberTypes;
   private typeNames = new Set<string>();
   private structDefs: StructDefinitionNode[] = [];
   // fn-ptr field name -> its fixed (interface, method) + the owning struct field position(s)
@@ -43,6 +46,7 @@ export default class LowerForeignFunctionPointerStructFields extends AstTraversa
   private fieldPositions = new Map<string, Set<number>>();
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.members = new ForeignMemberTypes(node);
     this.typeNames = new Set();
     for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
     for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
@@ -80,6 +84,10 @@ export default class LowerForeignFunctionPointerStructFields extends AstTraversa
             if (!this.fieldPositions.has(f.name)) return;
             const arg = n.parameters[pos];
             const m = arg ? this.foreignMember(arg) : undefined;
+            // A call through the field binds its type's arguments: the member must take exactly them.
+            if (m && !this.members!.fits(m, f.type as FunctionType)) {
+              throw new FunctionPointerTypeError(arg!, f.name, `${m.iface}.${m.method}`, f.type.toString());
+            }
             if (m) {
               const prev = seen.get(f.name);
               if (prev === null) return;

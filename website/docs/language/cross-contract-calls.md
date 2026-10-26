@@ -306,11 +306,11 @@ list naming fewer) fails validation. The array is checked as the loop saw it, so
 loop or after it, but one that writes it inside the loop, or on both sides, does not compile.
 
 Function-pointer arrays use the same machinery. `fns[index](args)` outside a loop calls just that element and can
-return a value. Each element's method must take the table type's parameters and return its results; a table holding
-another does not compile. `fns[i](args)` inside a loop is a broadcast and must be void, and follows the same rule:
-the loop calls the elements one by one from the first to the last, or none, and a spend that stops early, skips or
-repeats an element, or runs past the end fails validation. For a varying-method table, pass the method names aligned
-with the instances:
+return a value. Each element's method must take the table type's parameters and return its results, as must the
+method a single external pointer names; a table or pointer holding another does not compile. `fns[i](args)` inside a
+loop is a broadcast and must be void, and follows the same rule: the loop calls the elements one by one from the first
+to the last, or none, and a spend that stops early, skips or repeats an element, or runs past the end fails
+validation. For a varying-method table, pass the method names aligned with the instances:
 
 ```ts
 router.registerExternalArray('IHandler', handlers, ['deposit', 'withdraw']);

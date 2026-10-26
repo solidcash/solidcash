@@ -23,6 +23,8 @@ import {
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { FunctionPointerTypeError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 /**
  * FOREIGN external function pointers. A `function(...) external f = IFoo(addr).method` targets ANOTHER contract,
@@ -44,11 +46,13 @@ import { cloneNode } from '../ast/clone.js';
 export default class DesugarExternalFunctionPointers extends AstTraversal {
   private aliases = new Map<string, ExpressionNode>();
   private aliasTypes = new Map<string, FunctionType>();
+  private members?: ForeignMemberTypes;
   private synthIfaces: InterfaceNode[] = [];
   private usedInterfaceNames = new Set<string>();
   private synthCounter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.members = new ForeignMemberTypes(node);
     this.synthIfaces = [];
     this.usedInterfaceNames = new Set(node.interfaceDefinitions.map((iface) => iface.name));
     this.synthCounter = 0;
@@ -92,6 +96,15 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     const walk = (n: Node): void => {
       if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && n.type.isExternal
           && n.expression && this.isRewritableAlias(n.expression)) {
+        // A call through the alias binds its type's arguments: each member it can hold must take exactly them.
+        const arms = n.expression instanceof TernaryOpNode ? [n.expression.ifTrue, n.expression.ifFalse] : [n.expression];
+        for (const arm of arms) {
+          const iface = arm instanceof FieldAccessNode ? this.castInterfaceName(arm.expression) : undefined;
+          if (arm instanceof FieldAccessNode && iface !== undefined && this.members!.knows(iface)
+            && !this.members!.fits({ iface, method: arm.name }, n.type)) {
+            throw new FunctionPointerTypeError(arm, n.name, `${iface}.${arm.name}`, n.type.toString());
+          }
+        }
         if (seen.has(n.name)) this.aliases.delete(n.name);
         else {
           this.aliases.set(n.name, n.expression);

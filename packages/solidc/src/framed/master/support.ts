@@ -3652,8 +3652,11 @@ function deriveEntryCallSites(
     const target = siteTarget(slot);
     if ('reason' in target) return { calls: [], reason: target.reason };
     // A call routed to the target's fallback carries its payload's own selector, which no method of it names.
+    // A call names the overload its lowering selected; only a call without one falls back to the name.
+    const resolved = slot.sourceCallNode?.resolvedCallee;
     const selector = slot.compileTimeSelector ?? slot.sourceCallNode?.lowLevelRoute?.fallback?.selector
-      ?? resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName, evmCompat);
+      ?? (resolved ? selectorForParameters(slot.functionName, resolved.parameterTypes, evmCompat)
+        : resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName, evmCompat));
     if (selector === undefined) {
       return { calls: [], reason: `the call to '${slot.interfaceName}.${slot.functionName}' has no four-byte `
         + 'selector the master head can check' };
@@ -3845,12 +3848,18 @@ function resolveInterfaceSelector(
   evmCompat = false,
 ): Uint8Array | undefined {
   const iface = interfaces.find((candidate) => candidate.name === interfaceName);
-  const fn = iface?.functions.find((candidate) => candidate.name === functionName);
-  if (!fn) return undefined;
+  // An overloaded name has no one selector.
+  const named = iface?.functions.filter((candidate) => candidate.name === functionName) ?? [];
+  if (named.length !== 1) return undefined;
+  return selectorForParameters(functionName, named[0]!.parameters.map((parameter) => parameter.type), evmCompat);
+}
+
+/** The four-byte selector of `functionName` taking `types`. */
+function selectorForParameters(functionName: string, types: readonly Type[], evmCompat: boolean): Uint8Array {
   return computeFunctionSelector(
     evmCompat
-      ? canonicalSelectorSignature(functionName, fn.parameters.map((parameter) => parameter.type))
-      : computeFunctionSignature(functionName, fn.parameters.map((parameter) => parameter.type.toString())),
+      ? canonicalSelectorSignature(functionName, [...types])
+      : computeFunctionSignature(functionName, types.map((type) => type.toString())),
     evmCompat,
   );
 }

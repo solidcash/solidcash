@@ -33,11 +33,15 @@ import {
   DoWhileNode,
   DeleteLocalNode,
   DeleteStateNode,
+  StateAssignNode,
+  AssignNode,
+  StateAccessNode,
 } from '../ast/AST.js';
 import { ArrayType, FunctionType, AddressType, BytesType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { FnPtrArrayLoweringError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 const SELECTOR_ARRAY_PREFIX = '__fnsel_';
 
@@ -66,7 +70,7 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  */
 export default class LowerForeignFunctionPointerArrayElements extends AstTraversal {
   private typeNames = new Set<string>();
-  private memberTypes = new Map<string, InterfaceNode | ContractNode>();
+  private members?: ForeignMemberTypes;
   private tables = new Map<string, TableInfo>();
   private loopDepth = 0;
   private hoistCounter = 0;
@@ -83,13 +87,10 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
-    this.memberTypes = new Map();
+    this.members = new ForeignMemberTypes(node);
     const types = [...node.interfaceDefinitions as InterfaceNode[], ...node.importedContracts as ContractNode[],
       ...(node.contract ? [node.contract] : [])];
-    for (const type of types) {
-      this.typeNames.add(type.name);
-      this.memberTypes.set(type.name, type);
-    }
+    for (const type of types) this.typeNames.add(type.name);
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
     return node;
   }
@@ -118,6 +119,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
       });
     }
     if (this.tables.size === 0) return node;
+    for (const fn of bodies) this.refuseWholeTableAssigns(fn.body!);
 
     // A plain-`address[]` array is registered as a dynamic-array STATE VARIABLE (not a collection), so MOVE each
     // classified fn-ptr array out of collections into a plain `address[]` state var (+ the parallel `bytes[]`
@@ -156,7 +158,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     const { iface, method } = members[0];
     if (members.some((p) => p.iface !== iface)) return { kind: 'none', iface: '', method: '' };
     // A call through the table binds its type's arguments for every element, so each element's method takes them.
-    const misfit = written.find((p) => !this.memberFits(p.member!, type));
+    const misfit = written.find((p) => !this.members!.fits(p.member!, type));
     if (misfit) {
       throw new FnPtrArrayLoweringError(misfit.value, name,
         `'${misfit.member!.iface}.${misfit.member!.method}' does not name one method of the table's type ${type}`);
@@ -165,36 +167,32 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     return { kind: varying ? 'varying' : 'fixed', iface, method };
   }
 
-  /** True when `iface.method` names one method taking the parameters, and returning the results, of `type`. */
-  private memberFits(member: { iface: string; method: string }, type: FunctionType): boolean {
-    const same = (a: Type[], b: Type[]): boolean => a.length === b.length
-      && a.every((item, at) => item.toString() === b[at]!.toString());
-    const owner = this.memberTypes.get(member.iface);
-    return (owner ? this.methodsNamed(owner, member.method) : []).filter((fn) => same(fn.parameters
-      .filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => parameter.type),
-    type.parameterTypes) && same(fn.returnTypes ?? [], type.returnTypes)).length === 1;
-  }
-
   /**
-   * The methods another contract can call on `owner` by `name`, its parent interfaces' included, one per signature
-   * (an interface's own declaration overrides a parent's).
+   * Refuses a whole assignment to a table this pass lowers, except a copy of another table of the same interface and
+   * method: the classification sees only pushes and element writes, and the lowered copy moves the addresses alone.
    */
-  private methodsNamed(
-    owner: InterfaceNode | ContractNode, name: string, seen = new Set<string>(),
-  ): { parameters: { name: string; type: Type }[]; returnTypes?: Type[] }[] {
-    if (seen.has(owner.name)) return [];
-    seen.add(owner.name);
-    type Method = { parameters: { name: string; type: Type }[]; returnTypes?: Type[] };
-    const own = owner instanceof InterfaceNode ? owner.functions.filter((fn) => fn.name === name)
-      : owner.functions.filter((fn) => fn.name === name && fn.isEntryPoint);
-    const inherited = owner instanceof InterfaceNode ? owner.parents.flatMap((parent) => {
-      const declared = this.memberTypes.get(parent);
-      return declared ? this.methodsNamed(declared, name, seen) : [];
-    }) : [];
-    const bySignature = new Map<string, Method>();
-    const signature = (fn: Method): string => fn.parameters.map((parameter) => parameter.type.toString()).join(',');
-    for (const fn of [...inherited, ...own] as Method[]) bySignature.set(signature(fn), fn);
-    return [...bySignature.values()];
+  private refuseWholeTableAssigns(body: Node): void {
+    const walk = (n: Node): void => {
+      const target = n instanceof StateAssignNode ? n.name
+        : n instanceof AssignNode ? n.identifier.name : undefined;
+      const table = target !== undefined ? this.tables.get(target) : undefined;
+      if (table) {
+        const value = n instanceof StateAssignNode ? n.expression : (n as AssignNode).expression;
+        const sourceName = value instanceof IdentifierNode || value instanceof StateAccessNode ? value.name : undefined;
+        const source = sourceName !== undefined ? this.tables.get(sourceName) : undefined;
+        if (!source || table.kind !== 'fixed' || source.kind !== 'fixed' || source.iface !== table.iface
+          || source.method !== table.method) {
+          throw new FnPtrArrayLoweringError(n, target!,
+            'a whole assignment to the table must copy a table of the same interface and method');
+        }
+      }
+      for (const key of Object.keys(n)) {
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
   }
 
   private rewrite(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {

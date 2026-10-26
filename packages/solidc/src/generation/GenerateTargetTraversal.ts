@@ -25563,6 +25563,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.foldedCallReverts) this.emitFoldedCallFailure(node);
       return node;
     }
+    // The entry point lays out and binds a callee; an invoked body of a direct build has none of it, so a call left
+    // there would run unchecked.
+    if (this.isDefineSubTraversal && !this.isUnemittedDefine && this.directConvention
+      && this.compilerOptions.messageBus !== true && !this.currentFunction.graphEmissionHandler
+      && !this.isCompilerMessageBusRoute()) {
+      throw new SolidcDiagnosticError(
+        'EXTERNAL_CALL_IN_SUBROUTINE',
+        `'${this.currentFunction.name}' makes the external call ${node.interfaceName}.${node.functionName} inside an `
+          + 'invoked function body, where no entry point binds its callee. Call it from the entry point.',
+        { functionName: this.currentFunction.name, interfaceName: node.interfaceName },
+      );
+    }
     // A call an argument expression makes was already lowered into its own site for the call it feeds; visiting it
     // again would bind a second record, so the visit lifts the value it left on the frame for the digest instead.
     if (this.framedMaster && this.framedLoweredSites.has(node)) {

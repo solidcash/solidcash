@@ -2527,16 +2527,26 @@ export default class SymbolTableTraversal extends AstTraversal {
       return literal(this.computeAbiSelector(signature), 4);
     };
 
+    // The one function of a name; an overloaded name has no one selector, as in Solidity.
+    const onlyNamed = <T extends { name: string }>(
+      functions: readonly T[] | undefined, owner: string, name: string,
+    ): T | undefined => {
+      const named = (functions ?? []).filter((fn) => fn.name === name);
+      if (named.length > 1) throw new AmbiguousSelectorError(expr, owner, name);
+      return named[0];
+    };
+    const ownName = this.currentContract?.name ?? 'this';
+
     // `this.f.selector` and bare `f.selector`.
     if (expr.expression instanceof StateAccessNode) {
       const functionName = expr.expression.name;
-      const own = this.currentContract?.functions.find((fn) => fn.name === functionName);
+      const own = onlyNamed(this.currentContract?.functions, ownName, functionName);
       const folded = selectorForFunction(own);
       if (folded) return folded;
     }
     if (expr.expression instanceof IdentifierNode) {
       const name = expr.expression.name;
-      const own = this.currentContract?.functions.find((fn) => fn.name === name);
+      const own = onlyNamed(this.currentContract?.functions, ownName, name);
       const folded = selectorForFunction(own);
       if (folded) return folded;
 
@@ -2564,7 +2574,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const holder = qualifier === 'super' || qualifier === this.currentContract?.name
         ? this.currentContract
         : this.contractMap.get(qualifier) ?? this.interfaceMap.get(qualifier);
-      const folded = selectorForFunction(holder?.functions.find((fn) => fn.name === name));
+      const holderFunctions: readonly { name: string; parameters: ParameterNode[] }[] | undefined = holder instanceof
+        InterfaceNode ? this.getAllInterfaceFunctions(holder) : holder?.functions;
+      const folded = selectorForFunction(onlyNamed(holderFunctions, qualifier, name));
       if (folded) return folded;
 
       const libraryErrorTypes = this.libraryErrorSignatures.get(`${qualifier}.${name}`);

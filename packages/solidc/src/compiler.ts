@@ -15898,8 +15898,9 @@ function compileResolvedAst(
   if (needsInlineAssembly) ast = ast.accept(new LowerInlineAssembly()) as Ast;
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
-  // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
-  if (needsExternalCallLowering) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+  // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case. A call through a function
+  // pointer parameter becomes an external call only in the pointer lowering above, after the survey.
+  if (needsExternalCallLowering || hasFunctionPointers) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
 
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.

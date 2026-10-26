@@ -351,7 +351,8 @@ receive() external payable { require(tx.outputs[0].value >= 546); }  // warned: 
   cross-contract caller receives through a return-event NFT.
 - Internal calls are real subroutines (`OP_DEFINE`/`OP_INVOKE`), so recursion works. Function pointers:
   `function(int, int) internal returns (int) op = useAdd ? add : mul;` then `op(a, b)`. Internal pointers work,
-  also in arrays and mappings; one external pointer works but a `function(..) external[]` array fails to lower.
+  also in arrays and mappings; one external pointer works but a `function(..) external[]` array fails to lower. A
+  foreign external pointer (`IFace(a).m`) must name a method of exactly its type, or it does not compile.
 
 ### Modifiers
 

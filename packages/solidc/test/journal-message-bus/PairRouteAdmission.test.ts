@@ -95,16 +95,15 @@ describe('pair-shaped participant route admission', () => {
     expect(mint?.eligible).toBe(false);
     expect(mint?.rejectionReason).toBe('KERNEL_LAYOUT');
     expect(artifact.messageBus?.available ?? false).toBe(false);
-    // The compiler must never emit a route for this writer. Three experiments measured the remaining work. With
-    // the conditional-scalar refusal disabled, route synthesis throws `Message-bus kernel admission retained a
-    // non-kernel route shape (mint)` because the fee recipient row key is a `factory.feeToAndMigrator()` producer
-    // result, which the fixed entry alternatives cannot represent. Widening those alternatives to accept one
-    // parameter key beside one expression key admits this participant, but the real pair is then refused at
-    // `conditional-scalar-collection-event-settlement`: its first-mint arm writes `totalSupply` beside a
-    // `balanceOf` row and a `Transfer` event, and that arm also holds a `require`, an external result and a
-    // `log2` call, so the write cannot move to a select without code motion across the row/event settlement.
-    // A route therefore needs both a runtime-return-keyed row and a kernel settlement for a branch-selected
-    // scalar write.
+    // The compiler must never emit a route for this writer. Route admission now admits a scalar write that shares
+    // its arm with the row/event settlement (`packages/solidcash/test/e2e/KernelConditionalScalarRoute.test.ts`
+    // drives both branches), but this writer's `_mintFee` shape is the complementary one: `kLast` is written in an
+    // arm whose sibling arm mints `balanceOf[_feeTo]` and emits. That shape fails at run time when admission is
+    // allowed (`BCH-2026 preflight failed at input 81: Program failed an OP_VERIFY operation`,
+    // `fence-complementary-fails.log`), so it stays refused as `conditional-scalar-collection-event-settlement`.
+    // Measured on the real pair with `messageBusHandlersByContract: { UniswapV2Pair: ['getReserves', 'mint'] }`:
+    // the contract compile reports the same gate for `mint` (`narrow-fence-pair-mint.log`). A route for this
+    // writer needs a kernel settlement for a scalar whose absence is complementary to a sibling arm's row.
   });
 });
 

@@ -187,13 +187,19 @@ The pair's returning state readers were the last shape without a route. Three co
   `UniswapV2Router02` publish a route at all; it admits `WETH`, `__receive`, `addLiquidity`, `factory`,
   `getAmountIn`, `getAmountOut`, `quote`, `removeLiquidity` and `removeLiquidityWithPermit`.
 
-Publishing a pair route changes the pair's direct-entry ABI: the vmap batch for `transferFrom` is split
-differently, and the ERC20-via-pair `transferFrom` then fails preflight (`OP_VERIFY`), 14 -> 13. The parity
-project therefore keeps the pair on its established direct lowering with `messageBusByContract`
-(`UniswapV2Pair: false`, `SushiSwapPair: false`). A regression
+Compiling the pair under the message bus (with or without a routed handler) changes its direct-entry ABI: the
+vmap batch for `transferFrom` is split differently, and the ERC20-via-pair `transferFrom` then fails preflight
+(`OP_VERIFY`), 14 -> 13. The parity project therefore keeps the pair on its established direct lowering with
+`messageBusByContract` (`UniswapV2Pair: false`, `SushiSwapPair: false`). A regression
 (`PairRouteAdmission.test.ts > per-contract message-bus opt-out`) asserts the opted-out contract's bytecode is
 identical to a `messageBus: false` build while a sibling still publishes its route. The route capability stays
 available for a participant whose direct entries do not change.
+
+Route admission now admits a scalar state write that shares its arm with the row/event settlement, and keeps
+refusing the complementary shape (a scalar in one arm while a sibling arm settles a row or event). Both sides are
+measured: `packages/solidcash/test/e2e/KernelConditionalScalarRoute.test.ts` sends the admitted shape on both
+branches, and `fence-complementary-fails.log` records the refused shape failing the preflight when the fence is
+bypassed. The parity project therefore keeps the pair on its direct lowering.
 
 ### Parity fixes in the compiler/SDK
 
@@ -470,23 +476,21 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   A pre-created pair does not change this: the manual two-step still fails at the same direct-call refusal.
   The Router's route (which now admits `addLiquidity`, `factory`, `quote` and the amount getters) is a
   prerequisite but cannot substitute for a routable pair writer.
-  Measured, not assumed: with `messageBusHandlersByContract: { UniswapV2Pair: ['mint'] }` and the
-  conditional-scalar gate disabled for one compile, route synthesis throws
-  `Message-bus kernel admission retained a non-kernel route shape (mint)` because the fee recipient is a
-  per-row key sourced from `factory.feeToAndMigrator()` and `kernelFixedEntryAlternatives` cannot fix it.
-  Widening those alternatives to accept one parameter key beside one expression key per collection admits the
-  pair-shaped unit-test participant (`PairRouteAdmission.test.ts`). It does not admit the real pair: its
-  contract compile then stops at `{"handler":"mint","gate":"conditional-scalar-collection-event-settlement"}`
-  (`writer-final-pair-admission.log`), because the first-mint arm writes `totalSupply` beside a `balanceOf` row
-  and a `Transfer` event. A compile-time select desugaring (lift `if (c) x = v;` to `x = c ? v : x`) was also
-  implemented and measured: it removes the `_mintFee`/`_update` scalar writes, but the first-mint arm
-  interleaves a `require`, an external result, a `log2` call and the row/event settlement, so moving that write
-  to a join needs code motion across the settlement (and a value that depends on which arm ran). Bypassing the
-  wide-event gate for `burn` instead lands on the same `conditional-scalar-collection-event-settlement`
-  refusal. Each writer therefore needs two new kernel journal mechanisms: a row key sourced from a runtime
-  external return, and a conditional scalar settlement. Without them the Router ceiling is the 11 tests that
-  never seed a pair (address getters, two deadline guards, four pure library-math cases), and the SushiRoll
-  ceiling is its 3 non-pair tests.
+  Measured, not assumed: with `messageBusHandlersByContract: { UniswapV2Pair: ['getReserves', 'mint'] }`, the
+  contract compile still reports `{"handler":"mint","gate":"conditional-scalar-collection-event-settlement"}`
+  (`narrow-fence-pair-mint.log`). The fence itself was narrowed and re-measured. It now admits a scalar state
+  write that shares its arm with the row/event settlement: `KernelConditionalScalarRoute` drives
+  `if (key > 0) { flags[key] = true; appends += 1; emit Appended(key); }` through the shipped sender on both
+  branches (scalar 1 on the arm, 0 off it, row present on the arm and absent off it). The shape it still
+  refuses is the complementary one, a scalar in one arm while a *sibling* arm settles a row or event. That
+  shape genuinely fails at run time: the same harness with the fence bypassed stops at
+  `BCH-2026 preflight failed at input 81: Program failed an OP_VERIFY operation` for both the mapping arm and
+  the scalar arm (`fence-complementary-fails.log`). The pair's `_mintFee` is that shape — `kLast = 0` sits in
+  an arm whose sibling mints `balanceOf[_feeTo]` and emits — so `mint` stays refused.
+  Bypassing the wide-event gate for `burn` instead lands on the same `conditional-scalar-collection-event-settlement`
+  refusal. A writer therefore needs a kernel settlement for a scalar whose absence is complementary to a
+  sibling arm's row. Without it the Router ceiling is the 11 tests that never seed a pair (address getters, two
+  deadline guards, four pure library-math cases), and the SushiRoll ceiling is its 3 non-pair tests.
   The pair-writer route alone would not raise either count: `addLiquidity` also deploys the pair through the
   factory inside the same transaction, and BCH cannot spend an output it creates, so the 63 Router and 13
   SushiRoll failures each need that child-creation gap closed first (see the two bullets below).

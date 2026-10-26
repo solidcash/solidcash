@@ -6849,10 +6849,14 @@ function synthesizeMessageBusRoute(
     }
     return candidates.length === 1 ? candidates[0] : undefined;
   };
-  // The fixed entry/effect frame can settle an unconditional scalar update beside mapping rows, but a scalar
-  // write selected by a source branch has no independent row-local settlement identity. Inspect successful
-  // paths through internal calls rather than treating every syntactic arm as reachable: a preceding terminal
-  // zero guard can rule out that arm, including when the guard is in the caller of the writing helper.
+  // A scalar write selected by a source branch shares its branch's absence with the row/event settlement when
+  // both live in the SAME arm: the frame publishes that whole arm or none of it, which measurably works (see
+  // `KernelConditionalScalarRoute`), so such a write is admitted. What has no row-local settlement identity is a
+  // scalar write in one arm while a SIBLING arm settles a collection or event: the two absences are then
+  // complementary, and the fixed frame would have to pair a scalar with a row that the other path settles.
+  // Inspect successful paths through internal calls rather than treating every syntactic arm as reachable: a
+  // preceding terminal zero guard can rule out that arm, including when the guard is in the caller of the
+  // writing helper.
   const hasSuccessfulConditionalScalarWrite = (root: FunctionDefinitionNode): boolean => {
     const scalarStateNames = new Set(contract.stateVariables.map((state) => state.name));
     let nextLocalMarker = 0;
@@ -6861,11 +6865,11 @@ function synthesizeMessageBusRoute(
       aliases: Map<string, string>;
       nonZero: Set<string>;
       conditional: boolean;
-      // True when an enclosing branch also writes a collection, emits, or transfers. A scalar update in that
-      // branch has no row of its own. A scalar update in a branch that does none of those is unrelated.
+      // True when a SIBLING arm of an enclosing branch writes a collection, emits or transfers, so this path's
+      // scalar update has no row of its own. A scalar update whose own arm carries that settlement is unrelated.
       settlementBranch: boolean;
     }
-    const branchSettlesCollectionOrEvent = (branch: BranchNode): boolean => {
+    const branchSettlesCollectionOrEvent = (branch: Node): boolean => {
       let settles = false;
       walkInvocationAst(branch, (node) => {
         const namedCollection = (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode)
@@ -6945,20 +6949,25 @@ function synthesizeMessageBusRoute(
           || !path.nonZero.has(comparison.marker);
         const falsePossible = comparison === undefined || comparison.equal
           || !path.nonZero.has(comparison.marker);
-        const settles = branchSettlesCollectionOrEvent(statement);
-        const branchPath = (nonZero: Set<string>): ScalarPath => ({
+        // An arm is settlement-bearing when the OTHER arm settles a collection/event. Same-arm settlement (the
+        // handler's row, event and scalar published together) keeps this path clean.
+        const yesSettles = branchSettlesCollectionOrEvent(statement.ifBlock);
+        const noSettles = statement.elseBlock === undefined
+          ? false : branchSettlesCollectionOrEvent(statement.elseBlock);
+        const branchPath = (nonZero: Set<string>, rivalSettles: boolean): ScalarPath => ({
           owner: path.owner, aliases: new Map(path.aliases), nonZero, conditional: true,
-          settlementBranch: path.settlementBranch || settles,
+          settlementBranch: path.settlementBranch || rivalSettles,
         });
         const trueNonZero = new Set(path.nonZero);
         const falseNonZero = new Set(path.nonZero);
         if (comparison && !comparison.equal) trueNonZero.add(comparison.marker);
         if (comparison && comparison.equal) falseNonZero.add(comparison.marker);
-        const yes = truePossible ? visitBlock(statement.ifBlock, [branchPath(trueNonZero)]) : [];
+        const yes = truePossible
+          ? visitBlock(statement.ifBlock, [branchPath(trueNonZero, noSettles)]) : [];
         const no = falsePossible
           ? statement.elseBlock
-            ? visitBlock(statement.elseBlock, [branchPath(falseNonZero)])
-            : [branchPath(falseNonZero)]
+            ? visitBlock(statement.elseBlock, [branchPath(falseNonZero, yesSettles)])
+            : [branchPath(falseNonZero, yesSettles)]
           : [];
         // The branch predicate selects writes *inside* an arm; an assignment after the join is not itself
         // conditional. Retain only the proven facts on each surviving path.

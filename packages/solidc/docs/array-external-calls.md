@@ -103,10 +103,11 @@ Codegen: `emitArrayExternalCallLoop` (GTT) reads the whole array to a blob (`emi
 co-spends the array's chunks once), decodes the count, then loops `OP_BEGIN..OP_UNTIL` decoding each framed
 element and verifying `callee[externalCallInputBase + i*stride].master.LBC == arr[i]` plus master/category
 preservation and the selector. Each call the source loop makes claims the element after the one claimed before it
-and binds the arguments it names, and after the loop the last claim must be the last element: the loop calls every
-element once, in order, or none (then no callee is checked). Strict: count pinned to N, each callee verified against
-arr[i]. The array is read as the loop saw it: before the function's writes to it when they all follow the loop, after
-them when they all precede it; a function writing it inside the loop, or on both sides, is refused
+and binds the arguments it names (on a table of received pointers, at the callee input the next entry of its witness
+list names), and after the loop the last claim must be the last element: the loop calls every element once, in
+order, or none (then no callee is checked). Strict: count pinned to N, each callee verified against arr[i]. The array
+is read as the loop saw it: before the function's writes to it when they all follow the loop, after them when they
+all precede it; a function writing it inside the loop, or on both sides, is refused
 (`LOOP_ARRAY_WRITTEN_AROUND_CALLS`). A write inside a loop goes through the `__dlcache_` loop cache, whose writes
 count as the array's.
 

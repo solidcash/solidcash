@@ -10169,6 +10169,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const slot of loopInputFloors) {
       this.emit(encodeInt(-1n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(this.loopInputFloorName(slot));
+      // A table of received pointers names each element's callee input in a witness list, read in turn.
+      const list = `__internal__extcallIdxList${slot.slotIndex}`;
+      if (slot.fnPtrCall && this.getStackIndex(list, true) >= 0) {
+        this.emitPickTrackedFromBottom(list, { location: node.location, positionHint: PositionHint.START });
+        this.pushToStack(this.loopIndexCursorName(slot));
+      }
     }
     this.refuseStaleSortedReads(node);
     node.body = this.visit(node.body) as BlockNode;
@@ -27796,16 +27802,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The declared types of the arguments a direct typed call names, `undefined` for a `sig`, when no record digest
    * binds them: a call to a method that returns nothing, one naming fewer arguments than its method declares, or a
    * returning call whose record the caller does not digest (a contract-typed target). `inLoop` is a call a loop over
-   * per-iteration targets dispatches where it runs. Repeated or grouped calls, pointers, self calls and the bus are
-   * bound otherwise or out of scope.
+   * per-iteration targets dispatches where it runs, `tableElement` one on an element of a table of pointers. Repeated
+   * or grouped calls, other pointers, self calls and the bus are bound otherwise or out of scope.
    */
   private directCallArgumentBinding(
-    node: ExternalFunctionCallNode, slot: ExternalCallSlot, inLoop = false,
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, inLoop = false, tableElement = false,
   ): { types: (Type | undefined)[] } | undefined {
     const method = slot.calleeMethod;
     if (method === undefined || !this.directConvention || node.opaqueReturn || slot.interfaceName === '__raw__'
       || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
-    if (slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar
+    if ((!tableElement && (slot.fnPtrCall || slot.selectorArrayVar)) || slot.runtimeSelector
       || (!inLoop && (slot.loopArrayVar || slot.inlineLoopDispatch))
       || slot.batchInvocations || slot.addressIsSelf || slot.callOrdinal !== undefined) return undefined;
     if ((!inLoop && (this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)))
@@ -49603,17 +49609,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
   }
 
+  /** The unread rest of the witness list naming a received table's callee inputs. */
+  private loopIndexCursorName(slot: ExternalCallSlot): string {
+    return `__internal__loopIndexCursor${slot.slotIndex}`;
+  }
+
   /**
    * A void call on a state-array element binds the arguments it names against the unlocking of that element's callee,
-   * at the input the loop's epilogue checks for it (`base + offset + element * stride`). Stack-neutral.
+   * at the input the loop's epilogue checks for it: `base + offset + element * stride`, or for a table of received
+   * pointers the next index of its witness list (the calls take the elements in turn). Stack-neutral.
    */
   private emitLoopElementArgumentBinding(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
   ): void {
     const floor = this.loopInputFloorName(slot);
-    if (slot.fnPtrCall || this.getStackIndex(floor, true) < 0) return;
-    const binding = this.directCallArgumentBinding(node, slot, true);
+    if (this.getStackIndex(floor, true) < 0) return;
+    const binding = this.directCallArgumentBinding(node, slot, true, true);
     if (!binding) return;
+    if (slot.fnPtrCall) {
+      const cursor = this.loopIndexCursorName(slot);
+      if (this.getStackIndex(cursor, true) < 0) {
+        throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no callee index list in scope`);
+      }
+      this.emitPickAt(this.getStackIndex(cursor), loc);       // [.., list]
+      this.emitPushdataDecode(PrimitiveType.BIGINT, loc);     // [.., idx, rest]
+      this.emitReplace(this.getStackIndex(cursor) + 2, node); // [.., idx]
+      this.pushToStack('(table_callee_idx)');
+      this.emitDirectCallArgumentBinding(node, slot, binding, loc, () => {
+        this.emitPickAt(this.getStackIndex('(table_callee_idx)'), loc);
+      });
+      const at = this.getStackIndex('(table_callee_idx)');
+      this.emit(encodeInt(BigInt(at)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(at);
+      return;
+    }
     const stride = 1 + slot.requiredDataNftIndices.length;
     this.emitDirectCallArgumentBinding(node, slot, binding, loc, () => {
       this.emitPickTrackedFromBottom('__internal__externalCallInputBase', loc); // [.., base]

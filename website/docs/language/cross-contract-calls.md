@@ -93,10 +93,10 @@ For a stateful typed call, the generated covenants bind at least these propertie
 3. The selected function/selector and arguments agree with the co-spent callee's invocation. A call that returns
    values is bound through its call record (below). A direct call that returns nothing, or names fewer arguments
    than its function declares, checks each argument it names against the callee's unlocking, inside a loop over a
-   parameter array, computed targets or a state array as well; a table of received function pointers does not check
-   its callees' arguments. An interface that declares a single function checks no selector there, so give such a
-   callee an interface naming its other functions when the function matters. Under `messageBus: false` a call into
-   a forwarding proxy is refused when it checks arguments, or in a loop a selector; the message bus binds it.
+   parameter array, computed targets or a state array (a table of function pointers too) as well. An interface that
+   declares a single function checks no selector there, so give such a callee an interface naming its other
+   functions when the function matters. Under `messageBus: false` a call into a forwarding proxy is refused when it
+   checks arguments, or in a loop a selector; the message bus binds it.
 4. The caller and callee replacement outputs obey their respective state covenants.
 5. A typed return comes from the callee's call record: a category-bound return-event output that names the call it
    answers, the only one of its kind the callee admits in the transaction.

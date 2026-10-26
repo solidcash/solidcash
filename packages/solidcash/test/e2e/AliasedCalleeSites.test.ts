@@ -259,6 +259,70 @@ describe('a loop over a state array of callees', () => {
   }, 300_000);
 });
 
+// A table of received pointers binds each call's arguments against the run of the element it calls.
+const TALLY = `pragma solidcash >=0.8.0;
+interface IT { public bigint calls; function hit(uint256 v); function other(uint256 v); }
+contract Tally() is IT {
+  bigint calls;
+  function hit(uint256 v) { require(int(v) >= 0); this.calls = this.calls + 1; }
+  function other(uint256 v) { require(int(v) >= 0); this.calls = this.calls + 2; }
+}`;
+
+describe('a call through a table of received pointers', () => {
+  it('refuses an element\'s callee run on another argument', async () => {
+    const provider = createTestProvider();
+    const tally = compileString(TALLY);
+    const hit = hexToBin(tally.abi.find((entry) => entry.name === 'hit')!.selector!);
+    const tallies: { lock: string; sc: StatefulContract<any> }[] = [];
+    for (let at = 0; at < 2; at++) {
+      const base = new Contract(tally, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, base, tally.stateLayout!, { calls: 0n }, { saltContract: true },
+      );
+      tallies.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
+        sc: StatefulContract.withCategory(base, categoryId) });
+    }
+    const artifact = compileString(TABLE);
+    const base = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
+    );
+    const table = StatefulContract.withCategory(base, categoryId) as any;
+    for (const entry of tallies) {
+      await table.reg(hexToBin(entry.lock), hit, alicePub, new SignatureTemplate(alicePriv)).send();
+    }
+    const pointer = artifact.abi.find((entry) => entry.name === 'fireN')!.externalCalls![0]!.interfaceName;
+    table.registerExternalArray(pointer, tallies.map((entry) => entry.sc), ['hit', 'hit']);
+
+    const send = provider.sendRawTransaction.bind(provider);
+    let honest = '';
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      honest = hex;
+      throw new Error('capture-only');
+    };
+    await expect(table.fireN(2n, 10n, alicePub, new SignatureTemplate(alicePriv)).send())
+      .rejects.toThrow('capture-only');
+    (provider as any).sendRawTransaction = send;
+
+    // A tally's unlocking ends `<v> <redeem>` and the table's `<v> <n> <redeem>`: the first tally runs hit(5) where
+    // the call names 10.
+    const tx = decodeTransactionUnsafe(hexToBin(honest));
+    const pushes = tx.inputs.map((input) => decodeAuthenticationInstructions(input.unlockingBytecode));
+    const caller = pushes.findIndex((p) => p.at(-3)?.opcode === 0x5a && p.at(-2)?.opcode === 0x52);
+    const callee = pushes.findIndex((p, at) => at !== caller && p.at(-2)?.opcode === 0x5a);
+    expect(caller).toBeGreaterThanOrEqual(0);
+    expect(callee).toBeGreaterThanOrEqual(0);
+    pushes[callee]![pushes[callee]!.length - 2] = { opcode: 0x55 } as never;
+    tx.inputs[callee]!.unlockingBytecode = encodeAuthenticationInstructions(pushes[callee]!);
+    const outcome = await provider.sendRawTransaction(binToHex(encodeTransaction(tx)))
+      .then(() => 'ACCEPTED').catch((e: Error) => e.message);
+    expectScriptRejection(outcome, caller);
+
+    await provider.sendRawTransaction(honest);
+    for (const entry of tallies) expect((await entry.sc.getState()).calls).toBe(1n);
+  }, 300_000);
+});
+
 // A table of fixed-method pointers lowers to an address array, whose callees run once each after the loop.
 const COUNTER = `pragma solidcash >=0.8.0;
 interface ICounter { public bigint counter; function increment(uint256 v); }

@@ -5050,8 +5050,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
       // The method a call to a fixed method runs, whose arguments a direct caller binds where no record digests them.
+      // A table of pointers names one of its methods: they vary by element, their parameters do not.
       for (const slot of node.externalCalls) {
-        if (slot.runtimeSelector || slot.selectorArrayVar) continue;
+        if (slot.runtimeSelector) continue;
         const methods = (this.getCalleeFunctions(slot.interfaceName) ?? [])
           .filter((candidate) => candidate.name === slot.functionName);
         if (methods.length !== 1) continue;

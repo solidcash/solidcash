@@ -2553,6 +2553,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
+  /** Every user function, overloads of one name included. */
+  private userFunctionList: FunctionDefinitionNode[] = [];
   private isDefineSubTraversal: boolean = false;
   /** A define body compiled only for its diagnostics: nothing invokes it, so its code never reaches the script. */
   private isUnemittedDefine: boolean = false;
@@ -4022,6 +4024,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Register free functions in userFunctionDefs map
     for (const f of node.freeFunctions) {
       this.userFunctionDefs.set(f.name, f);
+      this.userFunctionList.push(f);
     }
 
     // Reachability runs here, before visitContract. It uses constructor-parameter identity to recognize
@@ -5353,6 +5356,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Build a map of user-defined functions for OP_INVOKE
     for (const f of node.functions) {
       this.userFunctionDefs.set(f.name, f);
+      this.userFunctionList.push(f);
     }
 
     // Detect whether any function uses msg.data - if so, emit _redeemPushSize
@@ -7177,6 +7181,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       probe.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       probe.userFunctionDefs = this.userFunctionDefs;
+      probe.userFunctionList = this.userFunctionList;
       probe.constantExpressions = new Map(this.constantExpressions);
       probe.contractUsesMsgData = this.contractUsesMsgData;
       probe.journalWriterFunctionIds = this.journalWriterFunctionIds;
@@ -7506,6 +7511,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // must see the same set or it OP_INVOKEs a function whose OP_DEFINE this traversal omitted (ARITH-5).
     subTraversal.nativeLegacyMathFunctions = this.nativeLegacyMathFunctions;
     subTraversal.userFunctionDefs = this.userFunctionDefs;
+    subTraversal.userFunctionList = this.userFunctionList;
     subTraversal.isDefineSubTraversal = true;
     subTraversal.isUnemittedDefine = !emitDefinition;
     subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
@@ -7926,6 +7932,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // this set the call still OP_INVOKEs that omitted id (ARITH-5: to64(2^64) never reaches the range check).
       subTraversal.nativeLegacyMathFunctions = this.nativeLegacyMathFunctions;
       subTraversal.userFunctionDefs = this.userFunctionDefs;
+      subTraversal.userFunctionList = this.userFunctionList;
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
       subTraversal.entryFunctionPointerTargets = this.entryFunctionPointerTargets;
       subTraversal.functionValuesNeverInvoked = this.functionValuesNeverInvoked;
@@ -48418,7 +48425,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     // A function-pointer call runs whichever function the pointer holds.
     let anyFunctionWrites: boolean | undefined;
-    const pointerCallWrites = (): boolean => (anyFunctionWrites ??= [...this.userFunctionDefs.values()]
+    const pointerCallWrites = (): boolean => (anyFunctionWrites ??= this.userFunctionList
       .some((fn) => fn.body !== undefined && holds(fn.body, writesHere)));
     const writes = (node: Node): boolean => {
       if (node instanceof IndirectCallNode || (node instanceof FunctionCallNode

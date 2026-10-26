@@ -2937,6 +2937,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** The callee method this call runs: the overload its argument count selected, by its declared parameters. */
+  resolvedCallee?: { name: string; parameterTypes: Type[] };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */

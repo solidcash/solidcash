@@ -68,7 +68,9 @@ uint256 next = ICounter(counter).add(5);
 
 The compiler knows the interface, selector, argument types, return types, required callee state NFTs, and call
 mode. The SDK resolves the deployed instance and lays its UTXOs into the transaction. On chain, the caller and
-callee enforce the relationship rather than trusting that SDK resolution.
+callee enforce the relationship rather than trusting that SDK resolution. A call to an overloaded method runs the
+overload its argument count selects; a call that two overloads of the same arity could take does not compile, as
+its method and arguments could not be checked against one of them.
 
 The explicit member forms remain available when choosing a mode without consuming a typed return:
 
@@ -303,10 +305,11 @@ list naming fewer) fails validation. The array is checked as the loop saw it, so
 loop or after it, but one that writes it inside the loop, or on both sides, does not compile.
 
 Function-pointer arrays use the same machinery. `fns[index](args)` outside a loop calls just that element and can
-return a value. `fns[i](args)` inside a loop is a broadcast and must be void, and follows the same rule: the loop calls
-the elements one by one from the first to the last, or none, and a spend that stops early, skips or repeats an
-element, or runs past the end fails validation. For a varying-method table, pass the method names aligned with the
-instances:
+return a value. Each element's method must take the table type's parameters and return its results; a table holding
+another does not compile. `fns[i](args)` inside a loop is a broadcast and must be void, and follows the same rule:
+the loop calls the elements one by one from the first to the last, or none, and a spend that stops early, skips or
+repeats an element, or runs past the end fails validation. For a varying-method table, pass the method names aligned
+with the instances:
 
 ```ts
 router.registerExternalArray('IHandler', handlers, ['deposit', 'withdraw']);

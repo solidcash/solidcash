@@ -1874,6 +1874,13 @@ export class ExternalReadTargetReassignedError extends SolidCashError {
   }
 }
 
+export class AmbiguousExternalOverloadError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, functionName: string, argumentCount: number) {
+    super(node, `'${interfaceName}.${functionName}' has no single overload taking ${argumentCount} argument(s): `
+      + 'a call to it runs the one overload its argument count selects');
+  }
+}
+
 export class UndefinedInterfaceFunctionError extends SolidCashError {
   constructor(node: Node, interfaceName: string, functionName: string) {
     super(node, `Interface '${interfaceName}' does not declare function '${functionName}'`);

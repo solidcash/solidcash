@@ -147,6 +147,10 @@ semantics:
   epilogue co-spends and verifies EVERY element once, in order, so the loop's calls must take the elements in turn,
   as over any state array (a spend that stops early, skips or repeats an element, or runs past the end fails). Any
   index expression and loop form works. A broadcast cannot return a value (compile error).
+- Every element written into a fixed or varying table must name one method taking the table type's parameters
+  and returning its results (`FnPtrArrayLoweringError` otherwise): a call through the table binds those arguments
+  for whichever element it reaches. A received pointer's selector is a run-time value, so a received table cannot
+  check that the method it names takes no further parameters.
 - Mutations stay in lockstep with the selector array: element assign / `pop()` / `delete fns[i]` rewrite to
   two-statement blocks mutating both arrays.
 - An unclassifiable fn-ptr array (never written, or written an unsupported value form) is a specific

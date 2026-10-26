@@ -197,6 +197,7 @@ import {
   ExternalReadTargetReassignedError,
   ExternalOutStateRecordCountError,
   UndefinedInterfaceFunctionError,
+  AmbiguousExternalOverloadError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
   DeployThenCallError,
@@ -4472,13 +4473,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             // the original direct selector. Infer it without mutating the slot:
             // discovery must leave every ordinary/unselected call byte-identical.
             if (!slot.compileTimeSelector) {
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
-                .find((fn) => fn.name === slot.functionName);
+              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
-                const signature = this.selectorSignatureFor(
-                  slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type),
-                );
+                const signature = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameterTypes);
                 inferredSelectors.set(slot, this.computeAbiSelector(signature));
               }
             }
@@ -4571,16 +4568,14 @@ export default class SymbolTableTraversal extends AstTraversal {
               slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
               const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)!;
               slot.compileTimeSelector = selector;
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
-                .find((fn) => fn.name === slot.functionName);
+              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               const occurrence = callOccursInLoop(slot.sourceCallNode)
                 ? 'loop' as const
                 : slot.condition ? 'conditional' as const : 'once' as const;
               return {
                 selector,
                 parameters: slot.sourceCallNode!.parameters,
-                parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
+                parameterTypes: ifaceFunc?.parameterTypes
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
                 sourceCallsiteId: slot.slotIndex,
@@ -4818,10 +4813,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
             // selector (bound to `cond`).
             if (!slot.runtimeSelector && !slot.batchInvocations) {
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
+              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
-                const sig = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameters.map((p) => p.type));
+                const sig = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameterTypes);
                 slot.compileTimeSelector = this.computeAbiSelector(sig);
               }
             }
@@ -5011,11 +5005,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const slot of returningSlots) {
         // The record a direct call reads is the digest of this method's selector and arguments; a method chosen at run
         // time (a varying pointer, a selector table) has no constant one.
-        const recordIface = this.interfaceMap.get(slot.interfaceName);
-        const recordMethods = recordIface ? this.getAllInterfaceFunctions(recordIface)
-          .filter((candidate) => candidate.name === slot.functionName) : [];
-        if (recordMethods.length === 1 && !slot.runtimeSelector && !slot.selectorArrayVar) {
-          const parameterTypes = recordMethods[0]!.parameters.map((parameter) => parameter.type);
+        const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+        if (recordMethod && !slot.runtimeSelector && !slot.selectorArrayVar) {
+          const parameterTypes = recordMethod.parameterTypes;
           slot.callRecordSelector = this.computeAbiSelector(this.selectorSignatureFor(slot.functionName, parameterTypes));
           slot.callRecordParameterTypes = parameterTypes;
         }
@@ -5053,12 +5045,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A table of pointers names one of its methods: they vary by element, their parameters do not.
       for (const slot of node.externalCalls) {
         if (slot.runtimeSelector) continue;
-        const methods = (this.getCalleeFunctions(slot.interfaceName) ?? [])
-          .filter((candidate) => candidate.name === slot.functionName);
-        if (methods.length !== 1) continue;
-        const parameterTypes = methods[0]!.parameters
-          .filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => parameter.type);
-        slot.calleeMethod = { parameterTypes };
+        const method = this.slotCalleeMethod(slot);
+        if (method) slot.calleeMethod = { parameterTypes: method.parameterTypes };
       }
     }
 
@@ -14486,7 +14474,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
           const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
           if (calleeName && calleeFns) {
-            const ifaceFunc = calleeFns.find((f) => f.name === methodName);
+            const ifaceFunc = this.resolveCalleeMethod(
+              node, calleeName, calleeFns, methodName, node.fieldNames?.length ?? node.parameters.length,
+            );
             if (ifaceFunc) {
               this.validateExternalCallMutability(ifaceFunc);
               if (node.fieldNames) {
@@ -14562,6 +14552,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 functionName: methodName,
                 externalCallSlotIndex: -1,
               };
+              callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(ifaceFunc);
               if (ifaceFunc.returnTypes.length > 0) {
                 callNode.type = ifaceFunc.returnTypes.length === 1
                   ? ifaceFunc.returnTypes[0]
@@ -16039,6 +16030,45 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Callable functions for an external-call target name: an interface's functions, or - treating a contract
   // as its own interface - a contract's functions. The callee's own covenant arbiters which are callable, so
   // exposing all is safe. Returns undefined if the name is neither an interface nor a contract.
+  /**
+   * The method among `functions` a call of `name` with `count` arguments runs: the only one so named, or the one
+   * overload of that arity. A call naming several overloads of its arity, or none, is refused: it would bind none.
+   */
+  private resolveCalleeMethod<T extends InterfaceFunctionNode | FunctionDefinitionNode>(
+    node: Node, interfaceName: string, functions: readonly T[], name: string, count: number,
+  ): T | undefined {
+    const named = functions.filter((fn) => fn.name === name);
+    if (named.length <= 1) return named[0];
+    const sized = named.filter((fn) => SymbolTableTraversal.calleeSignature(fn).parameterTypes.length === count);
+    if (sized.length !== 1) throw new AmbiguousExternalOverloadError(node, interfaceName, name, count);
+    return sized[0];
+  }
+
+  /** A callee method's name and declared parameter types, past any compiler-internal parameter. */
+  private static calleeSignature(
+    fn: InterfaceFunctionNode | FunctionDefinitionNode,
+  ): { name: string; parameterTypes: Type[] } {
+    return {
+      name: fn.name,
+      parameterTypes: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+        .map((parameter) => parameter.type),
+    };
+  }
+
+  /**
+   * The method a slot's call runs: the overload the call selected, or the one method of its name. An overloaded name
+   * the call did not resolve is refused.
+   */
+  private slotCalleeMethod(slot: ExternalCallSlot): { name: string; parameterTypes: Type[] } | undefined {
+    if (slot.sourceCallNode?.resolvedCallee) return slot.sourceCallNode.resolvedCallee;
+    const named = (this.getCalleeFunctions(slot.interfaceName) ?? []).filter((fn) => fn.name === slot.functionName);
+    if (named.length > 1) {
+      throw new AmbiguousExternalOverloadError(slot.sourceCallNode ?? this.currentFunction!, slot.interfaceName,
+        slot.functionName, slot.sourceCallNode?.parameters.length ?? 0);
+    }
+    return named[0] && SymbolTableTraversal.calleeSignature(named[0]);
+  }
+
   private getCalleeFunctions(name: string): (InterfaceFunctionNode | FunctionDefinitionNode)[] | undefined {
     const iface = this.interfaceMap.get(name);
     if (iface) return this.getAllInterfaceFunctions(iface);
@@ -17777,7 +17807,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Validate: interface has function with the field access name
         const allFunctions = this.getAllInterfaceFunctions(iface);
-        const ifaceFunc = allFunctions.find((f) => f.name === functionName);
+        const ifaceFunc = this.resolveCalleeMethod(
+          node, iface.name, allFunctions, functionName, node.fieldNames?.length ?? node.parameters.length,
+        );
         if (!ifaceFunc) {
           throw new UndefinedInterfaceFunctionError(node, iface.name, functionName);
         }
@@ -17821,6 +17853,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           externalCallSlotIndex: -1,
           callMode,
         };
+        callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(ifaceFunc);
 
         // If the interface function has return types, this is a value-producing expression
         if (ifaceFunc.returnTypes.length > 0) {
@@ -17880,7 +17913,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Validate: interface has function with this name
         const allFunctions = this.getAllInterfaceFunctions(iface);
-        const ifaceFunc = allFunctions.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
+        const declaredFunc = this.resolveCalleeMethod(
+          node, iface.name, allFunctions, node.methodName, node.fieldNames?.length ?? node.parameters.length,
+        );
+        const ifaceFunc = declaredFunc ?? routedFallbackFunction(node);
         if (!ifaceFunc) {
           throw new UndefinedInterfaceFunctionError(node, iface.name, node.methodName);
         }
@@ -17971,6 +18007,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           functionName: node.methodName,
           externalCallSlotIndex: -1, // assigned later by pre-scan
         };
+        if (declaredFunc) callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(declaredFunc);
 
         // If the interface function has return types, this is a value-producing expression
         if (ifaceFunc.returnTypes.length > 0) {
@@ -18084,7 +18121,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         ?? this.stateVariableMap.get(varName)?.type;
       const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
       const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
-      const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
+      const declaredFunc = calleeName && calleeFns ? this.resolveCalleeMethod(
+        node, calleeName, calleeFns, node.methodName, node.fieldNames?.length ?? node.parameters.length,
+      ) : undefined;
+      const ifaceFunc = declaredFunc ?? routedFallbackFunction(node);
       if (calleeName && ifaceFunc) {
         if (this.deployResultLocals.has(varName)) {
           // A contract-typed local arrives here as a METHOD call: the parse namespaces only the receivers it
@@ -18123,6 +18163,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
+        if (declaredFunc) callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(declaredFunc);
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.sourceActivationConditions = node.sourceActivationConditions;
@@ -18172,9 +18213,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       || isStateElemFieldReceiver) {
       const recvType = this.resolveLowLevelReceiverType(node.object);
       const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
-      const ifaceFunc = calleeName
-        ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName)
-        : undefined;
+      const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
+      const ifaceFunc = calleeName && calleeFns ? this.resolveCalleeMethod(
+        node, calleeName, calleeFns, node.methodName, node.fieldNames?.length ?? node.parameters.length,
+      ) : undefined;
       if (calleeName && ifaceFunc) {
         if (node.fieldNames) {
           node.parameters = this.reorderNamedArgsByParams(
@@ -18185,6 +18227,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const addressExpr = this.visit(node.object) as ExpressionNode;
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
+        callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(ifaceFunc);
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.sourceActivationConditions = node.sourceActivationConditions;

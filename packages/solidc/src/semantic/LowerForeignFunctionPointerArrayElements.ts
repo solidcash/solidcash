@@ -34,7 +34,7 @@ import {
   DeleteLocalNode,
   DeleteStateNode,
 } from '../ast/AST.js';
-import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
+import { ArrayType, FunctionType, AddressType, BytesType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { FnPtrArrayLoweringError } from '../Errors.js';
@@ -66,6 +66,7 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  */
 export default class LowerForeignFunctionPointerArrayElements extends AstTraversal {
   private typeNames = new Set<string>();
+  private memberTypes = new Map<string, InterfaceNode | ContractNode>();
   private tables = new Map<string, TableInfo>();
   private loopDepth = 0;
   private hoistCounter = 0;
@@ -82,9 +83,13 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
-    for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
-    for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
-    if (node.contract) this.typeNames.add(node.contract.name);
+    this.memberTypes = new Map();
+    const types = [...node.interfaceDefinitions as InterfaceNode[], ...node.importedContracts as ContractNode[],
+      ...(node.contract ? [node.contract] : [])];
+    for (const type of types) {
+      this.typeNames.add(type.name);
+      this.memberTypes.set(type.name, type);
+    }
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
     return node;
   }
@@ -104,7 +109,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     this.tables = new Map();
     for (const coll of fnPtrArrays) {
       if (!(coll.type instanceof ArrayType)) continue;
-      const c = this.classifyArray(coll.name, bodies);
+      const c = this.classifyArray(coll.name, bodies, coll.type.elementType as FunctionType);
       if (c.kind === 'none') continue;
       const ft = coll.type.elementType as FunctionType;
       this.tables.set(coll.name, {
@@ -140,15 +145,48 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     return node;
   }
 
-  private classifyArray(name: string, bodies: FunctionDefinitionNode[]): ArrayClassification {
-    const written: Array<{ iface: string; method: string } | undefined> = [];
-    for (const fn of bodies) this.forEachWriteTo(fn.body!, name, (val) => written.push(this.foreignMember(val)));
-    if (written.length === 0 || written.some((p) => !p)) return { kind: 'none', iface: '', method: '' };
-    const members = written as { iface: string; method: string }[];
+  private classifyArray(name: string, bodies: FunctionDefinitionNode[], type: FunctionType): ArrayClassification {
+    const written: { value: ExpressionNode; member: { iface: string; method: string } | undefined }[] = [];
+    for (const fn of bodies) {
+      this.forEachWriteTo(fn.body!, name, (value) => written.push({ value, member: this.foreignMember(value) }));
+    }
+    if (written.length === 0 || written.some((p) => !p.member)) return { kind: 'none', iface: '', method: '' };
+    const members = written.map((p) => p.member!);
     const { iface, method } = members[0];
     if (members.some((p) => p.iface !== iface)) return { kind: 'none', iface: '', method: '' };
+    // A call through the table binds its type's arguments for every element, so each element's method takes them.
+    const misfit = written.find((p) => !this.memberFits(p.member!, type));
+    if (misfit) {
+      throw new FnPtrArrayLoweringError(misfit.value, name,
+        `'${misfit.member!.iface}.${misfit.member!.method}' does not name one method of the table's type ${type}`);
+    }
     const varying = members.some((p) => p.method !== method);
     return { kind: varying ? 'varying' : 'fixed', iface, method };
+  }
+
+  /** True when `iface.method` names one method taking the parameters, and returning the results, of `type`. */
+  private memberFits(member: { iface: string; method: string }, type: FunctionType): boolean {
+    const same = (a: Type[], b: Type[]): boolean => a.length === b.length
+      && a.every((item, at) => item.toString() === b[at]!.toString());
+    const owner = this.memberTypes.get(member.iface);
+    return (owner ? this.methodsNamed(owner, member.method) : []).filter((fn) => same(fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => parameter.type),
+    type.parameterTypes) && same(fn.returnTypes ?? [], type.returnTypes)).length === 1;
+  }
+
+  /** The methods `owner` declares by `name`, its parent interfaces' included. */
+  private methodsNamed(
+    owner: InterfaceNode | ContractNode, name: string, seen = new Set<string>(),
+  ): { parameters: { name: string; type: Type }[]; returnTypes?: Type[] }[] {
+    if (seen.has(owner.name)) return [];
+    seen.add(owner.name);
+    const own = (owner.functions as { name: string; parameters: { name: string; type: Type }[]; returnTypes?: Type[] }[])
+      .filter((fn) => fn.name === name);
+    const inherited = owner instanceof InterfaceNode ? owner.parents.flatMap((parent) => {
+      const declared = this.memberTypes.get(parent);
+      return declared ? this.methodsNamed(declared, name, seen) : [];
+    }) : [];
+    return [...own, ...inherited];
   }
 
   private rewrite(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {

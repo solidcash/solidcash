@@ -465,6 +465,23 @@ contract C() {
     for (const source of [insideCollection, pointerBefore]) {
       expect(() => compileString(source, { messageBus: false })).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
     }
+    // An overload of the writer's name hides no writer.
+    const hiddenWriter = contract('function(address) internal op;', `function setOp() { op = _t; }
+  function _t(address a) internal { _set(a); }
+  function _set(address a) internal { this.listeners[0] = a; }
+  function _set(address a, address b) internal { require(a != b); }
+  function go(address a, uint256 v) {
+    op(a);
+    for (uint256 i = 0; i < listeners.length; i = i + 1) { IL(listeners[i]).hear(v); }
+    _set(a);
+  }`);
+    expect(() => compileString(hiddenWriter, { messageBus: false })).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
+  });
+
+  it('refuses a table element whose method does not take the table\'s parameters', () => {
+    const misfit = VARYING_TABLE.replace('function other(uint256 v);', 'function other(uint256 v, uint256 w);');
+    expect(misfit).not.toBe(VARYING_TABLE);
+    expect(() => compileString(misfit)).toThrow(/does not name one method of the table's type/);
   });
 
   it('refuses a loop over an array its function writes inside that loop', () => {
@@ -503,9 +520,10 @@ contract Listener() {
 }`;
 
 describe('a void call on a state-array element', () => {
-  it('refuses an element\'s callee run on another argument', async () => {
+  /** Deploys `notifier`'s loop over two listeners, and refuses its first listener's run of hear(5, 7). */
+  async function refusesForgedListener(notifierSource: string, listenerSource = LISTENER): Promise<void> {
     const provider = createTestProvider();
-    const art = compileString(LISTENER);
+    const art = compileString(listenerSource);
     const listeners: { lock: string; sc: StatefulContract<any> }[] = [];
     for (let at = 0; at < 2; at++) {
       const base = new Contract(art, [], { provider });
@@ -515,7 +533,7 @@ describe('a void call on a state-array element', () => {
       listeners.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
         sc: StatefulContract.withCategory(base, categoryId) });
     }
-    const notifierArt = compileString(NOTIFIER);
+    const notifierArt = compileString(notifierSource);
     const base = new Contract(notifierArt, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, base, notifierArt.stateLayout!, { listeners: [], count: 0n }, { saltContract: true },
@@ -551,7 +569,30 @@ describe('a void call on a state-array element', () => {
     await provider.sendRawTransaction(honest);
     for (const entry of listeners) expect((await entry.sc.getState()).heard).toBe(1n);
     expect((await notifier.getState()).count).toBe(1n);
+  }
+
+  it('refuses an element\'s callee run on another argument', async () => {
+    await refusesForgedListener(NOTIFIER);
   }, 300_000);
+
+  it('binds the overload the call\'s argument count selects', async () => {
+    // `hear(bytes)` declared first: the call still runs hear(uint256, uint256) and binds its arguments. An interface
+    // of two functions checks its callee's selector, so this listener has two as well.
+    const hear = 'function hear(uint256 value, uint256 tag);';
+    const overloaded = NOTIFIER.replace(hear, `function hear(bytes b); ${hear}`);
+    expect(overloaded).not.toBe(NOTIFIER);
+    const listener = LISTENER.replace('this.heard = this.heard + 1;\n  }',
+      'this.heard = this.heard + 1;\n  }\n  function ping() { require(this.heard >= 0); }');
+    expect(listener).not.toBe(LISTENER);
+    await refusesForgedListener(overloaded, listener);
+  }, 300_000);
+
+  it('refuses a call that does not select one overload by its argument count', () => {
+    const hear = 'function hear(uint256 value, uint256 tag);';
+    const ambiguous = NOTIFIER.replace(hear, `function hear(bytes b, uint256 t); ${hear}`);
+    expect(ambiguous).not.toBe(NOTIFIER);
+    expect(() => compileString(ambiguous)).toThrow(/has no single overload taking 2 argument/);
+  });
 });
 
 // A table of received function-pointer values (address and selector) checks its callees once each after the loop.

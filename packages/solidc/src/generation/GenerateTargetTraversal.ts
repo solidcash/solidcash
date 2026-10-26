@@ -48434,6 +48434,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * A loop iteration's co-spent callee input (on top as `[.., idx]`) must differ from every function-pointer call's
+   * spender-supplied input witness (`__internal__extcallMasterIdx<n>`, present for fn-ptr calls and multi-call
+   * slots). Such a witness is bound only to its own target, not laid out at a fixed offset below the loop, so
+   * `loopCalleeRegionEnd` cannot bound it: without this a pointer whose target equals a loop target could name the
+   * loop iteration's callee and one run would serve both call sites. A loop index is never negative, so the
+   * inequality also passes a witness left at the -1 "call not made" sentinel. Stack-neutral.
+   */
+  private emitLoopIndexDistinctFromPointerWitnesses(
+    slot: ExternalCallSlot, loc: SingleLocationData, emitIndex: () => void,
+  ): void {
+    if (this.isCompilerMessageBusRoute()) return;
+    for (const other of this.externalCallSlots) {
+      if (other === slot) continue;
+      const witness = `__internal__extcallMasterIdx${other.slotIndex}`;
+      if (this.getStackIndex(witness, true) < 0) continue;
+      emitIndex();                                   // [.., idx]
+      this.emitPickTrackedFromBottom(witness, loc);  // [.., idx, W]
+      this.emit(Op.OP_NUMNOTEQUAL, loc);             // [.., idx != W]
+      this.emit(Op.OP_VERIFY, loc);                  // [..]
+    }
+  }
+
+  /**
    * Requires calls on different targets to name different callee inputs once both run (an untaken call's index is
    * -1). Each call's input index is a witness its identity check binds to its own target only, so with `a == b`
    * `IVault(a).deposit(x)` and `IVault(b).deposit(x)` could both accept one run of that callee. Calls on one target
@@ -48446,6 +48469,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const target = (slot: ExternalCallSlot): string | undefined => (slot.addressParam ? `param:${slot.addressParam}`
       : slot.addressStateVar ? `state:${slot.addressStateVar}`
         : slot.addressLiteral ? `literal:${slot.addressLiteral}` : undefined);
+    // [l, r] -> verify the two callee inputs differ, or one is the -1 "call not made" sentinel. Stack-consuming.
+    const verifyDistinctOrInactive = (): void => {
+      this.emit(Op.OP_2DUP, locationData);
+      this.emit(Op.OP_NUMNOTEQUAL, locationData);              // [l, r, l != r]
+      this.emit(Op.OP_ROT, locationData);
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_LESSTHAN, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);                   // [r, l != r || l < 0]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_LESSTHAN, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);
+      this.emit(Op.OP_VERIFY, locationData);
+    };
     const claims = this.externalCallSlots.filter((slot) => !slot.inlineLoopDispatch && !slot.loopArrayVar
       && this.getStackIndex(index(slot), true) >= 0);
     for (const [at, left] of claims.entries()) {
@@ -48453,17 +48490,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (target(left) !== undefined && target(left) === target(right)) continue;
         this.emitPickTrackedFromBottom(index(left), locationData);
         this.emitPickTrackedFromBottom(index(right), locationData);
-        this.emit(Op.OP_2DUP, locationData);
-        this.emit(Op.OP_NUMNOTEQUAL, locationData);              // [l, r, l != r]
-        this.emit(Op.OP_ROT, locationData);
-        this.emit(Op.OP_0, locationData);
-        this.emit(Op.OP_LESSTHAN, locationData);
-        this.emit(Op.OP_BOOLOR, locationData);                   // [r, l != r || l < 0]
-        this.emit(Op.OP_SWAP, locationData);
-        this.emit(Op.OP_0, locationData);
-        this.emit(Op.OP_LESSTHAN, locationData);
-        this.emit(Op.OP_BOOLOR, locationData);
-        this.emit(Op.OP_VERIFY, locationData);
+        verifyDistinctOrInactive();
+      }
+    }
+    // A function with a loop over targets keeps its fixed-offset (non-pointer) calls at `externalCallInputBase +
+    // computedOffset` with no own witness, so they are not claims above. A spender-chosen pointer witness must still
+    // differ from each such call's input once both run, or a pointer whose target equals the fixed call's could name
+    // that one callee and have one run serve both. The fixed call's identity reads this same offset.
+    const fixedPoints = this.externalCallSlots.filter((slot) => !slot.inlineLoopDispatch && !slot.loopArrayVar
+      && !this.isExternalCallSlotLoopNested(slot) && this.getStackIndex(index(slot), true) < 0
+      && !this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
+        && candidate.addressParam === slot.addressParam && candidate.batchInvocations));
+    for (const claim of claims) {
+      for (const fixed of fixedPoints) {
+        if (target(claim) !== undefined && target(claim) === target(fixed)) continue;
+        this.emitPickTrackedFromBottom(index(claim), locationData);
+        this.emitPickTrackedFromBottom('__internal__externalCallInputBase', locationData);
+        if (fixed.computedOffset > 0) {
+          this.emit(encodeInt(BigInt(fixed.computedOffset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+        verifyDistinctOrInactive();
       }
     }
   }
@@ -48746,6 +48793,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // This iteration's co-spent callee input must differ from every function-pointer call's input (its witness is
+    // not laid out at a fixed offset below this loop, so loopCalleeRegionEnd does not bound it). idx is on top.
+    this.emitLoopIndexDistinctFromPointerWitnesses(slot, loc, () => this.emit(Op.OP_DUP, loc)); // [elem, idx]
+
     // 1. IDENTITY: callee master LBC == arr[i] (elem at depth 2 under [idx, callee_bc])
     this.emit(Op.OP_DUP, loc);                           // [elem, idx, idx]
     this.emit(Op.OP_UTXOBYTECODE, loc);                  // [elem, idx, callee_bc]
@@ -48932,6 +48983,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no input floor in scope`);
     }
+
+    // This iteration's input must differ from every function-pointer call's spender-chosen input witness: such a
+    // witness is not laid out at a fixed offset below the loop, so loopCalleeRegionEnd cannot bound it, and a
+    // pointer whose target equals a loop target could otherwise name this iteration's callee (one run, two sites).
+    this.emitLoopIndexDistinctFromPointerWitnesses(
+      slot, loc, () => this.emitPickTrackedFromBottom('(ilc_inidx)', loc),
+    );
 
     // 1. IDENTITY: callee master UTXO bytecode == targets[i]
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_inidx)'))), loc);

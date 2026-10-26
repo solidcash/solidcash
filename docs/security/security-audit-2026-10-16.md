@@ -1032,6 +1032,22 @@ needs VM evidence, `rejectedWith` has no source fallback).
   be laid out. `a074dcabb` keeps each iteration's input below the first callee laid out after the loop, in the inline
   and the state-array forms, and adds looped frame calls to the distinct-input check. Test:
   `AliasedCalleeSites.test.ts`.
+- **A pointer call aliasing another call's input** (found 2026-10-25 beside the two call sites, source-traced; the
+  loop case VM-confirmed 2026-10-26). `29d652dad`/`a074dcabb` made calls on different targets, and loops over
+  targets, claim distinct callee inputs, but a call through an external function pointer takes its co-spent callee
+  from a spender-supplied input witness (`__internal__extcallMasterIdx<n>`) that neither check compared with a loop's
+  per-iteration inputs or with a fixed-offset call's. In a function with a loop over targets the fixed calls keep no
+  witness, so the pointer witness was the function's only distinct-input "claim" and went unchecked: a pointer
+  resolving to a loop target could name that loop iteration's callee, or resolving to a fixed call's target could
+  name the fixed call's own input, and one callee run served both sites (accepted at the VM for the loop case).
+  PTRFIX makes every loop iteration over targets (the inline-dispatch and state-array forms) require its input to
+  differ from each pointer witness, and makes the distinct-input check require each pointer witness to differ from
+  each fixed-offset call's input (`externalCallInputBase + computedOffset`, the offset the fixed call's identity
+  already reads). The new checks are emitted only in a function that has both a loop and a pointer call, or a pointer
+  call beside a fixed call under a loop, so no other contract changes bytes. Test: `AliasedFnPtrCalleeSites.test.ts`
+  (honest settles; a pointer naming the loop iteration's input, and one naming the fixed call's input, are refused).
+  Still open: a table of received pointers' witness list is now compared with single pointer calls but not yet with
+  the function's fixed-offset calls or a second loop (see Open).
 - **Loop receiver resolved by name** (found 2026-10-25 by a review of the day's loop fixes; accepted at the VM).
   `b6c2e106d` judged a loop receiver's target by the first declaration of its name in the function, so a second
   loop declaring `IPair pair` over the contract's own addresses took the first loop's caller-chosen initializer, and
@@ -1217,11 +1233,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) and its
   arguments (`6126221c0`; through a table of pointers since `fc5f4f09b`).
 
-- A call through an external function pointer takes its callee input from a witness that is not compared with the
-  fixed-offset inputs of a function with a loop over targets: a loop over a state array of pointers reads a witness
-  list (strictly increasing, but not compared with the function's other calls), and a single pointer call there a
-  witness index (found 2026-10-25 beside the two call sites, source-traced). A pointer target equal to another call's
-  target could serve both calls with one run.
+- A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
+  itself). PTRFIX now requires each element to differ from every single pointer call's witness, but not yet from the
+  function's fixed-offset calls or from a second loop over targets (found 2026-10-25 beside the two call sites,
+  source-traced; the single pointer call's own witness was closed in PTRFIX, both versus a loop and versus a fixed
+  call). A table pointer whose target equals a fixed call's target could still name that fixed call's input, so one
+  run would serve both sites.
 
 - A loop over a state array that calls only some of its elements is refused at the VM (`5311db02e`): its epilogue
   would run the others. Supporting it needs the epilogue to check only the claimed elements and the SDK to co-spend

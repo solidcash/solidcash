@@ -1,4 +1,4 @@
-import { FunctionType } from '@solidcash/utils';
+import { AddressType, FunctionType, Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -47,6 +47,10 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   private aliases = new Map<string, ExpressionNode>();
   private aliasTypes = new Map<string, FunctionType>();
   private members?: ForeignMemberTypes;
+  // The interface a name declared with one (a contract's state variable or constructor parameter, a function's
+  // parameter or local) holds: a receiver `t` of `t.m` names a member of it.
+  private contractDeclarations = new Map<string, Type>();
+  private functionDeclarations = new Map<string, Type>();
   private synthIfaces: InterfaceNode[] = [];
   private usedInterfaceNames = new Set<string>();
   private synthCounter = 0;
@@ -64,6 +68,10 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.contractDeclarations = new Map([
+      ...node.stateVariables.map((variable) => [variable.name, variable.type] as const),
+      ...node.parameters.map((parameter) => [parameter.name, parameter.type] as const),
+    ]);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     return node;
@@ -75,6 +83,7 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     this.aliases = new Map();
     this.aliasTypes = new Map();
     if (node.body) {
+      this.functionDeclarations = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type] as const));
       this.collectAliases(node.body);
       // This pass runs once before branch normalization and again after pointer-specific lowerings. Preserve
       // aliases captured by the early run: it may erase their declaration after rewriting high-level calls,
@@ -94,12 +103,16 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   private collectAliases(node: Node): void {
     const seen = new Set<string>();
     const walk = (n: Node): void => {
+      if (n instanceof VariableDefinitionNode && !(n.type instanceof FunctionType)) {
+        this.functionDeclarations.set(n.name, n.type);
+      }
       if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && n.type.isExternal
           && n.expression && this.isRewritableAlias(n.expression)) {
         // A call through the alias binds its type's arguments: each member it can hold must take exactly them.
         const arms = n.expression instanceof TernaryOpNode ? [n.expression.ifTrue, n.expression.ifFalse] : [n.expression];
         for (const arm of arms) {
-          const iface = arm instanceof FieldAccessNode ? this.castInterfaceName(arm.expression) : undefined;
+          const iface = arm instanceof FieldAccessNode
+            ? this.castInterfaceName(arm.expression) ?? this.declaredInterface(arm.expression) : undefined;
           if (arm instanceof FieldAccessNode && iface !== undefined && this.members!.knows(iface)
             && !this.members!.fits({ iface, method: arm.name }, n.type)) {
             throw new FunctionPointerTypeError(arm, n.name, `${iface}.${arm.name}`, n.type.toString());
@@ -143,6 +156,14 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
 
   private isStableValue(expr: ExpressionNode): boolean {
     return expr instanceof IdentifierNode;
+  }
+
+  // The interface a receiver variable `t` (or `this.t`) is declared with, if any.
+  private declaredInterface(expr: ExpressionNode): string | undefined {
+    const name = expr instanceof IdentifierNode || expr instanceof StateAccessNode ? expr.name : undefined;
+    const type = name === undefined ? undefined
+      : this.functionDeclarations.get(name) ?? this.contractDeclarations.get(name);
+    return type instanceof AddressType ? type.interfaceName : undefined;
   }
 
   // The interface name of an `IFace(addr)` cast receiver, or undefined if not a plain interface cast.

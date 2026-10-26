@@ -82,7 +82,9 @@ export default class LowerForeignFunctionPointerStructFields extends AstTraversa
         if (sd) {
           sd.fields.forEach((f, pos) => {
             if (!this.fieldPositions.has(f.name)) return;
-            const arg = n.parameters[pos];
+            // A named constructor `S({fn: ..})` gives its arguments in its own order.
+            const at = n.fieldNames?.length ? n.fieldNames.indexOf(f.name) : pos;
+            const arg = at >= 0 ? n.parameters[at] : undefined;
             const m = arg ? this.foreignMember(arg) : undefined;
             // A call through the field binds its type's arguments: the member must take exactly them.
             if (m && !this.members!.fits(m, f.type as FunctionType)) {
@@ -152,7 +154,8 @@ export default class LowerForeignFunctionPointerStructFields extends AstTraversa
     const sd = this.structDefs.find((s) => s.name === name);
     if (sd) {
       node.parameters = node.parameters.map((arg, pos) => {
-        const f = sd.fields[pos];
+        const f = node.fieldNames?.length ? sd.fields.find((field) => field.name === node.fieldNames![pos])
+          : sd.fields[pos];
         if (f && this.lowered.has(f.name)) {
           const m = this.foreignMember(arg);
           if (m) {

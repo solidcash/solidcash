@@ -83,6 +83,8 @@ export type SolidcDiagnosticCode =
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
+  // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.
+  | 'ROUTE_ONLY_ENTRY_UNSERVED'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

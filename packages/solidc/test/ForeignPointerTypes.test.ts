@@ -29,6 +29,51 @@ describe('foreign function values', () => {
     }
   });
 
+  it('refuses a member of another type through a typed receiver, a split argument or a named field', () => {
+    const shapes = {
+      receiverLocal: (m: string) => contract(`bigint n;
+  function fire(uint256 v) { IT t = IT(a); function(uint256) external f = t.${m}; f(v); this.n = this.n + 1; }`),
+      receiverParameter: (m: string) => `pragma solidcash >=0.8.0;\n${IFACE}\ncontract C(IT t) { bigint n;
+  function fire(uint256 v) { function(uint256) external f = t.${m}; f(v); this.n = this.n + 1; } }`,
+      externalArgument: (m: string) => `pragma solidcash >=0.8.0;\n${IFACE}
+interface IB { function register(function(uint256) external cb, uint256 amount); }
+contract C(address a, address b) { bigint n;
+  function fire(uint256 amount) { IB(b).register(IT(a).${m}, amount); this.n = this.n + 1; } }`,
+      namedField: (m: string) => contract(`struct S { function(uint256, uint256) external g; function(uint256) external fn; }
+  bigint n; S s;
+  function setS() { this.s = S({g: IT(a).${m === 'big' ? 'small' : 'big'}, fn: IT(a).${m}}); this.n = this.n + 1; }
+  function fire(uint256 v) { s.fn(v); this.n = this.n + 1; }`),
+    };
+    for (const shape of Object.values(shapes)) {
+      expect(() => compileString(shape('big'))).toThrow(/does not name one method of function pointer/);
+      expect(() => compileString(shape('small'))).not.toThrow();
+    }
+  });
+
+  it('passes a pointer named in an external call in its method\'s order', () => {
+    const source = (args: string): string => `pragma solidcash >=0.8.0;\n${IFACE}
+interface IB { function register(function(uint256) external cb, uint256 amount); }
+contract C(address a, address b) { bigint n;
+  function fire(uint256 amount) { IB(b).register(${args}); this.n = this.n + 1; } }`;
+    expect(hex(compileString(source('{amount: amount, cb: IT(a).small}')).bytecode))
+      .toBe(hex(compileString(source('IT(a).small, amount')).bytecode));
+  });
+
+  it('inlines a returning helper only with members of its parameters\' types, placed by name', () => {
+    const source = (args: string): string => `pragma solidcash >=0.8.0;
+interface IR {
+  function ret(uint256 v) external returns (uint256); function ret2(uint256 v, uint256 w) external returns (uint256);
+}
+contract C(address a, address b) { bigint n;
+  function ev(function(uint256) external returns (uint256) f, function(uint256, uint256) external returns (uint256) g)
+    internal returns (uint256) { return f(1) + g(2, 3); }
+  function fire() { this.n = int(ev(${args})); } }`;
+    expect(() => compileString(source('IR(a).ret2, IR(b).ret2'))).toThrow(/does not name one method/);
+    const named = compileString(source('{g: IR(a).ret2, f: IR(b).ret}'));
+    expect(named.abi.find((entry) => entry.name === 'fire')!.externalCalls!.map((call) => call.functionName))
+      .toEqual(['ret', 'ret2']);
+  });
+
   it('binds a call through a value an internal helper receives at the entry point', () => {
     // The helper is the contract's only call: the value lowering makes it an external call, which the entry binds.
     const artifact = compileString(contract(`bigint n;

@@ -13,6 +13,8 @@ import {
 import { FunctionType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { FunctionPointerTypeError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 /**
  * Foreign external function pointers flowing through a SIDE-EFFECT-FREE internal/private helper (whole body is
@@ -39,7 +41,10 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   private fnPtrStateVars = new Set<string>(); // foreign fn-ptr state vars - sound to beta-reduce as a helper arg
   private valueReferenced = new Set<string>(); // candidates a bare identifier still uses as a fn-ptr VALUE
 
+  private members?: ForeignMemberTypes;
+
   visitSourceFile(node: SourceFileNode): Node {
+    this.members = new ForeignMemberTypes(node);
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
     return node;
   }
@@ -76,7 +81,7 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
       // A helper with external fn-ptr params inlines only if EVERY call passes an arg SAFE to beta-reduce for
       // each: a foreign MEMBER (`IFace(a).m`) or a foreign fn-ptr STATE VAR (`x`). A self-ref (`this.g`, a
       // functionId) or any other identifier (a param that could be a self-ref) is NOT - leave those to OP_INVOKE.
-      if (extPtrParams.size > 0 && !this.allCallsPassBetaReducible(bodies, fn.name, extPtrParams)) continue;
+      if (extPtrParams.size > 0 && !this.allCallsPassBetaReducible(bodies, fn, extPtrParams)) continue;
       this.candidates.set(fn.name, {
         params: fn.parameters.map((p) => p.name), extPtrParams, returnExpr: ret.expressions[0], isPublic,
       });
@@ -115,14 +120,21 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   }
 
   // Every call `name(...)` passes a beta-reducible fn-ptr arg (a foreign member or a foreign fn-ptr state var) at
-  // each ext-fn-ptr position.
+  // each ext-fn-ptr position, by position (named arguments are not substituted), and a member of the parameter's type.
   private allCallsPassBetaReducible(
-    bodies: FunctionDefinitionNode[], name: string, positions: Set<number>,
+    bodies: FunctionDefinitionNode[], helper: FunctionDefinitionNode, positions: Set<number>,
   ): boolean {
     let ok = true;
     const walk = (n: Node): void => {
-      if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode && n.identifier.name === name) {
-        for (const pos of positions) if (!this.isBetaReducibleArg(n.parameters[pos])) ok = false;
+      if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode
+        && n.identifier.name === helper.name) {
+        const args = InlineForeignFunctionPointerReturns.positionalArguments(n, helper.parameters.map((p) => p.name));
+        if (!args) ok = false;
+        for (const pos of positions) {
+          const arg = args?.[pos];
+          if (!this.isBetaReducibleArg(arg)) ok = false;
+          else if (this.isForeignMember(arg)) this.refuseMisfit(arg as FieldAccessNode, helper.parameters[pos]!);
+        }
       }
       for (const key of Object.keys(n)) {
         const val = (n as unknown as Record<string, unknown>)[key];
@@ -154,9 +166,10 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
       // into the getter's returned pointer value.
       const bareStatePointerCall = cand?.isPublic && this.fnPtrStateVars.has(node.identifier.name)
         && !node.fromThisCall;
-      if (cand && !bareStatePointerCall && node.parameters.length === cand.params.length) {
+      const args = cand ? InlineForeignFunctionPointerReturns.positionalArguments(node, cand.params) : undefined;
+      if (cand && args && !bareStatePointerCall && args.length === cand.params.length) {
         const subst = new Map<string, ExpressionNode>();
-        cand.params.forEach((p, i) => subst.set(p, this.visit(node.parameters[i]) as ExpressionNode));
+        cand.params.forEach((p, i) => subst.set(p, this.visit(args[i]!) as ExpressionNode));
         return this.substExpr(cloneNode(cand.returnExpr) as ExpressionNode, subst);
       }
     }
@@ -201,6 +214,24 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   }
 
   // `IFace(addr).method` (a FieldAccess over a single-arg cast) - the foreign fn-ptr member form.
+  /** A call's arguments in the helper's parameter order, named ones placed by name; undefined if they do not cover it. */
+  private static positionalArguments(call: FunctionCallNode, params: string[]): ExpressionNode[] | undefined {
+    const names = call.fieldNames ?? [];
+    if (names.length === 0) return call.parameters.length === params.length ? call.parameters : undefined;
+    if (names.length !== params.length || new Set(names).size !== names.length) return undefined;
+    const args = params.map((param) => call.parameters[names.indexOf(param)]);
+    return args.every((arg) => arg !== undefined) ? args as ExpressionNode[] : undefined;
+  }
+
+  /** A call through the parameter binds its type's arguments: the member passed must take exactly them. */
+  private refuseMisfit(member: FieldAccessNode, parameter: { name: string; type: unknown }): void {
+    const iface = ((member.expression as FunctionCallNode).identifier as IdentifierNode).name;
+    if (!(parameter.type instanceof FunctionType) || !this.members!.knows(iface)) return;
+    if (!this.members!.fits({ iface, method: member.name }, parameter.type)) {
+      throw new FunctionPointerTypeError(member, parameter.name, `${iface}.${member.name}`, parameter.type.toString());
+    }
+  }
+
   private isForeignMember(expr: ExpressionNode | undefined): boolean {
     return expr instanceof FieldAccessNode && expr.expression instanceof FunctionCallNode
       && (expr.expression as FunctionCallNode).identifier instanceof IdentifierNode

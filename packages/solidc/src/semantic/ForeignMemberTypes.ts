@@ -32,6 +32,15 @@ export default class ForeignMemberTypes {
     type.parameterTypes) && same(fn.returnTypes ?? [], type.returnTypes)).length === 1;
   }
 
+  /** The parameters of the one method `owner.name` another contract can call with `count` arguments. */
+  parameters(owner: string, name: string, count: number): { name: string; type: Type }[] | undefined {
+    const declared = this.owners.get(owner);
+    const sized = (declared ? this.methodsNamed(declared, name) : [])
+      .map((fn) => fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')))
+      .filter((parameters) => parameters.length === count);
+    return sized.length === 1 ? sized[0] : undefined;
+  }
+
   /**
    * The methods another contract can call on `owner` by `name`, its parent interfaces' included, one per signature
    * (an interface's own declaration overrides a parent's).

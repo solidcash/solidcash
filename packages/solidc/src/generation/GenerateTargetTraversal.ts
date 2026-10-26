@@ -2717,6 +2717,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private sourcePrimaryContract?: ContractNode;
   entryPointDebugInfo: Map<string, FunctionDebugInformation> = new Map();  // selector hex -> debug info
+  /**
+   * Entries of a message-bus build whose own body leaves a call to the route (noteCallBoundByRoute), by selector hex
+   * (one without a selector by name), with that call: the dispatcher refuses their selectors, so only the route runs
+   * them. Shared with sub-traversals.
+   */
+  routeOnlyEntries: Map<string, string> = new Map();
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
   invokedFunctionBytecodes: Map<number, Uint8Array> = new Map(); // function id -> internal OP_INVOKE body
   // Offloaded atomic verification needs a callable copy even when the participant route inlines its only call.
@@ -6756,6 +6762,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (node.constructorDef) {
           node.constructorDef = visited[visited.length - 1];
         }
+        // A sole entry has no route beside it: one only the route may run fails (compiler.ts refuses it by name).
+        if (this.routeOnlyEntries.size > 0) this.emitRouteOnlyRefusal(outlineLoc);
       }
     } else {
       // A direct contract's selector dispatcher leaves each entry it invokes `0 || selector`, the prefix of its call
@@ -7297,8 +7305,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(receiveDepth)), loc);
       this.emit(Op.OP_NUMEQUAL, loc);
       this.emit(Op.OP_IF, loc);
-      this.emit(node.receiveDef!.functionSelector!, loc);
-      this.emit(Op.OP_INVOKE, loc);
+      if (this.isRouteOnlyEntry(node.receiveDef)) this.emitRouteOnlyRefusal(loc);
+      else {
+        this.emit(node.receiveDef!.functionSelector!, loc);
+        this.emit(Op.OP_INVOKE, loc);
+      }
       this.emit(Op.OP_ELSE, loc);
     }
 
@@ -7330,8 +7341,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INVOKE, loc);   // known selector: dispatch normally
       this.emit(Op.OP_ELSE, loc);
       this.emit(Op.OP_DROP, loc);     // drop unknown selector
-      this.emit(node.fallbackDef!.functionSelector!, loc);
-      this.emit(Op.OP_INVOKE, loc);   // invoke fallback
+      if (this.isRouteOnlyEntry(node.fallbackDef)) this.emitRouteOnlyRefusal(loc);
+      else {
+        this.emit(node.fallbackDef!.functionSelector!, loc);
+        this.emit(Op.OP_INVOKE, loc);   // invoke fallback
+      }
       this.emit(Op.OP_ENDIF, loc);
     } else {
       // No fallback: validate 4-byte selector, then OP_INVOKE (unknown selectors hard-fail)
@@ -7410,6 +7424,51 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_ENDIF, loc);
+  }
+
+  private isRouteOnlyEntry(fn: FunctionDefinitionNode | undefined): boolean {
+    return fn?.functionSelector !== undefined && this.routeOnlyEntries.has(binToHex(fn.functionSelector));
+  }
+
+  /** The program fails where only the route may run what follows: the always-fail form, not data-output OP_RETURN. */
+  private emitRouteOnlyRefusal(loc: SingleLocationData): void {
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /**
+   * A message-bus build binds a looped call to a fixed target only on its route, row by row: the entry's own body
+   * checks no callee for it. Such an entry is left to the route, and the compile refuses one the route does not
+   * serve. A direct build binds the call in the loop as counted frames, or refuses it. Both the routeOnly ABI stamp
+   * and the entry body's direct-spend guard (emitExternalFunctionCall) key off isRouteBoundLoopedCall.
+   */
+  private noteCallBoundByRoute(fn: FunctionDefinitionNode, slot: ExternalCallSlot): void {
+    if (!this.isRouteBoundLoopedCall(fn, slot)) return;
+    const key = fn.functionSelector ? binToHex(fn.functionSelector) : fn.name;
+    if (!this.routeOnlyEntries.has(key)) this.routeOnlyEntries.set(key, `${slot.interfaceName}.${slot.functionName}`);
+  }
+
+  /**
+   * Whether this loop-nested call is one a message-bus build leaves to its route. An entry point's own (non-bus-owned)
+   * body makes the call, no counted frame binds it, so the route re-derives the loop row by row and binds it there,
+   * while the entry body co-spends nothing for it. The route's handler is a bus-owned body (excluded here), so its own
+   * loop keeps its per-row binding; only the entry body's direct-spend copy carries the guard.
+   */
+  private isRouteBoundLoopedCall(fn: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
+    if (this.compilerOptions.messageBus !== true || !fn.isEntryPoint || slot.callOrdinal !== undefined
+      || fn.name.startsWith('__message_bus') || fn.graphEmissionHandler || fn.graphRuntimeEmissionHandler
+      || this.isCompilerMessageBusRoute(fn) || !this.isExternalCallSlotLoopNested(slot)) return false;
+    // A repeated-address batch's owner, verified in the epilogue, binds its whole invocation vector, loop rows too.
+    const owner = slot.batchInvocations ? slot : this.externalCallSlots.find((candidate) =>
+      candidate.slotIndex < slot.slotIndex && candidate.addressParam === slot.addressParam
+      && candidate.batchInvocations);
+    if (owner !== undefined && !this.isExternalCallSlotLoopNested(owner)) return false;
+    return true;
+  }
+
+  /** The call-site form: physicalSlot may be undefined, and currentFunction is the body being emitted. */
+  private isRouteBoundLoopedCallSite(slot: ExternalCallSlot | undefined): boolean {
+    return slot !== undefined && this.isRouteBoundLoopedCall(this.currentFunction, slot);
   }
 
   /**
@@ -7514,6 +7573,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.userFunctionList = this.userFunctionList;
     subTraversal.isDefineSubTraversal = true;
     subTraversal.isUnemittedDefine = !emitDefinition;
+    subTraversal.routeOnlyEntries = this.routeOnlyEntries;
     subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
     subTraversal.forceFullStateLayout = true;
     subTraversal.journalSlotsByFunctionId = this.journalSlotsByFunctionId;
@@ -7934,6 +7994,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.userFunctionDefs = this.userFunctionDefs;
       subTraversal.userFunctionList = this.userFunctionList;
       subTraversal.isDefineSubTraversal = false; // full entry-point compilation (removeFinalVerify + cleanStack)
+      subTraversal.routeOnlyEntries = this.routeOnlyEntries;
       subTraversal.entryFunctionPointerTargets = this.entryFunctionPointerTargets;
       subTraversal.functionValuesNeverInvoked = this.functionValuesNeverInvoked;
       subTraversal.upgradeSignatureFenceIds = this.upgradeSignatureFenceIds;
@@ -25563,10 +25624,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.foldedCallReverts) this.emitFoldedCallFailure(node);
       return node;
     }
-    // The entry point lays out and binds a callee; an invoked body of a direct build has none of it, so a call left
-    // there would run unchecked.
+    // The entry point lays out and binds a callee; an invoked body has none of it, so a call left there would run
+    // unchecked. A message-bus build's own bodies are the route's, which binds their calls per row.
     if (this.isDefineSubTraversal && !this.isUnemittedDefine && this.directConvention
-      && this.compilerOptions.messageBus !== true && !this.currentFunction.graphEmissionHandler
+      && !this.currentFunction.name.startsWith('__message_bus') && !this.currentFunction.graphEmissionHandler
+      && !this.currentFunction.graphRuntimeEmissionHandler && !this.currentFunction.messageBusDetachedSignatureHandler
       && !this.isCompilerMessageBusRoute()) {
       throw new SolidcDiagnosticError(
         'EXTERNAL_CALL_IN_SUBROUTINE',
@@ -25734,6 +25796,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return node;
     }
+    // A message-bus build binds this looped call only on its route, which re-derives the loop row by row in its own
+    // handler and never runs this entry body. A direct spend of the entry's own selector reaches this body with no
+    // co-spend bound, so a run that enters the loop (>= 1 iteration) fails here; a zero-iteration direct spend never
+    // reaches it. The route's handler is a bus-owned body (excluded below), so its own loop keeps its per-row binding.
+    if (this.isRouteBoundLoopedCallSite(physicalSlot)) this.emitRouteOnlyRefusal(locationData);
     if (batchRow) this.appendExternalBatchRow(batchRow, node, locationData);
 
     // Inline loop-indexed dispatch: `targets[i].call/staticcall(data[i])` over a calldata/param address array
@@ -27840,7 +27907,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A returning call whose record digests its arguments (emitCallerCallRecordDigest) is bound there.
     if (slot.hasReturnValues && slot.callRecordSelector !== undefined
       && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], node.parameters.length)) return undefined;
-    const types: (Type | undefined)[] = method.parameterTypes.slice(0, node.parameters.length)
+    // A function value passes as its address and selector, two pushes (SplitExternalCallFnPtrArgs).
+    const types: (Type | undefined)[] = method.parameterTypes.flatMap((type) => (type instanceof FunctionType
+      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type])).slice(0, node.parameters.length)
       .map((type) => (type === PrimitiveType.SIG ? undefined : type));
     while (types.length > 0 && types[types.length - 1] === undefined) types.pop();
     return types.length > 0 ? { types } : undefined;
@@ -48036,7 +48105,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the call only runs when the loop body runs. A fixed epilogue would require co-spends even when the
       // loop is empty (first poolInfo.push), which fails identity checks against the master's own inputs.
       // Verification of reached iterations is the loop body's responsibility (inlined call site).
-      if (this.isExternalCallSlotLoopNested(slot)) continue;
+      if (this.isExternalCallSlotLoopNested(slot)) {
+        this.noteCallBoundByRoute(node, slot);
+        continue;
+      }
       // A repeated-address compiler batch has one physical participant and one
       // authenticated batch envelope. The owner slot verifies its identity,
       // preservation, selector and complete invocation vector; re-running the

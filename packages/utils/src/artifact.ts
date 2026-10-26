@@ -654,6 +654,12 @@ export interface AbiFunction {
    * published evidence split into own-state versus other-effect causes.
    */
   writesState?: boolean;
+  /**
+   * A message-bus build runs this entry only through its route: its body leaves a looped call to the route, which
+   * binds it row by row. The entry's own body co-spends nothing for that call, so a direct spend of the entry's own
+   * selector may only run it with an empty loop; a direct run that enters the loop fails at the VM.
+   */
+  routeOnly?: boolean;
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;

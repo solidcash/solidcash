@@ -15,6 +15,8 @@ import {
 import { FunctionType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { FunctionPointerTypeError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 /**
  * A foreign fn-ptr PASSED to a DIFFERENT contract over an external call. At the ABI boundary a
@@ -33,8 +35,13 @@ export default class SplitExternalCallFnPtrArgs extends AstTraversal {
   // same-contract function name -> the positions of its external fn-ptr parameters (which the param/storage
   // lowering flattens to (address, bytes4)); a foreign-member arg at such a position must split the same way.
   private fnPtrParamPositions = new Map<string, Set<number>>();
+  // same-contract function name -> its declared parameter types, for the type check of a member passed to it.
+  private parameterTypesByFunction = new Map<string, unknown[]>();
+  private members?: ForeignMemberTypes;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.members = new ForeignMemberTypes(node);
+    this.parameterTypesByFunction = new Map();
     this.typeNames = new Set();
     for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
     for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
@@ -52,7 +59,10 @@ export default class SplitExternalCallFnPtrArgs extends AstTraversal {
         fn.parameters.forEach((p, i) => {
           if (p.type instanceof FunctionType && (p.type as FunctionType).isExternal) positions.add(i);
         });
-        if (positions.size > 0) this.fnPtrParamPositions.set(fn.name, positions);
+        if (positions.size > 0) {
+          this.fnPtrParamPositions.set(fn.name, positions);
+          this.parameterTypesByFunction.set(fn.name, fn.parameters.map((p) => p.type));
+        }
       }
     }
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
@@ -69,8 +79,10 @@ export default class SplitExternalCallFnPtrArgs extends AstTraversal {
     const positions = visited.identifier instanceof IdentifierNode
       ? this.fnPtrParamPositions.get(visited.identifier.name) : undefined;
     if (positions) {
+      const declared = this.parameterTypesByFunction.get((visited.identifier as IdentifierNode).name) ?? [];
       visited.parameters = visited.parameters.flatMap((arg, i) => {
         const m = positions.has(i) ? this.foreignMember(arg) : undefined;
+        if (m) this.refuseMisfit(arg, m, declared[i], (visited.identifier as IdentifierNode).name);
         return m ? [cloneNode(m.address) as ExpressionNode, this.selectorOf(m.iface, m.method, arg)] : [arg];
       });
     }
@@ -81,12 +93,36 @@ export default class SplitExternalCallFnPtrArgs extends AstTraversal {
     const visited = super.visitMethodCall(node) as MethodCallNode;
     // Only split args of a call whose receiver is an interface-cast external-call target (`IFace(addr).method`).
     if (this.isExternalReceiver(visited.object)) {
-      visited.parameters = visited.parameters.flatMap((arg) => {
+      const receiver = visited.object instanceof FunctionCallNode && visited.object.identifier instanceof IdentifierNode
+        ? visited.object.identifier.name : undefined;
+      const declared = receiver !== undefined
+        ? this.members!.parameters(receiver, visited.methodName, visited.parameters.length) : undefined;
+      // Named arguments take the method's order first: a split pointer adds a selector the names do not cover.
+      const names = visited.fieldNames ?? [];
+      if (names.length > 0 && declared !== undefined && new Set(names).size === names.length
+        && declared.every((parameter) => names.includes(parameter.name))
+        && visited.parameters.some((arg) => this.foreignMember(arg) !== undefined)) {
+        visited.parameters = declared.map((parameter) => visited.parameters[names.indexOf(parameter.name)]!);
+        visited.fieldNames = undefined;
+      }
+      visited.parameters = visited.parameters.flatMap((arg, i) => {
         const m = this.foreignMember(arg);
+        if (m) this.refuseMisfit(arg, m, declared?.[i]?.type, visited.methodName);
         return m ? [cloneNode(m.address) as ExpressionNode, this.selectorOf(m.iface, m.method, arg)] : [arg];
       });
     }
     return visited;
+  }
+
+  /** A call through the parameter binds its type's arguments: the member passed must take exactly them. */
+  private refuseMisfit(
+    arg: ExpressionNode, member: { iface: string; method: string }, type: unknown, callee: string,
+  ): void {
+    if (!(type instanceof FunctionType) || !this.members!.knows(member.iface)) return;
+    if (!this.members!.fits(member, type)) {
+      throw new FunctionPointerTypeError(arg, `${callee}'s parameter`, `${member.iface}.${member.method}`,
+        type.toString());
+    }
   }
 
   // A helper whose body is a single `return` (the InlineForeignFunctionPointerReturns beta-reduction shape).

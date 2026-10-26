@@ -482,18 +482,22 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   write that shares its arm with the row/event settlement: `KernelConditionalScalarRoute` drives
   `if (key > 0) { flags[key] = true; appends += 1; emit Appended(key); }` through the shipped sender on both
   branches (scalar 1 on the arm, 0 off it, row present on the arm and absent off it). The shape it still
-  refuses is the complementary one, a scalar in one arm while a *sibling* arm settles a row or event. That
-  shape genuinely fails at run time: the same harness with the fence bypassed stops at
-  `BCH-2026 preflight failed at input 81 (ip 8 of 8, failing opcode 136, which is OP_EQUALVERIFY)` in the
-  participant's route body, `Token.__message_bus1`, for both the mapping arm and the scalar arm
-  (`fence-complementary-fails.log`, `fence-complementary-detail.log`). The failing step is the unlocker's
-  redeem-script check, so the route input is assembled for a different physical shape than the one the SDK
-  chose. The pair's `_mintFee` is that shape — `kLast = 0` sits in an arm whose sibling mints
-  `balanceOf[_feeTo]` and emits — so `mint` stays refused.
-  Bypassing the wide-event gate for `burn` instead lands on the same `conditional-scalar-collection-event-settlement`
-  refusal. A writer therefore needs a kernel settlement for a scalar whose absence is complementary to a
-  sibling arm's row. Without it the Router ceiling is the 11 tests that never seed a pair (address getters, two
-  deadline guards, four pure library-math cases), and the SushiRoll ceiling is its 3 non-pair tests.
+  refuses is the complementary one, a scalar in one arm while a *sibling* arm settles a row or event.
+  Measurement places the defect behind that fence: on an *unsplit* contract the complementary shape
+  assembles and executes in every combination of arm split and result shape (same or complementary arm x
+  void or returning handler; all four pass and `appends` settles to 1). The failure first attributed to
+  complementarity reproduces with **no scalar write at all**: a route handler whose linear sorted batch
+  inserts a key beside an existing entry without republishing the shared predecessor plans `PredOut = -1`
+  for that row (`pred-debug`: `predOrdinal: 0, firstLinearPred: false`), and the compiled route then reads
+  `tx.outputs[-1]` — `Program attempted to read from an invalid transaction output index ... requested
+  index: -1`. Both observations land on a split fragment (eight and six instructions long, starting
+  `DUP OP_OUTPUTBYTECODE`), so the witness is lost or mis-threaded across a fragment boundary.
+  The pair's `_mintFee` is that shape — `kLast = 0` sits in an arm whose sibling mints
+  `balanceOf[_feeTo]` and emits — so `mint` stays refused. Bypassing the wide-event gate for `burn` instead
+  lands on the same `conditional-scalar-collection-event-settlement` refusal. Until that witness threading is
+  fixed the fence state is unchanged, so the Router ceiling remains the 11 tests that never seed a pair (address
+  getters, two deadline guards, four pure library-math cases) and the SushiRoll ceiling its 3 non-pair tests.
+  Evidence: `matrix-two-branch-seed.log`, `sorted-insert-head.log`, `fence-complementary-detail.log`.
   The pair-writer route alone would not raise either count: `addLiquidity` also deploys the pair through the
   factory inside the same transaction, and BCH cannot spend an output it creates, so the 63 Router and 13
   SushiRoll failures each need that child-creation gap closed first (see the two bullets below).

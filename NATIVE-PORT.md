@@ -548,6 +548,10 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   read/write, emit or loop (each refused on its own in `probe-fold5.log`). Compiling the same shape with
   `composition: 'framed'` raises the same refusal, and the framed master compiler refuses contract creation
   outright (`support.ts`: "contract creation needs the witness `CREATE` checks, which are not emitted yet").
+  A framed body that also calls the fresh child reports the missing CREATE frame and the child-entry consequence
+  (`…; a call on the new contract would need the child's entry to run in a spent master's script`), pinned by
+  `packages/solidc/test/framed/master/deploy-then-call-refusal.test.ts` (the direct fold of the same source still
+  compiles).
   Lifting that one refusal under a probe flag reaches the next two layers, in order: the stop-site table asserts
   (`an execution with 0 call(s) closes 1 segment(s): got 2`) because the direct fold marks the `c.entry()` call
   `foldedIntoDeploy` and removes it from the entry's call slots while the framed call walk still counts the node;

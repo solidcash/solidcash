@@ -65,6 +65,7 @@ import {
   HexLiteralNode,
   IdentifierNode,
   IndirectCallNode,
+  InstantiationNode,
   InterfaceNode,
   IntLiteralNode,
   LiteralNode,
@@ -2591,7 +2592,20 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     ...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []), ...fallback,
   ];
   if (input.hasContractInstantiation) {
-    return refuse('contract creation needs the witness `CREATE` checks, which are not emitted yet');
+    // A direct-convention deploy-then-call is folded into the deploy genesis by the semantic pass. The framed
+    // convention has no CREATE frame, and the child's entry cannot run in a spent master of its own, so name both
+    // facts: the entry point the caller wanted is the part a witness-check patch alone would not supply.
+    let foldedDeployCall = false;
+    for (const body of [contract.constructorDef, ...input.contract.functions]) {
+      if (!body) continue;
+      walkInvocationAst(body.body, (node) => {
+        if (node instanceof InstantiationNode && node.hasFoldedChildCall === true) foldedDeployCall = true;
+      });
+    }
+    return refuse(foldedDeployCall
+      ? 'contract creation needs the witness `CREATE` checks, which are not emitted yet; a call on the new '
+        + "contract would need the child's entry to run in a spent master's script"
+      : 'contract creation needs the witness `CREATE` checks, which are not emitted yet');
   }
   if (input.hasFunctionPointers) {
     return refuse('a function pointer needs a call kind the frame does not carry yet');

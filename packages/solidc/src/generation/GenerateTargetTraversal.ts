@@ -7455,7 +7455,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * loop keeps its per-row binding; only the entry body's direct-spend copy carries the guard.
    */
   private isRouteBoundLoopedCall(fn: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
+    // Array-element (loopArrayVar) and inline-dispatch (inlineLoopDispatch) loops are bound per row inline: the
+    // epilogue's emitArrayExternalCallLoop, or the per-iteration inline call, authenticates every reached element's
+    // target, selector, arguments, order and frame, so the entry body co-spends them itself and needs no direct-spend
+    // guard. The epilogue `continue`s on both before noteCallBoundByRoute, so excluding them keeps the call-site guard
+    // in step with the stamp (which already never sees them).
     if (this.compilerOptions.messageBus !== true || !fn.isEntryPoint || slot.callOrdinal !== undefined
+      || slot.loopArrayVar !== undefined || slot.inlineLoopDispatch === true
       || fn.name.startsWith('__message_bus') || fn.graphEmissionHandler || fn.graphRuntimeEmissionHandler
       || this.isCompilerMessageBusRoute(fn) || !this.isExternalCallSlotLoopNested(slot)) return false;
     // A repeated-address batch's owner, verified in the epilogue, binds its whole invocation vector, loop rows too.

@@ -19,6 +19,7 @@ import {
   FieldAccessNode,
   IdentifierNode,
   StateAccessNode,
+  ReturnNode,
   ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -85,6 +86,7 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     if (node.body) {
       this.functionDeclarations = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type] as const));
       this.collectAliases(node.body);
+      this.refuseReturnedMemberMisfits(node);
       // This pass runs once before branch normalization and again after pointer-specific lowerings. Preserve
       // aliases captured by the early run: it may erase their declaration after rewriting high-level calls,
       // while LowerInlineAssembly still needs the original member to lower `fp.address`/`fp.selector` in Yul.
@@ -132,6 +134,34 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       }
     };
     walk(node);
+  }
+
+  // A function whose declared return type is a foreign external function pointer and that returns a foreign member
+  // `IFace(a).m` (or `t.m` for an interface-typed receiver) must name one method of exactly that type: a call through
+  // the returned pointer binds the return type's arguments, so any other signature leaves some unbound. Checked for
+  // EVERY function here, not only the side-effect-free single-return helpers InlineForeignFunctionPointerReturns
+  // inlines, so a side-effecting or multi-statement helper cannot slip a mistyped member past the check.
+  private refuseReturnedMemberMisfits(fn: FunctionDefinitionNode): void {
+    const walk = (n: Node): void => {
+      if (n instanceof ReturnNode) {
+        n.expressions.forEach((expr, index) => {
+          const declared = fn.returnTypes[index];
+          if (!(declared instanceof FunctionType) || !declared.isExternal || !(expr instanceof FieldAccessNode)) return;
+          const iface = this.castInterfaceName(expr.expression) ?? this.declaredInterface(expr.expression);
+          if (iface !== undefined && this.members!.knows(iface)
+            && !this.members!.fits({ iface, method: expr.name }, declared)) {
+            throw new FunctionPointerTypeError(expr, fn.name, `${iface}.${expr.name}`, declared.toString());
+          }
+        });
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    if (fn.body) walk(fn.body);
   }
 
   // A rewritable alias RHS is a foreign interface member `IFoo(addr).method` (FIXED), or a ternary of two

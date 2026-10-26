@@ -74,6 +74,26 @@ contract C(address a, address b) { bigint n;
       .toEqual(['ret', 'ret2']);
   });
 
+  it('refuses a returned member of another type from a side-effecting helper', () => {
+    // A side-effecting / multi-statement helper is not inlined, so `f = pick()` copies the returned pointer without a
+    // member check. The helper's `return IT(a).m` is checked instead: a call through the returned value binds its
+    // return type's arguments, so the member must name one method of exactly that type.
+    const source = (m: string): string => contract(`bigint n;
+  function pick() internal returns (function(uint256) external) { this.n = this.n + 1; return IT(a).${m}; }
+  function fire(uint256 v) { function(uint256) external f = pick(); f(v); this.n = this.n + 1; }`);
+    expect(() => compileString(source('big'))).toThrow(/does not name one method of function pointer/);
+    expect(() => compileString(source('small'))).not.toThrow();
+  });
+
+  it('leaves a returned pointer parameter and a non-member pointer return untouched', () => {
+    // Only a returned foreign MEMBER is checked: a returned pointer parameter (could be any fitting value) and a
+    // non-foreign-member pointer return must still compile.
+    const passthrough = contract(`bigint n;
+  function relay(function(uint256) external cb) internal returns (function(uint256) external) { return cb; }
+  function fire(uint256 v) { function(uint256) external f = relay(IT(a).small); f(v); this.n = this.n + 1; }`);
+    expect(() => compileString(passthrough)).not.toThrow();
+  });
+
   it('binds a call through a value an internal helper receives at the entry point', () => {
     // The helper is the contract's only call: the value lowering makes it an external call, which the entry binds.
     const artifact = compileString(contract(`bigint n;

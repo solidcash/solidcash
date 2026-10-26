@@ -1174,6 +1174,22 @@ needs VM evidence, `rejectedWith` has no source fallback).
   order) and named fields. In the marketplace fixture's legacy convention, `publishJobPost` and `updateJobPost` are
   refused (that route does not admit them); the kernel convention's route serves them. Test:
   `RouteOnlyLoopCalls.test.ts`, `ForeignPointerTypes.test.ts`, and VM shapes in `RouteOnlyLoopGuard.test.ts`.
+  An eleventh review (2026-10-26) found two LOW gaps in `9ba15c3a0`, both fixed by `TENTHFIX`. First, the entry-body
+  guard over-fired: its call-site predicate keyed off `isExternalCallSlotLoopNested`, which is also true for an
+  array-element loop (`IFoo(targets[i]).m(x)`, `loopArrayVar`) and an inline-dispatch loop (`targets[i].call(data[i])`,
+  `inlineLoopDispatch`). Those bind per row INLINE in the entry body (the epilogue's `emitArrayExternalCallLoop`, or the
+  per-iteration call, authenticates every reached element's target, selector, arguments, order and frame) and the
+  epilogue skips them before `noteCallBoundByRoute`, so they are never stamped `routeOnly`, yet the body still carried
+  the `OP_0 OP_VERIFY` guard: an honest direct spend that entered the loop was rejected at the VM though its callees were
+  co-spent. `isRouteBoundLoopedCall` now excludes `loopArrayVar` and `inlineLoopDispatch` slots, matching the epilogue;
+  a bus build of such a shape is byte-identical to its direct build and settles (VM). Second, the returned-pointer check
+  only covered `InlineForeignFunctionPointerReturns`' side-effect-free single-return helper candidates, so a
+  side-effecting or multi-statement helper returning a foreign member of another arity
+  (`function pick() internal returns (function(uint256) external) { this.n = this.n + 1; return IT(a).big; }`, then
+  `function(uint256) external f = pick(); f(v)`) compiled and lowered to a one-argument call that left the member's
+  second argument unbound. `DesugarExternalFunctionPointers` now checks every function's `return <foreign member>`
+  against its declared foreign-pointer return type (`fits`), leaving a returned pointer parameter or a non-member return
+  untouched. Tests: `RouteOnlyLoopArrayDirectSpend.test.ts` (new, VM), `ForeignPointerTypes.test.ts`.
 
 ### Not changed, by decision
 

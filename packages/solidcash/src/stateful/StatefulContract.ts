@@ -9635,12 +9635,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const rest = head ? splitTopLevel(head[1]) : undefined;
             if (head && rest) {
               const condBytes = evalComputedKey(head[0], valueArgs, valueInputs);
+              // Resolve the preserve arm only when the condition is settled false. An undecidable condition
+              // otherwise publishes the old value as an exact target, and the planner pins layout slots for
+              // exact targets, so trace derivation can never correct it. Leave that value to the trace.
               const taken = condBytes !== undefined && condBytes.length > 0;
               if (taken) {
                 resolvedWholeValue = evalComputedKey(rest[0], valueArgs, valueInputs);
-              } else if (rest[1].startsWith('map:') && list.has(slot)) {
-                // Not-taken preserve: pin the current tail only when the key already exists. An absent
-                // key must stay unminted (default 0 is not a zero-value insert).
+              } else if (condBytes !== undefined && rest[1].startsWith('map:') && list.has(slot)) {
+                // Not-taken preserve: pin the current tail only when the condition is settled false and the
+                // key already exists. An absent key must stay unminted (default 0 is not a zero-value insert).
                 resolvedWholeValue = list.find(slot)!.value;
               }
             }

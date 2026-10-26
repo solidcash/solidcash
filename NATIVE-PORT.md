@@ -156,11 +156,12 @@ equality bridge equates a logical address, a physical address, and an EVM projec
 deployment. The test now passes deterministically in each order; the whole-project run is 107/192.
 
 The counts above were re-measured from a **clean rebuild** of every package (`rm -rf packages/*/dist
-packages/*/tsconfig.build.tsbuildinfo`, `tsc -b`) and a clean parity compile. A package `dist` left partially stale by an
+packages/*/tsconfig.build.tsbuildinfo`, `tsc -b`) and a clean parity compile, with the pair's message-bus route
+enabled in `.parity-project/solidcash.config.ts`. A package `dist` left partially stale by an
 abandoned experiment can produce a false failure that a clean build does not reproduce (it showed an extra
 `UniswapV2ERC20 > transferFrom > decrements a finite allowance and transfers` failure whose failing require was the
 conditional allowance check); re-run a clean build before attributing a single case to the compiler.
-Evidence: `final5-parity-all-clean.log` (107/192), `final5-native-clean.log` (28/28),
+Evidence: `final6-parity-all.log` (107/192), `final5-native-clean.log` (28/28),
 `final5-hardhat-clean.log` (192/192).
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
@@ -199,7 +200,8 @@ Route admission now admits a scalar state write that shares its arm with the row
 refusing the complementary shape (a scalar in one arm while a sibling arm settles a row or event). Both sides are
 measured: `packages/solidcash/test/e2e/KernelConditionalScalarRoute.test.ts` sends the admitted shape on both
 branches, and `fence-complementary-fails.log` records the refused shape failing the preflight when the fence is
-bypassed. The parity project therefore keeps the pair on its direct lowering.
+bypassed. The pair's `mint` is refused by the same fence (`kLast = 0` in `_mintFee`); its other handlers keep
+their routes, and the parity project compiles the pair with the route enabled.
 
 ### Parity fixes in the compiler/SDK
 
@@ -252,8 +254,9 @@ bypassed. The parity project therefore keeps the pair on its direct lowering.
   lookup), and a raw `safeTransfer` fails preflight comparing a 64-byte entry/event commitment with an 8-byte
   witness at input 1; the legacy `messageBusKernel: false` lowering fails the same comparison (ip 908). A
   bus-compiled factory emits `PairCreated.token0` as a 35-byte locking bytecode instead of the 20-byte ABI
-  identity (2 Factory tests). Those compiles are kept out of the parity project, so the counts above are the
-  direct-artifact counts. Evidence: `pair-typedbus1.log`, `lib-legacybus-tail.log`, `lib-single-route1.log`,
+  identity (2 Factory tests). Those contracts are kept on the direct lowering in the parity project (only the
+  pair opts into the route), so the counts above are direct-artifact counts apart from the pair itself.
+  Evidence: `pair-typedbus1.log`, `lib-legacybus-tail.log`, `lib-single-route1.log`,
   `twostep-bus7.log`, `twostep-bus10.log`, `factory-bus-suite.log`.
 - A failing outlined library body is attributed from the trace's executed instructions even when the failing
   step exposes no control stack, so a `require` inside an inlined library (SafeMath) reports its message.
@@ -502,16 +505,24 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   that sentinel explicitly. Regression: `packages/solidcash/test/e2e/KernelSharedBatchPredecessor.test.ts`
   (empty mapping and a pre-seeded entry outside the inserted pair's gap); it fails before the change with the
   exact `requested index: -1` error and passes after.
-  A second, pair-specific defect remains on the same path: bus-compiling the pair changes the direct `transferFrom`
-  body's batch order to `[balanceOf (linear, 2 rows), allowance (non-linear, 1 row)]` (the direct build uses
-  `[allowance, balanceOf]`), and the entry then fails the recreated-predecessor commitment check
-  (`ip 353`, `OP_OUTPUTTOKENCOMMITMENT`/`OP_EQUALVERIFY`) even though both builds plan the predecessor output at
-  the same base. The same shape compiled as a standalone token (`balanceOf`, `allowance`, a conditional allowance
-  write, a `Transfer` event) passes in both compilations, and compiling the pair with `split: 'off'` fails
-  identically, so the trigger is the pair's own block layout rather than the splitter or the batch order alone.
-  This blocks enabling the pair's route at no cost (ERC20 14 -> 13).
+  The pair-specific `transferFrom` failure on that path is fixed. Bus-compiling the pair moves the allowance
+  write to the one layout lane that is not a loop entry (the bus lowering marks both `balanceOf` lanes `inLoop`),
+  so the planner pins that lane as an exact sorted-batch target. Its value came from the ternary's **preserve**
+  arm: `evalComputedKey` cannot evaluate `binop:!=(map:allowance(…), TypeIntrospectionNode{max})`, and the planner
+  treated an unevaluable condition as false. The published target then carried the old allowance (100 where the
+  covenant computed 60), and preflight failed its own target check (`ip 353`,
+  `OP_OUTPUTTOKENCOMMITMENT`/`OP_EQUALVERIFY`). An unevaluable condition now leaves the value to trace derivation,
+  so the planner pins the lane only when the taken arm is known.
+  With that change the parity project compiles the pair with its route enabled
+  (`messageBusByContract: { UniswapV2Pair: true, SushiSwapPair: true }`) and the ERC20 suite, which drives the LP
+  token through the pair, is 14/14; it was 13/14 before the change. The whole-project count with the route enabled
+  is unchanged at 107/192.
+  The bus-compiled pair measures 20,809 bytes against the 10,000-byte P2SH script limit (artifact
+  `deployability.status = "over-budget"`), so the routed pair fits the parity harness while a mainnet deployment
+  needs a compressed route.
   The pair's `_mintFee` still trips the fence (`kLast = 0` sits in an arm whose sibling mints `balanceOf[_feeTo]`
-  and emits), so `mint` stays refused. Bypassing the wide-event gate for `burn` instead lands on the same
+  and emits), so `mint` stays refused; the fence narrowing that admits same-arm settlement does not apply to that
+  complementary arm. Bypassing the wide-event gate for `burn` instead lands on the same
   `conditional-scalar-collection-event-settlement` refusal. The fence state is unchanged, so the Router ceiling
   remains the 11 tests that never seed a pair (address getters, two deadline guards, four pure library-math
   cases) and the SushiRoll ceiling its 3 non-pair tests.

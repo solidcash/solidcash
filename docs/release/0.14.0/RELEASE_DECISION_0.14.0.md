@@ -427,6 +427,8 @@ A fourth review found a nested pointer-table broadcast accepted at the VM, an in
 parameter, `delete` on an address local, and helpers holding a loop over targets failing to compile since
 `671dc23f1`; `9abf04ce5` fixes all four with the pins unchanged, and only the two pointer-table test files change
 bytes (with the two changed test files, four files passed once).
+`6126221c0` then binds the arguments of a void call on a state-array element (a callee run on another argument was
+accepted at the VM before it); six test files change bytes and passed once with the new case, the pins unchanged.
 
 ### What closed the 2026-10-17 failures
 

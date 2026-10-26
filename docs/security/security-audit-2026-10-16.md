@@ -1071,6 +1071,13 @@ needs VM evidence, `rejectedWith` has no source fallback).
   order, through any index or loop form; follows an array alias only through locals defined once; counts a delete
   as a definition; and compiles such a loop call in a body nothing invokes as a failure (an invoked body still
   refuses it). Test: `AliasedCalleeSites.test.ts`, `LoopTargetProvenance.test.ts`.
+- **Arguments of a void call on a state-array element** (open since `ca737ef32`; accepted at the VM). A void call in a
+  loop over a state array (`IListener(listeners[i]).hear(value, 7)`) bound its callee's method after the loop, where
+  the iteration's arguments are gone, and none of its arguments: each element's callee could run the method on other
+  arguments while the caller assumed its own call ran. `6126221c0` binds the arguments the call names where it runs,
+  against the unlocking of the input the epilogue checks for the element the call claims. A table of received function
+  pointers does not bind its callees' arguments: their methods are not known at compile time. Test:
+  `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 
@@ -1095,8 +1102,8 @@ needs VM evidence, `rejectedWith` has no source fallback).
   runs any of them; a fallback runs where a short first push meets a multi-function callee, while the caller's
   selector check skips such a push; with the anchor witness `>= 0` the selector compared is a witness. A void record
   pinned by the callee (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract
-  without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) but not its
-  arguments: the callees are checked after the loop, where per-iteration arguments are gone.
+  without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) and its
+  arguments (`6126221c0`); a table of received function pointers does not bind its callees' arguments.
 
 - A call through an external function pointer takes its callee input from a witness that is not compared with the
   fixed-offset inputs of a function with a loop over targets: a loop over a state array of pointers reads a witness

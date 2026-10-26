@@ -484,9 +484,12 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   branches (scalar 1 on the arm, 0 off it, row present on the arm and absent off it). The shape it still
   refuses is the complementary one, a scalar in one arm while a *sibling* arm settles a row or event. That
   shape genuinely fails at run time: the same harness with the fence bypassed stops at
-  `BCH-2026 preflight failed at input 81: Program failed an OP_VERIFY operation` for both the mapping arm and
-  the scalar arm (`fence-complementary-fails.log`). The pair's `_mintFee` is that shape — `kLast = 0` sits in
-  an arm whose sibling mints `balanceOf[_feeTo]` and emits — so `mint` stays refused.
+  `BCH-2026 preflight failed at input 81 (ip 8 of 8, failing opcode 136, which is OP_EQUALVERIFY)` in the
+  participant's route body, `Token.__message_bus1`, for both the mapping arm and the scalar arm
+  (`fence-complementary-fails.log`, `fence-complementary-detail.log`). The failing step is the unlocker's
+  redeem-script check, so the route input is assembled for a different physical shape than the one the SDK
+  chose. The pair's `_mintFee` is that shape — `kLast = 0` sits in an arm whose sibling mints
+  `balanceOf[_feeTo]` and emits — so `mint` stays refused.
   Bypassing the wide-event gate for `burn` instead lands on the same `conditional-scalar-collection-event-settlement`
   refusal. A writer therefore needs a kernel settlement for a scalar whose absence is complementary to a
   sibling arm's row. Without it the Router ceiling is the 11 tests that never seed a pair (address getters, two

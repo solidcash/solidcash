@@ -548,15 +548,15 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   read/write, emit or loop (each refused on its own in `probe-fold5.log`). Compiling the same shape with
   `composition: 'framed'` raises the same refusal, and the framed master compiler refuses contract creation
   outright (`support.ts`: "contract creation needs the witness `CREATE` checks, which are not emitted yet").
-  A framed body that also calls the fresh child reports the missing CREATE frame and the child-entry consequence
-  (`…; a call on the new contract would need the child's entry to run in a spent master's script`), pinned by
-  `packages/solidc/test/framed/master/deploy-then-call-refusal.test.ts` (the direct fold of the same source still
-  compiles).
-  Lifting that one refusal under a probe flag reaches the next two layers, in order: the stop-site table asserts
-  (`an execution with 0 call(s) closes 1 segment(s): got 2`) because the direct fold marks the `c.entry()` call
-  `foldedIntoDeploy` and removes it from the entry's call slots while the framed call walk still counts the node;
-  skipping folded nodes in that walk then stops in master codegen at `the compiled master reserves its address
-  slot more than once` (the child's address slot and the parent's are both reserved for one patch offset). The
+  A framed body that also calls the fresh child is refused earlier, at the call: "the framed composition convention
+  does not support a call on a contract created in the same transaction: the child's entry would need a spent
+  master of its own". Refusing before the direct fold keeps a `foldedIntoDeploy` call node out of the body, which
+  is what makes the framed stop-site table assert (`an execution with 0 call(s) closes 1 segment(s): got 2`) when
+  the creation guard is lifted; pinned by `packages/solidc/test/framed/master/deploy-then-call-refusal.test.ts`,
+  which also asserts the direct fold of the same source.
+  Lifting the creation guard under a probe flag and skipping the folded nodes reaches master codegen, which stops at
+  `the compiled master reserves its address slot more than once` (the child's address slot and the parent's are
+  both reserved for one patch offset). The
   validator side already represents a minted callee (`state.masterSet` includes `mintedRef(output)` and V5 has a
   CREATE arm), but no script executes a minted master: the child's block comes from the transcript, so the entry's
   body would be trusted rather than verified. A CREATE frame therefore needs the child's entry inlined into a

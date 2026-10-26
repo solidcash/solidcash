@@ -2713,6 +2713,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     return fn.body ? walk(fn.body) : true;
   }
 
+  /**
+   * The framed convention has no CREATE frame: a child created in this transaction has no spent master, so its
+   * entry cannot run under a master of its own. The direct convention folds such a call into the child's genesis;
+   * the framed one must refuse it by name before any fold, which also keeps the folded call node out of the body
+   * (the framed stop-site table would otherwise count a call the entry's slot list no longer has).
+   */
+  private refuseFramedDeployThenCall(): void {
+    if (this.compilerOptions.composition !== 'framed') return;
+    throw new SolidcDiagnosticError(
+      'FRAMED_CODEGEN_UNAVAILABLE',
+      'the framed composition convention does not support a call on a contract created in the same transaction: '
+      + "the child's entry would need a spent master of its own",
+      { requested: 'framed', reason: 'deploy-then-call' },
+    );
+  }
+
   // Fold one expression into a parent-context genesis expression, or null if not foldable. The child starts
   // at default (zero) state, so a `this.<field>` read resolves to the field's value WRITTEN EARLIER in foo
   // (fieldExprs) or its type default. Identifiers resolve to a forwarded arg or an earlier local (subs).
@@ -14531,6 +14547,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               }
               const parameters = this.visitList(node.parameters) as ExpressionNode[];
               if (this.deployResultLocals.has(varName)) {
+                this.refuseFramedDeployThenCall();
                 const deployNode = this.deployResultLocals.get(varName)!;
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
                 const realFoo = deployNode.referencedContract?.functions.find((f) => f.name === methodName);
@@ -17939,6 +17956,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? deployAlias
           : deployName ? this.deployResultLocals.get(deployName) : undefined;
         if (deployNode) {
+          this.refuseFramedDeployThenCall();
           const receiverName = deployName ?? `new ${deployNode.identifier.name}()`;
           // An inline deploy the hoist left in place (a conditionally evaluated position) would vanish with the
           // fold, which keeps only the call's effect: refuse it rather than drop the child.

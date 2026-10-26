@@ -433,7 +433,9 @@ accepted at the VM before it); six test files change bytes and passed once with 
 A fifth review found that a loop over a state array still ran the callees of elements its body skipped (through a
 table of fixed-method pointers as well) and that a write before such a loop made the replaced callee run, both
 accepted at the VM; `5311db02e` requires each loop to call its elements in turn and checks the array as the loop saw
-it, with the pins unchanged, and the eight test files whose contracts change bytes passed once.
+it, with the pins unchanged, and the eight test files whose contracts change bytes passed once. `fc5f4f09b` binds the
+arguments of a call through a table of pointers as well (accepted at the VM before it), the pins unchanged, three
+test files changed and passed once.
 
 ### The 2026-10-26 verification
 

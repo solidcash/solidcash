@@ -1091,6 +1091,13 @@ needs VM evidence, `rejectedWith` has no source fallback).
   after them when they all precede it. Writes to an array's loop cache count as its writes; a function writing the
   array inside the loop, or on both sides of it, is refused at compile time (`LOOP_ARRAY_WRITTEN_AROUND_CALLS`). Test:
   `AliasedCalleeSites.test.ts`.
+- **Arguments of a call through a table of pointers** (open since `6126221c0`; accepted at the VM). A call on an
+  element of a table of received function pointers, or of a varying-method table, bound its callee's identity and
+  method after the loop but none of its arguments, as the table's methods vary by element: each callee could run its
+  method on other arguments. The elements share the table's function type, whose parameters the call names, so
+  `fc5f4f09b` binds the arguments where the call runs, as on any state-array element: a varying table's callee at its
+  laid-out input, a received table's at the next entry of the witness list the epilogue checks, read in turn as the
+  calls take the elements. Test: `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 
@@ -1116,7 +1123,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   selector check skips such a push; with the anchor witness `>= 0` the selector compared is a witness. A void record
   pinned by the callee (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract
   without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) and its
-  arguments (`6126221c0`); a table of received function pointers does not bind its callees' arguments.
+  arguments (`6126221c0`; through a table of pointers since `fc5f4f09b`).
 
 - A call through an external function pointer takes its callee input from a witness that is not compared with the
   fixed-offset inputs of a function with a loop over targets: a loop over a state array of pointers reads a witness

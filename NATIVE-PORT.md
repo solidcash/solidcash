@@ -527,9 +527,24 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   remains the 11 tests that never seed a pair (address getters, two deadline guards, four pure library-math
   cases) and the SushiRoll ceiling its 3 non-pair tests.
   Evidence: `matrix-two-branch-seed.log`, `sorted-insert-head.log`, `fence-complementary-detail.log`.
-  The pair-writer route alone would not raise either count: `addLiquidity` also deploys the pair through the
-  factory inside the same transaction, and BCH cannot spend an output it creates, so the 63 Router and 13
-  SushiRoll failures each need that child-creation gap closed first (see the two bullets below).
+- **Same-transaction child creation is refused by the compiler, and the two candidate workarounds are measured
+  closed.** The direct model already folds create-and-configure (`new C(); c.initialize(...)`) into the child's
+  genesis, but only for a straight-line callee. A callee with control flow — the pair's `mint` — is refused by
+  name: `Cannot call 'mint()' on 'c' in the transaction that deploys it with 'new Child(...)': the call would
+  co-spend Child as an input, but this transaction creates it as an output, and a UTXO cannot be both created and
+  spent in one transaction. … One-transaction deploy-then-configure folding for this call is in progress (see
+  packages/solidc/docs/deploy-then-call-fold.md)`. Compiling the same shape with `composition: 'framed'` raises
+  the same refusal, and the framed master compiler refuses contract creation outright (`support.ts`: "contract
+  creation needs the witness `CREATE` checks, which are not emitted yet").
+  Creating the pair top-level first does not help the Router either: `_addLiquidity` reads
+  `IUniswapV2Pair.getReserves` and then calls `IUniswapV2Pair.mint`, and the builder refuses two distinct
+  returning methods on one state owner without a compiled route (`Direct external calls to getReserves and mint
+  share one state owner but both return values`). The pair's `mint` cannot join a kernel route (the fence above)
+  and its `getReserves` reader is the scalar sibling the mixed-route gate refuses, so no authenticated
+  multi-method route exists to model it. A fold that satisfied the Router would therefore have to inline the
+  pair's first entry *including* its own external reads (`balanceOf` on both tokens) and decode another
+  contract's state layout at compile time; an interface carries neither. The 63 Router and 13 SushiRoll failures
+  stay blocked on that gap. Evidence: `precreated-router.log`, `fold-control-flow.log`.
 - **A contract cannot call itself in one transaction.** The pair's `migrator.desiredLiquidity()` and the flash
   callback's reentrant `mint`/`burn`/`swap`/`skim`/`sync` target the primary contract, whose master UTXO is
   already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not

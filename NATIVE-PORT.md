@@ -350,6 +350,11 @@ bypassed. The parity project therefore keeps the pair on its direct lowering.
   placeholders first so an early-abort path can prove the loop is never reached. On a real provider it still
   requires explicitly deployed mutable-NFT side-cars
   (`Keccak256.test.ts`, "provisions the dynamic keccak256 side-cars on a provider that supports it").
+- A non-linear sorted batch whose rows share one proof names the single republished predecessor output for every
+  row; the non-republishing row used to carry `-1` and the covenant read `tx.outputs[-1]`. A linear batch keeps
+  `-1` there, because its two-lane and rows-table verifiers test that sentinel explicitly. Regression:
+  `packages/solidcash/test/e2e/KernelSharedBatchPredecessor.test.ts` (empty and pre-seeded mapping); the repro
+  fails on the previous planner with `requested index: -1` and passes with the change.
 
 ### Computed external targets (resolved)
 
@@ -485,19 +490,18 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   refuses is the complementary one, a scalar in one arm while a *sibling* arm settles a row or event.
   Measurement places the defect behind that fence. On an *unsplit* contract the complementary shape assembles and
   executes in every combination of arm split and result shape (same or complementary arm x void or returning
-  handler; all four pass and `appends` settles to 1). The failure first attributed to complementarity reproduces
-  with **no scalar write at all**: a route handler whose linear sorted batch writes two keys that share one proof
-  plans `__internal__vmapBatchPredOut = -1` for the row that does not republish the predecessor (`pred-debug`:
-  `predOrdinal: 0, firstLinearPred: false`, `firstPredSlot` naming the other row), and the spent predecessor
-  input then reads `tx.outputs[-1]` — `Program attempted to read from an invalid transaction output index ...
-  requested index: -1`. Compiling with `split: 'off'` fails identically, so this is not a size fragment: the
-  failing program is the six-instruction shared-predecessor entry covenant, which is bound to the wrong row's
-  `PredOut` sentinel. The compiled witnesses for that reproduction are
-  `Slot_0 = ca35…, Next_0 = 0, PredOut_0 = -1` and `Slot_1 = e77b…, Next_1 = ca35…, PredOut_1 = 19`, with lanes
-  2..8 inactive (-2); both rows share proof input 2, so the predecessor is republished at output 19 for the chain
-  head while the tail row keeps -1, and the verifier reads the predecessor output for the -1 row. The next work
-  item is that witness binding (bind the shared predecessor to the row that republishes it, or plan the verbatim
-  predecessor output), not the fence: lifting the fence today would publish routes that can hit this at run time.
+  handler; all four pass and `appends` settles to 1). The failure first attributed to complementarity reproduced
+  with **no scalar write at all**: a route handler whose non-linear sorted batch writes two keys that share one
+  proof planned `__internal__vmapBatchPredOut = -1` for the row that does not republish the predecessor (the other
+  row named the one republished output), and the spent predecessor input then read `tx.outputs[-1]` —
+  `Program attempted to read from an invalid transaction output index ... requested index: -1`. Compiling with
+  `split: 'off'` failed identically, so it was never a size fragment: the six-instruction program is the
+  shared-predecessor entry covenant.
+  That binding is fixed: a non-linear batch now names the single republished predecessor output for every row that
+  shares the proof, while a linear batch keeps `-1` there for its two-lane and rows-table verifiers, which test
+  that sentinel explicitly. Regression: `packages/solidcash/test/e2e/KernelSharedBatchPredecessor.test.ts`
+  (empty mapping and a pre-seeded entry outside the inserted pair's gap); it fails before the change with the
+  exact `requested index: -1` error and passes after.
   The pair's `_mintFee` still trips the fence (`kLast = 0` sits in an arm whose sibling mints `balanceOf[_feeTo]`
   and emits), so `mint` stays refused. Bypassing the wide-event gate for `burn` instead lands on the same
   `conditional-scalar-collection-event-settlement` refusal. The fence state is unchanged, so the Router ceiling

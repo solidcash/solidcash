@@ -9723,7 +9723,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               first: firstPredSlot.get(proofSlot), predOutputs: predOutputs.map((o) => binToHex(o.slot).slice(0, 12)),
             }));
           }
-          const predOut = predOrdinal < 0 || !firstLinearPred
+          // A non-linear batch's verifier reads the predecessor output for every active row, so every row that
+          // shares one proof names the single republished predecessor; -1 there makes the covenant read
+          // tx.outputs[-1]. A linear batch keeps -1 for the row another lane republishes: its two-lane and
+          // rows-table verifiers test that sentinel explicitly.
+          const sharedProofOutput = batch.linear !== true;
+          const predOut = predOrdinal < 0 || (!firstLinearPred && !sharedProofOutput)
             ? -1n
             : singleTargetRowBatch
               ? proofOwnerOffset === undefined ? -1n : BigInt((overrides?.blockBase ?? 0) + proofOwnerOffset)

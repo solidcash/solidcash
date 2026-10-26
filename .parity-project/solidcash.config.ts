@@ -17,6 +17,9 @@ export default defineConfig({
     forceStateful: true,
     commitmentLimit: 128,
     suppressWarnings: true,
+    // The pair opts into the bus lowering. `UniswapV2ERC20 > transferFrom > decrements a finite allowance and
+    // transfers` fails here (13/14) when the planner publishes the ternary's preserve arm for an undecidable
+    // condition, so that suite is the regression for the pair-route value resolution.
     messageBusByContract: { UniswapV2Pair: true, SushiSwapPair: true },
   },
   composition: 'direct',

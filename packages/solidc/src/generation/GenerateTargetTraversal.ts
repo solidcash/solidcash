@@ -19863,6 +19863,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sv: StateVariableNode,
     locationData: SingleLocationData,
     stackLabel: string,
+    inputState = false,
   ): void {
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
 
@@ -19871,7 +19872,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // fixed-width element type the stored blob is tight (count stripped), so prepend count = A$len/width; for
     // a variable-width element type the stored blob already carries its `pushdata(count)` prefix.
     if (sv.isDynamic) {
-      this.emitReadDynamicScalar(sv, locationData);
+      // `inputState` reads the array the transaction spends, past any write this function made to it.
+      if (inputState && this.pendingDynamicWrites.has(sv.name)) this.emitDynamicReadLoop(sv, locationData);
+      else this.emitReadDynamicScalar(sv, locationData);
       this.emitReframeDynamicArrayRead(sv, locationData);
       this.stack[0] = stackLabel;
       return;
@@ -19897,7 +19900,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       this.pushToStack(stackLabel);
     };
-    const state = this.pendingStateWrites.has(key) ? this.framedFieldState(key) : 'closed';
+    const state = this.pendingStateWrites.has(key) && !inputState ? this.framedFieldState(key) : 'closed';
     if (state === 'current') fromSlot();
     else if (state === 'closed') fromState();
     else this.emitFramedBySegment(state, fromSlot, fromState, locationData);
@@ -48363,6 +48366,80 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Where the current function writes the state arrays a loop over `slot`'s targets reads (the target array and a
+   * varying table's selector array), relative to the outermost loop around the slot's calls: only 'before' it, only
+   * 'after' it, or 'mixed' (inside that loop, or on both sides). A write to an array's loop cache (`__dlcache_V`,
+   * which the function's accesses read instead, flushed back at the end), assembly, and a call to or reference of an
+   * internal function whose body writes them count as writes. `undefined` when nothing writes them.
+   */
+  private loopArrayWritePlacement(slot: ExternalCallSlot): 'before' | 'after' | 'mixed' | undefined {
+    const names = new Set([slot.loopArrayVar, slot.selectorArrayVar].filter((name): name is string => !!name));
+    const caches = new Set([...names].map((name) => `__dlcache_${name}`));
+    const slotIndex = this.externalCallSlots.indexOf(slot);
+    const skip = new Set(['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'collection', 'sourceCallNode', 'callInfo', 'type']);
+    const children = (node: Node): Node[] => Object.entries(node).flatMap(([key, value]) => (skip.has(key) ? []
+      : Array.isArray(value) ? value.filter((item): item is Node => item instanceof Node)
+        : value instanceof Node ? [value] : []));
+    const writesHere = (node: Node): boolean => {
+      if (node instanceof AssemblyStatementNode) return true;
+      // A cache's flush only commits the writes made to the cache.
+      if (node instanceof StateAssignNode && node.expression instanceof IdentifierNode
+        && caches.has(node.expression.name)) return false;
+      if ((node instanceof StateArrayPushNode || node instanceof StateArrayPopNode || node instanceof StateArrayAssignNode
+        || node instanceof StateArrayDeleteNode || node instanceof StateAssignNode || node instanceof DeleteStateNode)
+        && names.has(node.name)) return true;
+      if ((node instanceof ArrayPushNode || node instanceof ArrayPopNode || node instanceof ArrayAssignNode
+        || node instanceof ArrayDeleteNode) && caches.has(node.name)) return true;
+      return (node instanceof AssignNode || node instanceof DeleteLocalNode) && caches.has(node.identifier.name);
+    };
+    const calleeWrites = new Map<FunctionDefinitionNode, boolean>();
+    const writes = (node: Node): boolean => {
+      const callee = node instanceof FunctionCallNode ? node.resolvedFunction
+        : node instanceof IdentifierNode ? node.functionReference : undefined;
+      if (callee?.body && !calleeWrites.has(callee)) {
+        calleeWrites.set(callee, false);
+        const seen = new Set<Node>();
+        const pending: Node[] = [callee.body];
+        let written = false;
+        while (!written && pending.length > 0) {
+          const current = pending.pop()!;
+          if (seen.has(current)) continue;
+          seen.add(current);
+          written = writes(current);
+          pending.push(...children(current));
+        }
+        calleeWrites.set(callee, written);
+      }
+      return writesHere(node) || (callee !== undefined && calleeWrites.get(callee) === true);
+    };
+    let order = 0;
+    const found: { at: number; loops: Node[] }[] = [];
+    const calls: { at: number; loops: Node[] }[] = [];
+    const visited = new Set<Node>();
+    const walk = (node: Node, loops: Node[]): void => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      const at = order;
+      order += 1;
+      if (node instanceof ExternalFunctionCallNode && node.callInfo?.externalCallSlotIndex === slotIndex) {
+        calls.push({ at, loops });
+      }
+      if (writes(node)) found.push({ at, loops });
+      const inner = node instanceof WhileNode || node instanceof DoWhileNode ? [...loops, node] : loops;
+      for (const child of children(node)) walk(child, inner);
+    };
+    walk(this.currentFunction.body, []);
+    if (found.length === 0) return undefined;
+    const outer = calls[0]?.loops[0];
+    if (outer === undefined || calls.some((call) => call.loops[0] !== outer)
+      || found.some((write) => write.loops.includes(outer))) return 'mixed';
+    const before = found.some((write) => write.at < calls[0]!.at);
+    const after = found.some((write) => write.at > calls[0]!.at);
+    return before && after ? 'mixed' : before ? 'before' : 'after';
+  }
+
+  /**
    * The offset of the first callee laid out after a loop over targets' first callee. The loop's callee for
    * iteration i sits at `base + offset + i * stride`, so from its second iteration on it would take that callee's
    * input too, and one run would serve both calls: the loop's inputs must stay below it.
@@ -48404,33 +48481,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const stride = 1 + slot.requiredDataNftIndices.length;
     const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
+    // The calls ran on the arrays as they stood at the loop: before the function's writes when it writes them only
+    // after the loop, after them when only before it.
+    const placement = this.loopArrayWritePlacement(slot);
+    if (placement === 'mixed') {
+      throw new SolidcDiagnosticError(
+        'LOOP_ARRAY_WRITTEN_AROUND_CALLS',
+        `'${node.name}' writes the state array '${slot.loopArrayVar}' inside the loop that calls through it, or both `
+          + 'before and after that loop, so the calls cannot be checked against one array. Write it only before the '
+          + 'loop or only after it.',
+        { functionName: node.name, arrayName: slot.loopArrayVar },
+      );
+    }
+    const inputState = placement !== 'before';
 
     // --- read whole array -> blob (pushdata(count) ++ framed element LBCs); co-spends arr's chunks once ---
-    // Prefer the PRE-write array when this function also mutates it (MasterChef.add: massUpdatePools then
-    // poolInfo.push). The mass-update loop only ran over the pre-push elements; verifying co-spends against
-    // the post-push array would demand a balanceOf for the brand-new pool that was never updated. Reading
-    // the pending write value would use post-push length; force the input-state path instead.
-    if (sv.isDynamic && this.pendingDynamicWrites.has(sv.name)) {
-      this.emitDynamicReadLoop(sv, loc); // input-state reassembly, ignore pending write
-      this.emitReframeDynamicArrayRead(sv, loc);
-      this.stack[0] = '(aec_blob)';
-    } else {
-      this.emitReadStateArrayBlob(sv, loc, '(aec_blob)'); // [..., (aec_blob)]
-    }
+    this.emitReadStateArrayBlob(sv, loc, '(aec_blob)', inputState); // [..., (aec_blob)]
     this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [count, remainder] remainder top
     this.emit(Op.OP_SWAP, loc);                          // [remainder, count] count top
     this.popFromStack();                                 // drop (aec_blob) tracking
     this.pushToStack('(aec_rem)');
     this.pushToStack('(aec_count)');
-    // The body's calls took increasing elements: the last one must be an element, or that call ran on nothing. A
-    // pointer table's broadcast took each element in turn, and must have taken the last.
+    // The body's calls took the elements in turn: they must have taken the last, or none, when no callee runs.
     const floor = this.loopInputFloorName(slot);
     if (this.getStackIndex(floor, true) >= 0) {
-      this.emitPickAt(this.getStackIndex(floor), loc);
-      if (slot.fnPtrCall) this.emit(Op.OP_1ADD, loc);
-      this.emitPickAt(this.getStackIndex('(aec_count)') + 1, loc);
-      this.emit(slot.fnPtrCall ? Op.OP_NUMEQUAL : Op.OP_LESSTHAN, loc);
-      this.emit(Op.OP_VERIFY, loc);
+      this.emitPickAt(this.getStackIndex(floor), loc);    // [.., rem, count, floor]
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_2DROP, loc);
+      this.emit(Op.OP_0, loc);                            // [.., rem, 0]
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_1ADD, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);               // [.., rem, count]
+      this.emit(Op.OP_ENDIF, loc);
     }
 
     // Varying-method dispatch table: also read the parallel `bytes[]` selector array; each iteration decodes
@@ -48438,7 +48524,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (slot.selectorArrayVar) {
       const selSv = this.stateVariables.find((v) => v.name === slot.selectorArrayVar);
       if (!selSv) throw new Error(`selector array '${slot.selectorArrayVar}' must be a state array`);
-      this.emitReadStateArrayBlob(selSv, loc, '(aec_sel_blob)'); // [..., sel_blob]
+      this.emitReadStateArrayBlob(selSv, loc, '(aec_sel_blob)', inputState); // [..., sel_blob]
       this.emitPushdataDecode(PrimitiveType.BIGINT, loc);        // [..., selcount, sel_rem] sel_rem top
       this.emit(Op.OP_NIP, loc);                                 // drop selcount -> [..., sel_rem]
       this.popFromStack();                                       // drop (aec_sel_blob) tracking
@@ -49488,8 +49574,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Requires a call on a state-array element to take an element above the one its loop took last (on a received
-   * pointer table, the next one: its broadcast runs every element once). Stack-neutral.
+   * Requires a call on a state-array element to take the element after the one its loop took last: the epilogue runs
+   * every element's callee once, in order. Stack-neutral.
    */
   private emitLoopElementFloor(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, target: ExpressionNode, loc: SingleLocationData,
@@ -49511,13 +49597,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.visit(cloneNode(index) as ExpressionNode);           // [.., k]
     this.emit(Op.OP_DUP, loc);                                // [.., k, k]
     this.emitPickAt(this.getStackIndex(floor) + 1, loc);      // [.., k, k, floor]
-    if (slot.fnPtrCall) {
-      this.emit(Op.OP_1ADD, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);                   // [.., k]
-    } else {
-      this.emit(Op.OP_GREATERTHAN, loc);
-      this.emit(Op.OP_VERIFY, loc);                           // [.., k]
-    }
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);                     // [.., k]
     this.emitReplace(this.getStackIndex(floor), node);
     this.popFromStack();
   }

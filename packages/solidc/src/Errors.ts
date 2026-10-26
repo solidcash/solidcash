@@ -79,6 +79,8 @@ export type SolidcDiagnosticCode =
   | 'RETURN_RESULT_UNBOUND'
   // A source function whose selector is the multi-call entry's reserved selector.
   | 'CALL_BATCH_RESERVED_SELECTOR_COLLISION'
+  // A loop calling through a state array its function writes inside that loop, or both before and after it.
+  | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

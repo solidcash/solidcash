@@ -248,6 +248,103 @@ describe('a loop over a state array of callees', () => {
     expect((await publisher.getState()).count).toBe(0n);
     expect((await subscribers[0].getState()).received).toBe(0n);
   }, 300_000);
+
+  it('refuses a body that skips an element or stops before the last', async () => {
+    // Every element's callee runs after the loop, so an element the body does not call would still run.
+    const { publisher, subscribers } = await deployed();
+    await expect(publisher.notifySome([1n], 10n, alicePub, new SignatureTemplate(alicePriv)).send()).rejects.toThrow();
+    await expect(publisher.notifySome([0n], 10n, alicePub, new SignatureTemplate(alicePriv)).send()).rejects.toThrow();
+    expect((await publisher.getState()).count).toBe(0n);
+    for (const subscriber of subscribers) expect((await subscriber.getState()).received).toBe(0n);
+  }, 300_000);
+});
+
+// A table of fixed-method pointers lowers to an address array, whose callees run once each after the loop.
+const COUNTER = `pragma solidcash >=0.8.0;
+interface ICounter { public bigint counter; function increment(uint256 v); }
+contract Counter() is ICounter {
+  bigint counter;
+  function increment(uint256 v) { this.counter = this.counter + int(v); require(int(v) >= 0); }
+}`;
+const FIXED_TABLE = `pragma solidcash >=0.8.0;
+interface ICounter { public bigint counter; function increment(uint256 v); }
+contract FixedTable() {
+  function(uint256) external[] fns;
+  bigint bumps;
+  function register(address a, pubkey pk, sig s) {
+    require(checkSig(s, pk)); this.fns.push(ICounter(a).increment); this.bumps = this.bumps + 1;
+  }
+  function fireN(uint256 n, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (uint256 i = 0; i < n; i = i + 1) { fns[i](v); }
+    this.bumps = this.bumps + 1;
+  }
+  function replaceFirst(address a, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    fns[0] = ICounter(a).increment;
+    for (uint256 i = 0; i < fns.length; i = i + 1) { fns[i](v); }
+    this.bumps = this.bumps + 1;
+  }
+}`;
+
+describe('a loop over a table of fixed-method pointers', () => {
+  const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
+  async function deployed(): Promise<{
+    base: Contract; categoryId: string; table: any; counters: { sc: any; lock: string }[];
+  }> {
+    const provider = createTestProvider();
+    const counter = compileString(COUNTER);
+    const counters: { sc: any; lock: string }[] = [];
+    for (const start of [5n, 20n, 100n]) {
+      const c = new Contract(counter, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, c, counter.stateLayout!, { counter: start }, { saltContract: true },
+      );
+      counters.push({ sc: StatefulContract.withCategory(c, categoryId),
+        lock: c.withCategory(hexToBin(categoryId)).lockingBytecode });
+    }
+    const artifact = compileString(FIXED_TABLE);
+    const base = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { fns: [], bumps: 0n }, { saltContract: true },
+    );
+    const table = StatefulContract.withCategory(base, categoryId) as any;
+    for (const entry of counters.slice(0, 2)) await table.register(hexToBin(entry.lock), alicePub, sig()).send();
+    return { base, categoryId, table, counters };
+  }
+
+  it('runs every pointer once, and refuses a loop that stops before the last', async () => {
+    const { table, counters } = await deployed();
+    table.registerExternalArray('ICounter', counters.slice(0, 2).map((entry) => entry.sc));
+    await expect(table.fireN(1n, 3n, alicePub, sig()).send()).rejects.toThrow();
+    expect((await counters[1]!.sc.getState()).counter).toBe(20n);
+    await table.fireN(2n, 3n, alicePub, sig()).send();
+    expect((await counters[0]!.sc.getState()).counter).toBe(8n);
+    expect((await counters[1]!.sc.getState()).counter).toBe(23n);
+  }, 300_000);
+
+  it('runs the pointer a write before the loop put in place, not the one it replaced', async () => {
+    const { base, categoryId, table, counters } = await deployed();
+    const [c0, c1, c2] = counters as [{ sc: any; lock: string }, { sc: any; lock: string }, { sc: any; lock: string }];
+    // The loop calls c2 and c1: a spend running the replaced c0 instead is refused.
+    table.registerExternalArray('ICounter', [c0.sc, c1.sc]);
+    await expect(table.replaceFirst(hexToBin(c2.lock), 3n, alicePub, sig()).send()).rejects.toThrow();
+    const fresh = StatefulContract.withCategory(base, categoryId) as any;
+    fresh.registerExternalArray('ICounter', [c2.sc, c1.sc]);
+    await fresh.replaceFirst(hexToBin(c2.lock), 3n, alicePub, sig()).send();
+    expect((await c0.sc.getState()).counter).toBe(5n);
+    expect((await c1.sc.getState()).counter).toBe(23n);
+    expect((await c2.sc.getState()).counter).toBe(103n);
+  }, 300_000);
+
+  it('refuses a loop over an array its function writes inside that loop', () => {
+    const source = FIXED_TABLE.replace(
+      'fns[0] = ICounter(a).increment;\n    for (uint256 i = 0; i < fns.length; i = i + 1) { fns[i](v); }',
+      'for (uint256 i = 0; i < fns.length; i = i + 1) { fns[i](v); fns[i] = ICounter(a).increment; }',
+    );
+    expect(source).not.toBe(FIXED_TABLE);
+    expect(() => compileString(source)).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
+  });
 });
 
 // A void call on a state-array element binds the arguments it names against that element's callee run.

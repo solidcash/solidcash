@@ -56,9 +56,9 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  *   `bytes4 __fnelemsel = bytes4(__fnsel_fns[idx]);` runtime selector for a varying table) and emits the
  *   single computed-receiver call `IFace(__fnelem).m(args)`. Value-returning calls work here.
  * - `fns[i](args)` INSIDE a loop is the notify-all idiom and maps to the BROADCAST covenant: the epilogue
- *   co-spends + verifies + calls EVERY element (the source loop is harmless iteration; the receiver keeps the
- *   live element, the shape of the array-element call `IFace(arr[i]).m()` in a loop). A broadcast cannot
- *   return a value (rejected).
+ *   co-spends + verifies + calls EVERY element once, so the loop's calls must take the elements in turn (the
+ *   receiver keeps the live element, the shape of the array-element call `IFace(arr[i]).m()` in a loop). A
+ *   broadcast cannot return a value (rejected).
  *
  * Mutations stay in LOCKSTEP with the selector array: a varying table's element assign / pop / element or whole
  * delete rewrites to a two-statement block mutating both arrays; classification scans pushes AND element assigns.

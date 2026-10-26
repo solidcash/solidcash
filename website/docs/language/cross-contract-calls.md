@@ -297,13 +297,16 @@ await publisher.call.notify(from, to, amount).send();
 An `address` element is the target's full locking bytecode, not a 20-byte account identifier. The compiler reads
 and authenticates the state array (including every required chunk), checks each co-spent master against the decoded
 element, and preserves or advances each callee under its own covenant. A wrong order, skipped element or substituted
-contract fails validation.
+contract fails validation. Each element's callee runs once after the loop, so the loop must call every element once,
+in order, or none: one that calls only some of them (behind a condition, before an early `break`, through an index
+list naming fewer) fails validation. The array is checked as the loop saw it, so a function may write it before the
+loop or after it, but one that writes it inside the loop, or on both sides, does not compile.
 
 Function-pointer arrays use the same machinery. `fns[index](args)` outside a loop calls just that element and can
-return a value. `fns[i](args)` inside a loop is a broadcast and must be void. Every element's callee runs once, in table
-order, so the loop must call the elements one by one from the first to the last: a spend that stops early, skips or
-repeats an element, or runs past the end fails validation. For a varying-method table, pass the method names aligned
-with the instances:
+return a value. `fns[i](args)` inside a loop is a broadcast and must be void, and follows the same rule: the loop calls
+the elements one by one from the first to the last, or none, and a spend that stops early, skips or repeats an
+element, or runs past the end fails validation. For a varying-method table, pass the method names aligned with the
+instances:
 
 ```ts
 router.registerExternalArray('IHandler', handlers, ['deposit', 'withdraw']);

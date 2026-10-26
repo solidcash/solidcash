@@ -1128,6 +1128,20 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `IFace.m.selector` of an overloaded `m`, as Solidity does; counts methods one per signature and only those another
   contract calls; folds the selected overload and refuses another arity; and gives those checks the selected
   overload. Test: `AliasedCalleeSites.test.ts`, `DeployThenCallFold.test.ts`.
+- **Foreign pointer types, calls through pointer parameters, table copies** (found 2026-10-26 by a ninth review; the
+  first accepted at the VM). A single foreign pointer of a narrower type than its method (`function(uint256)
+  external cb = IT(a).big` with `big(uint256, uint256)`) compiled, as a state variable, a struct field or a local: those
+  lowerings checked the interface and method name only and rewrote the call before type checking, so it bound one
+  argument and left the second to the spender. A call through an external pointer an internal helper receives became
+  an external call only after the survey that decides whether helpers making external calls are inlined, so a
+  contract whose only call was that one kept it inside the helper's invoked body, where no entry point binds a
+  callee (its honest spend failed at preflight). A whole table copy from a table of another method moved the
+  addresses only. A constant `IFace.m.selector` of an overloaded `m` folded the first declaration, and the framed
+  head took a call's selector by name when no compile-time selector was set. `e10d574f9` requires every foreign member
+  a pointer or table holds to name one method of its type, inlines helpers whenever a contract has function pointers
+  and refuses an external call left in an invoked body of a direct build, allows a whole table copy only between
+  tables of one interface and method, refuses that constant selector, and gives the framed head the selected
+  overload. Test: `ForeignPointerTypes.test.ts`.
 
 ### Not changed, by decision
 

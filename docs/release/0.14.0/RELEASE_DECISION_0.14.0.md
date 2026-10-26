@@ -441,7 +441,10 @@ outcome and the pins unchanged. A seventh review found overloaded callee methods
 accepted at the VM), table elements of another method type and overloaded writers; `4f2589e8c` fixes them, again
 with no test source changing bytes or outcome and the pins unchanged. An eighth review found a varying table storing
 another overload's selector (accepted at the VM), refused interface overrides, internal overloads, a deploy fold of
-the wrong overload and checks still keyed on a unique name; `1fce472ed` fixes them with the same evidence.
+the wrong overload and checks still keyed on a unique name; `1fce472ed` fixes them with the same evidence. A ninth
+review found foreign pointers of a narrower type than their method (accepted at the VM), a call through a pointer
+parameter left in an invoked body, whole table copies of another method, constant selectors of overloaded names and
+the framed selector by name; `e10d574f9` fixes them with the same evidence.
 
 ### The 2026-10-26 verification
 

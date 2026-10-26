@@ -1234,11 +1234,19 @@ needs VM evidence, `rejectedWith` has no source fallback).
   arguments (`6126221c0`; through a table of pointers since `fc5f4f09b`).
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
-  itself). acd85975b now requires each element to differ from every single pointer call's witness, but not yet from the
-  function's fixed-offset calls or from a second loop over targets (found 2026-10-25 beside the two call sites,
-  source-traced; the single pointer call's own witness was closed in acd85975b, both versus a loop and versus a fixed
-  call). A table pointer whose target equals a fixed call's target could still name that fixed call's input, so one
-  run would serve both sites.
+  itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does
+  not cross-check the list against the function's fixed-offset calls or a second loop over targets, and the fnPtrCall
+  branch of the loop has no `loopCalleeRegionEnd` bound (found 2026-10-25 beside the two call sites, source-traced).
+  Investigated at the VM 2026-10-26: the combined shape is FAIL-CLOSED, not exploitable. A received-pointer table
+  requires a state array, so the contract is stateful; with a table loop beside a fixed call to a coincident target,
+  or beside a second loop, NO honest spend of the combination settles -- every base/anchor/table-index witness
+  combination swept fails the caller's `OP_VERIFY` at preflight (the table-only and fixed-only entries each settle;
+  only the combination fails). With no settling spend, the aliasing double-count is unreachable: there is no run to
+  serve two sites. The code gap is real but inert; closing it defensively (mirror acd85975b: the table witness list
+  joins the claims x fixed-points check and the other-loop check, plus a `loopCalleeRegionEnd` bound) is left until a
+  settling honest spend exists to re-verify against -- the fix would otherwise be unprovable. Caveat: shown via
+  SDK-built transactions with primary-witness rewrites (mem-cash `createTxVerifier`), not a fully hand-built covenant
+  transaction; a definitive low-level verdict would need the latter.
 
 - A loop over a state array that calls only some of its elements is refused at the VM (`5311db02e`): its epilogue
   would run the others. Supporting it needs the epilogue to check only the claimed elements and the SDK to co-spend

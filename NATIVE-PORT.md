@@ -531,6 +531,27 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   remains the 11 tests that never seed a pair (address getters, two deadline guards, four pure library-math
   cases) and the SushiRoll ceiling its 3 non-pair tests.
   Evidence: `matrix-two-branch-seed.log`, `sorted-insert-head.log`, `fence-complementary-detail.log`.
+- **An emitting, value-returning helper with a guarded early return now inlines, so a fee-on-transfer token keeps
+  its message-bus route.** `InlineReturningStateHelpers` folded only an early return adjacent to the tail
+  (`if (c) return a; return b;`). `TestERC20._transfer` has `if (failTransfers) return false; … emit Transfer(…);
+  return true;`; the helper stayed behind `OP_INVOKE`, route synthesis refused the retained helper (`Helper
+  '_transfer' emits an event and is invoked internally as a value-returning subroutine, whose event would be
+  dropped at its exit`), every route rung failed, and the token's artifact silently fell back to direct-only. The
+  pass now rewrites the guarded shape into one result temp with the continuation nested in the guard's `else`
+  (`T __rh_ret; pre; if (c) { __rh_ret = a; } else { rest; __rh_ret = b; } return __rh_ret;`), which preserves
+  evaluation order, side effects and local scope. The helper then inlines and `TestERC20` synthesizes its route
+  (`transfer`, `transferFrom` and the fused `transferAndBalance` are admitted). Pinned by
+  `packages/solidc/test/EmittingEarlyReturnHelperRoute.test.ts`, which fails on the direct-only fallback when the
+  normalization is removed. This is a route-synthesis fix, not a parity gain: a direct pair call that reaches a
+  route-compiled token now co-spends the token's logical-identity anchor *after* the pair's own input block. The
+  anchor must be recreated, and at its same absolute input index it lands on the pair's own LP `balanceOf`
+  INSERT output; the transaction assembles, then fails the pair's anchor check (`BCH-2026 preflight failed at
+  input 16: Program failed an OP_VERIFY`). Appending the anchor past the caller's band and filling the anchor
+  witness by token category were both measured and do not resolve it, so the test token is opted out
+  (`messageBusByContract.TestERC20: false`) and the mixed direct/route anchor layout is recorded here as the
+  next blocker for composing `transferFrom` with `balanceOf`. Parity stays 107/192 (Factory 15, ERC20 14, Pair
+  27, Libraries 37, Router 11, SushiRoll 3); native 28/28; Hardhat 192/192. Evidence:
+  `round15-compile.log`, `round15-parity.log`, `round15-native.log`, `round15-hardhat.log`.
 - **Same-transaction child creation is refused by the compiler, and the two candidate workarounds are measured
   closed.** The direct model already folds create-and-configure (`new C(); c.initialize(...)`) into the child's
   genesis, but only for a straight-line callee. A callee with control flow — the pair's `mint` — is refused by

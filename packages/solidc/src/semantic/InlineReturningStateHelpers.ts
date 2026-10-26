@@ -493,6 +493,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (fn.body && fn.returnTypes.length === 1
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn))) {
         this.normalizeMultiEarlyReturn(fn);
+        this.normalizeGuardedEarlyReturn(fn);
         this.analysisNodes.delete(fn);
       }
     }
@@ -711,6 +712,93 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // evaluation-equivalent and preserves the guard order (a later guard evaluates only when earlier ones failed).
   private normalizeMultiEarlyReturn(fn: FunctionDefinitionNode): void {
     for (let guard = 0; guard < 256 && this.normalizeSimpleEarlyReturn(fn); guard++) { /* fold */ }
+  }
+
+  /**
+   * Canonicalize the early-return shape `normalizeMultiEarlyReturn` cannot reach: a guard whose return is NOT the
+   * statement before the tail, as in a token's `if (failTransfers) return false; ... emit Transfer(..);
+   * return true;`. Such a helper touches its own entry and emits, so it must inline (an OP_INVOKE subroutine has no
+   * caller block layout and would drop the event), yet `eligibleShape` sees two returns and leaves it behind. That
+   * is what kept a fee-on-transfer test token's message-bus route from being synthesized at all: route generation
+   * refused the retained helper, every rung failed, and the artifact fell back to direct-only.
+   *
+   * Rewrite every top-level `if (c) return a;` and the tail `return b;` into one assignment to a result temp, with
+   * the statements after each guard nested in its `else` arm:
+   *
+   * ```
+   * T f() { pre; if (c) return a; post; return b; }
+   * ->
+   * T f() { T __rh_ret; pre; if (c) { __rh_ret = a; } else { post; __rh_ret = b; } return __rh_ret; }
+   * ```
+   *
+   * Evaluation order, side effects and local scopes are preserved: `post` runs exactly when the guard failed, and
+   * every statement keeps its position on the path that reaches it. Only a flat body whose returns are all such
+   * top-level guards plus the tail qualifies; anything else is left for the existing refusals.
+   */
+  private normalizeGuardedEarlyReturn(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length !== 1) return false;
+    const stmts = fn.body.statements ?? [];
+    const tail = stmts[stmts.length - 1];
+    if (!isSourceReturn(tail) || tail.expressions.length !== 1) return false;
+    const isGuardedReturn = (statement: StatementNode): statement is BranchNode => {
+      if (!(statement instanceof BranchNode) || statement.elseBlock !== undefined) return false;
+      const arm = statement.ifBlock.statements ?? [];
+      return arm.length === 1 && isSourceReturn(arm[0]) && arm[0].expressions.length === 1;
+    };
+    let guards = 0;
+    for (let index = 0; index < stmts.length - 1; index += 1) {
+      if (isGuardedReturn(stmts[index])) guards += 1;
+    }
+    if (guards === 0) return false;
+    let returns = 0;
+    for (const node of this.nodesOf(fn)) if (node instanceof ReturnNode && !node.isYulReturn) returns += 1;
+    if (returns !== guards + 1) return false;
+
+    const resultName = `${PREFIX}_${this.counter++}_early`;
+    const resultId = (): IdentifierNode => {
+      const id = new IdentifierNode(resultName);
+      id.location = fn.location;
+      return id;
+    };
+    const assignResult = (value: ExpressionNode): StatementNode => {
+      const assignment = new AssignNode(resultId(), cloneNode(value) as ExpressionNode);
+      assignment.location = value.location ?? fn.location;
+      return assignment;
+    };
+    const block = (statements: StatementNode[]): BlockNode => {
+      const body = new BlockNode(statements);
+      body.location = fn.location;
+      return body;
+    };
+    // Fold the list's first guard into an `if`/`else`, recursing into the guarded continuation. The returned list
+    // ends on a path that assigns the result, never on a `return`.
+    const fold = (list: StatementNode[]): StatementNode[] => {
+      const index = list.findIndex(isGuardedReturn);
+      if (index < 0) {
+        const last = list[list.length - 1];
+        return isSourceReturn(last) && last.expressions.length === 1
+          ? [...list.slice(0, -1), assignResult(last.expressions[0])]
+          : list;
+      }
+      const guard = list[index] as BranchNode;
+      const early = (guard.ifBlock.statements![0] as ReturnNode).expressions[0];
+      const rest = fold(list.slice(index + 1));
+      const branch = new BranchNode(
+        cloneNode(guard.condition) as ExpressionNode,
+        block([assignResult(early)]),
+        block(rest),
+      );
+      branch.location = guard.location;
+      return [...list.slice(0, index), branch];
+    };
+    const folded = fold(stmts);
+    if (folded.length > 0 && isSourceReturn(folded[folded.length - 1])) return false;
+    const declaration = new VariableDefinitionNode(fn.returnTypes[0], [], resultName);
+    declaration.location = fn.location;
+    const trailing = new ReturnNode([resultId()]);
+    trailing.location = tail.location;
+    fn.body.statements = [declaration, ...folded, trailing];
+    return true;
   }
 
   // Solidity permits a multi-returning call to be forwarded as one return expression (`return target.f()`).

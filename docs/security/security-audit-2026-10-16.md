@@ -1107,6 +1107,16 @@ needs VM evidence, `rejectedWith` has no source fallback).
   pointer call as a write wherever any of the contract's functions writes the arrays, and walks call options. The
   review also found a varying-method table's arguments unbound (accepted at the VM), closed by `fc5f4f09b`, which it
   predated. Test: `AliasedCalleeSites.test.ts`.
+- **Overloaded callee methods, table element types and overloaded writers** (found 2026-10-26 by a seventh review;
+  the first accepted at the VM). An external call to an overloaded method took the first declaration of its name
+  everywhere: its compile-time selector could pin another overload's (a call naming `hear(uint256, uint256)` pinned
+  `hear(bytes)`), and its arguments, method and call record went unbound because the name was not unique. A table of
+  fixed- or varying-method pointers accepted an element whose method takes other parameters than the table's type,
+  leaving that method's extra arguments free. The pointer-call write check scanned a map keyed by function name, so
+  an overload hid the array's writer. `4f2589e8c` resolves a call to the overload its argument count selects,
+  recorded on the call for its selector, argument types and record, and refuses a call two overloads of its arity
+  could take; requires every table element to name one method of the table's type; and scans every function. Test:
+  `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 
@@ -1146,10 +1156,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   none of them and they run on the SDK's arguments. A function writing the array inside such a loop, or on both sides
   of it, does not compile in any mode (liveness). Assembly anywhere in such a function counts as a write of the array,
   and a loop whose element callee is a forwarding proxy or drops a budget pad is refused, as a direct call into one
-  is (fail closed). The sixth review saw an honest spend fail at preflight (`OP_SPLIT` on an empty item) where the
-  function referenced an internal pointer before the loop and called it after, writing the array, while the direct
-  call's twin settled; `5a475d031` now reads that loop's array as it stood before the write, the read the failure may
-  have come from. Not re-run.
+  is (fail closed). An honest spend whose function writes the loop's array through an internal function pointer
+  fails at preflight (`OP_SPLIT` on an empty item), while the direct call's twin settles: seen by the sixth review,
+  and by the seventh with the array read placed correctly, so it is an older failure of the pointer-invoked write,
+  not of that read (fail closed, open). A received pointer's selector is a run-time value: the method it names may
+  take more parameters than the table's type, and those are not bound (EVM reverts on the short calldata).
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
   `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:

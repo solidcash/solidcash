@@ -437,7 +437,9 @@ it, with the pins unchanged, and the eight test files whose contracts change byt
 arguments of a call through a table of pointers as well (accepted at the VM before it), the pins unchanged, three
 test files changed and passed once. A sixth review found three places the loop-array write placement did not look
 (collection loops, pointer calls, call options); `5a475d031` covers them with no test source changing bytes or
-outcome and the pins unchanged.
+outcome and the pins unchanged. A seventh review found overloaded callee methods binding the first declaration (one
+accepted at the VM), table elements of another method type and overloaded writers; `4f2589e8c` fixes them, again
+with no test source changing bytes or outcome and the pins unchanged.
 
 ### The 2026-10-26 verification
 

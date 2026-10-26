@@ -1160,8 +1160,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   value `this.f`), a scalar as well as an array, fails at preflight (the invoked body reads a state frame the call
   through the value never pushes: an invalid stack index or `OP_SPLIT` on an empty item), while the same call by name
   settles; `StructFunctionValueCalls.test.ts` keeps it as an open gap. It is older than the loop fixes and fails
-  closed (open, liveness): supporting it needs a state frame shared by every function a value can name. A received pointer's selector is a run-time value: the method it names may
-  take more parameters than the table's type, and those are not bound (EVM reverts on the short calldata).
+  closed (open, liveness): supporting it needs a state frame shared by every function a value can name. A received
+  pointer's selector is a run-time value: the method it names may take more parameters than the table's type, and
+  those are not bound (EVM reverts on the short calldata).
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
   `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:

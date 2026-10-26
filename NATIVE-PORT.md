@@ -541,9 +541,13 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   write included, pinned by `DeployThenCallFold.test.ts > folds a deterministic conditional child-state
   initializer`); a body that writes a mapping entry, reads another contract or emits is outside the replay
   (`DeployThenCallFold.test.ts > refuses a deploy-then-call whose callee …`, three cases). The pair's `mint` does
-  all three, so no deploy fold reaches it. Compiling the same shape with `composition: 'framed'` raises
-  the same refusal, and the framed master compiler refuses contract creation outright (`support.ts`: "contract
-  creation needs the witness `CREATE` checks, which are not emitted yet").
+  all three, so no deploy fold reaches it. Replaying the real pair is measured: a probe
+  `UniswapV2Pair p = new UniswapV2Pair(); p.mint(to)` is refused at that call, and the first statement the replay
+  cannot take is `(uint112 _reserve0, uint112 _reserve1,) = getReserves();` (`TupleAssignmentNode`,
+  `UniswapV2Pair.sol:131:8`); behind it the fold's vocabulary has no internal call, external read, mapping
+  read/write, emit or loop (each refused on its own in `probe-fold5.log`). Compiling the same shape with
+  `composition: 'framed'` raises the same refusal, and the framed master compiler refuses contract creation
+  outright (`support.ts`: "contract creation needs the witness `CREATE` checks, which are not emitted yet").
   Creating the pair top-level first does not help the Router either: `_addLiquidity` reads
   `IUniswapV2Pair.getReserves` and then calls `IUniswapV2Pair.mint`, and the builder refuses two distinct
   returning methods on one state owner without a compiled route (`Direct external calls to getReserves and mint

@@ -1040,7 +1040,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   witness, so the pointer witness was the function's only distinct-input "claim" and went unchecked: a pointer
   resolving to a loop target could name that loop iteration's callee, or resolving to a fixed call's target could
   name the fixed call's own input, and one callee run served both sites (accepted at the VM for the loop case).
-  PTRFIX makes every loop iteration over targets (the inline-dispatch and state-array forms) require its input to
+  acd85975b makes every loop iteration over targets (the inline-dispatch and state-array forms) require its input to
   differ from each pointer witness, and makes the distinct-input check require each pointer witness to differ from
   each fixed-offset call's input (`externalCallInputBase + computedOffset`, the offset the fixed call's identity
   already reads). The new checks are emitted only in a function that has both a loop and a pointer call, or a pointer
@@ -1234,9 +1234,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   arguments (`6126221c0`; through a table of pointers since `fc5f4f09b`).
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
-  itself). PTRFIX now requires each element to differ from every single pointer call's witness, but not yet from the
+  itself). acd85975b now requires each element to differ from every single pointer call's witness, but not yet from the
   function's fixed-offset calls or from a second loop over targets (found 2026-10-25 beside the two call sites,
-  source-traced; the single pointer call's own witness was closed in PTRFIX, both versus a loop and versus a fixed
+  source-traced; the single pointer call's own witness was closed in acd85975b, both versus a loop and versus a fixed
   call). A table pointer whose target equals a fixed call's target could still name that fixed call's input, so one
   run would serve both sites.
 

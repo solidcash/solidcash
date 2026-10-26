@@ -492,9 +492,12 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   input then reads `tx.outputs[-1]` — `Program attempted to read from an invalid transaction output index ...
   requested index: -1`. Compiling with `split: 'off'` fails identically, so this is not a size fragment: the
   failing program is the six-instruction shared-predecessor entry covenant, which is bound to the wrong row's
-  `PredOut` sentinel. The next work item is that witness binding (bind the shared predecessor to the row that
-  republishes it, or plan the verbatim predecessor output), not the fence: lifting the fence today would publish
-  routes that can hit this at run time.
+  `PredOut` sentinel. The compiled witnesses for that reproduction are
+  `Slot_0 = ca35…, Next_0 = 0, PredOut_0 = -1` and `Slot_1 = e77b…, Next_1 = ca35…, PredOut_1 = 19`, with lanes
+  2..8 inactive (-2); both rows share proof input 2, so the predecessor is republished at output 19 for the chain
+  head while the tail row keeps -1, and the verifier reads the predecessor output for the -1 row. The next work
+  item is that witness binding (bind the shared predecessor to the row that republishes it, or plan the verbatim
+  predecessor output), not the fence: lifting the fence today would publish routes that can hit this at run time.
   The pair's `_mintFee` still trips the fence (`kLast = 0` sits in an arm whose sibling mints `balanceOf[_feeTo]`
   and emits), so `mint` stays refused. Bypassing the wide-event gate for `burn` instead lands on the same
   `conditional-scalar-collection-event-settlement` refusal. The fence state is unchanged, so the Router ceiling

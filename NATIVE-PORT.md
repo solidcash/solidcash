@@ -548,6 +548,10 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   read/write, emit or loop (each refused on its own in `probe-fold5.log`). Compiling the same shape with
   `composition: 'framed'` raises the same refusal, and the framed master compiler refuses contract creation
   outright (`support.ts`: "contract creation needs the witness `CREATE` checks, which are not emitted yet").
+  Lifting that one refusal under a probe flag does not yield a create frame either: the framed compilation then
+  stops in planning with `an execution with 0 call(s) closes 1 segment(s): got 2`, so the CREATE frame's layout,
+  composer and validator rules are all absent (the deferrals doc lists the V1/V3/V4/V5/V7/V9 changes and calls the
+  analogous proxy case "a hard fork, not a soft extension"). Evidence: `probe-framed-create.log`.
   Creating the pair top-level first does not help the Router either: `_addLiquidity` reads
   `IUniswapV2Pair.getReserves` and then calls `IUniswapV2Pair.mint`, and the builder refuses two distinct
   returning methods on one state owner without a compiled route (`Direct external calls to getReserves and mint

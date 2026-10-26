@@ -533,7 +533,11 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   name: `Cannot call 'mint()' on 'c' in the transaction that deploys it with 'new Child(...)': the call would
   co-spend Child as an input, but this transaction creates it as an output, and a UTXO cannot be both created and
   spent in one transaction. … One-transaction deploy-then-configure folding for this call is in progress (see
-  packages/solidc/docs/deploy-then-call-fold.md)`. Compiling the same shape with `composition: 'framed'` raises
+  packages/solidc/docs/deploy-then-call-fold.md)`. The fold replays a straight-line body (a conditional scalar
+  write included, pinned by `DeployThenCallFold.test.ts > folds a deterministic conditional child-state
+  initializer`); a body that writes a mapping entry, reads another contract or emits is outside the replay
+  (`DeployThenCallFold.test.ts > refuses a deploy-then-call whose callee …`, three cases). The pair's `mint` does
+  all three, so no deploy fold reaches it. Compiling the same shape with `composition: 'framed'` raises
   the same refusal, and the framed master compiler refuses contract creation outright (`support.ts`: "contract
   creation needs the witness `CREATE` checks, which are not emitted yet").
   Creating the pair top-level first does not help the Router either: `_addLiquidity` reads

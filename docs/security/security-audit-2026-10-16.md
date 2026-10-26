@@ -1206,6 +1206,21 @@ needs VM evidence, `rejectedWith` has no source fallback).
   second argument unbound. `DesugarExternalFunctionPointers` now checks every function's `return <foreign member>`
   against its declared foreign-pointer return type (`fits`), leaving a returned pointer parameter or a non-member return
   untouched. Tests: `RouteOnlyLoopArrayDirectSpend.test.ts` (new, VM), `ForeignPointerTypes.test.ts`.
+- **Received function-pointer table callee arity** (found 2026-10-16 Open, VM-confirmed and fixed 2026-10-26). A table
+  of received function pointers (`function(uint256) external[]`, the `reg(function(uint256) external p)` /
+  `registerExternalArray` shape) stores an `(address, selector)` pair whose selector is a run-time witness, so the
+  compile-time `fits` check never sees it. The direct-build epilogue `emitArrayExternalCallLoop` bound only the pointer
+  type's declared arguments (the last pushes before the redeem, `emitDirectCallArgumentPushes` admitting
+  `pushes >= count + 1`), so a stored selector naming a callee method of HIGHER arity than the table's type ran that
+  method with its extra argument(s) left spender-controlled while the caller's own state advanced. The SDK will not
+  auto-build such a co-spend (it derives the co-spend args from the call site's arity and validates them against the
+  method's, `StatefulContract.ts:6788`), but an attacker supplies the higher-arity callee unlocking as a witness; the
+  mem-cash VM accepted it. `ARITYFIX` pins the co-spent callee's unlocking to exactly the table-type arity in
+  `emitArrayExternalCallLoop` (`emitRequireExactPushCount`): `count` argument pushes plus the redeem, plus the leading
+  selector push for a multi-method callee, refusing any method whose extra pushes the caller never binds. Emitted only
+  on the received-pointer path (`fnPtrCall && selectorArrayVar`), so no other contract changes bytes. Test:
+  `packages/solidcash/test/e2e/AuditReceivedPointerArity.test.ts` (the higher-arity splice is refused at the caller;
+  the honest 1-arg call settles; pre-fix the splice settled, VM-confirmed).
 
 ### Not changed, by decision
 
@@ -1258,9 +1273,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   value `this.f`), a scalar as well as an array, fails at preflight (the invoked body reads a state frame the call
   through the value never pushes: an invalid stack index or `OP_SPLIT` on an empty item), while the same call by name
   settles; `StructFunctionValueCalls.test.ts` keeps it as an open gap. It is older than the loop fixes and fails
-  closed (open, liveness): supporting it needs a state frame shared by every function a value can name. A received
-  pointer's selector is a run-time value: the method it names may take more parameters than the table's type, and
-  those are not bound (EVM reverts on the short calldata).
+  closed (open, liveness): supporting it needs a state frame shared by every function a value can name. (A received
+  pointer's selector naming a higher-arity callee method, whose extra parameters the caller never bound, was the
+  other half of this entry; it is FIXED below, "Received function-pointer table callee arity", ARITYFIX.)
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
   `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:

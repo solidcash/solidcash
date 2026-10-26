@@ -48826,6 +48826,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // decode/advance sel[i] UNCONDITIONALLY (the remainder must never desync), then compare only when the
       // co-spent unlocking begins with a 4-byte push - same guard as the single fnPtrCall path; a multi-method
       // callee always has the prefix, so the wrong method can never be co-spent.
+      // A received pointer's runtime selector may name a callee method of HIGHER arity than the table's type. The
+      // caller binds only the declared arguments (the last pushes before the redeem), so pin the co-spent unlocking
+      // to exactly that arity + redeem (+ a leading selector push for a multi-method callee): a method with extra
+      // parameters, whose values the caller never binds, is refused here rather than run on spender-chosen data.
+      const fnPtrArgCount = slot.sourceCallNode
+        ? this.directCallArgumentBinding(slot.sourceCallNode, slot, true, true)?.types.length
+        : undefined;
       this.emit(encodeInt(BigInt(this.getStackIndex('(aec_sel_rem)') + 2)), loc); // +2: elem, idx
       this.emit(Op.OP_PICK, loc);                        // [elem, idx, selrem copy]
       this.emitPushdataDecode(new BytesType(), loc);     // [elem, idx, sel_i, newrem]
@@ -48840,11 +48847,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);                          // [elem, idx, sel_i, rest]
       this.emit(encodeInt(4n), loc);
       this.emit(Op.OP_SPLIT, loc);                       // [elem, idx, sel_i, cosel, remainder]
-      this.emit(Op.OP_DROP, loc);                        // [elem, idx, sel_i, cosel]
-      this.emit(Op.OP_EQUALVERIFY, loc);                 // [elem, idx]
+      if (fnPtrArgCount !== undefined) {
+        this.emit(Op.OP_SWAP, loc);                      // [elem, idx, sel_i, remainder, cosel]
+        this.emit(encodeInt(2n), loc);
+        this.emit(Op.OP_ROLL, loc);                      // [elem, idx, remainder, cosel, sel_i]
+        this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx, remainder]  (cosel == sel_i)
+        this.emitRequireExactPushCount(fnPtrArgCount + 1, loc); // [elem, idx]  args + redeem, no extra pushes
+      } else {
+        this.emit(Op.OP_DROP, loc);                      // [elem, idx, sel_i, cosel]
+        this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx]
+      }
       this.emit(Op.OP_ELSE, loc);                        // [elem, idx, sel_i, rest]
-      this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_DROP, loc);                        // [elem, idx]
+      if (fnPtrArgCount !== undefined) {
+        this.emit(Op.OP_2DROP, loc);                     // [elem, idx]
+        this.emit(Op.OP_DUP, loc);                       // [elem, idx, idx]
+        this.emit(Op.OP_INPUTBYTECODE, loc);             // [elem, idx, ubc] (single-method callee: no selector push)
+        this.emitRequireExactPushCount(fnPtrArgCount + 1, loc); // [elem, idx]  args + redeem, no extra pushes
+      } else {
+        this.emit(Op.OP_DROP, loc);
+        this.emit(Op.OP_DROP, loc);                      // [elem, idx]
+      }
       this.emit(Op.OP_ENDIF, loc);
     } else if (callMode === ExternalCallMode.REGULAR && slot.needsSelectorVerification) {
       this.emit(Op.OP_DUP, loc);                         // [elem, idx, idx]
@@ -48907,6 +48929,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.removeFromStack(idx);
     }
+  }
+
+  /**
+   * `[.., blob] -> [..]`: OP_VERIFY that `blob` decodes to exactly `expected` pushdata items. Pins a received
+   * function pointer's co-spent callee to the arity of the table's declared type, so a runtime selector that names a
+   * higher-arity callee method (whose extra parameters the caller never binds) is refused. Untracked working values
+   * only; the blob must hold at least one push (the callee's redeem), which every co-spent unlocking does.
+   */
+  private emitRequireExactPushCount(expected: number, loc: SingleLocationData): void {
+    this.emit(encodeInt(0n), loc);                        // [.., blob, 0]
+    this.emit(Op.OP_SWAP, loc);                           // [.., 0, blob]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emitGenericPushdataDecode(new BytesType(), loc); // [.., n, push, rest]
+    this.emit(Op.OP_NIP, loc);                            // [.., n, rest]
+    this.emit(Op.OP_SWAP, loc);                           // [.., rest, n]
+    this.emit(Op.OP_1ADD, loc);                           // [.., rest, n+1]
+    this.emit(Op.OP_SWAP, loc);                           // [.., n+1, rest]
+    this.emit(Op.OP_SIZE, loc);                           // [.., n+1, rest, len]
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_EQUAL, loc);                          // [.., n+1, rest, len==0]
+    this.emit(Op.OP_UNTIL, loc);                          // [.., count, rest(empty)]
+    this.emit(Op.OP_DROP, loc);                           // [.., count]
+    this.emit(encodeInt(BigInt(expected)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);                 // [..]
   }
 
   /**

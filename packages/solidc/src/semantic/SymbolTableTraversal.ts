@@ -14504,9 +14504,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (this.deployResultLocals.has(varName)) {
                 const deployNode = this.deployResultLocals.get(varName)!;
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
-                const realFoo = deployNode.referencedContract ? this.resolveCalleeMethod(node,
-                  deployNode.referencedContract.name, deployNode.referencedContract.functions, methodName,
-                  parameters.length) : undefined;
+                const realFoo = this.deployFoldTarget(node, deployNode, ifaceFunc, methodName, parameters.length);
                 if (realFoo && this.calleeCannotComplete(realFoo)) {
                   // The callee cannot complete: the deploy-then-call is that failure, nothing to fold.
                   const failed = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
@@ -16059,6 +16057,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     const sized = named.filter((fn) => SymbolTableTraversal.calleeSignature(fn).parameterTypes.length === count);
     if (sized.length !== 1) throw new AmbiguousExternalOverloadError(node, interfaceName, name, count);
     return sized[0];
+  }
+
+  /**
+   * The deployed contract's function a deploy-then-call folds: the overload the call's argument count selects, when it
+   * takes the parameters of the method the call was typed against.
+   */
+  private deployFoldTarget(
+    node: Node, deployNode: InstantiationNode, typed: InterfaceFunctionNode | FunctionDefinitionNode | undefined,
+    name: string, count: number,
+  ): FunctionDefinitionNode | undefined {
+    const contract = deployNode.referencedContract;
+    if (!contract) return undefined;
+    const target = this.resolveCalleeMethod(node, contract.name, contract.functions, name, count);
+    if (!target || !typed) return target;
+    const parameters = (fn: InterfaceFunctionNode | FunctionDefinitionNode): string => SymbolTableTraversal
+      .calleeSignature(fn).parameterTypes.map((type) => type.toString()).join(',');
+    return parameters(target) === parameters(typed) ? target : undefined;
   }
 
   /** A callee method's name, declared parameter types past any compiler-internal one, and an interface's mutability. */
@@ -17982,9 +17997,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (deployAlias instanceof InstantiationNode) {
             throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
           }
-          const realFunction = deployNode.referencedContract ? this.resolveCalleeMethod(node,
-            deployNode.referencedContract.name, deployNode.referencedContract.functions, node.methodName,
-            parameters.length) : undefined;
+          const realFunction = this.deployFoldTarget(node, deployNode, ifaceFunc, node.methodName, parameters.length);
           const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
           if (!fold) {
             throw new DeployThenCallError(

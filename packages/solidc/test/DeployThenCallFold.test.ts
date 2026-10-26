@@ -176,4 +176,16 @@ contract Factory(pubkey deployer) {
     const [target] = artifact.abi.find((entry) => entry.name === 'go')!.deployTargets!;
     expect(target!.genesisState).toMatchObject({ fields: [{ name: 'v', value: { kind: 'binary', operator: '+' } }] });
   });
+
+  it('folds a call typed by an interface only into a function of the interface method\'s parameters', () => {
+    const source = (parameter: string): string => `
+      interface ISet { function set(${parameter} a); }
+      contract Child() { int v; function set(int a) public { this.v = a; } function get() public { require(this.v >= 0); } }
+      contract Parent(pubkey owner) {
+        function go(sig s) { require(checkSig(s, owner)); ISet c = ISet(new Child()); c.set(5); }
+      }`;
+    const [target] = compileString(source('int')).abi.find((entry) => entry.name === 'go')!.deployTargets!;
+    expect(target).toMatchObject({ hasFoldedChildCall: true });
+    expect(() => compileString(source('bytes'))).toThrow(/in the transaction that deploys it/);
+  });
 });

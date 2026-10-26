@@ -1174,7 +1174,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   order) and named fields. In the marketplace fixture's legacy convention, `publishJobPost` and `updateJobPost` are
   refused (that route does not admit them); the kernel convention's route serves them. Test:
   `RouteOnlyLoopCalls.test.ts`, `ForeignPointerTypes.test.ts`, and VM shapes in `RouteOnlyLoopGuard.test.ts`.
-  An eleventh review (2026-10-26) found two LOW gaps in `9ba15c3a0`, both fixed by `TENTHFIX`. First, the entry-body
+  An eleventh review (2026-10-26) found two LOW gaps in `9ba15c3a0`, both fixed by `e73beccb2`. First, the entry-body
   guard over-fired: its call-site predicate keyed off `isExternalCallSlotLoopNested`, which is also true for an
   array-element loop (`IFoo(targets[i]).m(x)`, `loopArrayVar`) and an inline-dispatch loop (`targets[i].call(data[i])`,
   `inlineLoopDispatch`). Those bind per row INLINE in the entry body (the epilogue's `emitArrayExternalCallLoop`, or the

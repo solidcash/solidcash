@@ -439,7 +439,9 @@ test files changed and passed once. A sixth review found three places the loop-a
 (collection loops, pointer calls, call options); `5a475d031` covers them with no test source changing bytes or
 outcome and the pins unchanged. A seventh review found overloaded callee methods binding the first declaration (one
 accepted at the VM), table elements of another method type and overloaded writers; `4f2589e8c` fixes them, again
-with no test source changing bytes or outcome and the pins unchanged.
+with no test source changing bytes or outcome and the pins unchanged. An eighth review found a varying table storing
+another overload's selector (accepted at the VM), refused interface overrides, internal overloads, a deploy fold of
+the wrong overload and checks still keyed on a unique name; `1fce472ed` fixes them with the same evidence.
 
 ### The 2026-10-26 verification
 

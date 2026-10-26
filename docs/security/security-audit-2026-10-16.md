@@ -1117,6 +1117,17 @@ needs VM evidence, `rejectedWith` has no source fallback).
   recorded on the call for its selector, argument types and record, and refuses a call two overloads of its arity
   could take; requires every table element to name one method of the table's type; and scans every function. Test:
   `AliasedCalleeSites.test.ts`.
+- **The overload a table holds, deploy folds and interface overrides** (found 2026-10-26 by an eighth review; the first
+  accepted at the VM). A varying-method table stored `IT.hit.selector`, resolved to the first `hit` declared, while
+  its type and its call bind another overload, so the stored method took an argument no one binds. An interface
+  redeclaring its parent's method counted twice, so a table of it was refused (a regression from `4f2589e8c`). A
+  contract's internal overload passed as a table element and resolved an external call. A same-transaction deploy
+  folded the first method of the called name by position (`c.set(5, 7)` with `set(int)` first baked `v = 5`). The
+  evmCompat payable check, the read-only selector and the framed read and argument types took a unique name or the
+  first method. `1fce472ed` makes a table's selector name the overload of its parameter types and refuses a source
+  `IFace.m.selector` of an overloaded `m`, as Solidity does; counts methods one per signature and only those another
+  contract calls; folds the selected overload and refuses another arity; and gives those checks the selected
+  overload. Test: `AliasedCalleeSites.test.ts`, `DeployThenCallFold.test.ts`.
 
 ### Not changed, by decision
 

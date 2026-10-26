@@ -268,32 +268,41 @@ contract Tally() is IT {
   function other(uint256 v) { require(int(v) >= 0); this.calls = this.calls + 2; }
 }`;
 
-describe('a call through a table of received pointers', () => {
-  it('refuses an element\'s callee run on another argument', async () => {
-    const provider = createTestProvider();
+const VARYING_TABLE = `pragma solidcash >=0.8.0;
+interface IT { public bigint calls; function hit(uint256 v); function other(uint256 v); }
+contract VaryingTable() {
+  function(uint256) external[] fns;
+  bigint bumps;
+  function reg(address a, address b, pubkey pk, sig s) {
+    require(checkSig(s, pk)); this.fns.push(IT(a).hit); this.fns.push(IT(b).other); this.bumps = this.bumps + 1;
+  }
+  function fireN(uint256 n, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (uint256 i = 0; i < n; i = i + 1) { fns[i](v); }
+    this.bumps = this.bumps + 1;
+  }
+}`;
+
+describe('a call through a table of pointers', () => {
+  async function tallies(provider: Provider): Promise<{ hit: Uint8Array; entries: { lock: string; sc: any }[] }> {
     const tally = compileString(TALLY);
-    const hit = hexToBin(tally.abi.find((entry) => entry.name === 'hit')!.selector!);
-    const tallies: { lock: string; sc: StatefulContract<any> }[] = [];
+    const entries: { lock: string; sc: any }[] = [];
     for (let at = 0; at < 2; at++) {
       const base = new Contract(tally, [], { provider });
       const { categoryId } = await setupStatefulUtxos(
         provider, base, tally.stateLayout!, { calls: 0n }, { saltContract: true },
       );
-      tallies.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
+      entries.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
         sc: StatefulContract.withCategory(base, categoryId) });
     }
-    const artifact = compileString(TABLE);
-    const base = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
-    );
-    const table = StatefulContract.withCategory(base, categoryId) as any;
-    for (const entry of tallies) {
-      await table.reg(hexToBin(entry.lock), hit, alicePub, new SignatureTemplate(alicePriv)).send();
-    }
-    const pointer = artifact.abi.find((entry) => entry.name === 'fireN')!.externalCalls![0]!.interfaceName;
-    table.registerExternalArray(pointer, tallies.map((entry) => entry.sc), ['hit', 'hit']);
+    return { hit: hexToBin(tally.abi.find((entry) => entry.name === 'hit')!.selector!), entries };
+  }
 
+  /**
+   * `fireN(2, 10)` built honestly, then with its first callee running on 5 where the call names 10: a callee's
+   * unlocking ends `<v> <redeem>` and the table's `<v> <n> <redeem>`.
+   */
+  async function forgeFirstArgument(provider: Provider, table: any): Promise<{ honest: string; outcome: string }> {
     const send = provider.sendRawTransaction.bind(provider);
     let honest = '';
     (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
@@ -303,9 +312,6 @@ describe('a call through a table of received pointers', () => {
     await expect(table.fireN(2n, 10n, alicePub, new SignatureTemplate(alicePriv)).send())
       .rejects.toThrow('capture-only');
     (provider as any).sendRawTransaction = send;
-
-    // A tally's unlocking ends `<v> <redeem>` and the table's `<v> <n> <redeem>`: the first tally runs hit(5) where
-    // the call names 10.
     const tx = decodeTransactionUnsafe(hexToBin(honest));
     const pushes = tx.inputs.map((input) => decodeAuthenticationInstructions(input.unlockingBytecode));
     const caller = pushes.findIndex((p) => p.at(-3)?.opcode === 0x5a && p.at(-2)?.opcode === 0x52);
@@ -317,9 +323,44 @@ describe('a call through a table of received pointers', () => {
     const outcome = await provider.sendRawTransaction(binToHex(encodeTransaction(tx)))
       .then(() => 'ACCEPTED').catch((e: Error) => e.message);
     expectScriptRejection(outcome, caller);
+    return { honest, outcome };
+  }
 
+  it('refuses a received pointer\'s callee run on another argument', async () => {
+    const provider = createTestProvider();
+    const { hit, entries } = await tallies(provider);
+    const artifact = compileString(TABLE);
+    const base = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
+    );
+    const table = StatefulContract.withCategory(base, categoryId) as any;
+    for (const entry of entries) {
+      await table.reg(hexToBin(entry.lock), hit, alicePub, new SignatureTemplate(alicePriv)).send();
+    }
+    const pointer = artifact.abi.find((entry) => entry.name === 'fireN')!.externalCalls![0]!.interfaceName;
+    table.registerExternalArray(pointer, entries.map((entry) => entry.sc), ['hit', 'hit']);
+    const { honest } = await forgeFirstArgument(provider, table);
     await provider.sendRawTransaction(honest);
-    for (const entry of tallies) expect((await entry.sc.getState()).calls).toBe(1n);
+    for (const entry of entries) expect((await entry.sc.getState()).calls).toBe(1n);
+  }, 300_000);
+
+  it('refuses a varying-method table\'s callee run on another argument', async () => {
+    const provider = createTestProvider();
+    const { entries } = await tallies(provider);
+    const artifact = compileString(VARYING_TABLE);
+    const base = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
+    );
+    const table = StatefulContract.withCategory(base, categoryId) as any;
+    await table.reg(hexToBin(entries[0]!.lock), hexToBin(entries[1]!.lock), alicePub,
+      new SignatureTemplate(alicePriv)).send();
+    table.registerExternalArray('IT', entries.map((entry) => entry.sc), ['hit', 'other']);
+    const { honest } = await forgeFirstArgument(provider, table);
+    await provider.sendRawTransaction(honest);
+    expect((await entries[0]!.sc.getState()).calls).toBe(1n);
+    expect((await entries[1]!.sc.getState()).calls).toBe(2n);
   }, 300_000);
 });
 
@@ -400,6 +441,31 @@ describe('a loop over a table of fixed-method pointers', () => {
     expect((await c1.sc.getState()).counter).toBe(23n);
     expect((await c2.sc.getState()).counter).toBe(103n);
   }, 300_000);
+
+  it('counts a collection loop around the calls, and a pointer call, as places that write the array', () => {
+    const contract = (decl: string, fn: string): string => `pragma solidcash >=0.8.0;
+interface IL { public bigint heard; function hear(uint256 v); }
+contract C() {
+  address[] listeners;
+  ${decl}
+  function add(address a) { this.listeners.push(a); }
+  ${fn}
+}`;
+    const insideCollection = contract('enumerable mapping(bytes20 => int) m;', `
+  function go(address a, uint256 n, uint256 v) {
+    for (bytes20 k in this.m) { for (uint256 i = 0; i < n; i = i + 1) { IL(listeners[i]).hear(v); } listeners[0] = a; }
+  }`);
+    const pointerBefore = contract('function(address) internal op;', `function setOp() { op = _push; }
+  function _push(address a) internal { this.listeners.push(a); }
+  function go(address a, uint256 v) {
+    op(a);
+    for (uint256 i = 0; i < listeners.length; i = i + 1) { IL(listeners[i]).hear(v); }
+    this.listeners.push(a);
+  }`);
+    for (const source of [insideCollection, pointerBefore]) {
+      expect(() => compileString(source, { messageBus: false })).toThrow(/LOOP_ARRAY_WRITTEN_AROUND_CALLS/);
+    }
+  });
 
   it('refuses a loop over an array its function writes inside that loop', () => {
     const source = FIXED_TABLE.replace(

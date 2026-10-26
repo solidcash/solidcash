@@ -48374,9 +48374,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Where the current function writes the state arrays a loop over `slot`'s targets reads (the target array and a
    * varying table's selector array), relative to the outermost loop around the slot's calls: only 'before' it, only
-   * 'after' it, or 'mixed' (inside that loop, or on both sides). A write to an array's loop cache (`__dlcache_V`,
-   * which the function's accesses read instead, flushed back at the end), assembly, and a call to or reference of an
-   * internal function whose body writes them count as writes. `undefined` when nothing writes them.
+   * 'after' it, or 'mixed' (inside that loop, or on both sides). A collection iteration is a loop. A write to an
+   * array's loop cache (`__dlcache_V`, which the function's accesses read instead, flushed back at the end),
+   * assembly, a call of an internal function whose body writes them, and a function-pointer call when any function
+   * writes them count as writes. `undefined` when nothing writes them.
    */
   private loopArrayWritePlacement(slot: ExternalCallSlot): 'before' | 'after' | 'mixed' | undefined {
     const names = new Set([slot.loopArrayVar, slot.selectorArrayVar].filter((name): name is string => !!name));
@@ -48384,9 +48385,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotIndex = this.externalCallSlots.indexOf(slot);
     const skip = new Set(['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
       'referencedContract', 'stateVariable', 'collection', 'sourceCallNode', 'callInfo', 'type']);
+    // A call's options (`{value: f()}`) are expressions it evaluates.
     const children = (node: Node): Node[] => Object.entries(node).flatMap(([key, value]) => (skip.has(key) ? []
       : Array.isArray(value) ? value.filter((item): item is Node => item instanceof Node)
-        : value instanceof Node ? [value] : []));
+        : value instanceof Node ? [value]
+          : key === 'callOptions' && value
+            ? Object.values(value as object).filter((item): item is Node => item instanceof Node) : []));
     const writesHere = (node: Node): boolean => {
       if (node instanceof AssemblyStatementNode) return true;
       // A cache's flush only commits the writes made to the cache.
@@ -48400,22 +48404,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return (node instanceof AssignNode || node instanceof DeleteLocalNode) && caches.has(node.identifier.name);
     };
     const calleeWrites = new Map<FunctionDefinitionNode, boolean>();
+    const holds = (root: Node, test: (node: Node) => boolean): boolean => {
+      const seen = new Set<Node>();
+      const pending: Node[] = [root];
+      while (pending.length > 0) {
+        const current = pending.pop()!;
+        if (seen.has(current)) continue;
+        seen.add(current);
+        if (test(current)) return true;
+        pending.push(...children(current));
+      }
+      return false;
+    };
+    // A function-pointer call runs whichever function the pointer holds.
+    let anyFunctionWrites: boolean | undefined;
+    const pointerCallWrites = (): boolean => (anyFunctionWrites ??= [...this.userFunctionDefs.values()]
+      .some((fn) => fn.body !== undefined && holds(fn.body, writesHere)));
     const writes = (node: Node): boolean => {
-      const callee = node instanceof FunctionCallNode ? node.resolvedFunction
-        : node instanceof IdentifierNode ? node.functionReference : undefined;
+      if (node instanceof IndirectCallNode || (node instanceof FunctionCallNode
+        && node.resolvedFunction?.functionId === undefined && node.identifier?.type instanceof FunctionType)) {
+        return pointerCallWrites();
+      }
+      const callee = node instanceof FunctionCallNode ? node.resolvedFunction : undefined;
       if (callee?.body && !calleeWrites.has(callee)) {
         calleeWrites.set(callee, false);
-        const seen = new Set<Node>();
-        const pending: Node[] = [callee.body];
-        let written = false;
-        while (!written && pending.length > 0) {
-          const current = pending.pop()!;
-          if (seen.has(current)) continue;
-          seen.add(current);
-          written = writes(current);
-          pending.push(...children(current));
-        }
-        calleeWrites.set(callee, written);
+        calleeWrites.set(callee, holds(callee.body, writes));
       }
       return writesHere(node) || (callee !== undefined && calleeWrites.get(callee) === true);
     };
@@ -48432,7 +48445,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         calls.push({ at, loops });
       }
       if (writes(node)) found.push({ at, loops });
-      const inner = node instanceof WhileNode || node instanceof DoWhileNode ? [...loops, node] : loops;
+      const inner = node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode
+        ? [...loops, node] : loops;
       for (const child of children(node)) walk(child, inner);
     };
     walk(this.currentFunction.body, []);

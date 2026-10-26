@@ -592,6 +592,15 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   pair's first entry *including* its own external reads (`balanceOf` on both tokens) and decode another
   contract's state layout at compile time; an interface carries neither. The 63 Router and 13 SushiRoll failures
   stay blocked on that gap. Evidence: `precreated-router.log`, `fold-control-flow.log`.
+- **A bare EOA value send has no modelled path, and a direct call to `receive()` publishes no hidden sender
+  frame.** `Signer.sendTransaction` throws (`has no equivalent on Bitcoin Cash`), and the Router's `receive()`
+  reads `msg.sender`, so a value-only call needs the same hidden `__internal__msgSenderCategory` /
+  `__internal__msgSenderAnchorIdx` frame as any other direct entry. The receive ABI hard-codes `inputs: []` while
+  the compiled body declares those parameters; calling `__receive({ value })` therefore fails the VM with
+  `Tried to read from an invalid stack index. Current stack depth: 0; requested depth: 0`. Publishing the
+  declared parameters (measured) still leaves the direct call with an empty unlocking stack, so the one Router
+  case that sends plain Ether stays unmodelled. Evidence: `tmp-receive` probe; the compiler fix was reverted
+  rather than shipped without a passing path.
 - **A contract cannot call itself in one transaction.** The pair's `migrator.desiredLiquidity()` and the flash
   callback's reentrant `mint`/`burn`/`swap`/`skim`/`sync` target the primary contract, whose master UTXO is
   already an input. The migrator tests therefore stop in transitive discovery ("Circular A->B->A calls are not

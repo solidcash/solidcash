@@ -420,6 +420,9 @@ the VM before `671dc23f1` (recorded in the security ledger as "Loop receiver res
 naming one callee input"). That fix leaves the pins as above: the gate identity and the three kernel cold baselines
 measure unchanged, and the 13 test files whose contracts change bytes passed once (solidc 4 files, 448 tests; SDK e2e 9
 files, 51).
+A third review found four more (an address local's first declaration, a written parameter array, a state-array call
+past the end, a pointer-table broadcast that ignored the source's index), all accepted at the VM before `60b758023`;
+the pins again measure unchanged, and the same 13 test files plus the three changed or pointer-table files passed once.
 
 ### What closed the 2026-10-17 failures
 

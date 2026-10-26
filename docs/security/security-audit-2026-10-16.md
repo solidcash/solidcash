@@ -1042,7 +1042,21 @@ needs VM evidence, `rejectedWith` has no source fallback).
   its counter, so `ts[which[i]]` with a repeated index, a loop-invariant `ts[k]`, or a state-array body
   `subscribers[which[i]]` (whose callees are checked once per element after the loop) let several calls accept one
   callee run. `671dc23f1` makes each call of such a loop claim an input, or a state-array element, above the one the loop
-  claimed last, as pointer lists already did; a loop that walks its targets backwards is refused now. Test:
+  claimed last; a loop that walks its targets backwards is refused now. (A table of received function pointers was
+  not covered: see the next entry.) Test: `AliasedCalleeSites.test.ts`.
+- **Loop aliases, written parameter arrays and past-the-end elements** (found 2026-10-26 by a third review of the
+  loop fixes; accepted at the VM). An address local holding a loop element (`address p = arr[i]; IFoo(p).m()`) was
+  rewritten to the element of its first declaration, so a reassigned `p`, or a second loop's `p`, was checked
+  against another value. A parameter array the body writes (`chosen[0] = a`, a push, a write through a local that
+  holds it) still counted as the caller's choice, so its loop target was lifted to a free witness. A state-array
+  loop's body call past the last element (`which = [0, 1, 2]` over two) ran on no callee, where Solidity reverts.
+  A loop calling through a state table of received function pointers is lowered to a broadcast that runs every
+  element once after the loop, whatever the source's index, so `fns[which[i]]` with a repeated index, a bound past
+  the table's end or a nested loop ran calls the source did not make. `60b758023` rewrites a local only when the body
+  defines it once; counts a parameter array as the caller's only when neither it nor a local holding it is written
+  and no assembly runs; requires the last element a state-array loop's body claimed to be below the array's length;
+  and requires a pointer table's broadcast to index the table by the counter of its one loop (refused at compile
+  time otherwise) and to make one call per element. Test: `LoopTargetProvenance.test.ts`,
   `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision

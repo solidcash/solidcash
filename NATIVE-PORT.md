@@ -483,20 +483,23 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   `if (key > 0) { flags[key] = true; appends += 1; emit Appended(key); }` through the shipped sender on both
   branches (scalar 1 on the arm, 0 off it, row present on the arm and absent off it). The shape it still
   refuses is the complementary one, a scalar in one arm while a *sibling* arm settles a row or event.
-  Measurement places the defect behind that fence: on an *unsplit* contract the complementary shape
-  assembles and executes in every combination of arm split and result shape (same or complementary arm x
-  void or returning handler; all four pass and `appends` settles to 1). The failure first attributed to
-  complementarity reproduces with **no scalar write at all**: a route handler whose linear sorted batch
-  inserts a key beside an existing entry without republishing the shared predecessor plans `PredOut = -1`
-  for that row (`pred-debug`: `predOrdinal: 0, firstLinearPred: false`), and the compiled route then reads
-  `tx.outputs[-1]` — `Program attempted to read from an invalid transaction output index ... requested
-  index: -1`. Both observations land on a split fragment (eight and six instructions long, starting
-  `DUP OP_OUTPUTBYTECODE`), so the witness is lost or mis-threaded across a fragment boundary.
-  The pair's `_mintFee` is that shape — `kLast = 0` sits in an arm whose sibling mints
-  `balanceOf[_feeTo]` and emits — so `mint` stays refused. Bypassing the wide-event gate for `burn` instead
-  lands on the same `conditional-scalar-collection-event-settlement` refusal. Until that witness threading is
-  fixed the fence state is unchanged, so the Router ceiling remains the 11 tests that never seed a pair (address
-  getters, two deadline guards, four pure library-math cases) and the SushiRoll ceiling its 3 non-pair tests.
+  Measurement places the defect behind that fence. On an *unsplit* contract the complementary shape assembles and
+  executes in every combination of arm split and result shape (same or complementary arm x void or returning
+  handler; all four pass and `appends` settles to 1). The failure first attributed to complementarity reproduces
+  with **no scalar write at all**: a route handler whose linear sorted batch writes two keys that share one proof
+  plans `__internal__vmapBatchPredOut = -1` for the row that does not republish the predecessor (`pred-debug`:
+  `predOrdinal: 0, firstLinearPred: false`, `firstPredSlot` naming the other row), and the spent predecessor
+  input then reads `tx.outputs[-1]` — `Program attempted to read from an invalid transaction output index ...
+  requested index: -1`. Compiling with `split: 'off'` fails identically, so this is not a size fragment: the
+  failing program is the six-instruction shared-predecessor entry covenant, which is bound to the wrong row's
+  `PredOut` sentinel. The next work item is that witness binding (bind the shared predecessor to the row that
+  republishes it, or plan the verbatim predecessor output), not the fence: lifting the fence today would publish
+  routes that can hit this at run time.
+  The pair's `_mintFee` still trips the fence (`kLast = 0` sits in an arm whose sibling mints `balanceOf[_feeTo]`
+  and emits), so `mint` stays refused. Bypassing the wide-event gate for `burn` instead lands on the same
+  `conditional-scalar-collection-event-settlement` refusal. The fence state is unchanged, so the Router ceiling
+  remains the 11 tests that never seed a pair (address getters, two deadline guards, four pure library-math
+  cases) and the SushiRoll ceiling its 3 non-pair tests.
   Evidence: `matrix-two-branch-seed.log`, `sorted-insert-head.log`, `fence-complementary-detail.log`.
   The pair-writer route alone would not raise either count: `addLiquidity` also deploys the pair through the
   factory inside the same transaction, and BCH cannot spend an output it creates, so the 63 Router and 13

@@ -70,7 +70,8 @@ The compiler knows the interface, selector, argument types, return types, requir
 mode. The SDK resolves the deployed instance and lays its UTXOs into the transaction. On chain, the caller and
 callee enforce the relationship rather than trusting that SDK resolution. A call to an overloaded method runs the
 overload its argument count selects; a call that two overloads of the same arity could take does not compile, as
-its method and arguments could not be checked against one of them.
+its method and arguments could not be checked against one of them, and neither does `IFace.m.selector` of an
+overloaded `m`, as in Solidity.
 
 The explicit member forms remain available when choosing a mode without consuming a typed return:
 

@@ -160,4 +160,20 @@ contract Factory(pubkey deployer) {
       deployTargets: [{ contractName: 'Child', hasFoldedChildCall: true }],
     });
   });
+
+  it('folds the overload the call\'s argument count selects', () => {
+    // `set(int)` declared first: `c.set(5, 7)` still runs set(int, int), whose genesis is 5 + 7.
+    const artifact = compileString(`
+      contract Child() {
+        int v;
+        function set(int a) public { this.v = a; }
+        function set(int a, int b) public { this.v = a + b; }
+        function get() public { require(this.v >= 0); }
+      }
+      contract Parent(pubkey owner) {
+        function go(sig s) { require(checkSig(s, owner)); Child c = new Child(); c.set(5, 7); }
+      }`);
+    const [target] = artifact.abi.find((entry) => entry.name === 'go')!.deployTargets!;
+    expect(target!.genesisState).toMatchObject({ fields: [{ name: 'v', value: { kind: 'binary', operator: '+' } }] });
+  });
 });

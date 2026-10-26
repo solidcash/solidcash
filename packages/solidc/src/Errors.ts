@@ -1881,6 +1881,12 @@ export class AmbiguousExternalOverloadError extends SolidCashError {
   }
 }
 
+export class AmbiguousSelectorError extends SolidCashError {
+  constructor(node: Node, ownerName: string, functionName: string) {
+    super(node, `'${ownerName}.${functionName}' is overloaded: its selector does not name one method`);
+  }
+}
+
 export class UndefinedInterfaceFunctionError extends SolidCashError {
   constructor(node: Node, interfaceName: string, functionName: string) {
     super(node, `Interface '${interfaceName}' does not declare function '${functionName}'`);

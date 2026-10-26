@@ -42,7 +42,7 @@ import { FnPtrArrayLoweringError } from '../Errors.js';
 const SELECTOR_ARRAY_PREFIX = '__fnsel_';
 
 type ArrayClassification = { kind: 'fixed' | 'varying' | 'none'; iface: string; method: string };
-type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; returns: boolean };
+type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; returns: boolean; parameterTypes: Type[] };
 
 /**
  * FOREIGN external function-pointer ARRAYS whose every written value is an inline `IFace(a).method` (a dispatch
@@ -114,6 +114,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
       const ft = coll.type.elementType as FunctionType;
       this.tables.set(coll.name, {
         kind: c.kind, iface: c.iface, method: c.method, returns: (ft.returnTypes ?? []).length > 0,
+        parameterTypes: ft.parameterTypes,
       });
     }
     if (this.tables.size === 0) return node;
@@ -174,19 +175,26 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     type.parameterTypes) && same(fn.returnTypes ?? [], type.returnTypes)).length === 1;
   }
 
-  /** The methods `owner` declares by `name`, its parent interfaces' included. */
+  /**
+   * The methods another contract can call on `owner` by `name`, its parent interfaces' included, one per signature
+   * (an interface's own declaration overrides a parent's).
+   */
   private methodsNamed(
     owner: InterfaceNode | ContractNode, name: string, seen = new Set<string>(),
   ): { parameters: { name: string; type: Type }[]; returnTypes?: Type[] }[] {
     if (seen.has(owner.name)) return [];
     seen.add(owner.name);
-    const own = (owner.functions as { name: string; parameters: { name: string; type: Type }[]; returnTypes?: Type[] }[])
-      .filter((fn) => fn.name === name);
+    type Method = { parameters: { name: string; type: Type }[]; returnTypes?: Type[] };
+    const own = owner instanceof InterfaceNode ? owner.functions.filter((fn) => fn.name === name)
+      : owner.functions.filter((fn) => fn.name === name && fn.isEntryPoint);
     const inherited = owner instanceof InterfaceNode ? owner.parents.flatMap((parent) => {
       const declared = this.memberTypes.get(parent);
       return declared ? this.methodsNamed(declared, name, seen) : [];
     }) : [];
-    return [...own, ...inherited];
+    const bySignature = new Map<string, Method>();
+    const signature = (fn: Method): string => fn.parameters.map((parameter) => parameter.type.toString()).join(',');
+    for (const fn of [...inherited, ...own] as Method[]) bySignature.set(signature(fn), fn);
+    return [...bySignature.values()];
   }
 
   private rewrite(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {
@@ -254,7 +262,9 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     if (!t || !fm) return undefined;
     const addrPush = this.copyLoc(new StateArrayPushNode(name, this.addressOf(value)), at);
     if (t.kind === 'fixed') return addrPush;
-    const selPush = this.copyLoc(new StateArrayPushNode(this.selArrayName(name), this.selectorExpr(fm, at)), at);
+    const selPush = this.copyLoc(
+      new StateArrayPushNode(this.selArrayName(name), this.selectorExpr(fm, t.parameterTypes, at)), at,
+    );
     return this.twoStatementBlock(addrPush, selPush, at);
   }
 
@@ -275,7 +285,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     const addrAssign = this.copyLoc(new StateArrayAssignNode(name, idx, this.addressOf(value)), at);
     if (t.kind === 'fixed') return addrAssign;
     const selAssign = this.copyLoc(new StateArrayAssignNode(
-      this.selArrayName(name), cloneNode(idx) as ExpressionNode, this.selectorExpr(fm, at),
+      this.selArrayName(name), cloneNode(idx) as ExpressionNode, this.selectorExpr(fm, t.parameterTypes, at),
     ), at);
     return this.twoStatementBlock(addrAssign, selAssign, at);
   }
@@ -356,10 +366,12 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     const block = new BlockNode([a, b]); block.location = at.location; return block;
   }
 
-  // `bytes(IFace.method.selector)` for the parallel selector array element (framed `bytes[]` element).
-  private selectorExpr(fm: { iface: string; method: string }, at: Node): ExpressionNode {
+  // `bytes(IFace.method.selector)` for the parallel selector array element (framed `bytes[]` element), naming the
+  // overload of the table's parameter types.
+  private selectorExpr(fm: { iface: string; method: string }, parameterTypes: Type[], at: Node): ExpressionNode {
     const ifaceId = new IdentifierNode(fm.iface); ifaceId.location = at.location;
     const methodAccess = new FieldAccessNode(ifaceId, fm.method); methodAccess.location = at.location;
+    methodAccess.overloadParameterTypes = parameterTypes;
     const selector = new FieldAccessNode(methodAccess, 'selector'); selector.location = at.location;
     const bounded = new CastNode(new BytesType(), selector, false); bounded.location = at.location;
     return bounded;

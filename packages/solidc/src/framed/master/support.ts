@@ -3734,6 +3734,9 @@ function siteTarget(
 function isReadCall(slot: ExternalCallSlot, interfaces: readonly InterfaceNode[]): boolean {
   if (slot.callMode === ExternalCallMode.STATICCALL) return true;
   if (slot.callMode !== undefined) return false;
+  // The overload the call selected, when the lowering recorded it.
+  const resolved = slot.sourceCallNode?.resolvedCallee?.stateMutability;
+  if (resolved !== undefined) return resolved === 'view' || resolved === 'pure';
   const iface = interfaces.find((candidate) => candidate.name === slot.interfaceName);
   const fn = iface?.functions.find((candidate) => candidate.name === slot.functionName);
   return fn?.stateMutability === 'view' || fn?.stateMutability === 'pure';
@@ -3780,6 +3783,8 @@ function declaredParameterTypes(
   slot: ExternalCallSlot,
   interfaces: readonly InterfaceNode[],
 ): readonly Type[] {
+  const resolved = slot.sourceCallNode?.resolvedCallee;
+  if (resolved) return resolved.parameterTypes;
   const iface = interfaces.find((candidate) => candidate.name === slot.interfaceName);
   const fn = iface?.functions.find((candidate) => candidate.name === slot.functionName);
   return (fn?.parameters ?? []).map((parameter) => parameter.type);

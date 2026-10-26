@@ -344,6 +344,8 @@ receive() external payable { require(tx.outputs[0].value >= 546); }  // warned: 
 - `public` and `external` functions are entry points chosen by a 4-byte selector (sha256-derived natively,
   keccak256 under evmCompat). Calling an `external` function internally is an error. Entry arguments are
   untrusted; bounded types, enums and `bool` are range-checked on entry by default.
+- A call to another contract's overloaded method runs the overload its argument count selects; two overloads of one
+  arity cannot be called, and `IFace.m.selector` of an overloaded `m` does not compile.
 - `pure` reads no state or environment; `view` only reads; neither may write state, create or make low-level calls.
 - Falling off the end returns the named values or type defaults. An entry point may declare returns, which a
   cross-contract caller receives through a return-event NFT.

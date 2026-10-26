@@ -198,6 +198,7 @@ import {
   ExternalOutStateRecordCountError,
   UndefinedInterfaceFunctionError,
   AmbiguousExternalOverloadError,
+  AmbiguousSelectorError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
   DeployThenCallError,
@@ -3612,6 +3613,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   ): false | { returnValue?: ExpressionNode, wrote?: boolean, unconditionalWrite?: boolean } {
     const body = foo.body as BlockNode | undefined;
     if (!body) return false;
+    // The arguments map to the parameters by position: another arity is another method.
+    if (foo.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length !== parentArgs.length) {
+      return false;
+    }
     const statements = body.statements ?? [];
     // An implemented empty function has no effects and returns the ABI default for an unnamed single return.
     // Treat it as a real fold, not as an abstract/unavailable body. ABI return-size probes rely on precisely
@@ -4326,10 +4331,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? this.collectLoopNestedExternalCalls(node.body) : new Set();
       if (hasExternalCalls) this.collectExternalCalls(node.body, externalCallSlots);
       for (const slot of externalCallSlots) {
-        const iface = this.interfaceMap.get(slot.interfaceName);
-        const matches = iface && this.getAllInterfaceFunctions(iface)
-          .filter((candidate) => candidate.name === slot.functionName);
-        const target = matches?.length === 1 ? matches[0] : undefined;
+        // The method the call runs: the overload it selected.
+        const target = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
         // Solidity sends value only to a function its interface declares payable (as for function pointers).
         if (this.compilerOptions.evmCompat && target && target.stateMutability !== 'payable'
           && !slot.interfaceName.startsWith('__')
@@ -4339,7 +4342,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (target && (target.stateMutability === 'view' || target.stateMutability === 'pure')
           && !slot.runtimeSelector && !slot.batchInvocations) {
           slot.readonlyReturnSelector = this.computeAbiSelector(this.selectorSignatureFor(
-            slot.functionName, target.parameters.map((parameter) => parameter.type),
+            slot.functionName, target.parameterTypes,
           ));
         }
       }
@@ -14489,7 +14492,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (this.deployResultLocals.has(varName)) {
                 const deployNode = this.deployResultLocals.get(varName)!;
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
-                const realFoo = deployNode.referencedContract?.functions.find((f) => f.name === methodName);
+                const realFoo = deployNode.referencedContract ? this.resolveCalleeMethod(node,
+                  deployNode.referencedContract.name, deployNode.referencedContract.functions, methodName,
+                  parameters.length) : undefined;
                 if (realFoo && this.calleeCannotComplete(realFoo)) {
                   // The callee cannot complete: the deploy-then-call is that failure, nothing to fold.
                   const failed = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
@@ -16037,31 +16042,40 @@ export default class SymbolTableTraversal extends AstTraversal {
   private resolveCalleeMethod<T extends InterfaceFunctionNode | FunctionDefinitionNode>(
     node: Node, interfaceName: string, functions: readonly T[], name: string, count: number,
   ): T | undefined {
-    const named = functions.filter((fn) => fn.name === name);
+    const named = functions.filter((fn) => fn.name === name && SymbolTableTraversal.callable(fn));
     if (named.length <= 1) return named[0];
     const sized = named.filter((fn) => SymbolTableTraversal.calleeSignature(fn).parameterTypes.length === count);
     if (sized.length !== 1) throw new AmbiguousExternalOverloadError(node, interfaceName, name, count);
     return sized[0];
   }
 
-  /** A callee method's name and declared parameter types, past any compiler-internal parameter. */
+  /** A callee method's name, declared parameter types past any compiler-internal one, and an interface's mutability. */
   private static calleeSignature(
     fn: InterfaceFunctionNode | FunctionDefinitionNode,
-  ): { name: string; parameterTypes: Type[] } {
+  ): { name: string; parameterTypes: Type[]; stateMutability?: string } {
     return {
       name: fn.name,
       parameterTypes: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
         .map((parameter) => parameter.type),
+      ...(fn instanceof InterfaceFunctionNode && { stateMutability: fn.stateMutability }),
     };
+  }
+
+  /** Whether another contract can call `fn`: any interface method, or a contract's public or external function. */
+  private static callable(fn: InterfaceFunctionNode | FunctionDefinitionNode): boolean {
+    return fn instanceof InterfaceFunctionNode || fn.isEntryPoint;
   }
 
   /**
    * The method a slot's call runs: the overload the call selected, or the one method of its name. An overloaded name
    * the call did not resolve is refused.
    */
-  private slotCalleeMethod(slot: ExternalCallSlot): { name: string; parameterTypes: Type[] } | undefined {
+  private slotCalleeMethod(
+    slot: ExternalCallSlot,
+  ): { name: string; parameterTypes: Type[]; stateMutability?: string } | undefined {
     if (slot.sourceCallNode?.resolvedCallee) return slot.sourceCallNode.resolvedCallee;
-    const named = (this.getCalleeFunctions(slot.interfaceName) ?? []).filter((fn) => fn.name === slot.functionName);
+    const named = (this.getCalleeFunctions(slot.interfaceName) ?? [])
+      .filter((fn) => fn.name === slot.functionName && SymbolTableTraversal.callable(fn));
     if (named.length > 1) {
       throw new AmbiguousExternalOverloadError(slot.sourceCallNode ?? this.currentFunction!, slot.interfaceName,
         slot.functionName, slot.sourceCallNode?.parameters.length ?? 0);
@@ -16642,10 +16656,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       && node.expression.expression instanceof IdentifierNode) {
       const fa = node.expression;
       const baseName = (fa.expression as IdentifierNode).name;
+      // One method of the name, or the overload a compiler-built member names by its parameter types.
       const params = (name: string): ParameterNode[] | undefined => {
-        const im = this.interfaceMap.get(name)?.functions.find((f) => f.name === fa.name);
-        if (im) return im.parameters;
-        return this.contractMap.get(name)?.functions.find((f) => f.name === fa.name)?.parameters;
+        const iface = this.interfaceMap.get(name);
+        let named: (InterfaceFunctionNode | FunctionDefinitionNode)[] = (iface ? this.getAllInterfaceFunctions(iface)
+          : this.contractMap.get(name)?.functions ?? []).filter((f) => f.name === fa.name);
+        const wanted = fa.overloadParameterTypes;
+        if (wanted) {
+          named = named.filter((f) => f.parameters.length === wanted.length
+            && f.parameters.every((parameter, at) => parameter.type.toString() === wanted[at]!.toString()));
+        }
+        if (named.length > 1) throw new AmbiguousSelectorError(node, name, fa.name);
+        return named[0]?.parameters;
       };
       // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
       // just 'address'); look it up in the scope chain, then the state vars.
@@ -17948,7 +17970,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (deployAlias instanceof InstantiationNode) {
             throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
           }
-          const realFunction = deployNode.referencedContract?.functions.find((f) => f.name === node.methodName);
+          const realFunction = deployNode.referencedContract ? this.resolveCalleeMethod(node,
+            deployNode.referencedContract.name, deployNode.referencedContract.functions, node.methodName,
+            parameters.length) : undefined;
           const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
           if (!fold) {
             throw new DeployThenCallError(

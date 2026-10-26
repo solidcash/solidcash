@@ -2938,7 +2938,7 @@ export interface CallOptions {
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
   /** The callee method this call runs: the overload its argument count selected, by its declared parameters. */
-  resolvedCallee?: { name: string; parameterTypes: Type[] };
+  resolvedCallee?: { name: string; parameterTypes: Type[]; stateMutability?: string };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
@@ -3546,6 +3546,8 @@ export class AddressSendExpressionNode extends ExpressionNode {
 export class FieldAccessNode extends ExpressionNode implements Named {
   structType?: StructType;
   enumType?: EnumType;
+  /** The parameter types naming one overload of a method member (a compiler-built `IFace.m.selector`). */
+  overloadParameterTypes?: Type[];
 
   constructor(
     public expression: ExpressionNode,

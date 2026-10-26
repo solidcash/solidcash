@@ -345,6 +345,55 @@ describe('a call through a table of pointers', () => {
     for (const entry of entries) expect((await entry.sc.getState()).calls).toBe(1n);
   }, 300_000);
 
+  it('stores the selector of the overload of the table\'s type', async () => {
+    // `hit(uint256, uint256)` declared first: the table holds hit(uint256), its type's overload, and binds it.
+    const provider = createTestProvider();
+    const { entries } = await tallies(provider);
+    const hit = 'function hit(uint256 v);';
+    const source = VARYING_TABLE.replace(hit, `function hit(uint256 v, uint256 w); ${hit}`);
+    expect(source).not.toBe(VARYING_TABLE);
+    const artifact = compileString(source);
+    const base = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
+    );
+    const table = StatefulContract.withCategory(base, categoryId) as any;
+    await table.reg(hexToBin(entries[0]!.lock), hexToBin(entries[1]!.lock), alicePub,
+      new SignatureTemplate(alicePriv)).send();
+    table.registerExternalArray('IT', entries.map((entry) => entry.sc), ['hit', 'other']);
+    const { honest } = await forgeFirstArgument(provider, table);
+    await provider.sendRawTransaction(honest);
+    expect((await entries[0]!.sc.getState()).calls).toBe(1n);
+    expect((await entries[1]!.sc.getState()).calls).toBe(2n);
+  }, 300_000);
+
+  it('takes an interface\'s override as its parent\'s method, and refuses an overloaded selector', () => {
+    const override = VARYING_TABLE.replace(
+      'interface IT { public bigint calls; function hit(uint256 v); function other(uint256 v); }',
+      'interface IBase { function hit(uint256 v); function other(uint256 v); }\n'
+        + 'interface IT is IBase { public bigint calls; function hit(uint256 v); }',
+    );
+    expect(override).not.toBe(VARYING_TABLE);
+    expect(() => compileString(override)).not.toThrow();
+    const selector = `pragma solidcash >=0.8.0;
+interface IT { function hit(uint256 v, uint256 w); function hit(uint256 v); }
+contract S() { function s() { require(bytes4(IT.hit.selector) != 0x00000000); } }`;
+    expect(() => compileString(selector)).toThrow(/is overloaded: its selector does not name one method/);
+    // A contract's internal overload is no method another contract calls.
+    const internal = `pragma solidcash >=0.8.0;
+contract Tally() {
+  bigint c;
+  function m(uint256 v, uint256 w) public { this.c = this.c + 1; require(v + w >= 0); }
+  function m(uint256 v) internal { require(v >= 0); }
+}
+contract T() {
+  function(uint256) external[] fns;
+  function reg(address a) { this.fns.push(Tally(a).m); }
+  function fire(uint256 v) { for (uint256 i = 0; i < fns.length; i = i + 1) { fns[i](v); } }
+}`;
+    expect(() => compileString(internal)).toThrow(/does not name one method of the table's type/);
+  });
+
   it('refuses a varying-method table\'s callee run on another argument', async () => {
     const provider = createTestProvider();
     const { entries } = await tallies(provider);

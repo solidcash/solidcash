@@ -548,10 +548,16 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   read/write, emit or loop (each refused on its own in `probe-fold5.log`). Compiling the same shape with
   `composition: 'framed'` raises the same refusal, and the framed master compiler refuses contract creation
   outright (`support.ts`: "contract creation needs the witness `CREATE` checks, which are not emitted yet").
-  Lifting that one refusal under a probe flag does not yield a create frame either: the framed compilation then
-  stops in planning with `an execution with 0 call(s) closes 1 segment(s): got 2`, so the CREATE frame's layout,
-  composer and validator rules are all absent (the deferrals doc lists the V1/V3/V4/V5/V7/V9 changes and calls the
-  analogous proxy case "a hard fork, not a soft extension"). Evidence: `probe-framed-create.log`.
+  Lifting that one refusal under a probe flag reaches the next two layers, in order: the stop-site table asserts
+  (`an execution with 0 call(s) closes 1 segment(s): got 2`) because the direct fold marks the `c.entry()` call
+  `foldedIntoDeploy` and removes it from the entry's call slots while the framed call walk still counts the node;
+  skipping folded nodes in that walk then stops in master codegen at `the compiled master reserves its address
+  slot more than once` (the child's address slot and the parent's are both reserved for one patch offset). The
+  validator side already represents a minted callee (`state.masterSet` includes `mintedRef(output)` and V5 has a
+  CREATE arm), but no script executes a minted master: the child's block comes from the transcript, so the entry's
+  body would be trusted rather than verified. A CREATE frame therefore needs the child's entry inlined into a
+  spent master's script, the same runtime state-transition subroutine the direct path needs. Evidence:
+  `probe-framed-create.log` (stop-site assertion), `probe-framed-create-stage2.log` (address-slot reservation).
   Creating the pair top-level first does not help the Router either: `_addLiquidity` reads
   `IUniswapV2Pair.getReserves` and then calls `IUniswapV2Pair.mint`, and the builder refuses two distinct
   returning methods on one state owner without a compiled route (`Direct external calls to getReserves and mint

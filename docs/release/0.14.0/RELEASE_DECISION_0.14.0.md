@@ -423,6 +423,10 @@ files, 51).
 A third review found four more (an address local's first declaration, a written parameter array, a state-array call
 past the end, a pointer-table broadcast that ignored the source's index), all accepted at the VM before `60b758023`;
 the pins again measure unchanged, and the same 13 test files plus the three changed or pointer-table files passed once.
+A fourth review found a nested pointer-table broadcast accepted at the VM, an inlined helper's reassigned array
+parameter, `delete` on an address local, and helpers holding a loop over targets failing to compile since
+`671dc23f1`; `9abf04ce5` fixes all four with the pins unchanged, and only the two pointer-table test files change
+bytes (with the two changed test files, four files passed once).
 
 ### What closed the 2026-10-17 failures
 

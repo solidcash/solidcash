@@ -1058,6 +1058,19 @@ needs VM evidence, `rejectedWith` has no source fallback).
   and requires a pointer table's broadcast to index the table by the counter of its one loop (refused at compile
   time otherwise) and to make one call per element. Test: `LoopTargetProvenance.test.ts`,
   `AliasedCalleeSites.test.ts`.
+- **Inlined helpers, deleted locals and pointer-table claims** (found 2026-10-26 by a fourth review of the loop
+  fixes; the nested broadcast accepted at the VM). A pointer table's broadcast had its loop's form checked before
+  helpers are inlined, and then only counted its calls: a helper holding the loop, inlined into another loop, called
+  one pointer twice and another never within the count, and a loop starting past 0 or skipping an index made a last
+  call past the table's end. An inlined helper's array parameter that the helper reassigns (`if (path.length == 0)
+  path = fb`) was followed to the caller's argument, so its target counted as the caller's choice, and `delete p` did
+  not count as a definition of `p`. Since `671dc23f1` a helper holding a loop over targets (Router02's `_swap`) no
+  longer compiled: its body is still compiled for its diagnostics after its callers inlined it, with no loop floor in
+  scope. `9abf04ce5` makes each call through a pointer table claim the element it indexes, the one after its loop's
+  last claim, and requires the last claim to be the table's last element, so a broadcast runs each pointer once, in
+  order, through any index or loop form; follows an array alias only through locals defined once; counts a delete
+  as a definition; and compiles such a loop call in a body nothing invokes as a failure (an invoked body still
+  refuses it). Test: `AliasedCalleeSites.test.ts`, `LoopTargetProvenance.test.ts`.
 
 ### Not changed, by decision
 
@@ -1090,6 +1103,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   list (strictly increasing, but not compared with the function's other calls), and a single pointer call there a
   witness index (found 2026-10-25 beside the two call sites, source-traced). A pointer target equal to another call's
   target could serve both calls with one run.
+
+- A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
+  `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:
+  the caller may name any callee there, as for a parameter's element, not only one the computation can reach (noted
+  2026-10-26, source-traced).
 
 - One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
   selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one

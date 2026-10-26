@@ -25728,6 +25728,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (loopSlot?.loopArrayVar
         && !this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
         this.emitLoopElementFloor(node, loopSlot, ilcAe, locationData);
+        this.emitLoopElementArgumentBinding(node, loopSlot, locationData);
       }
       const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
         || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode)
@@ -48376,11 +48377,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Verify an array-element external call `IFoo(arr[i]).m()`: every element of the state array `arr` (callee
    * addresses) is co-spent as a callee at the trailing external-call run and verified against arr[i] in a
-   * loop. The source `for` loop is left as harmless iteration (its body external call emits nothing); this
-   * epilogue reads the array once and loop-verifies callee[base + computedOffset + i*stride].master.LBC ==
-   * arr[i] (+ master/category preservation + selector). Modeled on emitDynamicReadLoop (runtime-stack-neutral
-   * OP_BEGIN/OP_UNTIL) + emitExternalCallVerification. count comes from the array (state), so no orphan-bound
-   * is needed - every element is verified and the spender cannot skip or substitute one.
+   * loop. Each call the source loop makes claims its element (emitLoopElementFloor) and binds the arguments it names
+   * (emitLoopElementArgumentBinding); this epilogue reads the array once and loop-verifies
+   * callee[base + computedOffset + i*stride].master.LBC == arr[i] (+ master/category preservation + selector).
+   * Modeled on emitDynamicReadLoop (runtime-stack-neutral OP_BEGIN/OP_UNTIL) + emitExternalCallVerification. count
+   * comes from the array (state), so no orphan-bound is needed - every element is verified and the spender cannot
+   * skip or substitute one.
    */
   private emitArrayExternalCallLoop(slot: ExternalCallSlot, node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.END };
@@ -49518,6 +49520,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emitReplace(this.getStackIndex(floor), node);
     this.popFromStack();
+  }
+
+  /**
+   * A void call on a state-array element binds the arguments it names against the unlocking of that element's callee,
+   * at the input the loop's epilogue checks for it (`base + offset + element * stride`). Stack-neutral.
+   */
+  private emitLoopElementArgumentBinding(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): void {
+    const floor = this.loopInputFloorName(slot);
+    if (slot.fnPtrCall || this.getStackIndex(floor, true) < 0) return;
+    const binding = this.directCallArgumentBinding(node, slot, true);
+    if (!binding) return;
+    const stride = 1 + slot.requiredDataNftIndices.length;
+    this.emitDirectCallArgumentBinding(node, slot, binding, loc, () => {
+      this.emitPickTrackedFromBottom('__internal__externalCallInputBase', loc); // [.., base]
+      if (slot.computedOffset !== 0) {
+        this.emit(encodeInt(BigInt(slot.computedOffset)), loc);
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emitPickAt(this.getStackIndex(floor) + 1, loc);                    // [.., base, element]
+      if (stride !== 1) {
+        this.emit(encodeInt(BigInt(stride)), loc);
+        this.emit(Op.OP_MUL, loc);
+      }
+      this.emit(Op.OP_ADD, loc);                                               // [.., idx]
+    });
   }
 
   /** The groups of this function's calls whose ordinals are counted at run time. */

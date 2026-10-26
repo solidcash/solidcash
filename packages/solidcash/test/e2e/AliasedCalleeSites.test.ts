@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
+  encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import { Contract, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { createFeeFunder, createTestProvider, setupStatefulUtxos, verifyTransaction } from '../test-util.js';
+import {
+  createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos, verifyTransaction,
+} from '../test-util.js';
 import { trivialCallee } from '../trivial-callee.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
@@ -242,6 +247,83 @@ describe('a loop over a state array of callees', () => {
       .rejects.toThrow();
     expect((await publisher.getState()).count).toBe(0n);
     expect((await subscribers[0].getState()).received).toBe(0n);
+  }, 300_000);
+});
+
+// A void call on a state-array element binds the arguments it names against that element's callee run.
+const NOTIFIER = `pragma solidcash >=0.8.0;
+interface IListener { public bigint heard; function hear(uint256 value, uint256 tag); }
+contract Notifier() {
+  address[] listeners;
+  int count;
+  function setListeners(address a, address b, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    this.listeners = [a, b];
+  }
+  function notifyAll(uint256 value, pubkey pk, sig sg) {
+    require(checkSig(sg, pk));
+    for (uint256 i = 0; i < listeners.length; i = i + 1) { IListener(listeners[i]).hear(value, 7); }
+    this.count = this.count + 1;
+  }
+}`;
+const LISTENER = `pragma solidcash >=0.8.0;
+contract Listener() {
+  bigint heard;
+  function hear(uint256 value, uint256 tag) {
+    require(int(value) >= 0 && int(tag) >= 0);
+    this.heard = this.heard + 1;
+  }
+}`;
+
+describe('a void call on a state-array element', () => {
+  it('refuses an element\'s callee run on another argument', async () => {
+    const provider = createTestProvider();
+    const art = compileString(LISTENER);
+    const listeners: { lock: string; sc: StatefulContract<any> }[] = [];
+    for (let at = 0; at < 2; at++) {
+      const base = new Contract(art, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, base, art.stateLayout!, { heard: 0n }, { saltContract: true },
+      );
+      listeners.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
+        sc: StatefulContract.withCategory(base, categoryId) });
+    }
+    const notifierArt = compileString(NOTIFIER);
+    const base = new Contract(notifierArt, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, notifierArt.stateLayout!, { listeners: [], count: 0n }, { saltContract: true },
+    );
+    const notifier = StatefulContract.withCategory(base, categoryId) as any;
+    await notifier.setListeners(hexToBin(listeners[0]!.lock), hexToBin(listeners[1]!.lock), alicePub,
+      new SignatureTemplate(alicePriv)).send();
+    notifier.registerExternalArray('IListener', listeners.map((listener) => listener.sc));
+
+    const send = provider.sendRawTransaction.bind(provider);
+    let honest = '';
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      honest = hex;
+      throw new Error('capture-only');
+    };
+    await expect(notifier.notifyAll(10n, alicePub, new SignatureTemplate(alicePriv)).send())
+      .rejects.toThrow('capture-only');
+    (provider as any).sendRawTransaction = send;
+
+    // A listener's unlocking ends `<tag> <value> <redeem>`: the first one runs hear(5, 7) where the call names 10.
+    const tx = decodeTransactionUnsafe(hexToBin(honest));
+    const pushes = tx.inputs.map((input) => decodeAuthenticationInstructions(input.unlockingBytecode));
+    const listener = pushes.findIndex((p) => p.at(-3)?.opcode === 0x57 && p.at(-2)?.opcode === 0x5a);
+    const caller = pushes.findIndex((p) => (p.at(-3) as { data?: Uint8Array } | undefined)?.data?.length === 33);
+    expect(listener).toBeGreaterThan(0);
+    expect(caller).toBeGreaterThanOrEqual(0);
+    pushes[listener]![pushes[listener]!.length - 2] = { opcode: 0x55 } as never;
+    tx.inputs[listener]!.unlockingBytecode = encodeAuthenticationInstructions(pushes[listener]!);
+    const outcome = await provider.sendRawTransaction(binToHex(encodeTransaction(tx)))
+      .then(() => 'ACCEPTED').catch((e: Error) => e.message);
+    expectScriptRejection(outcome, caller);
+
+    await provider.sendRawTransaction(honest);
+    for (const entry of listeners) expect((await entry.sc.getState()).heard).toBe(1n);
+    expect((await notifier.getState()).count).toBe(1n);
   }, 300_000);
 });
 

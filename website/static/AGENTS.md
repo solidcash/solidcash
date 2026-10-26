@@ -351,8 +351,10 @@ receive() external payable { require(tx.outputs[0].value >= 546); }  // warned: 
   cross-contract caller receives through a return-event NFT.
 - Internal calls are real subroutines (`OP_DEFINE`/`OP_INVOKE`), so recursion works. Function pointers:
   `function(int, int) internal returns (int) op = useAdd ? add : mul;` then `op(a, b)`. Internal pointers work,
-  also in arrays and mappings; one external pointer works but a `function(..) external[]` array fails to lower. A
-  foreign external pointer (`IFace(a).m`) must name a method of exactly its type, or it does not compile.
+  also in arrays and mappings, but a function one reaches cannot make an external call (call it from the entry
+  point); one external pointer works but a `function(..) external[]` array fails to lower. A foreign external
+  pointer (`IFace(a).m`) must name a method of exactly its type, wherever it is held or passed, or it does not
+  compile.
 
 ### Modifiers
 
@@ -927,6 +929,10 @@ target.staticcall(payload);                           // low-level read-only; de
   entry (`artifact.callBatch`), one spend of its master with one call record per frame. Compile the callee with
   `callBatch: true`, or in one `compileStringMulti` / `compileFileMulti` with its caller. A frame writes at most fixed
   state fields: value, events, token effects, mapping writes and nested calls stay refused.
+- A message-bus build runs an entry that calls one fixed target in a loop only through its route: the ABI entry is
+  `routeOnly` and a direct spend of its own selector runs only with an empty loop (a run that enters the loop is
+  rejected). When the route does not serve that entry, the default build compiles the contract direct, and
+  `messageBus: true` refuses it with `ROUTE_ONLY_ENTRY_UNSERVED`.
 - Compose only when `artifact.messageBus.available` is true and each selected `artifact.messageBus.handlers` entry is
   `eligible`, and check `artifact.messageBus.deployability` (`assertDeployabilityCertificate` from
   `@solidcash/utils`) before broadcasting: a compiled route can exceed the 10,000-byte limit. Handlers using `split`,

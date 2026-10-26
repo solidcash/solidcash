@@ -960,7 +960,9 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `target.call(payload)` to a fixed target in a loop once its data is read (a Multicall over array targets checks
   each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
   target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
-  reads no record, so the bus binds the same shapes per row. Since phase 4 of the direct multi-call, a looped
+  reads no record, so the bus binds the same shapes per row; the entry body's loop ran its counter unguarded for a
+  direct spend of its own selector until `9ba15c3a0` (below) made that loop branch fail closed. Since phase 4 of the
+  direct multi-call, a looped
   state-changing call to a fixed target runs as counted frames of the callee's multi-call spend, each iteration bound
   to its own frame's record, instead of being refused; a looped call that can be no frame stays refused, a void one
   included, since its callee runs once however many times the loop calls it (a call carrying value, a raw call to one
@@ -1145,6 +1147,33 @@ needs VM evidence, `rejectedWith` has no source fallback).
   the deployed contract's overload without comparing parameters (`ISet.set(bytes)` folded `Child.set(int)`):
   `68e8e247e` folds it only into a function of the interface method's parameters. Test: `DeployThenCallFold.test.ts`.
   Left as found (fail closed): a static low-level call's result is typed by the first overload of the name it encodes.
+- **Looped calls on a message-bus entry, a pointer helper's calls, pointer types through receivers, helpers and
+  arguments** (found 2026-10-26 by a tenth review; the first read from the emitted script). A message-bus build, the
+  default for a contract that makes calls, leaves a looped call to a fixed target to its route, which binds it row by
+  row. The selector dispatcher still ran the entry's own body for the entry's selector, and that body checks no
+  callee for the call (its loop ran the counter alone), so a spend naming that selector advanced the caller with the
+  callee run once, on another method or not at all. The SDK refuses to build that spend; a hand-built one met no
+  check. It held whether the route admitted the entry or not, and a default build without a route kept such an entry
+  as its whole program. A call made by a helper an internal function pointer reaches (`g = k ? h : h2; g(v)`) was
+  bound on neither path of a message-bus build: the effect analysis does not follow the pointer, and the refusal of
+  a call in an invoked body applied to direct builds only. The ninth review's type check of a foreign pointer missed
+  an interface-typed receiver (`IT t; .. f = t.big`), a member passed to a single-return helper (substituted by
+  position, so named arguments swapped) and a member passed to an internal or external call (split into its address
+  and selector unchecked; the argument binding then counted the pair as one argument and left the next unbound), and
+  it read a named struct constructor by position; named arguments of an external call lost the split selector.
+  `9ba15c3a0` marks such an entry `routeOnly` in its ABI and makes its entry body's per-iteration loop branch fail
+  closed (`OP_0 OP_VERIFY` before the counter): the route re-derives the loop row by row in its own handler and never
+  runs the entry body, so a direct spend of the entry's own selector passes only with an empty loop (no callee) and a
+  direct run that enters the loop (>= 1 iteration) is rejected at the VM, while the routed spend keeps its per-row
+  callee binding. The guard copy lives only in the entry body, not in the shared loop-body or the route's handler. A
+  routeOnly fallback's or receive's arm, and a sole routeOnly entry's whole program, still fail outright. It refuses
+  an entry the route does not serve (`refusedFunctions`, `ROUTE_ONLY_ENTRY_UNSERVED`: the SDK is not offered it, and a
+  sole entry's program fails) and compiles a default build direct instead, where the loop runs as counted frames or
+  is refused; refuses a call in an invoked body in every build but the bus's own bodies; and checks the receiver's
+  declared interface, the helper's and the call's parameter types, named arguments (an external call's in its method's
+  order) and named fields. In the marketplace fixture's legacy convention, `publishJobPost` and `updateJobPost` are
+  refused (that route does not admit them); the kernel convention's route serves them. Test:
+  `RouteOnlyLoopCalls.test.ts`, `ForeignPointerTypes.test.ts`, and VM shapes in `RouteOnlyLoopGuard.test.ts`.
 
 ### Not changed, by decision
 
@@ -1211,6 +1240,11 @@ needs VM evidence, `rejectedWith` has no source fallback).
   by the record's category and the callee's single run, and by the selector only for a multi-function callee, which is
   the pre-D50 binding. It cannot join a direct multi-call group, so a repeated callee with such a call stays refused.
   The arguments it names are bound at the caller since `0b94c0f13` (Fixed, above).
+
+- A function an internal function pointer reaches cannot make an external call in any build (since `9ba15c3a0`,
+  liveness): binding one needs the pointer call lowered to a dispatch over the functions the pointer can name, each
+  inlined at its entry. A default build whose route does not serve a looped entry compiles direct, so its other
+  entries lose the route as well.
 
 - A forwarder with neither `delegateForwarding` nor a low-level call slot (artifacts from before 2026-09) still
   places a direct delegate after its full block, which the delegate now refuses (`c1883fb8e`): fail-closed.

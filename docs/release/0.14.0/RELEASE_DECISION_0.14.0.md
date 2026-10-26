@@ -476,7 +476,34 @@ Claude Code when the box ran critically low on memory, before it finished; it ha
 suite is therefore unverified past `f6f34c883`, apart from the test files each fix changed, which passed once.
 
 The fixes after the battery are recorded in "The second 2026-10-25 re-pin" above and in
-`docs/security/security-audit-2026-10-16.md`; none moves a pin.
+`docs/security/security-audit-2026-10-16.md`; none moves a pin until the tenth review's, see "The 2026-10-26 re-pin".
+
+### The 2026-10-26 re-pin
+
+A tenth review of the loop and pointer fixes found that a message-bus build's entry with a looped call to a fixed
+target stayed reachable by its own selector, whose body checks no callee for that call (read from the emitted
+script), that a call made by a helper an internal pointer reaches was bound on neither path, and that pointer types
+went unchecked through typed receivers, helpers and call arguments (recorded in the security ledger as "Looped calls
+on a message-bus entry, ..."). `9ba15c3a0` leaves the entry's own selector dispatchable but makes its entry body's
+per-iteration loop branch fail closed (`OP_0 OP_VERIFY` before the counter): the route re-derives the loop row by row
+in its own handler and never runs the entry body, so a direct spend passes only with an empty loop and a direct run
+that enters the loop is rejected. The guard enters the marketplace fixtures' entry bodies, so the pins moved:
+
+| Pin | Old | New |
+|---|---|---|
+| `scripts/gate.sh` identity | `{"routeBytes":44865,"fullBytes":249861,"fullHash":"c2dda8e5d5c1a985"}` | `{"routeBytes":44865,"fullBytes":249869,"fullHash":"2a2a23be9b3b401c"}` |
+| kernel manifest, marketplace-v1 legacy | 44865 / 249861 / `c2dda8e5` | 44865 / 249869 / `2a2a23be` |
+| kernel manifest, marketplace-v1 kernel | 14850 / 314117 / `d66cead3` | 14850 / 314127 / `a770a698` |
+| kernel manifest, unicrow-claim kernel | 1073 / 16665 / `30a99be7` | 1072 / 16678 / `80f9950e` |
+
+Measured from a clean build of the fix. The guard is two bytes in each `routeOnly` entry body, so the full compiles
+grow a little (MarketplaceV1 legacy +8, kernel +10; UnicrowClaim +13) and the metadata hashes move with the ABI's
+`routeOnly` flags. MarketplaceV1's route bytes and route hashes are unchanged; UnicrowClaim's tiny kernel route moves
+one byte as an outlined-function-id re-encoding (the guard changes the entry body, so its loop body no longer dedups
+against the route handler's copy). Handler counts are unchanged. In the legacy convention, MarketplaceV1's
+`publishJobPost` and `updateJobPost`, whose loops read `MarketplaceDataV1.meceTags` and which that route refuses
+(`direct-versus-batch-introspection-divergence`), are refused functions; the kernel convention's route admits them.
+The test files whose contracts change bytes passed once. `kernel-beta-gate` and the marketplace matrix were not run.
 
 ### What closed the 2026-10-17 failures
 

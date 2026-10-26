@@ -424,6 +424,12 @@ repeats calls to it; simple contracts stay without it. A frame is a call to a fu
 fields and takes no value, events, token effects, mapping writes or calls of its own. Any other repeated or looped
 call to one target is refused there with `MESSAGE_BUS_REQUIRED`; the automatic mode routes it through the bus.
 
+A message-bus build binds a looped call to a fixed target only on its route, row by row, so it runs that entry only
+through the route: the ABI entry is `routeOnly`, and a direct spend of the entry's own selector runs only with an
+empty loop (no callee) - a direct run that enters the loop is rejected, since the entry body co-spends no callee.
+When the route does not serve the entry, the automatic mode compiles the contract direct instead, where the loop
+runs as frames or is refused, and `messageBus: true` refuses it with `ROUTE_ONLY_ENTRY_UNSERVED`.
+
 ## Practical limits
 
 - Every stateful participant adds real inputs, outputs, unlocking bytecode, and VM work.

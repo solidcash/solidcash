@@ -435,7 +435,9 @@ table of fixed-method pointers as well) and that a write before such a loop made
 accepted at the VM; `5311db02e` requires each loop to call its elements in turn and checks the array as the loop saw
 it, with the pins unchanged, and the eight test files whose contracts change bytes passed once. `fc5f4f09b` binds the
 arguments of a call through a table of pointers as well (accepted at the VM before it), the pins unchanged, three
-test files changed and passed once.
+test files changed and passed once. A sixth review found three places the loop-array write placement did not look
+(collection loops, pointer calls, call options); `5a475d031` covers them with no test source changing bytes or
+outcome and the pins unchanged.
 
 ### The 2026-10-26 verification
 

@@ -1098,6 +1098,15 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `fc5f4f09b` binds the arguments where the call runs, as on any state-array element: a varying table's callee at its
   laid-out input, a received table's at the next entry of the witness list the epilogue checks, read in turn as the
   calls take the elements. Test: `AliasedCalleeSites.test.ts`.
+- **Loop-array writes through collection loops, pointer calls and call options** (found 2026-10-26 by a sixth review;
+  compile probes). `5311db02e` placed a function's writes to a loop's arrays relative to the outermost `while` or `do`
+  around its calls: a collection loop (`for (k in this.m)`) around the calls did not count, so a write inside it was
+  taken for one after the loop and the epilogue checked the array as it stood before the write; a call through an
+  internal function pointer counted at the pointer's reference, not at its call, and a pointer held in state was not
+  seen; a write in a call's options (`{value: f()}`) was not walked. `5a475d031` counts a collection loop as a loop, a
+  pointer call as a write wherever any of the contract's functions writes the arrays, and walks call options. The
+  review also found a varying-method table's arguments unbound (accepted at the VM), closed by `fc5f4f09b`, which it
+  predated. Test: `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 
@@ -1135,7 +1144,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   would run the others. Supporting it needs the epilogue to check only the claimed elements and the SDK to co-spend
   only those. The SDK co-spends every element's callee today, also for a loop that calls none, when the caller checks
   none of them and they run on the SDK's arguments. A function writing the array inside such a loop, or on both sides
-  of it, does not compile in any mode (liveness).
+  of it, does not compile in any mode (liveness). Assembly anywhere in such a function counts as a write of the array,
+  and a loop whose element callee is a forwarding proxy or drops a budget pad is refused, as a direct call into one
+  is (fail closed). The sixth review saw an honest spend fail at preflight (`OP_SPLIT` on an empty item) where the
+  function referenced an internal pointer before the loop and called it after, writing the array, while the direct
+  call's twin settled; `5a475d031` now reads that loop's array as it stood before the write, the read the failure may
+  have come from. Not re-run.
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
   `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:

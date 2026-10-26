@@ -10159,11 +10159,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(this.callOrdinalCounterName(group));
     }
-    // A loop over targets dispatched where it runs claims its callee inputs in increasing order, from -1.
-    const loopInputFloors = this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.externalCallSlots.filter(
-      (slot) => slot.loopArrayVar !== undefined && (!slot.fnPtrCall
-        || node.parameters.some((parameter) => parameter.name === slot.loopArrayVar)),
-    );
+    // A loop over targets claims its callee inputs, or state-array elements, in increasing order from -1. The
+    // floors stay until the checks after the body read them, and the final clean-up drops them.
+    const loopInputFloors = this.isDefineSubTraversal || !node.isEntryPoint ? []
+      : this.externalCallSlots.filter((slot) => slot.loopArrayVar !== undefined);
     for (const slot of loopInputFloors) {
       this.emit(encodeInt(-1n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(this.loopInputFloorName(slot));
@@ -10238,12 +10237,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     for (const group of callOrdinalCounters) {
       const idx = this.getStackIndex(this.callOrdinalCounterName(group));
-      this.emitRollAt(idx, { location: node.location, positionHint: PositionHint.END });
-      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
-      this.removeFromStack(idx);
-    }
-    for (const slot of loopInputFloors) {
-      const idx = this.getStackIndex(this.loopInputFloorName(slot));
       this.emitRollAt(idx, { location: node.location, positionHint: PositionHint.END });
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
       this.removeFromStack(idx);
@@ -25729,7 +25722,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const loopSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
       // A loop over a state array checks each element once after the loop: each call here claims its element in
       // increasing order, so two calls cannot share one element's run.
-      if (loopSlot?.loopArrayVar && !loopSlot.fnPtrCall
+      if (loopSlot?.loopArrayVar
         && !this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
         this.emitLoopElementFloor(node, loopSlot, ilcAe, locationData);
       }
@@ -48424,6 +48417,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();                                 // drop (aec_blob) tracking
     this.pushToStack('(aec_rem)');
     this.pushToStack('(aec_count)');
+    // The body's calls took increasing elements: the last one must be an element, or that call ran on nothing. A
+    // pointer table's broadcast counted its calls instead, which must be one per element.
+    const floor = this.loopInputFloorName(slot);
+    if (this.getStackIndex(floor, true) >= 0) {
+      this.emitPickAt(this.getStackIndex(floor), loc);
+      if (slot.fnPtrCall) this.emit(Op.OP_1ADD, loc);
+      this.emitPickAt(this.getStackIndex('(aec_count)') + 1, loc);
+      this.emit(slot.fnPtrCall ? Op.OP_NUMEQUAL : Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    }
 
     // Varying-method dispatch table: also read the parallel `bytes[]` selector array; each iteration decodes
     // its next framed selector (exactly like an address element) and verifies it == the co-spent callee's.
@@ -49473,8 +49476,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const element = (expression: ExpressionNode): ExpressionNode | undefined => (expression instanceof MappingAccessNode
       ? expression.keys[0] : expression instanceof ArrayAccessNode ? expression.index
         : expression instanceof FieldAccessNode ? element(expression.expression) : undefined);
-    const index = element(target);
     const floor = this.loopInputFloorName(slot);
+    if (slot.fnPtrCall && this.getStackIndex(floor, true) >= 0) {
+      // A received pointer table's call is a broadcast that runs every element once after the loop, whatever its
+      // index: count the calls, which must come to the table's length.
+      this.emitPickAt(this.getStackIndex(floor), loc);
+      this.pushToStack('(loop_calls)');
+      this.emit(Op.OP_1ADD, loc);
+      this.emitReplace(this.getStackIndex(floor), node);
+      this.popFromStack();
+      return;
+    }
+    const index = element(target);
     if (index === undefined || this.getStackIndex(floor, true) < 0) {
       throw new Error(`Loop call ${slot.interfaceName}.${slot.functionName} has no element index or floor in scope`);
     }

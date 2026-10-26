@@ -227,6 +227,14 @@ describe('a loop over a state array of callees', () => {
     for (const subscriber of subscribers) expect((await subscriber.getState()).received).toBe(10n);
   }, 300_000);
 
+  it('refuses a body call past the array\'s last element', async () => {
+    // Two subscribers: a third call has no element, so no callee run, where Solidity would revert.
+    const { publisher } = await deployed();
+    await expect(publisher.notifySome([0n, 1n, 2n], 10n, alicePub, new SignatureTemplate(alicePriv)).send())
+      .rejects.toThrow();
+    expect((await publisher.getState()).count).toBe(0n);
+  }, 300_000);
+
   it('refuses a body that calls one element twice', async () => {
     // Each element runs once after the loop, so the second call on element 0 would have no run of its own.
     const { publisher, subscribers } = await deployed();
@@ -235,4 +243,76 @@ describe('a loop over a state array of callees', () => {
     expect((await publisher.getState()).count).toBe(0n);
     expect((await subscribers[0].getState()).received).toBe(0n);
   }, 300_000);
+});
+
+// A table of received function-pointer values (address and selector) checks its callees once each after the loop.
+const HANDLER = `pragma solidcash >=0.8.0;
+interface IH { public bigint counter; function inc(uint256 v); function dec(uint256 v); }
+contract Handler() is IH {
+  bigint counter;
+  function inc(uint256 v) { this.counter = this.counter + int(v); require(int(v) >= 0); }
+  function dec(uint256 v) { this.counter = this.counter - int(v); require(int(v) >= 0); }
+}`;
+const TABLE = `pragma solidcash >=0.8.0;
+contract Table() {
+  function(uint256) external[] fns;
+  bigint bumps;
+  function reg(function(uint256) external p, pubkey pk, sig s) {
+    require(checkSig(s, pk)); this.fns.push(p); this.bumps = this.bumps + 1;
+  }
+  function fireN(uint256 n, uint256 v, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (uint256 i = 0; i < n; i = i + 1) { fns[i](v); }
+    this.bumps = this.bumps + 1;
+  }
+}`;
+
+describe('a loop over a table of function pointers', () => {
+  async function deployed(): Promise<{ table: any; handlers: any[] }> {
+    const provider = createTestProvider();
+    const handler = compileString(HANDLER);
+    const inc = hexToBin(handler.abi.find((entry) => entry.name === 'inc')!.selector!);
+    const handlers: { lock: string; sc: StatefulContract<any> }[] = [];
+    for (let at = 0; at < 2; at++) {
+      const base = new Contract(handler, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, base, handler.stateLayout!, { counter: 0n }, { saltContract: true },
+      );
+      handlers.push({ lock: base.withCategory(hexToBin(categoryId)).lockingBytecode,
+        sc: StatefulContract.withCategory(base, categoryId) });
+    }
+    const artifact = compileString(TABLE);
+    const base = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
+    );
+    const table = StatefulContract.withCategory(base, categoryId) as any;
+    for (const entry of handlers) {
+      await table.reg(hexToBin(entry.lock), inc, alicePub, new SignatureTemplate(alicePriv)).send();
+    }
+    const pointer = artifact.abi.find((entry) => entry.name === 'fireN')!.externalCalls![0]!.interfaceName;
+    table.registerExternalArray(pointer, handlers.map((entry) => entry.sc), ['inc', 'inc']);
+    return { table, handlers: handlers.map((entry) => entry.sc) };
+  }
+
+  it('calls each pointer once, in order', async () => {
+    const { table, handlers } = await deployed();
+    await table.fireN(2n, 3n, alicePub, new SignatureTemplate(alicePriv)).send();
+    for (const handler of handlers) expect((await handler.getState()).counter).toBe(3n);
+  }, 300_000);
+
+  it('refuses a broadcast whose calls are not one per pointer', async () => {
+    // The table runs each of its two callees once, so three calls (past its end) or one would not match the source.
+    for (const n of [3n, 1n]) {
+      const { table, handlers } = await deployed();
+      await expect(table.fireN(n, 3n, alicePub, new SignatureTemplate(alicePriv)).send(), String(n)).rejects.toThrow();
+      expect((await handlers[0].getState()).counter).toBe(0n);
+    }
+  }, 300_000);
+
+  it('refuses a call that indexes the table by anything but its loop counter', () => {
+    const picked = TABLE.replace('function fireN(uint256 n,', 'function fireN(uint256[] which, uint256 n,')
+      .replace('fns[i](v)', 'fns[which[i]](v)');
+    expect(() => compileString(picked)).toThrow(/must index it by that loop's counter/);
+  });
 });

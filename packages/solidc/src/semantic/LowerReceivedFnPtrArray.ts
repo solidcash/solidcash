@@ -40,6 +40,7 @@ import {
   StateAccessNode,
   DeleteLocalNode,
   DeleteStateNode,
+  BinaryOpNode,
 } from '../ast/AST.js';
 import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -88,6 +89,8 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   private hoistCounter = 0;
   private hoists: StatementNode[] = [];
   private loopDepth = 0;
+  // The identifier each enclosing loop's condition compares, innermost last.
+  private loopCounters: (string | undefined)[] = [];
   // received/mixed fn-ptr array name -> its synth interface + whether the fn type returns values.
   private lowered = new Map<string, { iface: string; returns: boolean }>();
   private currentFn: FunctionDefinitionNode | undefined;
@@ -235,16 +238,25 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
 
   visitWhile(node: WhileNode): Node {
     this.loopDepth += 1;
+    this.loopCounters.push(LowerReceivedFnPtrArray.loopCounter(node.condition));
     const r = super.visitWhile(node);
+    this.loopCounters.pop();
     this.loopDepth -= 1;
     return r;
   }
 
   visitDoWhile(node: DoWhileNode): Node {
     this.loopDepth += 1;
+    this.loopCounters.push(LowerReceivedFnPtrArray.loopCounter(node.condition));
     const r = super.visitDoWhile(node);
+    this.loopCounters.pop();
     this.loopDepth -= 1;
     return r;
+  }
+
+  /** The identifier a loop condition such as `i < fns.length` bounds. */
+  private static loopCounter(condition: ExpressionNode): string | undefined {
+    return condition instanceof BinaryOpNode && condition.left instanceof IdentifierNode ? condition.left.name : undefined;
   }
 
   // `fns.push(v)` -> `{ fns.push(<addr>); __fnsel_fns.push(<selector>); }` for either write kind.
@@ -387,6 +399,14 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
           if (info.returns) {
             throw new FnPtrArrayLoweringError(node, name,
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
+          }
+          // The broadcast runs every element once, checked after the loop: only one loop indexing the table by the
+          // counter its condition bounds calls each element once, in order.
+          if (!this.graphMode && (this.loopDepth !== 1 || !(target.index instanceof IdentifierNode)
+            || target.index.name !== this.loopCounters.at(-1))) {
+            throw new FnPtrArrayLoweringError(node, name,
+              'a call through the table inside a loop must index it by that loop\'s counter, in one loop, as in '
+              + '`for (uint i = 0; i < fns.length; i++) fns[i](...)`');
           }
           const arrId = new IdentifierNode(name); arrId.location = node.location;
           // The ordinary broadcast covenant verifies the whole table in its epilogue, so its receiver stays

@@ -130,3 +130,87 @@ contract Views(address a, address b) {
     expect(inputs('own[i]', undefined).some((name) => name.startsWith('__internal__viewReturn'))).toBe(false);
   });
 });
+
+describe('loop targets held by locals and written arrays', () => {
+  // Stand-in callees running swap(1): A the contract's own, F its fallback, X one the spender picks.
+  const A = TARGET;
+  const F = Uint8Array.of(...TARGET, 0x61, 0x61);
+  const X = OTHER;
+
+  /** `go(chosen)` of `source` built from `args` by input name, with `callees` co-spent from input 1 on. */
+  async function spendGo(
+    source: string, ctor: Uint8Array[], chosen: Uint8Array[], witnesses: Uint8Array[][], callees: Uint8Array[],
+  ): Promise<TransactionBuilder> {
+    const provider = createTestProvider();
+    const artifact = compileString(source);
+    const contract = new Contract(artifact, ctor, { provider });
+    const selector = swapSelector();
+    const go = artifact.abi.find((entry) => entry.name === 'go')!;
+    const args = go.inputs.map((input) => {
+      if (input.name === 'chosen') return encodePushdataValue(chosen, 'address[]');
+      if (input.name === '__internal__externalCallInputBase') return 1n;
+      const witness = /^__internal__loopTargets(\d+)$/.exec(input.name);
+      if (witness) return encodePushdataValue(witnesses[Number(witness[1])]!, 'address[]');
+      if (input.name.startsWith('__internal__externalCallSelector')) return selector;
+      throw new Error(`no value for ${input.name}`);
+    });
+    const funder = await createFeeFunder(provider, 10000n);
+    const builder = new TransactionBuilder({ provider });
+    builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, (contract.unlock.go as any)(...args));
+    callees.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n },
+      unlocker(lock)));
+    builder.addInput(funder.utxo, funder.unlocker);
+    builder.addOutput({ to: contract.address, amount: 100000n });
+    for (const lock of callees) builder.addOutput({ to: lock, amount: 1500n });
+    builder.addOutput({ to: OP_TRUE, amount: 7000n });
+    return builder;
+  }
+
+  it('checks a reassigned local, not the element it was declared with', async () => {
+    const source = `pragma solidcash >=0.8.0;
+${IFACE}
+contract R(address allowed, address fallbackPair) {
+  function go(address[] chosen) {
+    for (uint i = 0; i < chosen.length; i++) {
+      address p = chosen[i];
+      if (p != allowed) { p = fallbackPair; }
+      IPair(p).swap(1);
+    }
+  }
+}`;
+    // chosen = [X] is not the allowed pair, so the call runs on the fallback.
+    verifyTransaction(await spendGo(source, [A, F], [X], [[F]], [F]));
+    const forged = await spendGo(source, [A, F], [X], [[X]], [X]);
+    expect(() => verifyTransaction(forged)).toThrow();
+  });
+
+  it('gives two loops\' locals of one name their own targets', async () => {
+    const source = `pragma solidcash >=0.8.0;
+${IFACE}
+contract T(address a) {
+  function go(address[] chosen) {
+    for (uint i = 0; i < chosen.length; i++) { address p = chosen[i]; IPair(p).swap(1); }
+    address[1] memory own = [a];
+    for (uint i = 0; i < 1; i++) { address p = own[i]; IPair(p).swap(1); }
+  }
+}`;
+    verifyTransaction(await spendGo(source, [A], [X], [[X], [A]], [X, A]));
+    // The second loop's callee is the contract's own `a`, whatever the first loop's caller-chosen element.
+    const forged = await spendGo(source, [A], [X], [[X], [X]], [X, X]);
+    expect(() => verifyTransaction(forged)).toThrow();
+  });
+
+  it('checks a parameter array the body writes against its written element', async () => {
+    const source = `pragma solidcash >=0.8.0;
+${IFACE}
+contract W(address a) {
+  function go(address[] chosen) {
+    chosen[0] = a;
+    for (uint i = 0; i < chosen.length; i++) { IPair pair = IPair(chosen[i]); pair.swap(1); }
+  }
+}`;
+    verifyTransaction(await spendGo(source, [A], [X], [[A]], [A]));
+    const forged = await spendGo(source, [A], [X], [[X]], [X]);
+    expect(() => verifyTransaction(forged)).toThrow();
+  });
+});

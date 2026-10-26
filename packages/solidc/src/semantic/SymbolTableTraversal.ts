@@ -8601,7 +8601,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // a parameter array is the caller's choice, so its index decides nothing here.
         let array = n.array instanceof IdentifierNode ? this.resolveInlineAliasName(n.array.name, body) : undefined;
         const aliases = new Set<string>();
-        while (array !== undefined && !(parameters.has(array) && this.localDefinitionCount(body, array) === 0)
+        while (array !== undefined && !(parameters.has(array) && this.parameterArrayUnwritten(body, array))
           && !aliases.has(array)) {
           aliases.add(array);
           const init = this.localDefinitionCount(body, array) === 1 ? this.findLocalInit(body, array) : undefined;
@@ -8634,6 +8634,55 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     walk(expr);
     return chosen && elements > 0;
+  }
+
+  /**
+   * True when `body` writes neither parameter array `name` nor a local that holds it (an element write, push, pop,
+   * delete, reassignment or a local of the same name) and runs no assembly: its elements are then the caller's.
+   */
+  private parameterArrayUnwritten(body: Node | undefined, name: string): boolean {
+    const walk = (visit: (node: Node) => void): void => {
+      const seen = new Set<Node>();
+      const step = (node: Node | undefined): void => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+        visit(node);
+        for (const [key, value] of Object.entries(node)) {
+          if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+          if (value instanceof Node) step(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) step(item);
+        }
+      };
+      step(body);
+    };
+    // The locals that hold the array: those initialized or assigned from it, transitively.
+    const holders = new Set([name]);
+    for (let grew = true; grew;) {
+      grew = false;
+      walk((node) => {
+        const [holder, source] = node instanceof VariableDefinitionNode ? [node.name, node.expression]
+          : node instanceof AssignNode ? [node.identifier.name, node.expression] : [undefined, undefined];
+        if (holder !== undefined && !holders.has(holder) && source instanceof IdentifierNode
+          && holders.has(this.resolveInlineAliasName(source.name, body))) {
+          holders.add(holder);
+          grew = true;
+        }
+      });
+    }
+    let written = false;
+    walk((node) => {
+      if (node instanceof AssemblyStatementNode
+        || ((node instanceof ArrayPushNode || node instanceof ArrayPopNode || node instanceof ArrayAssignNode
+          || node instanceof ArrayDeleteNode) && holders.has(node.name))
+        || (node instanceof DeleteLocalNode && holders.has(node.identifier.name))
+        || (node instanceof AssignNode && node.identifier.name === name)
+        || (node instanceof VariableDefinitionNode && node.name === name)
+        || (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name !== undefined
+          && holders.has(element.name)))) {
+        written = true;
+      }
+    });
+    return !written;
   }
 
   /** How many statements of `body` define local `name`: declarations, tuple binds and assignments. */
@@ -9286,8 +9335,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       // the target to the array element itself so the existing loop-array dispatch co-spends each element (identical
       // to writing `IToken(path[i]).m()` directly). Guard: init is `<ident>[<ident>]` (an array indexed by a bare
       // loop counter); a param/literal-indexed or non-array init is left as a fixed target.
+      // Only a local defined once holds its initializer's element at the call: a reassigned local, or one of two
+      // loops' locals of one name, keeps its own value, which the bound witness below checks.
       if (addressParam && !addressStateVar && this.loopDeclaredLocals.has(addressParam)
-        && node.addressExpression instanceof IdentifierNode) {
+        && node.addressExpression instanceof IdentifierNode
+        && this.localDefinitionCount(this.currentFunction?.body, addressParam) === 1) {
         const aliasInit = this.findLocalInit(this.currentFunction?.body, addressParam)
           ?? this.findTupleInit(this.currentFunction?.body, addressParam);
         const localArrayElement = aliasInit instanceof ArrayAccessNode

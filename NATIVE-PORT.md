@@ -161,8 +161,12 @@ enabled in `.parity-project/solidcash.config.ts`. A package `dist` left partiall
 abandoned experiment can produce a false failure that a clean build does not reproduce (it showed an extra
 `UniswapV2ERC20 > transferFrom > decrements a finite allowance and transfers` failure whose failing require was the
 conditional allowance check); re-run a clean build before attributing a single case to the compiler.
-Evidence: `final6-parity-all.log` (107/192), `final5-native-clean.log` (28/28),
-`final5-hardhat-clean.log` (192/192).
+The six files are also run one at a time for the reproducible counts: a combined run deploys six fixtures in
+parallel, and on a loaded host one `beforeEach` exceeded vitest's 10 s default hook timeout and reported as a
+test failure (measured: 103/192 combined against 107/192 per file). The parity config raises `hookTimeout` to
+60 s, after which the combined run reports the same 107/192 as the per-file runs.
+Evidence: `final10-parity-all.log` (107/192 combined, raised hook timeout), `final9-*.log` (per-file),
+`final9-native.log` (28/28), `final9-hardhat.log` (192/192).
 
 The original EVM Hardhat suite in `/Code/sushi-port` remains untouched.
 

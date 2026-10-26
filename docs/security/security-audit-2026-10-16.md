@@ -1141,7 +1141,10 @@ needs VM evidence, `rejectedWith` has no source fallback).
   a pointer or table holds to name one method of its type, inlines helpers whenever a contract has function pointers
   and refuses an external call left in an invoked body of a direct build, allows a whole table copy only between
   tables of one interface and method, refuses that constant selector, and gives the framed head the selected
-  overload. Test: `ForeignPointerTypes.test.ts`.
+  overload. Test: `ForeignPointerTypes.test.ts`. The same review found a deploy-then-call typed by an interface folding
+  the deployed contract's overload without comparing parameters (`ISet.set(bytes)` folded `Child.set(int)`):
+  `68e8e247e` folds it only into a function of the interface method's parameters. Test: `DeployThenCallFold.test.ts`.
+  Left as found (fail closed): a static low-level call's result is typed by the first overload of the name it encodes.
 
 ### Not changed, by decision
 

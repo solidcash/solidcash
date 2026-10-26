@@ -429,6 +429,10 @@ parameter, `delete` on an address local, and helpers holding a loop over targets
 bytes (with the two changed test files, four files passed once).
 `6126221c0` then binds the arguments of a void call on a state-array element (a callee run on another argument was
 accepted at the VM before it); six test files change bytes and passed once with the new case, the pins unchanged.
+A fifth review found that a loop over a state array still ran the callees of elements its body skipped (through a
+table of fixed-method pointers as well) and that a write before such a loop made the replaced callee run, both
+accepted at the VM; `5311db02e` requires each loop to call its elements in turn and checks the array as the loop saw
+it, with the pins unchanged, and the eight test files whose contracts change bytes passed once.
 
 ### What closed the 2026-10-17 failures
 

@@ -1078,6 +1078,19 @@ needs VM evidence, `rejectedWith` has no source fallback).
   against the unlocking of the input the epilogue checks for the element the call claims. A table of received function
   pointers does not bind its callees' arguments: their methods are not known at compile time. Test:
   `AliasedCalleeSites.test.ts`.
+- **Loops over a state array call every element in turn, against the array the loop saw** (found 2026-10-26 by a
+  fifth review; both accepted at the VM). The epilogue of a loop over a state array runs every element's callee, but
+  the body's calls only had to take increasing elements, so a loop that skipped an element or stopped before the last
+  (a condition, a `break`, an index list naming fewer, `fns[i](v)` over a table of fixed-method pointers, which lowers
+  to an address array and missed `9abf04ce5`'s rule for received tables) still ran the others, on arguments the
+  spender picked. The epilogue read a dynamic array as it stood before the function's writes and a packed array or a
+  varying table's selector array as it stood after them, so a write before the loop (`fns[0] =
+  ICounter(a).increment`) had the replaced callee run instead of the new one. `5311db02e` makes every call of such a
+  loop take the element after the last one claimed and the last claim be the last element, or no call be made (then
+  no callee is checked), and reads the arrays as the loop saw them: before the writes when they all follow the loop,
+  after them when they all precede it. Writes to an array's loop cache count as its writes; a function writing the
+  array inside the loop, or on both sides of it, is refused at compile time (`LOOP_ARRAY_WRITTEN_AROUND_CALLS`). Test:
+  `AliasedCalleeSites.test.ts`.
 
 ### Not changed, by decision
 
@@ -1110,6 +1123,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   list (strictly increasing, but not compared with the function's other calls), and a single pointer call there a
   witness index (found 2026-10-25 beside the two call sites, source-traced). A pointer target equal to another call's
   target could serve both calls with one run.
+
+- A loop over a state array that calls only some of its elements is refused at the VM (`5311db02e`): its epilogue
+  would run the others. Supporting it needs the epilogue to check only the claimed elements and the SDK to co-spend
+  only those. The SDK co-spends every element's callee today, also for a loop that calls none, when the caller checks
+  none of them and they run on the SDK's arguments. A function writing the array inside such a loop, or on both sides
+  of it, does not compile in any mode (liveness).
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
   `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:

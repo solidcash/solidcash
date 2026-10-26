@@ -502,6 +502,14 @@ fills from the deployment it co-spends, and the loop's per-iteration coordinates
   that sentinel explicitly. Regression: `packages/solidcash/test/e2e/KernelSharedBatchPredecessor.test.ts`
   (empty mapping and a pre-seeded entry outside the inserted pair's gap); it fails before the change with the
   exact `requested index: -1` error and passes after.
+  A second, pair-specific defect remains on the same path: bus-compiling the pair changes the direct `transferFrom`
+  body's batch order to `[balanceOf (linear, 2 rows), allowance (non-linear, 1 row)]` (the direct build uses
+  `[allowance, balanceOf]`), and the entry then fails the recreated-predecessor commitment check
+  (`ip 353`, `OP_OUTPUTTOKENCOMMITMENT`/`OP_EQUALVERIFY`) even though both builds plan the predecessor output at
+  the same base. The same shape compiled as a standalone token (`balanceOf`, `allowance`, a conditional allowance
+  write, a `Transfer` event) passes in both compilations, and compiling the pair with `split: 'off'` fails
+  identically, so the trigger is the pair's own block layout rather than the splitter or the batch order alone.
+  This blocks enabling the pair's route at no cost (ERC20 14 -> 13).
   The pair's `_mintFee` still trips the fence (`kLast = 0` sits in an arm whose sibling mints `balanceOf[_feeTo]`
   and emits), so `mint` stays refused. Bypassing the wide-event gate for `burn` instead lands on the same
   `conditional-scalar-collection-event-settlement` refusal. The fence state is unchanged, so the Router ceiling

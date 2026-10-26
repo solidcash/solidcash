@@ -107,7 +107,8 @@ The unconditional return-event ordering coverage is regtest-gated; unbounded ret
 at that commit, and the six residuals and five skips above stay non-blocking. `master` carries all the release work:
 the readiness and matrix fixes (merge `168a45b9d`), `feat/tether-bch-native` (merge `e974a00e4`),
 `solidcash_v0.13.1` (merge `30b457b10`, history only) and the D30 record (`c7dc1b535`). The most recent mocknet
-verification ran at `f6f34c883` on master, 2026-10-25: every gate passes, see "The 2026-10-25 verification" below.
+verification ran at `626fd0036` on master, 2026-10-26: every gate exits 0 but its solidc suite did not complete, see
+"The 2026-10-26 verification" below; the last complete run is at `f6f34c883`, see "The 2026-10-25 verification".
 Before it, `e3d85e0b4` passed every gate once `a0883f157`, a test-only commit, re-pinned two e2e byte-identity
 hashes; its gate table and the re-pins it needed are in "The 2026-10-24 verification" below. The 2026-10-23 run at `0f7da2afa` and its four green marketplace cells are in "The 2026-10-23
 verification". Two items outside the gates are left for the release owner:
@@ -433,6 +434,38 @@ A fifth review found that a loop over a state array still ran the callees of ele
 table of fixed-method pointers as well) and that a write before such a loop made the replaced callee run, both
 accepted at the VM; `5311db02e` requires each loop to call its elements in turn and checks the array as the loop saw
 it, with the pins unchanged, and the eight test files whose contracts change bytes passed once.
+
+### The 2026-10-26 verification
+
+The loop and call fixes through `671dc23f1` and the second 2026-10-25 re-pin ran through one mocknet battery at
+`626fd0036` on 2026-10-25/26, in a built checkout under `/Code`, one gate at a time, the tree clean before and after
+each. Every step exits 0, but the solidc suite inside `gate.sh full` did not complete:
+
+| Gate | Commit | Result |
+|---|---|---|
+| `check:source-tree` | `626fd0036` | exit 0 |
+| `check:doc-citations` | `626fd0036` | exit 0 |
+| `yarn spellcheck` | `626fd0036` | exit 0 (42 s) |
+| `yarn lint` | `626fd0036` | exit 0 (272 s) |
+| `scripts/gate.sh full` | `626fd0036` | exit 0 (650 s), incomplete: identity `{"routeBytes":44865,"fullBytes":249861,"fullHash":"c2dda8e5d5c1a985"}` matches; utils 525/525; solidc reported 473 of 476 files and 7196 of 7447 tests passed, none failed. The gate kept only vitest's summary lines and took its status from the build and identity, so three files that never reported (a worker killed under memory pressure fits) did not fail it; `24a3bf3b7` now fails the gate on such a run |
+| `release-security-conformance` | `626fd0036` | exit 0 (66 s) |
+| `release-docs-snippets` | `626fd0036` | exit 0 (9 s): 346 blocks, 160 compiled, 0 failed |
+| `release-corpus-baseline` | `626fd0036` | exit 0 against the retained scorecard |
+| `release-application-conformance` | `626fd0036` | exit 0 (14 s) |
+| `release-generated-project-smoke` | `626fd0036` | exit 0 (35 s) |
+| `release-package-smoke` | `626fd0036` | exit 0 (276 s) |
+| `kernel-beta-gate` | `626fd0036` | exit 0 (35 min) without `--allow-dirty`: `diagnosticOnly: false`, head `626fd0036`, sourceFingerprints matched |
+| `yarn test` | `626fd0036` | pass, run per package: testing 120/120; solidhat 72 passed, 1 skipped; create-solidhat and testing-suite (27/27) exit 0; solidcash in eight file chunks, 6003 passed, 5 expected failures, 186 skipped, 5 todo; utils and solidc ran in `gate.sh full` |
+| `yarn test:e2e` | `626fd0036` | pass, in five file chunks: 620 files (4 skipped), 3833 passed, 24 skipped, 3 todo, 0 failed |
+| marketplace matrix | not run | by instruction |
+| `release-application-regtest` | not run | mocknet-only verification |
+
+A re-run of the solidc suite with its full output, at `31c52c250` (master after the fixes below), was stopped by
+Claude Code when the box ran critically low on memory, before it finished; it has not been run again. The solidc
+suite is therefore unverified past `f6f34c883`, apart from the test files each fix changed, which passed once.
+
+The fixes after the battery are recorded in "The second 2026-10-25 re-pin" above and in
+`docs/security/security-audit-2026-10-16.md`; none moves a pin.
 
 ### What closed the 2026-10-17 failures
 

@@ -491,6 +491,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
   declare hasContractInstantiation?: boolean;
+  // F1 (caller-attested call edges): a direct, non-framed, non-route stateful entry that reads a contract-caller
+  // msg.sender. Its codegen computes the entry's own call digest and the msg.sender minting path requires a
+  // co-spent caller-category edge record matching it, so a caller is bound by its call, not merely co-spent.
+  declare requiresCallerEdge?: boolean;
   // Set by EnsureFinalRequireTraversal on a direct entry point with no covenant of its own, whose early-return paths it
   // verifies. Only there does EarlyReturnTransformation seal an unguarded bare return (SEM-1).
   declare sealsUnguardedReturns?: boolean;

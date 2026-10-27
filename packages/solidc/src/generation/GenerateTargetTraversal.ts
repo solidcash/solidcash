@@ -674,6 +674,11 @@ const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** The `ordinal 0 || selector` the selector dispatcher leaves a dispatched entry, its call record's prefix. */
 const CALL_RECORD_PREFIX = '__internal__callRecordPrefix';
+/** F1 caller-edge record form byte, appended to the call digest so the edge is distinct from a result record. */
+const CALL_EDGE_FORM = 0x03;
+/** F1 caller-edge carrier lock: OP_1 OP_NOP - anyone-can-spend but distinct from OP_TRUE, so the call-record
+ * count (which matches the OP_TRUE carrier) never counts an edge as a result record. */
+const CALL_EDGE_CARRIER_LOCK = new Uint8Array([0x51, 0x61]);
 /** The block size a shared outside-layout walk takes as its argument. */
 const OUTSIDE_LAYOUT_BLOCK_SIZE = '(__outside_layout_block_size)';
 /** The input index the parked outside-layout pin skips, -1 for none. */
@@ -10228,8 +10233,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (!this.isDefineSubTraversal && node.isEntryPoint) this.emitEntryFunctionIdChecks(node);
     // The digest of the call this entry executes, taken before the body consumes its parameters; its record pins it.
+    // An edge-binding entry (F1) that settles no record of its own still needs the digest to match the caller's edge.
+    const bindsCallerEdge = this.entryBindsCallerEdge(node);
+    const edgeNeedsDigest = bindsCallerEdge && !this.settlesDirectCallRecord(node)
+      && !(this.callBatchFrame && node.returnTypes.length === 0);
     if (!this.isDefineSubTraversal && (this.settlesDirectCallRecord(node)
-      || (this.callBatchFrame && node.returnTypes.length === 0))) this.emitOwnCallRecordDigest(node);
+      || (this.callBatchFrame && node.returnTypes.length === 0) || edgeNeedsDigest)) {
+      this.emitOwnCallRecordDigest(node);
+    }
+    // F1: bind the contract caller to the call it made (a co-spent caller-category edge record matching this digest).
+    if (bindsCallerEdge) {
+      this.emitCallerEdgeRequirement(node);
+      // A returning or frame entry consumes the digest at its record settlement; a plain void edge entry does not,
+      // so drop the leftover here now the requirement has read it.
+      if (edgeNeedsDigest) {
+        const digestIdx = this.getStackIndex('__internal__callDigest');
+        this.emitRollAt(digestIdx, { location: node.location, positionHint: PositionHint.START });
+        this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
+        this.removeFromStack(digestIdx);
+      }
+    }
     // A callee called in a loop or a branch counts its calls from 0: each call takes the next ordinal.
     const callOrdinalCounters = this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.countedCallOrdinalGroups();
     for (const group of callOrdinalCounters) {
@@ -10870,7 +10893,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // one is read back beside the genuine log. Delegate functions are pinned regardless of `declaresEvents`:
       // the readable signature may be declared by the proxy, which the implementation cannot see.
       const declaresEvents = this.currentContractHasEvents
-        || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent')
+        || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent' || slot.kind === 'callEdge')
           && !this.isForwardingFallbackBody(node));
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
         && (this.getStackIndex('__internal__callInputIndex', true) >= 0
@@ -25904,6 +25927,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const binding = this.directCallArgumentBinding(node, physicalSlot)
         ?? this.singleReceivedPointerValueBinding(node, physicalSlot);
       if (binding) this.emitDirectCallArgumentBinding(node, physicalSlot, binding, locationData);
+    }
+
+    // F1: pin this call's caller-attested edge record, so the callee binds this contract to the call. Emitted iff
+    // the layout reserved a callEdge slot for this slot index (externalCallSlotCarriesEdge), keeping STT and GTT in
+    // lockstep. A delegate function's own-category outputs belong to the proxy block and are not edge carriers.
+    if (batchRow === undefined && physicalSlot && node.callInfo && !this.functionHasDelegatecall
+      && (this.currentFunction.blockLayout?.slots ?? []).some(
+        (s) => s.kind === 'callEdge' && s.slotIndex === node.callInfo!.externalCallSlotIndex)) {
+      this.emitCallerEdgeRecord(node, physicalSlot, locationData);
     }
 
     // Handle {value: X} call option - emit a transfer to the callee's address
@@ -49761,6 +49793,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, loc);
   }
 
+  /**
+   * F1 (caller side): pin this call's caller-attested edge record at its reserved `callEdge` output. The record is
+   * an own-category immutable NFT whose commitment is the call's digest followed by the edge form byte, under the
+   * edge carrier lock (distinct from the OP_TRUE result-record carrier so the record count never counts it). The
+   * callee reads it (emitCallerEdgeRequirement) to bind this contract to the call. Stack-neutral.
+   */
+  private emitCallerEdgeRecord(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): void {
+    if (!this.emitCallerCallRecordDigest(node, slot, loc)) {
+      throw new Error(`${slot.interfaceName}.${slot.functionName}() in '${this.currentFunction.name}' carries a `
+        + 'caller edge but has no call digest to attest it by');
+    }
+    // [.., digest] -> [.., digest || edge form]
+    this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
+    this.emit(Op.OP_CAT, loc);
+    // The reserved output index (untracked); then the pin consumes it and the record.
+    this.emitBlockSlotIndex('callEdge', slot.slotIndex, loc);
+    this.emitEdgeCarrierPin(loc);
+    this.popFromStack();
+  }
+
+  /** `[record, idx]` -> `[]`: pin the output at idx as an own-category edge carrier holding `record`. */
+  private emitEdgeCarrierPin(loc: SingleLocationData): void {
+    this.emit(Op.OP_TUCK, loc);                      // [idx, record, idx]
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);     // [idx, record, commitment]
+    this.emit(Op.OP_EQUALVERIFY, loc);               // [idx]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);       // [idx, out_cat(32, immutable)]
+    this.emitMasterInputIndex(loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32Inline(loc);                 // [idx, out_cat, own_cat_32]
+    this.emit(Op.OP_EQUALVERIFY, loc);               // [idx]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);            // [idx] - no fungible amount
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(CALL_EDGE_CARRIER_LOCK, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);               // [idx] - edge carrier lock
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emit(encodeInt(1200n), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);                    // []
+  }
+
   /** `[.., preimage]` -> `[.., digest]`: the first 31 bytes of the preimage's SHA256. */
   private emitCallRecordDigestOfPreimage(loc: SingleLocationData): void {
     this.emit(Op.OP_SHA256, loc);
@@ -52829,7 +52908,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // index it checks. Without this the pin admits a position no honest emit can occupy and refuses the one
     // it does.
     const allowedOffsets = (node.blockLayout?.slots ?? [])
-      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
+      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'callEdge')
       .map((slot) => (this.usesDelegateExecutorBlockBase() && this.currentContractIsSplitFacet
         ? slot.offset - this.countDataNftSlotsBefore(slot.offset) : slot.offset));
     // A B-side return event is also an own-category immutable NFT, but its index is WITNESSED, not the layout
@@ -56805,6 +56884,77 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_NIP, locationData);              // [logicalCaller]
     this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /**
+   * F1: this entry computes its own call digest and requires the caller to attest the call, so a contract caller is
+   * bound by the call it made rather than merely co-spent. Runs for a direct, non-framed, non-route stateful entry
+   * that reads a contract-caller msg.sender.
+   */
+  private entryBindsCallerEdge(node: FunctionDefinitionNode): boolean {
+    return node.requiresCallerEdge === true && !this.isDefineSubTraversal && node.isEntryPoint
+      && this.directConvention && !this.framedMaster && !this.isCompilerMessageBusRoute(node)
+      && !node.graphEmissionHandler;
+  }
+
+  /**
+   * F1 (callee side): when msg.sender resolves to a contract (a non-zero caller category witness), require a co-spent
+   * output of that caller's category whose commitment is this entry's own call digest followed by the edge form byte.
+   * The caller pins exactly that record (emitCallerEdgeRecord) only for a call it genuinely makes, and its own
+   * covenant admits no other own-category immutable NFT, so a spender who co-spends the caller but runs a function
+   * that makes no such call finds no matching edge and the spend is refused. A direct EOA call (zero category) binds
+   * nothing here - its identity is a signed input, governed separately.
+   */
+  private emitCallerEdgeRequirement(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    if (this.getStackIndex('__internal__callDigest', true) < 0) {
+      throw new SolidcDiagnosticError(
+        'CALLER_EDGE_DIGEST_UNAVAILABLE',
+        `'${node.name}' reads a contract-caller msg.sender but its call digest is not in scope where the edge must `
+        + 'be bound (msg.sender reached only through a non-inlined subroutine). Read msg.sender in the entry body.',
+        { function: node.name },
+      );
+    }
+    this.emitPickTrackedFromBottom('__internal__msgSenderCategory', loc);  // [C_A?]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_NUM2BIN, loc);                   // [C_A?, 32 zero bytes]
+    this.emit(Op.OP_EQUAL, loc);                     // [C_A?, isDirectEoaCall]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);                      // EOA caller: no contract edge to bind -> []
+    this.emit(Op.OP_ELSE, loc);                      // [C_A]
+    // expected edge commitment = this run's call digest || edge form byte.
+    this.emitPickTrackedFromBottom('__internal__callDigest', loc);  // [C_A, digest]
+    this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
+    this.emit(Op.OP_CAT, loc);                       // [C_A, expected]
+    // Scan outputs for one own-caller-category (32-byte immutable) NFT carrying exactly that commitment.
+    this.emit(Op.OP_0, loc);                         // found = 0  [C_A, expected, 0]
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);             // [C_A, expected, found, j]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);                      // j--
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);     // [C_A, expected, found, j, commit_j]
+    this.emit(encodeInt(3n), loc);
+    this.emit(Op.OP_PICK, loc);                      // pick expected
+    this.emit(Op.OP_EQUAL, loc);                     // [C_A, expected, found, j, commitMatch]
+    this.emit(Op.OP_OVER, loc);                      // copy j
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);       // [.., commitMatch, cat_j]
+    this.emit(encodeInt(5n), loc);
+    this.emit(Op.OP_PICK, loc);                      // pick C_A (32-byte immutable category)
+    this.emit(Op.OP_EQUAL, loc);                     // [.., commitMatch, catMatch]
+    this.emit(Op.OP_BOOLAND, loc);                   // [C_A, expected, found, j, isEdge]
+    this.emit(Op.OP_ROT, loc);                       // [C_A, expected, j, isEdge, found]
+    this.emit(Op.OP_BOOLOR, loc);                    // found' = found | isEdge
+    this.emit(Op.OP_SWAP, loc);                      // [C_A, expected, found', j]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);                      // drop j -> [C_A, expected, found']
+    this.emit(Op.OP_NIP, loc);                       // drop expected -> [C_A, found']
+    this.emit(Op.OP_NIP, loc);                       // drop C_A -> [found']
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   // ===== Address Balance Loop Support =====

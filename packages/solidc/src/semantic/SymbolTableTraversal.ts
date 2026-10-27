@@ -5062,6 +5062,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (slot.runtimeSelector) continue;
         const method = this.slotCalleeMethod(slot);
         if (method) slot.calleeMethod = { parameterTypes: method.parameterTypes };
+        // F1 caller edge: a void fixed-method call needs the same digest a returning one carries, so its caller can
+        // attest the call. The returning-slot loop above set it for returning slots; set it for the rest here.
+        if (method && slot.callRecordSelector === undefined && !slot.selectorArrayVar
+          && this.interfaceMap.has(slot.interfaceName)) {
+          slot.callRecordSelector = this.computeAbiSelector(
+            this.selectorSignatureFor(slot.functionName, method.parameterTypes),
+          );
+          slot.callRecordParameterTypes = method.parameterTypes;
+        }
       }
     }
 
@@ -5433,6 +5442,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.isStatefulContract && node.isEntryPoint) {
       node.blockLayout = this.computeBlockLayout(node);
     }
+
+    // F1: an entry reading a contract-caller msg.sender binds its caller to the call (codegen computes the entry's
+    // own call digest and the minting path requires a matching caller-category edge record).
+    if (this.entryRequiresCallerEdge(node)) node.requiresCallerEdge = true;
 
     // A direct entry that writes at most fixed state fields may run as a frame of the multi-call entry. A void one
     // takes the record witness a frame pins its call's record at; one that reads fixed entries takes their shift
@@ -19237,6 +19250,33 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Compute the 1:1 block layout for a stateful function.
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
+  /**
+   * F1: this entry is a callee that reads a contract-caller msg.sender, so it must bind which contract called it.
+   * A direct, non-framed, non-route stateful entry whose body uses msg.sender; the message bus binds its callers
+   * through the route instead, and framed through its call records.
+   */
+  private entryRequiresCallerEdge(node: FunctionDefinitionNode): boolean {
+    return this.isStatefulContract && node.isEntryPoint && node.usesMsgSender === true
+      && !node.graphEmissionHandler && !node.messageBusRoute && node.name !== '__construct'
+      && this.compilerOptions.composition !== 'framed';
+  }
+
+  /**
+   * F1: this outgoing external call carries a caller-attested edge record - a straight-line, unconditional, direct
+   * call to a fixed method of a known interface. The caller pins an own-category edge record committing to the
+   * call's digest at this slot's `callEdge` output, so the callee can bind the caller to the call. Loop, conditional,
+   * pointer, runtime-selector, opaque, self, msg.sender-target and raw calls do not (fail closed: a callee that
+   * requires the edge refuses such a caller).
+   */
+  private externalCallSlotCarriesEdge(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
+    return this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
+      && slot.callRecordSelector !== undefined && this.interfaceMap.has(slot.interfaceName)
+      && slot.calleeMethod !== undefined && !slot.runtimeSelector && !slot.selectorArrayVar && !slot.opaqueReturn
+      && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations
+      && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender
+      && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR;
+  }
+
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
     // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
     // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
@@ -19348,6 +19388,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {
       slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
+    }
+
+    // Caller-attested call edges (F1, output-only). One own-category edge record per straight-line, unconditional,
+    // direct call to a fixed method; `slotIndex` is the external-call slot it attests. The caller pins it; the
+    // callee reads it to bind the caller to the call. Reserved here so the SDK funds and places it 1:1.
+    if (node.externalCalls) {
+      for (let i = 0; i < node.externalCalls.length; i++) {
+        if (this.externalCallSlotCarriesEdge(node, node.externalCalls[i])) {
+          slots.push({ kind: 'callEdge', offset: offset++, slotIndex: i });
+        }
+      }
     }
 
     // Return event (output-only)

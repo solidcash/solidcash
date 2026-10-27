@@ -1278,6 +1278,28 @@ needs VM evidence, `rejectedWith` has no source fallback).
   pinned by the callee (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract
   without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) and its
   arguments (`6126221c0`; through a table of pointers since `fc5f4f09b`).
+  - VM-CONFIRMED EXPLOITABLE (1a), 2026-10-27, mem-cash `BCH_2026_05`, mocknet
+    (`packages/solidcash/test/e2e/AuditSingleInterfaceMethodBinding.test.ts`): a caller naming one method of a
+    single-function interface co-spends a three-method callee. The honest co-spend of the named method settles; a
+    spliced co-spend running a DIFFERENT same-arity method (its own 4-byte selector, trailing argument agreeing with
+    the bound value) also SETTLES while the caller advances its own state. `needsSelectorVerification` is false
+    (`SymbolTableTraversal.ts:9579`, `calleeFns.length > 1`), so no selector is checked; the argument binding pins
+    only the trailing push, not the method. A WIDER method is refused pre-fix (its extra leading push trips the
+    argument-count binding), so same-arity method confusion is the uncovered residual. The test marks the
+    same-arity case `it.fails` so it passes on today's code and turns red when a sound fix lands.
+  - FIX VERDICT (no code change here; STOP for coordinator review of the size/soundness tradeoff). Approach A, a
+    conditional `prefix == 0x04` selector check mirroring the fn-ptr path, is NOT sound: (i) 1b holds -- a callee
+    with a fallback routes a short (non-4-byte) first push to its fallback (`GenerateTargetTraversal.ts:7321-7349`
+    has no selector-size check, unlike the no-fallback arm's `emitEntrySelectorSizeCheck`), below the caller's
+    4-byte guard; and (ii) it false-refuses a single-method callee whose first argument encodes to 4 bytes (read as
+    a selector). Push-count disambiguation removes (ii) but leaves a narrower 1b residual. No unlocking-bytes
+    inspection can be sound, because a fallback decouples the first push from the method that runs; only callee
+    attestation binds it. Approach B (the void record, `digest || 0x01`) is sound but requires the co-spent callee
+    to emit that record: `currentContractSettlesCallRecords` is false for a callee without a returning entry
+    (`GenerateTargetTraversal.ts:5251`), and `voidCallRecord` is set only for grouped or looped direct frame calls
+    that run the callee's multi-call entry (`SymbolTableTraversal.ts:12136-12143`). Binding a single void call to an
+    ordinary (possibly pure-void) callee needs universal void-record emission plus an SDK carrier output -- a
+    cross-cutting protocol change at the stated ~150-200 B/call, scoped as a dedicated workstream, not this item.
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
   itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does

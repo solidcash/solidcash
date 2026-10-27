@@ -1300,14 +1300,21 @@ needs VM evidence, `rejectedWith` has no source fallback).
     that run the callee's multi-call entry (`SymbolTableTraversal.ts:12136-12143`). Binding a single void call to an
     ordinary (possibly pure-void) callee needs universal void-record emission plus an SDK carrier output -- a
     cross-cutting protocol change at the stated ~150-200 B/call, scoped as a dedicated workstream, not this item.
-  - Decision (2026-10-27, reversible): accept this as a documented, regression-marked residual rather than land B
-    now. B cannot be scoped to where it is needed: a fallback decouples the first push from the method that runs, so
-    a caller cannot safely tell a single-method callee (identity-pinned, safe) from a multi-method one at run time,
-    and the void record must therefore be emitted by EVERY void callee. That universal ~150-200 B/void-entry cost
-    falls on the many contracts that never use the vulnerable shape (a single-function interface to a multi-method
-    callee with the caller advancing state on the call) and risks the known script/stack size walls. The narrow
-    shape does not justify a universal size regression. Revisit if the threat model elevates the shape or a cheaper
-    sound design (a scoped attestation) is found; `AuditSingleInterfaceMethodBinding.test.ts` keeps it flagged.
+  - Decision (2026-10-27, superseded same day by measurement): an earlier note accepted this as a residual on the
+    estimate that B costs ~150-200 B/void-entry universally and risks the size walls. A branch prototype (B,
+    `40fe33feb` on `fix/pointer-arg-types`, NOT merged) then MEASURED it and the estimate was wrong: non-void
+    contracts change by +0 (correctly scoped); the realistic exploitable shape (multi-method stateful callees, which
+    are multi-entry/outlined or already record-settling) costs ~3-27 B/entry; the ~860-955 B hits are only tiny
+    single-entry pure-void contracts far from the wall. Wall-safe for realistic contracts. B is functionally verified
+    on mocknet (`AuditSingleInterfaceMethodBinding.test.ts` 3/3: honest settles, same-arity and wider co-spends
+    refused; `.fails` removed). B reuses the D50 call-record + returnEvent carrier machinery: a void entry attests
+    `digest || 0x01` at a reserved returnEvent carrier the SDK funder balances; a single-function-interface void
+    caller is marked hasReturnValues+voidCallRecord to read it. So the fix is viable. It is a RELEASE-LEVEL change:
+    it alters every void-entry contract's bytecode (moving the release-gate pins if the fixtures have void entries)
+    and changes settlement for every void call, so landing it safely needs broad settlement verification (the e2e
+    suites / release battery), which is user-gated. Landing B is therefore coupled to the release battery; "run the
+    battery" verifies B's broad settlement, updates the pins, and gates the release in one pass. Until then the
+    accept-residual stands as the status quo (documented, regression-marked), now a choice rather than a necessity.
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
   itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does

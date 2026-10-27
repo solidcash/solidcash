@@ -1300,6 +1300,14 @@ needs VM evidence, `rejectedWith` has no source fallback).
     that run the callee's multi-call entry (`SymbolTableTraversal.ts:12136-12143`). Binding a single void call to an
     ordinary (possibly pure-void) callee needs universal void-record emission plus an SDK carrier output -- a
     cross-cutting protocol change at the stated ~150-200 B/call, scoped as a dedicated workstream, not this item.
+  - Decision (2026-10-27, reversible): accept this as a documented, regression-marked residual rather than land B
+    now. B cannot be scoped to where it is needed: a fallback decouples the first push from the method that runs, so
+    a caller cannot safely tell a single-method callee (identity-pinned, safe) from a multi-method one at run time,
+    and the void record must therefore be emitted by EVERY void callee. That universal ~150-200 B/void-entry cost
+    falls on the many contracts that never use the vulnerable shape (a single-function interface to a multi-method
+    callee with the caller advancing state on the call) and risks the known script/stack size walls. The narrow
+    shape does not justify a universal size regression. Revisit if the threat model elevates the shape or a cheaper
+    sound design (a scoped attestation) is found; `AuditSingleInterfaceMethodBinding.test.ts` keeps it flagged.
 
 - A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
   itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does

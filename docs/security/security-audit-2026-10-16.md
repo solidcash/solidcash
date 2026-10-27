@@ -1310,7 +1310,8 @@ needs VM evidence, `rejectedWith` has no source fallback).
     refused; `.fails` removed). B reuses the D50 call-record + returnEvent carrier machinery: a void entry attests
     `digest || 0x01` at a reserved returnEvent carrier the SDK funder balances; a single-function-interface void
     caller is marked hasReturnValues+voidCallRecord to read it. So the fix is viable. It is a RELEASE-LEVEL change:
-    it alters every void-entry contract's bytecode (moving the release-gate pins if the fixtures have void entries)
+    it alters every void-entry contract's bytecode (but repin confirms the release-gate fixtures are UNAFFECTED:
+    identity/MarketplaceV1/UnicrowClaim pins all unchanged, so landing B does not disturb the release gate)
     and changes settlement for every void call, so landing it safely needs broad settlement verification (the e2e
     suites / release battery), which is user-gated. Landing B is therefore coupled to the release battery; "run the
     battery" verifies B's broad settlement, updates the pins, and gates the release in one pass. Until then the

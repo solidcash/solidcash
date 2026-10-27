@@ -1230,7 +1230,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   so no argument is bound; a stored/passed selector naming a callee method of HIGHER arity than the pointer type ran
   that method with its extra argument(s) spender-controlled while the caller advanced its own state. VM-confirmed by
   splicing the real 2-arg `incWide` unlocking (an attacker witness) onto the co-spent callee of an honest 1-arg call:
-  the mem-cash VM (BCH_2026_05) accepted it for BOTH the storage and the parameter shape. `SINGLEARITYFIX` pins the
+  the mem-cash VM (BCH_2026_05) accepted it for BOTH the storage and the parameter shape. `55f260930` pins the
   co-spent unlocking to exactly the pointer type's arity plus the redeem (the selector push split off first for a
   multi-method callee) via `emitPinFnPtrPushCount`/`emitRequireExactPushCount`, the arity read from
   `sourceCallNode.resolvedCallee.parameterTypes` (`fnPtrDeclaredPushCount`). It is emitted only for a run-time-selector
@@ -1238,12 +1238,12 @@ needs VM evidence, `rejectedWith` has no source fallback).
   arguments in its own envelope and an anchor-less storage pointer pins unconditionally, so no other contract changes
   bytes. Test: `packages/solidcash/test/e2e/AuditReceivedSinglePointerArity.test.ts` (higher-arity splice refused,
   honest 1-arg settles, both storage and parameter; pre-fix both splices settled, VM-confirmed). Argument-value
-  sub-case (VM-confirmed and fixed 2026-10-27, `SINGLEVALUEFIX`): the arity pin caps the push COUNT, not argument
+  sub-case (VM-confirmed and fixed 2026-10-27, `1e0515e95`): the arity pin caps the push COUNT, not argument
   VALUES. `directCallArgumentBinding` returns undefined for a run-time selector (its `calleeMethod` is unset too),
   so a single received pointer's co-spent argument values were unbound and an EXACT-arity co-spend ran the named
   method on spender-chosen values while the caller advanced its own state. VM-confirmed by splicing an `inc(10)`
   unlocking onto an honest `inc(3)` co-spend: the mem-cash VM (BCH_2026_05) settled it (v'=10 != v=3) for BOTH the
-  storage and the parameter shape. `SINGLEVALUEFIX` binds the values at the call site, where the arguments are live,
+  storage and the parameter shape. `1e0515e95` binds the values at the call site, where the arguments are live,
   not by lifting the shared `|| slot.runtimeSelector` guard: a new `singleReceivedPointerValueBinding` returns the
   pointer type's declared argument types (from `sourceCallNode.resolvedCallee`, matching `fnPtrDeclaredPushCount`)
   ONLY for a single received pointer, and the existing `emitDirectCallArgumentBinding` OP_EQUALVERIFYs each against

@@ -1221,6 +1221,28 @@ needs VM evidence, `rejectedWith` has no source fallback).
   on the received-pointer path (`fnPtrCall && selectorArrayVar`), so no other contract changes bytes. Test:
   `packages/solidcash/test/e2e/AuditReceivedPointerArity.test.ts` (the higher-arity splice is refused at the caller;
   the honest 1-arg call settles; pre-fix the splice settled, VM-confirmed).
+- **Received single function-pointer callee arity** (found 2026-10-16 Open, VM-confirmed and fixed 2026-10-27). The
+  same run-time-selector arity hole in a SINGLE received pointer - held as a STORAGE field (`function(uint256)
+  external stored;`) or received as a PARAMETER (`function(uint256) external cb`) and called once, NOT a table/loop.
+  It takes the other codegen path: `emitExternalCallVerification`'s `slot.fnPtrCall` selector branch, which
+  `emitArrayExternalCallLoop`'s fix did not cover. That branch verified only the co-spent selector against the
+  run-time witness, never the push count, and `directCallArgumentBinding` returns undefined for a run-time selector
+  so no argument is bound; a stored/passed selector naming a callee method of HIGHER arity than the pointer type ran
+  that method with its extra argument(s) spender-controlled while the caller advanced its own state. VM-confirmed by
+  splicing the real 2-arg `incWide` unlocking (an attacker witness) onto the co-spent callee of an honest 1-arg call:
+  the mem-cash VM (BCH_2026_05) accepted it for BOTH the storage and the parameter shape. `SINGLEARITYFIX` pins the
+  co-spent unlocking to exactly the pointer type's arity plus the redeem (the selector push split off first for a
+  multi-method callee) via `emitPinFnPtrPushCount`/`emitRequireExactPushCount`, the arity read from
+  `sourceCallNode.resolvedCallee.parameterTypes` (`fnPtrDeclaredPushCount`). It is emitted only for a run-time-selector
+  `fnPtrCall` and runtime-gated to the direct co-spend (anchor `< 0`); a genuine proxy/CREATE-anchor route binds its
+  arguments in its own envelope and an anchor-less storage pointer pins unconditionally, so no other contract changes
+  bytes. Test: `packages/solidcash/test/e2e/AuditReceivedSinglePointerArity.test.ts` (higher-arity splice refused,
+  honest 1-arg settles, both storage and parameter; pre-fix both splices settled, VM-confirmed). Remaining sub-case
+  (code-observed, not VM-confirmed, open): the pin fixes the push COUNT, not argument VALUES. Because
+  `directCallArgumentBinding` still returns undefined for a run-time selector, a single received pointer's co-spent
+  argument values are not bound, so an EXACT-arity co-spend may run the named method on spender-chosen argument values
+  rather than the caller's; binding values for a run-time selector (lifting the `|| slot.runtimeSelector` guard) is a
+  larger change left for the coordinator.
 
 ### Not changed, by decision
 

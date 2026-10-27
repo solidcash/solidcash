@@ -48363,6 +48363,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // pinned by the identity check alone (its one method is unambiguous). SOUND: a multi-method callee
           // ALWAYS has the 0x04 selector prefix, so the wrong method can never be co-spent (worst case a
           // single-method callee with a 4-byte first arg fails closed, never miscompiles).
+          // A RECEIVED pointer's runtime selector may name a callee method of HIGHER arity than the pointer
+          // type. A runtime-selector call binds no arguments, so pin the co-spent unlocking to exactly that
+          // arity + redeem (the selector push is split off first for a multi-method callee): a wider method
+          // whose extra pushes the caller never binds is refused, not run on spender-chosen data. The pin is
+          // runtime-gated to the direct co-spend (anchor < 0); a genuine proxy/CREATE-anchor route binds its
+          // arguments in its own envelope. undefined for a fixed-method pointer, so every other call keeps its
+          // bytes.
+          const fnPtrPushCount = this.fnPtrDeclaredPushCount(slot);
           this.emit(Op.OP_DUP, locationData);            // [idx, idx]
           this.emit(Op.OP_INPUTBYTECODE, locationData);  // [idx, inputBC]
           this.emit(encodeInt(1n), locationData);
@@ -48373,10 +48381,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_IF, locationData);             // [idx, rest]
           this.emit(encodeInt(4n), locationData);
           this.emit(Op.OP_SPLIT, locationData);          // [idx, selector, remainder]
-          this.emit(Op.OP_DROP, locationData);           // [idx, selector]
-          emitSelectorCompare();                         // [idx]
+          if (fnPtrPushCount !== undefined) {
+            this.emit(Op.OP_SWAP, locationData);         // [idx, remainder, selector]
+            emitSelectorCompare();                       // [idx, remainder]
+            this.emitPinFnPtrPushCount(fnPtrPushCount + 1, anchorParamIdx, locationData); // [idx] args + redeem
+          } else {
+            this.emit(Op.OP_DROP, locationData);         // [idx, selector]
+            emitSelectorCompare();                       // [idx]
+          }
           this.emit(Op.OP_ELSE, locationData);           // [idx, rest]
-          this.emit(Op.OP_DROP, locationData);           // [idx]
+          if (fnPtrPushCount !== undefined) {
+            this.emit(Op.OP_DROP, locationData);         // [idx]
+            this.emit(Op.OP_DUP, locationData);          // [idx, idx]
+            this.emit(Op.OP_INPUTBYTECODE, locationData); // [idx, ubc] (single-method callee: no selector push)
+            this.emitPinFnPtrPushCount(fnPtrPushCount + 1, anchorParamIdx, locationData); // [idx] args + redeem
+          } else {
+            this.emit(Op.OP_DROP, locationData);         // [idx]
+          }
           this.emit(Op.OP_ENDIF, locationData);          // [idx]
         } else {
           // Stack: [idx] (1 untracked)
@@ -48953,6 +48974,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);                           // [.., count]
     this.emit(encodeInt(BigInt(expected)), loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);                 // [..]
+  }
+
+  /**
+   * `[.., blob] -> [..]`: pin a received function pointer's co-spent unlocking to `expected` pushes, but ONLY for
+   * a direct co-spend. When an anchor witness exists (anchorParamIdx >= 0) the runtime anchor decides: < 0 is the
+   * direct call (pin it); >= 0 is a genuine proxy/CREATE-anchor route whose own frame binds the arguments, so the
+   * raw push count must not be constrained (drop the blob unpinned). With no anchor witness the co-spend is always
+   * direct, so pin unconditionally. The anchor sits on the alt stack here (pushed per slot), so read a copy back.
+   */
+  private emitPinFnPtrPushCount(expected: number, anchorParamIdx: number, loc: SingleLocationData): void {
+    if (anchorParamIdx < 0) {
+      this.emitRequireExactPushCount(expected, loc);
+      return;
+    }
+    this.emit(Op.OP_FROMALTSTACK, loc);                   // [.., blob, anchor]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_TOALTSTACK, loc);                     // keep the anchor copy on alt for the common cleanup
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_LESSTHAN, loc);                       // [.., blob, anchor < 0]
+    this.emit(Op.OP_IF, loc);                             // [.., blob]
+    this.emitRequireExactPushCount(expected, loc);        // [..]
+    this.emit(Op.OP_ELSE, loc);                           // [.., blob]
+    this.emit(Op.OP_DROP, loc);                           // [..]
+    this.emit(Op.OP_ENDIF, loc);                          // [..]
+  }
+
+  /**
+   * Declared argument-push count of a RECEIVED single function pointer's co-spent callee: the pointer type's
+   * parameters, an external function-pointer parameter counting as two pushes (address + selector), matching
+   * directCallArgumentBinding. A runtime selector may name a wider callee method, so the single-call path pins
+   * the co-spent unlocking to this count plus the redeem (emitPinFnPtrPushCount): a method whose extra pushes
+   * the caller never binds is refused. undefined for a fixed-method pointer (its method is arity-checked at
+   * compile time) or when the declared signature is unavailable, leaving that call's bytecode unchanged.
+   */
+  private fnPtrDeclaredPushCount(slot: ExternalCallSlot): number | undefined {
+    if (!slot.fnPtrCall || !slot.runtimeSelector) return undefined;
+    const parameterTypes = slot.sourceCallNode?.resolvedCallee?.parameterTypes;
+    if (parameterTypes === undefined) return undefined;
+    let count = 0;
+    for (const type of parameterTypes) {
+      if (type === PrimitiveType.SIG) continue;
+      count += type instanceof FunctionType && type.isExternal ? 2 : 1;
+    }
+    return count;
   }
 
   /**

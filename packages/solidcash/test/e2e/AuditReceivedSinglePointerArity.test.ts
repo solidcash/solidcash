@@ -23,6 +23,13 @@ import { generateLibauthSourceOutputs } from '../../src/utils.js';
  * The stored/passed selector is incWide's, so the caller's selector check passes. After the fix, the single-call
  * path pins the co-spent unlocking to exactly the pointer type's arity (+ redeem, selector split off first),
  * refusing it. mem-cash BCH_2026_05, mocknet only.
+ *
+ * Value sub-case (same arity, different VALUE): the arity pin caps the push COUNT, not the argument VALUES. A
+ * single received pointer's co-spent arguments were unbound (directCallArgumentBinding returns undefined for a
+ * run-time selector), so the EXACT-arity method ran on spender-chosen values while the caller advanced its own
+ * state. Attacker model: build the honest `inc(v)` co-spend, then SPLICE an `inc(v')` unlocking (v' != v) onto it.
+ * After the value fix the caller OP_EQUALVERIFYs each declared-arity argument against the co-spent push, refusing
+ * v' != v; the honest value still settles.
  */
 
 // A callee with a 1-arg method (inc) and a 2-arg method (incWide). Neither writes counter, so the callee's
@@ -106,6 +113,22 @@ function splice(call: any, handlerSc: any, a: bigint, b: bigint): Promise<any> {
   })();
 }
 
+/** Splice the callee input's honest `inc(v)` unlocking with a co-spent callee's real `inc(vPrime)` unlocking. */
+function spliceInc(call: any, handlerSc: any, vPrime: bigint): Promise<any> {
+  return (async (): Promise<any> => {
+    const target = selectorInput(call, sel('inc'));
+    const other = await handlerSc.inc(vPrime).build();
+    const otherTx = other.buildLibauthTransaction();
+    const otherUnlocking = otherTx.inputs[selectorInput(other, sel('inc'))].unlockingBytecode as Uint8Array;
+    const original = call.inputs[target].unlocker;
+    call.inputs[target].unlocker = {
+      generateLockingBytecode: (): Uint8Array => original.generateLockingBytecode(),
+      generateUnlockingBytecode: (): Uint8Array => otherUnlocking,
+    };
+    return call;
+  })();
+}
+
 describe('a single received STORAGE pointer whose runtime selector names a higher-arity callee (VM)', () => {
   async function store(provider: Provider, storedSel: string, hAddr: string): Promise<any> {
     const art = compileString(STORE);
@@ -135,6 +158,16 @@ describe('a single received STORAGE pointer whose runtime selector names a highe
     const r = runVm(run);
     expect(r.error ?? 'ok').not.toContain('OP_VERIFY');
     expect(r.success).toBe(true);
+  }, 300_000);
+
+  it('refuses an exact-arity co-spend carrying a different argument value through the stored pointer', async () => {
+    const provider = createTestProvider();
+    const h = await handler(provider);
+    const sc = await store(provider, 'inc', h.addr);
+    const run = await sc.run(3n).withExternalCall(h.sc, 'inc', [3n]).build();
+    const r = runVm(await spliceInc(run, h.sc, 10n));
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toMatch(/OP_VERIFY|OP_EQUALVERIFY|OP_NUMEQUALVERIFY|failed/i);
   }, 300_000);
 });
 
@@ -168,5 +201,16 @@ describe('a single received PARAMETER pointer whose runtime selector names a hig
     const r = runVm(fire);
     expect(r.error ?? 'ok').not.toContain('OP_VERIFY');
     expect(r.success).toBe(true);
+  }, 300_000);
+
+  it('refuses an exact-arity co-spend carrying a different argument value through the passed pointer', async () => {
+    const provider = createTestProvider();
+    const h = await handler(provider);
+    const sc = await param(provider);
+    const fire = await sc.fireWith(hexToBin(h.addr), sel('inc'), 3n)
+      .withExternalCall(h.sc, 'inc', [3n]).build();
+    const r = runVm(await spliceInc(fire, h.sc, 10n));
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toMatch(/OP_VERIFY|OP_EQUALVERIFY|OP_NUMEQUALVERIFY|failed/i);
   }, 300_000);
 });

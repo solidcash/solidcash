@@ -1237,12 +1237,21 @@ needs VM evidence, `rejectedWith` has no source fallback).
   `fnPtrCall` and runtime-gated to the direct co-spend (anchor `< 0`); a genuine proxy/CREATE-anchor route binds its
   arguments in its own envelope and an anchor-less storage pointer pins unconditionally, so no other contract changes
   bytes. Test: `packages/solidcash/test/e2e/AuditReceivedSinglePointerArity.test.ts` (higher-arity splice refused,
-  honest 1-arg settles, both storage and parameter; pre-fix both splices settled, VM-confirmed). Remaining sub-case
-  (code-observed, not VM-confirmed, open): the pin fixes the push COUNT, not argument VALUES. Because
-  `directCallArgumentBinding` still returns undefined for a run-time selector, a single received pointer's co-spent
-  argument values are not bound, so an EXACT-arity co-spend may run the named method on spender-chosen argument values
-  rather than the caller's; binding values for a run-time selector (lifting the `|| slot.runtimeSelector` guard) is a
-  larger change left for the coordinator.
+  honest 1-arg settles, both storage and parameter; pre-fix both splices settled, VM-confirmed). Argument-value
+  sub-case (VM-confirmed and fixed 2026-10-27, `SINGLEVALUEFIX`): the arity pin caps the push COUNT, not argument
+  VALUES. `directCallArgumentBinding` returns undefined for a run-time selector (its `calleeMethod` is unset too),
+  so a single received pointer's co-spent argument values were unbound and an EXACT-arity co-spend ran the named
+  method on spender-chosen values while the caller advanced its own state. VM-confirmed by splicing an `inc(10)`
+  unlocking onto an honest `inc(3)` co-spend: the mem-cash VM (BCH_2026_05) settled it (v'=10 != v=3) for BOTH the
+  storage and the parameter shape. `SINGLEVALUEFIX` binds the values at the call site, where the arguments are live,
+  not by lifting the shared `|| slot.runtimeSelector` guard: a new `singleReceivedPointerValueBinding` returns the
+  pointer type's declared argument types (from `sourceCallNode.resolvedCallee`, matching `fnPtrDeclaredPushCount`)
+  ONLY for a single received pointer, and the existing `emitDirectCallArgumentBinding` OP_EQUALVERIFYs each against
+  the co-spent unlocking's pushes - the same machinery and anchor gating (bind only when anchor `< 0`) the table
+  path already uses, so a genuine proxy/CREATE-anchor route still binds in its own envelope and the arity pin stays.
+  `directCallArgumentBinding` is unchanged, so the table, proxy, batch, loop and every fixed-method call keep their
+  bytes. Test (same file): the value-substituted co-spend is refused at the argument OP_EQUALVERIFY and the honest
+  value settles, both shapes; pre-fix both splices settled, VM-confirmed.
 
 ### Not changed, by decision
 

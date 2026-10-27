@@ -25896,9 +25896,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [.., data, idx] -> [..]
     }
 
-    // A typed call no record digest binds checks the arguments it names against its callee's unlocking.
+    // A typed call no record digest binds checks the arguments it names against its callee's unlocking. A SINGLE
+    // received function pointer's run-time selector makes directCallArgumentBinding skip it, so bind its declared-
+    // arity argument VALUES here, where they are live, against the co-spent unlocking's pushes, as the table path
+    // binds its rows; the arity pin only caps the push count, leaving an exact-arity co-spend's values unbound.
     if (batchRow === undefined && physicalSlot) {
-      const binding = this.directCallArgumentBinding(node, physicalSlot);
+      const binding = this.directCallArgumentBinding(node, physicalSlot)
+        ?? this.singleReceivedPointerValueBinding(node, physicalSlot);
       if (binding) this.emitDirectCallArgumentBinding(node, physicalSlot, binding, locationData);
     }
 
@@ -27915,6 +27919,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], node.parameters.length)) return undefined;
     // A function value passes as its address and selector, two pushes (SplitExternalCallFnPtrArgs).
     const types: (Type | undefined)[] = method.parameterTypes.flatMap((type) => (type instanceof FunctionType
+      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type])).slice(0, node.parameters.length)
+      .map((type) => (type === PrimitiveType.SIG ? undefined : type));
+    while (types.length > 0 && types[types.length - 1] === undefined) types.pop();
+    return types.length > 0 ? { types } : undefined;
+  }
+
+  /**
+   * Argument-value binding for a SINGLE received function pointer called once (a STORAGE field or a PARAMETER, not
+   * a table, loop or batch). Its run-time selector makes directCallArgumentBinding skip it (calleeMethod is unset
+   * for a run-time selector and the fnPtr/selector guard fires), so the arity pin alone leaves the co-spent
+   * argument VALUES unbound. Mirrors directCallArgumentBinding's remaining scope guards and reads the declared
+   * types from the pointer type (sourceCallNode.resolvedCallee), an external function-pointer parameter counting as
+   * address + selector. undefined for anything else, so every other call keeps its bytes. Bound at the call site
+   * (emitDirectCallArgumentBinding), where the arguments are live and the anchor gates the proxy/CREATE route.
+   */
+  private singleReceivedPointerValueBinding(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot,
+  ): { types: (Type | undefined)[] } | undefined {
+    if (!slot.fnPtrCall || !slot.runtimeSelector || slot.selectorArrayVar
+      || slot.loopArrayVar || slot.inlineLoopDispatch) return undefined;
+    if (!this.directConvention || node.opaqueReturn || slot.interfaceName === '__raw__'
+      || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
+    if (slot.batchInvocations || slot.addressIsSelf || slot.callOrdinal !== undefined
+      || this.plainLoopDepth > 0 || this.isExternalCallSlotLoopNested(slot)
+      || this.isCompilerMessageBusRoute()
+      || this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
+        && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) return undefined;
+    if (slot.hasReturnValues && slot.callRecordSelector !== undefined
+      && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], node.parameters.length)) return undefined;
+    const parameterTypes = slot.sourceCallNode?.resolvedCallee?.parameterTypes;
+    if (parameterTypes === undefined) return undefined;
+    const types: (Type | undefined)[] = parameterTypes.flatMap((type) => (type instanceof FunctionType
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type])).slice(0, node.parameters.length)
       .map((type) => (type === PrimitiveType.SIG ? undefined : type));
     while (types.length > 0 && types[types.length - 1] === undefined) types.pop();

@@ -1215,7 +1215,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   method with its extra argument(s) left spender-controlled while the caller's own state advanced. The SDK will not
   auto-build such a co-spend (it derives the co-spend args from the call site's arity and validates them against the
   method's, `StatefulContract.ts:6788`), but an attacker supplies the higher-arity callee unlocking as a witness; the
-  mem-cash VM accepted it. `ARITYFIX` pins the co-spent callee's unlocking to exactly the table-type arity in
+  mem-cash VM accepted it. `9867d9a40` pins the co-spent callee's unlocking to exactly the table-type arity in
   `emitArrayExternalCallLoop` (`emitRequireExactPushCount`): `count` argument pushes plus the redeem, plus the leading
   selector push for a multi-method callee, refusing any method whose extra pushes the caller never binds. Emitted only
   on the received-pointer path (`fnPtrCall && selectorArrayVar`), so no other contract changes bytes. Test:
@@ -1275,7 +1275,7 @@ needs VM evidence, `rejectedWith` has no source fallback).
   settles; `StructFunctionValueCalls.test.ts` keeps it as an open gap. It is older than the loop fixes and fails
   closed (open, liveness): supporting it needs a state frame shared by every function a value can name. (A received
   pointer's selector naming a higher-arity callee method, whose extra parameters the caller never bound, was the
-  other half of this entry; it is FIXED below, "Received function-pointer table callee arity", ARITYFIX.)
+  other half of this entry; it is FIXED below, "Received function-pointer table callee arity", 9867d9a40.)
 
 - A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
   `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:

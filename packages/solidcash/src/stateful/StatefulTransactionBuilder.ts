@@ -7371,6 +7371,13 @@ export class StatefulTransactionBuilder {
       sendTiming,
     );
 
+    // F1: re-assert the caller edges on the finalized builder (phase-3 rebuild/fee assembly can drop the
+    // build-tail append). The edge value was already measured into the fee (phase-1 build carried it). Idempotent.
+    appendCallerEdges({
+      categoryId: this.categoryId,
+      externalCallUtxoGroups: this.externalCallUtxoGroups,
+    }, finalBuilder);
+
     // -- Phase 4–5: converge/serialize/fee-bytes then submit --
     return runSendPhase4ThroughSubmitImpl(
       this._runSendPhase4ThroughSubmitHost(),

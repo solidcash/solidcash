@@ -58,12 +58,25 @@ export function appendCallerEdges(
       synced.push(index);
       continue;
     }
-    unlocker.params[index] = BigInt(builder.outputs.length);
-    builder.outputs.push({
-      to: CALL_EDGE_CARRIER_LOCK,
-      amount: 1200n,
-      token: { amount: 0n, category: host.categoryId, nft: { capability: 'none', commitment: binToHex(commitment) } },
+    // Idempotent: reuse an edge this call already laid (so a later build phase re-points the witness instead of
+    // appending a duplicate), otherwise append a fresh one past every block.
+    const commitHex = binToHex(commitment);
+    const existing = builder.outputs.findIndex((output) => {
+      const lock = output.to;
+      return lock instanceof Uint8Array && lock.length === 2 && lock[0] === 0x51 && lock[1] === 0x61
+        && output.token?.category === host.categoryId
+        && String(output.token?.nft?.commitment ?? '') === commitHex;
     });
+    if (existing >= 0) {
+      unlocker.params[index] = BigInt(existing);
+    } else {
+      unlocker.params[index] = BigInt(builder.outputs.length);
+      builder.outputs.push({
+        to: CALL_EDGE_CARRIER_LOCK,
+        amount: 1200n,
+        token: { amount: 0n, category: host.categoryId, nft: { capability: 'none', commitment: commitHex } },
+      });
+    }
     synced.push(index);
   }
   unlocker.syncEncodedArgsFromParams?.(synced);

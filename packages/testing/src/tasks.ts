@@ -18,6 +18,7 @@ interface ParamDef {
   isOptional: boolean;
   isPositional: boolean;
   isVariadic: boolean;
+  isArray?: boolean;
 }
 
 export interface TaskDefinition {
@@ -50,6 +51,15 @@ export class TaskBuilder {
   addOptionalParam(name: string, description?: string, defaultValue?: unknown): this {
     this.def.params.push({
       name, description, defaultValue, isFlag: false, isOptional: true, isPositional: false, isVariadic: false,
+    });
+    return this;
+  }
+
+  /** A repeatable option; repeated flags and `--name=a,b` both append. */
+  addArrayParam(name: string, description?: string): this {
+    this.def.params.push({
+      name, description, defaultValue: [] as string[], isFlag: false,
+      isOptional: true, isPositional: false, isVariadic: false, isArray: true,
     });
     return this;
   }
@@ -123,7 +133,12 @@ export async function runTask(name: string, args: TaskArguments, hre: HardhatRun
   return def.action(merged, hre);
 }
 
-/** Coerce raw CLI tokens into a task's argument object using its param definitions. */
+/**
+ * Coerce raw CLI tokens into a task's argument object using its param definitions.
+ *
+ * Rejects unknown options and missing values (a typo must not become a silent argument nobody reads), accepts
+ * `--name=value`, and appends for repeatable (`addArrayParam`) options instead of keeping only the last value.
+ */
 export function parseTaskArgs(def: TaskDefinition, tokens: string[]): TaskArguments {
   const args: TaskArguments = {};
   const positionals = def.params.filter((p) => p.isPositional);
@@ -131,11 +146,30 @@ export function parseTaskArgs(def: TaskDefinition, tokens: string[]): TaskArgume
   const posQueue = [...positionals];
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
+    if (tok === undefined) continue;
     if (tok.startsWith('--')) {
-      const name = tok.slice(2);
+      const body = tok.slice(2);
+      const equals = body.indexOf('=');
+      const name = equals === -1 ? body : body.slice(0, equals);
+      const inlineValue = equals === -1 ? undefined : body.slice(equals + 1);
       const p = byName.get(name);
-      if (p?.isFlag) { args[name] = true; continue; }
-      args[name] = tokens[++i];
+      if (!p) {
+        throw new Error(
+          `Unknown option --${name}. Accepted options: ${def.params.map((param) => `--${param.name}`).join(', ') || '(none)'}`,
+        );
+      }
+      if (p.isFlag) {
+        args[name] = inlineValue === undefined ? true : inlineValue !== 'false';
+        continue;
+      }
+      const value = inlineValue === undefined ? tokens[++i] : inlineValue;
+      if (value === undefined) throw new Error(`Option --${name} requires a value.`);
+      if (p.isArray) {
+        const list = (args[name] ??= [] as string[]);
+        (list as string[]).push(...value.split(',').filter((entry) => entry.length > 0));
+      } else {
+        args[name] = value;
+      }
     } else {
       const p = posQueue[0];
       if (!p) continue;

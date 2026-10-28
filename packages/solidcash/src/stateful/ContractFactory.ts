@@ -411,6 +411,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
       throw new Error('ContractFactory.deploy needs a funder + changeAddress (from a Signer runner or overrides).');
     }
 
+    if (signer) await signer.provider.prepareSigner?.(signer);
     const nonceReservation = signer && overrides.logicalNonce !== false
       ? signer.reserveTransactionNonce() : undefined;
     const logicalIdentity = nonceReservation ? {

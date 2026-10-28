@@ -1001,6 +1001,7 @@ export async function deployProxy<TImpl extends Artifact>(
   }
   const runner = options.runner ?? ordinaryFactory.runner;
   const deploymentSigner = runner instanceof Signer ? runner : undefined;
+  if (deploymentSigner) await deploymentSigner.provider.prepareSigner?.(deploymentSigner);
   const nonceReservation = deploymentSigner?.reserveTransactionNonce();
   const logicalIdentity = nonceReservation ? {
     deployer: deploymentSigner!.getAddress(), nonce: nonceReservation.nonce,

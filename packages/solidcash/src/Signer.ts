@@ -124,6 +124,11 @@ export default class Signer {
     return connected;
   }
 
+  /** True while a deploy holds a nonce reservation; a seeding hook must not clear it. */
+  get transactionNonceReserved(): boolean {
+    return this._reservedTransactionNonce;
+  }
+
   /** EVM-compatibility nonce for user-visible transactions initiated by this signer. */
   async getNonce(): Promise<number> {
     // Once per signer: a caller that reads a nonce is about to create contracts, and the first read reserves the
@@ -138,6 +143,9 @@ export default class Signer {
         // Best-effort: a nonce read is not always followed by a create, and the pool may be short.
       }
     }
+    // Learn the next free CREATE slot from the chain before reporting it, so the number predicts this process's and
+    // a fresh process's next deployment. The hook is a no-op while a reservation is active.
+    await this.provider.prepareSigner?.(this);
     return Number(this._transactionNonce);
   }
 

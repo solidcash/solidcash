@@ -13,12 +13,43 @@ import {
 import type { TypegenTarget } from './typegen.js';
 
 export interface NetworkConfig {
-  /** Which provider backs this network. */
-  type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc';
+  /** Which provider backs this network. `mem-cash` connects to a running `solidhat node` devnet. */
+  type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc' | 'mem-cash';
   /** BCH network used by live providers. Inferred from the config key when omitted. */
   network?: 'mainnet' | 'testnet3' | 'testnet4' | 'chipnet' | 'regtest';
   electrum?: { host: string; port?: number };
   rpc?: { url: string; user?: string; password?: string };
+  /** Client settings for `type: "mem-cash"`. */
+  memCash?: {
+    url?: string;
+    host?: string;
+    port?: number;
+    encrypted?: boolean;
+    token?: string;
+    timeoutMs?: number;
+  };
+  /** Server defaults read only by `solidhat node` / `solidcash node` for this network entry. */
+  devnet?: {
+    host?: string;
+    port?: number;
+    height?: number;
+    timestamp?: number;
+    mining?: 'auto' | 'manual' | 'interval';
+    intervalMs?: number;
+    /** BCH network for prefixes and the SDK's `Network`; separate from the global network selector. */
+    network?: 'mocknet' | 'regtest';
+    /** Install the block-info oracle. Default true; `false` mirrors `--no-block-oracle`. */
+    blockOracle?: boolean;
+    /** Install the optional EVM chain-control extension. */
+    evm?: boolean;
+    accounts?: { path?: string; count?: number; initialIndex?: number };
+    /** BCH per account. */
+    balance?: number;
+    /** Coins per account. */
+    coins?: number;
+    /** Bootstrap height; headers `0..height` exist. */
+    chainId?: string;
+  };
   /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */
   consensus?: Partial<{
     maximumInputBytes: number;
@@ -165,7 +196,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
       tests: resolvePath(config.paths?.tests, 'test'),
       cache: resolvePath(config.paths?.cache, join(homedir(), '.cache', 'solidcash')),
     },
-    networks: { mock: { type: 'mock' }, ...config.networks },
+    networks: { mock: { type: 'mock' }, localhost: { type: 'mem-cash' }, ...config.networks },
     defaultNetwork: config.defaultNetwork ?? 'mock',
     mnemonic: config.mnemonic,
     accounts: config.accounts,

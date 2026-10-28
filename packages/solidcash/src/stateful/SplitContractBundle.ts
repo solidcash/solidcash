@@ -238,6 +238,7 @@ export class SplitContractBundle {
     });
     assertSplitRedeemSize('root', rootPreview.bytesize, provider);
 
+    if (signer) await signer.provider.prepareSigner?.(signer);
     const nonceReservation = signer?.reserveTransactionNonce();
     const logicalAddress = nonceReservation
       ? deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce) : undefined;

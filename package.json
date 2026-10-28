@@ -14,7 +14,14 @@
   ],
   "resolutions": {
     "ws": "8.21.0",
-    "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
+    "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8",
+    "@mem-cash/types": "file:../mem-cash/packages/types",
+    "@mem-cash/storage": "file:../mem-cash/packages/storage",
+    "@mem-cash/validation": "file:../mem-cash/packages/validation",
+    "@mem-cash/core": "file:../mem-cash/packages/core",
+    "@mem-cash/electrum": "file:../mem-cash/packages/electrum",
+    "@mem-cash/server": "file:../mem-cash/packages/server",
+    "@mem-cash/server-evm": "file:../mem-cash/packages/server-evm"
   },
   "devDependencies": {
     "@noble/hashes": "^1.4.0",

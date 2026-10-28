@@ -6,7 +6,9 @@
  */
 import './builtin-tasks.js';
 import { initHre } from './hre.js';
-import { getTask, getTasks, parseTaskArgs, runTask } from './tasks.js';
+import {
+  formatTaskHelp, getTask, getTasks, parseTaskArgs, runTask,
+} from './tasks.js';
 
 function printHelp(): void {
   console.log('Usage: solidcash <task> [--network <name>] [args...]\n');
@@ -32,7 +34,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  const hre = await initHre(process.cwd(), networkName);
   const def = getTask(taskName);
   if (!def) {
     console.error(`Unknown task "${taskName}".\n`);
@@ -40,6 +41,13 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // `<task> --help` prints that task's own flag table; it never starts a provider or a task action.
+  if (rest.slice(1).some((token) => token === '--help' || token === '-h')) {
+    console.log(formatTaskHelp(def, 'solidcash'));
+    return;
+  }
+
+  const hre = await initHre(process.cwd(), networkName);
   const args = parseTaskArgs(def, rest.slice(1));
   await runTask(taskName, args, hre);
 }

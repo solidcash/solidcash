@@ -185,6 +185,49 @@ export function parseTaskArgs(def: TaskDefinition, tokens: string[]): TaskArgume
   return args;
 }
 
+/**
+ * Render one task's own help: usage, description, and every flag with its description and default.
+ *
+ * Called by both CLIs for `<cli> <task> --help`, so the flag table ships with the task definition instead of
+ * living in a second hand-maintained string.
+ */
+export function formatTaskHelp(def: TaskDefinition, cliName: string): string {
+  const positional = def.params.filter((p) => p.isPositional);
+  const options = def.params.filter((p) => !p.isPositional);
+  const usage: string[] = [`Usage: ${cliName} ${def.name}`];
+  for (const p of positional) {
+    usage.push(p.isVariadic ? `<${p.name}...>` : p.isOptional ? `[${p.name}]` : `<${p.name}>`);
+  }
+  if (options.length > 0) usage.push('[options]');
+
+  const rows: { left: string; right: string }[] = [];
+  for (const p of options) {
+    const left = p.isFlag
+      ? `--${p.name}`
+      : p.isArray ? `--${p.name} <value...>` : `--${p.name} <value>`;
+    let right = p.description ?? '';
+    if (p.defaultValue !== undefined && p.defaultValue !== false) {
+      const shown = Array.isArray(p.defaultValue)
+        ? p.defaultValue.length === 0 ? undefined : `[${p.defaultValue.join(', ')}]`
+        : String(p.defaultValue);
+      if (shown !== undefined) right = right.length > 0 ? `${right} (default: ${shown})` : `(default: ${shown})`;
+    }
+    rows.push({ left, right });
+  }
+  for (const p of positional) {
+    rows.push({ left: p.isVariadic ? `<${p.name}...>` : `<${p.name}>`, right: p.description ?? '' });
+  }
+
+  const width = rows.reduce((max, row) => Math.max(max, row.left.length), 0);
+  const lines = [usage.join(' '), ''];
+  if (def.description !== undefined) lines.push(def.description, '');
+  if (rows.length > 0) {
+    lines.push('Options:');
+    for (const row of rows) lines.push(`  ${row.left.padEnd(width)}  ${row.right}`.trimEnd());
+  }
+  return lines.join('\n');
+}
+
 /** Reset the registry (test isolation). */
 export function clearTasks(): void {
   registry.clear();

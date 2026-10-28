@@ -81,6 +81,7 @@ describe('October 2026 class A holes', () => {
       if (entry.name === 'payload') values[entry.name] = payload;
       else if (entry.name === 'target') values[entry.name] = targetLock;
       else if (entry.name.toLowerCase().includes('callinput')) values[entry.name] = num(1n);
+      else if (entry.name === '__internal__returnOutputIdx') values[entry.name] = num(-1n);
       else values[entry.name] = new Uint8Array();
     }
     const dispatch = artifact.messageBus?.routeInBytecode === true;
@@ -127,6 +128,7 @@ describe('October 2026 class A holes', () => {
       if (entry.name === 'n') values[entry.name] = num(n);
       else if (entry.name === 'expect') values[entry.name] = hash;
       else if (entry.name.toLowerCase().includes('blockhash')) values[entry.name] = num(1n);
+      else if (entry.name === '__internal__returnOutputIdx') values[entry.name] = num(-1n);
       else values[entry.name] = new Uint8Array();
     }
     const masterUnlock = redeemUnlock(fn, redeem, values, artifact.messageBus?.routeInBytecode === true);
@@ -188,6 +190,8 @@ describe('October 2026 class A holes', () => {
       else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
       else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
       else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
+      // Fix B: an ordinary void entry's universal void call record; a standalone VM spend compacts it (witness -1).
+      else if (entry.name === '__internal__returnOutputIdx') values[entry.name] = num(-1n);
       else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
       else throw new Error(`unexpected input ${entry.name}`);
     }

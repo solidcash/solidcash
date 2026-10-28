@@ -925,6 +925,7 @@ function internalDefault(name: string): Uint8Array {
   if (name.includes('vmapBatchNext')) return ZERO32;
   if (name.includes('vmapBatchPredOut')) return num(-1n);
   if (name.includes('TrailingCount')) return num(0n);
+  if (name === '__internal__returnOutputIdx') return num(-1n);
   if (name.startsWith('__internal__')) return EMPTY;
   throw new Error(`scalar witness has no value for ${name}`);
 }
@@ -1238,7 +1239,7 @@ function tokenIterationSpend(
   for (const entry of fn.inputs) {
     if (values[entry.name] !== undefined) continue;
     if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
-    else if (entry.name.startsWith('__internal__')) values[entry.name] = EMPTY;
+    else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : EMPTY;
     else throw new Error(`unexpected input ${entry.name}`);
   }
   const sources: SourceOutputs = [
@@ -1304,7 +1305,7 @@ function iterationSpend(
   for (const entry of fn.inputs) {
     if (values[entry.name] !== undefined) continue;
     if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
-    else if (entry.name.startsWith('__internal__')) values[entry.name] = EMPTY;
+    else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : EMPTY;
     else throw new Error(`unexpected input ${entry.name}`);
   }
   const sources: SourceOutputs = [
@@ -1442,6 +1443,7 @@ function mappingWitness(name: string, slot: Uint8Array, predOut: bigint, key: Ui
   if (/^__internal__vmapBatchNext_\d+$/.test(name)) return ZERO32;
   if (/^__internal__vmapBatchPredOut_\d+$/.test(name)) return predOut === -2n ? Uint8Array.of(0x82) : num(predOut);
   if (name === '__internal__vmapBatchTrailingCount') return num(0n);
+  if (name === '__internal__returnOutputIdx') return num(-1n);
   if (name.startsWith('__internal__')) return EMPTY;
   return undefined;
 }

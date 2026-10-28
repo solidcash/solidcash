@@ -62,7 +62,8 @@ function redeemUnlock(
   fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
-    const value = values[entry.name];
+    // Fix B: an ordinary void entry's universal void call record defaults to a standalone compact spend (-1).
+    const value = values[entry.name] ?? (entry.name === '__internal__returnOutputIdx' ? num(-1n) : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;
   }).reverse();
@@ -143,7 +144,7 @@ describe('October 2026 class C holes', () => {
         else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
         else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
         else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const inputs = [
@@ -214,7 +215,7 @@ describe('October 2026 class C holes', () => {
         else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
         else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
         else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const inputs = [
@@ -307,7 +308,7 @@ describe('October 2026 class C holes', () => {
         else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
         else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
         else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const inputs = [
@@ -369,7 +370,7 @@ describe('October 2026 class C holes', () => {
         else if (entry.name.includes('vmapBatchNext')) values[entry.name] = zero;
         else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
         else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const layout = fn.blockLayout?.slots.find((entry) => entry.kind === 'entry');
@@ -419,7 +420,7 @@ describe('October 2026 class C holes', () => {
       const values: Record<string, Uint8Array> = {};
       for (const entry of fn.inputs) {
         if (entry.name === '__internal__returnOutputIdx') values[entry.name] = num(-1n);
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const inputs = [
@@ -704,7 +705,7 @@ describe('October 2026 class C holes', () => {
       const after = hexToBin(buildPushdataCommitment(artifact.stateLayout!, { accIndex: 1n }, data.nftIndex ?? 0));
       const values: Record<string, Uint8Array> = {};
       for (const entry of fn.inputs) {
-        if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       if (data.offset !== 1) throw new Error(`data offset ${data.offset}`);
@@ -904,7 +905,7 @@ describe('October 2026 class C holes', () => {
     const after = hexToBin(buildPushdataCommitment(artifact.stateLayout!, { n: 1n }, data.nftIndex ?? 0));
     const values: Record<string, Uint8Array> = {};
     for (const entry of fn.inputs) {
-      if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+      if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
       else throw new Error(`unexpected input ${entry.name}`);
     }
     if (lock.length !== 35) throw new Error(`master lock is ${lock.length} bytes`);
@@ -990,7 +991,7 @@ describe('October 2026 class C holes', () => {
       const values: Record<string, Uint8Array> = { c: blob };
       for (const entry of fn.inputs) {
         if (entry.name === 'c') continue;
-        if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       return values;
@@ -1054,7 +1055,7 @@ describe('October 2026 class C holes', () => {
       for (const entry of fn.inputs) {
         if (entry.name === 'stopAt' || entry.name === 'expected') continue;
         if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const sources: SourceOutputs = [
@@ -1133,7 +1134,7 @@ describe('October 2026 class C holes', () => {
       for (const entry of fn.inputs) {
         if (entry.name === 'skip' || entry.name === 'expected') continue;
         if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
-        else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const sources: SourceOutputs = [
@@ -1325,7 +1326,7 @@ describe('October 2026 class C holes', () => {
       const values: Record<string, Uint8Array> = { go: num(go ? 1n : 0n) };
       for (const entry of fn.inputs) {
         if (entry.name === 'go') continue;
-        if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+        if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
         else throw new Error(`unexpected input ${entry.name}`);
       }
       const sources: SourceOutputs = [

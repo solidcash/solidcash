@@ -63,6 +63,7 @@ function pairSpend(artifact: Artifact, skipped?: number): true | string {
     if (name.startsWith('__internal__vmapBatchPredOut_')) return num(target === skipped ? -2n : -1n);
     if (name.startsWith('__internal__vmapBatchRank_')) return num(target === low ? 0n : 1n);
     if (name === '__internal__vmapBatchRows_m') return rows;
+    if (name === '__internal__returnOutputIdx') return num(-1n);
     if (name.startsWith('__internal__')) return EMPTY;
     throw new Error(`no witness for '${name}'`);
   };

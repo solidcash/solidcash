@@ -4616,7 +4616,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         // co-spent callee could run a different same-arity method while the caller advances its state. Bind the
         // method by reading the callee's attested void record: mark the slot to carry a record. Its callee emits
         // `digest || 0x01` universally, so the caller can always read one.
-        const directConventionVoidBinding = messageBusExplicitlyDisabled
+        // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
+        // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
+        // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
+        // and auto; an explicitly enabled (or verifier-required) bus authenticates co-spent methods itself. Grouped
+        // slots are already removed above, and this block only runs off-route, so it reaches only direct calls.
+        const busMode = (this.compilerOptions as CompilerOptions
+          & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
+        const directConventionVoidBinding = (busMode === 'disabled' || busMode === 'auto')
           && this.compilerOptions.composition !== 'framed';
         if (directConventionVoidBinding && node.isEntryPoint) {
           for (const slot of externalCallSlots) {

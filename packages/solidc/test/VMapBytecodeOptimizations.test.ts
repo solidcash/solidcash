@@ -38,7 +38,7 @@ describe('general vmap bytecode sharing', () => {
     // 4990.5 measured after the October reaudit/hardening set (master-lock binding plus the DS-6 activity
     // settlement and container/foreign-token scans); re-pinned to the verified current emission.
     // 5090.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(5100);
+    expect(artifact.bytecode.length / 2).toBeLessThan(6000); // B+F1: +~820 B void-record/edge overhead
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -60,7 +60,7 @@ describe('general vmap bytecode sharing', () => {
     // 5004 measured after the direct entry's message-bus-eligibility census widened.
     // 5283.5 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
     // 5383.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(5400);
+    expect(artifact.bytecode.length / 2).toBeLessThan(6300); // B+F1: +~790 B void-record/edge overhead
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
@@ -89,7 +89,7 @@ describe('general vmap bytecode sharing', () => {
     // lock build + admission check is per function that writes a dynamic var.
     // 10030 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
     // 10130 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(10150);
+    expect(artifact.bytecode.length / 2).toBeLessThan(11000); // B+F1: +~780 B void-record/edge overhead
   });
 
   it('allocates collision-free structural and field-prefix helpers across entry points', () => {
@@ -149,7 +149,7 @@ describe('general vmap bytecode sharing', () => {
     // on in one classifying pass per side, and the mutable-output check tries the minted locks first.
     // 4786 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
     // 4996.5 once the C3 count-path record pin held each own-category record at its own index.
-    expect(artifact.bytecode.length / 2).toBeLessThan(5010);
+    expect(artifact.bytecode.length / 2).toBeLessThan(6000); // B+F1: +~880 B void-record/edge overhead
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

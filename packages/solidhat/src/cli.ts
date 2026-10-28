@@ -24,9 +24,15 @@ async function main(): Promise<void> {
   const taskName = selected.rest[0];
   if (!taskName) { console.log(HELP); return; }
   const {
-    getTask, getTasks, initHre, parseTaskArgs, runTask, formatTaskHelp,
+    getTask, getTasks, initHre, parseTaskArgs, runTask, formatTaskHelp, loadConfig,
   } = await import('@solidcash/testing');
-  const task = getTask(taskName);
+  let task = getTask(taskName);
+  if (!task) {
+    // Tasks a project declares in solidcash.config.* register when that module is imported, so a miss on the
+    // built-in registry is not conclusive until the config has loaded (loadConfig returns defaults with no file).
+    await loadConfig(process.cwd());
+    task = getTask(taskName);
+  }
   if (!task) {
     const names = getTasks().map((candidate) => candidate.name).join(', ');
     throw new Error(`Unknown task "${taskName}". Available tasks: ${names}`);

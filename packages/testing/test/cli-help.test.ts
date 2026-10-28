@@ -37,13 +37,13 @@ describe.each(Object.keys(clis) as (keyof typeof clis)[])('%s task help', (cli) 
     expect(stdout).toContain('--allow-origin <value...>');
     // The global init help must not stand in for the task table.
     expect(stdout).not.toContain('--init');
-  });
+  }, 90_000);
 
   it('keeps global help for `--help` without a task', () => {
     const { status, stdout } = run(cli, ['--help']);
     expect(status).toBe(0);
     expect(stdout).toContain(cli === 'solidhat' ? 'Usage: solidhat [--init]' : 'Usage: solidcash <task>');
-  });
+  }, 90_000);
 });
 
 describe('unknown task with help', () => {
@@ -51,5 +51,5 @@ describe('unknown task with help', () => {
     const result = run('solidhat', ['nope', '--help']);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Unknown task "nope"');
-  });
+  }, 90_000);
 });

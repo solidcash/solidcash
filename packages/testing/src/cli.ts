@@ -5,6 +5,7 @@
  * solidcash.config.ts (via `task(...)` from '@solidcash/solidcash/hardhat') are loaded when the config is imported.
  */
 import './builtin-tasks.js';
+import { loadConfig } from './config.js';
 import { initHre } from './hre.js';
 import {
   formatTaskHelp, getTask, getTasks, parseTaskArgs, runTask,
@@ -34,7 +35,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const def = getTask(taskName);
+  let def = getTask(taskName);
+  if (!def) {
+    // Tasks a project declares in solidcash.config.* register when that module is imported, so a miss on the
+    // built-in registry is not conclusive until the config has loaded (loadConfig returns defaults with no file).
+    await loadConfig(process.cwd());
+    def = getTask(taskName);
+  }
   if (!def) {
     console.error(`Unknown task "${taskName}".\n`);
     printHelp();

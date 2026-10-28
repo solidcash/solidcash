@@ -36,31 +36,18 @@ async function main(): Promise<void> {
   }
 
   const wantsTaskHelp = rest.slice(1).some((token) => token === '--help' || token === '-h');
-  // `<task> --help` prints that task's own flag table; it never starts a provider or a task action. A task the
-  // built-in registry does not know may be declared by the project config (which registers on import).
-  if (wantsTaskHelp) {
-    let def = getTask(taskName);
-    if (!def) {
-      await loadConfig(process.cwd());
-      def = getTask(taskName);
-    }
-    if (!def) {
-      console.error(`Unknown task "${taskName}".\n`);
-      printHelp();
-      process.exitCode = 1;
-      return;
-    }
-    console.log(formatTaskHelp(def, 'solidcash'));
-    return;
-  }
-
-  // Project configs register their tasks and may override a built-in, so it loads before the task is resolved.
+  // Project configs register their tasks and may override a built-in, so the config loads before the task is
+  // resolved. `<task> --help` prints that task's own flag table and never starts a provider or a task action.
   await loadConfig(process.cwd());
   const def = getTask(taskName);
   if (!def) {
     console.error(`Unknown task "${taskName}".\n`);
     printHelp();
     process.exitCode = 1;
+    return;
+  }
+  if (wantsTaskHelp) {
+    console.log(formatTaskHelp(def, 'solidcash'));
     return;
   }
 

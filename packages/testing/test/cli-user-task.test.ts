@@ -32,6 +32,12 @@ beforeAll(() => {
     "    console.log(`PROBE ${args.label ?? 'default'}`);",
     '  });',
     '',
+    "task('compile', 'Project override of the built-in compile task')",
+    "  .addFlag('fast', 'Skip the slow checks')",
+    '  .setAction(async () => {',
+    "    console.log('OVERRIDDEN COMPILE');",
+    '  });',
+    '',
   ].join('\n'));
 });
 
@@ -54,6 +60,19 @@ describe.each(Object.keys(clis) as (keyof typeof clis)[])('%s user-declared task
     expect(stderr).toBe('');
     expect(status).toBe(0);
     expect(stdout).toContain('PROBE alpha');
+  }, 120_000);
+
+  it('runs the project override of a built-in task', () => {
+    const { status, stdout } = run(cli, ['compile']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('OVERRIDDEN COMPILE');
+  }, 120_000);
+
+  it('shows the project override in the built-in task help', () => {
+    const { status, stdout } = run(cli, ['compile', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('Project override of the built-in compile task');
+    expect(stdout).toContain('--fast');
   }, 120_000);
 
   it('prints the task help for a declared task', () => {

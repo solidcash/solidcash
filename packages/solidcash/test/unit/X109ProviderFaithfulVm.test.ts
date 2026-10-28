@@ -100,7 +100,7 @@ describe('X109 - the decider applies the published limits (@mem-cash/validation 
   it('2. the decider DOES enforce the published limits, in both dimensions [0.0.10]', async () => {
     // VERSION-DEPENDENT. At 0.0.7 both submits below ACCEPT, because TxVerifierConfig has no `consensus` field
     // and the overrides are dropped. X121 row 0 is the version gate; this row states which side it pins.
-    expect(MEM_CASH_VALIDATION_VERSION, 'this row pins 0.0.10 behaviour').toBe('0.0.10');
+    expect(MEM_CASH_VALIDATION_VERSION, 'this row pins the released validation build').toBe('0.0.11');
 
     // maximumStackItemBytes: enforced. The refusal names the published 8 and the offending 65-byte signature.
     const strictItem = new MockNetworkProvider({

@@ -580,6 +580,17 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   // Test helper mirroring RegtestNetworkProvider: advance the simulated chain tip so height-mode locktimes
   // become final and each mined height is fresh.
+  /** Pin the recent-header window to the tip timestamp so MTP equals the mock's block time. */
+  private keepSyntheticTimeWindow(): void {
+    const tip = this.indexer.getTip();
+    if (tip === undefined || tip.height < 1) return;
+    this.indexer.rewriteRecentHeaders({
+      fromHeight: Math.max(1, tip.height - 10),
+      toHeight: tip.height,
+      timestamp: () => tip.timestamp,
+    });
+  }
+
   async mine(count: number = 1): Promise<void> {
     this.setBlockHeight(this.blockHeight + count);
     const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
@@ -789,6 +800,10 @@ export default class MockNetworkProvider implements NetworkProvider {
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     const mineStartedAt = debugTiming ? Date.now() : 0;
     this.indexer.mine();
+    // The mock chain starts at a synthetic height, so its eleven-header median-time-past would sit far behind the
+    // mined block. Keep the window on the tip's timestamp, as the mock's chain always did: nLocktime finality (the
+    // node's time basis) is then measured against the block the next send will extend.
+    this.keepSyntheticTimeWindow();
     // A contract that reads `block.timestamp` holds the value in a register a block oracle updates; a mined block
     // is when that value moves, so the chain's time reaches the register before the next transaction is built.
     const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');

@@ -22,6 +22,21 @@ import { diagnoseProject } from './doctor.js';
  * metadata change, so version-only keys can silently publish stale artifacts. Hashing emitted JavaScript trees
  * costs only a few milliseconds and avoids invalidating artifacts for declaration/source-map timestamp churn.
  */
+/**
+ * Release a network provider's socket and timers after a script finishes.
+ *
+ * A devnet provider keeps a WebSocket and a keep-alive timer that is not `unref`'d, so without this the process
+ * outlives the script. In-process providers have no `disconnect` and are unaffected.
+ */
+async function disconnectProvider(hre: HardhatRuntimeEnvironment): Promise<void> {
+  const provider = hre.network.provider as unknown as { disconnect?: () => Promise<void> };
+  try {
+    await provider.disconnect?.();
+  } catch {
+    // A socket that is already closed is the desired state.
+  }
+}
+
 function compilerJavaScriptFingerprint(entryFile: string): string {
   const root = path.dirname(entryFile);
   const files: string[] = [];
@@ -500,6 +515,16 @@ async function runScript(
     throw new Error(`Script not found. Tried: ${defaults.map((candidate) => path.resolve(candidate)).join(', ')}`);
   }
   if (!fs.existsSync(script)) throw new Error(`Script not found: ${script}`);
+  // A .ts script needs a loader when the CLI runs under plain node; register tsx when it is installed and let a
+  // caller-provided loader win when it is not.
+  if (/\.[cm]?ts$/.test(script)) {
+    try {
+      const tsx = await import('tsx/esm/api') as { register?: () => unknown };
+      tsx.register?.();
+    } catch {
+      // No tsx available: the caller's loader (if any) resolves the import.
+    }
+  }
   (globalThis as any).hre = hre;
   await import(pathToFileURL(script).href);
 }
@@ -508,16 +533,24 @@ task('run', 'Run a script with the SolidCash HRE available as the `hre` global')
   .addPositionalParam('script', 'Path to the script to run')
   .addFlag('no-compile', 'Skip compilation before running the script')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
-    if (args['no-compile'] !== true) await hre.run('compile');
-    await runScript(args.script, hre);
+    try {
+      if (args['no-compile'] !== true) await hre.run('compile');
+      await runScript(args.script, hre);
+    } finally {
+      await disconnectProvider(hre);
+    }
   });
 
 task('deploy', 'Compile and run the conventional deployment script')
   .addPositionalParam('script', 'Deployment script path (defaults to scripts/deploy.ts or .js)')
   .addFlag('no-compile', 'Skip compilation before running the deployment script')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
-    if (args['no-compile'] !== true) await hre.run('compile');
-    await runScript(args.script, hre, ['scripts/deploy.ts', 'scripts/deploy.js']);
+    try {
+      if (args['no-compile'] !== true) await hre.run('compile');
+      await runScript(args.script, hre, ['scripts/deploy.ts', 'scripts/deploy.js']);
+    } finally {
+      await disconnectProvider(hre);
+    }
   });
 
 task('clean', 'Delete the artifacts directory')
@@ -530,8 +563,45 @@ task('clean', 'Delete the artifacts directory')
     console.log(`Removed ${artifactsDir}, ${cacheDir}, and configured generated bindings`);
   });
 
-task('node', 'Info about the in-process mock network (no separate server needed)')
-  .setAction(async (_args, hre: HardhatRuntimeEnvironment) => {
-    console.log(`SolidCash mock network "${hre.network.name}" runs in-process.`);
-    console.log('Use `const [owner] = await hre.ethers.getSigners()` in tests/scripts; no daemon required.');
+task('node', 'Start a persistent mem-cash devnet (the `npx hardhat node` analogue)')
+  .addParam('host', 'Bind address (a non-loopback value requires --unsafe-expose)')
+  .addParam('port', 'HTTP + WebSocket port; 0 picks a free port')
+  .addParam('mining', 'Mining mode: auto, manual, or interval')
+  .addParam('interval', 'Interval mining period in milliseconds')
+  .addFlag('interval-empty', 'Interval mining also mines empty blocks')
+  .addParam('coinbase', 'Coinbase policy: burn, account, or none')
+  .addParam('mnemonic', 'Signing phrase for all accounts')
+  .addFlag('random-mnemonic', 'Generate and print a fresh BIP-39 phrase')
+  .addParam('path', "Account derivation branch (default m/44'/60'/0'/0)")
+  .addParam('accounts', 'Number of funded accounts')
+  .addParam('balance', 'Per-account balance in BCH')
+  .addParam('coins', 'Coins per account')
+  .addParam('height', 'Bootstrap tip height (>= 11)')
+  .addParam('timestamp', 'Genesis timestamp; block h is at timestamp + h')
+  .addParam('vm', 'VM version: BCH_2023_05, BCH_2025_05, BCH_2026_05, or BCH_SPEC')
+  .addParam('consensus', 'Consensus profile: relaxed or production')
+  .addFlag('no-fund', 'Skip account funding (empty chain)')
+  .addFlag('no-keys', 'Omit WIFs from the startup table')
+  .addParam('chain-id', 'Chain id committed in the genesis coinbase')
+  .addFlag('evm-rpc', 'Install the optional @mem-cash/server-evm chain-control extension')
+  .addParam('network', 'Deprecated alias for the HRE network selector')
+  .addParam('bch-network', 'BCH network for prefixes and Network mapping: mocknet or regtest')
+  .addFlag('no-block-oracle', 'Do not install the block-info oracle')
+  .addFlag('json', 'Newline JSON output')
+  .addFlag('quiet', 'Only endpoints and errors')
+  .addParam('log-level', 'error, warn, info, or debug')
+  .addFlag('trace', 'Log every RPC with timing')
+  .addParam('token', 'Bearer/query token; required when exposed')
+  .addFlag('unsafe-expose', 'Permit a non-loopback bind')
+  .addArrayParam('allow-origin', 'Repeatable: extra allowed browser origin')
+  .addArrayParam('allow-host', 'Repeatable: extra allowed Host header')
+  .addParam('max-connections', 'Maximum concurrent WebSocket connections')
+  .addParam('max-message-bytes', 'Maximum message size in bytes')
+  .addParam('max-snapshots', 'Maximum stored snapshots')
+  .addParam('shutdown-timeout', 'Drain window on SIGINT/SIGTERM, in milliseconds')
+  .addFlag('metrics', 'Serve /metrics (accepted; counters are on devnet.stats in v1)')
+  .addFlag('no-compile', 'Accepted and ignored: node never compiles')
+  .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
+    const { runDevnetNode } = await import('./node-task.js');
+    await runDevnetNode(args, hre);
   });

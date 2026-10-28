@@ -30,22 +30,68 @@
   "types": "dist/index.d.ts",
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./vitest": { "types": "./dist/test/TestExtensions.d.ts", "default": "./dist/test/TestExtensions.js" },
-    "./contract-factory": { "types": "./dist/stateful/ContractFactory.d.ts", "default": "./dist/stateful/ContractFactory.js" },
-    "./stateful": { "types": "./dist/stateful/index.d.ts", "default": "./dist/stateful/index.js" },
-    "./message-bus": { "types": "./dist/message-bus/index.d.ts", "default": "./dist/message-bus/index.js" },
-    "./kernel": { "types": "./dist/stateful/kernel/index.d.ts", "default": "./dist/stateful/kernel/index.js" },
-    "./framed": { "types": "./dist/framed/index.d.ts", "default": "./dist/framed/index.js" },
-    "./oracle": { "types": "./dist/oracle/index.d.ts", "default": "./dist/oracle/index.js" },
-    "./bcmr": { "types": "./dist/bcmr/index.d.ts", "default": "./dist/bcmr/index.js" },
-    "./network/mock": { "types": "./dist/network/mock/index.d.ts", "default": "./dist/network/mock/index.js" },
-    "./network/electrum": { "types": "./dist/network/electrum/index.d.ts", "default": "./dist/network/electrum/index.js" },
-    "./hdsigner": { "types": "./dist/HDSigner.d.ts", "default": "./dist/HDSigner.js" },
-    "./loop-call": { "types": "./dist/loop-call.d.ts", "default": "./dist/loop-call.js" },
-    "./walletconnect": { "types": "./dist/walletconnect-utils.d.ts", "default": "./dist/walletconnect-utils.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vitest": {
+      "types": "./dist/test/TestExtensions.d.ts",
+      "default": "./dist/test/TestExtensions.js"
+    },
+    "./contract-factory": {
+      "types": "./dist/stateful/ContractFactory.d.ts",
+      "default": "./dist/stateful/ContractFactory.js"
+    },
+    "./stateful": {
+      "types": "./dist/stateful/index.d.ts",
+      "default": "./dist/stateful/index.js"
+    },
+    "./message-bus": {
+      "types": "./dist/message-bus/index.d.ts",
+      "default": "./dist/message-bus/index.js"
+    },
+    "./kernel": {
+      "types": "./dist/stateful/kernel/index.d.ts",
+      "default": "./dist/stateful/kernel/index.js"
+    },
+    "./framed": {
+      "types": "./dist/framed/index.d.ts",
+      "default": "./dist/framed/index.js"
+    },
+    "./oracle": {
+      "types": "./dist/oracle/index.d.ts",
+      "default": "./dist/oracle/index.js"
+    },
+    "./bcmr": {
+      "types": "./dist/bcmr/index.d.ts",
+      "default": "./dist/bcmr/index.js"
+    },
+    "./network/mock": {
+      "types": "./dist/network/mock/index.d.ts",
+      "default": "./dist/network/mock/index.js"
+    },
+    "./network/electrum": {
+      "types": "./dist/network/electrum/index.d.ts",
+      "default": "./dist/network/electrum/index.js"
+    },
+    "./hdsigner": {
+      "types": "./dist/HDSigner.d.ts",
+      "default": "./dist/HDSigner.js"
+    },
+    "./loop-call": {
+      "types": "./dist/loop-call.d.ts",
+      "default": "./dist/loop-call.js"
+    },
+    "./walletconnect": {
+      "types": "./dist/walletconnect-utils.d.ts",
+      "default": "./dist/walletconnect-utils.js"
+    },
     "./package.json": "./package.json",
-    "./*": "./*"
+    "./*": "./*",
+    "./network/local": {
+      "types": "./dist/network/local/index.d.ts",
+      "default": "./dist/network/local/index.js"
+    }
   },
   "sideEffects": [
     "./dist/test/TestExtensions.js"
@@ -63,14 +109,14 @@
     "prepare": "yarn rebuild",
     "prepublishOnly": "yarn test && yarn lint",
     "test": "vitest run --exclude 'test/e2e/**'",
-    "test:unit": "vitest run test/unit --no-isolate --maxWorkers='60%'",
+    "test:unit": "vitest run test/unit --maxWorkers='60%'",
     "test:conformance": "vitest run test/conformance",
     "test:e2e": "vitest run test/e2e",
     "test:e2e:changed": "vitest run --config vitest.e2e.config.ts --changed --passWithNoTests",
     "test:e2e:watch": "vitest --config vitest.e2e.config.ts",
-    "test:fast": "vitest run --no-isolate --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
-    "test:changed": "vitest run --no-isolate --maxWorkers='60%' --changed --passWithNoTests --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
-    "test:watch": "vitest --no-isolate --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
+    "test:fast": "vitest run --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
+    "test:changed": "vitest run --maxWorkers='60%' --changed --passWithNoTests --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
+    "test:watch": "vitest --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
     "test:regtest": "node scripts/run-regtest-matrix.mjs"
   },
   "dependencies": {
@@ -83,7 +129,10 @@
     "@solidcash/utils": "^0.14.0-beta.1",
     "fflate": "^0.8.2",
     "semver": "^7.7.2",
-    "@noble/hashes": "^2.0.0"
+    "@noble/hashes": "^2.0.0",
+    "@electrum-cash/socket": "^4.2.0",
+    "@monsterbitar/isomorphic-ws": "^5.3.1",
+    "eventemitter3": "^5.0.1"
   },
   "devDependencies": {
     "@ethereumjs/common": "^10.1.2",

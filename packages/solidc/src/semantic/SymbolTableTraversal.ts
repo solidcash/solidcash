@@ -19290,7 +19290,11 @@ export default class SymbolTableTraversal extends AstTraversal {
    * requires the edge refuses such a caller).
    */
   private externalCallSlotCarriesEdge(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
-    return this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
+    // The edge is pinned in the caller's own minting category; a non-stateful contract has no such category, and
+    // the presence-based msg.sender forgery F1 closes is a stateful-category construct. Non-stateful callers carry
+    // no edge.
+    return this.isStatefulContract
+      && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
       && slot.callRecordSelector !== undefined && this.interfaceMap.has(slot.interfaceName)
       && slot.calleeMethod !== undefined && !slot.runtimeSelector && !slot.selectorArrayVar && !slot.opaqueReturn
       && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations

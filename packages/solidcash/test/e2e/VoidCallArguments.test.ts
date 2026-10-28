@@ -138,6 +138,18 @@ describe('direct void call arguments', () => {
     // The same transaction with the caller's own argument agreeing is valid: only the argument binding refuses it.
     const control = decode(encode(tx));
     setArgument(control, masterInput(control, d.sourceCat), artifacts().Source, 'relay', 'x', 8n);
+    // F1: Source pins an own-category edge committing to the call it makes. Editing relay.x = 8 makes Source
+    // recompute its edge as digest(put, [9]); update the stale edge record (OP_1 OP_NOP carrier) to match, as the
+    // SDK would when building that call. The digest is category-independent, so the forged x=9 run's edge carries
+    // the right commitment under d's own Source category.
+    const edgeOf = (t: Tx, cat: string): Output | undefined => t.outputs.find((output) => (
+      output.lockingBytecode.length === 2 && output.lockingBytecode[0] === 0x51
+      && output.lockingBytecode[1] === 0x61 && ofCategory(output, cat)));
+    const controlEdge = edgeOf(control, d.sourceCat);
+    const forgedEdge = edgeOf(forged, other.sourceCat);
+    if (controlEdge !== undefined && forgedEdge !== undefined) {
+      controlEdge.token!.nft!.commitment = forgedEdge.token!.nft!.commitment.slice();
+    }
     expectScriptRejection(await outcomeOf(d.provider, encode(tx)), masterInput(tx, d.sourceCat));
     expect(await outcomeOf(d.provider, encode(control))).toBe('ACCEPTED');
     expect((await d.sink.getState()).last).toBe(9n);

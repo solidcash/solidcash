@@ -5052,8 +5052,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
       || modifier === FunctionModifier.MERGE || modifier === FunctionModifier.MIGRATE_RECORDS
       || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.DELEGATE);
+    // An entry that makes a returning external storage read (readOnlyDataNft co-spend) leaves the target's lock on
+    // the stack through to the epilogue; adding the void record's own settlement there collides with it (its
+    // returnOutputIdx pick is thrown off). Such entries keep their pre-fix-B settlement, so no void record is
+    // injected. All three pieces (this witness, the reserved returnEvent slot, and the GTT settlement) derive from
+    // this injection, so gating it here keeps them consistent.
+    const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
+      && !readsExternalStorage
       && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');

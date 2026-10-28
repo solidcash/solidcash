@@ -1,13 +1,16 @@
 /**
- * F1 caller-attested call edges (SDK side): lay each reserved `callEdge` output in the owner block. The caller
- * pins an own-category immutable NFT committing to the digest of the call it makes, under the edge carrier lock,
- * so the callee can bind which contract invoked it (emitCallerEdgeRequirement in the compiler). Runs in the mid
- * cascade between owner events and return events, matching the block-layout order (events, callEdge, returnEvent).
+ * F1 caller-attested call edges (SDK side): append each outgoing call's edge record to the output tail and record
+ * its index in the caller's `__internal__callEdgeOutputIdx<slot>` witness. The caller pins an own-category immutable
+ * NFT committing to the digest of the call it makes (under the edge carrier lock), so the callee can bind which
+ * contract invoked it (emitCallerEdgeRequirement in the compiler). The edge is appended past every block (never a
+ * fixed block slot), so it shifts no callee block and interacts with no record layout; its dust value is covered by
+ * the ordinary fee funding. Runs once on the final build result, after all other outputs are placed.
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { Artifact, FunctionBlockLayout } from '@solidcash/utils';
-import type { Output } from '../interfaces.js';
+import type { Artifact } from '@solidcash/utils';
+import type { Output, Unlocker } from '../interfaces.js';
+import { isContractUnlocker } from '../interfaces.js';
 import { callRecordDigest } from './call-record.js';
 
 /** Edge form byte (distinct from result-record forms 0x01/0x02) and carrier lock (OP_1 OP_NOP). */
@@ -24,31 +27,46 @@ interface EdgeGroup {
   readonly compilerRoute?: unknown;
 }
 
-export interface MaterializeCallerEdgeOutputsHost {
-  readonly blockLayout?: FunctionBlockLayout;
+export interface AppendCallerEdgesHost {
   readonly categoryId: string;
   readonly externalCallUtxoGroups: readonly EdgeGroup[];
 }
 
-export function materializeCallerEdgeOutputs(
-  host: MaterializeCallerEdgeOutputsHost, builder: { outputs: Output[] },
+export function appendCallerEdges(
+  host: AppendCallerEdgesHost, builder: { outputs: Output[]; inputs: ReadonlyArray<{ unlocker?: Unlocker }> },
 ): void {
-  const edgeSlots = (host.blockLayout?.slots ?? []).filter((slot) => slot.kind === 'callEdge');
-  for (const slot of edgeSlots) {
-    // The callEdge is an output-only slot in the caller's block: its funding input was already inserted at this
-    // block offset (stb-build-inputs), so the edge output is SPLICE-inserted at the same offset to keep the 1:1
-    // block (shifting any following callee block right), not overwritten onto a co-spent callee output.
-    while (builder.outputs.length < slot.offset) builder.outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
-    const group = host.externalCallUtxoGroups[slot.slotIndex ?? -1];
+  // Mutate the master input of the BUILT transaction (not a sibling unlocker instance): its unlocker is the one
+  // the finalized tx serializes, and it is the caller entry carrying the edge-witness params.
+  const unlocker = builder.inputs
+    .map((input) => input.unlocker)
+    .find((u): u is NonNullable<typeof u> => u !== undefined && isContractUnlocker(u)
+      && u.abiFunction.inputs.some((input) => /^__internal__callEdgeOutputIdx\d+$/.test(input.name)));
+  if (unlocker === undefined || !isContractUnlocker(unlocker)) return;
+  const edgeParams = unlocker.abiFunction.inputs
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => /^__internal__callEdgeOutputIdx\d+$/.test(input.name));
+  if (edgeParams.length === 0) return;
+  const synced: number[] = [];
+  for (const { input, index } of edgeParams) {
+    const slotIndex = Number(input.name.match(/(\d+)$/)![1]);
+    const group = host.externalCallUtxoGroups[slotIndex];
     const commitment = group === undefined ? undefined : edgeCommitment(group);
-    // No digest for this call (an unexpected shape or a routed group): a plain pad, so a callee requiring the edge
-    // fails closed (sound; a liveness gap for that caller only).
-    const output: Output = commitment === undefined
-      ? { to: Uint8Array.of(0x51), amount: 1000n }
-      : { to: CALL_EDGE_CARRIER_LOCK, amount: 1200n,
-        token: { amount: 0n, category: host.categoryId, nft: { capability: 'none', commitment: binToHex(commitment) } } };
-    builder.outputs.splice(slot.offset, 0, output);
+    if (commitment === undefined) {
+      // No digest for this call (an unexpected shape or a routed group): the caller's covenant then finds no edge
+      // and fails closed (sound; a liveness gap for that caller only). -1 names no output.
+      unlocker.params[index] = -1n;
+      synced.push(index);
+      continue;
+    }
+    unlocker.params[index] = BigInt(builder.outputs.length);
+    builder.outputs.push({
+      to: CALL_EDGE_CARRIER_LOCK,
+      amount: 1200n,
+      token: { amount: 0n, category: host.categoryId, nft: { capability: 'none', commitment: binToHex(commitment) } },
+    });
+    synced.push(index);
   }
+  unlocker.syncEncodedArgsFromParams?.(synced);
 }
 
 /** The 32-byte edge commitment: the call's 31-byte digest followed by the edge form byte. */
@@ -64,4 +82,3 @@ function edgeCommitment(group: EdgeGroup): Uint8Array | undefined {
   });
   return digest === undefined ? undefined : Uint8Array.of(...digest, CALL_EDGE_FORM);
 }
-

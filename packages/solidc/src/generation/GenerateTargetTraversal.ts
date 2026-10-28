@@ -25930,11 +25930,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // F1: pin this call's caller-attested edge record, so the callee binds this contract to the call. Emitted iff
-    // the layout reserved a callEdge slot for this slot index (externalCallSlotCarriesEdge), keeping STT and GTT in
-    // lockstep. A delegate function's own-category outputs belong to the proxy block and are not edge carriers.
+    // STT injected this slot's edge witness (externalCallSlotCarriesEdge), keeping STT and GTT in lockstep. A
+    // delegate function's own-category outputs belong to the proxy block and are not edge carriers.
     if (batchRow === undefined && physicalSlot && node.callInfo && !this.functionHasDelegatecall
-      && (this.currentFunction.blockLayout?.slots ?? []).some(
-        (s) => s.kind === 'callEdge' && s.slotIndex === node.callInfo!.externalCallSlotIndex)) {
+      && this.getStackIndex(`__internal__callEdgeOutputIdx${node.callInfo.externalCallSlotIndex}`, true) >= 0) {
       this.emitCallerEdgeRecord(node, physicalSlot, locationData);
     }
 
@@ -49809,8 +49808,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // [.., digest] -> [.., digest || edge form]
     this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
     this.emit(Op.OP_CAT, loc);
-    // The reserved output index (untracked); then the pin consumes it and the record.
-    this.emitBlockSlotIndex('callEdge', slot.slotIndex, loc);
+    // The witnessed output index where the SDK appended this edge (untracked); the pin consumes it and the record.
+    this.emitPickTrackedFromBottom(`__internal__callEdgeOutputIdx${slot.slotIndex}`, loc);
     this.emitEdgeCarrierPin(loc);
     this.popFromStack();
   }
@@ -52908,7 +52907,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // index it checks. Without this the pin admits a position no honest emit can occupy and refuses the one
     // it does.
     const allowedOffsets = (node.blockLayout?.slots ?? [])
-      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk' || slot.kind === 'callEdge')
+      .filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk')
       .map((slot) => (this.usesDelegateExecutorBlockBase() && this.currentContractIsSplitFacet
         ? slot.offset - this.countDataNftSlotsBefore(slot.offset) : slot.offset));
     // A B-side return event is also an own-category immutable NFT, but its index is WITNESSED, not the layout
@@ -53161,7 +53160,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const returnWitnesses = [
       ...(hasReturnSlot ? ['__internal__returnOutputIdx'] : []),
       ...node.parameters.map((parameter) => parameter.name)
-        .filter((name) => /^__internal__externalReturnOutputIdx\d*$/.test(name)),
+        // F1 caller-edge records are own-category immutable NFTs the caller pins at a witnessed appended index, so
+        // the census admits exactly that index just as it admits a witnessed return carrier.
+        .filter((name) => /^__internal__(externalReturnOutputIdx|callEdgeOutputIdx)\d*$/.test(name)),
     ].filter((name, index, all) => all.indexOf(name) === index
       && this.getStackIndex(name, true) >= 0);
     for (const returnWitness of returnWitnesses) {

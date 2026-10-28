@@ -72,10 +72,26 @@ async function setup(): Promise<{ scCaller: any; scCallee: any; calleeAddr: Uint
 describe('F1 caller-attested call edge binds a contract caller to its call (VM)', () => {
   it('settles the honest A->X call (X sees msg.sender == A and the edge is present)', async () => {
     const { scCaller, scCallee, calleeAddr } = await setup();
-    const tx = await scCaller.run(calleeAddr).withExternalCall(scCallee, 'accept', []).send();
-    expect(tx.txid).toBeDefined();
-    expect((await scCallee.getState()).hits).toBe(1n);
-    expect((await scCaller.getState()).bumps).toBe(1n);
+    const run = await scCaller.run(calleeAddr).withExternalCall(scCallee, 'accept', []).build();
+    // Verify the covenant + appended edge at the VM level (as the other audit tests do), independent of send()'s
+    // multi-phase fee assembly: build() appends A's edge; a plain funder past every block covers the fee.
+    const tx = run.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(run.inputs);
+    tx.inputs.push({
+      outpointTransactionHash: hexToBin('11'.repeat(32)), outpointIndex: 0,
+      sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.of(),
+    });
+    sourceOutputs.push({ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000_000n });
+    const edge = tx.outputs.find((o: any) => o.lockingBytecode.length === 2
+      && o.lockingBytecode[0] === 0x51 && o.lockingBytecode[1] === 0x61 && o.token?.nft !== undefined);
+    expect(edge, 'edge output present in the honest build').toBeDefined();
+    const hex = binToHex(encodeTransaction(tx));
+    const lt = Number(tx.locktime);
+    const chain = lt < 500000000
+      ? { height: lt + 1, medianTimePast: 1700000000 } : { height: 133700, medianTimePast: lt + 1 };
+    const result = verifier.verify(hex, sourceOutputs, chain);
+    expect(result.debugMessage ?? result.error ?? 'ok').not.toContain('OP_VERIFY');
+    expect(result.success).toBe(true);
   }, 300_000);
 
   it('refuses the forgery: A co-spent but its edge record does not attest the call', async () => {

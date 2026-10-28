@@ -5072,6 +5072,21 @@ export default class SymbolTableTraversal extends AstTraversal {
           slot.callRecordParameterTypes = method.parameterTypes;
         }
       }
+      // F1: a per-slot witness output index where the caller pins its attested call-edge record. The edge is an
+      // appended output (not a fixed block slot), so a witnessed index keeps it clear of the callee's block and the
+      // caller's own block/record layout; the SDK fills it and the census admits exactly it.
+      for (let i = 0; i < node.externalCalls.length; i++) {
+        const slot = node.externalCalls[i];
+        if (!this.externalCallSlotCarriesEdge(node, slot)) continue;
+        const edgeIdxName = `__internal__callEdgeOutputIdx${slot.slotIndex}`;
+        const edgeIdxParam = new ParameterNode(PrimitiveType.BIGINT, edgeIdxName);
+        edgeIdxParam.location = node.location;
+        edgeIdxParam.syntheticallyUsed = true;
+        node.parameters.push(edgeIdxParam);
+        this.symbolTables[0].set(Symbol.variable(edgeIdxParam));
+        this.symbolTables[0].get(edgeIdxName)?.references.push({ name: edgeIdxName } as IdentifierNode);
+        this.pushToStack(edgeIdxParam);
+      }
     }
 
     // Token container access pre-scan: collect all token container accesses and assign slot indices
@@ -19393,17 +19408,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {
       slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
-    }
-
-    // Caller-attested call edges (F1, output-only). One own-category edge record per straight-line, unconditional,
-    // direct call to a fixed method; `slotIndex` is the external-call slot it attests. The caller pins it; the
-    // callee reads it to bind the caller to the call. Reserved here so the SDK funds and places it 1:1.
-    if (node.externalCalls) {
-      for (let i = 0; i < node.externalCalls.length; i++) {
-        if (this.externalCallSlotCarriesEdge(node, node.externalCalls[i])) {
-          slots.push({ kind: 'callEdge', offset: offset++, slotIndex: i });
-        }
-      }
     }
 
     // Return event (output-only)

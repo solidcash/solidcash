@@ -556,6 +556,7 @@ import {
   runBuildMidLateThroughTail as runBuildMidLateThroughTailImpl,
   type RunBuildMidLateThroughTailHost,
 } from './stb-run-build-mid-late-through-tail.js';
+import { appendCallerEdges } from './stb-materialize-caller-edge-outputs.js';
 import {
   getChunkableValueWriteBand as getChunkableValueWriteBandImpl,
   type GetChunkableValueWriteBandHost,
@@ -2319,11 +2320,6 @@ export class StatefulTransactionBuilder {
       midCascadeHost: (addReturnOutput) => ({
         ownerEntriesHost: this._materializeOwnerEntriesContainersTransfersHost(),
         ownerEventHost: this._materializeOwnerEventNftOutputsHost(),
-        callerEdgeHost: {
-          blockLayout: this.blockLayout,
-          categoryId: this.categoryId,
-          externalCallUtxoGroups: this.externalCallUtxoGroups,
-        },
         returnEventHost: this._materializeReturnEventOutputsHost(addReturnOutput),
         llcOutputsHost: this._materializeLowLevelCallOutputsHost(),
         trailingIterationHost: this._materializeTrailingIterationEntriesHost(),
@@ -6685,6 +6681,12 @@ export class StatefulTransactionBuilder {
     if (result === 'rebuild') {
       return this.build();
     }
+    // F1: append this caller's attested call-edge records past every block and fill their witness indices, once
+    // the final output list is settled (fee/change are added later and never shift the appended tail).
+    appendCallerEdges({
+      categoryId: this.categoryId,
+      externalCallUtxoGroups: this.externalCallUtxoGroups,
+    }, result);
     return result;
   }
 

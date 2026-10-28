@@ -138,6 +138,9 @@ export async function allocateCreateBuilderFunders(
   if (effectiveBlockLayout && builder.funderUtxos.length === 0) {
     const outputOnlyKinds = new Set([
       'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'lowLevelCall', 'deploy', 'deployDataNft',
+      // F1 caller-attested call edge: an own-category output-only slot inside the caller's block, so it needs a
+      // funder input at its offset to open the 1:1 hole the edge output fills (otherwise the callee block shifts up).
+      'callEdge',
     ]);
     timing?.('funder-accounting-start');
     const entryInfos = builder.getEntryNftInfos();

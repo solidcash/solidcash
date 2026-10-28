@@ -56924,8 +56924,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_DROP, loc);                      // EOA caller: no contract edge to bind -> []
     this.emit(Op.OP_ELSE, loc);                      // [C_A]
-    // expected edge commitment = this run's call digest || edge form byte.
-    this.emitPickTrackedFromBottom('__internal__callDigest', loc);  // [C_A, digest]
+    // expected edge commitment = this run's call digest || edge form byte. In the compact layout the entry holds
+    // the digest's PREIMAGE (settlement hashes it), so hash it to the 31-byte digest first, matching the record.
+    this.emitPickTrackedFromBottom('__internal__callDigest', loc);  // [C_A, digest-or-preimage]
+    if (this.settlesOwnCallPreimage()) this.emitCallRecordDigestOfPreimage(loc);  // [C_A, digest(31)]
     this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
     this.emit(Op.OP_CAT, loc);                       // [C_A, expected]
     // Scan outputs for one own-caller-category (32-byte immutable) NFT carrying exactly that commitment.

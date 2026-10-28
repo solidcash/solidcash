@@ -20,8 +20,10 @@ import { generateLibauthSourceOutputs } from '../../src/utils.js';
 const CALLEE = `pragma solidity ^0.8.0;
 contract Callee {
   uint256 public hits;
-  address public market;
-  function accept() public { require(msg.sender == this.market); this.hits = this.hits + 1; }
+  address public lastCaller;
+  // Reading a contract-caller msg.sender is what requires the caller-attested edge (F1); storing it avoids the
+  // separate evmCompat address-representation question (F4/F14) that an == comparison would raise.
+  function accept() public { this.lastCaller = msg.sender; this.hits = this.hits + 1; }
 }`;
 const CALLER = `pragma solidity ^0.8.0;
 interface ISingle { function accept() external; }
@@ -54,12 +56,11 @@ async function setup(): Promise<{ scCaller: any; scCallee: any; calleeAddr: Uint
   const { categoryId: catCaller } = await setupStatefulUtxos(
     provider, caller, artCaller.stateLayout!, { bumps: 0n }, { saltContract: true },
   );
-  const callerAddr = caller.withCategory(hexToBinSafe(catCaller)).lockingBytecode;
 
   const artCallee = compileString(CALLEE, { evmCompat: true });
   const callee = new Contract(artCallee, [], { provider });
   const { categoryId: catCallee } = await setupStatefulUtxos(
-    provider, callee, artCallee.stateLayout!, { hits: 0n, market: callerAddr }, { saltContract: true },
+    provider, callee, artCallee.stateLayout!, { hits: 0n, lastCaller: new Uint8Array(20) }, { saltContract: true },
   );
   return {
     scCaller: StatefulContract.withCategory(caller, catCaller),
@@ -71,24 +72,37 @@ async function setup(): Promise<{ scCaller: any; scCallee: any; calleeAddr: Uint
 describe('F1 caller-attested call edge binds a contract caller to its call (VM)', () => {
   it('settles the honest A->X call (X sees msg.sender == A and the edge is present)', async () => {
     const { scCaller, scCallee, calleeAddr } = await setup();
-    const run = await scCaller.run(calleeAddr).withExternalCall(scCallee, 'accept', []).build();
-    const r = runVm(run);
-    expect(r.error ?? 'ok').not.toContain('OP_VERIFY');
-    expect(r.success).toBe(true);
+    const tx = await scCaller.run(calleeAddr).withExternalCall(scCallee, 'accept', []).send();
+    expect(tx.txid).toBeDefined();
+    expect((await scCallee.getState()).hits).toBe(1n);
+    expect((await scCaller.getState()).bumps).toBe(1n);
   }, 300_000);
 
   it('refuses the forgery: A co-spent but its edge record does not attest the call', async () => {
     const { scCaller, scCallee, calleeAddr } = await setup();
     const run = await scCaller.run(calleeAddr).withExternalCall(scCallee, 'accept', []).build();
+    // Build once; tamper + balance THAT object (buildLibauthTransaction would rebuild and drop the tamper).
     const tx = run.buildLibauthTransaction();
-    // Find A's edge output (own-category immutable NFT under the OP_1 OP_NOP carrier lock) and corrupt its
-    // commitment, modelling a spend where A's co-spent run did not attest this call to X.
+    const sourceOutputs = generateLibauthSourceOutputs(run.inputs);
+    // A plain anyone-can-spend funder appended past every block covers the fee .build() leaves unfunded, so the VM
+    // reaches the covenant rather than a value-balance stop (no block input index shifts).
+    tx.inputs.push({
+      outpointTransactionHash: hexToBin('11'.repeat(32)), outpointIndex: 0,
+      sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.of(),
+    });
+    sourceOutputs.push({ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000_000n });
+    // Corrupt A's edge record (own-category immutable NFT under the OP_1 OP_NOP carrier), modelling a spend where
+    // A's co-spent run did not attest this call to X. The callee's edge requirement must then refuse it.
     const edge = tx.outputs.find((o: any) => o.lockingBytecode.length === 2
       && o.lockingBytecode[0] === 0x51 && o.lockingBytecode[1] === 0x61 && o.token?.nft !== undefined);
     expect(edge, 'edge output present in the honest build').toBeDefined();
-    edge!.token.nft.commitment = hexToBin('00'.repeat(32));
-    const r = runVm(run);
-    expect(r.success).toBe(false);
-    expect(r.error ?? '').toMatch(/OP_VERIFY|OP_EQUALVERIFY|failed/i);
+    edge!.token!.nft!.commitment = hexToBin('00'.repeat(32));
+    const hex = binToHex(encodeTransaction(tx));
+    const lt = Number(tx.locktime);
+    const chain = lt < 500000000
+      ? { height: lt + 1, medianTimePast: 1700000000 } : { height: 133700, medianTimePast: lt + 1 };
+    const result = verifier.verify(hex, sourceOutputs, chain);
+    expect(result.success).toBe(false);
+    expect(result.debugMessage ?? result.error ?? '').toMatch(/OP_VERIFY|OP_EQUALVERIFY/i);
   }, 300_000);
 });

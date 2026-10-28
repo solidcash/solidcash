@@ -10235,10 +10235,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The digest of the call this entry executes, taken before the body consumes its parameters; its record pins it.
     // An edge-binding entry (F1) that settles no record of its own still needs the digest to match the caller's edge.
     const bindsCallerEdge = this.entryBindsCallerEdge(node);
+    // The digest is left on the stack by emitCallerEdgeRequirement (read, not consumed); a record settlement
+    // consumes it. An edge entry that settles no record of its own - neither a direct call record (F1), a batch
+    // frame, nor a universal void record (fix B) - must drop the leftover itself.
     const edgeNeedsDigest = bindsCallerEdge && !this.settlesDirectCallRecord(node)
+      && !this.settlesUniversalVoidRecord(node)
       && !(this.callBatchFrame && node.returnTypes.length === 0);
     if (!this.isDefineSubTraversal && (this.settlesDirectCallRecord(node)
-      || (this.callBatchFrame && node.returnTypes.length === 0) || edgeNeedsDigest)) {
+      || (this.callBatchFrame && node.returnTypes.length === 0) || edgeNeedsDigest
+      || this.settlesUniversalVoidRecord(node))) {
       this.emitOwnCallRecordDigest(node);
     }
     // F1: bind the contract caller to the call it made (a co-spent caller-category edge record matching this digest).
@@ -10727,6 +10732,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitReturnEventCovenantVerification(node);
         } else if (this.callBatchFrame) {
           this.emitVoidFrameRecordSettlement({ location: node.location, positionHint: PositionHint.END });
+        } else if (!this.isDefineSubTraversal && this.settlesUniversalVoidRecord(node)) {
+          // Approach B: a void entry attests the method it ran as `digest || 0x01` at its carrier witness.
+          this.emitUniversalVoidCallRecordSettlement({ location: node.location, positionHint: PositionHint.END });
         } else if (!this.isDefineSubTraversal && this.contractSettlesCallRecords()
           && !this.isCompilerMessageBusRoute(node)) {
           // A void run of a contract whose entries return values leaves no record of its category.
@@ -49695,6 +49703,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** True when an entry of this contract returns values, so every run of it accounts for its records. */
   private contractSettlesCallRecords(): boolean {
     return !this.framedMaster && this.currentContractSettlesCallRecords;
+  }
+
+  /**
+   * Approach B (single-interface method binding). A void entry attests the method it ran with a void call record
+   * (`digest || 0x01`, digest over the entry's selector and arguments) so a caller through a single-function
+   * interface - which checks no co-spent selector - can bind the co-spent method. A single-function-interface
+   * caller cannot tell at run time whether its callee is single- or multi-method, so every ordinary void entry
+   * emits the record (universal emission). Lifecycle and unsafe entries keep their own covenant settlement.
+   */
+  private settlesUniversalVoidRecord(node: FunctionDefinitionNode): boolean {
+    return !this.framedMaster && node.isEntryPoint && node.returnTypes.length === 0
+      && !node.graphEmissionHandler && !this.isCompilerMessageBusRoute(node) && !this.functionHasDelegatecall
+      && !this.blockEndsWithRevert(node.body) && !this.callBatchFrame
+      && this.directConvention && this.compactCallRecords && !this.isLifecycleOrUnsafeEntry(node)
+      && this.getStackIndex('__internal__returnOutputIdx', true) >= 0;
+  }
+
+  /** A lifecycle or unsafe entry settles its own covenant; it does not carry a universal void call record. */
+  private isLifecycleOrUnsafeEntry(node: FunctionDefinitionNode): boolean {
+    return node.modifiers.some((modifier) => modifier === FunctionModifier.UPGRADE
+      || modifier === FunctionModifier.DEPLOY || modifier === FunctionModifier.SELFDESTRUCT
+      || modifier === FunctionModifier.SPLIT || modifier === FunctionModifier.MERGE
+      || modifier === FunctionModifier.MIGRATE_RECORDS || modifier === FunctionModifier.UNSAFE);
+  }
+
+  /**
+   * Settles an ordinary void entry's call record from `__internal__callDigest` (its preimage in the compact
+   * layout): the record is `digest || 0x01`, the inline form of an empty result, pinned at the carrier witness
+   * `__internal__returnOutputIdx` and counted like a returning entry's record. Mirrors emitCallRecordSettlement's
+   * non-frame tail with an empty result blob.
+   */
+  private emitUniversalVoidCallRecordSettlement(loc: SingleLocationData): void {
+    const digestIdx = this.getStackIndex('__internal__callDigest');
+    this.emitRollAt(digestIdx, loc);
+    this.removeFromStack(digestIdx);
+    this.pushToStack('__internal__callDigest');
+    // A void call has no result: an empty blob makes the record's inline form `digest || 0x01`.
+    this.emit(new Uint8Array(), loc);
+    this.pushToStack('(void_result_blob)');
+    // Stack: [.., preimage, blob]
+    this.registerCallRecordCount();
+    const settle = this.sharedEntryCheckId('callRecordSettle', (t, l) => t.emitCallRecordSettleBody(l));
+    if (settle !== undefined && this.subroutineDefined.get(settle)) {
+      this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
+      this.invokeSubroutineIfDefined(settle, loc);
+      this.popFromStack(2);
+      return;
+    }
+    if (this.settlesOwnCallPreimage()) {
+      this.emit(Op.OP_SWAP, loc);
+      this.emitCallRecordDigestOfPreimage(loc);
+      this.emit(Op.OP_SWAP, loc);
+    }
+    this.emitCallRecordForm(loc);
+    this.removeFromStack(1);
+    this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
+    this.popFromStack();
+    // Stack: [.., record, idx] (2 untracked)
+    this.emitCallRecordPin(loc);
+    this.emitCallRecordCount(loc);
   }
 
   /**

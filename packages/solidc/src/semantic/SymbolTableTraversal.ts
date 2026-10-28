@@ -4611,6 +4611,28 @@ export default class SymbolTableTraversal extends AstTraversal {
               ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
           }
         }
+        // Approach B (single-interface method binding): a void call through an interface naming exactly one
+        // function verifies no co-spent selector (a one-method callee has no selector prefix), so a multi-method
+        // co-spent callee could run a different same-arity method while the caller advances its state. Bind the
+        // method by reading the callee's attested void record: mark the slot to carry a record. Its callee emits
+        // `digest || 0x01` universally, so the caller can always read one.
+        const directConventionVoidBinding = messageBusExplicitlyDisabled
+          && this.compilerOptions.composition !== 'framed';
+        if (directConventionVoidBinding && node.isEntryPoint) {
+          for (const slot of externalCallSlots) {
+            if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
+            if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
+            if (slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf) continue;
+            if (slot.callValueEffect) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            if (slot.needsSelectorVerification) continue;
+            const calleeFns = this.getCalleeFunctions(slot.interfaceName);
+            if (!calleeFns || calleeFns.length !== 1) continue;
+            if (!this.interfaceMap.has(slot.interfaceName) || !this.slotCalleeMethod(slot)) continue;
+            slot.hasReturnValues = true;
+            slot.voidCallRecord = true;
+          }
+        }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
         let slotIndex = 0;
         let runningOffset = 0;
@@ -5012,6 +5034,29 @@ export default class SymbolTableTraversal extends AstTraversal {
         returnOutputIdxSymbol.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
       }
       this.pushToStack(returnOutputIdxParam);
+    }
+
+    // B-side (approach B, single-interface method binding): an ordinary void entry of a direct stateful contract
+    // attests the method it ran via a void call record so a single-function-interface caller can bind the co-spent
+    // method. It needs the carrier output index its caller pins the record at. Lifecycle and unsafe entries keep
+    // their own covenant settlement, and the multi-call candidate path below injects this witness itself.
+    const voidRecordLifecycleOrUnsafe = node.modifiers.some((modifier) =>
+      modifier === FunctionModifier.UPGRADE || modifier === FunctionModifier.DEPLOY
+      || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
+      || modifier === FunctionModifier.MERGE || modifier === FunctionModifier.MIGRATE_RECORDS
+      || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.DELEGATE);
+    if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
+      && this.isStatefulContract && !voidRecordLifecycleOrUnsafe
+      && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
+      && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
+      const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
+      voidRecordIdxParam.location = node.location;
+      voidRecordIdxParam.syntheticallyUsed = true;
+      node.parameters.push(voidRecordIdxParam);
+      this.symbolTables[0].set(Symbol.variable(voidRecordIdxParam));
+      this.symbolTables[0].get('__internal__returnOutputIdx')
+        ?.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
+      this.pushToStack(voidRecordIdxParam);
     }
 
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
@@ -19420,8 +19465,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
     }
 
-    // Return event (output-only)
-    if (node.returnTypes.length > 0) {
+    // Return event (output-only). A void entry that attests a universal void call record (approach B) also pins a
+    // record carrier at its `__internal__returnOutputIdx`, so it reserves the same output-only slot; the SDK funds
+    // it through the existing returnEvent funder and compacts it when the run is standalone (witness -1).
+    if (node.returnTypes.length > 0
+      || (node.returnTypes.length === 0
+        && node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx'))) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
       // The message-bus route commits its complete result vector here. Atomic graph derivation extracts each
       // logical invocation's typed result from that authenticated vector; no per-row return NFT is consumed or

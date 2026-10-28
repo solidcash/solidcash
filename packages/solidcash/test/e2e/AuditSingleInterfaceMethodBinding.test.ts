@@ -122,13 +122,12 @@ describe('a single-function-interface void call to a multi-method callee binds t
     expect(r.success).toBe(true);
   }, 300_000);
 
-  // CONFIRMED-EXPLOITABLE (1a), marked it.fails until a sound fix lands: the caller names only `declared` through a
-  // single-function interface, so needsSelectorVerification is false and the co-spent selector is never checked. A
-  // co-spend running a DIFFERENT same-arity method (`other`, whose trailing argument agrees with the bound value)
-  // SETTLES while the caller advances its own state. The argument binding pins only the trailing push, not the
-  // method. A sound fix (callee-attested void call record, digest || 0x01; see the ledger) must make this REFUSE;
-  // when it does, this expectation passes and it.fails turns red, signalling that `.fails` should be removed.
-  it.fails('refuses a co-spent callee running a DIFFERENT same-arity method (other) - UNFIXED, settles', async () => {
+  // FIXED (approach B, callee-attested void call record `digest || 0x01`): the caller names only `declared` through a
+  // single-function interface, so it verifies no co-spent selector. Before the fix a co-spend running a DIFFERENT
+  // same-arity method (`other`, whose trailing argument agrees with the bound value) SETTLED while the caller advanced
+  // its state. Now the callee attests the method it ran as a void call record and the caller binds the co-spent method
+  // to it, so the wrong-method co-spend is REFUSED while the honest `declared` co-spend still settles.
+  it('refuses a co-spent callee running a DIFFERENT same-arity method (other)', async () => {
     const provider = createTestProvider();
     const h = await callee(provider);
     const sc = await caller(provider);

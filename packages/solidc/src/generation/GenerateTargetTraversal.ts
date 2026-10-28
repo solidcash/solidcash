@@ -14704,7 +14704,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (transfers, events, and fix B's void-record returnEvent) are counted in blockSize but consume no input, so
     // they must be excluded from the input base - otherwise the entry inputs are read one position too high.
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    const inputSlots = blockSize - this.countOutputOnlySlotsBefore(blockSize);
+    // Co-spent entries follow the block's INPUT slots. Subtract only slots that consume NO input - the record/event
+    // carriers (returnEvent incl. fix B's void record, event, eventChunk, transfer). A deployDataNft is output-only
+    // for commitment purposes but DOES occupy a co-spent input (the deploy funder), so it must NOT be subtracted.
+    const noInputKinds = new Set<BlockSlotKind>(['returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer']);
+    const noInputSlots = (this.currentFunction.blockLayout?.slots ?? [])
+      .filter((slot) => noInputKinds.has(slot.kind) && slot.offset < blockSize).length;
+    const inputSlots = blockSize - noInputSlots;
 
     this.emitMasterInputIndex(locationData);
     this.emit(encodeInt(BigInt(inputSlots)), locationData);

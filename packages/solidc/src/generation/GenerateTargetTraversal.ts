@@ -14700,11 +14700,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitCollectionIterInputIndex(iterIdx: number, locationData: SingleLocationData): void {
-    // With 1:1 block layout, iteration entries start after the fixed block
+    // With 1:1 block layout, iteration entries start after the fixed block's INPUT slots. Output-only slots
+    // (transfers, events, and fix B's void-record returnEvent) are counted in blockSize but consume no input, so
+    // they must be excluded from the input base - otherwise the entry inputs are read one position too high.
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const inputSlots = blockSize - this.countOutputOnlySlotsBefore(blockSize);
 
     this.emitMasterInputIndex(locationData);
-    this.emit(encodeInt(BigInt(blockSize)), locationData);
+    this.emit(encodeInt(BigInt(inputSlots)), locationData);
     this.emit(Op.OP_ADD, locationData);
 
     // Add sum of prior iteration counts (runtime values from _collectionIterCount_0..iterIdx-1)

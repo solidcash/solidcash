@@ -49891,8 +49891,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
   }
 
-  /** `[record, idx]` -> `[]`: pin the output at idx as an own-category edge carrier holding `record`. */
+  /** `[record, idx]` -> `[]`: pin the output at idx as an own-category edge carrier holding `record`. A standalone
+   * spend names no edge output (idx < 0) and pins nothing; a callee that requires the edge still fails closed, so
+   * this is sound (mirrors the void record's compact form). The SDK always materialises the edge in production. */
   private emitEdgeCarrierPin(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_TUCK, loc);                      // [idx, record, idx]
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);     // [idx, record, commitment]
     this.emit(Op.OP_EQUALVERIFY, loc);               // [idx]
@@ -49914,6 +49920,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1200n), loc);
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);                    // []
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_2DROP, loc);                     // idx < 0: nothing pinned
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** `[.., preimage]` -> `[.., digest]`: the first 31 bytes of the preimage's SHA256. */

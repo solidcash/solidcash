@@ -1265,8 +1265,12 @@ function tokenIterationSpend(
   for (let index = 0; index < chain.length; index += 1) {
     inputs.push(input(blockSize + index, pushesOf([num(0n), num(0n), entryRedeem])));
   }
-  if (sources.length !== blockSize + chain.length) {
-    throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+  // Entries are co-spent inputs after the INPUT block slots; fix B's output-only returnEvent is counted in
+  // blockSize but has no input, so the source count matches the input-slot count, not blockSize.
+  const outputOnlyKinds = ['returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer', 'deployDataNft'];
+  const inputSlots = (fn.blockLayout?.slots ?? []).filter((s) => !outputOnlyKinds.includes(s.kind)).length || 1;
+  if (sources.length !== inputSlots + chain.length) {
+    throw new Error(`inputSlots ${inputSlots} sources ${sources.length} chain ${chain.length}`);
   }
   return { sourceOutputs: sources, transaction: { version: 2, locktime: 0, inputs, outputs } };
 }
@@ -1328,8 +1332,12 @@ function iterationSpend(
   for (let index = 0; index < chain.length; index += 1) {
     inputs.push(input(blockSize + index, pushesOf([num(0n), num(0n), entryRedeem])));
   }
-  if (sources.length !== blockSize + chain.length) {
-    throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+  // Entries are co-spent inputs after the INPUT block slots; fix B's output-only returnEvent is counted in
+  // blockSize but has no input, so the source count matches the input-slot count, not blockSize.
+  const outputOnlyKinds = ['returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer', 'deployDataNft'];
+  const inputSlots = (fn.blockLayout?.slots ?? []).filter((s) => !outputOnlyKinds.includes(s.kind)).length || 1;
+  if (sources.length !== inputSlots + chain.length) {
+    throw new Error(`inputSlots ${inputSlots} sources ${sources.length} chain ${chain.length}`);
   }
   return { sourceOutputs: sources, transaction: { version: 2, locktime: 0, inputs, outputs } };
 }

@@ -62,8 +62,11 @@ function redeemUnlock(
   fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
-    // Fix B: an ordinary void entry's universal void call record defaults to a standalone compact spend (-1).
-    const value = values[entry.name] ?? (entry.name === '__internal__returnOutputIdx' ? num(-1n) : undefined);
+    // Fix B void record (returnOutputIdx) and F1 call edge (callEdgeOutputIdx<n>) default to a standalone compact
+    // spend (-1): no output named, nothing pinned.
+    const value = values[entry.name] ?? (
+      entry.name === '__internal__returnOutputIdx' || /^__internal__callEdgeOutputIdx\d+$/.test(entry.name)
+        ? num(-1n) : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;
   }).reverse();
@@ -1086,8 +1089,12 @@ describe('October 2026 class C holes', () => {
       for (let index = 0; index < chain.length; index += 1) {
         inputs.push(input(blockSize + index, entryUnlock));
       }
-      if (sources.length !== blockSize + chain.length) {
-        throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+      // Entries are co-spent inputs after the INPUT block slots; fix B's output-only returnEvent is counted in
+      // blockSize but has no input, so the source count matches the input-slot count, not blockSize.
+      const outputOnlyKinds = ['returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer', 'deployDataNft'];
+      const inputSlots = (fn.blockLayout?.slots ?? []).filter((s) => !outputOnlyKinds.includes(s.kind)).length || 1;
+      if (sources.length !== inputSlots + chain.length) {
+        throw new Error(`inputSlots ${inputSlots} sources ${sources.length} chain ${chain.length}`);
       }
       return verdict(sources, { version: 2, locktime: 0, inputs, outputs });
     };

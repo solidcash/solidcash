@@ -36,10 +36,13 @@ export function appendCallerEdges(
   host: AppendCallerEdgesHost, builder: { outputs: Output[]; inputs: ReadonlyArray<{ unlocker?: Unlocker }> },
 ): void {
   // Mutate the master input of the BUILT transaction (not a sibling unlocker instance): its unlocker is the one
-  // the finalized tx serializes, and it is the caller entry carrying the edge-witness params.
+  // the finalized tx serializes, and it is the caller entry carrying the edge-witness params. Require a FULL-args
+  // unlocker (params aligned 1:1 with abiFunction.inputs): a visible-args-only unlocker encodes against
+  // visibleInputs, so a synthetic witness index would overrun its argument list.
   const unlocker = builder.inputs
     .map((input) => input.unlocker)
     .find((u): u is NonNullable<typeof u> => u !== undefined && isContractUnlocker(u)
+      && u.params.length === u.abiFunction.inputs.length
       && u.abiFunction.inputs.some((input) => /^__internal__callEdgeOutputIdx\d+$/.test(input.name)));
   if (unlocker === undefined || !isContractUnlocker(unlocker)) return;
   const edgeParams = unlocker.abiFunction.inputs

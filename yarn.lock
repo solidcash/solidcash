@@ -1695,48 +1695,54 @@
     npmlog "^4.1.2"
     write-file-atomic "^2.3.0"
 
-"@mem-cash/core@0.0.10":
-  version "0.0.10"
-  resolved "https://registry.npmjs.org/@mem-cash/core/-/core-0.0.10.tgz#3165ae9f69274f90df739edc0b405401d12d111c"
-  integrity sha512-f3hTyHCimWU1ZUPB7dOHSzTI0Fiwu4+Wudz3nZr0ADa8DOszVZEsMq/uFXD/wonWO03MGVFj0yjCm1X+x7e5UA==
+"@mem-cash/core@0.0.11", "@mem-cash/core@file:../mem-cash/packages/core":
+  version "0.0.11"
   dependencies:
     "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
-    "@mem-cash/storage" "0.0.10"
-    "@mem-cash/types" "0.0.10"
+    "@mem-cash/storage" "0.0.11"
+    "@mem-cash/types" "0.0.11"
 
-"@mem-cash/electrum@^0.0.10":
-  version "0.0.10"
-  resolved "https://registry.npmjs.org/@mem-cash/electrum/-/electrum-0.0.10.tgz#be9d22daeebcfa4ec6aaf2f0aa0483fd1523763c"
-  integrity sha512-OhqiCPIRs984gv2d5C9TXn45BgTU99vbXg6DAUJymQaFceyjqtCtg6UlJxLNjSAvQf4g3DxYX4sjpGNLjKWEKg==
+"@mem-cash/electrum@0.0.11", "@mem-cash/electrum@^0.0.10", "@mem-cash/electrum@file:../mem-cash/packages/electrum":
+  version "0.0.11"
   dependencies:
     "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
-    "@mem-cash/core" "0.0.10"
-    "@mem-cash/storage" "0.0.10"
-    "@mem-cash/types" "0.0.10"
+    "@mem-cash/core" "0.0.11"
+    "@mem-cash/storage" "0.0.11"
+    "@mem-cash/types" "0.0.11"
 
-"@mem-cash/storage@0.0.10":
-  version "0.0.10"
-  resolved "https://registry.npmjs.org/@mem-cash/storage/-/storage-0.0.10.tgz#49437090b9c2bd1ab69c06127d0d8c2015de626e"
-  integrity sha512-YNkfPmNbM+ZamJdctHiPyQuIO3YBERRXvYt2AChFUs5irGVxwhDVSySjkhj1eO4RTAkpAZnO7o4qY3veGXuuFQ==
+"@mem-cash/server-evm@0.0.11", "@mem-cash/server-evm@file:../mem-cash/packages/server-evm":
+  version "0.0.11"
+  dependencies:
+    "@mem-cash/types" "0.0.11"
+
+"@mem-cash/server@0.0.11", "@mem-cash/server@file:../mem-cash/packages/server":
+  version "0.0.11"
   dependencies:
     "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
-    "@mem-cash/types" "0.0.10"
+    "@mem-cash/core" "0.0.11"
+    "@mem-cash/electrum" "0.0.11"
+    "@mem-cash/storage" "0.0.11"
+    "@mem-cash/types" "0.0.11"
+    "@mem-cash/validation" "0.0.11"
+    ws "^8.21.0"
 
-"@mem-cash/types@0.0.10":
-  version "0.0.10"
-  resolved "https://registry.npmjs.org/@mem-cash/types/-/types-0.0.10.tgz#595b2f830fe9885f6564177502c3ea309e8e18a4"
-  integrity sha512-t9X5ivy9E11zEyRwvgCKqrUu8rxShiywKGSpIQN5B0hMuKuI/KzLSPMSoZDIOF09wYhphdPKpJHIilP9YwSwQA==
+"@mem-cash/storage@0.0.11", "@mem-cash/storage@file:../mem-cash/packages/storage":
+  version "0.0.11"
+  dependencies:
+    "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
+    "@mem-cash/types" "0.0.11"
+
+"@mem-cash/types@0.0.11", "@mem-cash/types@file:../mem-cash/packages/types":
+  version "0.0.11"
   dependencies:
     "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
 
-"@mem-cash/validation@^0.0.10":
-  version "0.0.10"
-  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.10.tgz#ec5d79fa17901689737932ad15d8677d90f47e44"
-  integrity sha512-u10PX92iA4uYathh8GkmItVGesTcDzkXIlQz6xWhjEuOw5LFNHm0DzvhXmwnQkiGovxVZqxD+VwSIxucnxmwsQ==
+"@mem-cash/validation@0.0.11", "@mem-cash/validation@^0.0.10", "@mem-cash/validation@file:../mem-cash/packages/validation":
+  version "0.0.11"
   dependencies:
     "@bitauth/libauth" "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8"
 
-"@monsterbitar/isomorphic-ws@^5.3.0":
+"@monsterbitar/isomorphic-ws@^5.3.0", "@monsterbitar/isomorphic-ws@^5.3.1":
   version "5.3.1"
   resolved "https://registry.yarnpkg.com/@monsterbitar/isomorphic-ws/-/isomorphic-ws-5.3.1.tgz#acd6be86c7568682d8146f8b5fadbec74bf8789e"
   integrity sha512-BWfWUffbg3uO4K6Cyokg9ff43lPaXAOZcCnNe1lcjCjUMDVrRAb5qEHG5qeJp3ud2SPYbORaNsls5as6SR3oig==
@@ -9715,7 +9721,7 @@ write-pkg@^3.1.0:
     sort-keys "^2.0.0"
     write-json-file "^2.2.0"
 
-ws@8.21.0, ws@^8.13.0:
+ws@8.21.0, ws@^8.13.0, ws@^8.21.0:
   version "8.21.0"
   resolved "https://registry.npmjs.org/ws/-/ws-8.21.0.tgz#012e413fc07429945121b0c153158c4343086951"
   integrity sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==

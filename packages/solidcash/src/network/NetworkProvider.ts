@@ -129,4 +129,12 @@ export default interface NetworkProvider {
    * provider with a remote party behind it must not implement it.
    */
   getLedgerOutput?(txid: string, vout: number): Promise<LedgerOutput | undefined>;
+
+  /**
+   * Optional hook awaited before a deploy-site CREATE reservation and by `Signer.getNonce()`.
+   *
+   * A remote provider uses it to seed the logical transaction nonce from the shared chain, so two processes deploying
+   * from one account do not anchor two contracts at the same logical address.
+   */
+  prepareSigner?(signer: import('../Signer.js').default): Promise<void>;
 }

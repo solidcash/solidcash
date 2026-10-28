@@ -26,6 +26,7 @@ import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash
 import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
 import ElectrumNetworkProvider from '@solidcash/solidcash/dist/network/ElectrumNetworkProvider.js';
 import BitcoinRpcNetworkProvider from '@solidcash/solidcash/dist/network/BitcoinRpcNetworkProvider.js';
+import MemCashNetworkProvider from '@solidcash/solidcash/dist/network/MemCashNetworkProvider.js';
 import Signer from '@solidcash/solidcash/dist/Signer.js';
 import { HDSigner, signersFromMnemonic } from '@solidcash/solidcash/hdsigner';
 import {
@@ -95,7 +96,11 @@ async function loadStatefulContract(): Promise<StatefulContractCtor> {
 }
 
 /** Build a network provider from a resolved network config. */
-export function createProvider(name: string, netCfg: NetworkConfig | undefined): NetworkProvider {
+export function createProvider(
+  name: string,
+  netCfg: NetworkConfig | undefined,
+  config?: Pick<ResolvedConfig, 'mnemonic' | 'accounts'>,
+): NetworkProvider {
   const type = netCfg?.type ?? (name === 'regtest' ? 'regtest' : name === 'mock' ? 'mock' : 'mock');
   const knownNetworks: readonly Network[] = [
     Networks.MAINNET, Networks.TESTNET3, Networks.TESTNET4, Networks.CHIPNET, Networks.REGTEST,
@@ -128,6 +133,23 @@ export function createProvider(name: string, netCfg: NetworkConfig | undefined):
         network,
         netCfg?.electrum?.host ? { hostname: netCfg.electrum.host } : {},
       );
+    }
+    case 'mem-cash': {
+      const memCash = netCfg?.memCash;
+      // A configured BCH network selects the cashaddr prefix; the global `--network` only picks the entry.
+      const providerNetwork = configuredNetwork === Networks.REGTEST ? Networks.REGTEST : Networks.MOCKNET;
+      return new MemCashNetworkProvider(providerNetwork, {
+        ...(memCash?.url === undefined ? {} : { url: memCash.url }),
+        ...(memCash?.host === undefined ? {} : { hostname: memCash.host }),
+        ...(memCash?.port === undefined ? {} : { port: memCash.port }),
+        ...(memCash?.encrypted === undefined ? {} : { encrypted: memCash.encrypted }),
+        ...(memCash?.token === undefined ? {} : { token: memCash.token }),
+        ...(memCash?.timeoutMs === undefined ? {} : { requestTimeoutMs: memCash.timeoutMs }),
+        mnemonic: netCfg?.mnemonic ?? config?.mnemonic ?? DEFAULT_MNEMONIC,
+        // Undefined lets the provider adopt the node's advertised branch, which is the value that must agree.
+        ...(config?.accounts?.path === undefined ? {} : { derivationPath: config.accounts.path }),
+        ...(config?.accounts?.initialIndex === undefined ? {} : { initialIndex: config.accounts.initialIndex }),
+      });
     }
     case 'bitcoin-rpc': {
       if (!netCfg?.rpc?.url) throw new Error(`Network "${name}" requires rpc.url.`);
@@ -886,9 +908,14 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   return ethers;
 }
 
-function buildConnection(name: string, netCfg: NetworkConfig | undefined, mnemonic: string, opts: EthersOptions)
-  : NetworkConnection {
-  const provider = createProvider(name, netCfg);
+function buildConnection(
+  name: string,
+  netCfg: NetworkConfig | undefined,
+  mnemonic: string,
+  opts: EthersOptions,
+  resolvedConfig?: ResolvedConfig,
+): NetworkConnection {
+  const provider = createProvider(name, netCfg, resolvedConfig);
   const ethers = buildEthers(provider, mnemonic, opts);
   return { name, provider, config: netCfg, ethers, networkHelpers: nh };
 }
@@ -925,7 +952,11 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     ...(config.create2Templates === undefined ? {} : { create2Templates: config.create2Templates }),
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
-    accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
+    // A devnet may fund a different branch than the default; leave it undefined so the provider adopts the
+    // node's advertised path instead of substituting a branch the node never funded.
+    accountsPath: selectedConfig.type === 'mem-cash'
+      ? config.accounts?.path as string
+      : config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
     accountsInitialIndex: config.accounts?.initialIndex ?? 0,
     accountSatoshis: config.accounts?.satoshis,
     recoveryProjection: config.compiler?.ecrecover === 'evm' ? 'evm'
@@ -949,14 +980,14 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     }
     return conn;
   };
-  const base = attachEthersNetwork(buildConnection(name, selectedConfig, mnemonic, ethersOpts));
+  const base = attachEthersNetwork(buildConnection(name, selectedConfig, mnemonic, ethersOpts, config));
   // The active provider backs the module-global network helpers (loadFixture/time/...).
   setActiveProvider(base.provider as unknown as nh.TestNetworkProvider);
 
   const connect = async (n?: string): Promise<NetworkConnection> => {
     const cn = n ?? name;
     const cnCfg = validateNetwork(cn);
-    const conn = attachEthersNetwork(buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts));
+    const conn = attachEthersNetwork(buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts, config));
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;

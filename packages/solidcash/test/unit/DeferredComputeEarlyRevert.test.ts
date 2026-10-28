@@ -1,6 +1,6 @@
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { Op, type Artifact } from '@solidcash/utils';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { FailedRequireError } from '../../src/Errors.js';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
@@ -63,6 +63,15 @@ function fixture(ambiguous = false): { builder: TransactionBuilder; provider: Ne
 }
 
 const candidate = [{ inputIndex: 0, inputBase: 0, offsets: [3] }];
+
+
+// `--no-isolate` shares one module registry between test files, so a later file's `vi.mock` of the VM module
+// would otherwise be shadowed by whichever file imported it first. Release the mock after this file's tests so
+// the next file re-imports the module through its own factory.
+afterAll(() => {
+  vi.doUnmock('../../src/network/createVirtualMachine.js');
+  vi.resetModules();
+});
 
 describe('deferred-compute early source revert', () => {
   it('retains the recipe gate when the active body is ambiguous', () => {

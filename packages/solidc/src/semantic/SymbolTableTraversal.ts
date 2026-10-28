@@ -5046,7 +5046,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || modifier === FunctionModifier.MERGE || modifier === FunctionModifier.MIGRATE_RECORDS
       || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.DELEGATE);
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
-      && this.isStatefulContract && !voidRecordLifecycleOrUnsafe
+      && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');

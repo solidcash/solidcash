@@ -391,19 +391,19 @@
         "legacy": {
           "convention": "legacy-unroll",
           "routeBytes": 44865,
-          "fullBytes": 249869,
+          "fullBytes": 254011,
           "routeHash": "8b23a047b9518cb5f01b07fc72fce24dbed71babb5bc023a1937aee656f1486b",
-          "fullHash": "2a2a23be9b3b401c0368c5d971e8c41c9c145c244c5291d2e09059a40941814a",
-          "metadataHash": "3d6236bf5b5ed8824f4ce64a8a22285359e334b2c76d88618d7423dd27dea5ed",
+          "fullHash": "9eaa6f738d98c65cfc952f6427d69b3d4716d89cc24debf7418ba35ecc3ffb5d",
+          "metadataHash": "faffcf07105e23ddf5a60873edc4014f2cf76224706abcd66ad8a4b4684e0fce",
           "handlers": { "total": 38, "eligible": 28, "refused": 10 }
         },
         "kernel": {
           "convention": "kernel-row-loop",
           "routeBytes": 14850,
-          "fullBytes": 314127,
+          "fullBytes": 319814,
           "routeHash": "756b40df2ee1a36ef8b0fb70b59f1ebd61fdfad96c60f767f32e1b9a78dd2f59",
-          "fullHash": "a770a6985ea8f54f2f3acda1bc05192bd50d1cd7288d77fe01be8571d688c10b",
-          "metadataHash": "1a3706d805afbfe45285381c9a258d9acdcab1540ac3f4523588ba5d08f2ff5b",
+          "fullHash": "d74fd8b723bea01103bcfa314b0a424b5971972540fffb231d716f0990d6d6d7",
+          "metadataHash": "f98336791e73098152b4566a312e3d81dd405c387ad0915cd55854de92aa01c7",
           "handlers": { "total": 38, "eligible": 38, "refused": 0 }
         }
       }
@@ -418,18 +418,18 @@
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 1072,
+        "measuredRouteBytes": 1087,
         "routeAloneExceedsLimit": false,
         "note": "Route fits alone; full-contract deployability requires the compiler certificate"
       },
       "modes": {
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 1072,
-          "fullBytes": 16678,
-          "routeHash": "2e717c98c07b2c6f3b1b67218554a347f79cc295c71dbe539b29380210b10158",
-          "fullHash": "80f9950e6bea9d0953b3cea93c0bb7d5eddd3945528fc48dc645432dfb9bdd3b",
-          "metadataHash": "c1deaf153ac774635b6eec73dd3fa057c213cbb405b118e141d0adf9d15bb6d9",
+          "routeBytes": 1087,
+          "fullBytes": 16935,
+          "routeHash": "48e15c5e16f07ff798db8a0a44e9072dc5c1b551c54167d47e38fa1b313c3c29",
+          "fullHash": "646bff46785229886274cab8ff2c4ce229fa0bfc2187f259c24d6bd16344fe62",
+          "metadataHash": "1059eee02ac0ec4689c5450f6a7e71152098343231ff5dc939a5a0298cc27fc7",
           "handlers": { "total": 10, "eligible": 10, "refused": 0 }
         }
       }

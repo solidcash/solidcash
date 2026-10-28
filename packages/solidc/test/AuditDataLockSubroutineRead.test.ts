@@ -73,8 +73,13 @@ function spend(artifact: Artifact, foreignLock?: Uint8Array, threads = 0): true 
   const recordLock = foreignLock ?? p2sh32(recordRedeem);
   const record = hexToBin(buildPushdataCommitment(artifact.stateLayout!, { owner: OWNER }, 0));
   const readOnly = pushesOf([encodeIntegerValue(0n), encodeIntegerValue(0n), recordRedeem]);
-  // The last argument is pushed first: `b` = true, then `n`.
-  const args = [encodeIntegerValue(1n), ...(threads > 0 ? [encodeIntegerValue(BigInt(threads))] : [])];
+  // The last argument is pushed first. Fix B appends __internal__returnOutputIdx to an ordinary void entry (not a
+  // split/merge lifecycle entry), so when the spent entry carries it, its value (-1, a compacted standalone void
+  // record) is pushed first, then `b` = true, then `n`.
+  const carriesVoidRecord = artifact.abi.some((entry) =>
+    (entry.inputs ?? []).some((input) => input.name === '__internal__returnOutputIdx'));
+  const args = [...(carriesVoidRecord ? [encodeIntegerValue(-1n)] : []), encodeIntegerValue(1n),
+    ...(threads > 0 ? [encodeIntegerValue(BigInt(threads))] : [])];
   const master = (): VmOutput => ({ lockingBytecode: lock, valueSatoshis: VALUE, token: token('minting', EMPTY) });
   const transaction: VmTransaction = {
     version: 2,
@@ -105,7 +110,8 @@ describe('a data record read only through a subroutine', () => {
 
   it('places the record the pointer target reads in the block of the entry', () => {
     expect((go.blockLayout?.slots ?? []).map((slot) => `${slot.kind}@${slot.offset}`))
-      .toEqual(['master@0', 'dataNft@1']);
+      // Fix B: an ordinary void entry reserves a returnEvent slot for its universal void call record.
+      .toEqual(['master@0', 'dataNft@1', 'returnEvent@2']);
     console.info(`subroutine-read entry: ${scriptToBytecode(asmToScript(artifact.bytecode)).length} B`);
   });
 

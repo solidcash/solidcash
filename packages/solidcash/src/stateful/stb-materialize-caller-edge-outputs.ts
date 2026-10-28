@@ -1,10 +1,11 @@
 /**
- * F1 caller-attested call edges (SDK side): append each outgoing call's edge record to the output tail and record
- * its index in the caller's `__internal__callEdgeOutputIdx<slot>` witness. The caller pins an own-category immutable
- * NFT committing to the digest of the call it makes (under the edge carrier lock), so the callee can bind which
- * contract invoked it (emitCallerEdgeRequirement in the compiler). The edge is appended past every block (never a
- * fixed block slot), so it shifts no callee block and interacts with no record layout; its dust value is covered by
- * the ordinary fee funding. Runs once on the final build result, after all other outputs are placed.
+ * F1 caller-attested call edges (SDK side): for every co-spent call in the transaction, append the caller's edge
+ * record to the output tail and record its index in that caller's `__internal__callEdgeOutputIdx<slot>` witness.
+ * Each caller (the top-level entry, or any intermediate contract in an A->B->C chain) pins an own-category
+ * immutable NFT committing to the digest of the call it makes, so the callee can bind which contract invoked it
+ * (emitCallerEdgeRequirement in the compiler). Edges are appended past every block (never a fixed block slot), so
+ * they shift no callee block and interact with no record layout; their dust value is covered by the fee funding.
+ * Runs once on the final build result, after all other outputs are placed. Idempotent across build/send phases.
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -25,64 +26,79 @@ interface EdgeGroup {
   readonly externalContract?: { readonly inner?: { readonly artifact?: Artifact } };
   readonly logicalArtifact?: Artifact;
   readonly compilerRoute?: unknown;
+  readonly categoryId?: string;
+  readonly masterUtxo?: { readonly txid: string; readonly vout: number };
+  readonly edgeParentIndex?: number;
+  readonly edgeEcSlot?: number;
 }
 
 export interface AppendCallerEdgesHost {
   readonly categoryId: string;
   readonly externalCallUtxoGroups: readonly EdgeGroup[];
+  readonly masterUtxo: { readonly txid: string; readonly vout: number };
 }
 
+type TxInput = { readonly txid: string; readonly vout: number; readonly unlocker?: Unlocker };
+
 export function appendCallerEdges(
-  host: AppendCallerEdgesHost, builder: { outputs: Output[]; inputs: ReadonlyArray<{ unlocker?: Unlocker }> },
+  host: AppendCallerEdgesHost, builder: { outputs: Output[]; inputs: ReadonlyArray<TxInput> },
 ): void {
-  // Mutate the master input of the BUILT transaction (not a sibling unlocker instance): its unlocker is the one
-  // the finalized tx serializes, and it is the caller entry carrying the edge-witness params. Require a FULL-args
-  // unlocker (params aligned 1:1 with abiFunction.inputs): a visible-args-only unlocker encodes against
-  // visibleInputs, so a synthetic witness index would overrun its argument list.
-  const unlocker = builder.inputs
-    .map((input) => input.unlocker)
-    .find((u): u is NonNullable<typeof u> => u !== undefined && isContractUnlocker(u)
-      && u.params.length === u.abiFunction.inputs.length
-      && u.abiFunction.inputs.some((input) => /^__internal__callEdgeOutputIdx\d+$/.test(input.name)));
-  if (unlocker === undefined || !isContractUnlocker(unlocker)) return;
-  const edgeParams = unlocker.abiFunction.inputs
-    .map((input, index) => ({ input, index }))
-    .filter(({ input }) => /^__internal__callEdgeOutputIdx\d+$/.test(input.name));
-  if (edgeParams.length === 0) return;
-  const synced: number[] = [];
-  for (const { input, index } of edgeParams) {
-    const slotIndex = Number(input.name.match(/(\d+)$/)![1]);
-    const group = host.externalCallUtxoGroups[slotIndex];
-    const commitment = group === undefined ? undefined : edgeCommitment(group);
+  const groups = host.externalCallUtxoGroups;
+  // The caller's co-spent master input, keyed -1 for the top-level entry or a parent group index. A visible-args
+  // -only unlocker is skipped (its encoding uses visibleInputs, so a synthetic witness index would overrun it).
+  const callerUnlockerFor = (parent: number): ReturnType<typeof contractUnlockerOrUndefined> => {
+    const utxo = parent < 0 ? host.masterUtxo : groups[parent]?.masterUtxo;
+    if (utxo === undefined) return undefined;
+    const input = builder.inputs.find((candidate) => candidate.txid === utxo.txid && candidate.vout === utxo.vout);
+    return contractUnlockerOrUndefined(input?.unlocker);
+  };
+  for (const group of groups) {
+    const slot = group.edgeEcSlot;
+    if (slot === undefined) continue;
+    const parent = group.edgeParentIndex ?? -1;
+    const unlocker = callerUnlockerFor(parent);
+    if (unlocker === undefined) continue;
+    const witnessName = `__internal__callEdgeOutputIdx${slot}`;
+    const paramIndex = unlocker.abiFunction.inputs.findIndex((input) => input.name === witnessName);
+    if (paramIndex < 0) continue; // this caller does not carry an edge for this call
+    const callerCategory = parent < 0 ? host.categoryId : groups[parent]?.categoryId;
+    if (callerCategory === undefined) continue;
+    const commitment = edgeCommitment(group);
     if (commitment === undefined) {
-      // No digest for this call (an unexpected shape or a routed group): the caller's covenant then finds no edge
-      // and fails closed (sound; a liveness gap for that caller only). -1 names no output.
-      unlocker.params[index] = -1n;
-      synced.push(index);
+      // No digest for this call (an unexpected shape or a routed group): the caller's covenant finds no edge and
+      // fails closed (sound; a liveness gap for that caller only). -1 names no output.
+      unlocker.params[paramIndex] = -1n;
+      unlocker.syncEncodedArgsFromParams?.([paramIndex]);
       continue;
     }
-    // Idempotent: reuse an edge this call already laid (so a later build phase re-points the witness instead of
-    // appending a duplicate), otherwise append a fresh one past every block.
     const commitHex = binToHex(commitment);
+    // Idempotent: reuse an edge already laid for this call (build-tail then send-phase re-assert), else append.
     const existing = builder.outputs.findIndex((output) => {
       const lock = output.to;
       return lock instanceof Uint8Array && lock.length === 2 && lock[0] === 0x51 && lock[1] === 0x61
-        && output.token?.category === host.categoryId
+        && output.token?.category === callerCategory
         && String(output.token?.nft?.commitment ?? '') === commitHex;
     });
-    if (existing >= 0) {
-      unlocker.params[index] = BigInt(existing);
-    } else {
-      unlocker.params[index] = BigInt(builder.outputs.length);
+    unlocker.params[paramIndex] = BigInt(existing >= 0 ? existing : builder.outputs.length);
+    if (existing < 0) {
       builder.outputs.push({
         to: CALL_EDGE_CARRIER_LOCK,
         amount: 1200n,
-        token: { amount: 0n, category: host.categoryId, nft: { capability: 'none', commitment: commitHex } },
+        token: { amount: 0n, category: callerCategory, nft: { capability: 'none', commitment: commitHex } },
       });
     }
-    synced.push(index);
+    unlocker.syncEncodedArgsFromParams?.([paramIndex]);
   }
-  unlocker.syncEncodedArgsFromParams?.(synced);
+}
+
+function contractUnlockerOrUndefined(unlocker: Unlocker | undefined): (Unlocker & {
+  params: unknown[]; abiFunction: { inputs: ReadonlyArray<{ name: string }> };
+  syncEncodedArgsFromParams?: (indices?: readonly number[]) => void;
+}) | undefined {
+  if (unlocker === undefined || !isContractUnlocker(unlocker)) return undefined;
+  // A full-args unlocker has params aligned 1:1 with abiFunction.inputs; a visible-only one does not.
+  if (unlocker.params.length !== unlocker.abiFunction.inputs.length) return undefined;
+  return unlocker as never;
 }
 
 /** The 32-byte edge commitment: the call's 31-byte digest followed by the edge form byte. */

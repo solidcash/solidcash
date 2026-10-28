@@ -6686,6 +6686,7 @@ export class StatefulTransactionBuilder {
     appendCallerEdges({
       categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      masterUtxo: this.masterUtxo,
     }, result);
     return result;
   }
@@ -7376,6 +7377,7 @@ export class StatefulTransactionBuilder {
     appendCallerEdges({
       categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      masterUtxo: this.masterUtxo,
     }, finalBuilder);
 
     // -- Phase 4–5: converge/serialize/fee-bytes then submit --

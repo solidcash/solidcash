@@ -10900,8 +10900,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // ever contradict them; a delegate function's own event NFT carries the PROXY's category, so an appended
       // one is read back beside the genuine log. Delegate functions are pinned regardless of `declaresEvents`:
       // the readable signature may be declared by the proxy, which the implementation cannot see.
+      // A returning function's returnEvent slot is a genuine own-category immutable NFT event that this census
+      // pins. Fix B's universal void call record reuses the returnEvent slot kind for a VOID entry, but that record
+      // is a carrier (OP_TRUE lock) protected by its own settlement (emitCallRecordPin/count), not an event - so a
+      // void function's returnEvent slot must NOT trigger the event census, or it wrongly forbids legitimate
+      // co-spent own-category outputs (e.g. a blockhash oracle sharing the category). Returning <=> returnTypes > 0.
       const declaresEvents = this.currentContractHasEvents
-        || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent' || slot.kind === 'callEdge')
+        || ((node.blockLayout?.slots ?? []).some((slot) =>
+          (slot.kind === 'returnEvent' && node.returnTypes.length > 0) || slot.kind === 'callEdge')
           && !this.isForwardingFallbackBody(node));
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
         && (this.getStackIndex('__internal__callInputIndex', true) >= 0

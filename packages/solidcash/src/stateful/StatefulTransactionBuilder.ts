@@ -2319,6 +2319,11 @@ export class StatefulTransactionBuilder {
       midCascadeHost: (addReturnOutput) => ({
         ownerEntriesHost: this._materializeOwnerEntriesContainersTransfersHost(),
         ownerEventHost: this._materializeOwnerEventNftOutputsHost(),
+        callerEdgeHost: {
+          blockLayout: this.blockLayout,
+          categoryId: this.categoryId,
+          externalCallUtxoGroups: this.externalCallUtxoGroups,
+        },
         returnEventHost: this._materializeReturnEventOutputsHost(addReturnOutput),
         llcOutputsHost: this._materializeLowLevelCallOutputsHost(),
         trailingIterationHost: this._materializeTrailingIterationEntriesHost(),

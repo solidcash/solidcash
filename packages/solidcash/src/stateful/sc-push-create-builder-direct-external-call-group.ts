@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — push one direct nested external-call UTXO group.
  */
 
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type {
   AbiFunction,
   Artifact,
@@ -156,6 +156,15 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bCompilerInternalArgs.__internal__vmapBatchTrailingCount = directVmapBatchTrailingCount(
       bCompilerInternalArgs,
     );
+  }
+
+  // F1: a callee that reads a contract-caller msg.sender sees THIS call's caller - the contract making the call.
+  // Wire its __internal__msgSenderCategory to the caller's category (reversed, as the entry early-args path
+  // encodes it) unless already set, so emitMsgSender resolves the co-spent caller master rather than tx.origin.
+  // The caller's own covenant then pins a matching edge record beside its outgoing call (F1 caller side).
+  if (bAbiFunc?.inputs?.some((inp) => inp.name === '__internal__msgSenderCategory')
+    && !Object.prototype.hasOwnProperty.call(bCompilerInternalArgs, '__internal__msgSenderCategory')) {
+    bCompilerInternalArgs.__internal__msgSenderCategory = hexToBin(host.callerCategoryId).reverse();
   }
 
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {

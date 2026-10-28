@@ -393,7 +393,7 @@ export function buildInputs(
           else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
         }
-        case 'transfer': case 'tcTransfer': case 'event': case 'eventChunk': case 'returnEvent': {
+        case 'transfer': case 'tcTransfer': case 'event': case 'eventChunk': case 'returnEvent': case 'callEdge': {
           const f = funderPool.shift();
           if (f) positioned[slot.offset] = f;
           break;

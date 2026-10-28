@@ -13,6 +13,10 @@ import {
   type MaterializeOwnerEventNftOutputsHost,
 } from './stb-materialize-owner-event-nft-outputs.js';
 import {
+  materializeCallerEdgeOutputs,
+  type MaterializeCallerEdgeOutputsHost,
+} from './stb-materialize-caller-edge-outputs.js';
+import {
   materializeReturnEventOutputs,
   type MaterializeReturnEventOutputsHost,
 } from './stb-materialize-return-event-outputs.js';
@@ -33,6 +37,7 @@ import type { ReturnEventRecord } from './stb-materialize-return-event-outputs.j
 export interface MaterializeMidBuildOutputsCascadeHost {
   readonly ownerEntriesHost: MaterializeOwnerEntriesContainersTransfersHost;
   readonly ownerEventHost: MaterializeOwnerEventNftOutputsHost;
+  readonly callerEdgeHost: MaterializeCallerEdgeOutputsHost;
   readonly returnEventHost: MaterializeReturnEventOutputsHost;
   readonly llcOutputsHost: MaterializeLowLevelCallOutputsHost;
   readonly trailingIterationHost: MaterializeTrailingIterationEntriesHost;
@@ -65,6 +70,9 @@ export function materializeMidBuildOutputsCascade(
   );
 
   materializeOwnerEventNftOutputs(host.ownerEventHost, builder);
+
+  // F1: own-category edge records for this caller's outgoing calls (block order: events, callEdge, returnEvent).
+  materializeCallerEdgeOutputs(host.callerEdgeHost, builder);
 
   materializeReturnEventOutputs(
     host.returnEventHost, builder, deferredDelegateReturnEvents,

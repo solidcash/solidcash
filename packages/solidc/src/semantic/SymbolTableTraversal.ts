@@ -19274,7 +19274,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       && slot.calleeMethod !== undefined && !slot.runtimeSelector && !slot.selectorArrayVar && !slot.opaqueReturn
       && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations
       && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender
-      && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR;
+      && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
+      // The caller can only attest a call whose arguments it names (and so digests). A call that leaves arguments
+      // to the callee's witness (fewer than the method declares) cannot compute the edge digest, so it carries no
+      // edge; a callee requiring one then fails closed (liveness), consistent with the other unbound shapes.
+      && slot.sourceCallNode !== undefined
+      && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], slot.sourceCallNode.parameters.length);
   }
 
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {

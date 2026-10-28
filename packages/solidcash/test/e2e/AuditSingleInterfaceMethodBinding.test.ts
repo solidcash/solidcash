@@ -79,8 +79,15 @@ function selectorInput(builder: any, s: Uint8Array): number {
 /** Run the mem-cash VM over the built single call under a chain state past its anti-malleability locktime. */
 function runVm(call: any): { success: boolean; error?: string } {
   const tx = call.buildLibauthTransaction();
-  const hex = binToHex(encodeTransaction(tx));
   const sourceOutputs = generateLibauthSourceOutputs(call.inputs);
+  // F1: the caller pins its call edge as an appended output; a plain anyone-can-spend funder past every block
+  // covers that dust (build() leaves it unfunded) so the VM reaches the covenant, not a value-balance stop.
+  tx.inputs.push({
+    outpointTransactionHash: hexToBin('11'.repeat(32)), outpointIndex: 0,
+    sequenceNumber: 0xffffffff, unlockingBytecode: Uint8Array.of(),
+  });
+  sourceOutputs.push({ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000_000n });
+  const hex = binToHex(encodeTransaction(tx));
   const lt = Number(tx.locktime);
   const chain = lt < 500000000
     ? { height: lt + 1, medianTimePast: 1700000000 } : { height: 133700, medianTimePast: lt + 1 };

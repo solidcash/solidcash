@@ -5075,7 +5075,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       // F1: a per-slot witness output index where the caller pins its attested call-edge record. The edge is an
       // appended output (not a fixed block slot), so a witnessed index keeps it clear of the callee's block and the
       // caller's own block/record layout; the SDK fills it and the census admits exactly it.
-      for (let i = 0; i < node.externalCalls.length; i++) {
+      // A function that also delegatecalls decodes a variable-length low-level `input` in its prologue; appending
+      // an edge witness perturbs that decode. No call made in such a function carries an edge. This is a liveness
+      // residual only: were a co-spent callee here to read a contract msg.sender, its edge requirement would fail
+      // closed (no forgery), consistent with the other unbound shapes. lowLevelCalls is not populated yet, so scan
+      // the body for the mode directly.
+      const functionDelegatecalls = describeFunctionLowLevelCallsites(node).some((s) => s.callMode === 'delegatecall');
+      for (let i = 0; !functionDelegatecalls && i < node.externalCalls.length; i++) {
         const slot = node.externalCalls[i];
         if (!this.externalCallSlotCarriesEdge(node, slot)) continue;
         const edgeIdxName = `__internal__callEdgeOutputIdx${slot.slotIndex}`;

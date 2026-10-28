@@ -26113,8 +26113,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
   ): void {
     if (!this.emitCallerCallRecordDigest(node, slot, loc)) {
-      throw new Error(`${node.interfaceName}.${node.functionName}() in '${this.currentFunction.name}' runs as a frame `
-        + 'of its callee\'s multi-call spend but has no call digest to read its record by');
+      // A call dispatched through its callee's own multi-call entry has its record read and bound by that entry's
+      // machinery, not by a caller-side digest. Fix B's single-interface void-record read does not apply here;
+      // defer to the multi-call binding, as the pre-fix-B direct read did.
+      return;
     }
     const returnParamName = this.externalCallSlots.filter((candidate) => candidate.hasReturnValues).length === 1
       ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;

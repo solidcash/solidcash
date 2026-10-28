@@ -4628,7 +4628,14 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (slot.needsSelectorVerification) continue;
             const calleeFns = this.getCalleeFunctions(slot.interfaceName);
             if (!calleeFns || calleeFns.length !== 1) continue;
-            if (!this.interfaceMap.has(slot.interfaceName) || !this.slotCalleeMethod(slot)) continue;
+            const recordMethod = this.slotCalleeMethod(slot);
+            if (!this.interfaceMap.has(slot.interfaceName) || !recordMethod) continue;
+            // The void record is read by the digest of this method's selector and arguments; set it here so the
+            // read always has one, including where the generic returning-slot pass does not reach this slot
+            // (e.g. a callee dispatched through its own multi-call entry).
+            slot.callRecordSelector = this.computeAbiSelector(
+              this.selectorSignatureFor(slot.functionName, recordMethod.parameterTypes));
+            slot.callRecordParameterTypes = recordMethod.parameterTypes;
             slot.hasReturnValues = true;
             slot.voidCallRecord = true;
           }

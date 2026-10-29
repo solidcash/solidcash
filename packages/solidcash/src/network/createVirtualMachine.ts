@@ -905,10 +905,11 @@ const derivationProviders = new WeakMap<NetworkProvider, NetworkProvider>();
  * that learn what a composition computes: a constructor probe runs a contract's whole program, which only its shards
  * have to fit a real input, and a run that pads an input measures it before the padding. Every other limit is the
  * provider's own, or the chain's when the provider states none; what is broadcast is judged by the provider's own
- * machine.
+ * machine. An `observer` watches the run, as a run that reads what the body hashed does.
  */
 export function createDerivationVirtualMachineForProvider(
   provider: NetworkProvider,
+  observer?: ProviderVmObserver,
 ): ReturnType<typeof createVirtualMachineBch2026> {
   let lifted = derivationProviders.get(provider);
   if (lifted === undefined) {
@@ -936,7 +937,7 @@ export function createDerivationVirtualMachineForProvider(
     }) as NetworkProvider;
     derivationProviders.set(provider, lifted);
   }
-  return createVirtualMachineBch2026ForProvider(lifted);
+  return createVirtualMachineBch2026ForProvider(lifted, observer);
 }
 
 /** The supply libauth's transaction verification holds every transaction to: BCH's 21 million coins. */

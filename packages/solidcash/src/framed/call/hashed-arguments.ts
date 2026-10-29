@@ -12,7 +12,7 @@
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { bytesEqual, decodeCallDataArguments } from '@solidcash/utils';
 import type NetworkProvider from '../../network/NetworkProvider.js';
-import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
+import { createDerivationVirtualMachineForProvider } from '../../network/createVirtualMachine.js';
 import type { ShippedVmProgram } from '../composer/shipped-host.js';
 
 /**
@@ -20,14 +20,15 @@ import type { ShippedVmProgram } from '../composer/shipped-host.js';
  * hashed them.
  *
  * An input is read only when it is the selector followed by exactly `arity` minimal pushes, so nothing else the
- * program hashes is taken for a call's arguments. The machine is the provider's, at its limits, with `OP_SHA256`
- * observed and otherwise unchanged.
+ * program hashes is taken for a call's arguments. The machine is the derivation's, with `OP_SHA256` observed: the
+ * draft's inputs are padded to their budgets only once every value is learned, so a run held to the provider's budget
+ * stops short of a visit an expensive body reaches, and the last digest it made is an earlier visit's.
  */
 export function hashedCallArguments(
   provider: NetworkProvider, program: ShippedVmProgram, selector: Uint8Array, arity: number,
 ): Uint8Array[][] {
   const hashed: Uint8Array[][] = [];
-  const machine = createVirtualMachineBch2026ForProvider(provider, {
+  const machine = createDerivationVirtualMachineForProvider(provider, {
     opcodes: new Set([OpcodesBch2026.OP_SHA256]),
     beforeOperation: (unknownState) => {
       const state = unknownState as {

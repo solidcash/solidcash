@@ -282,11 +282,16 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     lines.push(`  Accounts    ${accounts.length} funded · ${coins} coins each · ${balanceBch} BCH each`);
     if (!quiet) {
       lines.push('');
-      lines.push(`  #  Address${' '.repeat(34)}${noKeys ? '' : `WIF${' '.repeat(36)}`}Balance      Path`);
+      // Columns are as wide as their widest entry: a BCH address is 50 characters and a WIF 52, where the EVM table
+      // this mirrors fits 42-character addresses.
+      const addressWidth = Math.max('Address'.length, ...accounts.map((account) => account.address.length)) + 2;
+      const wifWidth = Math.max('WIF'.length, ...accounts.map((account) => account.wif.length)) + 2;
+      const balanceWidth = `${balanceBch} BCH`.length + 2;
+      lines.push(`  #  ${'Address'.padEnd(addressWidth)}${noKeys ? '' : 'WIF'.padEnd(wifWidth)}${'Balance'.padEnd(balanceWidth)}Path`);
       for (const account of accounts) {
-        const address = account.address.padEnd(42);
-        const wif = noKeys ? '' : `${account.wif.padEnd(40)}`;
-        lines.push(`  ${String(account.index).padStart(2)} ${address}${wif}${`${balanceBch} BCH`.padEnd(13)}${account.path}`);
+        const address = account.address.padEnd(addressWidth);
+        const wif = noKeys ? '' : account.wif.padEnd(wifWidth);
+        lines.push(`  ${String(account.index).padStart(2)} ${address}${wif}${`${balanceBch} BCH`.padEnd(balanceWidth)}${account.path}`);
       }
       lines.push('');
       lines.push(`  Mnemonic: ${mnemonic}`);

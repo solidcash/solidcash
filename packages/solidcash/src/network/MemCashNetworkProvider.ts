@@ -763,8 +763,8 @@ export default class MemCashNetworkProvider implements NetworkProvider {
   }
 
   private scriptHash(lockingBytecode: Uint8Array): string {
-    // sha256 via the same instance mem-cash uses, so the hash convention can never drift.
-    return binToHex(sha256Instance.hash(lockingBytecode));
+    // The Electrum protocol's script hash, as Fulcrum names it: SHA-256 of the locking bytecode in reversed byte order.
+    return binToHex(sha256Instance.hash(lockingBytecode).slice().reverse());
   }
 }
 

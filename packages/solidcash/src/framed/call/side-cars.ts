@@ -123,12 +123,21 @@ async function livePool(
   const addUtxo = (provider as { addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
   if (utxos.length < count && typeof addUtxo === 'function') {
     const present = await provider.getUtxosForLockingBytecode(lock);
-    // Stand-ins are numbered from the first, so one another frame takes is passed over for the next.
+    // Stand-ins are numbered from the first, so one another frame takes is passed over for the next. A chain that
+    // keeps its history (a devnet node) refuses to mint an outpoint again once a transaction spent it, where the mock
+    // overwrites it; the next number is a fresh stand-in.
     let free = utxos.length;
-    for (let index = 0; free < count && index < count + taken.size + present.length; index += 1) {
+    let spent = 0;
+    for (let index = 0; free < count && index < count + taken.size + present.length + spent; index += 1) {
       const standIn = computeSideCarStandIn(`framed ${name}`, lock, index);
       if (taken.has(`${standIn.txid}:${standIn.vout}`) || hasOutpoint(present, standIn)) continue;
-      await addUtxo.call(provider, binToHex(lock), standIn);
+      try {
+        await addUtxo.call(provider, binToHex(lock), standIn);
+      } catch (error) {
+        if (!/already exists/.test(error instanceof Error ? error.message : String(error))) throw error;
+        spent += 1;
+        continue;
+      }
       free += 1;
     }
     utxos = await mutable();

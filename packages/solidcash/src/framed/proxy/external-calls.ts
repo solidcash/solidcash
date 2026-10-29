@@ -1627,7 +1627,7 @@ function knownResultsOf(
 }
 
 /** The learned results one site's argument sources read, keyed the way the expression evaluator reads them. */
-function argumentReturnsOf(
+export function argumentReturnsOf(
   row: ExternalCallAbi, routing: readonly ExternalCallAbi[], known: ReadonlyMap<number, FunctionArgument> | undefined,
 ): ReadonlyMap<string, FunctionArgument> | undefined {
   const sources = [...row.argSources ?? [], ...row.addressSource === undefined ? [] : [row.addressSource]];

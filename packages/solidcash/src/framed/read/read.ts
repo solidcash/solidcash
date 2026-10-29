@@ -82,6 +82,7 @@ import {
   reachedIdentity,
   reachedResultKey,
   registeredExternalFor,
+  argumentReturnsOf,
   routingOf,
   waitingProducers,
   type FramedProxyExternal,
@@ -709,18 +710,24 @@ async function planReadFrames(options: {
       const where = `the call to "${row.interfaceName}.${row.functionName}()" in entry `
         + `"${frame.contract}.${frame.entry.name}()"`;
       // A loop's bound and guard are the frame's own computation, so one over an earlier call's result waits for a
-      // pass that has learned it, as the hop's plan stops before such a site.
+      // pass that has learned it, as the hop's plan stops before such a site. So does a target the frame computes
+      // from one (a pair address hashed from the code hash its factory returned): the site's deployment is the one
+      // that result names, which no pass before it knows.
       const domain = row.occurrence === 'loop' ? row.iterationDomain : undefined;
       const guard = row.occurrence === 'loop' ? row.condition ?? undefined : undefined;
       const producers = waitingProducers([
         ...(domain === undefined ? [] : [domain.initialValue, domain.stepValue, domain.continueCondition]),
         ...(guard === undefined ? [] : [guard]),
+        ...(row.addressSource === undefined ? [] : [row.addressSource]),
       ], callIndex, routing, frame.callBases.map((base) => (base < 0 ? undefined : base)), known);
       if (producers.length > 0) {
         waits.push({ master: frame.master, path: frame.path, where, producers });
         break;
       }
-      const turns = siteTurns(frame, row, callIndex, routing, resolver, known, where);
+      // The site's target and arguments read the results learned for the frame's earlier calls, as the hop's do.
+      const argumentReturns = argumentReturnsOf(row, routing, known);
+      const siteResolver = argumentReturns === undefined ? resolver : makeCallResolver({ ...inputs, argumentReturns });
+      const turns = siteTurns(frame, row, callIndex, routing, siteResolver, known, where);
       // A site no turn of which calls reaches no callee, so nothing is placed for it and its target and arguments
       // need not resolve.
       if (turns.length === 0) {
@@ -731,7 +738,7 @@ async function planReadFrames(options: {
       const callsiteId = row.callsiteId ?? -1;
       for (const turn of turns) {
         // Each turn reaches the deployment its own target names: a loop over a path reaches one pair per hop.
-        const reached = externalAtTurn(call, row, inputs, resolver, turn, options);
+        const reached = externalAtTurn(call, row, inputs, siteResolver, turn, options);
         if (reached === undefined) {
           throw new FramedReadError(
             `entry "${frame.contract}.${frame.entry.name}()" makes ${calls.length} external call(s): `
@@ -762,7 +769,7 @@ async function planReadFrames(options: {
         // The callee's call data is the same whether the callee is reached directly or through its own proxy, so
         // it is stated once per turn here: the proxy's fallback and the implementation's delegate frame share it.
         const { pushes: argumentPushes, values: calleeArgs } =
-          readCallArguments(frame, row, call, external.artifact, calleeEntry, resolver, turn);
+          readCallArguments(frame, row, call, external.artifact, calleeEntry, siteResolver, turn);
         if (proxied) {
           // The address the call reaches names the proxy, so the reach is the pair the hop places for one: the
           // proxy's fallback frame, which the caller records, and the implementation's delegate frame it forwards

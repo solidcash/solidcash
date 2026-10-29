@@ -458,8 +458,11 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     return this.getBlockHeight();
   }
 
-  async getBlock(tag?: string | number): Promise<{ number: number; timestamp: number; hash?: string }> {
-    const height = tag === undefined ? await this.getBlockHeight() : quantity(tag);
+  async getBlock(tag?: string | number | bigint): Promise<{ number: number; timestamp: number; hash?: string }> {
+    // ethers' block tags: every finality tag names the tip on an instant-finality devnet.
+    const height = tag === undefined || tag === 'latest' || tag === 'safe' || tag === 'finalized'
+      ? await this.getBlockHeight()
+      : tag === 'earliest' ? 0 : quantity(typeof tag === 'bigint' ? Number(tag) : tag);
     const hex = await this.request<string>('blockchain.block.header', height);
     const { hashBlockHeader } = await import('@mem-cash/types');
     return {

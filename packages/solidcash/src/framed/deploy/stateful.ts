@@ -28,7 +28,7 @@ import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { framedValidator } from '@solidcash/solidc/runtime';
-import { bytesEqual, type Artifact } from '@solidcash/utils';
+import { bytesEqual, validatorAddress, type Artifact } from '@solidcash/utils';
 import type { TransactionDetails } from '../../interfaces.js';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
@@ -72,6 +72,20 @@ async function measuredFee(builder: { buildLibauthTransaction: () => unknown }):
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
 
   return BigInt(encodeTransaction(builder.buildLibauthTransaction() as never).byteLength);
+}
+
+/**
+ * A framed deployment's own address, `addrV(category)`: the lock its frames present as `address(this)` and that a
+ * contract storing its address holds. A handle attached in another process than the deploying one derives it here.
+ */
+export function framedContractAddress(network: string, categoryId: string): string {
+  const address = lockingBytecodeToCashAddress({
+    bytecode: validatorAddress(hexToBin(categoryId), framedValidator.buildValidatorProgram()),
+    prefix: getNetworkPrefix(network),
+    tokenSupport: true,
+  });
+  if (typeof address === 'string') throw new FramedDeployError(`The contract's own address is not encodable: ${address}`);
+  return address.address;
 }
 
 /**

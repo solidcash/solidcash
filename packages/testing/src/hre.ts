@@ -783,11 +783,36 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // `at` is async (it eagerly resolves the category); await it before the dispatch proxy wraps the handle,
       // otherwise the proxy shadows `Promise.prototype.then` and the caller's `await` throws.
       const connected = await SC.at(lookupAddress, loaded as T, runner ?? defaultRunner());
+      // A frame runs a category's entry on its shard only when the category's bundle is registered, which its genesis
+      // does in the deploying process. This HRE deploys a framed contract from the bundle its artifacts publish
+      // (`withFunctionSplit`), so a category attached in another process was minted from that bundle too; without it
+      // the call composes the logical program, whose master outgrows an input.
+      const attachedCategory = (connected as unknown as { categoryId?: string }).categoryId;
+      const attachedSplit = withFunctionSplit({}, loaded as Artifact).functionSplit;
+      if (attachedSplit !== undefined && attachedCategory !== undefined
+        && framedDeploy.functionSplitFor(provider, attachedCategory) === undefined) {
+        framedDeploy.registerFunctionSplit(provider, attachedCategory, attachedSplit);
+      }
       // A framed deployment is addressed by the lock its frames present: the connected handle keeps the address the
       // registered one carries, so `getAddress()` names the contract the identity named, as the child branch does.
       const registeredHandle = registered?.contract as { _framedAddress?: string } | undefined;
       if (registeredHandle?._framedAddress !== undefined) {
         (connected as unknown as { _framedAddress?: string })._framedAddress = registeredHandle._framedAddress;
+      } else if (attachedCategory !== undefined && (loaded as Artifact).composition?.convention === 'framed') {
+        // A deployment this process did not make is registered as its deployment registers it: at the lock its
+        // frames present, which another contract that stored its address calls it by, and at the address it was
+        // attached by.
+        const { registerDeployment } = await import('@solidcash/solidcash/stateful');
+        const framedAddress = framedDeploy.framedContractAddress(provider.network, attachedCategory);
+        (connected as unknown as { _framedAddress?: string })._framedAddress = framedAddress;
+        const decodedLock = cashAddressToLockingBytecode(framedAddress);
+        if (typeof decodedLock === 'string') throw new Error(`getContractAt: ${decodedLock}`);
+        const lockingBytecode = binToHex(decodedLock.bytecode);
+        for (const address of new Set([framedAddress, lookupAddress])) {
+          registerDeployment(provider as never, {
+            contractName: (loaded as Artifact).contractName, address, lockingBytecode, contract: connected,
+          });
+        }
       }
       registerDeployTargetChildren(connected as Registerable);
       return presentAddresses(preferAbiMethods(connected as object, loaded), loaded) as typeof connected;

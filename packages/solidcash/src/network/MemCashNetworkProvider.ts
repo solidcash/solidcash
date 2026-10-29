@@ -712,7 +712,8 @@ export default class MemCashNetworkProvider implements NetworkProvider {
    * Seed and advance the CREATE nonce from the chain.
    *
    * A no-op while the signer holds an active reservation; never lowers the local nonce; probes forward from the local
-   * nonce (or from 0 on the first call) to the smallest logical address with no identity anchor.
+   * nonce (or from 0 on the first call) to the smallest logical address with no identity anchor. A long-lived node
+   * keeps every earlier run's anchors, so the probe runs until it finds a free address.
    */
   async prepareSigner(signer: Signer): Promise<void> {
     if (signer.transactionNonceReserved) return;
@@ -722,11 +723,7 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     const { deriveLogicalCreateAddress, resolveLogicalIdentity } = await import('../stateful/logical-identity.js');
     const deployer = signer.getAddress();
     let candidate = firstSeed ? 0n : local;
-    const limit = candidate + 64n;
-    while (candidate < limit) {
-      const address = deriveLogicalCreateAddress(deployer, candidate);
-      const occupied = await this.logicalAddressOccupied(address, resolveLogicalIdentity);
-      if (!occupied) break;
+    while (await this.logicalAddressOccupied(deriveLogicalCreateAddress(deployer, candidate), resolveLogicalIdentity)) {
       candidate += 1n;
     }
     if (candidate > local) signer._setTransactionNonceState(candidate);

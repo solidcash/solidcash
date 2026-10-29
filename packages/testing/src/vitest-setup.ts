@@ -166,7 +166,8 @@ globals.xcontext = globals.xdescribe;
 
 // Vitest's `root` changes discovery/resolution but deliberately leaves process.cwd() unchanged. A harness config
 // hosted above the ported project can provide its real root so the matching solidcash.config.ts is loaded.
-const hre = await initHre(process.env.SOLIDCASH_PROJECT_ROOT ?? process.cwd());
+// A `solidcash test --network <name>` run names its network to the workers (`TEST_NETWORK_ENV`).
+const hre = await initHre(process.env.SOLIDCASH_PROJECT_ROOT ?? process.cwd(), process.env.SOLIDCASH_NETWORK || undefined);
 // ethers.Contract shim and ported suites look up methods via globalThis.hre.ethers.getContractAt.
 (globalThis as { hre?: typeof hre }).hre = hre;
 

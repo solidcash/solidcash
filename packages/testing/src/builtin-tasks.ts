@@ -160,6 +160,9 @@ function copyArtifactTree(sourceDir: string, targetDir: string): void {
   }
 }
 
+
+/** The network a `test` run selected, which its Vitest workers' HRE adopts (`vitest-setup.ts`). */
+export const TEST_NETWORK_ENV = 'SOLIDCASH_NETWORK';
 task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, Hardhat-style layout)')
   .addFlag('quiet', 'Suppress per-file output')
   .addFlag('suppress-warnings', 'Suppress non-fatal compiler warnings')
@@ -520,7 +523,7 @@ task('init', 'Create SolidCash configuration')
 task('test', 'Run the test suite (Vitest)')
   .addFlag('no-compile', 'Skip compilation before running tests')
   .addVariadicPositionalParam('paths', 'Optional test file paths/globs')
-  .setAction(async (args) => {
+  .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const extra = (args.paths as string[]) ?? [];
     const solidhatConfig = ['vitest.solidhat.config.ts', 'vitest.solidhat.config.js']
       .map((candidate) => path.resolve(candidate))
@@ -528,7 +531,11 @@ task('test', 'Run the test suite (Vitest)')
     // Pass the config and root as ABSOLUTE paths. Vitest resolves a relative --config against its own inferred
     // root, which in a monorepo is not necessarily this project, and it then fails to load the config at all.
     const configArgs = solidhatConfig ? ['--config', solidhatConfig, '--root', process.cwd()] : [];
-    const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], { stdio: 'inherit' });
+    // The workers build their own HRE, so the network `--network` selected travels with them, as `npx hardhat test
+    // --network localhost` runs its tests against the node.
+    const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], {
+      stdio: 'inherit', env: { ...process.env, [TEST_NETWORK_ENV]: hre.network.name },
+    });
     if (res.status !== 0) process.exitCode = res.status ?? 1;
     return { status: res.status };
   });

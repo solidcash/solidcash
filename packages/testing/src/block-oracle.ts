@@ -3,7 +3,8 @@
  *
  * `solidhat node` installs one mutable NFT at the oracle lock during `prepare`, advertises it in
  * `server.features.devnet.block_oracle`, and rewrites its commitment on every tip change so compiled
- * `block.timestamp`/`block.number` reads see the live chain. Per-snapshot outpoints travel with the chain, so a reader
+ * `block.timestamp`/`block.number` reads see the live chain. It holds the block the next transaction is mined into,
+ * as Hardhat executes a transaction in its own block: a swap's `block.timestamp` is its receipt block's. Per-snapshot outpoints travel with the chain, so a reader
  * spend that moved the oracle does not strand a later refresh.
  */
 import { secp256k1, sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
@@ -32,7 +33,15 @@ interface Outpoint {
 export interface TipChangeLike {
   readonly kind: 'mine' | 'time' | 'revert' | 'reset';
   readonly tip: BlockHeader;
+  /** The block the next mine produces (mem-cash `TipChange.next`). */
+  readonly next: { readonly height: number; readonly timestamp: number };
   readonly snapshotId?: string;
+}
+
+/** The block a transaction accepted now is mined into. */
+interface PendingBlock {
+  readonly height: number;
+  readonly timestamp: number;
 }
 
 export interface BlockOracleRuntime {
@@ -53,10 +62,10 @@ const INITIAL_OUTPOINT: Outpoint = { txid: `${'b0'.repeat(31)}c1`, vout: 0 };
 /** Fixed owner key for the devnet oracle commitment (never used to sign). */
 const OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x22));
 
-function fieldsFor(header: BlockHeader): BlockOracleCommitmentFields {
+function fieldsFor(block: PendingBlock): BlockOracleCommitmentFields {
   return {
-    number: BigInt(header.height),
-    timestamp: BigInt(header.timestamp),
+    number: BigInt(block.height),
+    timestamp: BigInt(block.timestamp),
     difficulty: 0n,
     size: 1000n,
     totalFees: 0n,
@@ -101,15 +110,16 @@ export function createBlockOracleRuntime(params: {
     return entry === undefined ? undefined : { txid: entry.outpoint.txid, vout: entry.outpoint.vout };
   }
 
-  function write(outpoint: Outpoint, header: BlockHeader): void {
-    const commitment = encodeBlockOracleCommitment(ownerPkh, fieldsFor(header));
+  function write(outpoint: Outpoint, block: PendingBlock, tip: BlockHeader): void {
+    const commitment = encodeBlockOracleCommitment(ownerPkh, fieldsFor(block));
     indexer.storage._test.utxo.remove({ txid: outpoint.txid, vout: outpoint.vout });
     indexer.addUtxo({
       txid: outpoint.txid,
       vout: outpoint.vout,
       satoshis: 10_000n,
       scriptHash: lockScriptHash,
-      height: header.height,
+      // The coin is confirmed at the tip; its commitment describes the block after it.
+      height: tip.height,
       lockingBytecode: lock,
       tokenData: {
         category: binToHex(category),
@@ -120,10 +130,10 @@ export function createBlockOracleRuntime(params: {
     liveOutpoint = outpoint;
   }
 
-  function refresh(header: BlockHeader): void {
+  function refresh(change: TipChangeLike): void {
     if (!params.enabled) return;
     const target = liveOracleOutpoint() ?? liveOutpoint;
-    write(target, header);
+    write(target, change.next, change.tip);
     announce();
   }
 
@@ -132,7 +142,7 @@ export function createBlockOracleRuntime(params: {
       if (!params.enabled) return;
       const header = indexer.getTip();
       if (header === undefined) throw new Error('block oracle: the chain has no tip yet');
-      write(INITIAL_OUTPOINT, header);
+      write(INITIAL_OUTPOINT, { height: header.height + 1, timestamp: indexer.nextBlockTimestamp() }, header);
       announce();
     },
     advertisement,
@@ -149,18 +159,18 @@ export function createBlockOracleRuntime(params: {
         // The reset baseline restored the chain the oracle was installed on; adopt whatever it holds now.
         perSnapshot.clear();
         liveOutpoint = liveOracleOutpoint() ?? INITIAL_OUTPOINT;
-        refresh(change.tip);
+        refresh(change);
         return;
       }
       if (change.kind === 'revert' && change.snapshotId !== undefined) {
         const recorded = perSnapshot.get(change.snapshotId);
         if (recorded !== undefined) {
           liveOutpoint = recorded;
-          refresh(change.tip);
+          refresh(change);
           return;
         }
       }
-      refresh(change.tip);
+      refresh(change);
     },
     subscribeAdvertisement(listener) {
       advertisementListeners.push(listener);

@@ -110,6 +110,17 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
   1,253, and a 136-byte block at 1.73M operation cost where it was 2.26M. Every keccak covenant is regenerated from it
   (the compute covenant 1,950 B, its stateful form 1,946 B, the shifted one 1,918 B, the chained ones 2,019 and
   2,031 B, the library blob 1,838 B); the pre-batching covenant an artifact may still commit stays as it was.
+- **A covered master's head walks its tail through the framework library** (section 12, `framework-library.ts`). A
+  master every spend of which is covered recognises its validator first, after the check that reserves its address
+  slot (a deployment finds the validator hash slot as the first reserved one after it), and then invokes the
+  library's routine for each walk of its block's tail (the calls, the segments, the events, the sends, the values and
+  the padding) and for its P2PKH shape and caller hash-type checks, where it carried their code. A counted walk takes
+  its count above the tail and loops, which leaves the alternate stack as the unrolled walk does
+  (`tail-walk-routines.test.ts` holds the two to the same stacks on every tail). The recognition cuts the validator's
+  redeem from its unlocking after the transcript by its three-byte `OP_PUSHDATA2` header, which the P2SH32 check that
+  follows binds. A `TestERC20` or `UniswapV2Pair` shard sheds about 182 B, 7.2% of the two contracts' 43 shards, and
+  the registrar grows from 939 to 1,656 B, which a validator padded to its budget absorbs: every Router02 flow measured
+  shrinks by 1.7 to 4.1 kB (`removeLiquidityETHWithPermit` 113,798 to 111,149 B, `addLiquidity` 90,004 to 88,290 B).
 - **A recovery co-spends one side-car, which checks a witnessed key natively** (section 5, covenant V). Four
   `OP_CHECKDATASIG`s replace the A/B pair's Script ladder: two ECDSA checks through keys shifted by known multiples
   of G, whose shifts two Schnorr checks prove (section 5's compute side-cars). V is 804 B, spends ~0.39M operation

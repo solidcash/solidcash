@@ -25,6 +25,7 @@ import {
   scriptToBytecode,
   type Script,
 } from '@solidcash/utils';
+import { assertP2pkhShapeScript, callerSignatureHashTypeScript, tailWalkBodies } from './master/frame-tail.js';
 
 /** `OP_HASH256 OP_PUSHBYTES_32`, which opens a P2SH32 lock. */
 const P2SH32_LOCK_PREFIX = Uint8Array.of(0xaa, 0x20);
@@ -73,6 +74,39 @@ export const KECCAK_SIDE_CAR_MATCH_ROUTINE_ID = -131n;
  * is kept: the call's own bind then fails, which is where a derivation learns a computed preimage.
  */
 export const KECCAK_SIDE_CAR_FIND_ROUTINE_ID = -132n;
+
+/*
+ * The master head's tail walks (frame-tail.ts `verifyTailScript`), each `[..., tail]` -> `[..., tail']` with what the
+ * walk parks on the alternate stack. A master every spend of which is covered recognises its validator before it
+ * walks its tail, so it invokes these where an uncovered master emits the walks inline. A counted walk takes its count
+ * above the tail.
+ */
+/** The call section, its count parked. */
+export const TAIL_CALLS_ROUTINE_ID = -133n;
+/** The call section, its count parked above the records kept for the body's call sites. */
+export const TAIL_CALLS_KEPT_ROUTINE_ID = -134n;
+/** The segment count checked against the parked call count, then the segments stepped over. */
+export const TAIL_SEGMENTS_ROUTINE_ID = -135n;
+/** The segment count checked, then the segments kept for the body's record reads beside the first record's base. */
+export const TAIL_SEGMENTS_KEPT_ROUTINE_ID = -136n;
+/** `[..., owner, tail, n]`: the event list read into `n` positions, each output the owner's category's. */
+export const TAIL_EVENTS_ROUTINE_ID = -137n;
+/** The event list read as a run of consecutive outputs of the owner's category. */
+export const TAIL_EVENT_RUN_ROUTINE_ID = -138n;
+/** `[..., tail, n]`: the send list read into `n` positions. */
+export const TAIL_SENDS_ROUTINE_ID = -139n;
+/** The send list read as a run of consecutive outputs. */
+export const TAIL_SEND_RUN_ROUTINE_ID = -140n;
+/** `[..., tail, n]`: the value list read into `n` slots. */
+export const TAIL_VALUES_ROUTINE_ID = -141n;
+/** The padding consumed, nothing after it. */
+export const TAIL_PADDING_ROUTINE_ID = -142n;
+
+/** `[lock]` -> `[lock]`: the lock is a P2PKH one, as a root frame's caller and origin are. */
+export const P2PKH_SHAPE_ROUTINE_ID = -143n;
+
+/** `[callerRef]` -> `[]`: the caller's signature signs with `SIGHASH_ALL`, its UTXOS bit either way. */
+export const CALLER_HASH_TYPE_ROUTINE_ID = -144n;
 
 /**
  * `[category]` -> `[lock]`: the P2SH32 lock of a category-seeded covenant, for a category in chain order.
@@ -247,6 +281,26 @@ export function frameworkRoutines(): readonly FrameworkRoutine[] {
       name: 'keccak side-car match', id: KECCAK_SIDE_CAR_MATCH_ROUTINE_ID, body: scriptToBytecode(keccakSideCarMatchScript()),
     },
     { name: 'keccak side-car find', id: KECCAK_SIDE_CAR_FIND_ROUTINE_ID, body: scriptToBytecode(keccakSideCarFindScript()) },
+    ...tailWalkRoutines(),
+    { name: 'p2pkh shape', id: P2PKH_SHAPE_ROUTINE_ID, body: assertP2pkhShapeScript() },
+    { name: 'caller hash type', id: CALLER_HASH_TYPE_ROUTINE_ID, body: callerSignatureHashTypeScript() },
+  ];
+}
+
+/** The master head's tail walks, as `verifyTailScript` emits them inline. */
+function tailWalkRoutines(): readonly FrameworkRoutine[] {
+  const walks = tailWalkBodies();
+  return [
+    { name: 'tail calls', id: TAIL_CALLS_ROUTINE_ID, body: walks.calls },
+    { name: 'tail calls kept', id: TAIL_CALLS_KEPT_ROUTINE_ID, body: walks.callsKept },
+    { name: 'tail segments', id: TAIL_SEGMENTS_ROUTINE_ID, body: walks.segments },
+    { name: 'tail segments kept', id: TAIL_SEGMENTS_KEPT_ROUTINE_ID, body: walks.segmentsKept },
+    { name: 'tail events', id: TAIL_EVENTS_ROUTINE_ID, body: walks.events },
+    { name: 'tail event run', id: TAIL_EVENT_RUN_ROUTINE_ID, body: walks.eventRun },
+    { name: 'tail sends', id: TAIL_SENDS_ROUTINE_ID, body: walks.sends },
+    { name: 'tail send run', id: TAIL_SEND_RUN_ROUTINE_ID, body: walks.sendRun },
+    { name: 'tail values', id: TAIL_VALUES_ROUTINE_ID, body: walks.values },
+    { name: 'tail padding', id: TAIL_PADDING_ROUTINE_ID, body: walks.padding },
   ];
 }
 
@@ -257,6 +311,11 @@ function startsWith(bytes: Uint8Array, at: number, needle: Uint8Array): boolean 
     if (bytes[at + index] !== needle[index]) return false;
   }
   return true;
+}
+
+/** `<id> OP_INVOKE`: one of the library's routines, where a master would have emitted its code. */
+export function invokeFrameworkRoutine(id: bigint): Uint8Array {
+  return scriptToBytecode([encodeInt(id), Op.OP_INVOKE]);
 }
 
 /** Every identifier the library takes, the registrar's included, which a master must not define itself. */

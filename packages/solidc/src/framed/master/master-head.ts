@@ -45,6 +45,8 @@ import {
   splitFirstPushScript,
 } from './witness-reader.js';
 import {
+  HASH_TYPE_ALL,
+  HASH_TYPE_UTXOS_BIT_MASK,
   assertP2pkhShapeScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
@@ -58,6 +60,7 @@ import {
   callValuesScript, containerGrowthScript, containerLockScript, selfContainerLockScript, sendRunValuesScript,
 } from './value.js';
 import { mastersRecreatedInPlaceScript } from './lifecycle.js';
+import { CALLER_HASH_TYPE_ROUTINE_ID, P2PKH_SHAPE_ROUTINE_ID, invokeFrameworkRoutine } from '../framework-library.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -205,10 +208,6 @@ export function valueWitnessSlotName(slot: number): string {
   return `__internal__valueWitness_${slot}`;
 }
 
-/** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
-const HASH_TYPE_ALL = 0x41;
-/** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
-const HASH_TYPE_UTXOS_BIT_MASK = 0xdf;
 /** A P2SH32 lock's length, `OP_HASH256 <32 bytes> OP_EQUAL`: the push a drained run's marker carries its lock in. */
 const P2SH32_LOCK_BYTES = 35;
 
@@ -744,11 +743,20 @@ class HeadEmitter {
    * constant, and its body binds one call record per call it makes.
    */
   private composedFrameChecks(): void {
+    // A master every spend of which is covered recognises its validator first, so the framework library the program
+    // carries is defined for the tail walks, which it then invokes rather than carries (framework-library.ts). The
+    // address check goes before it: a deployment finds the validator hash slot as the first reserved one after the
+    // address slot (`findPlaceholderOffsets`).
+    if (this.requiresValidator) {
+      this.assertSelfAddressForCodeConstantKinds();
+      this.recogniseValidator();
+    }
     this.emitBytes(verifyTailScript(this.tailShape, {
       keepsRecordIndices: this.keepsRecordIndices,
       returnsValue: this.returnsValue,
       eventOwnerBelowTail: true,
       keepsCalls: this.keepsCalls,
+      viaLibrary: this.requiresValidator,
     }));
     this.forget('rest');
     // A frame that handles value keeps whose containers it pays from: the owner of the records it runs on.
@@ -756,7 +764,7 @@ class HeadEmitter {
     else this.dropTailCategoryOwner();
     this.assertCallerIsNotSelf();
     this.computeOrigin();
-    this.assertSelfAddressForCodeConstantKinds();
+    if (!this.requiresValidator) this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
     if (!this.handlesValue) this.assertZeroValue();
     this.branchOnValidatorNeed();
@@ -1017,25 +1025,14 @@ class HeadEmitter {
    */
   private branchOnValidatorNeed(): void {
     const covered = (): void => {
-      if (!this.reservesValidatorHashSlot) {
-        throw new Error('master head: a validator reference needs a reserved validator program hash slot');
-      }
-      // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed.
-      this.pushValidatorHashSlot();
-      this.pick('validatorRef');
-      this.bin2num();
-      // A master every spend of which is covered defines the framework library the recognised program carries, so its
-      // body invokes the shared routines (framework-library.ts).
-      this.emitBytes(recogniseValidatorScriptAgainstReservedHash(this.requiresValidator));
-      this.pop(1);
-      this.forget('validatorHashSlot');
+      this.recogniseValidator();
       // A covered frame never settles its own records: the validator settles every covered master's contract (V8).
       if (this.handlesValue) this.pushAlone(false);
     };
     // A master every spend of which names a validator has no standalone arm: `INDEX_NONE` names no input, so the
-    // recognition refuses it.
+    // recognition refuses it. It recognised the validator before its tail walks.
     if (this.requiresValidator) {
-      covered();
+      if (this.handlesValue) this.pushAlone(false);
       return;
     }
     this.emitBranch(
@@ -1048,6 +1045,22 @@ class HeadEmitter {
       () => this.assertStandalone(),
       covered,
     );
+  }
+
+  /** Recognises the validator `validatorRef` names against the reserved program hash. */
+  private recogniseValidator(): void {
+    if (!this.reservesValidatorHashSlot) {
+      throw new Error('master head: a validator reference needs a reserved validator program hash slot');
+    }
+    // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed.
+    this.pushValidatorHashSlot();
+    this.pick('validatorRef');
+    this.bin2num();
+    // A master every spend of which is covered defines the framework library the recognised program carries, so its
+    // head and body invoke the shared routines (framework-library.ts).
+    this.emitBytes(recogniseValidatorScriptAgainstReservedHash(this.requiresValidator));
+    this.pop(1);
+    this.forget('validatorHashSlot');
   }
 
   /** N1's second half: the frame is a user's, it makes no call, and it is its category's only master. */
@@ -1259,6 +1272,12 @@ class HeadEmitter {
    */
   private assertCallerSignatureHashType(): void {
     this.pick('callerRef');
+    if (this.requiresValidator) {
+      // The framework library is defined by now (`composedFrameChecks`), and the check is one of its routines.
+      this.emitBytes(invokeFrameworkRoutine(CALLER_HASH_TYPE_ROUTINE_ID));
+      this.pop(1);
+      return;
+    }
     this.bin2num();
     this.emitPopPush(Opcodes.OP_INPUTBYTECODE, 'callerUnlocking');
     this.emitBytes(splitFirstPushScript());
@@ -1322,7 +1341,8 @@ class HeadEmitter {
 
   /** Verifies the item on top is a 25-byte `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG` lock. */
   private assertP2pkhShape(): void {
-    this.emitBytes(assertP2pkhShapeScript());
+    // A master every spend of which is covered has the framework library defined by now (`composedFrameChecks`).
+    this.emitBytes(this.requiresValidator ? invokeFrameworkRoutine(P2PKH_SHAPE_ROUTINE_ID) : assertP2pkhShapeScript());
   }
 
   /**

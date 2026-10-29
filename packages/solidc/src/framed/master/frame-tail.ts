@@ -42,7 +42,21 @@ import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruc
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { KEPT_VIEW_LENGTH, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
 import { ADDRESS_SLOT_LENGTH } from './placeholders.js';
-import { FRAMEWORK_REGISTRAR_ID, frameworkRegistrar, frameworkRegistrarOffset } from '../framework-library.js';
+import {
+  FRAMEWORK_REGISTRAR_ID,
+  TAIL_CALLS_KEPT_ROUTINE_ID,
+  TAIL_CALLS_ROUTINE_ID,
+  TAIL_EVENTS_ROUTINE_ID,
+  TAIL_EVENT_RUN_ROUTINE_ID,
+  TAIL_PADDING_ROUTINE_ID,
+  TAIL_SEGMENTS_KEPT_ROUTINE_ID,
+  TAIL_SEGMENTS_ROUTINE_ID,
+  TAIL_SENDS_ROUTINE_ID,
+  TAIL_SEND_RUN_ROUTINE_ID,
+  TAIL_VALUES_ROUTINE_ID,
+  frameworkRegistrar,
+  frameworkRegistrarOffset,
+} from '../framework-library.js';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropFirstPushScript,
@@ -178,6 +192,24 @@ const P2PKH_PREFIX = new Uint8Array([0x76, 0xa9, 0x14]);
 const P2PKH_SUFFIX = new Uint8Array([0x88, 0xac]);
 const P2PKH_LENGTH = 25;
 
+/** The sighash type a root caller's signature must carry once its UTXOS bit (0x20) is masked off: `SIGHASH_ALL`. */
+export const HASH_TYPE_ALL = 0x41;
+/** Masks the UTXOS bit off a sighash type, which the head admits either way. */
+export const HASH_TYPE_UTXOS_BIT_MASK = 0xdf;
+
+/**
+ * `[callerRef]` -> `[]`: the caller's signature, the first push of its unlocking bytecode, signs with `SIGHASH_ALL`,
+ * its UTXOS bit either way. A caller whose unlocking bytecode carries no push fails the split.
+ */
+export function callerSignatureHashTypeScript(): Uint8Array {
+  return new Uint8Array([
+    Opcodes.OP_BIN2NUM, Opcodes.OP_INPUTBYTECODE, ...splitFirstPushScript(), Opcodes.OP_DROP,
+    Opcodes.OP_SIZE, Opcodes.OP_1SUB, Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+    ...encodeDataPush(Uint8Array.of(HASH_TYPE_UTXOS_BIT_MASK)), Opcodes.OP_AND,
+    ...encodeDataPush(Uint8Array.of(HASH_TYPE_ALL)), Opcodes.OP_EQUALVERIFY,
+  ]);
+}
+
 /**
  * Requires the item on top to be a 25-byte `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG` lock, leaving it.
  *
@@ -239,6 +271,11 @@ export function verifyTailScript(
     readonly eventOwnerBelowTail?: boolean;
     /** True when the master's bodies make calls, whose sites then bind their records from the head's kept copy. */
     readonly keepsCalls?: boolean;
+    /**
+     * True when the framework library is defined (a master every spend of which is covered recognises its validator
+     * first): each walk is then one invocation of the library's routine for it, the counts the walks take pushed.
+     */
+    readonly viaLibrary?: boolean;
   } = {},
 ): Uint8Array {
   const keepsRecordIndices = options.keepsRecordIndices === true;
@@ -251,6 +288,27 @@ export function verifyTailScript(
   } else {
     bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   }
+  if (options.viaLibrary === true) {
+    if (options.eventOwnerBelowTail !== true) {
+      throw new Error('master tail: the library walks the events of a frame that leaves their owner below the tail');
+    }
+    const invoke = (id: bigint, ...counts: number[]): number[] => [
+      ...counts.flatMap((count) => [...encodeDataPush(scriptNumber(count))]), ...encodeDataPush(encodeInt(id)),
+      Opcodes.OP_INVOKE,
+    ];
+    bytes.push(...invoke(options.keepsCalls === true ? TAIL_CALLS_KEPT_ROUTINE_ID : TAIL_CALLS_ROUTINE_ID));
+    bytes.push(...invoke(keepsRecordIndices ? TAIL_SEGMENTS_KEPT_ROUTINE_ID : TAIL_SEGMENTS_ROUTINE_ID));
+    if (tail.eventRun === true) bytes.push(...invoke(TAIL_EVENT_RUN_ROUTINE_ID));
+    else if (tail.maxEventCount === 0) bytes.push(...requireU16Equals(0));
+    else bytes.push(...invoke(TAIL_EVENTS_ROUTINE_ID, tail.maxEventCount));
+    if (tail.sendRun === true) bytes.push(...invoke(TAIL_SEND_RUN_ROUTINE_ID));
+    else if (tail.sendCount === 0) bytes.push(...requireU16Equals(0));
+    else bytes.push(...invoke(TAIL_SENDS_ROUTINE_ID, tail.sendCount));
+    const values = tail.valueWitnessCount ?? 0;
+    bytes.push(...(values === 0 ? valueSection(0) : invoke(TAIL_VALUES_ROUTINE_ID, values)));
+    bytes.push(...invoke(TAIL_PADDING_ROUTINE_ID));
+    return new Uint8Array(bytes);
+  }
   bytes.push(...(options.keepsCalls === true ? callWalkKeepingCallsScript() : callWalkScript()));
   bytes.push(...segmentCountCheckScript());
   bytes.push(...(keepsRecordIndices ? segmentLoopKeepingSegmentsScript() : segmentLoopScript()));
@@ -261,6 +319,30 @@ export function verifyTailScript(
   bytes.push(...valueSection(tail.valueWitnessCount ?? 0));
   bytes.push(...paddingSection());
   return new Uint8Array(bytes);
+}
+
+/**
+ * The bodies of the library's tail walks (framework-library.ts), each what `verifyTailScript` emits inline for the
+ * same walk. A counted walk takes its count on top of the tail and runs it as a loop, which leaves the alternate
+ * stack as the unrolled walk does; it is invoked only for a count of at least one.
+ */
+export function tailWalkBodies(): {
+  readonly calls: Uint8Array; readonly callsKept: Uint8Array; readonly segments: Uint8Array;
+  readonly segmentsKept: Uint8Array; readonly events: Uint8Array; readonly eventRun: Uint8Array;
+  readonly sends: Uint8Array; readonly sendRun: Uint8Array; readonly values: Uint8Array; readonly padding: Uint8Array;
+} {
+  return {
+    calls: new Uint8Array(callWalkScript()),
+    callsKept: new Uint8Array(callWalkKeepingCallsScript()),
+    segments: new Uint8Array([...segmentCountCheckScript(), ...segmentLoopScript()]),
+    segmentsKept: new Uint8Array([...segmentCountCheckScript(), ...segmentLoopKeepingSegmentsScript()]),
+    events: new Uint8Array(eventLoopSection()),
+    eventRun: new Uint8Array(eventRunSection(true)),
+    sends: new Uint8Array(sendLoopSection()),
+    sendRun: new Uint8Array(sendRunSection()),
+    values: new Uint8Array(valueLoopSection()),
+    padding: new Uint8Array(paddingSection()),
+  };
 }
 
 /**
@@ -278,7 +360,7 @@ function paddingSection(): number[] {
  * past the list; a body that reads a long value at an empty slot fails its own hash check. The count is read
  * unsigned, as the validator reads it, so no count the validator refuses is accepted here.
  */
-function valueSection(slots: number): number[] {
+export function valueSection(slots: number): number[] {
   const bytes: number[] = [...takeFixedWidthField(2), Opcodes.OP_SWAP, ...unsignedLength()];
   for (let slot = 0; slot < slots; slot += 1) {
     // `[..., rest, count]`.
@@ -288,6 +370,26 @@ function valueSection(slots: number): number[] {
   }
   bytes.push(...encodeDataPush(scriptNumber(slots)), Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY);
   return bytes;
+}
+
+/**
+ * `valueSection` over a count on top of the tail rather than one built in: entry `[..., tail, slots]` with `slots`
+ * at least one, exit as `valueSection(slots)` leaves it. The loop keeps `[count, slots, rest, slot]`.
+ */
+function valueLoopSection(): number[] {
+  return [
+    Opcodes.OP_TOALTSTACK,
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, ...unsignedLength(), // [rest, count]
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_ROT, Opcodes.OP_0, // [count, slots, rest, 0]
+    Opcodes.OP_BEGIN,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_OVER, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
+    Opcodes.OP_SWAP, ...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK, Opcodes.OP_SWAP,
+    Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_TOALTSTACK, Opcodes.OP_ENDIF,
+    Opcodes.OP_1ADD, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_DROP, Opcodes.OP_ROT, Opcodes.OP_ROT, // [rest, count, slots]
+    Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY,
+  ];
 }
 
 /** Consumes a `u16` count and requires it to equal `expected`, leaving the tail on top. */
@@ -533,7 +635,7 @@ function requireRecordShape(sentinel: Uint8Array = INDEX_NONE_BYTES): number[] {
  * first, and the declared count is parked last, above them all; the caller moves them to the main stack as tracked
  * slots in the order the bodies read them.
  */
-function eventSection(maxEventCount: number, ownerBelowTail: boolean): number[] {
+export function eventSection(maxEventCount: number, ownerBelowTail: boolean): number[] {
   if (maxEventCount === 0) return requireU16Equals(0);
   const bytes: number[] = [
     // Read the declared count as a VM number, leaving `[declared, tail]`.
@@ -572,6 +674,39 @@ function eventSection(maxEventCount: number, ownerBelowTail: boolean): number[] 
 }
 
 /**
+ * `eventSection(maxEventCount, true)` over a count on top of the tail rather than one built in: entry
+ * `[..., owner, tail, maxEventCount]` with the count at least one, exit as the unrolled walk leaves it. The loop keeps
+ * `[owner, declared, maxEventCount, rest, position]`, so the owner sits six items below a category just read.
+ */
+function eventLoopSection(): number[] {
+  return [
+    Opcodes.OP_TOALTSTACK,
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, // [owner, rest, declared]
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_2DUP, Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY,
+    Opcodes.OP_ROT, // [owner, declared, max, rest]
+    Opcodes.OP_1NEGATE, Opcodes.OP_TOALTSTACK, Opcodes.OP_0,
+    Opcodes.OP_BEGIN,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_OVER, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
+    Opcodes.OP_SWAP, ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, // [.., position, rest', out]
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
+    ...encodeDataPush(scriptNumber(6)), Opcodes.OP_PICK, Opcodes.OP_UTXOTOKENCATEGORY,
+    ...encodeDataPush(scriptNumber(32)), Opcodes.OP_SPLIT, Opcodes.OP_DROP, Opcodes.OP_EQUALVERIFY,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_OVER, Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY,
+    Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK, Opcodes.OP_SWAP,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_FROMALTSTACK,
+    ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_1ADD, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_DROP, Opcodes.OP_NIP, // [owner, declared, rest]
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP,
+    Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
+  ];
+}
+
+/**
  * The number of items above the records' owner when the event walk reads a category.
  *
  * The owner sits directly below the tail. When a listed event is read the working region above it holds the tail's
@@ -607,7 +742,7 @@ function eventCategoryScript(ownerBelowTail: boolean): number[] {
  * the lock and the value it computed at the listed output, or requires the sentinel when its own send did not
  * happen, so the region states exactly the sends the execution made.
  */
-function sendSection(count: number): number[] {
+export function sendSection(count: number): number[] {
   if (count === 0) return requireU16Equals(0);
   const bytes: number[] = [
     // Read the declared count as a VM number, leaving `[declared, tail]`, and require it not to exceed the region.
@@ -631,6 +766,30 @@ function sendSection(count: number): number[] {
   // Park the declared count above the positions.
   bytes.push(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
   return bytes;
+}
+
+/**
+ * `sendSection` over a count on top of the tail rather than one built in: entry `[..., tail, count]` with the count
+ * at least one, exit as `sendSection(count)` leaves it. The loop keeps `[declared, count, rest, position]`.
+ */
+function sendLoopSection(): number[] {
+  return [
+    Opcodes.OP_TOALTSTACK,
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, // [rest, declared]
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_2DUP, Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY,
+    Opcodes.OP_ROT, Opcodes.OP_0, // [declared, count, rest, 0]
+    Opcodes.OP_BEGIN,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_OVER, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
+    Opcodes.OP_SWAP, ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_SWAP,
+    Opcodes.OP_ELSE,
+    ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_1ADD, Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_DROP, Opcodes.OP_NIP, // [declared, rest]
+    Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
+  ];
 }
 
 /**
@@ -788,10 +947,12 @@ export function recogniseValidatorScriptAgainstReservedHash(definesFramework = f
     ...encodeDataPush(scriptNumber(33)), Opcodes.OP_NUMEQUALVERIFY,
     Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(32)), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
     ...encodeDataPush(new Uint8Array([TokenCapability.MUTABLE])), Opcodes.OP_EQUALVERIFY,
-    // The redeem script: the last push of the validator's unlocking bytecode.
+    // The redeem script: the last push of the validator's unlocking bytecode, after the transcript. The pin and the
+    // program are thousands of bytes, so the push is `OP_PUSHDATA2` and its header three bytes; what follows the
+    // header is the redeem, whose hash256 the P2SH32 check below binds to the input's lock (so no other bytes, and
+    // nothing after them, pass it).
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_INPUTBYTECODE,
-    ...dropFirstPushScript(), ...splitFirstPushScript(),
-    Opcodes.OP_0, Opcodes.OP_EQUALVERIFY,
+    ...dropFirstPushScript(), ...encodeDataPush(scriptNumber(3)), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
     // The redeem runs only when this input's lock is P2SH32 of it. Require that, and require the pin push to
     // open with the 33-byte push opcode. A bare lock replaying the unlocking is not a validator.
     Opcodes.OP_DUP,

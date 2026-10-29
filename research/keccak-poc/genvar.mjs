@@ -24,15 +24,64 @@ function reverseEachLane(e, n) {
   for (let i = 1; i < n; i++) { e.raw('<8> OP_SPLIT OP_SWAP OP_REVERSEBYTES', 1); e.raw('OP_ROT OP_SWAP OP_CAT OP_SWAP', -1); }
   e.raw('OP_DROP', -1);
 }
-// round body (theta,rho,pi,chi). in/out 25 lane items (lane i at depth i). net 0.
+// A stack of named items (bottom first) that emits the picks and rolls reaching them. Each item is read a known
+// number of times, and its last read moves it rather than copying it, so a round leaves nothing to clean up.
+class NamedStack {
+  constructor(names, uses) { this.ops = []; this.items = [...names]; this.uses = { ...uses }; }
+  depthOf(name) {
+    const at = this.items.lastIndexOf(name);
+    if (at < 0) throw new Error(`no item ${name} on [${this.items.join(' ')}]`);
+    return this.items.length - 1 - at;
+  }
+  // Read `name` onto the top as `as`: a copy while it has later reads, else the item itself.
+  take(name, as) {
+    const depth = this.depthOf(name);
+    this.uses[name] -= 1;
+    if (this.uses[name] > 0) {
+      this.ops.push(depth === 0 ? 'OP_DUP' : depth === 1 ? 'OP_OVER' : `<${depth}> OP_PICK`);
+    } else {
+      if (depth === 1) this.ops.push('OP_SWAP');
+      else if (depth === 2) this.ops.push('OP_ROT');
+      else if (depth > 2) this.ops.push(`<${depth}> OP_ROLL`);
+      this.items.splice(this.items.length - 1 - depth, 1);
+    }
+    this.items.push(as);
+  }
+  unary(ops, as) { if (ops !== '') this.ops.push(ops); this.items[this.items.length - 1] = as; }
+  binary(op, as) { this.ops.push(op); this.items.splice(-2, 2, as); }
+}
+// A 64-bit big-endian lane rotated left by k (net 0).
+const rotlOps = (k) => (k % 64 === 0 ? '' : `OP_DUP <${k}> OP_LSHIFTBIN OP_SWAP <${64 - k}> OP_RSHIFTBIN OP_OR`);
+// round body (theta,rho,pi,chi). in/out 25 lane items (lane i at depth i). net 0. Every intermediate is consumed by
+// its last read, so the 25 new lanes are all that is left, and NOT is OP_INVERT. The @solidcash/utils covenants and
+// library blob are generated from it, and artifacts commit their hashes.
 function emitRoundBody25(e) {
-  const base = e.size - 25, L = (i) => base + (24 - i), C = [], D = [], B = [];
-  for (let x = 0; x < 5; x++) { e.pickAbs(L(x)); for (let y = 1; y < 5; y++) { e.pickAbs(L(x+5*y)); e.xor(); } C[x] = e.size-1; }
-  for (let x = 0; x < 5; x++) { e.pickAbs(C[(x+4)%5]); e.pickAbs(C[(x+1)%5]); e.rotl(1); e.xor(); D[x] = e.size-1; }
-  for (let p = 0; p < 25; p++) { const { x, y, rot } = piSrc[p]; e.pickAbs(L(x+5*y)); e.pickAbs(D[x]); e.xor(); e.rotl(rot); B[p] = e.size-1; }
-  for (let i = 24; i >= 0; i--) { const x = i%5, y = (i-x)/5;
-    e.pickAbs(B[x+5*y]); e.pickAbs(B[((x+1)%5)+5*y]); e.not(); e.pickAbs(B[((x+2)%5)+5*y]); e.and(); e.xor(); }
-  for (let k = 0; k < 60; k++) e.raw('<25> OP_ROLL OP_DROP', -1);
+  const lanes = Array.from({ length: 25 }, (_, k) => `a${24 - k}`); // bottom first: lane 0 on top
+  const uses = {};
+  for (let i = 0; i < 25; i++) { uses[`a${i}`] = 2; uses[`B${i}`] = 3; } // theta and rho/pi; chi's three
+  for (let x = 0; x < 5; x++) { uses[`C${x}`] = 2; uses[`D${x}`] = 5; }   // the two D's beside it; a column
+  const s = new NamedStack(lanes, uses);
+  for (let x = 0; x < 5; x++) {
+    s.take(`a${x}`, `C${x}`);
+    for (let y = 1; y < 5; y++) { s.take(`a${x + 5 * y}`, 't'); s.binary('OP_XOR', `C${x}`); }
+  }
+  for (let x = 0; x < 5; x++) {
+    s.take(`C${(x + 4) % 5}`, 'p'); s.take(`C${(x + 1) % 5}`, 'q'); s.unary(rotlOps(1), 'q');
+    s.binary('OP_XOR', `D${x}`);
+  }
+  for (let p = 0; p < 25; p++) {
+    const { x, y, rot } = piSrc[p];
+    s.take(`a${x + 5 * y}`, 'u'); s.take(`D${x}`, 'v'); s.binary('OP_XOR', `B${p}`); s.unary(rotlOps(rot), `B${p}`);
+  }
+  for (let i = 24; i >= 0; i--) {
+    const x = i % 5, y = (i - x) / 5;
+    s.take(`B${((x + 1) % 5) + 5 * y}`, 'n'); s.unary('OP_INVERT', 'n');
+    s.take(`B${((x + 2) % 5) + 5 * y}`, 'm'); s.binary('OP_AND', 'k');
+    s.take(`B${x + 5 * y}`, 'b'); s.binary('OP_XOR', `out${i}`);
+  }
+  const expected = Array.from({ length: 25 }, (_, k) => `out${24 - k}`);
+  if (s.items.join(' ') !== expected.join(' ')) throw new Error(`round leaves [${s.items.join(' ')}]`);
+  e.raw(s.ops.join(' '), 0);
 }
 // absorb a 136-byte block (on top) into the 25 lane items below it. out: 25 new lane items.
 function emitAbsorbBlock25(e) {

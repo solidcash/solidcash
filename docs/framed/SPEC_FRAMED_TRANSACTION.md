@@ -110,6 +110,12 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
   1,253, and a 136-byte block at 1.73M operation cost where it was 2.26M. Every keccak covenant is regenerated from it
   (the compute covenant 1,950 B, its stateful form 1,946 B, the shifted one 1,918 B, the chained ones 2,019 and
   2,031 B, the library blob 1,838 B); the pre-batching covenant an artifact may still commit stays as it was.
+- **A recovery co-spends one side-car, which checks a witnessed key natively** (section 5, covenant V). Four
+  `OP_CHECKDATASIG`s replace the A/B pair's Script ladder: two ECDSA checks through keys shifted by known multiples
+  of G, whose shifts two Schnorr checks prove (section 5's compute side-cars). V is 804 B, spends ~0.39M operation
+  cost and takes a ~1.4 kB input, where the pair spent ~12.7M across two ~10 kB inputs. So recovery `j`'s side-car
+  sits at `OP_INPUTINDEX + 1 + j`, and the keccak side-cars after it at `+ 1 + r + ...` (section 16). The pair stays
+  the default composition's, unchanged (`packages/solidc/docs/ecrecover.md`).
 
 ### Since revision 17 (2026-10-20)
 
@@ -900,8 +906,15 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 
 **Compute side-cars** (`solidcash/src/framed/composer/layout.ts`, `recovery.ts`).
 - A frame whose body hashes with `keccak256` or recovers a signer with `ecrecover` co-spends side-car inputs right
-  after its own master: each recovery's A/B pair in call order, then one keccak side-car per recovery projected to
+  after its own master: each recovery's side-car in call order, then one keccak side-car per recovery projected to
   an EVM address, then one per `keccak256` call in the order the body makes them.
+- A recovery's side-car (covenant V, `ecrecover/ecrecoverVerifySidecar.ts`) checks a witnessed key with four native
+  `OP_CHECKDATASIG`s and commits it compressed. `OP_CHECKDATASIG` signs SHA256 of its message, so each ECDSA check
+  runs through a key shifted by a known multiple of G: a signature by Q over the digest z is one by
+  Q + ((z - z1)/r)G over z1 = SHA256(m1). A Schnorr check that V signs itself proves each shift, from a baked nonce
+  point. Check 1 pins (z/s)G + (r/s)Q to the two points at x = r, and check 2, one generator further on, pins the
+  one v selects, which fixes Q. The pair of Script-ladder side-cars this replaces spent ~12.7M op-cost across two
+  ~10 kB inputs; V spends ~0.39M in one ~1.4 kB input, bound by its code (`packages/solidc/docs/ecrecover.md`).
 - The body finds them at fixed offsets from its own input (section 16), even in a frame that runs on its caller's
   records. Each side-car recreates itself at its own index, like every other participant.
 - A side-car is a UTXO at its covenant's shared lock, holding that covenant's own token rather than the contract's.
@@ -909,7 +922,7 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 - The SDK spends live side-car UTXOs and refuses by name a pool that is short (`call/side-cars.ts`). A constructor's
   frame co-spends its side-cars the same way (`c937caa8f`). A preimage or digest the body computes is learned from
   the body's own bind (section 18).
-- A recovery inside a loop would need a run-time number of side-car pairs, and is refused by name
+- A recovery inside a loop would need a run-time number of side-cars, and is refused by name
   (`solidc/src/framed/master/support.ts`). A `keccak256` call inside a loop reads one side-car per turn: the body
   counts the side-cars it has read, and the artifact publishes the loop's recurrence, by which the SDK counts the
   side-cars it lays (`master/loop-effects.ts`, `call/loop-turns.ts`). An extra side-car is never read.
@@ -1894,9 +1907,9 @@ record = in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut
   addresses it from its own input, except that a per-entry master's keccak256 call outside a hashing loop binds
   whichever input at the shared stateful lock holds its job when its own slot does not, so calls that hash one
   preimage share one side-car (section 0): for `r` recoveries and `p` of them projected to an EVM address, recovery `j`'s
-  pair is at `OP_INPUTINDEX + 1 + 2j` and `+ 2 + 2j`, projection `j`'s keccak side-car at `+ 1 + 2r + j`, and the
-  `i`-th `keccak256` call's at `+ 1 + 2r + p + i` (`GenerateTargetTraversal.ts`). A body that hashes inside a loop
-  counts instead: its `k`-th call reads `+ 1 + 2r + p + k`. A side-car recreates itself at its own index, so the same
+  side-car is at `OP_INPUTINDEX + 1 + j`, projection `j`'s keccak side-car at `+ 1 + r + j`, and the `i`-th
+  `keccak256` call's at `+ 1 + r + p + i` (`GenerateTargetTraversal.ts`). A body that hashes inside a loop counts
+  instead: its `k`-th call reads `+ 1 + r + p + k`. A side-car recreates itself at its own index, so the same
   coordinate names its output.
 - **Runs.** A master with a body that emits or sends inside a loop reads that list as a run: the listed outputs must
   be consecutive, its head checks every one, and the body binds its `k`-th event or send at the run's first output

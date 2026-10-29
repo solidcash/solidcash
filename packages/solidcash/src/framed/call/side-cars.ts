@@ -2,7 +2,7 @@
  * The compute side-cars a user-entered frame co-spends.
  *
  * An entry that hashes through keccak256 or recovers a signer reads one side-car per call right after its own
- * input: each recovery's A/B pair, one keccak side-car per EVM projection, then one per keccak256 call. A side-car
+ * input: each recovery's own, one keccak side-car per EVM projection, then one per keccak256 call. A side-car
  * is a UTXO at its covenant's shared lock, so a call spends live ones. A provider that can mint them (the mock
  * network) is provisioned with deterministic stand-ins; a real network needs the pool deployed, and a pool that is
  * short is refused by name. A value the body computes is left to the derivation, which learns it from the body's
@@ -89,14 +89,13 @@ export async function entrySideCars(options: EntrySideCarOptions): Promise<Recov
   const projections = calls.filter((call) => call.evm).length;
   // The EVM projections' side-cars and the keccak256 calls' side-cars share the stateful keccak covenant's lock.
   const taken = options.taken ?? new Set<string>();
-  const [a, b, keccak] = await Promise.all([
-    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'A'), calls.length, 'recovery side-car A', taken),
-    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'B'), calls.length, 'recovery side-car B', taken),
+  const [v, keccak] = await Promise.all([
+    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'V'), calls.length, 'recovery side-car', taken),
     livePool(
       provider, keccakComputeLockingBytecode(salt, true), projections + preimages.length, 'keccak256 side-car', taken,
     ),
   ]);
-  const recovery = buildRecoverySideCars(master, calls, salt, { a, b, k: keccak.slice(0, projections) });
+  const recovery = buildRecoverySideCars(master, calls, salt, { v, k: keccak.slice(0, projections) });
   const hashing = buildKeccakSideCars(master, preimages, salt, keccak.slice(projections));
   return {
     ids: [...recovery.ids, ...hashing.ids],

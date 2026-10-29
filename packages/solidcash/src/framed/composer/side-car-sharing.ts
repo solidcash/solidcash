@@ -11,7 +11,7 @@
  *
  * `keccakJobsToShare` reads, from a settled draft, which of a frame's keccak256 calls need a side-car of their own:
  * none for a call whose side-car still holds its placeholder or whose job a side-car of another frame, or of an
- * earlier call of this frame, holds; the job it settled to for every other call. A recovery pair and its EVM
+ * earlier call of this frame, holds; the job it settled to for every other call. A recovery side-car and its EVM
  * projection's side-car are read at their own offsets and are not shared. The caller plans the frame again with those
  * jobs (`EntrySideCarOptions.jobs`) and keeps that plan only when every participant accepts it, so a master that reads
  * its side-car at its own offset alone leaves the call as it was.

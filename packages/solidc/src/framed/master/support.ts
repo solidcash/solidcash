@@ -2946,10 +2946,10 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     if (fn.usesBlockhash || contract.usesBlockhash) {
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
     }
-    // A recovery loop reads its pair per iteration from a run-time counter, which the head would have to place a
-    // variable number of inputs for; the straight-line framed pair is what the head locates.
+    // A recovery loop reads its side-car per iteration from a run-time counter, which the head would have to place a
+    // variable number of inputs for; the straight-line framed side-car is what the head locates.
     if (fn.ecrecoverLoopReads === true) {
-      refuseBody(fn, 'an ecrecover loop reads one recovery side-car pair per iteration, which the master head does '
+      refuseBody(fn, 'an ecrecover loop reads one recovery side-car per iteration, which the master head does '
         + 'not locate a run-time number of');
     }
     if ((fn.externalCalls?.length ?? 0) > 0 && invoked.has(fn.name)) {

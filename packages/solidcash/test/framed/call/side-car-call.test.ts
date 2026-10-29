@@ -8,8 +8,7 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
-import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
+import { computeEcrecoverVerifyWitness } from '../../../src/ecrecover/ecrecoverVerifySidecar.js';
 import { participant } from '../../../src/framed/composer/index.js';
 import { FramedSideCarPoolError, callFramedEntry } from '../../../src/framed/call/index.js';
 import type { Artifact } from '@solidcash/utils';
@@ -45,39 +44,21 @@ interface Signer {
 
 const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
 
-/**
- * A key whose signature over the digest splits (at 57). A random key's signature can fail the probe, and a failed
- * probe tries every split (about 17 s of CPU), so the search starts here.
- */
-const SPLITTING_KEY = '0x65b605e09337ea34c9b99b8e943317a7ac778adf254ca5b8a283904fda98a5ec';
+/** The key that signs the digest. */
+const SIGNING_KEY = '0x65b605e09337ea34c9b99b8e943317a7ac778adf254ca5b8a283904fda98a5ec';
 
-/** Signs the digest with the known key, then with fresh wallets, until the shipped split probe accepts it. */
-function splittableSigner(): Signer {
-  const probeUtxo = (odd: boolean): never => ({
-    txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
-    token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-  }) as never;
-  const signed = `0x${binToHex(DIGEST.slice().reverse())}`;
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const wallet = attempt === 0 ? new ethers.Wallet(SPLITTING_KEY) : ethers.Wallet.createRandom();
-    const { r, s, v } = wallet.signingKey.sign(signed);
-    const signer = { v, r: leBytes(r), s: leBytes(s), owner: hexToBin(wallet.signingKey.compressedPublicKey.slice(2)) };
-    try {
-      probeEcrecoverSplit(computeEcrecoverWitness(DIGEST, v, signer.r, signer.s), SHARED_LIBRARY_SALT,
-        probeUtxo(false), probeUtxo(true));
-    } catch {
-      continue;
-    }
-    return signer;
-  }
-  throw new Error('no signature with a two-covenant split after 200 draws');
+/** The digest signed by the known key. */
+function signerOfDigest(): Signer {
+  const wallet = new ethers.Wallet(SIGNING_KEY);
+  const { r, s, v } = wallet.signingKey.sign(`0x${binToHex(DIGEST.slice().reverse())}`);
+  return { v, r: leBytes(r), s: leBytes(s), owner: hexToBin(wallet.signingKey.compressedPublicKey.slice(2)) };
 }
 
 let signer: Signer;
 let guard: Artifact;
 
 beforeAll(() => {
-  signer = splittableSigner();
+  signer = signerOfDigest();
   guard = compileStringMulti('pragma solidcash ^0.14.0;'
     + ' error InvalidSignature();'
     + ' error InvalidSignatureLength(int length);'
@@ -173,7 +154,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     const deployed = await deploy();
     const first = await bump(deployed, CALLER_TXID);
     expect(first.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    const ids = ['master/recovery-A0', 'master/recovery-B0', 'master/keccak-0', 'master/keccak-1'];
+    const ids = ['master/recovery-V0', 'master/keccak-0', 'master/keccak-1'];
     const masterIndex = participant(first.draft.layout, 'master').index;
     expect(ids.map((id) => participant(first.draft.layout, id).index))
       .toStrictEqual(ids.map((_, offset) => masterIndex + 1 + offset));
@@ -191,8 +172,8 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
   }, 120_000);
 
   it('answers the zero address for a signature of 65 zero bytes, so the body reaches its own revert', async () => {
-    // `v` is 0, which the precompile refuses: the body reads no pair and its own `revert` is the refusal, while
-    // the placeholder pair the call co-spends accepts on its own.
+    // `v` is 0, which the precompile refuses: the body reads no side-car and its own `revert` is the refusal, while
+    // the placeholder side-car the call co-spends accepts on its own.
     const { deployed, callerUtxo } = await refusalDeployment();
     const refused = await callFramedEntry({
       provider: deployed.provider,
@@ -207,20 +188,19 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     });
     expect(refused.refusal?.innermost?.reason.error?.name).toBe('InvalidSignature');
     const accepted = new Map(refused.verdicts.map((verdict) => [verdict.id, verdict.accepted]));
-    expect([accepted.get('master'), accepted.get('master/recovery-A0'), accepted.get('master/recovery-B0')])
-      .toStrictEqual([false, true, true]);
+    expect([accepted.get('master'), accepted.get('master/recovery-V0')]).toStrictEqual([false, true]);
     expect(refused.broadcast).toBeUndefined();
   }, 120_000);
 
   it('answers the zero address for a signature whose r no curve point has, so the body reaches its own revert', async () => {
-    // The body binds the placeholder, and the pair it learns it should bind is rebuilt as one whose A pad proves `r`
-    // off the curve, which the body checks before answering the zero address.
+    // The body binds the placeholder, and the side-car it learns it should bind is rebuilt as one whose pad proves
+    // `r` off the curve, which the body checks before answering the zero address.
     const word = (value: bigint): Uint8Array =>
       Uint8Array.from({ length: 32 }, (_, index) => Number((value >> BigInt(8 * index)) & 0xffn));
     let x = 1n;
     const onCurve = (): boolean => {
       try {
-        computeEcrecoverWitness(DIGEST, 27, word(x), signer.s);
+        computeEcrecoverVerifyWitness(DIGEST, 27, word(x), signer.s);
         return true;
       } catch {
         return false;
@@ -241,8 +221,7 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     });
     expect(refused.refusal?.innermost?.reason.error?.name).toBe('InvalidSignature');
     const accepted = new Map(refused.verdicts.map((verdict) => [verdict.id, verdict.accepted]));
-    expect([accepted.get('master'), accepted.get('master/recovery-A0'), accepted.get('master/recovery-B0')])
-      .toStrictEqual([false, true, true]);
+    expect([accepted.get('master'), accepted.get('master/recovery-V0')]).toStrictEqual([false, true]);
     expect(refused.broadcast).toBeUndefined();
   }, 120_000);
 

@@ -770,7 +770,7 @@ section 5.
 | solidc/src/framed/master/support.ts:1972 | refusedEntries | an event emitted from a loop makes the event count depend on the loop | GAP |
 | solidc/src/framed/master/support.ts:1980 | refusedEntries | a blockhash read needs a co-spent oracle input the master head does not locate | GAP |
 | solidc/src/framed/master/support.ts:1985 | refusedEntries | a keccak256 call inside a loop reads one compute side-car per turn | GAP |
-| solidc/src/framed/master/support.ts:1991 | refusedEntries | an ecrecover loop reads one recovery side-car pair per iteration | GAP |
+| solidc/src/framed/master/support.ts:1991 | refusedEntries | an ecrecover loop reads one recovery side-car per iteration | GAP |
 | solidc/src/framed/master/support.ts:1995 | refusedEntries | the body makes an external call and is invoked as its own subroutine | GAP |
 | solidc/src/framed/master/support.ts:2002 | refusedEntries | the body reads the balance of an address other than its own | MUST-STAY (semantics) |
 | solidc/src/framed/master/support.ts:2006 | refusedEntries | the body reads its contract's balance and is invoked as its own subroutine | GAP |

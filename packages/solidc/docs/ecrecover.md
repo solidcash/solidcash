@@ -283,7 +283,8 @@ off-chain, not in the VM.
 2. **Digest = `sha256(h)`, not `h`** - `OP_CHECKDATASIG` verifies over `sha256(message)`
    (`interpreter.cpp`: `CSHA256().Write(vchMessage...).Finalize`). So a BCH-produced signature signs `sha256(h)`.
    An Ethereum/MetaMask signature signs the digest directly -> mismatch (why this approach is scoped to
-   BCH-produced). This is exactly the limitation that Part 2 (pure-script) removes.
+   BCH-produced). This is exactly the limitation that Part 2 (pure-script) removes. A key shift removes it as well,
+   without the ladder: see "Native-sigcheck verification (covenant V)" below.
 3. **low-S** - `OP_CHECKDATASIG` requires low-S; the EVM precompile permits high-S. libauth always emits lower-S,
    so this only bites imported foreign high-S signatures.
 
@@ -687,7 +688,22 @@ addition). Three things make it **robust across 40+ random signatures (100%)**:
    signature (all 127 mask bytes non-zero, ~3e-4) where no 2-input split fits, the probe finds none and the SDK
    escalates to a 3-input ladder - detected, never mis-recovered.
 
-With these, both inputs land around 7.9M with ~60-100K of margin on every signature tested. (The baked per-signature
+With these, both inputs land around 7.9M with ~60-100K of margin on every signature tested.
+
+**Cheaper arithmetic (2026-10-29, research only: `ECRECOVER_LAZY=1`).** `OP_MOD` was a third of each input and the
+conditional reduction after every field add and subtract (a copy, a push of p, a compare and a branch) about a sixth.
+With `ECRECOVER_LAZY=1` the register machine (`emit.mjs`) reduces only products: a sum stays unreduced and a
+difference adds the multiple of p that bounds its subtrahend, so neither branches, with each value's bound tracked and
+reduced past 64p. The ladder carries its accumulator
+between the double and the add unreduced under fixed bounds (13p, 9p, 3p), which `engine.mjs` checks are a fixed
+point of both steps, and the checkpoint reduces it, because it is hashed against the SDK's reduced model. A depth-1
+or depth-2 pick or roll is the one opcode that does it. On one fixed signature the pair falls from 7.72M + 7.86M to
+6.41M + 6.31M (-18%); every research check (vs noble and ethers, every forgery and tamper case) passes. Fast
+reduction stays out: measured on the VM, its folds cost more than `OP_MOD` (7,855 vs 4,029 per multiply). The shipped
+pair keeps the eager arithmetic, which the generators reproduce without the switch: a framed composition no longer
+spends the pair at all (covenant V, below), and the default composition's builder fills every recovery input to the
+~10,000-byte cap, so a cheaper ladder would change no transaction's size there, only which signatures need the
+3-way split. (The baked per-signature
 engine, `lib.mjs`, fits two inputs without any of this because a baked table needs no on-chain verification; the
 witnessed reusable covenant pays that ~420K, which the pre-split and the ladder reuse buy back.)
 
@@ -696,6 +712,46 @@ master (1) hashes the sidecar's covenant *body* (no arguments) and checks it aga
 hash - so it trusts the self-verifying recovery code; (2) reads the `(hash, v, r, s)` arguments from the sidecar's
 unlocking and binds them equal to the ones it provided (`OP_EQUALVERIFY`); (3) copies `Q` from the sidecar's second
 output commitment back into itself. Integrity-hash + arg-bind + one read - nothing more.
+
+## Native-sigcheck verification (covenant V) - framed, 2026-10-29
+
+A framed body co-spends one side-car per recovery, covenant V, in place of the A/B pair: the SDK recovers Q off-chain
+and witnesses it, and V checks it with four native `OP_CHECKDATASIG`s. The SHA256 prehash that scoped Part 1 to
+BCH-produced signatures does not stand in the way, by two facts:
+
+- **Key shift.** If `(r, s)` is a valid signature on the digest `z` by Q, it is one on `z1 = SHA256(m1)` by
+  `Q + ((z - z1)/r)G`: the verifier's point `(z1/s)G + (r/s)(Q + ((z - z1)/r)G)` is `(z/s)G + (r/s)Q` unchanged.
+- **Known discrete log.** A witnessed point D is `d*G` for a `d` V computes when a Schnorr check by D passes on a
+  signature V builds itself: nonce point `R0 = k0*G` baked (G or -G, whichever has a quadratic-residue y), challenge
+  `e = SHA256(R0.x || compressed(D) || SHA256(m))`, `s0 = k0 + e*d`. The check computes `s0*G - e*D = R0 + e(dG - D)`,
+  which has `R0`'s x and a residue y only when it is `R0`, so only when `D = dG` (`e = 0` has probability 2^-256).
+
+With `W = (z/s)G + (r/s)Q` and `R` the point at `x = r` whose y parity `v` selects (witnessed as `Ry`, checked on the
+curve and against `v`):
+
+1. ECDSA check 1, `DER(r, low-s(s))` over `m1` by `P1 = Q + D1`, `D1 = ((z - z1)/r)G` proven as above, gives
+   `x(W) = r (mod n)`: W is R or -R.
+2. ECDSA check 2 targets `W + G`: `r2 = x(R + G) mod n`, `s2 = r2*s/r`, `D2 = ((z + s - z2*r/r2)/r)G` proven as
+   above, `P2 = Q + D2`. It gives `x(W + G) = x(R + G) (mod n)`. `-R + G` is neither `R + G` nor `-(R + G)` (either
+   would make R or G the identity), so their x-coordinates differ, and they agree mod n only when they differ by
+   exactly n, a 2^-128 event no signer steers, as is an x of `r + n` in check 1. So W is R, and W fixes Q.
+
+V also checks `r`, `s` in [1, n), `v` in {27, 28}, every witnessed coordinate in [0, p), Q and R on the curve, and
+each witnessed inverse (`r^-1`, `r2^-1`, and the three affine additions'). Each point addition, `Q + D1`, `Q + D2` and
+`R + G`, is affine with its inverse witnessed. The messages `m1`, `m2` are witnessed bytes, so the SDK redraws them
+past a degenerate shift; neither check's soundness depends on them, since the shift absorbs `z1`. No V exists for
+`r = G.x` (R + G is then a doubling) or for a key at infinity, and a crafted `r` small enough to make `DER(r, s)` 64
+bytes would read as Schnorr: liveness limits a random signature never meets, which the master's own range and
+off-curve answers do not depend on.
+
+Measured on the BCH-2026 VM (`ecrecover-poc/native.mjs` for the verifier, `gen-ecrecover-native.mjs` for the
+production covenant: salt brand, `<pad(32)> <argBlob> <witnessBlob> <redeem>` parse, the commitment B makes,
+self-preservation): V is 804 B and spends ~0.39M operation cost (four checks at 26,000 each, the rest field and
+group arithmetic), in a ~1,406-byte input that its code bounds, where the pair spent ~12.7M across two ~10 kB
+inputs. Over random signatures Q matches ethers, and the key of the other recovery id, a random key under honest
+shifts, a negated Q, wrong shifts, a tampered argument blob, commitment or witness, all fail. The SDK side is
+`ecrecover/ecrecoverVerifySidecar.ts`; the master binds V's argument blob and covenant hash and reads Q from V's
+output, as it read B's.
 
 ## Compiler / SDK integration (mirrors the keccak compute sidecar) - WIRED, builds green
 
@@ -727,7 +783,8 @@ The integration is built and compiles across both packages (mirroring the keccak
   `ecrecover-poc/gen-ecrecover-sidecar.mjs`: the proven `engine.mjs` verification + GLV ladder wrapped with the
   blob-structured unlocking (`<pad><argBlob><shared><witnessBlob><redeem>`), a leading salt brand-check (the P2SH
   redeem is `0x20||salt||covenant`, so the covenant runs with the 32-byte salt on top - dropped when SHARED, else
-  input-0's category is verified), the A->B checkpoint-hash commit, and self-preservation. covA = 7482 B, covB = 3353 B.
+  input-0's category is verified), the A->B checkpoint-hash commit, and self-preservation. covA = 6416 B, covB = 2170 B
+  (7482 and 3353 B before the lazy reduction below).
 
 ## SHIPPED end-to-end (compiler + SDK + VM) - 2026-07-20
 

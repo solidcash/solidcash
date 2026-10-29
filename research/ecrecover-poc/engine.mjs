@@ -8,7 +8,7 @@
 import { ethers } from 'ethers';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { createVirtualMachineBch2026, assembleBytecodeBch, binToHex, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { E, P } from './emit.mjs';
+import { E, P, LAZY } from './emit.mjs';
 import { emitJdbl, emitJaddMixed } from './group.mjs';
 
 const vm = createVirtualMachineBch2026();
@@ -40,14 +40,25 @@ const accBlob = ([X, Y, Z]) => { const b = new Uint8Array(99); b.set(to33(X), 0)
 const decAcc = (blob) => [0, 33, 66].map((o) => vmNumberToBigInt(blob.slice(o, o + 33), { requireMinimalEncoding: false }));
 
 // subroutines: 0x10 double, 0x11 mixed-add, 0x12 AAV (affine add verified)
+// Under lazy reduction the ladder's accumulator (X Y Z) is carried between the double and the add unreduced: each
+// leaves it under LADDER_BOUNDS (in units of p), which each also takes it under, and the checkpoint (COMBINE3)
+// reduces it.
+const LADDER_BOUNDS = LAZY ? { X: 13n, Y: 9n, Z: 3n } : { X: 1n, Y: 1n, Z: 1n };
 const DEFS = (() => {
-  const db = new E(); db.stk = ['X', 'Y', 'Z']; emitJdbl(db, []);
-  const ad = new E(); ad.stk = ['X', 'Y', 'Z', 'X2', 'Y2']; ad.relabel('X', 'X1').relabel('Y', 'Y1').relabel('Z', 'Z1'); emitJaddMixed(ad, []);
+  const db = new E(); db.stk = ['X', 'Y', 'Z']; db.inputBounds = LADDER_BOUNDS; emitJdbl(db, [], LAZY);
+  const ad = new E(); ad.stk = ['X', 'Y', 'Z', 'X2', 'Y2']; ad.inputBounds = LADDER_BOUNDS; ad.relabel('X', 'X1').relabel('Y', 'Y1').relabel('Z', 'Z1'); emitJaddMixed(ad, [], LAZY);
   const av = new E(); av.stk = ['x1', 'y1', 'x2', 'y2', 'inv'];
   av.sub('x2', 'x1', 'dx'); av.mul('dx', 'inv', 'chk'); av.sub('y2', 'y1', 'dy'); av.mul('dy', 'inv', 'lam');
   av.sqr('lam', 'lam2'); av.sub('lam2', 'x1', 'tt'); av.sub('tt', 'x2', 'x3'); av.sub('x1', 'x3', 'd1'); av.mul('lam', 'd1', 'm1'); av.sub('m1', 'y1', 'y3');
   av.keep(['x3', 'y3', 'chk']);
-  return `<0x${binToHex(asm(db.asm()))}> <0x10> OP_DEFINE <0x${binToHex(asm(ad.asm()))}> <0x11> OP_DEFINE <0x${binToHex(asm(av.asm() + ' OP_1 OP_NUMEQUALVERIFY'))}> <0x12> OP_DEFINE`;
+  const [dbAsm, adAsm] = [db.asm(), ad.asm()];
+  // A fixed point: every way the ladder leaves the accumulator stays within the bounds both steps take it under.
+  for (const [step, outputs] of [['double', db.outputBounds], ['add', ad.outputBounds]]) {
+    for (const [at, name] of [['X3', 'X'], ['Y3', 'Y'], ['Z3', 'Z']]) {
+      if (outputs[at] > LADDER_BOUNDS[name]) throw new Error(`${step} leaves ${name} under ${outputs[at]}p, past ${LADDER_BOUNDS[name]}p`);
+    }
+  }
+  return `<0x${binToHex(asm(dbAsm))}> <0x10> OP_DEFINE <0x${binToHex(asm(adAsm))}> <0x11> OP_DEFINE <0x${binToHex(asm(av.asm() + ' OP_1 OP_NUMEQUALVERIFY'))}> <0x12> OP_DEFINE`;
 })();
 const termHex = (() => { const tb = new Uint8Array(16 * 65); for (let m = 0; m < 16; m++) { let term = 0n; for (let j = 0; j < 4; j++) if (m & (1 << j)) term += B128 ** BigInt(j); tb.set(bigIntToVmNumber(term), m * 65); } return binToHex(tb); })();
 const COMPOSITES = [[3, 2, 0], [5, 4, 0], [6, 4, 1], [7, 6, 0], [9, 8, 0], [10, 8, 1], [11, 10, 0], [12, 8, 2], [13, 12, 0], [14, 12, 1], [15, 14, 0]];
@@ -58,7 +69,10 @@ const SHAMIR =
   'OP_DUP OP_0 OP_NUMEQUAL OP_IF OP_DROP OP_ELSE ' +
   '<4> OP_PICK OP_SWAP <0x42> OP_MUL OP_SPLIT OP_NIP <0x42> OP_SPLIT OP_DROP <33> OP_SPLIT OP_BIN2NUM OP_SWAP OP_BIN2NUM OP_SWAP <0x11> OP_INVOKE ' +
   'OP_ENDIF OP_FROMALTSTACK OP_SIZE OP_0 OP_NUMEQUAL OP_UNTIL OP_DROP';
-const COMBINE3 = 'OP_TOALTSTACK OP_TOALTSTACK <33> OP_NUM2BIN OP_FROMALTSTACK <33> OP_NUM2BIN OP_CAT OP_FROMALTSTACK <33> OP_NUM2BIN OP_CAT';
+// [X Y Z] -> the 99-byte checkpoint X33||Y33||Z33. Under lazy reduction each is reduced first: the ladder carries them
+// unreduced, and the checkpoint is hashed against the SDK's model of the ladder, whose values are reduced.
+const COMBINE3 = (LAZY ? `OP_ROT ${pP} OP_MOD OP_ROT ${pP} OP_MOD OP_ROT ${pP} OP_MOD ` : '')
+  + 'OP_TOALTSTACK OP_TOALTSTACK <33> OP_NUM2BIN OP_FROMALTSTACK <33> OP_NUM2BIN OP_CAT OP_FROMALTSTACK <33> OP_NUM2BIN OP_CAT';
 // pre-split ladder: entries e0..e15 sit BELOW [X Y Z maskChunk]; each add-step picks the 66B entry[mask] by computed
 // depth (20-mask) instead of re-splitting the 1KB table blob - saves ~120K/input, buying the 2-input budget slack.
 const SHAMIR_PRESPLIT =

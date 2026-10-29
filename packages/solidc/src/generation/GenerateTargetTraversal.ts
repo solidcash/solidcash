@@ -86,6 +86,7 @@ import {
   ECRECOVER_COMPUTE_B2_COVENANT_HASH,
   ECRECOVER_COMPUTE_B3_COVENANT_HASH,
   ECRECOVER_COMPUTE_M_COVENANT_HASH,
+  ECRECOVER_COMPUTE_V_COVENANT_HASH,
   ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH,
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
@@ -15386,11 +15387,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (this.framedMaster) {
         // A framed frame's side-cars follow its own input, even in a frame that runs on its caller's records: each
-        // recovery pair and its EVM keccak side-car first, then one keccak side-car per call in the order the body
-        // makes them. A side-car recreates at its own index, so the input coordinate also reads the output.
+        // recovery's side-car and its EVM keccak side-car first, then one keccak side-car per call in the order the
+        // body makes them. A side-car recreates at its own index, so the input coordinate also reads the output.
         this.emit(Op.OP_INPUTINDEX, loc);
         const atSource = this.framedHashesAtSource;
-        const step = 1 + 2 * (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + (atSource ? 0 : i);
+        const step = 1 + (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + (atSource ? 0 : i);
         this.emit(encodeInt(BigInt(step)), loc);
         this.emit(Op.OP_ADD, loc);
         // A body that hashes in a loop reads the next side-car by the count it has read, the input index above it.
@@ -15653,11 +15654,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return;
       }
       if (this.framedMaster) {
-        // A framed frame's side-car pair is placed immediately after its own input, one pair per call, so the body
-        // locates A/B from `OP_INPUTINDEX`, not from the records' owner a frame that runs on its caller's records
-        // reads. A self-preserving side-car recreates at its own index, so the input coordinate also reads the output.
+        // A framed frame's recovery side-car (covenant V) is placed immediately after its own input, one per call, so
+        // the body locates it from `OP_INPUTINDEX`, not from the records' owner a frame that runs on its caller's
+        // records reads. V both carries the bound arguments and commits the key, so both roles name it. A
+        // self-preserving side-car recreates at its own index, so the input coordinate also reads the output.
         this.emit(Op.OP_INPUTINDEX, loc);
-        const offset = 1 + 2 * effectOrdinal + (role === 'B' ? 1 : 0);
+        const offset = 1 + effectOrdinal;
         this.emit(encodeInt(BigInt(offset)), loc);
         this.emit(Op.OP_ADD, loc);
         return;
@@ -15727,10 +15729,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const keccakIdx = (isOutput = false, extra = 0): void => {
       if (loop) { emitLoopSideCarIndex(3n, extra); return; }
       if (this.framedMaster) {
-        // The EVM projection's keccak side-car rides after every recovery pair, one per ecrecoverEvm call, so its
-        // coordinate is the frame's own input plus the pairs plus this call's evm ordinal.
+        // The EVM projection's keccak side-car rides after every recovery side-car, one per ecrecoverEvm call, so its
+        // coordinate is the frame's own input plus the recovery side-cars plus this call's evm ordinal.
         this.emit(Op.OP_INPUTINDEX, loc);
-        const offset = 1 + 2 * n + j;
+        const offset = 1 + n + j;
         this.emit(encodeInt(BigInt(offset)), loc);
         this.emit(Op.OP_ADD, loc);
         return;
@@ -15790,7 +15792,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
     }
 
-    // 2. side-car A: bind ITS argBlob == ours, then integrity-check its covenant.
+    // 2. side-car A (a framed body's V): bind ITS argBlob == ours, then integrity-check its covenant.
     if (loop) {
       // A dynamic loop verifies integrity with OP_UTXOBYTECODE == the baked shared P2SH lock (a cheap 35-byte
       // compare), NOT by re-reading + hash256-ing the ~7.4 KB / ~3.3 KB covenants every iteration - that exhausted
@@ -15858,85 +15860,93 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // following side-car reads calculate the depth of a scoped compute-block base or another caller value.
       // Deferring this until the end makes those reads select the item immediately above the real base.
       this.popFromStack(1);
-      this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2 = sharedBlob||aBlob||redeem]
-      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob
-      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop aBlob -> [redeempush]
+      // A's rest is sharedBlob||aBlob||redeem; V's is its witness blob, then the redeem.
+      this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2]
+      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob (V: the witness blob)
+      if (!this.framedMaster) {
+        this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop aBlob
+      }
+      // [redeempush]: PUSHDATA2, as every recovery redeem is over 255 bytes.
       dropFirst(3);
       this.emitBindAltStackedRedeemLock(loc);
-      dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantA
+      dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenant A (V)
       this.emit(Op.OP_HASH256, loc);
-      this.emit(hexToBin(ECRECOVER_COMPUTE_A_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);                                // A integrity
-      // 3. side-car B integrity (its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>)
-      slotIdx('B');
-      this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
-      this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
-      for (let k = 0; k < 5; k++) { this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc); } // drop pad,argBlob,shared,C,Zinv
-      dropFirst(3);
-      this.emitBindAltStackedRedeemLock(loc);
-      dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
-      this.emit(Op.OP_HASH256, loc);
-      // Accept the stateless 2-way B (A immediately before), the stateful 2-way B2 (A two inputs before, past the
-      // M/funder slot), and the 3-way B3 (M immediately before). Each commits the same recovered pubkey.
-      //
-      // ECR-1: the predecessor B ladders from must be the chain this call's own A started, not an arbitrary
-      // output an attacker placed there. For B and B2 the predecessor input is pinned to this call's A slot. For
-      // B3 the input before B must additionally run the M covenant (checked from its revealed redeem, so the
-      // salted lock needs no constant), and the input before M is this call's A slot. Before this, an attacker
-      // put any output with `hash256(argBlob||shared||C2')` at B-1 and B3 ladded from a chosen checkpoint.
-      const requirePredecessorCovenant = (
-        offset: bigint, argCount: number, covenantHash: string,
-      ): void => {
+      const boundCovenantHash = this.framedMaster ? ECRECOVER_COMPUTE_V_COVENANT_HASH : ECRECOVER_COMPUTE_A_COVENANT_HASH;
+      this.emit(hexToBin(boundCovenantHash), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);                                // A (V) integrity
+      // 3. side-car B integrity. V commits the key itself, so a framed body reads no B.
+      if (!this.framedMaster) {
+        // Its unlock = <pad><argBlob><sharedBlob><Cblob><Zinv><redeem>.
         slotIdx('B');
-        this.emit(encodeInt(offset), loc);
-        this.emit(Op.OP_SUB, loc);
-        this.emit(Op.OP_INPUTBYTECODE, loc);
-        for (let field = 0; field < argCount; field += 1) {
-          this.emitGenericPushdataDecode(raw, loc);
-          this.emit(Op.OP_NIP, loc);
-        }
-        // The redeem push (PUSHDATA2 for a multi-KB covenant).
-        this.emit(encodeInt(3n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-        // ECR-1: the revealed redeem must be the predecessor's actual script. Hashing bytes found in the
-        // unlocking script alone let any bare input publish `0x20 || salt || M_redeem` and stand in for the
-        // covenant without ever executing it. Bind the full redeem to the P2SH32 lock
-        // `OP_HASH256 <hash256(redeem)> OP_EQUAL`, then check the role from the covenant-only hash below.
-        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
+        this.emit(Op.OP_INPUTBYTECODE, loc);                 // [U_B]
+        for (let k = 0; k < 5; k++) { this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc); } // drop pad,argBlob,shared,C,Zinv
+        dropFirst(3);
+        this.emitBindAltStackedRedeemLock(loc);
+        dropFirst(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH);     // -> covenantB
         this.emit(Op.OP_HASH256, loc);
-        this.emit(hexToBin('aa20'), loc);
-        this.emit(Op.OP_SWAP, loc);
-        this.emit(Op.OP_CAT, loc);
-        this.emit(hexToBin('87'), loc);
-        this.emit(Op.OP_CAT, loc);
-        slotIdx('B');
-        this.emit(encodeInt(offset), loc);
-        this.emit(Op.OP_SUB, loc);
-        this.emit(Op.OP_UTXOBYTECODE, loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        this.emit(encodeInt(BigInt(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH)), loc);
-        this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-        this.emit(Op.OP_HASH256, loc);
-        this.emit(hexToBin(covenantHash), loc);
-        this.emit(Op.OP_EQUALVERIFY, loc);
-      };
-      this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
-      this.emit(hexToBin(ECRECOVER_COMPUTE_B3_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_IF, loc);                                       // [hB]
-      requirePredecessorCovenant(1n, 4, ECRECOVER_COMPUTE_M_COVENANT_HASH);
-      requirePredecessorCovenant(2n, 4, ECRECOVER_COMPUTE_A_COVENANT_HASH);
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
-      this.emit(hexToBin(ECRECOVER_COMPUTE_B2_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_IF, loc);                                       // [hB]
-      this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
-      this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
-      this.emit(Op.OP_EQUALVERIFY, loc);                              // [hB]
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_ENDIF, loc);
-      this.emit(Op.OP_DROP, loc);                                     // hB
+        // Accept the stateless 2-way B (A immediately before), the stateful 2-way B2 (A two inputs before, past the
+        // M/funder slot), and the 3-way B3 (M immediately before). Each commits the same recovered pubkey.
+        //
+        // ECR-1: the predecessor B ladders from must be the chain this call's own A started, not an arbitrary
+        // output an attacker placed there. For B and B2 the predecessor input is pinned to this call's A slot. For
+        // B3 the input before B must additionally run the M covenant (checked from its revealed redeem, so the
+        // salted lock needs no constant), and the input before M is this call's A slot. Before this, an attacker
+        // put any output with `hash256(argBlob||shared||C2')` at B-1 and B3 ladded from a chosen checkpoint.
+        const requirePredecessorCovenant = (
+          offset: bigint, argCount: number, covenantHash: string,
+        ): void => {
+          slotIdx('B');
+          this.emit(encodeInt(offset), loc);
+          this.emit(Op.OP_SUB, loc);
+          this.emit(Op.OP_INPUTBYTECODE, loc);
+          for (let field = 0; field < argCount; field += 1) {
+            this.emitGenericPushdataDecode(raw, loc);
+            this.emit(Op.OP_NIP, loc);
+          }
+          // The redeem push (PUSHDATA2 for a multi-KB covenant).
+          this.emit(encodeInt(3n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+          // ECR-1: the revealed redeem must be the predecessor's actual script. Hashing bytes found in the
+          // unlocking script alone let any bare input publish `0x20 || salt || M_redeem` and stand in for the
+          // covenant without ever executing it. Bind the full redeem to the P2SH32 lock
+          // `OP_HASH256 <hash256(redeem)> OP_EQUAL`, then check the role from the covenant-only hash below.
+          this.emit(Op.OP_DUP, loc);
+          this.emit(Op.OP_HASH256, loc);
+          this.emit(hexToBin('aa20'), loc);
+          this.emit(Op.OP_SWAP, loc);
+          this.emit(Op.OP_CAT, loc);
+          this.emit(hexToBin('87'), loc);
+          this.emit(Op.OP_CAT, loc);
+          slotIdx('B');
+          this.emit(encodeInt(offset), loc);
+          this.emit(Op.OP_SUB, loc);
+          this.emit(Op.OP_UTXOBYTECODE, loc);
+          this.emit(Op.OP_EQUALVERIFY, loc);
+          this.emit(encodeInt(BigInt(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH)), loc);
+          this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+          this.emit(Op.OP_HASH256, loc);
+          this.emit(hexToBin(covenantHash), loc);
+          this.emit(Op.OP_EQUALVERIFY, loc);
+        };
+        this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
+        this.emit(hexToBin(ECRECOVER_COMPUTE_B3_COVENANT_HASH), loc);
+        this.emit(Op.OP_EQUAL, loc);
+        this.emit(Op.OP_IF, loc);                                       // [hB]
+        requirePredecessorCovenant(1n, 4, ECRECOVER_COMPUTE_M_COVENANT_HASH);
+        requirePredecessorCovenant(2n, 4, ECRECOVER_COMPUTE_A_COVENANT_HASH);
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
+        this.emit(hexToBin(ECRECOVER_COMPUTE_B2_COVENANT_HASH), loc);
+        this.emit(Op.OP_EQUAL, loc);
+        this.emit(Op.OP_IF, loc);                                       // [hB]
+        this.emit(Op.OP_ELSE, loc);
+        this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
+        this.emit(hexToBin(ECRECOVER_COMPUTE_B_COVENANT_HASH), loc);
+        this.emit(Op.OP_EQUALVERIFY, loc);                              // [hB]
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_ENDIF, loc);
+        this.emit(Op.OP_DROP, loc);                                     // hB
+      }
     }
 
     // 4. read the recovered pubkey from B's output commitment (34 B: parity || Qx as a 33-byte LITTLE-endian VM

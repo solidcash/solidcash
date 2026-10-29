@@ -1,20 +1,20 @@
 /**
  * The recovery side-cars a framed master co-spends.
  *
- * A compiled master whose entry calls `ecrecoverPubKey` (or the EVM projection) reads a side-car pair at a fixed
- * offset from its own input: side-car A checkpoints the GLV ladder and side-car B commits the recovered key, with
- * one keccak side-car after the pairs when the call projects to an EVM address. This module builds those inputs
- * from the call's `(hash, v, r, s)` and hands them to the plan in the order the body reads them, and `layout.ts`
- * places them immediately after the master's own input.
+ * A compiled master whose entry calls `ecrecoverPubKey` (or the EVM projection) reads one side-car per call at a
+ * fixed offset from its own input, which verifies the recovered key natively and commits it (covenant V), with one
+ * keccak side-car after them when the call projects to an EVM address. This module builds those inputs from the
+ * call's `(hash, v, r, s)` and hands them to the plan in the order the body reads them, and `layout.ts` places them
+ * immediately after the master's own input.
  *
- * The witnesses themselves are the shipped recovery engine (`ecrecover/ecrecoverComputeSidecar.ts`); this module
- * only resolves each call's scalars from the master's own argument pushes and shapes the two inputs a draft takes.
- * The salt brands the side-car; the compiled check strips it before hashing the covenant, so any salt the caller
- * states works. Scalars the body computes are learned from the body's own bind: the pair is built over placeholder
+ * The witnesses themselves are the shipped builder's (`ecrecover/ecrecoverVerifySidecar.ts`); this module only
+ * resolves each call's scalars from the master's own argument pushes and shapes the input a draft takes. The salt
+ * brands the side-car; the compiled check strips it before hashing the covenant, so any salt the caller states
+ * works. Scalars the body computes are learned from the body's own bind: the side-car is built over placeholder
  * scalars and rebuilt over the ones the body binds. For scalars the EVM's precompile refuses by range (a `v`
- * outside 27/28, an `r` or `s` outside [1, n)) the body answers the zero address without reading its pair, so a
- * placeholder pair holds the place. So it does for an `r` no curve point has as its x-coordinate, where the
- * placeholder's A pad opens with the proof the body checks instead.
+ * outside 27/28, an `r` or `s` outside [1, n)) the body answers the zero address without reading its side-car, so a
+ * placeholder side-car holds the place. So it does for an `r` no curve point has as its x-coordinate, where the
+ * placeholder's pad holds the proof the body checks instead.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -28,8 +28,7 @@ import {
   sha256,
 } from '@solidcash/utils';
 import type { Output, Unlocker, Utxo } from '../../interfaces.js';
-import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit }
-  from '../../ecrecover/ecrecoverComputeSidecar.js';
+import { buildEcrecoverVerifySidecar, computeEcrecoverVerifyWitness } from '../../ecrecover/ecrecoverVerifySidecar.js';
 import { buildKeccakComputeSidecar } from '../../keccak/keccakComputeSidecar.js';
 import type { DraftComputedWitness, DraftInput, DraftSettledInput, DraftSourceOutput } from './draft.js';
 
@@ -58,7 +57,7 @@ export interface ComputedRecoveryCall {
   readonly evm: boolean;
 }
 
-/** The scalars a recovery side-car pair recovers from. */
+/** The scalars a recovery side-car recovers from. */
 type RecoveryScalars = Omit<RecoveryCall, 'evm'>;
 
 /** The side-car inputs one master co-spends, in the order its body reads them. */
@@ -73,8 +72,8 @@ export interface RecoverySideCars {
 
 /** The live side-car UTXOs a caller supplies, per covenant, in the order the side-cars take them. */
 export interface RecoverySideCarPools {
-  readonly a: readonly Utxo[];
-  readonly b: readonly Utxo[];
+  /** The recovery covenant's UTXOs, one per call. */
+  readonly v: readonly Utxo[];
   /** The stateful keccak covenant's UTXOs the EVM projections take, one per projection. */
   readonly k: readonly Utxo[];
 }
@@ -88,10 +87,10 @@ export interface RecoveryAbiFunction {
   readonly ecrecoverEvmFlags?: readonly boolean[] | null;
 }
 
-/** A synthetic UTXO for the pair builders, which read the lock and the token that recreates it. */
-function sideCarUtxo(role: 'A' | 'B' | 'K'): Utxo {
+/** A synthetic UTXO for the side-car builders, which read the lock and the token that recreates it. */
+function sideCarUtxo(role: 'V' | 'K'): Utxo {
   return {
-    txid: (role === 'A' ? 'aa' : role === 'B' ? 'bb' : 'cc').repeat(32),
+    txid: (role === 'V' ? 'aa' : 'cc').repeat(32),
     vout: 1,
     satoshis: SIDE_CAR_VALUE,
     token: {
@@ -123,7 +122,7 @@ function sideCarSource(lock: Uint8Array, utxo: Utxo): DraftSourceOutput {
 }
 
 /** The UTXO the `index`-th side-car of a role spends: from the caller's pool when it supplied one. */
-function sideCarUtxoAt(pool: readonly Utxo[] | undefined, index: number, role: 'A' | 'B' | 'K'): Utxo {
+function sideCarUtxoAt(pool: readonly Utxo[] | undefined, index: number, role: 'V' | 'K'): Utxo {
   if (pool === undefined) return sideCarUtxo(role);
   const utxo = pool[index];
   if (utxo === undefined) {
@@ -155,24 +154,20 @@ function sideCarRecreation(recreate: Output): DraftSourceOutput {
 /** The byte length of the blob a recovery binds: `hash(32) || v(1) || r(32) || s(32)`. */
 const RECOVERY_ARGUMENT_BYTES = 97;
 
-/** The most scalar draws a placeholder recovery tries; a random point's ladder nearly always splits. */
+/** The most scalar draws a placeholder recovery tries; a random point is nearly always one the side-car proves. */
 const PLACEHOLDER_RECOVERY_DRAWS = 16;
 
 /** The A/B pair over `scalars`, and when `k` is set the EVM projection's keccak side-car over the recovered key. */
 function recoverySideCarsOver(
   scalars: RecoveryScalars,
   salt: Uint8Array,
-  placed: { readonly a: PlacedSideCar; readonly b: PlacedSideCar; readonly k: PlacedSideCar | undefined },
+  placed: { readonly v: PlacedSideCar; readonly k: PlacedSideCar | undefined },
   padPrefix?: Uint8Array,
 ): Record<string, DraftSettledInput> {
-  const witness = computeEcrecoverWitness(scalars.hash, scalars.v, scalars.r, scalars.s);
-  const chunkA = probeEcrecoverSplit(witness, salt, placed.a.utxo, placed.b.utxo);
-  const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
-    witness, chunkA, salt, placed.a.utxo, placed.b.utxo, padPrefix,
-  );
+  const witness = computeEcrecoverVerifyWitness(scalars.hash, scalars.v, scalars.r, scalars.s);
+  const { unlocker, recreate } = buildEcrecoverVerifySidecar(witness, salt, placed.v.utxo, padPrefix);
   const settled: Record<string, DraftSettledInput> = {
-    [placed.a.id]: { unlockingBytecode: unlockingOf(unlockerA), output: sideCarRecreation(recreateA) },
-    [placed.b.id]: { unlockingBytecode: unlockingOf(unlockerB), output: sideCarRecreation(recreateB) },
+    [placed.v.id]: { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) },
   };
   if (placed.k !== undefined) {
     const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, placed.k.utxo, true);
@@ -247,11 +242,11 @@ function littleEndianWord(value: bigint): Uint8Array {
 }
 
 /**
- * Placeholder scalars for a recovery the body computes, and the pair built over them.
+ * Placeholder scalars for a recovery the body computes, and the side-car built over them.
  *
- * They are drawn from `tag` and recover a key over a random point, so the pair is a valid pair: one the body never
- * reads still holds its place. The drawn hash keeps every placeholder distinct. A draw whose ladder does not split
- * within the side-cars' budget is redrawn.
+ * They are drawn from `tag` and recover a key over a random point, so the side-car is a valid one: one the body
+ * never reads still holds its place. The drawn hash keeps every placeholder distinct. A draw the side-car cannot
+ * prove is redrawn.
  */
 function placeholderRecovery(
   tag: string,
@@ -276,14 +271,14 @@ function placeholderRecovery(
       refusal = error;
     }
   }
-  throw new FramedEncodingError(`no placeholder recovery for "${tag}" splits its ladder: ${String(refusal)}`);
+  throw new FramedEncodingError(`no placeholder recovery for "${tag}" is one the side-car proves: ${String(refusal)}`);
 }
 
 /**
- * Builds the recovery side-cars one master co-spends, in the order its body reads them: the A/B pair of each call,
+ * Builds the recovery side-cars one master co-spends, in the order its body reads them: the side-car of each call,
  * then one keccak side-car per EVM projection. The ids are namespaced by the master, so a composition that names
  * two masters' side-cars keeps them distinct. A call whose scalars the body computes is built over placeholder
- * scalars, and its computed witness rebuilds the pair (and its keccak side-car) over the blob the body binds. A
+ * scalars, and its computed witness rebuilds the side-car (and its keccak side-car) over the blob the body binds. A
  * caller that spends live side-cars supplies their pools; without them each side-car spends a synthetic UTXO.
  */
 export function buildRecoverySideCars(
@@ -292,7 +287,7 @@ export function buildRecoverySideCars(
   salt: Uint8Array = SHARED_LIBRARY_SALT,
   pools?: RecoverySideCarPools,
 ): RecoverySideCars {
-  const pairIds: string[] = [];
+  const recoveryIds: string[] = [];
   const keccakIds: string[] = [];
   const inputs: Record<string, DraftInput> = {};
   const computedWitnesses: DraftComputedWitness[] = [];
@@ -300,17 +295,14 @@ export function buildRecoverySideCars(
   calls.forEach((call, index) => {
     const evmIndex = keccakIds.length;
     const placed = {
-      a: { id: `${master}/recovery-A${index}`, utxo: sideCarUtxoAt(pools?.a, index, 'A') },
-      b: { id: `${master}/recovery-B${index}`, utxo: sideCarUtxoAt(pools?.b, index, 'B') },
+      v: { id: `${master}/recovery-V${index}`, utxo: sideCarUtxoAt(pools?.v, index, 'V') },
       k: call.evm ? { id: `${master}/recovery-K${evmIndex}`, utxo: sideCarUtxoAt(pools?.k, evmIndex, 'K') } : undefined,
     };
-    pairIds.push(placed.a.id, placed.b.id);
+    recoveryIds.push(placed.v.id);
     const sources: Record<string, DraftSourceOutput> = {
-      [placed.a.id]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'A'), placed.a.utxo),
-      [placed.b.id]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'B'), placed.b.utxo),
+      [placed.v.id]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'V'), placed.v.utxo),
     };
-    utxos[placed.a.id] = placed.a.utxo;
-    utxos[placed.b.id] = placed.b.utxo;
+    utxos[placed.v.id] = placed.v.utxo;
     if (placed.k !== undefined) {
       keccakIds.push(placed.k.id);
       sources[placed.k.id] = sideCarSource(keccakComputeLockingBytecode(salt, true), placed.k.utxo);
@@ -318,7 +310,7 @@ export function buildRecoverySideCars(
     }
     const over = (scalars: RecoveryScalars, padPrefix?: Uint8Array): Record<string, DraftSettledInput> =>
       recoverySideCarsOver(scalars, salt, placed, padPrefix);
-    // The pair a body does not bind holds its place, its A pad proving an off-curve `r` when that is why.
+    // The side-car a body does not bind holds its place, its pad proving an off-curve `r` when that is why.
     const unbound = (scalars: RecoveryScalars, tag: string): Record<string, DraftSettledInput> => {
       const proof = inRange(scalars) ? offCurveProof(scalars.r) : undefined;
       return placeholderRecovery(tag, (drawn) => over(drawn, proof)).settled;
@@ -342,7 +334,7 @@ export function buildRecoverySideCars(
     }
     for (const [id, input] of Object.entries(settled)) inputs[id] = { source: sources[id]!, ...input };
   });
-  return { ids: [...pairIds, ...keccakIds], inputs, computedWitnesses, utxos };
+  return { ids: [...recoveryIds, ...keccakIds], inputs, computedWitnesses, utxos };
 }
 
 /**

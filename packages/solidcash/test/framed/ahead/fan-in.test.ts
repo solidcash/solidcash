@@ -3,7 +3,7 @@ import { bigIntToVmNumber, binToHex, encodeLockingBytecodeP2pkh, hexToBin, secp2
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { ethers } from 'ethers';
 import {
-  SHARED_LIBRARY_SALT, bytesToHex, encodePushdataValue, hash160, validatorAddress, type Artifact,
+  bytesToHex, encodePushdataValue, hash160, validatorAddress, type Artifact,
 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -11,8 +11,6 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
-import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import {
   buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
@@ -249,7 +247,7 @@ function compiled(): Compiled {
 /** A little-endian word from the big-endian hex a signer returns. */
 const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
 
-/** The worker: a key whose recovery pair splits within the side-cars' budget, its lock and its 65-byte signature. */
+/** The worker: a key, its lock and its 65-byte signature. */
 interface Worker {
   readonly key: Uint8Array;
   readonly lock: Uint8Array;
@@ -258,36 +256,23 @@ interface Worker {
 
 let workerRun: Worker | undefined;
 /**
- * Signs the digest `take` hashes, `keccak256(PREFIX || keccak256(abi.encode(count, id)))`, with deterministic keys
- * until the shipped split probe accepts one; `abi.encode` is each value's pushdata encoding.
+ * Signs the digest `take` hashes, `keccak256(PREFIX || keccak256(abi.encode(count, id)))`, with a deterministic
+ * key; `abi.encode` is each value's pushdata encoding.
  */
-function splittableWorker(): Worker {
+function signingWorker(): Worker {
   if (workerRun !== undefined) return workerRun;
   const encoded = Uint8Array.from([
     ...encodePushdataValue(NOTES_BEFORE, 'bigint'), ...encodePushdataValue(JOB, 'bigint'),
   ]);
   const digest = keccak_256(Uint8Array.from([...PREFIX, ...keccak_256(encoded)]));
-  const probeUtxo = (odd: boolean): never => ({
-    txid: id32(odd ? 'b1' : 'a1'), vout: 1, satoshis: 100_000n,
-    token: { category: id32('e1'), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-  }) as never;
-  for (let seed = 0; seed < 50; seed += 1) {
-    const key = keccak_256(new TextEncoder().encode(`fan-in worker ${seed}`));
-    const { r, s, v } = new ethers.Wallet(`0x${binToHex(key)}`).signingKey
-      .sign(`0x${binToHex(digest.slice().reverse())}`);
-    try {
-      probeEcrecoverSplit(computeEcrecoverWitness(digest, v, leBytes(r), leBytes(s)), SHARED_LIBRARY_SALT,
-        probeUtxo(false), probeUtxo(true));
-    } catch {
-      continue;
-    }
-    const pub = secp256k1.derivePublicKeyCompressed(key) as Uint8Array;
-    workerRun = {
-      key, lock: encodeLockingBytecodeP2pkh(hash160(pub)), signature: Uint8Array.from([...leBytes(r), ...leBytes(s), v]),
-    };
-    return workerRun;
-  }
-  throw new Error('no worker signature with a two-covenant split after 50 keys');
+  const key = keccak_256(new TextEncoder().encode('fan-in worker 0'));
+  const { r, s, v } = new ethers.Wallet(`0x${binToHex(key)}`).signingKey
+    .sign(`0x${binToHex(digest.slice().reverse())}`);
+  const pub = secp256k1.derivePublicKeyCompressed(key) as Uint8Array;
+  workerRun = {
+    key, lock: encodeLockingBytecodeP2pkh(hash160(pub)), signature: Uint8Array.from([...leBytes(r), ...leBytes(s), v]),
+  };
+  return workerRun;
 }
 
 /** A coin a genesis or a hop is funded from; a genesis mints its txid as the category. */
@@ -573,7 +558,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('the fan-in shape through the s
   }
 
   it('take: learns the count, the fee and the deal in execution order, and settles both posts', async () => {
-    const worker = splittableWorker();
+    const worker = signingWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6a'));
     const result = await enterDesk(deployed, 'take', [JOB, worker.signature], {
@@ -590,7 +575,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('the fan-in shape through the s
   });
 
   it('pay start: learns the fee in execution order, and settles the token fan-in', async () => {
-    const worker = splittableWorker();
+    const worker = signingWorker();
     const deployed = await deployFanIn(worker);
     const coin = funding(id32('6b'));
     const result = await enterDesk(deployed, 'payStart', [JOB, worker.lock], {

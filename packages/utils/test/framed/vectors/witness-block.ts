@@ -250,9 +250,12 @@ export const MALFORMED_WITNESS_BLOCKS: Record<string, MalformedVector> = {
   ) },
 };
 
-/** The transcript `M` for `ABBA`: roots `[0]`, masters `[0, 1, 4]`, settling `catA` over state input 3, creating none. */
+/**
+ * The transcript `M` for `ABBA`: roots `[0]`, masters `[0, 1, 4]`, settling `catA` over state input 3, creating none,
+ * and no padding, so it ends with a zero padding length.
+ */
 export const TRANSCRIPT_ABBA = {
-  hex: '50433702010003000104010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20010300',
+  hex: '50433702010003000104010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200103000000',
   roots: [0],
   masters: [0, 1, 4],
   settles: [{ category: CATEGORY_A, stateInputs: [3], createdOutputs: [] }],

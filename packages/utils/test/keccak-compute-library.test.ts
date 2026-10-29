@@ -69,14 +69,14 @@ describe('keccak compute-and-commit side-car (utils)', () => {
   it('COVENANT hash matches the baked integrity constant', () => {
     const covBytes = Uint8Array.from(KECCAK256_COMPUTE_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
     expect(binToHex(hash256(covBytes))).toBe(KECCAK256_COMPUTE_COVENANT_HASH);
-    expect(covBytes.length).toBe(2443);
+    expect(covBytes.length).toBe(1950);
   });
 
   it('STATEFUL COVENANT hash matches its baked constant and differs only in the self-pres tail', () => {
     const stateful = Uint8Array.from(KECCAK256_COMPUTE_STATEFUL_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
     expect(binToHex(hash256(stateful))).toBe(KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH);
     // Self-preserves via OP_INPUTINDEX (absolute slot) - 4 bytes shorter than the offset-from-end stateless one.
-    expect(stateful.length).toBe(2439);
+    expect(stateful.length).toBe(1946);
     expect(KECCAK256_COMPUTE_STATEFUL_COVENANT.endsWith('c076d27b88c0c778cd88c0ce78d1887551')).toBe(true);
     // Everything before the self-pres tail is byte-identical to the stateless covenant (same brand + keccak).
     const statelessHead = KECCAK256_COMPUTE_COVENANT.slice(0, -'c0c493c39476d27b88c0c778cd88c0ce78d1887551'.length);

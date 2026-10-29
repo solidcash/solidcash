@@ -14,6 +14,7 @@ import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
+import { asmToBytecode } from '@solidcash/utils';
 import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
@@ -262,6 +263,8 @@ export interface NetworkConnection {
   config: NetworkConfig | undefined;
   ethers: SolidcashEthers;
   networkHelpers: typeof nh;
+  /** Hardhat 3 `connection.close()`: drop a devnet provider's socket. An in-process provider holds none. */
+  close(): Promise<void>;
 }
 
 export interface HardhatNetwork extends NetworkConnection {
@@ -269,15 +272,31 @@ export interface HardhatNetwork extends NetworkConnection {
   create(networkName?: string): Promise<NetworkConnection>;
   /** Hardhat 3 spelling for creating and selecting a connection. */
   connect(networkName?: string): Promise<NetworkConnection>;
+  /** Close the active connection and every one `create()` opened, as a Hardhat process exiting does. */
+  closeAll(): Promise<void>;
 }
 
 export interface HardhatRuntimeEnvironment {
   config: ResolvedConfig;
   network: HardhatNetwork;
+  /** Hardhat 3 `hre.artifacts`: a compiled contract by name, its bytecode as hex. */
+  artifacts: { readArtifact(name: string): Promise<Record<string, unknown>> };
+  /** Hardhat 3 `hre.globalOptions`: the options the CLI was given, the selected `--network` among them. */
+  globalOptions: { network: string };
   ethers: SolidcashEthers;
   networkHelpers: typeof nh;
   tasks: { getTask: typeof getTask; getTasks: typeof getTasks };
   run(taskName: string, args?: TaskArguments): Promise<unknown>;
+}
+
+/**
+ * hardhat `artifacts.readArtifact("Name")`: the artifact `loadArtifactByName` finds, its bytecode as hex. SolidCash
+ * publishes the contract script as ASM; Hardhat callers (and `keccak256(artifact.bytecode)`) expect hex.
+ */
+export async function readHexArtifact(artifactsDir: string, name: string): Promise<Record<string, unknown>> {
+  const artifact = loadArtifactByName(artifactsDir, name);
+  const bytecode = `0x${binToHex(asmToBytecode(artifact.bytecode))}`;
+  return { ...artifact, bytecode, deployedBytecode: bytecode };
 }
 
 /**
@@ -851,6 +870,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   const ethersProvider = provider as NetworkProvider & {
     getBlockNumber?: () => Promise<number>;
     getBlock?: (tag?: string | number) => Promise<{ number: number; timestamp: number; hash?: string }>;
+    getCode?: (address: string) => Promise<string>;
     getBlockHeight: () => Promise<number>;
     getBlockTime?: () => number;
     getBlockHash?: (height: number) => Promise<string>;
@@ -877,6 +897,25 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
   }
   if (typeof ethersProvider.getBlockNumber !== 'function') {
     ethersProvider.getBlockNumber = async (): Promise<number> => ethersProvider.getBlockHeight();
+  }
+  if (typeof ethersProvider.getCode !== 'function') {
+    // ethers `getCode`: an address a contract is deployed at holds code, any other address "0x". A contract's address
+    // is a logical identity, whose anchor commits to the root locking bytecode it runs as, or the script its state
+    // coins sit at; a key's address (P2PKH) holds no code whatever it holds.
+    ethersProvider.getCode = async (address: string): Promise<string> => {
+      const decoded = cashAddressToLockingBytecode(address);
+      if (typeof decoded === 'string') return '0x';
+      const lock = binToHex(decoded.bytecode);
+      if (/^76a914[0-9a-f]{40}88ac$/.test(lock)) return '0x';
+      const { resolveLogicalIdentity } = await import('@solidcash/solidcash/stateful');
+      try {
+        const identity = await resolveLogicalIdentity(provider, address);
+        return `0x${binToHex(identity.rootLockingBytecode)}`;
+      } catch (error) {
+        if (!/missing or invalid/.test(error instanceof Error ? error.message : String(error))) throw error;
+      }
+      return (await provider.getUtxos(address)).length > 0 ? `0x${lock}` : '0x';
+    };
   }
   if (typeof ethersProvider.getBlock !== 'function') {
     ethersProvider.getBlock = async (
@@ -942,7 +981,14 @@ function buildConnection(
 ): NetworkConnection {
   const provider = createProvider(name, netCfg, resolvedConfig);
   const ethers = buildEthers(provider, mnemonic, opts);
-  return { name, provider, config: netCfg, ethers, networkHelpers: nh };
+  const close = async (): Promise<void> => {
+    try {
+      await (provider as { disconnect?: () => Promise<void> }).disconnect?.();
+    } catch {
+      // A socket that is already closed is the desired state.
+    }
+  };
+  return { name, provider, config: netCfg, ethers, networkHelpers: nh, close };
 }
 
 /** Create an HRE from a resolved config, selecting `networkName` (defaults to config.defaultNetwork). */
@@ -1009,10 +1055,13 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
   // The active provider backs the module-global network helpers (loadFixture/time/...).
   setActiveProvider(base.provider as unknown as nh.TestNetworkProvider);
 
+  // Every connection a script opens holds a devnet socket until the task closes it.
+  const opened: NetworkConnection[] = [];
   const connect = async (n?: string): Promise<NetworkConnection> => {
     const cn = n ?? name;
     const cnCfg = validateNetwork(cn);
     const conn = attachEthersNetwork(buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts, config));
+    opened.push(conn);
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;
@@ -1021,11 +1070,16 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     ...base,
     create: connect,
     connect,
+    closeAll: async () => {
+      for (const conn of [base, ...opened.splice(0)]) await conn.close();
+    },
   };
 
   const hre: HardhatRuntimeEnvironment = {
     config,
     network,
+    artifacts: { readArtifact: async (contractName) => readHexArtifact(config.paths.artifacts, contractName) },
+    globalOptions: { network: name },
     ethers: base.ethers,
     networkHelpers: nh,
     tasks: { getTask, getTasks },

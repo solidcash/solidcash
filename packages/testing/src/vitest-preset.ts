@@ -15,8 +15,10 @@
  * transform that rewrites those requires into ESM imports against the same alias targets - including absolute
  * paths the project config may have already resolved.
  */
-import { fileURLToPath } from 'url';
 import type { Plugin } from 'vite';
+import { hardhatAliases } from './hardhat-aliases.js';
+
+export { hardhatAliases };
 
 /** Vite alias entry: a string `find` also matches `find/...` subpaths, a RegExp only what it matches. */
 export interface ViteAliasEntry { find: string | RegExp; replacement: string }
@@ -38,31 +40,7 @@ export interface ViteLikeConfig {
   [k: string]: unknown;
 }
 
-const stub = (name: string): string => fileURLToPath(new URL(`./stubs/${name}.js`, import.meta.url));
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** The Hardhat/ethers/chai -> @solidcash/testing alias map (the heart of the drop-in). */
-export function hardhatAliases(): Record<string, string> {
-  return {
-    hardhat: '@solidcash/testing',
-    'hardhat/config': '@solidcash/testing',
-    'hardhat/types': stub('empty'),
-    '@nomicfoundation/hardhat-toolbox/network-helpers': '@solidcash/testing/network-helpers',
-    '@nomicfoundation/hardhat-network-helpers': '@solidcash/testing/network-helpers',
-    '@nomicfoundation/hardhat-ethers/signers': stub('empty'),
-    '@nomicfoundation/hardhat-ethers': '@solidcash/testing',
-    '@nomicfoundation/hardhat-chai-matchers': '@solidcash/testing/chai',
-    '@openzeppelin/hardhat-upgrades': '@solidcash/testing',
-    chai: '@solidcash/testing/chai',
-    'chai-subset': stub('chai-plugin'),
-    'chai-as-promised': stub('chai-plugin'),
-    // Redirect the EVM CREATE-address predictors to BCH (category-based) identity; re-exports the rest of ethers.
-    ethers: '@solidcash/testing/ethers-shim',
-    // MistSwap PairKashi: `import { defaultAbiCoder } from "ethers/lib/utils"` (v5 path).
-    'ethers/lib/utils': '@solidcash/testing/ethers',
-    'ethers/lib/utils.js': '@solidcash/testing/ethers',
-  };
-}
 
 /**
  * Rewrite top-level CJS requires that Hardhat-era suites still use into ESM imports Vite can resolve:

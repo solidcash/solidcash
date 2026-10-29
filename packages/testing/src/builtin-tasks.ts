@@ -4,7 +4,7 @@
  */
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { createRequire } from 'module';
+import { createRequire, register } from 'module';
 import { pathToFileURL } from 'url';
 import fs from 'fs';
 import path from 'path';
@@ -16,6 +16,8 @@ import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
 import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
 import { diagnoseProject } from './doctor.js';
+import type { ScriptHookData } from './script-hooks.js';
+import { hardhatAliases } from './hardhat-aliases.js';
 
 /**
  * Project artifacts depend on emitted JavaScript implementations, not only package versions. During local
@@ -30,12 +32,8 @@ import { diagnoseProject } from './doctor.js';
  * outlives the script. In-process providers have no `disconnect` and are unaffected.
  */
 async function disconnectProvider(hre: HardhatRuntimeEnvironment): Promise<void> {
-  const provider = hre.network.provider as unknown as { disconnect?: () => Promise<void> };
-  try {
-    await provider.disconnect?.();
-  } catch {
-    // A socket that is already closed is the desired state.
-  }
+  // The script's own `hre.network.create()` connections too: each holds a socket.
+  await hre.network.closeAll();
 }
 
 function compilerJavaScriptFingerprint(entryFile: string): string {
@@ -561,8 +559,33 @@ async function runScript(
       // No tsx available: the caller's loader (if any) resolves the import.
     }
   }
+  registerScriptHooks();
+  // The `chai` drop-in extends Vitest's `expect`, which a test run makes global; a script's chai assertions get it too.
+  // Vitest is an optional peer: without it, only a script that imports chai fails.
+  if ((globalThis as any).expect === undefined) {
+    try {
+      (globalThis as any).expect = (await import('vitest')).expect;
+    } catch {
+      // No Vitest installed.
+    }
+  }
   (globalThis as any).hre = hre;
   await import(pathToFileURL(script).href);
+}
+
+let scriptHooksRegistered = false;
+
+/** Resolve a script's `hardhat`/`ethers` imports to the SolidCash drop-ins, as the test runner aliases them. */
+function registerScriptHooks(): void {
+  if (scriptHooksRegistered) return;
+  scriptHooksRegistered = true;
+  const data: ScriptHookData = {
+    aliases: hardhatAliases(),
+    parentURL: import.meta.url,
+    projectURL: pathToFileURL(process.cwd() + path.sep).href,
+  };
+  // Registered after tsx, so it runs first and hands tsx the drop-in's specifier.
+  register(new URL('./script-hooks.js', import.meta.url), { data });
 }
 
 task('run', 'Run a script with the SolidCash HRE available as the `hre` global')

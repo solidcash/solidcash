@@ -106,9 +106,14 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
   settles, the driver plans it once more with a side-car only for each of the entry's calls whose job no other
   side-car holds (`keccakJobsToShare`, `EarlierResults.keccakJobs`), and keeps that call only when every participant
   accepts it. A router and the factory it calls derive one pair's CREATE2 address, and the router derives it once per
-  helper: `addLiquidity` co-spent six side-cars for two jobs. A body that hashes in a loop still reads its side-cars by
-  the count it has made, which the derivation of its repeated call sites follows, so neither its calls nor its entry's
-  side-cars are shared (a multi-hop swap derived to a stall when its loop's calls bound earlier side-cars).
+  helper: `addLiquidity` co-spent six side-cars for two jobs. A body that hashes in a loop shares the same way: its
+  `k`-th hash binds from the slot its count of hashes names, and each hash is one call of the plan, in the order the
+  body makes them; a multi-hop swap derives each pair's address in two turns. A hash that binds another input's
+  side-car scans the transaction for it, which the body pays for: the run that reads the arguments a body hashed for a
+  visit (`hashedCallArguments`) is the derivation's, budgets lifted, as every draft run is, since the draft is padded
+  only once every value is learned. Held to the provider's budget, the fee-on-transfer multi-hop swap's unpadded root
+  stopped short of its second turn, whose swap was planned from the first turn's amounts. The regular multi-hop swap
+  went from 106,372 to 89,992 B and the fee-on-transfer one from 106,805 to 99,548 B.
 - **Keccak's round consumes each intermediate at its last read** and computes NOT with `OP_INVERT`: 760 B where it was
   1,253, and a 136-byte block at 1.73M operation cost where it was 2.26M. Every keccak covenant is regenerated from it
   (the compute covenant 1,950 B, its stateful form 1,946 B, the shifted one 1,918 B, the chained ones 2,019 and
@@ -1918,12 +1923,12 @@ record = in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut
   the node's head (section 20). A read that finds its value inline, and a frame that reads none, leave the entry
   empty or the list short, and a master's head takes at most as many as its widest body reads.
 - **Side-cars.** No field names a compute side-car (section 5). The layout fixes where each one sits, so the body
-  addresses it from its own input, except that a per-entry master's keccak256 call outside a hashing loop binds
-  whichever input at the shared stateful lock holds its job when its own slot does not, so calls that hash one
+  addresses it from its own input, except that a per-entry master's keccak256 call binds whichever input at the
+  shared stateful lock holds its job when its own slot does not, so calls that hash one
   preimage share one side-car (section 0): for `r` recoveries and `p` of them projected to an EVM address, recovery `j`'s
   side-car is at `OP_INPUTINDEX + 1 + j`, projection `j`'s keccak side-car at `+ 1 + r + j`, and the `i`-th
   `keccak256` call's at `+ 1 + r + p + i` (`GenerateTargetTraversal.ts`). A body that hashes inside a loop counts
-  instead: its `k`-th call reads `+ 1 + r + p + k`. A side-car recreates itself at its own index, so the same
+  instead: its `k`-th call's slot is `+ 1 + r + p + k`. A side-car recreates itself at its own index, so the same
   coordinate names its output.
 - **Runs.** A master with a body that emits or sends inside a loop reads that list as a run: the listed outputs must
   be consecutive, its head checks every one, and the body binds its `k`-th event or send at the run's first output

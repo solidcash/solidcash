@@ -3459,9 +3459,9 @@ async function callInShape(
 
   // Once every job is known, the call is planned again with a side-car only for each keccak256 call whose job no other
   // side-car holds (`keccakJobsToShare`), and that plan is kept when every participant accepts it: a master that reads
-  // its side-car at its own offset alone refuses it, and the call stands as planned.
-  // An entry that hashes in a loop reads its side-cars by the count it has made, so its side-cars are not shared.
-  if (prior.keccakJobs === undefined && loopTurns.hashes === undefined) {
+  // its side-car at its own offset alone refuses it, and the call stands as planned. An entry that hashes in a loop
+  // shares the same way: each hash is one call, in the order the body makes them.
+  if (prior.keccakJobs === undefined) {
     const jobs = keccakJobsToShare(sideCars, draft, MASTER_ID);
     if (jobs !== undefined) {
       try {

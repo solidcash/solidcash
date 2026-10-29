@@ -15456,10 +15456,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A per-entry master binds the side-car that holds its call's job: the one the layout gives the call, or another
     // input's, so calls that hash one preimage can share one side-car (framework-library.ts). The frame keeps its
     // shape, and a job no input holds keeps the layout's index, whose bind fails as before. A body that hashes in a
-    // loop reads its side-cars by the count it has made, which the derivation of its repeated call sites relies on, so
-    // it keeps the layout's.
-    const bindsByJob = this.framedRequiresValidator && !this.keccakLoopActive && !chainEligible
-      && !this.framedHashesAtSource;
+    // loop gives each call the side-car its count of hashes names, which binds the same way.
+    const bindsByJob = this.framedRequiresValidator && !this.keccakLoopActive && !chainEligible;
     if (bindsByJob) {
       this.emit(encodeInt(KECCAK_SIDE_CAR_FIND_ROUTINE_ID), loc);
       this.emit(Op.OP_INVOKE, loc);

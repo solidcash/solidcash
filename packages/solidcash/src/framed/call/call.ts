@@ -2501,7 +2501,12 @@ async function callInShape(
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
     if (blockOracle !== undefined) inputs[BLOCK_ORACLE_INPUT] = blockOracle.input;
-    Object.assign(inputs, callees?.inputs ?? {});
+    // A callee's plan of an input the entry also lays stands where a callee writes it, as a node the entry reads that
+    // a callee below it rewrites. One it only keeps does not: a frame of the entry's own contract (an INTERNAL helper)
+    // keeps the entry's records and nodes, which the entry itself may write before or after that frame runs.
+    for (const [id, input] of Object.entries(callees?.inputs ?? {})) {
+      if (inputs[id] === undefined || callees?.kept.has(id) !== true) inputs[id] = input;
+    }
     payees.forEach((payee, index) => {
       inputs[receiveMasterId(index)] = {
         source: masterSource(payee.deployed.lockingBytecode, payee.category, payee.master.satoshis),

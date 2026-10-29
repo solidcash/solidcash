@@ -788,6 +788,12 @@ export interface CalleeFrames {
     readonly writes: ReadonlySet<DraftRecordEntry>;
     readonly relinks: ReadonlySet<DraftRecordEntry>;
   };
+  /**
+   * The inputs the frames only keep: a data record no frame writes and a node a frame only reads, each recreated as
+   * it was. A frame of the entry's own contract (an INTERNAL helper) keeps the entry's records and nodes too, which
+   * the entry may write, so the entry's plan of such an input stands over this one.
+   */
+  readonly kept: ReadonlySet<string>;
 }
 
 /**
@@ -1141,6 +1147,7 @@ export function calleeFrames(options: {
       redeemScript: callee.deployed.script,
     };
   });
+  const kept = new Set<string>();
   for (const callee of callees) {
     inputs[callee.master] = {
       source: {
@@ -1161,6 +1168,7 @@ export function calleeFrames(options: {
       const writer = writerOf.get(record.id);
       // A written record is spent on the covenant's write path, authorized by the master that writes it, and carries
       // the end of its declaration chain; a kept one is read-only and recreated as it was.
+      if (writer === undefined) kept.add(record.id);
       inputs[record.id] = {
         source,
         ...(writer === undefined ? { output: source } : {}),
@@ -1173,6 +1181,7 @@ export function calleeFrames(options: {
     for (const node of callee.readNodes) {
       if (inputs[node.id] !== undefined || node.utxo === undefined) continue;
       const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(callee.categoryId, node.signature);
+      kept.add(node.id);
       inputs[node.id] = {
         source: {
           lockingBytecode,
@@ -1211,7 +1220,7 @@ export function calleeFrames(options: {
   // A data record a frame writes on such a contract chains in the same walk, as the hop chains it.
   for (const id of chainedRecords) nodes.add(indexOf(id));
   return {
-    masters, inputs, settles, eventOutputs, createdOutputs,
+    masters, inputs, settles, eventOutputs, createdOutputs, kept,
     ...(chained || chainedRecords.size > 0
       ? { chain: { nodes, writes: writeTransitions, relinks: relinkTransitions } } : {}),
   };

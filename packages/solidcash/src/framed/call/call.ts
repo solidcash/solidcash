@@ -3569,6 +3569,8 @@ async function callInShape(
   if (repeated !== undefined && !accepted && !reverted) throw mappingBatchRepeatsSlot(repeated);
   // A callee frame's batch keeps a repeated slot the same way, and a run refused with no reason is refused for it.
   if (calleePlan?.repeatedSlotRefusal !== undefined && !accepted && !reverted) throw calleePlan.repeatedSlotRefusal;
+  // So is one whose frames touch a node in an order the plan does not settle, which a frame that stops first never meets.
+  if (calleePlan?.chainRefusal !== undefined && !accepted && !reverted) throw calleePlan.chainRefusal;
   // A plan stopped before a site the planner refused: a run that reached the site meets the refusal there.
   if (refusedPlanning !== undefined && !accepted && !reverted) {
     throw refusedPlanning instanceof WrittenValueAwaited

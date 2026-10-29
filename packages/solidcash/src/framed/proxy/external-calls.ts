@@ -114,7 +114,7 @@ import {
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedTouch } from './enclosed-reads.js';
-import { FramedFailedCallSite, FramedProxyDeployError } from './errors.js';
+import { FramedFailedCallSite, FramedNodeChainError, FramedProxyDeployError } from './errors.js';
 import { reachedNodeValue } from './reached-values.js';
 import { lockOfIdentity } from './address-identity.js';
 import {
@@ -3548,6 +3548,9 @@ function chunkingNode(touches: readonly NodeTouch[]): boolean {
  * `requireSettledNodeChains` refuses once every frame has settled, and a relink states none, which is refused here.
  */
 function requireChainableNodes(callees: readonly HopCallee[]): void {
+  // The first pair one frame of which enters the other is refused once every other node's chain is checked, which
+  // refuses by its own name.
+  let interleaved: FramedNodeChainError | undefined;
   for (const [id, touches] of nodeTouches(callees)) {
     if (touches.length < 2) continue;
     const collection = touches[0]!.collection;
@@ -3558,7 +3561,7 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
         if (chainsEnclosedTouch(callees, outer, inner, collection, id)) continue;
         // So does any touch inside a frame that only reads the node.
         if ((entersFrame(callees, outer.frame, inner.frame) ? outer : inner).kind === 'read') continue;
-        throw new FramedProxyDeployError(
+        interleaved ??= new FramedNodeChainError(
           `the hop's reaches "${outer.functionName}" and "${inner.functionName}" touch one node of collection `
           + `"${collection}", and one of them enters the other, so their segments interleave in an order this hop `
           + 'does not settle',
@@ -3581,6 +3584,7 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
       if (touch.kind !== 'read') written = touch;
     }
   }
+  if (interleaved !== undefined) throw interleaved;
 }
 
 /**

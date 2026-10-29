@@ -41,8 +41,11 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
   caller left, and a node the caller reads that the helper rewrites is one input whose declarations chain across both
   frames. A record or node the helper only keeps stays as the caller's plan lays it, so a write the caller makes
   before or after the helper runs ends the record's chain (`CalleeFrames.kept`): `UniswapV2Pair.mint` entered
-  directly keeps its reserves record in two helpers and writes it after them. `UniswapV2Pair.mint` is 6,008 B and
-  `burn` 5,844 B with their helpers cut, each a 4-5 kB master of its own.
+  directly keeps its reserves record in two helpers and writes it after them. Two frames one of which enters the
+  other and touches one node in an order the plan cannot state are refused only for a run that stops on no reason of
+  its own (`PlannedCallees.chainRefusal`): a reentered entry its caller locked, as `UniswapV2Pair.burn` inside a swap's
+  callback is, reports the lock. `UniswapV2Pair.mint` is 6,008 B and `burn` 5,844 B with their helpers cut, each a
+  4-5 kB master of its own.
 - **A call reached on some paths is a conditional site** whether or not its guard can be stated, so a run that passes
   it by steps over it. A guard over a local declared without a value reads the type's zero, and a call whose guard no
   fact of the caller decides is planned both ways until the machine accepts one.

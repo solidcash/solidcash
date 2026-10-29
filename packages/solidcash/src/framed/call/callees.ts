@@ -75,7 +75,7 @@ import {
 } from '../proxy/deploy.js';
 import { EnclosingValueLearned, learnEnclosingValues } from '../proxy/enclosed-values.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
-import { FramedFailedCallSite, FramedProxyDeployError } from '../proxy/errors.js';
+import { FramedFailedCallSite, FramedNodeChainError, FramedProxyDeployError } from '../proxy/errors.js';
 import { hopTrace, hopTraceOn } from '../proxy/hop-trace.js';
 import {
   WrittenValueAwaited, calleeRepeatsSlot, chainedNodeIds, deploymentStateValues, planHopExternalCalls,
@@ -142,6 +142,11 @@ export interface PlannedCallees {
    * a skipped target (`calleeRepeatsSlot`): the call raises it for a run refused with no reason of its own.
    */
   readonly repeatedSlotRefusal?: FramedCalleeError;
+  /**
+   * The refusal a run meets when two of the frames, one entering the other, touch one node in an order the plan does
+   * not settle (`requireChainableNodes`): the call raises it for a run refused with no reason of its own.
+   */
+  readonly chainRefusal?: FramedCalleeError;
   /** The sends to a user's lock each callee frame that makes any lists, by master (`calleeListedSends`). */
   readonly listedSends?: ReadonlyMap<string, CalleeListedSends>;
 }
@@ -595,11 +600,18 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   // the hop chains them (`call.ts`). Reaches of one collection one transaction cannot carry are refused by name, as
   // the hop refuses them. A block is a deployment's, so two deployments of one contract are two blocks, each with its
   // own masters and records (`HopCallee.block`).
+  // Two frames, one entering the other, that touch one node in an order the plan cannot state are refused for a run
+  // that stops on no reason of its own: the execution meets them only once it makes both touches, and a frame that
+  // stops first reports itself, as a reentered entry its caller locked does.
+  let chainRefusal: FramedCalleeError | undefined;
   try {
     requireSatisfiableReachWrites(plan.callees);
   } catch (error) {
     if (!(error instanceof FramedProxyDeployError)) throw error;
-    refuse(error.message);
+    if (!(error instanceof FramedNodeChainError)) refuse(error.message);
+    chainRefusal = new FramedCalleeError(
+      `entry "${options.functionName}" makes ${count} external call(s): ${error.message}`,
+    );
   }
   const byBlock = new Map<string, HopCallee[]>();
   for (const callee of plan.callees) byBlock.set(callee.block, [...(byBlock.get(callee.block) ?? []), callee]);
@@ -646,6 +658,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
         `entry "${options.functionName}" makes ${count} external call(s): ${repeats.message}`,
       ),
     }),
+    ...(chainRefusal === undefined ? {} : { chainRefusal }),
     ...(listedSends.size === 0 ? {} : {
       listedSends: new Map([...listedSends].map(([master, { count: listed, unconditional }]) =>
         [master, { count: listed, unconditional }] as const)),

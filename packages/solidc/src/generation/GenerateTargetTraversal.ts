@@ -48648,15 +48648,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         : value instanceof Node ? [value]
           : key === 'callOptions' && value
             ? Object.values(value as object).filter((item): item is Node => item instanceof Node) : []));
+    // The element field the slot calls through (`arr[i].<field>`). A whole-element rebuild that carries this field
+    // over from the same element at the same index leaves the callee addresses the trailing epilogue verifies
+    // unchanged, so it does not force 'mixed'; only a rebuild that recomputes this field (or a push/pop/delete that
+    // moves elements) can. `undefined` when the call is on the element itself, where any rebuild must count.
+    const addrExpr = slot.addressSource?.kind === 'expression' ? slot.addressSource.expression : undefined;
+    const calleeField = addrExpr?.kind === 'field' && addrExpr.expression?.kind === 'arrayAccess'
+      ? addrExpr.name : undefined;
+    const structurallyEqual = (a: unknown, b: unknown, depth = 0): boolean => {
+      if (a === b) return true;
+      if (depth > 24 || !(a instanceof Node) || !(b instanceof Node) || a.constructor !== b.constructor) return false;
+      const keysA = Object.keys(a).filter((k) => !skip.has(k));
+      if (keysA.length !== Object.keys(b).filter((k) => !skip.has(k)).length) return false;
+      return keysA.every((k) => {
+        const va = (a as unknown as Record<string, unknown>)[k];
+        const vb = (b as unknown as Record<string, unknown>)[k];
+        if (va instanceof Node || vb instanceof Node) return structurallyEqual(va, vb, depth + 1);
+        if (Array.isArray(va) && Array.isArray(vb)) {
+          return va.length === vb.length && va.every((x, i) => structurallyEqual(x, vb[i], depth + 1));
+        }
+        return va === vb;
+      });
+    };
+    const preservesCalleeField = (node: StateArrayAssignNode | ArrayAssignNode): boolean => {
+      if (calleeField === undefined || !(node.value instanceof FunctionCallNode)) return false;
+      return node.value.parameters.some((arg) => arg instanceof FieldAccessNode && arg.name === calleeField
+        && arg.expression instanceof ArrayAccessNode
+        && (arg.expression.array as { name?: string }).name === node.name
+        && structurallyEqual(arg.expression.index, node.index));
+    };
     const writesHere = (node: Node): boolean => {
       if (node instanceof AssemblyStatementNode) return true;
       // A cache's flush only commits the writes made to the cache.
       if (node instanceof StateAssignNode && node.expression instanceof IdentifierNode
         && caches.has(node.expression.name)) return false;
-      if ((node instanceof StateArrayPushNode || node instanceof StateArrayPopNode || node instanceof StateArrayAssignNode
+      // An element rebuild that carries the callee field over leaves the verified addresses intact.
+      if (node instanceof StateArrayAssignNode && names.has(node.name)) return !preservesCalleeField(node);
+      if ((node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
         || node instanceof StateArrayDeleteNode || node instanceof StateAssignNode || node instanceof DeleteStateNode)
         && names.has(node.name)) return true;
-      if ((node instanceof ArrayPushNode || node instanceof ArrayPopNode || node instanceof ArrayAssignNode
+      if (node instanceof ArrayAssignNode && caches.has(node.name)) return !preservesCalleeField(node);
+      if ((node instanceof ArrayPushNode || node instanceof ArrayPopNode
         || node instanceof ArrayDeleteNode) && caches.has(node.name)) return true;
       return (node instanceof AssignNode || node instanceof DeleteLocalNode) && caches.has(node.identifier.name);
     };

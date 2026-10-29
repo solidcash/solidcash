@@ -129,6 +129,15 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
   follows binds. A `TestERC20` or `UniswapV2Pair` shard sheds about 182 B, 7.2% of the two contracts' 43 shards, and
   the registrar grows from 939 to 1,656 B, which a validator padded to its budget absorbs: every Router02 flow measured
   shrinks by 1.7 to 4.1 kB (`removeLiquidityETHWithPermit` 113,798 to 111,149 B, `addLiquidity` 90,004 to 88,290 B).
+- **The data-record covenant defines its authority bind and its category once** (`state.ts`,
+  `buildDataNftCovenantScript`). Its four paths (explicit output, destroy, write, read) named the category seven
+  times and three of them bound the minting authority, a 112-byte walk of the authority's unlocking. The covenant now
+  opens with `OP_DEFINE`s of both, under the one-byte identifiers 1 and 2 that nothing else in a record's evaluation
+  defines, and invokes them where each path named them, so every path runs the instructions it ran before. It is
+  312 B where it was 707 (238 where it was 488 with a master lock), and the library's record-lock routine, which
+  rebuilds the covenant around its category pushes, splices one push where it spliced seven: 300 B. A multi-hop swap
+  spends a dozen data records: the regular one went from 89,992 to 84,990 B and the fee-on-transfer one from 99,548 to
+  94,741 B.
 - **A recovery co-spends one side-car, which checks a witnessed key natively** (section 5, covenant V). Four
   `OP_CHECKDATASIG`s replace the A/B pair's Script ladder: two ECDSA checks through keys shifted by known multiples
   of G, whose shifts two Schnorr checks prove (section 5's compute side-cars). V is 804 B, spends ~0.39M operation

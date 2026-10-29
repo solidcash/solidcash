@@ -499,6 +499,8 @@ function ifBlock(script: Script, ifIdx: number): { ifPath: Script; elsePath: Scr
 
 describe('buildDataNftCovenantScript (tri-path)', () => {
   const categoryId = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x54 : 0xab));
+  // The covenant opens by defining its authority bind and its category push, three elements each; the dispatch follows.
+  const DISPATCH = 6;
 
   it('should produce valid script bytecode', () => {
     const script = buildDataNftCovenantScript(categoryId);
@@ -511,11 +513,12 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
 
   it('should dispatch explicit-output flag=3 before the legacy tri-path', () => {
     const script = buildDataNftCovenantScript(categoryId);
+    expect([script[2], script[5]]).toEqual([Op.OP_DEFINE, Op.OP_DEFINE]);
     // Outer dispatch: flag=3 uses an explicit output coordinate.
-    expect(script[0]).toBe(Op.OP_DUP);
-    expect(script[1]).toBe(Op.OP_3);
-    expect(script[2]).toBe(Op.OP_NUMEQUAL);
-    expect(script[3]).toBe(Op.OP_IF);
+    expect(script[DISPATCH]).toBe(Op.OP_DUP);
+    expect(script[DISPATCH + 1]).toBe(Op.OP_3);
+    expect(script[DISPATCH + 2]).toBe(Op.OP_NUMEQUAL);
+    expect(script[DISPATCH + 3]).toBe(Op.OP_IF);
     // Should contain OP_ELSE and OP_ENDIF for the outer and inner paths
     expect(script).toContain(Op.OP_ELSE);
     expect(script).toContain(Op.OP_ENDIF);
@@ -539,18 +542,35 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
 
   it('should embed the category ID in the script in internal order', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // OP_UTXOTOKENCATEGORY answers in internal (reversed) order, and that is the order the script bakes.
+    // OP_UTXOTOKENCATEGORY answers in internal (reversed) order, and that is the order the script bakes: the body of
+    // the function the covenant invokes wherever it names the category is that push.
     const internal = categoryId.slice().reverse();
+    const pushed = [0x20, ...internal];
     const found = script.some(
-      (el) => el instanceof Uint8Array && el.length === 32 && el.every((b, i) => b === internal[i]),
+      (el) => el instanceof Uint8Array && el.length === 33 && el.every((b, i) => b === pushed[i]),
     );
     expect(found).toBe(true);
   });
 
+  it('should carry its authority bind and its category once, invoked where each path names them', () => {
+    const script = buildDataNftCovenantScript(categoryId);
+    const internal = binToHex(categoryId.slice().reverse());
+    const bytecode = binToHex(scriptToBytecode(script));
+    expect(bytecode.split(internal)).toHaveLength(2);
+    // OP_1 OP_INVOKE binds the authority on the explicit-output, destroy and write paths; OP_2 OP_INVOKE pushes the
+    // category on all four.
+    const invokes = (id: number): number => script.filter((el, i) => {
+      const pushed = script[i - 1];
+      return el === Op.OP_INVOKE && pushed instanceof Uint8Array && pushed.length === 1 && pushed[0] === id;
+    }).length;
+    expect({ binds: invokes(1), categories: invokes(2) }).toEqual({ binds: 3, categories: 7 });
+    expect(scriptToBytecode(script)).toHaveLength(312);
+  });
+
   it('should have destroy path (flag=2) that skips output preservation', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // The flag=2 dispatch opens the ELSE of the flag=3 dispatch at script[3].
-    const { elsePath: legacy } = ifBlock(script, 3);
+    // The flag=2 dispatch opens the ELSE of the flag=3 dispatch.
+    const { elsePath: legacy } = ifBlock(script, DISPATCH + 3);
     const { ifPath: destroyPath } = ifBlock(legacy, legacy.indexOf(Op.OP_IF));
 
     // Destroy path: OP_DROP, verify master minting NFT, verify this input's category
@@ -564,7 +584,7 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
   it('should enforce exact satoshi preservation in common section (flag=0/1)', () => {
     const script = buildDataNftCovenantScript(categoryId);
     // Verify satoshi check is in the ELSE branch (flag=0/1), not in the IF branch (flag=2)
-    const { elsePath: legacy } = ifBlock(script, 3);
+    const { elsePath: legacy } = ifBlock(script, DISPATCH + 3);
     const { ifPath: destroyPath, elsePath: commonPath } = ifBlock(legacy, legacy.indexOf(Op.OP_IF));
     // The common section should contain UTXOVALUE and OUTPUTVALUE for exact satoshi check
     expect(commonPath).toContain(Op.OP_UTXOVALUE);

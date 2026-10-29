@@ -176,6 +176,13 @@ function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
 }
 
 /**
+ * The function identifiers the data-NFT covenant defines its shared parts under: its minting-authority bind and its
+ * category push. Nothing else runs in a record's evaluation, so no other definition can take them.
+ */
+const DATA_RECORD_AUTHORITY_FUNCTION_ID = 1n;
+const DATA_RECORD_CATEGORY_FUNCTION_ID = 2n;
+
+/**
  * Build the data-NFT covenant script seeded with a specific token category.
  *
  * Dual-path covenant:
@@ -192,7 +199,13 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
   // OP_UTXOTOKENCATEGORY pushes category bytes in internal (reversed) byte order.
   // The caller passes display-order bytes, so reverse them to match the VM.
   const catInternal = categoryId.slice().reverse();
+  // Four paths name the category and three bind the minting authority. Each is defined once, as a function, and
+  // invoked where it is named, so the covenant carries one copy of each and every path runs the same instructions.
+  const category: Script = [encodeInt(DATA_RECORD_CATEGORY_FUNCTION_ID), Op.OP_INVOKE];
+  const bindAuthority: Script = [encodeInt(DATA_RECORD_AUTHORITY_FUNCTION_ID), Op.OP_INVOKE];
   return [
+    scriptToBytecode(bindMintingAuthorityLock(masterLock)), encodeInt(DATA_RECORD_AUTHORITY_FUNCTION_ID), Op.OP_DEFINE,
+    scriptToBytecode([catInternal]), encodeInt(DATA_RECORD_CATEGORY_FUNCTION_ID), Op.OP_DEFINE,
     // flag=3 carries an explicit output coordinate for composed layouts where the input and output bands differ.
     // Stack: <masterInputIndex> <outputIndex> <flag>
     Op.OP_DUP,
@@ -201,13 +214,13 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_IF,
     Op.OP_DROP,
     Op.OP_SWAP, // outputIndex, masterInputIndex
-    ...bindMintingAuthorityLock(masterLock),
+    ...bindAuthority,
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_2,
     Op.OP_EQUALVERIFY,
-    catInternal,
+    ...category,
     Op.OP_EQUALVERIFY,
     // Authenticate this mutable data NFT.
     Op.OP_INPUTINDEX,
@@ -216,7 +229,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_SPLIT,
     Op.OP_1,
     Op.OP_EQUALVERIFY,
-    catInternal,
+    ...category,
     Op.OP_EQUALVERIFY,
     // Preserve its covenant, category, FT amount, and satoshi value at the explicit output coordinate.
     Op.OP_DUP,
@@ -251,14 +264,14 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     // === Destroy path (flag=2): verify master only, no output preservation ===
     Op.OP_DROP, // drop original flag
     // A second minting baton (the block-oracle keeper) must not burn this record.
-    ...bindMintingAuthorityLock(masterLock),
+    ...bindAuthority,
     // Verify minting NFT at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_2,
     Op.OP_EQUALVERIFY, // minting capability
-    catInternal,
+    ...category,
     Op.OP_EQUALVERIFY, // correct category
     // Verify this input has the expected category
     Op.OP_INPUTINDEX,
@@ -267,7 +280,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_SPLIT,
     Op.OP_1,
     Op.OP_EQUALVERIFY, // verify mutable capability (0x01)
-    catInternal,
+    ...category,
     Op.OP_EQUALVERIFY, // correct category
     // Verify output at this input's index does NOT preserve this category
     // (if the output exists at all - when INPUTINDEX >= TXOUTPUTCOUNT the
@@ -285,7 +298,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     encodeInt(32n),
     Op.OP_SPLIT,
     Op.OP_DROP,
-    catInternal,
+    ...category,
     Op.OP_EQUAL,
     Op.OP_NOT,
     Op.OP_VERIFY,
@@ -300,7 +313,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     // === Write path (flag=1): verify minting NFT at masterInputIndex ===
     // The block-oracle keeper is a second minting NFT at its own short lock. Its unlocking is a few
     // bytes; the contract master reveals its redeem. Require a P2SH32 lock and that long unlocking.
-    ...bindMintingAuthorityLock(masterLock),
+    ...bindAuthority,
     // Part 1: verify minting NFT of expected category at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
     encodeInt(32n),
@@ -308,7 +321,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_2,
     Op.OP_EQUALVERIFY,
     // Push expected category once; OP_TUCK keeps a copy for Part 2
-    catInternal,
+    ...category,
     Op.OP_TUCK,
     Op.OP_EQUALVERIFY,
     // Part 2: verify this input has the expected category
@@ -329,7 +342,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_SPLIT,
     Op.OP_1,
     Op.OP_EQUALVERIFY, // mutable capability (0x01)
-    catInternal,
+    ...category,
     Op.OP_EQUALVERIFY, // correct category
     // Commitment preservation: input commitment == output commitment
     Op.OP_INPUTINDEX,

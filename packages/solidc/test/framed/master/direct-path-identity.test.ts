@@ -13,8 +13,9 @@ import { compileString } from '../../../src/compiler.js';
  * became one classifying pass per side that also counts minting uniqueness; and again when the token container
  * covenant lost its merge path and the keep of an unnamed container refused a minting NFT (the master pin's destroy
  * arm moved them only while every contract carried it); and again when the own-category count pinned each record
- * beside a count-path call at its own index (C3). A framed compile may add artifacts, but it may not make these two
- * directs disagree.
+ * beside a count-path call at its own index (C3); and again when the data-record covenant, whose lock the master
+ * rebuilds to check its records, defined its authority bind and its category once. A framed compile may add
+ * artifacts, but it may not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -36,9 +37,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.14.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: '04d196136acf25481b94e9bb7a57f761909e53a350d51fd29dbeb635e17fd8f5' },
+    pinnedSha256: '5e9f90f223b0653b6e373b7551db55c3fdafbd46e22127dcf7364b9ceb82bcce' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: 'a6caec9e0458b11ba77eaa393c5144d9a2d6549944c8f1243cc7dd4db82409cb' },
+    pinnedSha256: 'ea7b6d5563a4766c086450db4cefae3409db5e6108b17ccb69dc5ff431c85a9b' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

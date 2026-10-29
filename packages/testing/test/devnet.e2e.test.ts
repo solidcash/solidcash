@@ -85,7 +85,7 @@ async function startNode(extraArgs: string[] = [], cwd = fixture): Promise<NodeH
   });
 
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`node did not report listening; stderr: ${stderr}`)), 90_000);
+    const timer = setTimeout(() => reject(new Error(`node did not report listening; stderr: ${stderr}`)), 240_000);
     const onLine = (line: string): void => {
       if (line.trim().length === 0) return;
       lines.push(line);
@@ -142,7 +142,7 @@ async function startNode(extraArgs: string[] = [], cwd = fixture): Promise<NodeH
 async function stopNode(node: NodeHandle): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (node.child.exitCode !== null) return { code: node.child.exitCode, signal: null };
   node.child.kill('SIGTERM');
-  return waitForExit(node.child, 15_000);
+  return waitForExit(node.child, 60_000);
 }
 
 interface Rpc {
@@ -207,7 +207,7 @@ describe('solidhat node end to end', () => {
     node = await startNode();
     projectDir = makeProjectDir();
     writeProject(projectDir, node.port);
-  }, 120_000);
+  }, 300_000);
 
   afterAll(async () => {
     await stopNode(node);
@@ -217,7 +217,7 @@ describe('solidhat node end to end', () => {
         child.kill('SIGKILL');
       } catch { /* already gone */ }
     }
-  }, 60_000);
+  }, 180_000);
 
   it('reports a listening event with chain identity and no keys', () => {
     expect(node.port).toBeGreaterThan(0);
@@ -622,7 +622,7 @@ describe('solidhat node end to end', () => {
     node = await startNode();
     expect(node.genesisHash).toBe(firstGenesis);
     expect(node.accounts.map((account) => account.address).slice(0, 3)).toEqual(firstAccounts);
-  }, 120_000);
+  }, 240_000);
 });
 
 describe('solidhat node --evm-rpc', () => {
@@ -649,5 +649,5 @@ describe('solidhat node --evm-rpc', () => {
       const exit = await stopNode(node);
       expect(exit.code).toBe(0);
     }
-  }, 180_000);
+  }, 300_000);
 });

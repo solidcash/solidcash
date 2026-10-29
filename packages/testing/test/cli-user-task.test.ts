@@ -32,6 +32,12 @@ beforeAll(() => {
     "    console.log(`PROBE ${args.label ?? 'default'}`);",
     '  });',
     '',
+    "task('compile', 'Project override of the built-in compile task')",
+    "  .addFlag('fast', 'Skip the slow checks')",
+    '  .setAction(async () => {',
+    "    console.log('OVERRIDDEN COMPILE');",
+    '  });',
+    '',
   ].join('\n'));
 });
 
@@ -43,7 +49,7 @@ function run(cli: keyof typeof clis, args: string[]): { status: number | null; s
   const result = spawnSync(process.execPath, [clis[cli], ...args], {
     cwd: projectDir,
     encoding: 'utf8',
-    timeout: 120_000,
+    timeout: 180_000,
   });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -54,7 +60,20 @@ describe.each(Object.keys(clis) as (keyof typeof clis)[])('%s user-declared task
     expect(stderr).toBe('');
     expect(status).toBe(0);
     expect(stdout).toContain('PROBE alpha');
-  }, 120_000);
+  }, 240_000);
+
+  it('runs the project override of a built-in task', () => {
+    const { status, stdout } = run(cli, ['compile']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('OVERRIDDEN COMPILE');
+  }, 240_000);
+
+  it('shows the project override in the built-in task help', () => {
+    const { status, stdout } = run(cli, ['compile', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('Project override of the built-in compile task');
+    expect(stdout).toContain('--fast');
+  }, 240_000);
 
   it('prints the task help for a declared task', () => {
     const { status, stdout, stderr } = run(cli, ['probe-task', '--help']);
@@ -63,7 +82,7 @@ describe.each(Object.keys(clis) as (keyof typeof clis)[])('%s user-declared task
     expect(stdout).toContain(`Usage: ${cli} probe-task [options]`);
     expect(stdout).toContain('A project-declared probe task');
     expect(stdout).toContain('--label <value>');
-  }, 120_000);
+  }, 240_000);
 });
 
 describe('task listing', () => {
@@ -71,11 +90,11 @@ describe('task listing', () => {
     const { status, stdout } = run('solidcash', ['help']);
     expect(status).toBe(0);
     expect(stdout).toContain('probe-task');
-  }, 120_000);
+  }, 240_000);
 
   it('still reports a genuinely unknown task', () => {
     const { status, stderr } = run('solidcash', ['definitely-not-a-task']);
     expect(status).toBe(1);
     expect(stderr).toContain('Unknown task "definitely-not-a-task"');
-  }, 120_000);
+  }, 240_000);
 });

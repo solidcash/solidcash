@@ -53,8 +53,8 @@ const BEFORE = commitment(0n, 5n);
 // The segment boundary at the call: the guard is set and the first increment done.
 const MIDDLE = commitment(1n, 6n);
 const AFTER = commitment(0n, 8n);
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits after the caller, the validator's head and the two facets it binds.
+const RECORD_INDEX = 4;
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
   ({ in: RECORD_INDEX, out: RECORD_INDEX, viewIn, viewOut });
 
@@ -103,8 +103,8 @@ function plan(): CompositionDraftPlan {
   };
   return {
     blocks,
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: 'user', index: 5 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: 'user', index: 6 }],
     masters: [guardedMaster, calleeMaster],
     inputs: {
       'guarded-1': { source: { lockingBytecode: guarded.lockingBytecode, valueSatoshis: 20_000n, token: tokenWith(guarded.category, 'minting', new Uint8Array(0)) } },

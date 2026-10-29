@@ -192,23 +192,29 @@ describe('a framed master whose dynamic write shares the frame with a call', () 
   it('accepts every contract input of the settled transaction', () => {
     const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted);
     expect(rejected).toStrictEqual([]);
-    // The master, the callee, the validator with its facet and the two records are all asked.
-    expect(outcome.verdicts.length).toBe(6);
+    // The master, the callee, the validator with its two facets and the two records are all asked.
+    expect(outcome.verdicts.length).toBe(7);
   });
 
   it('refuses a chunk output whose commitment the body did not compute', () => {
-    // The control: the settled derivation's run output carries a commitment the body never computed, so the master
-    // recomputes the chunk and refuses it.
+    // The settled derivation's run output carries a commitment the body never computed. The master ends the chunk at
+    // the view it computed; the validator, which settles the master's contract, holds that view to the output (V7).
     const program = outcome.draft.programFor(APP_MASTER);
     const outputs = program.transaction.outputs.map((output, index) => index === built.base
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: new Uint8Array([7]) } } }
       : output);
     const machine = compositionMachine();
-    const state = machine.evaluate({
-      inputIndex: program.inputIndex,
+    const accepts = (inputIndex: number): boolean => machine.stateSuccess(machine.evaluate({
+      inputIndex,
       sourceOutputs: program.sourceOutputs,
       transaction: { ...program.transaction, outputs },
-    });
-    expect(machine.stateSuccess(state)).not.toBe(true);
+    })) === true;
+    expect(accepts(program.inputIndex)).toBe(true);
+    const head = participant(outcome.draft.layout, VALIDATOR_ID).index;
+    const validatorInputs = outcome.draft.layout.participants
+      .filter((placed) => placed.kind === 'validator' || placed.kind === 'facet')
+      .map((placed) => placed.index);
+    expect(validatorInputs).toContain(head);
+    expect(validatorInputs.every(accepts)).toBe(false);
   });
 });

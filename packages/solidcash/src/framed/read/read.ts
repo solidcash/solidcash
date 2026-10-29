@@ -17,8 +17,11 @@
  * contract reads that contract's own live records the same way: the caller names the other contracts in
  * `externals`, each callee becomes its own `STATIC` frame over its own master and records, and one validator — the
  * root's — covers every frame of the read. A callee is learned before its caller, because the caller's call record
- * carries the callee's returned bytes. A mapping-backed record is read the same way: the entry's own block slots
- * name the live nodes it reads, and the deployment layer's classification locates them. A key its own arguments and
+ * carries the callee's returned bytes. A frame's calls are planned from what the frame holds, as the hop plans them:
+ * its arguments, its addresses, and the state its live records hold, so a call to an address the caller keeps in its
+ * own state reaches that address, and a loop its stored state bounds runs that many turns. A mapping-backed record is
+ * read the same way: the entry's own block slots name the live nodes it reads, and the deployment layer's
+ * classification locates them. A key its own arguments and
  * a loop counter name — `cells[id + i]` — is one no single resolution can evaluate, so the read enumerates the
  * turns the arguments fix and locates each turn's node.
  *
@@ -27,9 +30,10 @@
  * the calls before the loop are composed and learned, and the read is planned again from what they returned.
  */
 
+import { collectionKeyEncoding } from '../composer/mapping-plan.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { isVmNumberError, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
+import { createVirtualMachineBch2026ForProvider, createDerivationVirtualMachineForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
   VALUE_HEAD_SIZE,
@@ -58,6 +62,7 @@ import {
   type ExternalCallAbi,
   resolveAddressForm,
   type ExternalResultEncoding,
+  type FunctionSplitBundle,
   type FrameKindValue,
   type StateLayout,
   type StateValue,
@@ -69,8 +74,12 @@ import { hopTrace, hopTraceOn } from '../proxy/hop-trace.js';
 import {
   calleePath,
   callingTurnsOf,
+  deploymentStateValues,
   entryWrittenState,
+  liveDeploymentOf,
+  liveMappingValueReader,
   occurrenceCountOf,
+  reachedIdentity,
   reachedResultKey,
   registeredExternalFor,
   routingOf,
@@ -78,14 +87,18 @@ import {
   type FramedProxyExternal,
 } from '../proxy/external-calls.js';
 import {
-  makeCallResolver, resolveCallArguments, type CallResolver,
+  makeCallResolver, resolveCallArguments, resolveCallTarget, type CallResolver, type HopCallInputs,
 } from '../proxy/call-resolution.js';
 import { FramedProxyDeployError } from '../proxy/errors.js';
+import { functionSplitFor } from '../deploy/split-registry.js';
+import { requireFunctionSplitShard } from '../deploy/entry-pool.js';
 import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { FramedCallRecordError, readEntryNode } from '../call/entry-records.js';
 import { framedTokenAccesses, framedTokenContainerUnlockingBytecode } from '../call/token-containers.js';
+import { FramedLoopTurnsError, entryLoopTurns } from '../call/loop-turns.js';
+import { FramedSideCarPoolError, entrySideCars } from '../call/side-cars.js';
 import {
   chunkRecordLockingBytecode,
   deployMaster,
@@ -105,6 +118,7 @@ import {
   UNFILLED_CALLEE_REF,
   createComposedDerivationHost,
   createShippedDerivationHost,
+  deploymentBlockId,
   deriveDepthFirst,
   describeInnermost,
   layoutTransaction,
@@ -123,6 +137,7 @@ import {
   type DraftSourceOutput,
   type PublishedCallSite,
   type PublishedEntryStopSites,
+  type RecoverySideCars,
 } from '../composer/index.js';
 
 /** The BCH-2026 machine a read runs and learns on. */
@@ -253,6 +268,11 @@ interface ReadCall {
 interface ReadFrame {
   readonly master: string;
   readonly contract: string;
+  /**
+   * The block the frame's master sits in: one per deployment, so a further deployment of the same contract, a second
+   * pair a loop reaches, is its own block over its own records (`deploymentBlockId`).
+   */
+  readonly block: string;
   readonly artifact: Artifact;
   readonly entry: ReadEntry;
   readonly categoryId: string;
@@ -262,8 +282,8 @@ interface ReadFrame {
   readonly kind: FrameKindValue;
   /** `address(this)`: the frame's own address, or the proxy's for a delegate frame. */
   readonly self: Uint8Array;
-  /** The contract whose records the frame reads, which is the proxy's for a delegate frame. */
-  readonly recordContract?: string;
+  /** The block whose records the frame reads, which is the proxy's for a delegate frame. */
+  readonly recordBlock?: string;
   readonly recordCategory?: Uint8Array;
   readonly recordCategoryId?: string;
   /** The layout the frame's records are classified with, carrying the implementation's collections behind a proxy. */
@@ -316,8 +336,8 @@ const NO_STATE_LAYOUT: StateLayout = { variables: [], dataNftCount: 0, commitmen
 const FALLBACK_ENTRY = '__fallback';
 
 /** The contract whose records a frame names, which is the proxy's for a frame that runs on its records. */
-function recordContractOf(frame: ReadFrame): string {
-  return frame.recordContract ?? frame.contract;
+function recordBlockOf(frame: ReadFrame): string {
+  return frame.recordBlock ?? frame.block;
 }
 
 /** The category whose records a frame reads. */
@@ -350,9 +370,9 @@ function recordId(nftIndex: number): string {
   return `record-${nftIndex}`;
 }
 
-/** The record identity for data-NFT index `nftIndex` of a callee contract. */
-function calleeRecordId(contract: string, nftIndex: number): string {
-  return `${contract}-record-${nftIndex}`;
+/** The record identity for data-NFT index `nftIndex` of a callee's deployment, named by its block. */
+function calleeRecordId(block: string, nftIndex: number): string {
+  return `${block}-record-${nftIndex}`;
 }
 
 /**
@@ -367,6 +387,17 @@ function retvalPlaceholder(master: string): Uint8Array {
 }
 
 /** The ABI row a read names, refusing an entry the artifact does not publish. */
+/** The shard a split category reads an entry on, by its selector when the call names one. */
+function requireReadShard(
+  split: FunctionSplitBundle, functionName: string, selector?: string,
+): FunctionSplitBundle['shards'][number] {
+  try {
+    return requireFunctionSplitShard(split, functionName, selector);
+  } catch (error) {
+    throw new FramedReadError((error as Error).message);
+  }
+}
+
 function requireEntry(artifact: Artifact, functionName: string): ReadEntry {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
   if (entry === undefined) {
@@ -417,6 +448,45 @@ function externalOf(
 }
 
 /**
+ * The external contract one turn of a call reaches.
+ *
+ * A site whose target the caller computes from its own facts (an argument, an element of one, a hash over them)
+ * reaches the deployment that turn's target names, found the way the hop finds it, so a loop over a path reaches one
+ * pair per hop, and a target the caller keeps in its own state is the address its live record holds. A 20-byte
+ * target is an identity, read as the deployment that presents it. An interface the caller names in `externals`, a
+ * target the site publishes, and a target the frame's facts do not state are reached as the site is (`externalOf`).
+ */
+function externalAtTurn(
+  call: PublishedCallSite,
+  row: ExternalCallAbi,
+  inputs: HopCallInputs,
+  resolver: CallResolver,
+  turn: number,
+  options: {
+    readonly externals: FramedReadOptions['externals'];
+    readonly provider: NetworkProvider;
+    readonly validatorProgram: Uint8Array;
+  },
+): FramedProxyExternal | undefined {
+  const { externals, provider, validatorProgram } = options;
+  const atSite = (): FramedProxyExternal | undefined => externalOf(call, externals, provider, validatorProgram);
+  if (externals?.[call.interfaceName] !== undefined || call.target.length > 0) return atSite();
+  let target: Uint8Array | undefined;
+  try {
+    target = resolveCallTarget(row, inputs, resolver, turn);
+  } catch (error) {
+    if (!(error instanceof FramedProxyDeployError)) throw error;
+  }
+  if (target === undefined || target.length === 0) return atSite();
+  const address = target.length === 20
+    ? reachedIdentity({ externals: externals ?? {}, provider, validatorProgram }, target) ?? target
+    : target;
+  const atTarget = Object.values(externals ?? {}).find((candidate) =>
+    bytesEqual(validatorAddress(hexToBin(candidate.categoryId), validatorProgram), address));
+  return atTarget ?? registeredExternalFor(provider, address, call.interfaceName);
+}
+
+/**
  * The address a call reaches.
  *
  * A site whose target the caller pins in its own code publishes that address, and the frame the call reaches is at
@@ -432,9 +502,9 @@ function callTarget(call: PublishedCallSite, calleeAddress: Uint8Array): Uint8Ar
  * The call data one call carries: the callee's selector, then each argument's canonical push in call order.
  *
  * The caller's published routing states where each argument comes from, and the resolver the hop reads its own
- * calls with reads those sources here from the calling frame's own arguments and addresses — never from a
- * deployment. A source the frame's own facts do not state, such as a field of the caller's live state or an
- * earlier call's result, is refused by the kind that names it rather than guessed at. The pushes themselves come
+ * calls with reads those sources here from the calling frame's own arguments, addresses and live state. A source
+ * those facts do not state, such as an earlier call's result the read has not learned, is refused by the kind that
+ * names it rather than guessed at. The pushes themselves come
  * from the shipped encoder the hop uses, so a read and a hop state one call data. A call in a loop is stated at
  * its turn, which is what a source reading the loop's counter resolves against.
  */
@@ -460,7 +530,7 @@ function readCallArguments(
     throw new FramedReadError(
       `entry "${frame.contract}.${frame.entry.name}()" calls "${row.interfaceName}.${row.functionName}()", `
       + `whose argument ${index} comes from a "${source.kind}"${expression}, which a read cannot state from the `
-      + "caller's own arguments and addresses",
+      + "caller's own arguments, addresses and state",
     );
   }
   try {
@@ -522,16 +592,17 @@ function knownResultsAt(
  * A call is resolved from the entry's published stop site to an external the caller supplied, or one the provider's
  * registrations name, and a callee becomes its own `STATIC` frame over its own deployment. A callee behind its own
  * proxy is two frames: the proxy's `STATIC` fallback, which the caller reaches, and the implementation's `DELEGATE`
- * frame, which runs the called entry on the proxy's records. Nothing is read from the provider here: a frame's
- * deployment coordinates are derived from its category and validator program, so an entry whose calls nothing names
- * is refused before any chain state is read.
+ * frame, which runs the called entry on the proxy's records. A frame's deployment coordinates are derived from its
+ * category and validator program; a frame whose entry makes calls also has its live records read first, from the
+ * deployments the read composes over (`deployments`), so a call's target, argument or loop bound may name the state
+ * they hold, or a node of one of its mappings.
  *
  * A site in a loop places one call per turn that calls, each with that turn's call data and frames of its own, named
  * by the turn and taking masters in order, as the hop places them. A loop whose bound or guard reads an earlier
  * call's result `results` does not hold stops its frame's plan before the site (`waits`): the calls before it are
  * planned, and nothing after it in that frame is, until a pass has learned the result.
  */
-function planReadFrames(options: {
+async function planReadFrames(options: {
   readonly provider: NetworkProvider;
   readonly artifact: Artifact;
   readonly categoryId: string;
@@ -541,22 +612,27 @@ function planReadFrames(options: {
   readonly validatorProgram: Uint8Array;
   /** The results earlier passes learned, keyed by `reachedResultKey`: the calling frame's path and the site. */
   readonly results: ReadonlyMap<string, FunctionArgument>;
-}): { readonly frames: readonly ReadFrame[]; readonly root: ReadFrame; readonly waits: readonly ReadWait[] } {
+  /** The live deployments every pass of the read reads, by category (`readDeployment`). */
+  readonly deployments: Map<string, FramedDeploymentSet>;
+}): Promise<{ readonly frames: readonly ReadFrame[]; readonly root: ReadFrame; readonly waits: readonly ReadWait[] }> {
   const category = hexToBin(options.categoryId);
   const rootDeployed = deployMaster(options.artifact, category, options.validatorProgram);
+  // The block each deployment the read reaches is named, by category, as the composer names one.
+  const blockNames = new Map<string, string>();
   const root: ReadFrame = {
     master: READ_MASTER,
     contract: options.artifact.contractName,
+    block: deploymentBlockId(blockNames, options.artifact.contractName, options.categoryId),
     artifact: options.artifact,
     entry: requireEntry(options.artifact, options.functionName),
     categoryId: options.categoryId,
     category,
     deployed: rootDeployed,
     kind: FrameKind.STATIC,
-    self: rootDeployed.address,
+    self: rootDeployed.self,
     path: '',
     parent: undefined,
-    sender: rootDeployed.address,
+    sender: rootDeployed.self,
     args: options.args ?? [],
     argumentPushes: [],
     segmentCount: publishedEntryOf(options.artifact, options.functionName)?.sites.sites
@@ -583,6 +659,22 @@ function planReadFrames(options: {
   };
   let calleeCount = 0;
   const waits: ReadWait[] = [];
+  // The state a frame's records hold, which a delegate frame reads at the proxy that entered it, decoded by the
+  // frame's own layout, as its body reads it.
+  const liveStateOf = async (frame: ReadFrame): Promise<Pick<HopCallInputs, 'stateValues' | 'readMappingValue'>> => {
+    const owner = frame.recordOwner === undefined ? frame : byMaster.get(frame.recordOwner)!;
+    const deployment = await readDeployment(
+      options.provider, options.deployments, owner.categoryId, recordLayoutOf(owner),
+    );
+    const categoryId = recordCategoryIdOf(frame);
+    const layout = recordLayoutOf(frame);
+    return {
+      stateValues: deploymentStateValues(layout, categoryId, deployment),
+      readMappingValue: liveMappingValueReader(
+        frame.artifact, liveDeploymentOf(categoryId, deployment, layout), frame.artifact.structs,
+      ),
+    };
+  };
 
   for (const frame of frames) {
     // A proxy's fallback publishes the delegate it forwards to, which the pair already placed: it is not a call
@@ -592,16 +684,17 @@ function planReadFrames(options: {
     const calls = published?.calls ?? [];
     if (calls.length === 0) continue;
     const routing = routingOf(frame.artifact, frame.entry.name);
-    // The frame's own facts are what each call's arguments are stated from, exactly as the hop states its own
-    // calls. A read holds no live state, so a source that needs one is refused by name when its call is reached.
-    const resolver = makeCallResolver({
+    // The frame's own facts are what each call's target, arguments and loop bound are stated from, exactly as the hop
+    // states its own calls: its arguments, its addresses and its live state.
+    const inputs: HopCallInputs = {
       artifact: frame.artifact,
       functionName: frame.entry.name,
       args: frame.args,
-      stateValues: {},
+      ...await liveStateOf(frame),
       selfAddress: frame.self,
       senderAddress: frame.sender,
-    });
+    };
+    const resolver = makeCallResolver(inputs);
     // The results learned for the frame's own earlier calls, which a loop's bound and guard are evaluated against.
     const known = knownResultsAt(options.results, frame.path);
     for (const [callIndex, call] of calls.entries()) {
@@ -635,30 +728,35 @@ function planReadFrames(options: {
         continue;
       }
       frame.callBases.push(frame.calls.length);
-      const external = externalOf(call, options.externals, options.provider, options.validatorProgram);
-      if (external === undefined) {
-        throw new FramedReadError(
-          `entry "${frame.contract}.${frame.entry.name}()" makes ${calls.length} external call(s): `
-          + `"${call.interfaceName}.${call.functionName}()" at 0x${call.target} is not supplied in externals`,
-        );
-      }
-      const contract = external.artifact.contractName;
-      const proxyArtifact = external.proxyArtifact;
-      const implementationCategoryId = external.implementationCategoryId;
-      const proxied = proxyArtifact !== undefined && implementationCategoryId !== undefined;
-      // One call is one frame, so a contract two call sites (or two turns of one) reach is two frames over its own
-      // records. A contract that reaches itself is not: the frames are ordered by their calls and the chain would
-      // never bottom out.
-      const placed = proxied ? [proxyArtifact.contractName, contract] : [contract];
-      const repeated = placed.find((name) => callerChain(frame).some((ancestor) => ancestor.contract === name));
-      if (repeated !== undefined) {
-        throw new FramedReadError(
-          `the read reaches "${repeated}" again below itself, so its frames have no order`,
-        );
-      }
-      const calleeEntry = requireEntry(external.artifact, call.functionName);
       const callsiteId = row.callsiteId ?? -1;
       for (const turn of turns) {
+        // Each turn reaches the deployment its own target names: a loop over a path reaches one pair per hop.
+        const reached = externalAtTurn(call, row, inputs, resolver, turn, options);
+        if (reached === undefined) {
+          throw new FramedReadError(
+            `entry "${frame.contract}.${frame.entry.name}()" makes ${calls.length} external call(s): `
+            + `"${call.interfaceName}.${call.functionName}()" at 0x${call.target} is not supplied in externals`,
+          );
+        }
+        // A callee deployed from a per-entry bundle runs the shard the call's selector names.
+        const calleeSplit = functionSplitFor(options.provider, reached.categoryId);
+        const external = calleeSplit === undefined ? reached
+          : { ...reached, artifact: requireReadShard(calleeSplit, call.functionName, call.selector).artifact };
+        const contract = external.artifact.contractName;
+        const proxyArtifact = external.proxyArtifact;
+        const implementationCategoryId = external.implementationCategoryId;
+        const proxied = proxyArtifact !== undefined && implementationCategoryId !== undefined;
+        // One call is one frame, so a contract two call sites (or two turns of one) reach is two frames over its own
+        // records. A contract that reaches itself is not: the frames are ordered by their calls and the chain would
+        // never bottom out.
+        const placed = proxied ? [proxyArtifact.contractName, contract] : [contract];
+        const repeated = placed.find((name) => callerChain(frame).some((ancestor) => ancestor.contract === name));
+        if (repeated !== undefined) {
+          throw new FramedReadError(
+            `the read reaches "${repeated}" again below itself, so its frames have no order`,
+          );
+        }
+        const calleeEntry = requireEntry(external.artifact, call.functionName);
         const path = calleePath(frame.path, callIndex, turn);
         const reach: ReadReach = { callerPath: frame.path, callsiteId, occurrence: turn };
         // The callee's call data is the same whether the callee is reached directly or through its own proxy, so
@@ -687,9 +785,11 @@ function planReadFrames(options: {
           const proxyMaster = `read-${calleeCount}`;
           calleeCount += 1;
           const implementationMaster = `read-${calleeCount}`;
+          const proxyBlock = deploymentBlockId(blockNames, proxyArtifact.contractName, external.categoryId);
           const proxy: ReadFrame = {
             master: proxyMaster,
             contract: proxyArtifact.contractName,
+            block: proxyBlock,
             artifact: proxyArtifact,
             entry: requireEntry(proxyArtifact, FALLBACK_ENTRY),
             categoryId: external.categoryId,
@@ -697,7 +797,6 @@ function planReadFrames(options: {
             deployed: proxyDeployed,
             kind: FrameKind.STATIC,
             self: proxyDeployed.address,
-            recordContract: proxyArtifact.contractName,
             recordCategory: proxyCategory,
             recordCategoryId: external.categoryId,
             recordLayout,
@@ -727,6 +826,7 @@ function planReadFrames(options: {
           const implementation: ReadFrame = {
             master: implementationMaster,
             contract,
+            block: deploymentBlockId(blockNames, contract, implementationCategoryId),
             artifact: external.artifact,
             entry: calleeEntry,
             categoryId: implementationCategoryId,
@@ -735,7 +835,7 @@ function planReadFrames(options: {
             kind: FrameKind.DELEGATE,
             // A delegate frame runs as its caller's contract, so its `address(this)` is the proxy's.
             self: proxyDeployed.address,
-            recordContract: proxyArtifact.contractName,
+            recordBlock: proxyBlock,
             recordCategory: proxyCategory,
             recordCategoryId: external.categoryId,
             path,
@@ -771,13 +871,14 @@ function planReadFrames(options: {
         const callee: ReadFrame = {
           master: calleeMaster,
           contract,
+          block: deploymentBlockId(blockNames, contract, external.categoryId),
           artifact: external.artifact,
           entry: calleeEntry,
           categoryId: external.categoryId,
           category: calleeCategory,
           deployed: calleeDeployed,
           kind: FrameKind.STATIC,
-          self: calleeDeployed.address,
+          self: calleeDeployed.self,
           path,
           reach,
           parent: frame.master,
@@ -798,13 +899,28 @@ function planReadFrames(options: {
         frames.push(callee);
         byMaster.set(calleeMaster, callee);
         frame.calls.push({
-          callee: calleeMaster, target: callTarget(call, calleeDeployed.address),
+          callee: calleeMaster, target: callTarget(call, calleeDeployed.self),
           kind: FrameKind.STATIC, argumentPushes,
         });
       }
     }
   }
   return { frames, root, waits };
+}
+
+/** A category's live deployment, read once for every pass of the read and kept in `deployments`. */
+async function readDeployment(
+  provider: NetworkProvider,
+  deployments: Map<string, FramedDeploymentSet>,
+  categoryId: string,
+  layout: StateLayout,
+): Promise<FramedDeploymentSet> {
+  let deployment = deployments.get(categoryId);
+  if (deployment === undefined) {
+    deployment = await readFramedDeployment(provider, categoryId, layout);
+    deployments.set(categoryId, deployment);
+  }
+  return deployment;
 }
 
 /**
@@ -821,31 +937,30 @@ async function readFrameDeployments(
   frames: readonly ReadFrame[],
   deployments: Map<string, FramedDeploymentSet>,
 ): Promise<void> {
-  const mastersTaken = new Map<string, number>();
+  const mastersTaken = new Map<string, Set<string>>();
   const byMaster = new Map(frames.map((frame) => [frame.master, frame]));
-  const deploymentFor = async (categoryId: string, layout: StateLayout): Promise<FramedDeploymentSet> => {
-    let deployment = deployments.get(categoryId);
-    if (deployment === undefined) {
-      deployment = await readFramedDeployment(provider, categoryId, layout);
-      deployments.set(categoryId, deployment);
-    }
-    return deployment;
-  };
+  const deploymentFor = (categoryId: string, layout: StateLayout): Promise<FramedDeploymentSet> =>
+    readDeployment(provider, deployments, categoryId, layout);
   for (const frame of frames) {
     // A contract that keeps no state variable publishes no layout and mints no record; it is classified against an
     // empty one, so its category still yields the master the frame runs on.
     const deployment = await deploymentFor(frame.categoryId, recordLayoutOf(frame));
     // Each frame runs on a master of its own, so a contract two calls reach takes the next master of its pool
     // rather than the one the frame before it already spends.
-    const taken = mastersTaken.get(frame.categoryId) ?? 0;
-    const master = deployment.masters[taken];
+    // A category deployed from a per-entry bundle keeps a pool per entry, so the frame takes one at its shard's lock.
+    const taken = mastersTaken.get(frame.categoryId) ?? new Set<string>();
+    const split = functionSplitFor(provider, frame.categoryId) !== undefined;
+    const master = deployment.masters.find((utxo) => !taken.has(`${utxo.txid}:${utxo.vout}`)
+      && (!split || (utxo.lockingBytecode !== undefined
+        && bytesEqual(utxo.lockingBytecode, frame.deployed.lockingBytecode))));
     if (master === undefined) {
       throw new FramedReadError(
         `category ${frame.categoryId} holds ${deployment.masters.length} master(s), and the read runs `
-        + `${taken + 1} frame(s) over it`,
+        + `${taken.size + 1} frame(s) over ${split ? `the pool of "${frame.entry.name}"` : 'it'}`,
       );
     }
-    mastersTaken.set(frame.categoryId, taken + 1);
+    taken.add(`${master.txid}:${master.vout}`);
+    mastersTaken.set(frame.categoryId, taken);
     frame.masterSatoshis = master.satoshis;
     if (frame.master === READ_MASTER) {
       const validator = deployment.validators[0];
@@ -879,7 +994,7 @@ function dataNftReadRecord(frame: ReadFrame, deployment: FramedDeploymentSet, nf
     throw new FramedReadError(`the record at data-NFT index ${nftIndex} carries no commitment`);
   }
   return {
-    id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(recordContractOf(frame), nftIndex),
+    id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(recordBlockOf(frame), nftIndex),
     commitment: new Uint8Array(hexToBin(commitment)),
     satoshis: utxo.satoshis,
     lockingBytecode: stateRecordLockingBytecode(recordCategoryIdOf(frame)),
@@ -1111,7 +1226,7 @@ function locatedNode(
   collection: { readonly name: string; readonly signature: string },
   key: Uint8Array,
 ): ReturnType<typeof readEntryNode> {
-  const slot = keyToSlotMulti([key]);
+  const slot = keyToSlotMulti([key], collectionKeyEncoding(frame.artifact, collection.name));
   const nodes = (deployment.nodesByCollection.get(collection.name) ?? []).map((utxo) => {
     const commitment = utxo.token?.nft?.commitment;
     if (commitment === undefined) {
@@ -1654,6 +1769,56 @@ function entryArgumentPushes(
   ];
 }
 
+/**
+ * The compute side-cars each frame's keccak256 and recovery calls read, by master, as a call co-spends them
+ * (`entrySideCars`): one per call, right after the frame's own input, each a live UTXO no other frame of the read
+ * spends. A preimage or digest the body computes is left to the derivation, which learns it from the body's own bind;
+ * a body that hashes in a loop reads as many as its turns make, counted from the frame's arguments and state.
+ */
+async function readSideCars(
+  provider: NetworkProvider,
+  frames: readonly ReadFrame[],
+  deployments: ReadonlyMap<string, FramedDeploymentSet>,
+): Promise<ReadonlyMap<string, RecoverySideCars>> {
+  const sideCarsOf = new Map<string, RecoverySideCars>();
+  const taken = new Set<string>();
+  for (const frame of frames) {
+    const abiFunction = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
+    if (abiFunction === undefined) continue;
+    const hashes = (abiFunction.keccakPreimageParams ?? []).length > 0 || abiFunction.keccakInLoop === true;
+    const recovers = (abiFunction.ecrecoverArgParams ?? []).length > 0
+      || (abiFunction.ecrecoverEvmFlags ?? []).length > 0;
+    if (!hashes && !recovers) continue;
+    const recordCategoryId = frame.recordCategoryId ?? frame.categoryId;
+    const deployment = deployments.get(recordCategoryId);
+    let sideCars: RecoverySideCars;
+    try {
+      const turns = abiFunction.keccakInLoop !== true ? {} : entryLoopTurns({
+        artifact: frame.artifact,
+        functionName: frame.entry.name,
+        args: frame.args,
+        stateValues: deployment === undefined ? {}
+          : deploymentStateValues(recordLayoutOf(frame), recordCategoryId, deployment) as Record<string, StateValue>,
+        selfAddress: frame.self,
+        senderAddress: frame.sender,
+      });
+      sideCars = await entrySideCars({
+        provider, master: frame.master, abiFunction, argumentPushes: frame.argumentPushes, leadingPushes: 1,
+        ...(turns.hashes === undefined ? {} : { hashes: turns.hashes }), taken,
+      });
+    } catch (error) {
+      if (error instanceof FramedLoopTurnsError || error instanceof FramedSideCarPoolError) {
+        throw new FramedReadError(error.message);
+      }
+      throw error;
+    }
+    if (sideCars.ids.length === 0) continue;
+    sideCarsOf.set(frame.master, sideCars);
+    for (const utxo of Object.values(sideCars.utxos)) taken.add(`${utxo.txid}:${utxo.vout}`);
+  }
+  return sideCarsOf;
+}
+
 /** Every frame of the read, callees before the callers that reach them. */
 function framesInDependencyOrder(frames: readonly ReadFrame[]): readonly ReadFrame[] {
   const byMaster = new Map(frames.map((frame) => [frame.master, frame]));
@@ -1714,59 +1879,69 @@ async function composeRead(options: {
     frame.origin = callerRef;
   }
 
-  // One block per contract, however many frames it runs: a contract two calls reach has two masters in its block.
-  // A record is one input however many frames read it, so a block declares it once and a later frame of the same
-  // contract resolves it through its own segments.
+  // One block per deployment, however many frames it runs: a deployment two calls reach has two masters in its
+  // block, and a further deployment of the same contract is a block of its own. A record is one input however many
+  // frames read it, so a block declares it once and a later frame of the same deployment resolves it through its own
+  // segments.
   const frameByMaster = new Map(frames.map((frame) => [frame.master, frame]));
   const blockOrder: string[] = [];
   const mastersOfBlocks = new Map<string, string[]>();
   const stateOfBlocks = new Map<string, string[]>();
   for (const frame of frames) {
-    if (!mastersOfBlocks.has(frame.contract)) {
-      blockOrder.push(frame.contract);
-      mastersOfBlocks.set(frame.contract, []);
-      stateOfBlocks.set(frame.contract, []);
+    if (!mastersOfBlocks.has(frame.block)) {
+      blockOrder.push(frame.block);
+      mastersOfBlocks.set(frame.block, []);
+      stateOfBlocks.set(frame.block, []);
     }
-    mastersOfBlocks.get(frame.contract)!.push(frame.master);
+    mastersOfBlocks.get(frame.block)!.push(frame.master);
     // A delegate frame's records sit at the proxy's category, so they are declared in the proxy's block, which the
     // owner frame reaches first; the delegate contributes only the ones its own entry reads.
     const owner = frame.recordOwner === undefined ? frame : frameByMaster.get(frame.recordOwner)!;
     for (const record of frame.records) {
-      const state = stateOfBlocks.get(owner.contract)!;
+      const state = stateOfBlocks.get(owner.block)!;
       if (!state.includes(record.id)) state.push(record.id);
     }
   }
-  const blocks: ContractBlock[] = blockOrder.map((contract, index) => ({
-    contract,
-    masters: mastersOfBlocks.get(contract)!,
-    ...(index === 0 ? { validator: { id: VALIDATOR_ID, settles: [] } } : {}),
-    state: stateOfBlocks.get(contract)!,
-  }));
+  const sideCarsOf = await readSideCars(provider, frames, options.deployments);
+  const blocks: ContractBlock[] = blockOrder.map((contract, index) => {
+    // Each master's side-cars follow it, in the order its body reads them.
+    const recovery = Object.fromEntries(mastersOfBlocks.get(contract)!.flatMap((master) => {
+      const sideCars = sideCarsOf.get(master);
+      return sideCars === undefined ? [] : [[master, sideCars.ids] as const];
+    }));
+    return {
+      contract,
+      masters: mastersOfBlocks.get(contract)!,
+      ...(index === 0 ? { validator: { id: VALIDATOR_ID, settles: [] } } : {}),
+      state: stateOfBlocks.get(contract)!,
+      ...(Object.keys(recovery).length === 0 ? {} : { recovery }),
+    };
+  });
   // The validator runs as a head plus its facet inputs, so the read's own layout has to place the same facets the
   // composer places; otherwise the indices the plan states and the ones the assembled transaction uses would differ.
   const validatorRedeem = validatorRedeemScript(root.category, validatorProgram);
   const facets = validatorFacetsOf({ id: VALIDATOR_ID, covers: [], settles: [], redeemScript: validatorRedeem });
   const layout = layoutTransaction(blocks, new Map([[VALIDATOR_ID, facets]]));
 
-  // How many masters of each contract the read spends: a contract a caller reaches twice has two frames.
-  const mastersPerContract = new Map<string, number>();
+  // How many masters of each deployment the read spends: a deployment a caller reaches twice has two frames.
+  const mastersPerBlock = new Map<string, number>();
   for (const frame of frames) {
-    mastersPerContract.set(frame.contract, (mastersPerContract.get(frame.contract) ?? 0) + 1);
+    mastersPerBlock.set(frame.block, (mastersPerBlock.get(frame.block) ?? 0) + 1);
   }
 
   const masters: DraftMaster[] = frames.map((frame, index) => ({
     master: frame.master,
-    contract: frame.contract,
+    contract: frame.block,
     functionName: `${frame.contract}.${frame.entry.name}()`,
     program: frame.deployed.script,
     facts: {
-      contract: frame.contract,
+      contract: frame.block,
       functionName: frame.entry.name,
       kind: frame.kind,
       callerIsUser: false,
       originEqualsCaller: false,
       makesExternalCall: frame.calls.length > 0,
-      mastersOfContract: mastersPerContract.get(frame.contract) ?? 1,
+      mastersOfContract: mastersPerBlock.get(frame.block) ?? 1,
     },
     frame: { kind: frame.kind, sender: frame.sender, self: frame.self, value: 0n },
     enteredBy: frame.enteredBy,
@@ -1841,6 +2016,8 @@ async function composeRead(options: {
     }
   }
 
+  for (const sideCars of sideCarsOf.values()) Object.assign(inputs, sideCars.inputs);
+
   // A frame that reads a token container's amount reads the containers its transaction spends, so the read spends
   // every fungible container of each category it reads, owned by its master and recreated in place as a run of its
   // own (spec 4b), which leaves the amount where it was.
@@ -1906,11 +2083,14 @@ async function composeRead(options: {
     ...(tokenRuns.length === 0 ? {} : { tokenRuns }),
     masters,
     inputs,
+    ...(sideCarsOf.size === 0 ? {} : {
+      computedWitnesses: [...sideCarsOf.values()].flatMap((sideCars) => sideCars.computedWitnesses),
+    }),
     ...(containerOutputs.length + tokenRunOutputs.length === 0 ? {}
       : { trailingOutputs: [...tokenRunOutputs, ...containerOutputs] }),
     validator: {
       id: VALIDATOR_ID,
-      covers: [...new Set(frames.slice(1).map((frame) => frame.contract))],
+      covers: [...new Set(frames.slice(1).map((frame) => frame.block))],
       settles: [],
       redeemScript: validatorRedeem,
     },
@@ -1942,6 +2122,9 @@ async function composeRead(options: {
       if (closed.has(frame.retvalFrom)) closed.add(frame.master);
       continue;
     }
+    // A body that hashes or recovers binds what its side-cars carry before it closes, so the preimages and digests it
+    // computed are learned first, and the comparison read next is the close against the frame's `retval`.
+    if (sideCarsOf.has(frame.master)) draft.learnUnstatedViewsOf([frame.master]);
     const reading = readComputedDeclaration({
       vm: machine,
       program: draft.programFor(frame.master),
@@ -2022,7 +2205,7 @@ async function composeInPasses(options: {
   const deployments = new Map<string, FramedDeploymentSet>();
   let results: ReadonlyMap<string, FunctionArgument> = new Map();
   for (;;) {
-    const { frames, root, waits } = planReadFrames({ ...options, results });
+    const { frames, root, waits } = await planReadFrames({ ...options, results, deployments });
     await readFrameDeployments(options.provider, frames, deployments);
     const composed = await composeRead({ ...options, frames, root, deployments });
     if (waits.length === 0) return { frames, root, composed };
@@ -2048,12 +2231,16 @@ export async function readFramedEntry(options: FramedReadOptions): Promise<Frame
   const { provider, categoryId, functionName } = options;
   const { framedValidator } = await import('@solidcash/solidc/runtime');
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
-  const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
+  // A read is never broadcast, so it runs on a machine with the budgets lifted.
+  const machine = options.vm ?? createDerivationVirtualMachineForProvider(provider);
 
+  // A category deployed from a per-entry bundle answers the read on the entry's own shard.
+  const split = functionSplitFor(provider, categoryId);
+  const artifact = split === undefined ? options.artifact : requireReadShard(split, functionName).artifact;
   const { frames, root, composed } = await composeInPasses({
     provider,
     machine,
-    artifact: options.artifact,
+    artifact,
     categoryId,
     functionName,
     args: options.args ?? [],
@@ -2092,7 +2279,7 @@ export async function readFramedEntry(options: FramedReadOptions): Promise<Frame
   const host = createShippedDerivationHost({ artifacts, runs: draft.runs, vm: machine });
   const rootFunctionName = `${root.contract}.${root.entry.name}()`;
   deriveDepthFirst(
-    { contract: root.contract, functionName: rootFunctionName, kind: FrameKind.STATIC, master: READ_MASTER },
+    { contract: root.block, functionName: rootFunctionName, kind: FrameKind.STATIC, master: READ_MASTER },
     host,
   );
 

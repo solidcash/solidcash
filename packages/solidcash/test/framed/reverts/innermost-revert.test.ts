@@ -134,8 +134,8 @@ function build(calleeBody: string, callerBody: string, callerBeforeCall = '', de
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: USER_ID, index: 4 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 5 }],
     masters: [callerMaster, calleeMaster],
     inputs: {
       [CALLER_MASTER]: {
@@ -272,7 +272,8 @@ function buildThree(): {
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
       { contract: 'Inner', masters: [INNER_MASTER], state: [] },
     ],
-    userInputs: [{ id: USER_ID, index: 5 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 6 }],
     masters: [callerMaster, calleeMaster, innerMaster],
     inputs: {
       [CALLER_MASTER]: {

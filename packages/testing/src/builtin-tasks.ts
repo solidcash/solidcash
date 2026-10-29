@@ -8,6 +8,7 @@ import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import fs from 'fs';
 import path from 'path';
+import type { Artifact } from '@solidcash/utils';
 import { task } from './tasks.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
 import { artifactCompilerOptions, compileSolidityProject } from './project-compiler.js';
@@ -198,8 +199,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // TODO(remove SOLIDC_COMPILE_CACHE): replace this environment check with a `--no-cache` flag once the
     // variable is gone from the compiler (`packages/solidc/src/compiler.ts`, `artifactCacheEnabled`).
     const artifactCache = process.env.SOLIDC_COMPILE_CACHE !== '0';
+    // `split: 'func'` publishes each framed contract as a per-entry bundle beside its logical artifact. It is a
+    // placement of the compiled contracts, not an option of the logical compile.
+    const { split: splitMode, ...solcOptions } = hre.config.solc ?? {};
     const compilerOptions = {
-      ...hre.config.solc,
+      ...solcOptions,
       // A project config may pin the composition convention directly; it overrides the free-form solc map.
       ...(hre.config.composition !== undefined && { composition: hre.config.composition }),
       suppressWarnings,
@@ -350,7 +354,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           // The lightweight declaration scan can see prose in comments (for example, "contract constructor").
           // Artifact maps are ordinary objects, so a name like `constructor` can otherwise resolve an inherited
           // Object.prototype member and reach asmToBytecode with no bytecode string.
-          return typeof artifact?.bytecode === 'string'
+          // A framed contract is never size-split: `split: 'func'` places it one entry per master below.
+          return typeof artifact?.bytecode === 'string' && artifact.composition?.convention !== 'framed'
             && asmToBytecode(artifact.bytecode).length > maxShardBytes;
         });
         if (!needsSplit) continue;
@@ -374,6 +379,30 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
           formatSplitArtifactBundle(split, 'json'),
         );
+      }
+      // A framed project compiled with `split: 'func'` places every deployable framed contract one entry per master
+      // program, so each master carries only its own entry. The bundle is published as `<Contract>.func.json`.
+      if (splitMode === 'func' && compilerOptions.composition === 'framed') {
+        const bundled = new Set<string>();
+        for (const full of solFiles) {
+          for (const name of new Set(solidityDeclarations(full))) {
+            const artifact = result.artifacts[name] as Artifact | undefined;
+            if (artifact?.composition?.convention !== 'framed' || typeof artifact.bytecode !== 'string'
+              || artifact.bytecode.length === 0 || bundled.has(name)) continue;
+            bundled.add(name);
+            try {
+              const bundle = compileFileSplit(full, {
+                // The cap is the input limit, which a framed master shares with its witness block.
+                evmCompat: true, ...compilerOptions, maxShardBytes, framedWitnessReserve: true, split: 'func',
+                primaryContractName: name,
+              });
+              fs.writeFileSync(path.join(outputDir, `${name}.func.json`), formatSplitArtifactBundle(bundle, 'json'));
+              if (!args.quiet) console.log(`Split ${name} -> ${bundle.shards.length} entry shard(s)`);
+            } catch (error: any) {
+              shardFailures.push(`${path.relative(contractsDir, full)}:${name}: ${error.message.split('\n')[0]}`);
+            }
+          }
+        }
       }
       if (shardFailures.length > 0) {
         // Keep compile successful when ordinary artifacts already published. Unsplit oversized roots remain

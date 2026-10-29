@@ -139,6 +139,10 @@ function payment(which: 'first' | 'second' = 'first'): Payment {
 const PAYER = 'master';
 const VALIDATOR = 'validator';
 const VALIDATOR_FACET = 'validator/1';
+/** The validator's census facet, the second input it binds after its head. */
+const CENSUS_FACET = 'validator/2';
+/** Every facet the validator binds; none carries a witness block or a master reference. */
+const VALIDATOR_FACETS = [VALIDATOR_FACET, CENSUS_FACET];
 const RECIPIENT = 'receive-0';
 const RECIPIENT_RECORD = 'receive-0-record-0';
 /** The participants whose first push is a witness block. */
@@ -188,7 +192,7 @@ function changed(spend: Spend, change: Change): Spend {
   }
   change.transaction?.(transaction);
   for (const placed of participants) {
-    if (placed.id === VALIDATOR_FACET) continue;
+    if (VALIDATOR_FACETS.includes(placed.id)) continue;
     if (!MASTERS.includes(placed.id) && placed.id !== VALIDATOR) {
       // A record or a container: its first push names the input of the master that spends it.
       const unlocking = transaction.inputs[placed.index]!.unlockingBytecode;
@@ -245,13 +249,13 @@ function objectionAt(spend: Spend, inputIndex: number): string | undefined {
 }
 
 /**
- * Every participant's objection, or undefined where it accepts. The validator is its head and its facet, so its
- * verdict is both inputs': the head checks the input that runs it, and the facet the rest.
+ * Every participant's objection, or undefined where it accepts. The validator is its head and its facets, so its
+ * verdict is all three inputs': the head checks the input that runs it, and the facets the rest.
  */
 function objections(spend: Spend): Record<string, string | undefined> {
   const verdict: Record<string, string | undefined> = {};
   for (const placed of spend.participants) {
-    const id = placed.id === VALIDATOR_FACET ? VALIDATOR : placed.id;
+    const id = VALIDATOR_FACETS.includes(placed.id) ? VALIDATOR : placed.id;
     verdict[id] ??= objectionAt(spend, placed.index);
   }
   return verdict;
@@ -314,7 +318,7 @@ describe('a payment to a contract made without the recipient\'s master (T35)', (
   };
   /** Leaves the recipient out, and with `alone` the validator too, so the payer claims to stand alone. */
   const leftOut = (alone: boolean): string[] =>
-    [RECIPIENT, RECIPIENT_RECORD, ...(alone ? [VALIDATOR, VALIDATOR_FACET] : [])];
+    [RECIPIENT, RECIPIENT_RECORD, ...(alone ? [VALIDATOR, ...VALIDATOR_FACETS] : [])];
 
   it('(a) is refused by the payer as a plain output listed as a send, the frame and the call record left out', () => {
     for (const alone of [false, true]) {
@@ -328,7 +332,8 @@ describe('a payment to a contract made without the recipient\'s master (T35)', (
         },
       });
       // The body computed a 35-byte lock, so it makes a call: the block's missing record and its listed send refuse.
-      refusedBy(spend, PAYER);
+      // A validator, where one is spent, settles the payer's contract, and its value rule refuses the send as well.
+      refusedBy(spend, PAYER, ...(alone ? [] : [VALIDATOR]));
     }
   });
 
@@ -424,7 +429,7 @@ describe('a payment to a contract made without the recipient\'s master (T35)', (
     refusedBy({ ...spend, transaction }, PAYER, VALIDATOR);
   });
 
-  it('(d) is refused by the recipient when its receive() runs but its container receives less than the value', () => {
+  it('(d) is refused by the validator when the recipient\'s receive() runs but its container receives less than the value', () => {
     const spend = changed(payment().spend, {
       transaction: (transaction) => {
         const index = outputPaying(transaction, vaultContainer());
@@ -434,13 +439,14 @@ describe('a payment to a contract made without the recipient\'s master (T35)', (
         transaction.outputs[changeIndex] = { ...change, valueSatoshis: change.valueSatoshis + 1_000n };
       },
     });
-    refusedBy(spend, RECIPIENT);
+    // The recipient's frame is covered, so its contract's containers are the validator's to weigh (V7).
+    refusedBy(spend, VALIDATOR);
   });
 
   it('(d) is refused by the payer when it claims to stand alone while it makes the call', () => {
     // The head's call count does not cover a value call, and with no validator nothing binds the callee to a master
     // of the named contract (V5, V11), so the payer's own call site refuses. Without that check the payer accepts.
-    const spend = changed(payment().spend, { leaveOut: [VALIDATOR, VALIDATOR_FACET] });
+    const spend = changed(payment().spend, { leaveOut: [VALIDATOR, ...VALIDATOR_FACETS] });
     // The recipient's master refuses as well: a CALL frame needs a validator.
     refusedBy(spend, PAYER, RECIPIENT);
   });

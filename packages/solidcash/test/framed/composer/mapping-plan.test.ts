@@ -301,11 +301,26 @@ describe('planning a sorted batch as the body proves it', () => {
       .toStrictEqual([[1, 1], [INDEX_NONE, 5], [2, 2], [1, 1], [INDEX_NONE, 6]]);
   });
 
-  it('refuses a batch that writes one slot twice, and one segment laying its shared-gap inserts out in sequence', () => {
+  it('refuses a batch that writes one slot twice, or keeps the later write as skipped when asked', () => {
     const { inventory } = twoNodeList();
-    expect(() => planMappingBatch({
-      writes: [{ keys: [lowKey!], value: 1n }, { keys: [lowKey!], value: 2n }], inventory, encodeValue,
-    })).toThrow(/FRAMED_MAPPING_UNPLANNABLE: a sorted batch writes slot .* more than once/);
+    const writes = [{ keys: [lowKey!], value: 1n }, { keys: [lowKey!], value: 2n }];
+    expect(() => planMappingBatch({ writes, inventory, encodeValue }))
+      .toThrow(/FRAMED_MAPPING_UNPLANNABLE: a sorted batch writes slot .* more than once/);
+    // Kept, the first write inserts the node; the second is declared as one kept record that is not the node, the
+    // key's predecessor where the insert left it, which the body's batch reads as a skipped target.
+    const plan = planMappingBatch({ writes, inventory, encodeValue, keepsRepeatedSlot: true });
+    const slot = bytesToHex(keyToSlot(lowKey!));
+    const [kept] = plan.groups[1]!.records;
+    expect(plan.groups[1]!.skipped).toBe(true);
+    expect(plan.groups[1]!.records).toHaveLength(1);
+    expect(bytesToHex(kept!.slot)).not.toBe(slot);
+    expect(bytesToHex(kept!.viewIn)).toBe(bytesToHex(kept!.viewOut));
+    expect(plan.written.filter((node) => bytesToHex(node.slot) === slot)).toHaveLength(1);
+    expect(plan.repeatedSlots?.map(bytesToHex)).toStrictEqual([slot]);
+  });
+
+  it('lays one segment\'s shared-gap inserts out in sequence', () => {
+    const { inventory } = twoNodeList();
 
     // Planned one after another, the second insert relinks the node the first just created.
     const first = planMappingWrite({ keys: [lowKey!], value: 1n, inventory, encodeValue });

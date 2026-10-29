@@ -16,8 +16,10 @@ import { SolidcDiagnosticError } from '../../Errors.js';
 import {
   ADDRESS_SLOT_LENGTH,
   CATEGORY_SLOT_LENGTH,
+  IDENTITY_SLOT_LENGTH,
   placeholderPrefixLength,
   placeholderPush,
+  placeholderPushLength,
 } from './placeholders.js';
 
 /** The internal option that marks this compile as a framed master. */
@@ -53,8 +55,19 @@ export function setFramedMaster(options: FramedMasterOptionCarrier): void {
 export function findPlaceholderOffsets(
   script: Uint8Array,
   declaresTemplateHash = false,
-): { categoryOffset: number; addressOffset: number; templateHashOffset?: number } {
+): { categoryOffset: number; addressOffset: number; identityOffset: number; templateHashOffset?: number } {
   const addressOffset = uniqueOffset(script, placeholderPush(ADDRESS_SLOT_LENGTH), 'address');
+  // The identity slot is the push right after the address slot: the head reserves both together.
+  const identityOffset = addressOffset + placeholderPushLength(ADDRESS_SLOT_LENGTH);
+  const identityPush = placeholderPush(IDENTITY_SLOT_LENGTH);
+  if (!bytesEqual(script.subarray(identityOffset, identityOffset + identityPush.length), identityPush)) {
+    throw new SolidcDiagnosticError(
+      'FRAMED_CODEGEN_UNAVAILABLE',
+      `the compiled master does not reserve its ${IDENTITY_SLOT_LENGTH}-byte identity slot right after its address `
+      + 'slot',
+      { addressOffset },
+    );
+  }
   const thirtyTwoByteSlots = allOffsets(script, placeholderPush(CATEGORY_SLOT_LENGTH));
   const categoryOffset = lastBefore(thirtyTwoByteSlots, addressOffset);
   if (categoryOffset === undefined) {
@@ -65,7 +78,7 @@ export function findPlaceholderOffsets(
       { matches: thirtyTwoByteSlots, addressOffset },
     );
   }
-  if (!declaresTemplateHash) return { categoryOffset, addressOffset };
+  if (!declaresTemplateHash) return { categoryOffset, addressOffset, identityOffset };
   const templateHashOffset = thirtyTwoByteSlots.find((offset) => offset > addressOffset);
   if (templateHashOffset === undefined) {
     throw new SolidcDiagnosticError(
@@ -75,7 +88,7 @@ export function findPlaceholderOffsets(
       { matches: thirtyTwoByteSlots, addressOffset },
     );
   }
-  return { categoryOffset, addressOffset, templateHashOffset };
+  return { categoryOffset, addressOffset, identityOffset, templateHashOffset };
 }
 
 /** The greatest offset in `offsets` below `bound`, or undefined when none is. */
@@ -116,35 +129,6 @@ export function alignCensusAddressOffset(script: Script, declaresTemplateHash: b
     'the census address offset did not settle on the reserved address slot',
     {},
   );
-}
-
-/**
- * The trailing room a master's own input needs to pay for its own execution.
- *
- * An input's operation-cost budget is a density over the bytecode that spends it — `800` units per byte of the
- * input's unlocking bytecode, which carries the master's program. A body's cost grows with the number of calls its
- * execution makes, because every call binds a record, closes a segment and walks to the next, while those calls add
- * only a few bytes of records and segments to the program. A master that makes one call therefore fits its own
- * budget and a master that makes several runs out of it. The padding block is a data push per chunk, dropped where
- * the program ends: it lengthens the bytecode the budget is measured over, costs about a byte's worth of budget to
- * execute, and leaves the stack as it found it, so it changes nothing except the room an input has. Each chunk
- * stays under the push size limit, so a path that reaches the block pays for it rather than failing on it.
- *
- * A master that makes no external call never walks a call-record segment, so its budget is paid by its own body's
- * bytecode. Skipping the padding there keeps large standalone constructors inside the 10,000-byte consensus ceiling
- * instead of spending a third of that room on budget they do not use.
- */
-export const FRAMED_MASTER_PADDING_BYTES = 1024;
-const PADDING_CHUNK_BYTES = 512;
-
-/** Appends the padding block to a finished master script that can make at least one external call. */
-export function padFramedMasterScript(script: Script, callCount = 0): Script {
-  if (callCount <= 0) return script;
-  const padding: Script = [];
-  for (let written = 0; written < FRAMED_MASTER_PADDING_BYTES; written += PADDING_CHUNK_BYTES) {
-    padding.push(new Uint8Array(PADDING_CHUNK_BYTES), Op.OP_DROP);
-  }
-  return [...script, ...padding];
 }
 
 /** One encoded push: `start` is its first byte and `end` is the byte after its payload. */

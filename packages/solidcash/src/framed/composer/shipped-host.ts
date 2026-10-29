@@ -35,7 +35,6 @@ import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instr
 import { stepProbeTrace } from '../../network/createVirtualMachine.js';
 import {
   FrameKind,
-  bytesEqual,
   validateStopSiteMetadata,
   witnessKindOf,
   type Artifact,
@@ -136,15 +135,14 @@ export interface ExecutionStop {
   readonly frames?: readonly number[];
   readonly error?: string;
   /**
-   * The main and alternate stacks the run stopped with, as the items themselves.
+   * How many instructions the run evaluated before it stopped.
    *
    * A site one execution reaches several times is a single instruction every visit stops on, so the instruction
-   * pointer cannot tell one visit from the next: what differs is how much of the block the walk had consumed. These
-   * are what the host compares for those visits, by value. The items are held by reference: the machine never writes
-   * into one, so a comparison is one pass over the items instead of a hex string per item per run.
+   * pointer cannot tell one visit from the next: a later visit is one the run took more steps to reach. The stacks
+   * cannot tell them apart either, because a frame holds parts of its block unread, as the call records its later
+   * sites cut, and a fill rewrites those without the program taking a step.
    */
-  readonly stackItems?: readonly Uint8Array[];
-  readonly altItems?: readonly Uint8Array[];
+  readonly evaluated?: number;
 }
 
 export interface ShippedHostOptions {
@@ -173,21 +171,7 @@ function reachedFurther(before: ExecutionStop, after: ExecutionStop): boolean {
   if ((after.ip ?? 0) > (before.ip ?? 0)) return true;
   if (enteredLater(before, after)) return true;
   return after.ip !== undefined && after.ip === before.ip
-    && after.stackItems !== undefined && !sameStacks(before, after);
-}
-
-/** True when two stops left the same bytes on both stacks, including both having left neither. */
-function sameStacks(before: ExecutionStop, after: ExecutionStop): boolean {
-  return sameItems(before.stackItems, after.stackItems) && sameItems(before.altItems, after.altItems);
-}
-
-function sameItems(left: readonly Uint8Array[] | undefined, right: readonly Uint8Array[] | undefined): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    if (!bytesEqual(left[index]!, right[index]!)) return false;
-  }
-  return true;
+    && after.evaluated !== undefined && after.evaluated > (before.evaluated ?? 0);
 }
 
 /**
@@ -232,23 +216,19 @@ function runOnce(vm: VirtualMachine, program: ShippedVmProgram): ExecutionStop {
   const typed = state as {
     readonly ip?: number;
     readonly error?: string;
-    readonly stack?: readonly Uint8Array[];
-    readonly altStack?: readonly Uint8Array[];
     readonly controlStack?: readonly unknown[];
+    readonly metrics?: { readonly evaluatedInstructionCount?: number };
   };
-  const stackItems = typed.stack;
   // An entered function is the control-stack entry that holds the position execution returns to.
   const frames = (typed.controlStack ?? []).flatMap((entry) => (typeof entry === 'object' && entry !== null
     && typeof (entry as { readonly ip?: unknown }).ip === 'number' ? [(entry as { readonly ip: number }).ip] : []));
+  const evaluated = typed.metrics?.evaluatedInstructionCount;
   return {
     accepted: false,
     ...(typed.ip === undefined ? {} : { ip: typed.ip }),
     ...(frames.length === 0 ? {} : { frames }),
     ...(typed.error === undefined ? {} : { error: String(typed.error) }),
-    ...(stackItems === undefined ? {} : {
-      stackItems,
-      ...(typed.altStack === undefined ? {} : { altItems: typed.altStack }),
-    }),
+    ...(evaluated === undefined ? {} : { evaluated }),
   };
 }
 

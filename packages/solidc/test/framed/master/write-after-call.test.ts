@@ -14,7 +14,10 @@ import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stat
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A compiled master whose entry writes a verified mapping after it has made an external call.
@@ -127,8 +130,15 @@ function build(options: Options = {}): Omit<Program, 'inputIndex'> {
   const unit = options.callerUnit ?? artifacts;
   const callerProgram = fill(unit, 'Caller');
   const calleeProgram = fill(artifacts, 'Callee');
+  // The validator settles both covered masters' contracts: the caller's spent predecessor and created node, and the
+  // callee, which holds no record.
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+    roots: [CALLER_INDEX],
+    masters: [CALLER_INDEX, CALLEE_INDEX],
+    settles: [
+      { category: CATEGORY_CALLER, stateInputs: [PRED_INDEX], createdOutputs: [NODE_INDEX] },
+      { category: CATEGORY_CALLEE, stateInputs: [] },
+    ],
   });
   const callerLock = encodeLockingBytecodeP2sh32(hash256(callerProgram));
   const calleeLock = encodeLockingBytecodeP2sh32(hash256(calleeProgram));
@@ -256,8 +266,22 @@ function build(options: Options = {}): Omit<Program, 'inputIndex'> {
   sourceOutputs[VALIDATOR_INDEX] = {
     lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable'),
   };
+  validatorFacetPlacements().forEach((facet, offset) => {
+    const index = VALIDATOR_INDEX + 1 + offset;
+    inputs[index] = facet.input; outputs[index] = facet.output; sourceOutputs[index] = facet.output;
+  });
 
   return { sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 } };
+}
+
+/** Whether the validator's head and every facet it binds accept. */
+function validatorAccepts(options: Options = {}): boolean {
+  const program = build(options);
+  const vm = compositionMachine();
+  return Array.from({ length: VALIDATOR_INPUT_SPAN }, (_, offset) => VALIDATOR_INDEX + offset).every((inputIndex) =>
+    vm.stateSuccess(vm.evaluate({
+      inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    })) === true);
 }
 
 /** The caller input's verdict in the BCH-2026 machine, with the objection for a diagnosis. */
@@ -279,9 +303,13 @@ describe('a framed master whose entry writes a verified mapping after an externa
   });
 
   it('is refused when the created node carries a value the code did not compute', () => {
+    // The caller's code ends the node at the view it computed; the validator, which settles the caller's contract,
+    // holds that view to the output the node is created at (V7).
     const tampered = encodeEntryCommitment(SLOT, ZERO_SLOT, new Uint8Array([AMOUNT + 1]));
-    expect(verdict({ nodeOutputCommitment: tampered }).accepted).toBe(false);
+    expect(verdict({ nodeOutputCommitment: tampered }).accepted).toBe(true);
+    expect(validatorAccepts({ nodeOutputCommitment: tampered })).toBe(false);
     expect(verdict({ nodeOutputCommitment: NODE_COMMITMENT }).accepted).toBe(true);
+    expect(validatorAccepts({ nodeOutputCommitment: NODE_COMMITMENT })).toBe(true);
   });
 
   it('serves a write after two calls, reading the segment the second call opened', () => {

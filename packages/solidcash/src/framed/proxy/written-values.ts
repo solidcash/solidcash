@@ -19,6 +19,7 @@
  * with the record the site's call carries, so bytes the body does not compute are refused there.
  */
 
+import { collectionKeyEncoding } from '../composer/mapping-plan.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
   VALUE_INLINE_LIMIT, bytesEqual, bytesToHex,
@@ -160,7 +161,7 @@ export function statedMappingWrites(
   const turns = loops.flatMap((loop) => {
     const stated = loopValue(artifact, fn, args, loop);
     return loop.turns.map((turn): StatedMappingWrite => {
-      const slot = keyToSlotMulti([...turn.keys]);
+      const slot = keyToSlotMulti([...turn.keys], collectionKeyEncoding(artifact, loop.collection));
       const value = learned?.(loop.collection, slot) ?? stated;
       return { collection: loop.collection, slot, ...(value === undefined ? {} : { value }) };
     });

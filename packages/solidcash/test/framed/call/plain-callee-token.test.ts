@@ -9,6 +9,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
+import { bytesToSlotValue, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';
@@ -128,11 +129,15 @@ describe('an ERC-20-like callee on the plain call path', () => {
     expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
     expect(result.completed.map((frame) => [frame.functionName, frame.kind]))
       .toStrictEqual([['Token.transfer()', FrameKind.CALL], ['Payer.pay()', FrameKind.ROOT]]);
-    // The token's block spends the payer's node and creates the recipient's: one node input, two trailing outputs,
-    // the event first.
+    // The token's block spends the payer's node and creates the recipient's after the node its slot follows, which is
+    // the payer's own when the recipient's slot follows the payer's, else the list's head: two trailing outputs, the
+    // event first.
+    const balances = chain.artifacts.Token.stateLayout!.collections!.find((collection) => collection.name === 'balanceOf');
+    const follows = bytesToSlotValue(keyToSlotMulti([RECIPIENT], balances))
+      > bytesToSlotValue(keyToSlotMulti([chain.locks.get('Payer')!], balances));
     const tokenNodes = result.draft.layout.participants
       .filter((placed) => placed.contract === 'Token' && placed.kind === 'state');
-    expect(tokenNodes).toHaveLength(1);
+    expect(tokenNodes).toHaveLength(follows ? 1 : 2);
     expect(result.draft.trailingOutputs).toHaveLength(2);
     expect(await balanceOf(chain, chain.locks.get('Payer')!)).toBe(900n);
     expect(await balanceOf(chain, RECIPIENT)).toBe(100n);

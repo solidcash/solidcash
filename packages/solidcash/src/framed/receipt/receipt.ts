@@ -23,7 +23,9 @@ import {
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,
   bytesEqual,
+  computeEventContinuationHash,
   computeEventNameHash,
+  concatBytes,
   hash256,
   scriptToBytecode,
   validatorAddress,
@@ -56,7 +58,7 @@ export interface CompositionEventLog {
   readonly address: Uint8Array;
   /** The output the event sits at, in the derived transaction. */
   readonly outputIndex: number;
-  /** The NFT commitment the output carries, as emitted. */
+  /** The payload as emitted: the output's NFT commitment, joined with the chunks after it of a wide event. */
   readonly commitment: Uint8Array;
   /** The decoded fields, keyed by the event ABI's parameter names. */
   readonly args: Readonly<Record<string, StateValue>>;
@@ -86,6 +88,31 @@ function eventCovenantLock(category: Uint8Array, definition: EventDefinitionAbi)
     ? buildAnonymousEventNftCovenantScript(category)
     : buildEventNftCovenantScript(category, computeEventNameHash(definition.signature));
   return encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(covenant)));
+}
+
+/** The lock a wide event's further chunks carry: its continuation covenant, which the emitting body rebuilds too. */
+function eventContinuationLock(category: Uint8Array, definition: EventDefinitionAbi): Uint8Array {
+  const hash = computeEventContinuationHash(definition.signature, definition.anonymous === true);
+  return encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildEventNftCovenantScript(category, hash))));
+}
+
+/**
+ * The payload a listed event output starts: its own commitment, then each chunk the listed outputs right after it
+ * carry at the event's continuation covenant, up to the first empty one (`EmitAbi.chunks`).
+ */
+function joinedPayload(
+  head: Uint8Array, definition: EventDefinitionAbi, category: Uint8Array, outputIndex: number,
+  listed: readonly number[], outputs: readonly (CompositionEventOutput | undefined)[],
+): Uint8Array {
+  const continuation = eventContinuationLock(category, definition);
+  const chunks = [head];
+  for (let next = outputIndex + 1; listed.includes(next); next += 1) {
+    const chunk = outputs[next]?.token?.nft?.commitment;
+    if (outputs[next] === undefined || !bytesEqual(outputs[next]!.lockingBytecode, continuation)
+      || chunk === undefined || chunk.length === 0) break;
+    chunks.push(chunk);
+  }
+  return chunks.length === 1 ? head : concatBytes(chunks);
 }
 
 /**
@@ -164,7 +191,10 @@ export function compositionEventLogs(
       // The output's covenant names the declared event, and a commitment that does not decode against every
       // candidate is one the frame did not compute: it is not reported.
       const decoded = declaredEvents(artifact, category, output.lockingBytecode)
-        .map((definition) => ({ definition, fields: decodeFields(commitment, definition, structs) }))
+        .map((definition) => {
+          const payload = joinedPayload(commitment, definition, category, outputIndex, listed, outputs);
+          return { definition, payload, fields: decodeFields(payload, definition, structs) };
+        })
         .find((candidate) => candidate.fields !== undefined);
       if (decoded?.fields === undefined) continue;
       logs.push({
@@ -174,7 +204,7 @@ export function compositionEventLogs(
         emitter: placed.id,
         address,
         outputIndex,
-        commitment: Uint8Array.from(commitment),
+        commitment: Uint8Array.from(decoded.payload),
         args: decoded.fields.args,
         values: decoded.fields.values,
       });

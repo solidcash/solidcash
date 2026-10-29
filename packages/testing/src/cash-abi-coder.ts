@@ -27,6 +27,13 @@ export function setCashAddressLockResolver(
 
 /** Map a BCH CashAddress to a synthetic 20-byte ETH-style hex address for ethers ABI coding. */
 export function cashAddressToEthHex(addr: string): string {
+  // A P2SH20 address names its 20-byte identity outright, as a P2PKH one does: a CREATE2 child's is the EVM address
+  // its own body holds as `address(this)`, whichever lock its frames execute under.
+  const named = cashAddressToLockingBytecode(addr);
+  if (typeof named !== 'string' && named.bytecode.length === 23 && named.bytecode[0] === 0xa9
+    && named.bytecode[1] === 0x14 && named.bytecode[22] === 0x87) {
+    return `0x${binToHex(named.bytecode.slice(2, 22))}`;
+  }
   const resolved = cashAddressLockResolver?.(addr);
   const decoded = resolved === undefined ? cashAddressToLockingBytecode(addr) : { bytecode: resolved };
   if (typeof decoded === 'string') return addr;

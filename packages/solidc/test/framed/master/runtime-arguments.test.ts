@@ -44,9 +44,9 @@ const FOREIGN_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-/** The input count of the transaction these cases build: the caller, the callee, the validator with its facet and
+/** The input count of the transaction these cases build: the caller, the callee, the validator with its facets and
  * the user. The numeric form passes it as its argument, so it tracks the validator's own layout. */
-const INPUT_COUNT = 5;
+const INPUT_COUNT = 3 + VALIDATOR_INPUT_SPAN;
 
 /** The caller passes a bounded number only the running code counts. */
 const NUMERIC_SOURCE = 'pragma solidcash ^0.14.0;'

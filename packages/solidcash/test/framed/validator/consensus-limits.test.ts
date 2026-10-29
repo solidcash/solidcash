@@ -16,6 +16,7 @@ import {
   MockNetworkProvider,
 } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { fillCensusCheckpoints } from '../../../src/framed/composer/census.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
@@ -36,7 +37,7 @@ import {
  *
  * The machine here is that chain profile, not the relaxed one: `maximumInputBytes` is the real 10,000 and the
  * operation-cost density is the real 800. The validator spans one input per program part — the head runs in the
- * validator input the masters point at, and the facet the head binds runs at the input after it — so the assertion
+ * validator input the masters point at, and the facets the head binds run at the inputs after it — so the assertion
  * is about every input the transaction spends, each against the budget its own bytes buy.
  *
  * `MOCK_CONSENSUS_LIMITS` itself lifts the byte caps (1,000,000), which is why the profile is built explicitly
@@ -198,7 +199,7 @@ interface InputMeasurement {
 
 const root = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: CALLER_MASTER };
 
-/** Where the composer places the parts: the caller, the head, the facet the head binds, the callee, then the user. */
+/** Where the composer places the parts: the caller, the head, the facets the head binds, the callee, then the user. */
 const HEAD_INDEX = 1;
 const FACET_INDEX = 2;
 
@@ -211,9 +212,10 @@ function measure(): { measurements: readonly InputMeasurement[]; programBytes: n
   });
   deriveDepthFirst(root, host);
 
-  const template = draft.programFor(CALLER_MASTER);
+  // The census facet carries the checkpoint the head computes, as a builder fills it.
+  const template = fillCensusCheckpoints(draft.programFor(CALLER_MASTER), draft.layout.participants);
   const vm = consensusMachine();
-  // The layout's participants are the contract's inputs: the caller's master, the validator's head, the facet the
+  // The layout's participants are the contract's inputs: the caller's master, the validator's head, the facets the
   // head binds, and the callee's master. The user's signed input is not one of them.
   const measurements = draft.layout.participants.map((placed): InputMeasurement => {
     const program = {
@@ -253,7 +255,7 @@ describe('the composed transaction under the chain\'s own limits', () => {
     // The controls: the profile is the chain's, and the composition is the whole one, validator parts included.
     expect(MOCK_CONSENSUS_LIMITS.maximumInputBytes).toBeGreaterThan(CONTRACT_INPUT_LIMIT_BYTES);
     expect(measurements.map((input) => input.id)).toEqual([
-      CALLER_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, CALLEE_MASTER,
+      CALLER_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, CALLEE_MASTER,
     ]);
     expect(measurements.map((input) => input.accepted)).toEqual(measurements.map(() => true));
     for (const input of measurements) {

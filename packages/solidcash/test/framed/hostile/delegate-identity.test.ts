@@ -311,8 +311,9 @@ describe('a DELEGATE frame inherits its caller\'s sender and self', () => {
         .filter((row) => row.accepted)
         .map((row) => row.participant)
         .sort();
-      // The head accepts and the refusal lands on its facet, which is what the machine run excludes here.
-      expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID].sort());
+      // The head accepts and the refusal lands on its first facet, which is what the machine run excludes here; the
+      // census facet weighs no edge, and accepts too.
+      expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/2`, RECORD_ID].sort());
     }
   });
 });

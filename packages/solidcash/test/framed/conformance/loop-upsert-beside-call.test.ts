@@ -300,8 +300,8 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
     expect(implementation?.accepted).toBe(true);
     // Every participant whose own verdict was accepted is asked again about the mutated spend. This second call writes
     // the value the record already holds, and the entry lands a write of it, so the record is spent on the write path
-    // whatever its end view: the validator, which ties every declared record's end to the output it creates, is the
-    // participant that has to refuse.
+    // whatever its end view: the validator's census facet, which ties every declared record's end to the output it
+    // creates, is the participant that has to refuse.
     const vm = compositionMachine();
     const refused = answered.verdicts
       .filter((verdict) => verdict.accepted)
@@ -312,7 +312,7 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
         }).error ?? ''),
       }))
       .filter((verdict) => verdict.error !== '');
-    expect(refused.map((verdict) => verdict.id)).toContain('validator');
+    expect(refused.map((verdict) => verdict.id)).toContain('validator/2');
   });
 });
 
@@ -359,7 +359,7 @@ describe('a mapping loop whose own body reaches a call, through the same path', 
     const frame = draft.runs.find((execution) => execution.functionName.includes('Impl.move()'))!;
     const segments = draft.blockOf(frame.master).segments;
     expect(segments.map((segment) => segment.some((entry) => entry.in === INDEX_NONE))).toStrictEqual([false, true]);
-    // Every participant the hop derived accepts, the validator facet included: the loop's write is declared where
+    // Every participant the hop derived accepts, the validator's facets included: the loop's write is declared where
     // the turns can land it, and the records the write reaches are declared once each and kept at what it left.
     expect(run.deployment.initialize.verdicts.filter((verdict) => !verdict.accepted).map((verdict) => verdict.id))
       .toStrictEqual([]);

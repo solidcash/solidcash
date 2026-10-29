@@ -86,6 +86,10 @@ function selectorOf(source: string, entry: string): Uint8Array {
 }
 
 const container = (value: bigint): VmOutput => ({ lockingBytecode: CONTAINER_LOCK, valueSatoshis: value });
+/** The zero-value marker a run follows when its frame keeps nothing: `OP_RETURN <a container lock>`. */
+const drainedRunMarker = (containerLock: Uint8Array): VmOutput => ({
+  lockingBytecode: Uint8Array.of(0x6a, containerLock.length, ...containerLock), valueSatoshis: 0n,
+});
 const payment = (value: bigint): VmOutput => ({ lockingBytecode: USER_LOCK, valueSatoshis: value });
 
 /** A spend of a compiled master at input 0: the user at 1, then the second master and the validator, if any. */
@@ -196,6 +200,28 @@ describe('a send paid from the contract\'s containers, compiled framed', () => {
     // Shared, the containers are weighed by the validator (V7), but the send still follows one of them.
     expect(pay({ ...covered(true), trailing: [container(30_000n), payment(AMOUNT)] })).toStrictEqual({ accepted: true });
     expect(pay({ ...covered(true), trailing: [payment(40_000n), payment(AMOUNT)] }).accepted).toBe(false);
+  });
+});
+
+describe('a send that drains the contract\'s containers, compiled framed', () => {
+  const drain = (lead: VmOutput): { accepted: boolean } => verdict({
+    source: PAY_SOURCE,
+    argumentPushes: encodeArgumentList([encodeIntegerValue(AMOUNT)]),
+    trailing: [lead, payment(AMOUNT)],
+    sends: [3],
+    containersIn: [AMOUNT],
+  });
+
+  it('is accepted when the send follows the drained run\'s marker, which keeps nothing', () => {
+    expect(drain(drainedRunMarker(CONTAINER_LOCK))).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the marker names another contract, or none', () => {
+    const otherLock = encodeLockingBytecodeP2sh32(
+      hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(seededCategory('another payer')))),
+    );
+    expect(drain(drainedRunMarker(otherLock)).accepted).toBe(false);
+    expect(drain({ lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }).accepted).toBe(false);
   });
 });
 

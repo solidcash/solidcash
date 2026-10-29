@@ -233,7 +233,8 @@ async function heldAt(
   run: Chain, artifact: Artifact, categoryId: string, collection: string, key: Uint8Array,
 ): Promise<bigint> {
   const pools = await readFramedDeployment(run.network, categoryId, artifact.stateLayout!);
-  const slot = bytesToHex(keyToSlotMulti([key]));
+  const keyed = artifact.stateLayout!.collections!.find((candidate) => candidate.name === collection);
+  const slot = bytesToHex(keyToSlotMulti([key], keyed));
   const node = (pools.nodesByCollection.get(collection) ?? [])
     .map((utxo) => decodeEntryCommitment(hexToBin(utxo.token!.nft!.commitment)))
     .find((entry) => bytesToHex(entry.slot) === slot);

@@ -3,14 +3,14 @@
  *
  * SDKFRAMED-2's atomic calling initialize needs a minted proxy root master: a master the transaction mints as an
  * output rather than spends, whose witness block rides in the transcript. This suite hand-lays that minimal shape —
- * a validator, its facet, a spent Writer master, and one minted proxy root that calls the Writer — and checks the
+ * a validator, its facets, a spent Writer master, and one minted proxy root that calls the Writer — and checks the
  * derivation accepts it and refuses each edge mutation, and that the on-chain program accepts the honest shape and
  * refuses the same edge mutation.
  */
 
 import { describe, expect, test } from 'vitest';
 import { compileString } from '@solidcash/solidc';
-import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
+import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256, type Output } from '@bitauth/libauth';
 import {
   FrameKind,
   INDEX_NONE,
@@ -28,6 +28,7 @@ import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
+  validatorFacetUnlockingBytecode,
   type FramedTransaction,
   type InputView,
   type OutputView,
@@ -42,11 +43,17 @@ import {
 } from './fixture.js';
 import { deployMaster } from '../../../src/framed/deploy/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/network/mock/index.js';
 
 /** The real program, so the addresses this transaction presents are the ones every deployed validator derives. */
 const PROGRAM = buildValidatorProgram();
 const FACETS = buildValidatorFacets();
+
+/** The writer's input: the validator head is input 0, and the facets it binds sit at `0 + k`. */
+const WRITER = 1 + FACETS.length;
+/** The minted proxy root's output, after every input's recreation. */
+const MINTED = WRITER + 1;
 
 const writerCategory = categoryOf('minted-genesis-writer');
 const proxyCategory = categoryOf('minted-genesis-proxy');
@@ -75,6 +82,11 @@ function writerBlock(callerRef: number, overrides: Partial<WitnessBlock> = {}): 
   };
 }
 
+/** The writer's own contract, which the validator settles because it covers the writer's master (V8). */
+function writerSettled(): { category: Uint8Array; stateInputs: number[] }[] {
+  return [{ category: writerCategory, stateInputs: [] }];
+}
+
 /** The proxy root (minted): a ROOT frame with no caller, calling the writer. */
 function proxyBlock(calls: WitnessBlock['calls']): WitnessBlock {
   return {
@@ -93,13 +105,13 @@ function proxyBlock(calls: WitnessBlock['calls']): WitnessBlock {
   };
 }
 
-/** The genesis transaction with the writer at input 2 and the minted proxy root at output 3. */
+/** The genesis transaction with the writer at input `WRITER` and the minted proxy root at output `MINTED`. */
 function transaction(block: WitnessBlock, proxyCalls: WitnessBlock['calls']): FramedTransaction {
   const transcript = encodeMintedTranscript({
     roots: [],
-    masters: [2],
-    mintedMasters: [{ output: 3, block: proxyBlock(proxyCalls) }],
-    settles: [],
+    masters: [WRITER],
+    mintedMasters: [{ output: MINTED, block: proxyBlock(proxyCalls) }],
+    settles: writerSettled(),
   });
   const inputs: InputView[] = [
     {
@@ -114,17 +126,19 @@ function transaction(block: WitnessBlock, proxyCalls: WitnessBlock['calls']): Fr
       outpointTransactionHash: categoryOf('minted-genesis-outpoint:0'),
       outpointIndex: 0,
     },
-    {
-      index: 1,
+    // Each facet's padding is empty; the census facet leads with the checkpoint's placeholder, which the machine
+    // restates for the head it evaluates (`settlingCensus`).
+    ...FACETS.map((code, at): InputView => ({
+      index: at + 1,
       value: 10_000n,
-      lockingBytecode: encodeLockingBytecodeP2sh32(hash256(FACETS[0]!)),
-      unlockingBytecode: encodeDataPush(FACETS[0]!),
+      lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)),
+      unlockingBytecode: validatorFacetUnlockingBytecode(at + 1, code),
       token: emptyToken(),
-      outpointTransactionHash: categoryOf('minted-genesis-outpoint:1'),
+      outpointTransactionHash: categoryOf(`minted-genesis-outpoint:${at + 1}`),
       outpointIndex: 0,
-    },
+    })),
     {
-      index: 2,
+      index: WRITER,
       value: 10_000n,
       lockingBytecode: writerLock,
       unlockingBytecode: new Uint8Array([
@@ -133,26 +147,28 @@ function transaction(block: WitnessBlock, proxyCalls: WitnessBlock['calls']): Fr
         ...encodeDataPush(writerRedeem),
       ]),
       token: masterTokenShape(writerCategory),
-      outpointTransactionHash: categoryOf('minted-genesis-outpoint:2'),
+      outpointTransactionHash: categoryOf(`minted-genesis-outpoint:${WRITER}`),
       outpointIndex: 0,
     },
   ];
   const outputs: OutputView[] = [
     { index: 0, value: 10_000n, lockingBytecode: validatorAddress(writerCategory, PROGRAM), token: mutableTokenShape(writerCategory, categoryOf('minted-genesis-validator-commitment').subarray(0, 8)) },
-    { index: 1, value: 10_000n, lockingBytecode: encodeLockingBytecodeP2sh32(hash256(FACETS[0]!)), token: emptyToken() },
-    { index: 2, value: 10_000n, lockingBytecode: writerLock, token: masterTokenShape(writerCategory) },
-    { index: 3, value: 10_000n, lockingBytecode: contractLockOf(categoryOf('minted-genesis-proxy-code')), token: masterTokenShape(proxyCategory) },
+    ...FACETS.map((code, at): OutputView => ({
+      index: at + 1, value: 10_000n, lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)), token: emptyToken(),
+    })),
+    { index: WRITER, value: 10_000n, lockingBytecode: writerLock, token: masterTokenShape(writerCategory) },
+    { index: MINTED, value: 10_000n, lockingBytecode: contractLockOf(categoryOf('minted-genesis-proxy-code')), token: masterTokenShape(proxyCategory) },
   ];
   return { inputs, outputs };
 }
 
-/** The honest call: the proxy root calls the writer at input 2, recording the writer's address and empty arguments. */
+/** The honest call: the proxy root calls the writer's input, recording the writer's address and empty arguments. */
 function honestCall(): WitnessBlock['calls'][number] {
   return {
     kind: FrameKind.CALL,
     target: validatorAddress(writerCategory, PROGRAM),
     value: 0n,
-    calleeRef: 2,
+    calleeRef: WRITER,
     argsHash: argsHash(SELECTOR, encodeArgumentList([])),
     result: new Uint8Array(0),
   };
@@ -167,9 +183,9 @@ function model(tx: FramedTransaction): ReturnType<typeof decideValidator> {
 function withMintedRoot(tx: FramedTransaction, block: WitnessBlock): FramedTransaction {
   const transcript = encodeMintedTranscript({
     roots: [],
-    masters: [2],
-    mintedMasters: [{ output: 3, block }],
-    settles: [],
+    masters: [WRITER],
+    mintedMasters: [{ output: MINTED, block }],
+    settles: writerSettled(),
   });
   return {
     ...tx,
@@ -189,7 +205,7 @@ function withMintedRoot(tx: FramedTransaction, block: WitnessBlock): FramedTrans
 function withWriterBlock(tx: FramedTransaction, block: WitnessBlock): FramedTransaction {
   return {
     ...tx,
-    inputs: tx.inputs.map((input) => (input.index === 2
+    inputs: tx.inputs.map((input) => (input.index === WRITER
       ? {
         ...input,
         unlockingBytecode: new Uint8Array([
@@ -204,32 +220,32 @@ function withWriterBlock(tx: FramedTransaction, block: WitnessBlock): FramedTran
 
 describe('the genesis-shape transcript, decided by the derivation', () => {
   test('accepts a minted proxy root whose call names the spent writer', () => {
-    expect(model(transaction(writerBlock(mintedRef(3)), [honestCall()])).accepted).toBe(true);
+    expect(model(transaction(writerBlock(mintedRef(MINTED)), [honestCall()])).accepted).toBe(true);
   });
 
   test('refuses a minted root whose callee records a different caller', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
-    expect(model(withWriterBlock(tx, writerBlock(2))).rejection?.reason).toBe('V5_CALLER_MISMATCH');
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
+    expect(model(withWriterBlock(tx, writerBlock(WRITER))).rejection?.reason).toBe('V5_CALLER_MISMATCH');
   });
 
   test('refuses a minted root whose callee records a different kind', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
-    expect(model(withWriterBlock(tx, writerBlock(mintedRef(3), { kind: FrameKind.STATIC }))).rejection?.reason)
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
+    expect(model(withWriterBlock(tx, writerBlock(mintedRef(MINTED), { kind: FrameKind.STATIC }))).rejection?.reason)
       .toBe('V5_KIND_MISMATCH');
   });
 
   test('refuses a minted root whose call names an input that is not a covered master', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [{ ...honestCall(), calleeRef: 1 }]);
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [{ ...honestCall(), calleeRef: 1 }]);
     expect(model(tx).rejection?.reason).toBe('V5_CALLEE_NOT_A_MASTER');
   });
 
   test('refuses a minted root that records a caller or an origin', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
     const minted = encodeMintedTranscript({
       roots: [],
-      masters: [2],
-      mintedMasters: [{ output: 3, block: { ...proxyBlock([honestCall()]), callerRef: 0 } }],
-      settles: [],
+      masters: [WRITER],
+      mintedMasters: [{ output: MINTED, block: { ...proxyBlock([honestCall()]), callerRef: 0 } }],
+      settles: writerSettled(),
     });
     const forged: FramedTransaction = {
       ...tx,
@@ -247,7 +263,7 @@ describe('the genesis-shape transcript, decided by the derivation', () => {
   });
 
   test('refuses a minted root that records a sender', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
     const forged = withMintedRoot(tx, { ...proxyBlock([honestCall()]), sender: new Uint8Array([0x01]) });
     expect(model(forged).rejection?.reason).toBe('V4_MINTED_ROOT_SENDER');
   });
@@ -262,7 +278,7 @@ describe('the minted V5 reasons are on-chain', () => {
 });
 
 /** The machine's token shape for one the derivation states. */
-function vmToken(token: OutputView['token'] | InputView['token']): unknown {
+function vmToken(token: OutputView['token'] | InputView['token']): Output['token'] {
   if (token.category.length === 0) return undefined;
   const capabilities = ['none', 'mutable', 'minting'] as const;
   return {
@@ -274,9 +290,9 @@ function vmToken(token: OutputView['token'] | InputView['token']): unknown {
 
 /** How the machine decided one input of the modelled transaction, at the relaxed operation-cost density. */
 function vmVerdict(tx: FramedTransaction, inputIndex: number): { accepted: boolean; objection?: string } {
-  const vm = createVirtualMachineBch2026ForProvider(
+  const vm = settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
   const state = vm.evaluate({
     inputIndex,
     sourceOutputs: tx.inputs.map((input) => ({
@@ -311,16 +327,17 @@ function vmVerdict(tx: FramedTransaction, inputIndex: number): { accepted: boole
 
 describe('the genesis-shape transcript, decided by the on-chain program', () => {
   test('accepts a minted proxy root whose call names the spent writer', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
-    // The facet runs first: it carries V4/V5/V6, and the head then checks the minted master's completeness.
-    for (const inputIndex of [1, 0]) {
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
+    // The facets run first: the first carries V4/V5/V6 and the census facet the census, and the head then checks the
+    // minted master's completeness.
+    for (const inputIndex of [...FACETS.map((_code, at) => at + 1), 0]) {
       expect(vmVerdict(tx, inputIndex).accepted).toBe(true);
     }
   });
 
   test('refuses a minted root whose callee records a different caller', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
-    expect(vmVerdict(withWriterBlock(tx, writerBlock(2)), 1).accepted).toBe(false);
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
+    expect(vmVerdict(withWriterBlock(tx, writerBlock(WRITER)), 1).accepted).toBe(false);
   });
 
   // A minted root's self has to be the address of its output's category. The derivation reports V11, and the
@@ -335,13 +352,13 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
     const deployed = deployMaster(artifact, writerCategory, PROGRAM);
     const selector = Uint8Array.from(Buffer.from(artifact.abi.find((row) => row.name === 'act')!.selector!, 'hex'));
     const call = { ...honestCall(), argsHash: argsHash(selector, encodeArgumentList([])) };
-    const frame = writerBlock(mintedRef(3), { sender: authorized });
+    const frame = writerBlock(mintedRef(MINTED), { sender: authorized });
     const tx = transaction(frame, [call]);
     const transcript = encodeMintedTranscript({
       roots: [],
-      masters: [2],
-      mintedMasters: [{ output: 3, block: { ...proxyBlock([call]), self: authorized } }],
-      settles: [],
+      masters: [WRITER],
+      mintedMasters: [{ output: MINTED, block: { ...proxyBlock([call]), self: authorized } }],
+      settles: writerSettled(),
     });
     const changed: FramedTransaction = {
       ...tx,
@@ -355,7 +372,7 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
             ]),
           };
         }
-        if (input.index === 2) {
+        if (input.index === WRITER) {
           return {
             ...input,
             lockingBytecode: deployed.lockingBytecode,
@@ -369,16 +386,16 @@ describe('the genesis-shape transcript, decided by the on-chain program', () => 
         return input;
       }),
       outputs: tx.outputs.map((output) => (
-        output.index === 2 ? { ...output, lockingBytecode: deployed.lockingBytecode } : output
+        output.index === WRITER ? { ...output, lockingBytecode: deployed.lockingBytecode } : output
       )),
     };
     expect(model(changed).rejection?.reason).toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
-    // The facet carries the minted-root rule. A transaction the facet refuses does not settle.
+    // The first facet carries the minted-root rule. A transaction the facet refuses does not settle.
     expect(vmVerdict(changed, 1).accepted).toBe(false);
   });
 
   test('a minted root that records a sender fails on chain', () => {
-    const tx = transaction(writerBlock(mintedRef(3)), [honestCall()]);
+    const tx = transaction(writerBlock(mintedRef(MINTED)), [honestCall()]);
     const forged = withMintedRoot(tx, { ...proxyBlock([honestCall()]), sender: new Uint8Array([0x01]) });
     expect(vmVerdict(forged, 1).accepted).toBe(false);
   });

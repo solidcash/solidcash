@@ -122,8 +122,19 @@ const COUNTER = (constructor: boolean): string => [
 const ADMIN = encodeLockingBytecodeP2pkh(alicePkh);
 const ADMIN_FUNDER = new SignatureTemplate(alicePriv).unlockP2PKH();
 const ROLE = new Uint8Array(32).fill(0x01);
-const OTHER_ROLE = new Uint8Array(32).fill(0x02);
-const memberAt = (role: Uint8Array, account: Uint8Array): bigint => bytesToSlotValue(keyToSlotMulti([role, account]));
+/** How the compile publishes the role members' collection (`_roles__members`): an address key by its 20-byte identity. */
+const ROLE_MEMBER_KEYS = {
+  keyType: 'bytes32', keyTypes: ['bytes32', 'address'], addressKeyEncoding: 'identity20' as const,
+};
+const memberAt = (role: Uint8Array, account: Uint8Array): bigint =>
+  bytesToSlotValue(keyToSlotMulti([role, account], ROLE_MEMBER_KEYS));
+/**
+ * A second role whose member node for the admin sits below the admin's own node, so a grant of it to the admin
+ * splices after the head rather than through the node the admin check reads, which the plain call path does not
+ * spend for two keys (`read-node-spent-by-insert.test.ts` covers that splice behind a proxy).
+ */
+const OTHER_ROLE = Array.from({ length: 32 }, (_unused, index) => new Uint8Array(32).fill(index + 2))
+  .find((role) => memberAt(role, ADMIN) < memberAt(new Uint8Array(32), ADMIN))!;
 /** An account whose ROLE member node sits below the admin's node, so a grant to it splices after the head. */
 const GRANTEE = Array.from({ length: 32 }, (_unused, index) =>
   encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(index + 1)))

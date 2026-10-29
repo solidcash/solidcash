@@ -24,6 +24,7 @@ import {
   validateStopSiteMetadata,
   type PublishedLoopEffects,
   type PublishedFramedStopSites,
+  type PublishedReadSegment,
   type PublishedWriteSegment,
   type StopSite,
   type StopSiteMetadata,
@@ -95,7 +96,8 @@ export function entryStopSites(
  * declaring them in every segment. An entry that writes none publishes an empty list, and one whose write's segment
  * the source does not fix publishes nothing; a write set that does not share one segment publishes one fact per
  * write instead. An entry that emits, sends or hashes once per turn of a loop publishes the runs a builder lays
- * those outputs and side-cars by (`loop-effects.ts`).
+ * those outputs and side-cars by (`loop-effects.ts`). An entry also publishes the segments its own code reads its
+ * records in (`framedReadSegments`), which with its writes' segments tell a builder what a segment's code touches.
  */
 export function publishFramedStopSites(
   contractName: string,
@@ -105,14 +107,17 @@ export function publishFramedStopSites(
     readonly pathCount?: number;
     readonly writeSegment?: number | 'last';
     readonly writeSegments?: readonly PublishedWriteSegment[];
+    readonly readSegments?: readonly PublishedReadSegment[];
     readonly sendCallsBefore?: readonly number[];
+    readonly sendsAfterCalls?: readonly boolean[];
     readonly loopEffects?: PublishedLoopEffects;
   }[],
 ): PublishedFramedStopSites {
   return {
     version: 1,
     entries: entries.map(({
-      entryName, calls, pathCount, writeSegment, writeSegments, sendCallsBefore, loopEffects,
+      entryName, calls, pathCount, writeSegment, writeSegments, readSegments, sendCallsBefore, sendsAfterCalls,
+      loopEffects,
     }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
@@ -126,7 +131,9 @@ export function publishFramedStopSites(
         })),
         ...(writeSegment === undefined ? {} : { writeSegment }),
         ...(writeSegments === undefined ? {} : { writeSegments }),
+        ...(readSegments === undefined ? {} : { readSegments }),
         ...(sendCallsBefore === undefined ? {} : { sendCallsBefore }),
+        ...(sendsAfterCalls === undefined ? {} : { sendsAfterCalls }),
         ...(loopEffects === undefined ? {} : { loopEffects }),
         sites: entryStopSites(functionName, calls, pathCount),
       };

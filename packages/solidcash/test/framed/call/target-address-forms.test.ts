@@ -11,9 +11,10 @@ import { addressPayloadToLockingBytecode } from '../../../src/utils.js';
  * The forms an address argument arrives in, and the one that names the zero address.
  *
  * An `address` in the language is a locking bytecode, while a caller reaching this hop through the compatibility
- * layer carries the 20-byte identity an EVM ABI uses, as bytes or as a `0x` string. Both name the same address as
- * the lock of that hash, so a target computed from one has to be read through that identity rather than taken as a
- * byte string, and a caller that names the zero address in either form names it once.
+ * layer carries the 20-byte identity an EVM ABI uses, as bytes or as a `0x` string. A call never reaches a key's P2PKH
+ * lock, so a target given as that identity stays it, which the planner maps to the deployment that presents it, a
+ * contract whose address projects to it or a CREATE2 child; an address stated as a string is read as the lock the
+ * entry's call data carries. A caller that names the zero address in any form names it once.
  *
  * A site the source names as the zero address has no deployment to place a callee on, which the hop answers by
  * stating no record for the site and letting the entry's own body decide. The cases below take the target from the
@@ -64,8 +65,10 @@ async function plan(arg: unknown): Promise<Awaited<ReturnType<typeof planHopExte
 }
 
 describe('the target of a call whose address the caller carries', () => {
-  it('widens a 20-byte payload to the lock of that hash, so both forms of one address name it', () => {
-    expect(bytesToHex(siteTarget(SOME_PAYLOAD)!)).toBe(bytesToHex(SOME_LOCK));
+  it('keeps a 20-byte payload as the identity it names a contract by, and reads a stated address as its lock', () => {
+    // The payload is the identity the planner maps to the deployment presenting it; an address stated as a string is
+    // read as the lock the entry's call data carries for it, as a lock is.
+    expect(bytesToHex(siteTarget(SOME_PAYLOAD)!)).toBe(bytesToHex(SOME_PAYLOAD));
     expect(bytesToHex(siteTarget(SOME_STRING)!)).toBe(bytesToHex(SOME_LOCK));
     expect(bytesToHex(siteTarget(SOME_LOCK)!)).toBe(bytesToHex(SOME_LOCK));
     expect(bytesToHex(SOME_LOCK)).not.toBe(bytesToHex(SOME_PAYLOAD));

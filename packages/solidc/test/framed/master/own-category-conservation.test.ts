@@ -8,7 +8,6 @@ import {
   scriptToBytecode, sha256, type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
-import { selfSettlementScript } from '../../../src/framed/master/frame-tail.js';
 import {
   decideValidator, type FramedTransaction, type TokenShape, type ValidatorReasonName,
 } from '../../../src/framed/validator/index.js';
@@ -29,11 +28,10 @@ import {
  * The direct convention ends an entry with no mapping access by requiring as many mutable NFTs of the contract's own
  * category among the outputs as among the inputs, so no record is destroyed or minted beside it. A framed frame of
  * such an entry can sit beside a sibling frame of its contract that inserts a node or consumes a chunk, and the count
- * then refuses it. A framed master's records are settled by a census instead: its own walk when it is its
- * category's only master (S2, S3), the validator's when another master or a delegate frame shares them (V7, V8). Both
- * admit an own-category mutable token only where a frame declares it, so the count is dropped for every master whose
- * head runs that walk whenever it stands alone. A head that can forward a delegate call runs it for a frame whose
- * block records no such call, and the validator settles its contract when the call is made, so it drops the count too.
+ * then refuses it. A framed master's records are settled by a census instead: its own walk when it stands alone (S2,
+ * S3), and its validator's whenever one covers it (V7, V8). Both admit an own-category mutable token only where a
+ * frame declares it, so the count is dropped for every master. A head that can forward a delegate call never stands
+ * alone, so its records are always the validator's.
  *
  * Every case drives the shipped compile and deployment and asks the BCH-2026 machine for the verdict of each
  * contract input of one hand-built transaction. A refusal is a minimal variation of an accepted composition, and it
@@ -63,7 +61,8 @@ interface Deployed extends ChunkRunContract {
 }
 
 function deploy(name: string, source: string): Deployed {
-  const artifact = compileString(source, { composition: 'framed' });
+  // Unoptimised, so the walk's own bytes are the program's and the census is found where it is emitted.
+  const artifact = compileString(source, { composition: 'framed', optimise: false });
   const contract = deployChunkRunContract(artifact, `own category ${name}`);
   const signature = artifact.stateLayout!.collections?.[0]?.signature ?? `${name} has no collection`;
   const nodeScript = buildEntryNftCovenantScript(contract.category, computeCollectionHash(signature));
@@ -365,11 +364,13 @@ function byteIndexOf(code: Uint8Array, needle: Uint8Array, from = 0): number {
   return -1;
 }
 
-/** The byte ranges of the head's own walk in a program: from the walk's leading bytes to the end of its index loop. */
+/** The byte ranges of the head's own walk in a program: from the table it builds to the end of its index loop. */
 function walkRanges(contract: Deployed): readonly (readonly [number, number])[] {
-  const lead = selfSettlementScript({
-    addressPayloadOffset: contract.artifact.composition!.placeholders.addressOffset + 1,
-  }).slice(0, 40);
+  // The settlement table the walk builds: one three-byte entry per index the transaction has.
+  const lead = new Uint8Array([
+    Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, Opcodes.OP_3, Opcodes.OP_MUL, Opcodes.OP_0,
+    Opcodes.OP_SWAP, Opcodes.OP_NUM2BIN, Opcodes.OP_TOALTSTACK,
+  ]);
   // `OP_TXINPUTCOUNT OP_TXOUTPUTCOUNT OP_MAX OP_GREATERTHANOREQUAL OP_UNTIL`: the walk's last index test.
   const loopEnd = new Uint8Array([
     Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_UNTIL,
@@ -385,13 +386,11 @@ function walkRanges(contract: Deployed): readonly (readonly [number, number])[] 
 /**
  * The refusal is the walk's census (S2, S3): the failing instruction is the `OP_BOOLOR OP_VERIFY` that weighs an
  * index's token against what the walk saw there, inside the walk, in the master's own program. The program carries
- * the walk twice, in the standalone arm and in the arm that settles alone under a validator, so `copy` names which;
- * a master that can make a call has no standalone arm to settle in, so its one walk is the one under a validator.
+ * the walk once, in its standalone arm: a covered frame never settles its own records.
  */
-function isWalkCensus(contract: Deployed, verdict: true | Site, copy: 'standalone' | 'under a validator'): boolean {
+function isWalkCensus(contract: Deployed, verdict: true | Site): boolean {
   if (verdict === true) return false;
-  const ranges = walkRanges(contract);
-  const range = copy === 'standalone' ? ranges[0] : ranges[ranges.length - 1];
+  const [range] = walkRanges(contract);
   return range !== undefined
     && binToHex(verdict.code) === binToHex(contract.program)
     && verdict.opcodes[verdict.at] === Opcodes.OP_VERIFY && verdict.opcodes[verdict.at - 1] === Opcodes.OP_BOOLOR
@@ -486,7 +485,7 @@ describe('a record destroyed or minted outside any declared write, under the val
   });
 });
 
-describe('a record destroyed or minted outside any declared write, under a master that settles alone (S2, S3)', () => {
+describe('a record destroyed or minted outside any declared write (S2, S3, V7)', () => {
   it('accepts the release standing alone', () => {
     expect(verdicts({ contract: LEDGER, frames: () => [release] })).toStrictEqual({ frames: [true] });
   });
@@ -494,40 +493,37 @@ describe('a record destroyed or minted outside any declared write, under a maste
   it('refuses a node spent and written nowhere, at the census of the standalone walk', () => {
     const refused = verdicts({ contract: LEDGER, frames: () => [release], destroyed: STRAY });
     expect(refused.destroyed).toBe(true);
-    expect(isWalkCensus(LEDGER, refused.frames[0]!, 'standalone')).toBe(true);
+    expect(isWalkCensus(LEDGER, refused.frames[0]!)).toBe(true);
   });
 
   it('refuses a node written that no segment declares, at the census of the standalone walk', () => {
     const refused = verdicts({ contract: LEDGER, frames: () => [release], minted: STRAY });
-    expect(isWalkCensus(LEDGER, refused.frames[0]!, 'standalone')).toBe(true);
+    expect(isWalkCensus(LEDGER, refused.frames[0]!)).toBe(true);
   });
 
-  it('refuses a node spent and written nowhere beside a validator that settles nothing, at the walk under it', () => {
-    // The ledger has one master, so the validator does not settle it (V8) and accepts; the master's own walk refuses.
-    expect(verdicts({ contract: LEDGER, frames: () => [release], validator: 'settles nothing' }))
+  it('leaves a covered frame\'s records to the validator, which refuses a node spent and written nowhere', () => {
+    // A covered master never settles its own records: the validator settles its contract (V8), and its census refuses
+    // the stray record (V7). A validator that leaves the contract unsettled is refused for that alone.
+    expect(verdicts({ contract: LEDGER, frames: () => [release], validator: 'settles' }))
       .toStrictEqual({ frames: [true], settlement: true });
-    const refused = verdicts({ contract: LEDGER, frames: () => [release], validator: 'settles nothing', destroyed: STRAY });
-    expect(refused.settlement).toBe(true);
-    expect(refused.destroyed).toBe(true);
-    expect(isWalkCensus(LEDGER, refused.frames[0]!, 'under a validator')).toBe(true);
+    expect(verdicts({ contract: LEDGER, frames: () => [release], validator: 'settles', destroyed: STRAY }))
+      .toStrictEqual({ frames: [true], settlement: false, destroyed: true, reason: 'V7_STATE_INPUTS_MISMATCH' });
+    expect(verdicts({ contract: LEDGER, frames: () => [release], validator: 'settles nothing' }))
+      .toStrictEqual({ frames: [true], settlement: false, reason: 'V8_SETTLE_REQUIRED_MISSING' });
   });
 });
 
 describe('a master whose head can forward a delegate call drops the count', () => {
   const STRAY_NODE: Token = { lock: FORWARDER.nodeLock, commitment: node(K2, 5) };
 
-  it('settles alone under a validator a frame that makes no delegate call, so its walk refuses a stray node', () => {
-    // The head asks the frame's block which calls it made: a frame that made no delegate call is its category's
-    // only master, which the validator leaves to its own walk (V8).
-    expect(walkRanges(FORWARDER)).toHaveLength(1);
-    expect(verdicts({ contract: FORWARDER, frames: () => [release], validator: 'settles nothing' }))
+  it('leaves a frame that makes no delegate call to the validator, which refuses a stray node', () => {
+    // The head carries no walk of its own: a master that can make a call never stands alone, and a covered frame's
+    // records are its validator's to settle (V8), whatever calls the frame made.
+    expect(walkRanges(FORWARDER)).toHaveLength(0);
+    expect(verdicts({ contract: FORWARDER, frames: () => [release], validator: 'settles' }))
       .toStrictEqual({ frames: [true], settlement: true });
-    const refused = verdicts({
-      contract: FORWARDER, frames: () => [release], validator: 'settles nothing', destroyed: STRAY_NODE,
-    });
-    expect(refused.settlement).toBe(true);
-    expect(refused.destroyed).toBe(true);
-    expect(isWalkCensus(FORWARDER, refused.frames[0]!, 'under a validator')).toBe(true);
+    expect(verdicts({ contract: FORWARDER, frames: () => [release], validator: 'settles', destroyed: STRAY_NODE }))
+      .toStrictEqual({ frames: [true], settlement: false, destroyed: true, reason: 'V7_STATE_INPUTS_MISMATCH' });
   });
 
   it('settles an entry with no mapping access beside a sibling insert: both frames and the validator accept', () => {

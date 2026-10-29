@@ -80,7 +80,13 @@ export default class LowerValueLowLevelCalls extends AstTraversal {
         empty.type = new BytesType();
         return empty;
       }];
-      const lowered: StatementNode[] = [transferOf(send, statement)];
+      const transfer = transferOf(send, statement);
+      // The success local stays the one the body's own check reads, so the check can be published with the send.
+      const [success] = statement.elements;
+      if (success !== undefined && success.skip !== true && success.name !== undefined) {
+        transfer.successLocal = success.name;
+      }
+      const lowered: StatementNode[] = [transfer];
       statement.elements.forEach((element, index) => {
         if (element.skip) return;
         if (element.existing) {

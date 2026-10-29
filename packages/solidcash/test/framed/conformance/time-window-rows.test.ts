@@ -268,7 +268,7 @@ describe('spec section 23 row 16: the clock the shipped call path states', () =>
     expect(refusals.length).toBeGreaterThan(0);
     expect(refusals.every((objection) => !objection.includes('non-final sequence'))).toBe(true);
     expect(result.verdicts.filter((verdict) => verdict.accepted).map((verdict) => verdict.id))
-      .toStrictEqual(['validator', 'validator/1', 'record-0']);
+      .toStrictEqual(['validator', 'validator/1', 'validator/2', 'record-0']);
     expect(result.values).toStrictEqual([]);
   }, 120_000);
 

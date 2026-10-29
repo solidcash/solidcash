@@ -246,11 +246,10 @@ describe('hostile compositions', () => {
   });
 
   test('V8 rejects a contract the validator settles but does not have to', () => {
+    // No covered master belongs to the stranger and no frame borrows it, and the transaction spends and creates none
+    // of it, so its settlement holds vacuously and only V8 objects.
     const composition = abbaComposition();
-    composition.transcript.settles.push({
-      category: categoryOf('B'),
-      stateInputs: [composition.slotIndex.get('DB')!],
-    });
+    composition.transcript.settles.push({ category: categoryOf('stranger'), stateInputs: [] });
     const both = decideMutation(composition, 'a settlement nothing needs');
     expect(both.derivation.rejection?.check).toBe('V8');
     expect(both.derivation.rejection?.reason).toBe('V8_SETTLE_NOT_REQUIRED');

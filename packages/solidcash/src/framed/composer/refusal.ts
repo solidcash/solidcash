@@ -22,14 +22,19 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
-import { decodeAuthenticationInstructions, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import type { AuthenticationInstruction } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-types.js';
+import {
+  decodeAuthenticationInstructions, encodeAuthenticationInstructions, vmNumberToBigInt,
+} from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
   FrameKind, sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement,
   type RevertArgumentSource,
 } from '@solidcash/utils';
 import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
-import { callTreeOf, executionRanks, frameMadeCall, frameStopOf, type FrameStop } from './execution-order.js';
+import {
+  callTreeOf, executionRanks, frameMadeCall, frameStopOf, type CallTree, type FrameStop,
+} from './execution-order.js';
 import { blockContractName } from './layout.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -241,6 +246,53 @@ function entrySelector(artifact: Artifact, functionName: string | undefined): st
     || `${artifact.contractName}.${entry.name}()` === functionName)?.selector;
 }
 
+/** True under `FRAMED_REFUSAL_DUMP=1` (docs/kernel-diagnostics.md). */
+function refusalDumpOn(): boolean {
+  return (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.FRAMED_REFUSAL_DUMP === '1';
+}
+
+/**
+ * Writes one refusing participant's program as the machine left it to stderr (`FRAMED_REFUSAL_DUMP=1`): the
+ * instructions around the refused one, both stacks, and the instructions each enclosing function frame was at, so a
+ * refusal no source line names can be read off the program itself.
+ */
+function dumpRefusedParticipant(label: string, inputIndex: number, refused: unknown): void {
+  type Instruction = { readonly opcode: number; readonly data?: Uint8Array };
+  const state = refused as {
+    readonly ip?: number; readonly error?: unknown; readonly instructions?: readonly Instruction[];
+    readonly stack?: readonly Uint8Array[]; readonly alternateStack?: readonly Uint8Array[];
+    readonly controlStack?: readonly unknown[];
+  };
+  const window = (instructions: readonly Instruction[], at: number): string => {
+    const from = Math.max(0, at - 40);
+    return instructions.slice(from, at + 3).map((instruction, offset) => `${from + offset}:`
+      + `${instruction.opcode.toString(16)}${instruction.data === undefined ? '' : `[${binToHex(instruction.data).slice(0, 24)}]`}`)
+      .join(' ');
+  };
+  const at = state.ip ?? 0;
+  const callers = (state.controlStack ?? []).flatMap((entry) => {
+    const frame = entry as { readonly instructions?: readonly Instruction[]; readonly ip?: number };
+    return frame.instructions === undefined || frame.ip === undefined ? []
+      : [`\n  caller(${frame.ip}/${frame.instructions.length})=${window(frame.instructions, frame.ip)}`];
+  });
+  console.error(`FRAMED-REFUSAL ${label} input=${inputIndex} ip=${at} of ${state.instructions?.length ?? '?'} `
+    + `error=${String(state.error)}\n  ops=${window(state.instructions ?? [], at)}`
+    + `\n  stack(top last)=${(state.stack ?? []).map((item, index) => `${index}:${binToHex(item).slice(0, 100)}`).join(' | ')}`
+    + `\n  alt=${(state.alternateStack ?? []).map((item) => binToHex(item).slice(0, 100)).join(' | ')}${callers.join('')}`);
+}
+
+/** The body the artifact publishes under `debug.invokeDebug` whose bytecode is `running`, when exactly one is. */
+function invokedBodyOf(
+  artifact: Artifact, running: readonly AuthenticationInstruction[],
+): { readonly requires: readonly RequireStatement[] } | undefined {
+  const bodies = (artifact.debug as { invokeDebug?: Record<string, { bytecode?: string; requires?: RequireStatement[] }> }
+    | undefined)?.invokeDebug;
+  if (bodies === undefined) return undefined;
+  const bytecode = binToHex(encodeAuthenticationInstructions([...running]));
+  const matches = Object.values(bodies).filter((candidate) => candidate.bytecode === bytecode);
+  return matches.length === 1 ? { requires: matches[0]!.requires ?? [] } : undefined;
+}
+
 /**
  * The reason a frame's program refused, read from the frame's artifact and the machine's failing instruction.
  *
@@ -258,14 +310,20 @@ export function frameRevertReason(
   ip: number | undefined,
   functionName?: string,
   stack?: readonly Uint8Array[],
+  running?: readonly AuthenticationInstruction[],
 ): FrameRevertReason {
   if (artifact?.debug === undefined || ip === undefined) return {};
   const selector = entrySelector(artifact, functionName);
   const body = selector === undefined ? undefined : artifact.debug.functionDebug?.[selector];
   const debugIndex = ip + debugSkew(artifact, program);
+  // A body the entry invokes (a library function, a span the compiler outlined) reports its pointer within itself, so
+  // its own requirements name the reason, read by the bytecode running when the machine refused. Two bodies of one
+  // spelling are told apart by nothing here, so a bytecode more than one publishes is read as before.
+  const invoked = running === undefined ? undefined : invokedBodyOf(artifact, running);
 
   // A body's requirements index the raw pointer; the artifact's index the pointer shifted by the emitted head.
-  const matched = (body === undefined ? undefined : requirementAt(body.requires, ip))
+  const matched = (invoked === undefined ? undefined : requirementAt(invoked.requires, ip))
+    ?? (body === undefined ? undefined : requirementAt(body.requires, ip))
     ?? requirementAt(artifact.debug.requires ?? [], debugIndex);
 
   // Prefer the source map that indexes whichever pointer the reason was read at. A dispatched body always indexes
@@ -415,6 +473,19 @@ export interface CompositionRefusalOptions {
  * refusal there is left to the caller. The frames are evaluated on the draft as it stands, so a composition whose
  * derivation stalled before it could complete still reports the frame whose program refused.
  */
+/**
+ * The artifact a frame ran: of the contract's artifacts, the one whose ABI holds the frame's entry. A contract
+ * deployed from a per-entry bundle is several artifacts of one name, its shards, each holding its own entry, and the
+ * reason a frame refused is read from the program that ran.
+ */
+function frameArtifactOf(
+  artifacts: readonly Artifact[], contractName: string, functionName: string | undefined,
+): Artifact | undefined {
+  const named = artifacts.filter((candidate) => candidate.contractName === contractName);
+  return named.find((candidate) => candidate.abi.some((entry) => `${contractName}.${entry.name}()` === functionName))
+    ?? named[0];
+}
+
 export function reportCompositionRefusal(options: CompositionRefusalOptions): CompositionRefusal {
   const { draft, artifacts } = options;
   const vm = options.vm ?? createVirtualMachineBch2026(false);
@@ -433,8 +504,12 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
     if (vm.stateSuccess(state) === true) continue;
     stops.set(placed.id, frameStopOf(state));
     const typed = state as { readonly ip?: number; readonly error?: unknown; readonly stack?: readonly Uint8Array[] };
+    if (refusalDumpOn()) {
+      const run = draft.runs.find((candidate) => candidate.master === placed.id);
+      dumpRefusedParticipant(`${placed.id} (${run?.functionName ?? placed.contract})`, placed.index, state);
+    }
     const run = draft.runs.find((candidate) => candidate.master === placed.id);
-    const artifact = artifacts.find((candidate) => candidate.contractName === blockContractName(placed.contract));
+    const artifact = frameArtifactOf(artifacts, blockContractName(placed.contract), run?.functionName);
     refusals.push({
       master: placed.id,
       contract: placed.contract,
@@ -445,10 +520,19 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
       ...(typed.ip === undefined ? {} : { ip: typed.ip }),
       reason: frameRevertReason(
         artifact, run?.program ?? new Uint8Array(0), typed.ip, run?.functionName, typed.stack,
+        (state as { readonly instructions?: readonly AuthenticationInstruction[] }).instructions,
       ),
     });
   }
 
+  if (refusalDumpOn()) {
+    for (const placed of draft.layout.participants.filter((participant) => participant.kind !== 'master')) {
+      const state = vm.evaluate({
+        inputIndex: placed.index, sourceOutputs: shared.sourceOutputs, transaction: shared.transaction,
+      });
+      if (vm.stateSuccess(state) !== true) dumpRefusedParticipant(`${placed.id} (${placed.kind})`, placed.index, state);
+    }
+  }
   const callers = frameCallers(draft);
   const seeded = new Set(options.reached ?? []);
   // A frame that refused before making one of its calls stopped the execution there, so nothing below that call ran
@@ -515,7 +599,43 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
   for (const refusal of pool) {
     if (innermost === undefined || rankOf(refusal) < rankOf(innermost)) innermost = refusal;
   }
-  return { accepted: refusals.length === 0, refusals, ...(innermost === undefined ? {} : { innermost }) };
+  const frameOf = (master: string): CaughtFrame => {
+    const placed = masters.find((participant) => participant.id === master)!;
+    const run = draft.runs.find((candidate) => candidate.master === master);
+    return {
+      master, contract: placed.contract, functionName: run?.functionName ?? placed.contract, index: placed.index,
+      depth: depths.get(master) ?? 0,
+    };
+  };
+  const reported = innermost === undefined ? undefined : caughtByCallers(draft, tree, innermost, frameOf);
+  return { accepted: refusals.length === 0, refusals, ...(reported === undefined ? {} : { innermost: reported }) };
+}
+
+/** The fields a refused frame is named by, apart from what it stopped on. */
+type CaughtFrame = Omit<RefusedFrame, 'objection' | 'ip' | 'reason'>;
+
+/**
+ * The refusal the execution reports for a frame that refused below low-level calls: such a call returns the failure
+ * below it to its caller as `false`, and the caller's own check over the call's success refuses with its message
+ * (`DraftCall.failedCallMessage`). Each check catches what failed below it, so the outermost one on the path up is
+ * the reason, reported by the frame that made that call.
+ */
+function caughtByCallers(
+  draft: CompositionDraft, tree: CallTree, refused: RefusedFrame, frameOf: (master: string) => CaughtFrame,
+): RefusedFrame {
+  let reported = refused;
+  for (let child = refused.master, parent = tree.parentOf.get(child); parent !== undefined;
+    child = parent.caller, parent = tree.parentOf.get(child)) {
+    const { caller } = parent;
+    const message = draft.assembly.calls
+      .find((call) => call.from === caller && call.callee === child)?.failedCallMessage;
+    if (message !== undefined) {
+      reported = {
+        ...frameOf(caller), objection: `the low-level call it made failed: ${refused.objection}`, reason: { message },
+      };
+    }
+  }
+  return reported;
 }
 
 /** Reports a refused composition as an error, so a caller that only wants the reason can throw it. */

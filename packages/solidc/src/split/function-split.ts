@@ -42,6 +42,7 @@ import {
   Node,
   NullaryOpNode,
   ParameterNode,
+  StateVariableVisibility,
   UnaryOpNode,
   type Ast,
 } from '../ast/AST.js';
@@ -65,6 +66,7 @@ interface HelperCutProfile {
   readsLocalState: boolean;
   writesState: boolean;
   externalCalls: boolean;
+  sendsValue: boolean;
   unknown: boolean;
 }
 
@@ -94,6 +96,7 @@ export interface FunctionSplitRequest {
     composition?: string;
     evmCompat?: boolean;
     maxShardBytes?: number;
+    framedWitnessReserve?: boolean;
   };
   host: FunctionSplitHost;
 }
@@ -132,7 +135,38 @@ export function compileFunctionSplit(request: FunctionSplitRequest): FunctionSpl
       request, probe, byName, entry, selector, frameKinds, maxShardBytes, budgetWholeSpend,
     );
     shards.push(compiled.shard);
-    internalCuts.push(...compiled.cuts);
+    for (const cut of compiled.cuts) {
+      // Two entries that cut the same helper share one program, so a deployment holds one pool of its masters and
+      // either entry's frame enters it. A deployment fills each entry's helper lock by the helper's name, so two
+      // entries whose cuts of one helper compile apart, each beside its own other cuts, are refused by name.
+      const same = internalCuts.findIndex((other) => other.name === cut.name);
+      if (same < 0) {
+        internalCuts.push(cut);
+        continue;
+      }
+      if (internalCuts[same]!.artifact.bytecode !== cut.artifact.bytecode) {
+        throw new SolidcDiagnosticError(
+          'SPLIT_HELPER_CUT_DIVERGES',
+          `Cannot split '${contract.name}': entries ${internalCuts[same]!.callerSelectors.join(', ')} and `
+            + `${cut.callerSelectors.join(', ')} cut helper '${cut.name}' into different programs.`,
+          { contractName: contract.name, helper: cut.name },
+        );
+      }
+      const shared = internalCuts[same]!;
+      internalCuts[same] = { ...shared, callerSelectors: [...new Set([...shared.callerSelectors, ...cut.callerSelectors])] };
+    }
+  }
+
+  // A public state variable's getter is synthesized late, so the probe holds no function for it. Each one the
+  // logical ABI publishes gets a shard of its own, which serves that getter alone.
+  const sharded = new Set(shards.map((shard) => shard.selector.toLowerCase()));
+  const getterNames = publicGetterNames(contract);
+  for (const abiEntry of monolith.abi) {
+    const selector = abiEntry.selector?.toLowerCase();
+    if (selector === undefined || sharded.has(selector) || !getterNames.has(abiEntry.name)
+      || byName.has(abiEntry.name)) continue;
+    shards.push(compileGetterShard(request, probe, abiEntry.name, selector, maxShardBytes, budgetWholeSpend));
+    sharded.add(selector);
   }
 
   host.assertLayouts(
@@ -214,13 +248,94 @@ function indexFunctions(contract: ContractNode): Map<string, FunctionDefinitionN
   return byName;
 }
 
-function measuredSpend(host: FunctionSplitHost, artifact: Artifact, budgetWholeSpend: boolean): number {
-  return host.byteSize(artifact) + host.spendReserve(artifact, budgetWholeSpend);
+function measuredSpend(request: FunctionSplitRequest, artifact: Artifact, budgetWholeSpend: boolean): number {
+  const witness = request.options.framedWitnessReserve === true ? framedWitnessEstimate(artifact) : 0;
+  return request.host.byteSize(artifact) + request.host.spendReserve(artifact, budgetWholeSpend) + witness;
 }
 
+/** The fixed part of a witness block: magic, kind, three references, sender, self, value and the result's length. */
+const WITNESS_HEADER_BYTES = 3 + 1 + 6 + (2 + 36) + (2 + 36) + 8 + 4;
+/** A call record at a result as wide as a 256-bit word: kind, target, value, callee, argument digest, result. */
+const CALL_RECORD_BYTES = 1 + (1 + 36) + 8 + 2 + 32 + (1 + 33);
+/** A declaration's two indices and two view lengths, ahead of its views. */
+const DECLARATION_BYTES = 8;
+/** The view a sorted mapping's node carries: its slot, its successor's slot and its value. */
+const NODE_VIEW_BYTES = 33 + 33 + 34;
+/** The records a sorted mapping write declares in its segment: the predecessor it relinks and the node it creates. */
+const NODE_WRITE_DECLARATIONS = 3;
+/** The block oracle's record, which a frame that reads the chain's clock declares. */
+const ORACLE_VIEW_BYTES = 128;
+
+/** The widest push a state field of the published type takes, as the state packer sizes it. */
+function stateFieldBytes(type: string): number {
+  const integer = /^u?int(\d*)$/.exec(type);
+  if (integer !== null) return Math.ceil((Number(integer[1] || 256) + 1) / 8) + 1;
+  if (type === 'bool') return 1;
+  if (type.startsWith('address')) return 36;
+  const fixed = /^bytes(\d+)$/.exec(type);
+  if (fixed !== null) return Number(fixed[1]) + 1;
+  return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * The witness block a framed master of the shard's entry carries, at the widest view each of its records can hold.
+ *
+ * The block is a header, one call record per call site the entry publishes, and one segment more than calls, each
+ * declaring the records the entry's block layout names: its data records, its mapping nodes and the block oracle. A
+ * middle segment whose code the entry says touches no mapping declares only the data records its code reads or
+ * writes there (`sparseBlock`). A write adds the written view to its segment, a mapping write the nodes it relinks
+ * and creates, and every event a place in the event list. A call site in a loop is counted once, so the estimate
+ * holds for an entry whose calls the source fixes.
+ */
+function framedWitnessEstimate(artifact: Artifact): number {
+  const sites = artifact.composition?.stopSites?.entries ?? [];
+  const entry = artifact.abi.find((fn) => fn.blockLayout !== undefined
+    && sites.some((site) => site.functionName.endsWith(`.${fn.name}()`)));
+  if (entry?.blockLayout === undefined) return 0;
+  const site = sites.find((candidate) => candidate.functionName.endsWith(`.${entry.name}()`))!;
+  const layout = artifact.stateLayout;
+  const limit = layout?.commitmentLimit ?? 128;
+  const recordView = (nftIndex: number): number => Math.min(limit, (layout?.variables ?? [])
+    .filter((variable) => variable.nftIndex === nftIndex)
+    .reduce((total, variable) => total + stateFieldBytes(variable.type), 2));
+  const slots = entry.blockLayout.slots;
+  const declared = slots.reduce((total, slot) => {
+    if (slot.kind === 'dataNft' && slot.nftIndex !== undefined) return total + DECLARATION_BYTES + recordView(slot.nftIndex);
+    if (slot.kind === 'entry') return total + DECLARATION_BYTES + NODE_VIEW_BYTES;
+    if (slot.kind === 'blockInfoOracle') return total + DECLARATION_BYTES + ORACLE_VIEW_BYTES;
+    return total;
+  }, 0);
+  const segments = site.calls.length + 1;
+  // What each segment declares: everything, or in a middle segment that reaches no mapping, what its code touches.
+  const segmentDeclared = (segment: number): number => {
+    if (site.readSegments === undefined || site.writeSegments === undefined || segment === 0
+      || segment === segments - 1) return declared;
+    const touched = new Set<number>();
+    for (const fact of [...site.readSegments, ...site.writeSegments]) {
+      if (fact.segment !== segment) continue;
+      if (fact.record === undefined || (fact as { turns?: unknown }).turns !== undefined) return declared;
+      touched.add(fact.record);
+    }
+    return [...touched].reduce((total, record) => total + DECLARATION_BYTES + recordView(record), 0);
+  };
+  const writes = (site.writeSegments ?? []).reduce((total, write) => total + (write.record !== undefined
+    ? recordView(write.record) : NODE_WRITE_DECLARATIONS * (DECLARATION_BYTES + NODE_VIEW_BYTES)), 0);
+  const events = slots.filter((slot) => slot.kind === 'event' || slot.kind === 'returnEvent').length;
+  const results = (entry.outputs ?? []).length * 33;
+  let segmentBytes = 0;
+  for (let segment = 0; segment < segments; segment += 1) segmentBytes += 4 + segmentDeclared(segment);
+  return WITNESS_HEADER_BYTES + results + 2 + site.calls.length * CALL_RECORD_BYTES
+    + 2 + segmentBytes + writes + 2 + 2 * events + 2 + 2;
+}
+
+/**
+ * Whether a helper can run as an INTERNAL frame of its own. The frame runs in its caller's context: it keeps the
+ * caller's sender, address and value, reads and writes the caller's records, which the validator chains through it,
+ * makes its own calls and hands its result back as a call's. A helper whose footprint the analysis cannot read is not
+ * one, nor is one that sends value, which a callee frame's plan does not carry yet.
+ */
 function isLegalCut(profile: HelperCutProfile): boolean {
-  return !profile.returns && !profile.readsLocalState && !profile.writesState
-    && !profile.externalCalls && !profile.unknown;
+  return !profile.unknown && !profile.sendsValue;
 }
 
 function asProfiles(cuts: readonly unknown[]): HelperCutProfile[] {
@@ -232,6 +347,7 @@ function asProfiles(cuts: readonly unknown[]): HelperCutProfile[] {
       && typeof profile.readsLocalState === 'boolean'
       && typeof profile.writesState === 'boolean'
       && typeof profile.externalCalls === 'boolean'
+      && typeof profile.sendsValue === 'boolean'
       && typeof profile.unknown === 'boolean';
   });
 }
@@ -240,7 +356,10 @@ function profileKey(fn: FunctionDefinitionNode): string {
   return `${fn.name}(${fn.parameters.map((parameter) => parameter.type.toString()).join(',')})`;
 }
 
-/** Helpers whose profile is a legal cut and that this entry actually copies. */
+/**
+ * Helpers whose profile is a legal cut and that this entry actually copies, heaviest first: a helper's weight is the
+ * AST its body and the helpers it reaches hold, each counted once, which is what a cut moves out of the entry.
+ */
 function legalCutFunctions(
   entry: FunctionDefinitionNode,
   byName: Map<string, FunctionDefinitionNode[]>,
@@ -256,7 +375,22 @@ function legalCutFunctions(
       if (legal.has(profileKey(fn))) chosen.push(fn);
     }
   }
-  return chosen;
+  const weights = new Map(chosen.map((fn) => [fn, closureWeight(fn, byName)]));
+  return chosen.sort((left, right) => weights.get(right)! - weights.get(left)!
+    || profileKey(left).localeCompare(profileKey(right)));
+}
+
+/** How many AST nodes a helper's body holds, with the bodies of the helpers its bare calls reach, each once. */
+function closureWeight(fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>): number {
+  let weight = 0;
+  const seen = new Set<object>();
+  for (const name of inlineClosureNames(fn, byName)) {
+    for (const candidate of byName.get(name) ?? []) {
+      if (candidate !== fn && candidate.isEntryPoint) continue;
+      walkInvocationAst(candidate.body, () => { weight += 1; }, seen);
+    }
+  }
+  return weight;
 }
 
 function capacityError(
@@ -266,6 +400,7 @@ function capacityError(
   helperCuts: readonly unknown[],
   measured: number,
   limit: number,
+  declinedCuts: readonly { name: string; reason: string }[] = [],
 ): SolidcDiagnosticError {
   const helperNames = helperCuts
     .map((cut) => (cut as { name?: string }).name)
@@ -281,6 +416,7 @@ function capacityError(
       handlers: [entryName],
       callChain: [...closure],
       helperCuts,
+      ...(declinedCuts.length === 0 ? {} : { declinedCuts }),
       measured,
       limit,
     },
@@ -300,28 +436,64 @@ function compileEntryWithinCap(
   const { host } = request;
   const contractName = probe.contract.name;
   const full = compileEntryShard(request, probe, byName, entry, selector, frameKinds, new Set());
-  const fullSpend = measuredSpend(host, full, budgetWholeSpend);
+  const fullSpend = measuredSpend(request, full, budgetWholeSpend);
   const profiles = asProfiles(host.helperCuts(entry));
-  const cuts = fullSpend > maxShardBytes ? legalCutFunctions(entry, byName, profiles) : [];
-  if (fullSpend > maxShardBytes && cuts.length === 0) {
-    throw capacityError(
-      contractName, entry.name, [...inlineClosureNames(entry, byName)], profiles, fullSpend, maxShardBytes,
-    );
+  // An entry over the cap moves helpers into INTERNAL frames of their own, heaviest first, one at a time, until it
+  // fits. A cut replaces the helper's code with a call site, so one that does not shrink the entry is not kept, and
+  // neither is one whose call the framed convention cannot place the entry around (`refusedEntries`), as a call after
+  // a mapping write the entry makes behind a conditional call moves that write off a segment the source fixes, nor
+  // one the entry does not compile with. Why each was not kept is published with a capacity refusal.
+  let cuts: FunctionDefinitionNode[] = [];
+  let sentinels = new Map<string, Uint8Array>();
+  let artifact = full;
+  let wholeSpendBytes = fullSpend;
+  const declined = new Map<string, string>();
+  // A cut can change what the next one meets, as one that moves the entry's mapping write into the helper frees a
+  // later call of the write's segment, so the candidates are tried again after each cut the entry keeps.
+  let pending = fullSpend > maxShardBytes ? legalCutFunctions(entry, byName, profiles) : [];
+  let progress = true;
+  while (progress && wholeSpendBytes > maxShardBytes) {
+    progress = false;
+    for (const candidate of pending) {
+      const trial = [...cuts, candidate];
+      const trialSentinels = new Map(trial.map((fn, index) => [profileKey(fn), helperLockSentinel(index, profileKey(fn))]));
+      let compiled: Artifact;
+      try {
+        compiled = compileEntryShard(
+          request, probe, byName, entry, selector, frameKinds, new Set(trial.map((fn) => fn.name)), false,
+          trialSentinels,
+        );
+      } catch (error) {
+        declined.set(profileKey(candidate), (error as Error).message.split('\n')[0]!);
+        continue;
+      }
+      if (refusesEntry(compiled)) {
+        declined.set(profileKey(candidate), compiled.composition!.refusedEntries![0]!.reason);
+        continue;
+      }
+      const spend = measuredSpend(request, compiled, budgetWholeSpend);
+      if (spend >= wholeSpendBytes) {
+        declined.set(profileKey(candidate), `the entry is ${spend} bytes with it cut`);
+        continue;
+      }
+      cuts = trial;
+      sentinels = trialSentinels;
+      artifact = compiled;
+      wholeSpendBytes = spend;
+      declined.delete(profileKey(candidate));
+      pending = pending.filter((other) => other !== candidate);
+      progress = true;
+      if (spend <= maxShardBytes) break;
+    }
   }
-  const cutNames = new Set(cuts.map((fn) => fn.name));
-  const sentinels = new Map<string, Uint8Array>();
-  cuts.forEach((fn, index) => {
-    sentinels.set(profileKey(fn), helperLockSentinel(index, profileKey(fn)));
-  });
-  const artifact = cuts.length > 0
-    ? compileEntryShard(request, probe, byName, entry, selector, frameKinds, cutNames, false, sentinels)
-    : full;
-  const wholeSpendBytes = cuts.length > 0 ? measuredSpend(host, artifact, budgetWholeSpend) : fullSpend;
+  const declinedCuts = [...declined].map(([name, reason]) => ({ name, reason }));
   if (wholeSpendBytes > maxShardBytes) {
     throw capacityError(
       contractName, entry.name, [...inlineClosureNames(entry, byName)], profiles, wholeSpendBytes, maxShardBytes,
+      declinedCuts,
     );
   }
+  const cutNames = new Set(cuts.map((fn) => fn.name));
   const internalCuts: FunctionSplitInternalCut[] = [];
   for (const helper of cuts) {
     const others = new Set(cutNames);
@@ -330,10 +502,11 @@ function compileEntryWithinCap(
       request, probe, byName, helper, host.selectorHex(helper, request.options.evmCompat === true),
       [FrameKind.INTERNAL], others, true, sentinels,
     );
-    const helperSpend = measuredSpend(host, helperArtifact, budgetWholeSpend);
+    const helperSpend = measuredSpend(request, helperArtifact, budgetWholeSpend);
     if (helperSpend > maxShardBytes) {
       throw capacityError(contractName, helper.name, [helper.name], profiles, helperSpend, maxShardBytes);
     }
+    const helperEntry = helperArtifact.abi.find((fn) => fn.name === helper.name);
     helperArtifact.abi = helperArtifact.abi.filter((fn) => fn.name !== helper.name);
     stripKernelRoute(helperArtifact);
     internalCuts.push({
@@ -342,6 +515,7 @@ function compileEntryWithinCap(
       lock: publishedRedeemLock(helperArtifact.bytecode),
       wholeSpendBytes: helperSpend,
       callerSelectors: [selector],
+      ...(helperEntry === undefined ? {} : { entry: helperEntry }),
     });
   }
   stripKernelRoute(artifact);
@@ -358,6 +532,83 @@ function compileEntryWithinCap(
   };
 }
 
+/** The names a public state variable, mapping, constant or flattened struct publishes a getter under. */
+function publicGetterNames(contract: ContractNode): Set<string> {
+  const isPublic = (visibility: StateVariableVisibility | undefined): boolean =>
+    visibility === StateVariableVisibility.PUBLIC || visibility === StateVariableVisibility.EXTERNAL;
+  return new Set([
+    ...contract.stateVariables.filter((state) => isPublic(state.visibility)).map((state) => state.name),
+    ...contract.collections.filter((collection) => isPublic(collection.visibility)).map((collection) => collection.name),
+    ...contract.constantDefinitions.filter((constant) => isPublic(constant.visibility)).map((constant) => constant.name),
+    ...contract.transientStateVars.filter((state) => isPublic(state.visibility)).map((state) => state.name),
+    ...contract.flattenedPublicStructGetters.map((spec) => spec.name),
+  ]);
+}
+
+/**
+ * The shard that serves one synthesized getter.
+ *
+ * It holds no entry of the source: the getter pass synthesizes the one getter it is named for, and a getter is an
+ * external view, so it admits the historical four frame kinds.
+ */
+function compileGetterShard(
+  request: FunctionSplitRequest,
+  probe: Ast,
+  name: string,
+  selector: string,
+  maxShardBytes: number,
+  budgetWholeSpend: boolean,
+): FunctionSplitShard {
+  const { host, code } = request;
+  const prepared = probe.contract;
+  const completeFunctions = prepared.functions;
+  const completeConstructor = prepared.constructorDef;
+  const completeFallback = prepared.fallbackDef;
+  const completeReceive = prepared.receiveDef;
+  let ast: Ast;
+  try {
+    prepared.functions = completeFunctions.filter((fn) => isLifecycleFunction(fn));
+    prepared.constructorDef = undefined;
+    prepared.fallbackDef = undefined;
+    prepared.receiveDef = undefined;
+    ast = host.cloneAst(probe, `func:getter:${name}:${selector}`);
+  } finally {
+    prepared.functions = completeFunctions;
+    prepared.constructorDef = completeConstructor;
+    prepared.fallbackDef = completeFallback;
+    prepared.receiveDef = completeReceive;
+  }
+  const contract = ast.contract;
+  contract.suppressSynthesizedGetters = true;
+  contract.synthesizedGetterOnly = name;
+  contract.implements = [];
+  contract.parentInvocations = [];
+  const frameKinds = [...HISTORICAL_KINDS];
+  const artifactOptions: CompilerOptions = {
+    ...request.options,
+    composition: 'framed',
+    __functionSplitPrepared: true,
+    __functionSplitFrameKinds: frameKinds,
+  } as CompilerOptions;
+  const artifact = host.compileParsed(code, artifactOptions, ast, frameKinds);
+  if (!artifact.abi.some((fn) => fn.selector?.toLowerCase() === selector)) {
+    throw new Error(`split 'func' on '${prepared.name}' did not synthesize the getter '${name}'`);
+  }
+  const wholeSpendBytes = measuredSpend(request, artifact, budgetWholeSpend);
+  if (wholeSpendBytes > maxShardBytes) {
+    throw capacityError(prepared.name, name, [name], [], wholeSpendBytes, maxShardBytes);
+  }
+  stripKernelRoute(artifact);
+  return {
+    selector,
+    function: name,
+    acceptedFrameKinds: frameKinds.map((kind) => KIND_NAME[kind]!),
+    artifact,
+    lock: publishedRedeemLock(artifact.bytecode),
+    wholeSpendBytes,
+  };
+}
+
 function compileEntryShard(
   request: FunctionSplitRequest,
   probe: Ast,
@@ -371,10 +622,13 @@ function compileEntryShard(
 ): Artifact {
   const { host, code } = request;
   const evmCompat = request.options.evmCompat === true;
-  const inlineNames = inlineClosureNames(entry, byName);
+  // A cut helper's body runs in its own frame, so the shard copies what its code reaches short of the cuts, and calls
+  // the cuts it reaches.
+  const inlineNames = inlineClosureNames(entry, byName, cutNames);
+  const reachedCuts = [...cutNames].filter((name) => inlineNames.has(name));
   for (const name of cutNames) inlineNames.delete(name);
   const selfCallTargets = selfCallEntries(entry, byName, inlineNames, entrySelector, evmCompat, host);
-  const cutTargets = [...cutNames].flatMap((name) => (byName.get(name) ?? [])
+  const cutTargets = reachedCuts.flatMap((name) => (byName.get(name) ?? [])
     .filter((fn) => !fn.isEntryPoint));
   const prepared = probe.contract;
   const completeFunctions = prepared.functions;
@@ -438,10 +692,16 @@ function compileEntryShard(
     __functionSplitFrameKinds: frameKinds,
   } as CompilerOptions;
   const artifact = host.compileParsed(code, artifactOptions, ast, frameKinds);
-  if (cutTargets.length > 0) {
+  // A refused entry compiles to a program that runs none of its body, so it holds no call site to fill.
+  if (cutTargets.length > 0 && !refusesEntry(artifact)) {
     recordInternalHelperLocks(artifact, sentinels, new Set(cutTargets.map((fn) => profileKey(fn))));
   }
   return artifact;
+}
+
+/** Whether the framed convention refused an entry of the artifact, which then runs none of its body. */
+function refusesEntry(artifact: Artifact): boolean {
+  return (artifact.composition?.refusedEntries?.length ?? 0) > 0;
 }
 
 const HELPER_LOCK_BYTES = 35;
@@ -534,10 +794,14 @@ function keepFunction(
   return entries.length === 1;
 }
 
-/** Names reached by bare calls. `this.f()` is a message call and is not part of the copied body. */
+/**
+ * Names reached by bare calls. `this.f()` is a message call and is not part of the copied body. A name in `stops` is
+ * reached but not entered: its body is not part of the closure.
+ */
 function inlineClosureNames(
   root: FunctionDefinitionNode,
   byName: Map<string, FunctionDefinitionNode[]>,
+  stops: ReadonlySet<string> = new Set(),
 ): Set<string> {
   const closure = new Set<string>();
   const pending = [root.name];
@@ -545,6 +809,7 @@ function inlineClosureNames(
     const name = pending.pop()!;
     if (closure.has(name)) continue;
     closure.add(name);
+    if (name !== root.name && stops.has(name)) continue;
     for (const candidate of byName.get(name) ?? []) {
       for (const called of inlineCallNames(candidate)) {
         if (byName.has(called)) pending.push(called);

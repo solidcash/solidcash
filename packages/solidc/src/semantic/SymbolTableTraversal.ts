@@ -710,6 +710,18 @@ function allOf(conditions: readonly ExternalCallExpression[]): ExternalCallExpre
     ? next : { kind: 'binary', operator: '&&', left: combined, right: next }), undefined);
 }
 
+/** The zero an uninitialized local of `type` holds, as a published expression, for the types a guard compares. */
+function zeroValueOf(type: Type): ExternalCallExpression | undefined {
+  if (type instanceof IntType || type === PrimitiveType.INT || type === PrimitiveType.BIGINT) {
+    return { kind: 'literal', type: 'bigint', value: '0' };
+  }
+  if (type === PrimitiveType.BOOL) return { kind: 'literal', type: 'bool', value: false };
+  if (type instanceof AddressType) {
+    return { kind: 'cast', type: 'address', expression: { kind: 'literal', type: 'bigint', value: '0' } };
+  }
+  return undefined;
+}
+
 /** True when an expression reads a flag a lowered return sets (see ConfineReturns). */
 function readsReturnFlag(expression: Node): boolean {
   return bodyHolds(expression, (node) => node instanceof IdentifierNode && isReturnFlag(node.name));
@@ -8440,6 +8452,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // caller-supplied direct-route witnesses both discards those rows and creates a hidden parameter which the
     // already-synthesized route cannot own. Preserve every call for the normal graph-slot collector instead.
     if (fn.graphEmissionHandler) return true;
+    // A framed body makes each call as a frame of its own, on a master of its own, with the result in the call's
+    // record, so a receiver a loop calls more than once needs no caller-supplied view witnesses.
+    if (this.compilerOptions.composition === 'framed') return true;
     const byLocal = new Map<string, ExternalFunctionCallNode[]>();
     const allCalls = new Set<ExternalFunctionCallNode>();
     const removed = new Set<ExternalFunctionCallNode>();
@@ -8883,20 +8898,25 @@ export default class SymbolTableTraversal extends AstTraversal {
     return result;
   }
 
+  // The value one slot of a tuple assignment takes: its own RHS in `(x, y) = (a, b)`, else that element of the RHS.
+  private tupleSlotValue(node: TupleAssignmentNode, index: number): ExpressionNode | undefined {
+    if (node.tupleExpressions?.[index]) return node.tupleExpressions[index];
+    if (!node.tuple) return undefined;
+    // This is a provenance view, not a second execution of the RHS. Keep the canonical call node so its
+    // stable callsite identity survives; callers that intend to rewrite the expression clone explicitly.
+    const value = new TupleIndexOpNode(node.tuple, index);
+    value.location = node.location;
+    return value;
+  }
+
   // The per-slot RHS of a tuple-destructure element `(input, output) = (path[i], path[i+1])` -> input := path[i].
   private findTupleInit(node: Node | undefined, name: string, seen: Set<Node> = new Set()): ExpressionNode | undefined {
     if (!node || seen.has(node)) return undefined;
     seen.add(node);
     if (node instanceof TupleAssignmentNode) {
       const idx = node.elements.findIndex((el) => el.name === name && !el.skip);
-      if (idx >= 0 && node.tupleExpressions?.[idx]) return node.tupleExpressions[idx];
-      if (idx >= 0 && node.tuple) {
-        // This is a provenance view, not a second execution of the RHS. Keep the canonical call node so its
-        // stable callsite identity survives; callers that intend to rewrite the expression clone explicitly.
-        const value = new TupleIndexOpNode(node.tuple, idx);
-        value.location = node.location;
-        return value;
-      }
+      const value = idx >= 0 ? this.tupleSlotValue(node, idx) : undefined;
+      if (value) return value;
     }
     for (const [key, v] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
@@ -9324,7 +9344,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       // dead initializer to read the same witness, so `pairFor` is not recomputed on-chain (defeating the witness
       // and risking a size fault). A MULTI-use receiver gets one independently authenticated call slot per method;
       // keep its cheap source initializer intact so every call can still recover the common loop index.
-      if (addressParam && !addressStateVar
+      // A framed body computes each turn's callee where it calls and binds the record to it, so the direct
+      // convention's per-iteration witness arrays (`__internal__loopTargets<n>`) are not its machinery.
+      const framedLoopTargets = this.compilerOptions.composition === 'framed';
+      if (!framedLoopTargets && addressParam && !addressStateVar
         && directAddressIdentifier(node.addressExpression)?.name === addressParam) {
         const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
         let resolvedInit = initExpr;
@@ -9379,7 +9402,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
       }
-      if (addressParam && !addressStateVar && !loopArrayVar && this.loopDeclaredLocals.has(addressParam)) {
+      if (!framedLoopTargets && addressParam && !addressStateVar && !loopArrayVar
+        && this.loopDeclaredLocals.has(addressParam)) {
         const access = this.findLoopArrayInComputedTarget(node.addressExpression, this.currentFunction?.body);
         if (access && access.array instanceof IdentifierNode) {
           const arrayName = this.resolveInlineAliasName(access.array.name, this.currentFunction?.body);
@@ -9390,7 +9414,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
       }
-      if (!addressParam && !loopArrayVar) {
+      if (!framedLoopTargets && !addressParam && !loopArrayVar) {
         const seenLoopAliases = new Set<string>();
         const unwrapLoopTarget = (expression: ExpressionNode): ExpressionNode => {
           if (expression instanceof CastNode) return unwrapLoopTarget(expression.expression);
@@ -9571,6 +9595,15 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return localInitializers.get(name);
       };
+      // A framed `for` counter whose start the source computes (`for (uint i = path.length - 1; i > 0; i--)`). It is
+      // published by name, and the site's own loop domain states its start and step (`Artifact.ts`): following its
+      // initializer instead would publish the first turn's value for every turn.
+      const computedLoopCounter = (identifier: IdentifierNode): boolean => {
+        if (this.compilerOptions.composition !== 'framed') return false;
+        const definition = identifier.definition?.definition;
+        return definition instanceof VariableDefinitionNode && definition.isLoopVariable === true
+          && definition.loopInitialValue === undefined;
+      };
       const classifyArg = (
         expression: ExpressionNode, seen = new Set<Node>(),
       ): ExternalCallArgSource | undefined => {
@@ -9624,6 +9657,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 && { stepValue: defNode.loopStepValue.toString() }),
             };
           }
+          if (computedLoopCounter(expression)) return { kind: 'loopIndex', counterName: expression.name };
           // Inlined helpers bind their original parameters to synthesized locals.
           // Follow that initializer back to the entry-point parameter/expression.
           if (defNode instanceof VariableDefinitionNode && defNode.expression) {
@@ -9910,6 +9944,70 @@ export default class SymbolTableTraversal extends AstTraversal {
         : { kind: 'field', name, expression: value, ...(type && { type }) });
       // What a local holds where it is read: `undefined` when the dominating statements never write it after its
       // declaration (the resolvers below read it as before), `null` when a write cannot be followed.
+      /**
+       * Marks the mapping reads of a local's value that run where the frame starts: the local is declared at the body's
+       * top level with its value, and no statement before its declaration writes the mapping (`readAtEntry`). A builder
+       * reads such a value from the frame's own nodes rather than past the writes the entry makes before the call that
+       * reads it.
+       */
+      const markEntryMappingReads = (
+        serialized: ExternalCallExpression, identifier: IdentifierNode,
+      ): ExternalCallExpression => {
+        const statements = this.currentFunction?.body?.statements ?? [];
+        const declaration = statements.findIndex((statement) => statement instanceof VariableDefinitionNode
+          && statement.name === identifier.name);
+        if (declaration < 0) return serialized;
+        // A local the body assigns again after its declaration (a cached mapping value the body updates) holds its
+        // initializer's read only up to that assignment, so the read stands where the call is, past the writes.
+        const assigns = (statement: StatementNode): boolean => {
+          let assigned = false;
+          walkInvocationAst(statement, (node) => {
+            if ((node instanceof AssignNode && node.identifier.name === identifier.name)
+              || (node instanceof TupleAssignmentNode
+                && node.elements.some((element) => element.name === identifier.name && element.existing === true))) {
+              assigned = true;
+            }
+          });
+          return assigned;
+        };
+        if (statements.some((statement, index) => index > declaration && assigns(statement))) return serialized;
+        const before = statements.slice(0, declaration);
+        const writes = (collection: string): boolean => {
+          const visited = new Set<FunctionDefinitionNode>();
+          let written = false;
+          const visit = (node: Node): void => {
+            if (written) return;
+            if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+              || node instanceof MappingDeleteNode) && node.name === collection) {
+              written = true;
+              return;
+            }
+            const callee = node instanceof FunctionCallNode ? node.resolvedFunction : undefined;
+            if (callee?.body !== undefined && !visited.has(callee)) {
+              visited.add(callee);
+              walkInvocationAst(callee.body, visit);
+            }
+          };
+          for (const statement of before) walkInvocationAst(statement, visit);
+          return written;
+        };
+        const mark = (value: ExternalCallExpression): ExternalCallExpression => {
+          const marked: Record<string, unknown> = { ...value };
+          for (const [key, child] of Object.entries(value)) {
+            if (Array.isArray(child)) {
+              marked[key] = child.map((entry) => (entry !== null && typeof entry === 'object' && 'kind' in entry
+                ? mark(entry as ExternalCallExpression) : entry));
+            } else if (child !== null && typeof child === 'object' && 'kind' in (child as object)) {
+              marked[key] = mark(child as ExternalCallExpression);
+            }
+          }
+          if (value.kind === 'stateAccess' && typeof value.name === 'string' && !writes(value.name)) {
+            marked.readAtEntry = true;
+          }
+          return marked as unknown as ExternalCallExpression;
+        };
+        return mark(serialized);
+      };
       const followLocal = (
         identifier: IdentifierNode, seen = new Set<string>(),
       ): ExternalCallExpression | null | undefined => {
@@ -9927,6 +10025,12 @@ export default class SymbolTableTraversal extends AstTraversal {
             : this.currentFunction?.body
               ? localInitializerFor(identifier.name) : undefined;
           if (initializer instanceof IdentifierNode) return followLocal(initializer, seen);
+          // A declaration without an initializer (`uint x;`) holds its type's zero, which is what codegen emits, until
+          // a write: one no dominating statement makes, and no loop around the read makes on an earlier turn.
+          if (definition instanceof VariableDefinitionNode && definition.expression === undefined
+            && !loopsAround().some((loop) => writesLocal(loop, identifier.name))) {
+            return zeroValueOf(definition.type);
+          }
           return undefined;
         }
         const before = prior.slice(0, last);
@@ -9994,8 +10098,16 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (condition === undefined || ifTrue === undefined || ifFalse === undefined) return null;
           return typed({ kind: 'ternary', condition, ifTrue, ifFalse });
         }
-        // A tuple's own declaration or assignment is the resolvers' below (`findTupleInit`).
-        if (write instanceof TupleAssignmentNode) return undefined;
+        if (write instanceof TupleAssignmentNode) {
+          // A tuple's own declaration is the resolvers' below (`findTupleInit`). An assignment to a declared local is a
+          // write like any other: the local holds the slot this assignment gives it, read where the assignment runs,
+          // so a local each arm of a branch assigns from its own tuple keeps each arm's value.
+          const index = write.elements.findIndex((element) => element.name === identifier.name && !element.skip);
+          if (index < 0 || !write.elements[index]!.existing) return undefined;
+          const slot = this.tupleSlotValue(write, index);
+          const value = slot === undefined ? undefined : at(before, slot);
+          return value === undefined ? null : typed(value);
+        }
         return null;
       };
       // The state variables a statement writes, through the internal functions it calls.
@@ -10305,6 +10417,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             return snapshot ?? { kind: 'unsupported', name: 'localArraySnapshot' };
           }
         }
+        if (expression instanceof IdentifierNode && !preservedLocal && computedLoopCounter(expression)) {
+          return { kind: 'source', source: { kind: 'loopIndex', counterName: expression.name } };
+        }
         if (expression instanceof IdentifierNode && !preservedLocal) {
           const value = followLocal(expression);
           if (value !== undefined) return value ?? undefined;
@@ -10332,7 +10447,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? branchAssignmentInitializer(expression) : undefined;
         const resolved = preservedLocal
           ? expression : tupleInitializer ?? assignedInitializer ?? joinedInitializer ?? resolveInitializer(expression);
-        if (resolved !== expression) return serializeExpression(resolved, seen);
+        if (resolved !== expression) {
+          const serialized = serializeExpression(resolved, seen);
+          return serialized === undefined || !(expression instanceof IdentifierNode)
+            ? serialized : markEntryMappingReads(serialized, expression);
+        }
         if (expression instanceof IdentifierNode) {
           const definition = expression.definition?.definition;
           const constant = definition instanceof ConstantDefinitionNode
@@ -10382,6 +10501,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.BLOCK_TIMESTAMP) {
           return { kind: 'state', name: '__block_timestamp', type: 'uint256' };
+        }
+        // The frame's own `msg.value`, which a builder states beside the caller's state as the clock is.
+        if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_VALUE) {
+          return { kind: 'state', name: '__msg_value', type: 'uint256' };
         }
         if (expression instanceof StateAccessNode) {
           return followState(expression) ?? { kind: 'state', name: expression.name };
@@ -10802,12 +10925,24 @@ export default class SymbolTableTraversal extends AstTraversal {
           || expression instanceof AbiEncodeNode || expression instanceof AbiEncodePackedNode) {
           const values = serializeArgs(expression.parameters);
           if (!values) return undefined;
+          // A packed operand is typed before type checking where the source fixes its type: a cast, a parameter, or
+          // a ternary whose branches are such values. An address packs as its identity, so the type is the encoding.
+          const operandType = (operand: ExpressionNode): string => {
+            if (operand instanceof CastNode) return operand.type.toString();
+            if (operand.type !== undefined) return operand.type.toString();
+            if (operand instanceof TernaryOpNode) return operandType(operand.ifTrue) || operandType(operand.ifFalse);
+            if (operand instanceof IdentifierNode) {
+              const declared = this.currentFunction?.parameters.find((parameter) => parameter.name === operand.name);
+              return declared?.type.toString() ?? operand.definition?.type?.toString() ?? '';
+            }
+            return '';
+          };
           return {
             kind: expression instanceof BytesConcatNode ? 'bytesConcat'
               : expression instanceof StringConcatNode ? 'stringConcat'
                 : expression instanceof AbiEncodePackedNode ? 'abiEncodePacked' : 'abiEncode',
             args: values,
-            fields: expression.parameters.map((parameter) => parameter.type?.toString() ?? ''),
+            fields: expression.parameters.map(operandType),
           };
         }
         if (expression instanceof AbiDecodeNode) {
@@ -11014,6 +11149,12 @@ export default class SymbolTableTraversal extends AstTraversal {
           const type = expression.type ?? expression.definition?.type ?? this.symbolTables[0].get(expression.name)?.type;
           return { kind: 'identifier', name: expression.name, ...(type && { type: type.toString() }) };
         }
+        // `type(C).creationCode` is the child's compiled program, which exists only once the child is compiled; the
+        // compiler folds a published `keccak256` of it to the digest then (`foldPublishedCreationCodeHashes`).
+        if (expression instanceof TypeIntrospectionNode && expression.property === 'creationCode'
+          && expression.contractName !== undefined) {
+          return { kind: 'unsupported', name: 'TypeIntrospectionNode', creationCodeOf: expression.contractName };
+        }
         return {
           kind: 'unsupported',
           name: expression.constructor.name,
@@ -11022,7 +11163,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       };
       for (let i = 0; i < argSources.length; i += 1) {
         const source = argSources[i];
-        if (source.kind !== 'loopIndex' || source.stepValue !== undefined) continue;
+        // A counter with no literal start takes its whole progression from its loop's domain (`Artifact.ts`).
+        if (source.kind !== 'loopIndex' || source.stepValue !== undefined || source.initialValue === undefined) continue;
         const parameter = node.parameters[i];
         const definition = parameter instanceof IdentifierNode
           ? parameter.definition?.definition : undefined;
@@ -12973,10 +13115,32 @@ export default class SymbolTableTraversal extends AstTraversal {
     return undefined;
   }
 
-  /** A tuple component of an external call's result: `(feeTo, migrator) = factory.feeToAndMigrator()`. */
-  private producerKeyOf(expression: ExpressionNode): {
+  /**
+   * A tuple component of an external call's result (`(feeTo, migrator) = factory.feeToAndMigrator()`), or the sole
+   * result of one (`feeTo = factory.feeTo()`), reached through the locals the body binds it to.
+   */
+  private producerKeyOf(expression: ExpressionNode, seen: Set<string> = new Set()): {
     callsiteId?: number; resultIndex: number; sourceEffectOrdinal?: number; functionName?: string;
   } | undefined {
+    if (expression instanceof IdentifierNode && !seen.has(expression.name)) {
+      const bound = this.localKeyDefs.get(expression.name);
+      if (bound === undefined || this.writtenLocals?.has(expression.name)) return undefined;
+      seen.add(expression.name);
+      return this.producerKeyOf(bound, seen);
+    }
+    if (expression instanceof CastNode) return this.producerKeyOf(expression.expression, seen);
+    if (expression instanceof ExternalFunctionCallNode && (expression.callInfo?.returnTypes?.length ?? 1) === 1) {
+      const callsiteId = expression.callInfo?.externalCallSlotIndex;
+      const functionName = expression.callInfo?.functionName;
+      if (callsiteId !== undefined && callsiteId >= 0) {
+        return { callsiteId, resultIndex: 0, ...(functionName && { functionName }) };
+      }
+      const sourceEffectOrdinal = (expression as unknown as { sourceEffectOrdinal?: number }).sourceEffectOrdinal;
+      if (sourceEffectOrdinal !== undefined) {
+        return { resultIndex: 0, sourceEffectOrdinal, ...(functionName && { functionName }) };
+      }
+      return undefined;
+    }
     if (!(expression instanceof TupleIndexOpNode)) return undefined;
     const tuple = expression.tuple;
     if (!(tuple instanceof ExternalFunctionCallNode)) return undefined;
@@ -13110,6 +13274,25 @@ export default class SymbolTableTraversal extends AstTraversal {
             adjacentInitializers.set(definition.name, assignment.expression);
           }
         }
+        // An assignment a later statement of the same block makes is on every path through the block as well: the
+        // shape an inlined returning helper leaves, its result locals declared together and assigned in turn.
+        for (let i = 0; i < statements.length; i += 1) {
+          const definition = statements[i];
+          if (!(definition instanceof VariableDefinitionNode) || definition.expression || definition.isLoopVariable
+            || adjacentInitializers.has(definition.name)) continue;
+          const assignment = statements.slice(i + 1).find((later): later is AssignNode => later instanceof AssignNode
+            && later.identifier.name === definition.name);
+          if (assignment !== undefined) adjacentInitializers.set(definition.name, assignment.expression);
+        }
+      }
+      // `(T a, T b) = (x, y)` declares each name with its own element.
+      if (n instanceof TupleAssignmentNode && n.tupleExpressions !== undefined) {
+        n.elements.forEach((element, index) => {
+          if (element.name !== undefined && element.existing !== true && element.skip !== true
+            && !this.localKeyDefs.has(element.name) && n.tupleExpressions![index] !== undefined) {
+            this.localKeyDefs.set(element.name, n.tupleExpressions![index]!);
+          }
+        });
       }
       for (const k of Object.keys(n)) {
         if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'resolvedFunction') continue;

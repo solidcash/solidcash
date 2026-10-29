@@ -14,8 +14,9 @@ import { keyToSlot } from '../../../src/stateful/SortedList.js';
  *
  * A master that settles alone walks only the transaction's own indices, so a declaration at any other coordinate is
  * never settled, and a body that reads its views takes them on the frame's word. A loop's later turns read a paged
- * mapping node that way: before the head held every declared index to the transaction, a turn declared at `0x8001`
- * (-1) read a value no input carried, and the frame wrote state from it. Each path that reads a declaration is
+ * mapping node that way: before the walk held every declared index to the transaction, a turn declared at `0x8001`
+ * (-1) read a value no input carried, and the frame wrote state from it. A covered frame's declarations are its
+ * validator's, which keys every one by an index the transaction has (V7). Each path that reads a declaration is
  * accepted with the record at a real index and refused with the same views declared at `0x8001` or `0x7fff`.
  */
 

@@ -40,17 +40,20 @@
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH } from '@solidcash/utils';
+import { KEPT_VIEW_LENGTH, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
 import { ADDRESS_SLOT_LENGTH } from './placeholders.js';
+import { FRAMEWORK_REGISTRAR_ID, frameworkRegistrar, frameworkRegistrarOffset } from '../framework-library.js';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropFirstPushScript,
   dropPrefix,
   readOwnWitnessBlockScript,
+  skipSegmentScript,
   splitFirstPushScript,
   takeFixedWidthField,
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
+  takeRecordFieldsScript,
   unsignedLength,
 } from './witness-reader.js';
 
@@ -234,6 +237,8 @@ export function verifyTailScript(
     readonly keepsRecordIndices?: boolean;
     readonly returnsValue?: boolean;
     readonly eventOwnerBelowTail?: boolean;
+    /** True when the master's bodies make calls, whose sites then bind their records from the head's kept copy. */
+    readonly keepsCalls?: boolean;
   } = {},
 ): Uint8Array {
   const keepsRecordIndices = options.keepsRecordIndices === true;
@@ -246,16 +251,24 @@ export function verifyTailScript(
   } else {
     bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   }
-  bytes.push(...callWalkScript());
+  bytes.push(...(options.keepsCalls === true ? callWalkKeepingCallsScript() : callWalkScript()));
   bytes.push(...segmentCountCheckScript());
-  bytes.push(...segmentLoopScript(keepsRecordIndices));
+  bytes.push(...(keepsRecordIndices ? segmentLoopKeepingSegmentsScript() : segmentLoopScript()));
   bytes.push(...(tail.eventRun === true
     ? eventRunSection(options.eventOwnerBelowTail === true)
     : eventSection(tail.maxEventCount, options.eventOwnerBelowTail === true)));
   bytes.push(...(tail.sendRun === true ? sendRunSection() : sendSection(tail.sendCount)));
   bytes.push(...valueSection(tail.valueWitnessCount ?? 0));
-  bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
+  bytes.push(...paddingSection());
   return new Uint8Array(bytes);
+}
+
+/**
+ * Consumes the block's padding, which nothing reads, and requires nothing to follow it. Entry `[..., tail]`, exit
+ * `[...]`.
+ */
+function paddingSection(): number[] {
+  return [...takeLengthPrefixedField(), Opcodes.OP_0, Opcodes.OP_EQUALVERIFY, Opcodes.OP_DROP];
 }
 
 /**
@@ -301,6 +314,47 @@ function callWalkScript(): number[] {
     ...countCallRecordsScript(),
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+  ];
+}
+
+/**
+ * Consumes the call section as `callWalkScript` does, and parks the call records for the body's call sites.
+ *
+ * Entry `[..., tail]`, exit `[...]`. Each record's bytes are kept as the walk steps over them, each led by its own
+ * length as a two-byte number, and the run is parked on the alt stack beneath the declared call count
+ * (`callsSlotName`), which the segment walk reads next. A site then steps to its own record with one split a record
+ * instead of reading the block and walking the frame's header.
+ */
+function callWalkKeepingCallsScript(): number[] {
+  const num = (value: number): number[] => [...encodeDataPush(scriptNumber(value))];
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP,
+    // Park a copy for the body, as the plain walk does.
+    ...num(1), Opcodes.OP_PICK, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_0, Opcodes.OP_ROT, Opcodes.OP_ROT, Opcodes.OP_0, Opcodes.OP_SWAP, // [kept, count, cursor, tail]
+    ...num(2), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_BEGIN,
+    Opcodes.OP_DUP, // [kept, count, cursor, before, tail]
+    ...callRecordSkip(),
+    // The record is what the skip consumed: `before` up to the length the tail lost.
+    Opcodes.OP_SIZE, ...num(2), Opcodes.OP_PICK, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_SWAP, Opcodes.OP_SUB,
+    Opcodes.OP_ROT, Opcodes.OP_SWAP,
+    Opcodes.OP_DUP, ...num(2), Opcodes.OP_NUM2BIN, Opcodes.OP_ROT, Opcodes.OP_ROT,
+    Opcodes.OP_SPLIT, Opcodes.OP_DROP, Opcodes.OP_CAT, // [kept, count, cursor, tail, lengthAndRecord]
+    ...num(4), Opcodes.OP_ROLL, Opcodes.OP_SWAP, Opcodes.OP_CAT,
+    ...num(3), Opcodes.OP_ROLL, ...num(3), Opcodes.OP_ROLL, ...num(3), Opcodes.OP_ROLL, // [kept, count, cursor, tail]
+    ...num(1), Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
+    ...num(1), Opcodes.OP_PICK,
+    ...num(3), Opcodes.OP_PICK,
+    Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    ...num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    ...num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, // [kept, tail]
+    // Beneath the parked count, which the segment walk reads from the top.
+    Opcodes.OP_SWAP, Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK,
   ];
 }
 
@@ -354,64 +408,60 @@ function segmentCountCheckScript(): number[] {
 }
 
 /**
- * Walks every segment the block declares, each with the record list it declares.
+ * Steps over every segment the block declares, by the length each leads with.
  *
- * Entry `[..., tail]`, exit `[...]`. Only the first segment parks the record base a body reads its state through,
- * so the loop branches on the cursor; every later segment only checks its records' shapes.
+ * Entry `[..., tail]`, exit `[..., tail']` past the segments, with the declared call count parked on the alt stack:
+ * the block declares one segment more. The records are not read here: a covered frame's are its validator's to
+ * hold to the codec and to settle (V2, V7), and a standalone frame's its own settlement walk's.
  */
-function segmentLoopScript(keepIndices: boolean): number[] {
+function segmentLoopScript(): number[] {
   return [
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK,
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ADD,
-    Opcodes.OP_SWAP,
-    Opcodes.OP_0, Opcodes.OP_SWAP,
+    Opcodes.OP_SWAP, // [count, tail]
     Opcodes.OP_BEGIN,
+    ...skipSegmentScript(),
+    Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP,
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
-    Opcodes.OP_IF,
-    ...recordWalkScript(keepIndices),
-    Opcodes.OP_ELSE,
-    ...recordWalkScript(false),
-    Opcodes.OP_ENDIF,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK,
-    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK,
-    Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_UNTIL,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    Opcodes.OP_NIP,
   ];
 }
 
 /**
- * Consumes a segment's record list whose length the entry does not fix, checking each entry's shape.
+ * Steps over every segment as `segmentLoopScript` does, keeping them for the body's reads of its records, and parks
+ * the base of the record block the first segment's first record names.
  *
- * The count is not known, so it is read and its entries walked. The walk is guarded so a segment with no record
- * consumes none: the loop runs at least once, so a zero count would otherwise read a record that is not there.
- * The count and the cursor sit below the tail on the main stack, so the tail stays on top for the field reader.
- *
- * With `keepIndices` the first entry's own two index fields are parked before the walk consumes them, and a
- * segment that declares none parks the sentinel instead.
+ * Entry `[..., tail]`, exit `[..., tail']`. The segments are kept as the block writes them, each led by its length,
+ * and parked on the alt stack (`segmentsSlotName`) above the record base, so a read steps over a segment with one
+ * cut and scans only the bytes of the segment it resolves against. The base is the first record's input and output
+ * indices less one, input side first; a first segment that declares no record parks the no-index sentinel instead.
  */
-function recordWalkScript(keepIndices = false): number[] {
+function segmentLoopKeepingSegmentsScript(): number[] {
+  const num = (value: number): number[] => [...encodeDataPush(scriptNumber(value))];
   return [
-    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP,
-    Opcodes.OP_0, Opcodes.OP_SWAP,
-    ...encodeDataPush(scriptNumber(2)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
-    Opcodes.OP_IF,
-    ...(keepIndices ? parkAbsentRecordBase() : []),
-    Opcodes.OP_ELSE,
-    ...(keepIndices ? parkFirstRecordBase() : []),
+    Opcodes.OP_0, Opcodes.OP_SWAP, // [kept, tail]
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK,
+    ...num(1), Opcodes.OP_ADD,
+    Opcodes.OP_SWAP, // [kept, count, tail]
     Opcodes.OP_BEGIN,
-    ...recordEntryCheck(),
-    // cursor += 1, then continue while cursor < count.
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK,
-    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK,
-    Opcodes.OP_GREATERTHANOREQUAL,
+    ...num(2), Opcodes.OP_SPLIT, // [kept, count, length, rest]
+    Opcodes.OP_OVER, ...unsignedLength(), Opcodes.OP_SPLIT, // [kept, count, length, segment, rest']
+    Opcodes.OP_TOALTSTACK, Opcodes.OP_CAT, // [kept, count, lengthAndSegment]
+    Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SWAP, Opcodes.OP_1SUB, // [kept', count - 1]
+    Opcodes.OP_FROMALTSTACK, // [kept', count - 1, rest']
+    ...num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
     Opcodes.OP_UNTIL,
+    Opcodes.OP_NIP, Opcodes.OP_SWAP, // [tail', kept]
+    // The first segment's record count, two bytes past its length.
+    Opcodes.OP_DUP, ...num(4), Opcodes.OP_SPLIT, Opcodes.OP_DROP, ...num(2), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+    ...unsignedLength(),
+    Opcodes.OP_IF,
+    ...parkFirstRecordBase(),
+    Opcodes.OP_ELSE,
+    ...parkAbsentRecordBase(),
     Opcodes.OP_ENDIF,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
-    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    Opcodes.OP_TOALTSTACK,
   ];
 }
 
@@ -427,50 +477,19 @@ function parkAbsentRecordBase(): number[] {
 }
 
 /**
- * Park the base of the record block the first entry of a segment declares, without consuming the entry.
+ * Park the base of the record block the first record of the kept segments declares, without consuming them.
  *
- * Entry `[..., count, cursor, rest]`, exit the same with the base of the first entry's input block and of its
- * output block parked on the alt stack, input first. The two index fields lead the entry, so each is read from a
- * copy of the remainder and the entry itself is left for the walk.
+ * Entry `[..., kept]`, exit the same with the base of the first record's input block and of its output block parked
+ * on the alt stack, input first. The two index fields lead the record, four bytes into its segment.
  */
 function parkFirstRecordBase(): number[] {
-  const parked = (): number[] => [Opcodes.OP_DROP, Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK];
+  const num = (value: number): number[] => [...encodeDataPush(scriptNumber(value))];
   return [
-    Opcodes.OP_DUP, ...takeFixedWidthField(2), ...parked(),
-    // The output field is read from the same copy: the split leaves the remainder on top, so the field just taken is
-    // dropped before the next one is split off, or the second read would take the input field again.
-    Opcodes.OP_DUP, ...takeFixedWidthField(2), Opcodes.OP_NIP, ...takeFixedWidthField(2), ...parked(),
+    Opcodes.OP_DUP, ...num(8), Opcodes.OP_SPLIT, Opcodes.OP_DROP, ...num(4), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+    ...num(2), Opcodes.OP_SPLIT, // [kept, in, out]
+    Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
   ];
-}
-
-/**
- * Consumes one record entry and requires its shape: kept in place, created, or deleted, at an index the transaction
- * has.
- *
- * Settlement walks only the indices the transaction has, so an index naming none would leave the entry's views
- * unsettled for the body to read. Read as signed numbers, the sentinel is the least an index field holds, so the
- * larger of the two must name an input or an output; that also refuses an entry with no index at all.
- */
-function recordEntryCheck(): number[] {
-  return [
-    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
-    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
-    ...skipLengthPrefixed32(),
-    ...skipLengthPrefixed32(),
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, // [..., tail, out, in]
-    Opcodes.OP_2DUP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_MAX,
-    Opcodes.OP_0, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, Opcodes.OP_WITHIN, Opcodes.OP_VERIFY,
-    // Equal indices, or one of them the sentinel.
-    Opcodes.OP_2DUP, Opcodes.OP_EQUAL,
-    Opcodes.OP_ROT, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL,
-    Opcodes.OP_ROT, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL,
-    Opcodes.OP_BOOLOR, Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY,
-  ];
-}
-
-/** Consumes an `lp32` field from the front of the tail and drops its payload. */
-function skipLengthPrefixed32(): number[] {
-  return [...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_DROP];
 }
 
 /**
@@ -739,79 +758,8 @@ export function countMastersScript(): Uint8Array {
   ]);
 }
 
-/**
- * Consumes a 32-byte category on top and leaves how many of one side's UTXOs carry it, by any capability.
- *
- * Entry `[..., category]`, exit `[..., count]`. Unlike `countMastersScript`, which matches the whole category plus
- * capability byte (so it counts only a minting master), this compares the first 32 bytes, so a record, a container
- * holding the token, an event NFT and a master all count. A tokenless or shorter category never matches. The head
- * uses it to require a delegate callee's own category untouched: present on exactly one input and one output, the
- * recreated master.
- */
-export function countCategoryHoldersScript(side: 'input' | 'output'): Uint8Array {
-  const countOp = side === 'input' ? Opcodes.OP_TXINPUTCOUNT : Opcodes.OP_TXOUTPUTCOUNT;
-  const tokenOp = side === 'input' ? Opcodes.OP_UTXOTOKENCATEGORY : Opcodes.OP_OUTPUTTOKENCATEGORY;
-  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-  const bytes: number[] = [];
-  pushAll(bytes, [
-    Opcodes.OP_0, Opcodes.OP_0, // count, index
-    Opcodes.OP_BEGIN,
-    Opcodes.OP_DUP, tokenOp, // the UTXO's category field (empty, 32 or 33 bytes)
-    Opcodes.OP_SIZE, num(32), Opcodes.OP_LESSTHAN,
-    Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_0, // tokenless: an empty string never equals the 32-byte pin
-    Opcodes.OP_ELSE, num(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP, // the 32-byte category without the capability byte
-    Opcodes.OP_ENDIF,
-    num(3), Opcodes.OP_PICK, // the expected category, at depth 3
-    Opcodes.OP_EQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_1, Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP, // count++ under the index
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_1ADD,
-    Opcodes.OP_DUP, countOp, Opcodes.OP_GREATERTHANOREQUAL,
-    Opcodes.OP_UNTIL,
-    Opcodes.OP_DROP, // index
-    Opcodes.OP_SWAP, Opcodes.OP_DROP, // category
-  ]);
-  return new Uint8Array(bytes);
-}
-
 /** The frame kinds of the calls that run on the caller's records, `DELEGATE` and `INTERNAL`, as `[low, high)`. */
 const CONTEXT_CALL_KINDS = [3, 5] as const;
-
-/**
- * Leaves whether the frame's own block records no `DELEGATE` or `INTERNAL` call.
- *
- * Entry `[...]`, exit `[..., flag]`. Such a call runs on the records of the caller's context contract, which the
- * validator then settles (V8), so a master that made one does not settle its own. Each site binds the record of the
- * call it made and the body pins how many the block declares, so the kinds the block records are the calls the
- * execution made: a frame whose body skipped such a call records none. The block is read again rather than taken
- * from the tail walk, which drops each record unread.
- */
-export function blockRecordsNoContextCallScript(): Uint8Array {
-  const bytes: number[] = [];
-  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
-  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-  emit(...readOwnWitnessBlockScript(), ...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  // `sender`, `self`, `value` and `retval`.
-  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP, ...takeLengthPrefixedField(), Opcodes.OP_NIP);
-  emit(...dropPrefix(8), ...takeLengthPrefixedField32(), Opcodes.OP_NIP);
-  // `[count, flag, rest]`, the flag starting true.
-  emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_1, Opcodes.OP_ROT);
-  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF, Opcodes.OP_BEGIN);
-  {
-    // The record's kind clears the flag when it is a context call.
-    emit(...takeFixedWidthField(1), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM);
-    emit(num(CONTEXT_CALL_KINDS[0]), num(CONTEXT_CALL_KINDS[1]), Opcodes.OP_WITHIN, Opcodes.OP_NOT);
-    emit(Opcodes.OP_ROT, Opcodes.OP_BOOLAND, Opcodes.OP_SWAP);
-    // `target`, then `value`, `calleeRef` and `argsHash`, then `result`.
-    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP, ...dropPrefix(8 + 2 + 32));
-    emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
-    emit(Opcodes.OP_ROT, Opcodes.OP_1SUB, Opcodes.OP_ROT, Opcodes.OP_ROT);
-    emit(num(2), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
-  }
-  emit(Opcodes.OP_UNTIL, Opcodes.OP_ENDIF, Opcodes.OP_DROP, Opcodes.OP_NIP);
-  return new Uint8Array(bytes);
-}
 
 /**
  * Consumes a validator input index on top and requires it to name a validator for the hash in the reserved slot.
@@ -826,8 +774,13 @@ export function blockRecordsNoContextCallScript(): Uint8Array {
  * category is read from the redeem script and compared with the category the UTXO itself carries, so a validator
  * whose token is not the one its script pins is refused. P2SH32 consensus gives its lock as `addrV(c)`, and the
  * master skips the transcript and never interprets it.
+ *
+ * With `definesFramework`, the master then defines the framework library the program opens with
+ * (framework-library.ts). The hash just checked covers that push, so the bytes cut from it are the registrar this
+ * compiler built; defined under its identifier and invoked once, it defines every routine. Entry and exit stay the
+ * same.
  */
-export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
+export function recogniseValidatorScriptAgainstReservedHash(definesFramework = false): Uint8Array {
   return new Uint8Array([
     Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY,
     // The category plus its capability byte: 33 bytes, and a mutable NFT is capability 0x01.
@@ -851,7 +804,16 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
     // `push(pin(c)) || program`. The push is 34 bytes; the program after it must hash to the reserved slot, four
     // items below the computed hash.
     ...encodeDataPush(scriptNumber(VALIDATOR_PIN_PUSH_LENGTH)), Opcodes.OP_SPLIT,
-    Opcodes.OP_SHA256, ...encodeDataPush(scriptNumber(4)), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
+    ...(definesFramework
+      ? [
+        // `[.., pinPush, program]`: the program is kept past its check, then cut down to the registrar.
+        Opcodes.OP_DUP, Opcodes.OP_SHA256, ...encodeDataPush(scriptNumber(5)), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
+        ...encodeDataPush(scriptNumber(frameworkRegistrarOffset())), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+        ...encodeDataPush(scriptNumber(frameworkRegistrar().length)), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+        ...encodeDataPush(encodeInt(FRAMEWORK_REGISTRAR_ID)), Opcodes.OP_DEFINE,
+        ...encodeDataPush(encodeInt(FRAMEWORK_REGISTRAR_ID)), Opcodes.OP_INVOKE,
+      ]
+      : [Opcodes.OP_SHA256, ...encodeDataPush(scriptNumber(4)), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY]),
     // Drop the push opcode and require the pin to be the category the UTXO carries.
     Opcodes.OP_1, Opcodes.OP_SPLIT, Opcodes.OP_NIP,
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
@@ -867,21 +829,23 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
  * A master settles its own records when it is its category's only master in the transaction and it made no
  * `DELEGATE` or `INTERNAL` call, which the head establishes before this runs. Its execution is split into one
  * segment per external call plus one, and each segment declares, for the record it touches, the commitment that
- * record holds at the segment's start and at its end. This walk turns those declarations into one transition: the
- * first begins at the commitment the transaction spends, every later one carries on from the one before it, and the
- * last ends at the commitment the transaction writes; a record the transaction creates has no input index, so it
- * begins at the empty commitment rather than at one an input carries. The same walk checks that the state UTXOs
- * spent are exactly the record declared, and that no state output carries the contract's token that no segment
- * declared.
+ * record holds at the segment's start and at its end. This walk turns those declarations into one transition per
+ * record: the first begins at the commitment the transaction spends, every later one carries on from the one before
+ * it, and the last ends at the commitment the transaction writes; a record the transaction creates has no input
+ * index, so it begins at the empty commitment rather than at one an input carries. The same walk checks that the
+ * state UTXOs spent and the state outputs written are exactly the records declared.
  *
  * It also counts the outputs whose token is the bare category, which the head's census makes immutable NFTs, and
  * holds the count to the events the frame declares (spec S2). The tail walk proved each listed event a distinct such
  * output, so no unlisted one remains.
  *
- * The check re-reads the block rather than reusing the shape walk, because the shape walk drops the view payloads it
- * reads. One chain is settled: a contract's data NFT is one record, so the shape covers it. A segment declaring
- * several records, and a later segment declaring a record the chain does not already name, are refused rather than
- * settled partly, because only one chain is walked.
+ * A record is named by its index, kept at its own index or created or deleted there (the shape check refuses a
+ * move), so the walk keeps one entry per index the transaction has: whether the index was read and whether it is
+ * written back, and where in the segment section the view the record was last declared with sits. The declarations
+ * are walked once, in execution order, each updating the entry of the index it names; then every index is visited
+ * once for the commitment it ends at and the census. Each check compares the views themselves, the operands in the
+ * order a derivation reads a close by. The table rides on the alt stack while the declarations are read, so the
+ * block's remainder stays on top for the field readers, and the block is read from the transaction once.
  *
  * A send is paid from the contract's containers (spec 4b), never from a record, so a record written back keeps at
  * least the value it held whether or not the entry sends.
@@ -891,204 +855,241 @@ export interface SelfSettlementShape {
   readonly addressPayloadOffset: number;
 }
 
+/**
+ * One index's entry in the settlement table: a flag byte, then where the record's last view sits in the segment
+ * section, as the two-byte offset of that `viewOut`'s length field (zero when the chain ended in a deletion).
+ */
+const SETTLEMENT_ENTRY_BYTES = 3;
+/** The flag bits of an entry: the record was read at the index, and it is written back there. */
+const SEEN_IN = 0x01;
+const SEEN_OUT = 0x02;
+/** A declaration's two index fields and its views' two length fields, which lie before its `viewIn` payload. */
+const DECLARATION_VIEW_IN_OFFSET = 8;
+
+/** The raw `outLen` of a declaration its segment leaves as it found it, whose `viewOut` is its `viewIn`. */
+const KEPT_VIEW_LENGTH_RAW = new Uint8Array([KEPT_VIEW_LENGTH & 0xff, KEPT_VIEW_LENGTH >>> 8]);
+
 export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
   const { addressPayloadOffset } = shape;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-  const absent = (): Uint8Array => encodeDataPush(INDEX_NONE_BYTES);
-  const toAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_TOALTSTACK); };
-  const fromAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_FROMALTSTACK); };
-  /** A copy of the item at `depth` in the main stack, leaving it in place. */
-  const copy = (depth: number, held = 0): void => { emit(num(depth + held), Opcodes.OP_PICK); };
-  /** Keeps the shape check's raw two-byte fields, which the sentinel comparison reads as written. */
-  const copyNumber = (depth: number, held = 0): void => { copy(depth, held); emit(Opcodes.OP_BIN2NUM); };
-  /** A copy of the item at alt-stack `depth`, leaving the alt stack as it was. */
-  const copyAlt = (depth: number): void => {
-    fromAlt(depth + 1);
-    emit(Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK);
-    for (let held = 0; held < depth; held += 1) emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
+  const flag = (value: number): Uint8Array => encodeDataPush(new Uint8Array([value]));
+  const pick = (depth: number): void => { emit(num(depth), Opcodes.OP_PICK); };
+  const roll = (depth: number): void => { emit(num(depth), Opcodes.OP_ROLL); };
+  /** `[table, index]` to `[flags, offset]`: the entry at the index. */
+  const entryAt = (): void => {
+    emit(num(SETTLEMENT_ENTRY_BYTES), Opcodes.OP_MUL, Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+    emit(num(SETTLEMENT_ENTRY_BYTES), Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    emit(num(1), Opcodes.OP_SPLIT, Opcodes.OP_BIN2NUM);
   };
+  /** `[flags, offset]` to `[entry]`. */
+  const packEntry = (): void => { emit(num(2), Opcodes.OP_NUM2BIN, Opcodes.OP_CAT); };
+  /** `[entry, table, index]` to `[table']`: the table with the entry at the index replaced. */
+  const writeEntry = (): void => {
+    emit(num(SETTLEMENT_ENTRY_BYTES), Opcodes.OP_MUL, Opcodes.OP_SPLIT);
+    emit(num(SETTLEMENT_ENTRY_BYTES), Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+    emit(Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_CAT);
+  };
+  /** `[flags]` to `[flags, bit]`: whether the entry carries `bit`, as a boolean. */
+  const hasFlag = (bit: number): void => { emit(Opcodes.OP_DUP, flag(bit), Opcodes.OP_AND, flag(bit), Opcodes.OP_EQUAL); };
   /**
-   * Replaces the alt-stack item at `depth` with the single value `newValue` leaves on the main stack.
-   *
-   * The items above the one replaced come off first and go back in the same order — pushing them back in the
-   * order they were popped would reverse them — and `newValue` is emitted between the two, so it can read the
-   * main stack with the popped items already above it, which is what `held` names.
+   * `[offset]` to `[view]`: the view the declaration an entry's offset names in the segment section, kept
+   * `sectionDepth` items beneath the offset, ends at — its `viewOut`, or its `viewIn` when it is kept — or the
+   * no-index sentinel a deletion leaves.
    */
-  const replaceAlt = (depth: number, newValue: (held: number) => void): void => {
-    fromAlt(depth);
-    emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP);
-    newValue(depth);
-    toAlt(depth + 1);
+  const viewAt = (sectionDepth: number): void => {
+    emit(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+    emit(Opcodes.OP_DROP, encodeDataPush(INDEX_NONE_BYTES));
+    emit(Opcodes.OP_ELSE);
+    pick(sectionDepth);
+    emit(Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+    emit(num(DECLARATION_VIEW_IN_OFFSET), Opcodes.OP_SPLIT, Opcodes.OP_SWAP);
+    emit(num(4), Opcodes.OP_SPLIT, Opcodes.OP_NIP, num(2), Opcodes.OP_SPLIT); // [views, inLen, outLen]
+    emit(Opcodes.OP_DUP, encodeDataPush(KEPT_VIEW_LENGTH_RAW), Opcodes.OP_EQUAL, Opcodes.OP_IF);
+    emit(Opcodes.OP_DROP, ...unsignedLength(), Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    emit(Opcodes.OP_ELSE);
+    emit(...unsignedLength(), Opcodes.OP_SWAP, ...unsignedLength());
+    emit(Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    emit(Opcodes.OP_ENDIF);
+    emit(Opcodes.OP_ENDIF);
+  };
+  /** The offset an entry ends at: the running declaration's own, `declarationDepth` items down. */
+  const viewOutOffset = (declarationDepth: number): void => {
+    pick(declarationDepth);
   };
 
-  // The own-category immutable outputs seen, the index under test, and the pass over every index the transaction
-  // could name.
-  emit(Opcodes.OP_0, Opcodes.OP_0);
+  // The block, from the transaction once, walked to its first segment.
+  emit(...readOwnWitnessBlockScript());
+  emit(...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
+  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
+  emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
+  emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
+  // The call section is the block's own, so the walk steps over however many records it declares and keeps the
+  // declared segment count as its segment counter.
+  emit(...callSectionWalkScript());
+  emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
+  // The segment section is kept whole, with its length, so an entry can name a view by where it sits:
+  // `[section, length, segments, tail]`.
+  emit(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_2SWAP);
+  // The table, one zeroed entry per index the transaction has, parked on the alt stack.
+  emit(Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, num(SETTLEMENT_ENTRY_BYTES), Opcodes.OP_MUL);
+  emit(Opcodes.OP_0, Opcodes.OP_SWAP, Opcodes.OP_NUM2BIN, Opcodes.OP_TOALTSTACK);
+
+  // Every segment, in execution order. Main: [section, length, segments, tail]. Alt: [table].
   emit(Opcodes.OP_BEGIN);
   {
-    emit(Opcodes.OP_TOALTSTACK);
-    // The pass's prologue: the block, its fixed prefix, and the three values the walk carries.
-    emit(...readOwnWitnessBlockScript());
-    emit(...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
-    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
-    emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
-    emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
-    // The call section is the block's own, so the walk steps over however many records it declares and keeps the
-    // declared segment count as this walk's segment counter.
-    emit(...callSectionWalkScript());
-    emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
-    // Alt: [index]. Main: [segments, block]. The flags go below the index, so `copyAlt` can reach them with the
-    // block never leaving the top of the main stack.
-    emit(Opcodes.OP_0);
-    emit(Opcodes.OP_0);
-    emit(absent());
-    // Alt: [seenIn, seenOut, lastView, index].
-    toAlt(3);
-    // Main: [segments, block]
-    emit(Opcodes.OP_BEGIN);
+    // The segment's length leads it, then its record count.
+    emit(...dropPrefix(2));
+    emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
+    // Main: [.., segments, count, tail]. A segment that declares nothing runs no declaration: the loop tests its
+    // condition after the body, so the body is guarded rather than entered once for nothing.
+    pick(1);
+    emit(Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_IF, Opcodes.OP_BEGIN);
     {
-      // The segment's record count comes off the front of the block, leaving the block back on top.
-      emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM);
-      emit(Opcodes.OP_SWAP);
-      // Main: [block, count, segments] — the layout every declaration below is written against. A segment that
-      // declares nothing runs no declaration at all, which the loop cannot express on its own: it tests its
-      // condition after the body, so the body is guarded rather than entered once for nothing.
-      emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_GREATERTHAN);
-      emit(Opcodes.OP_IF);
-      emit(Opcodes.OP_BEGIN);
+      // Where the declaration starts in the section, then its four fields, off the front of the tail.
+      emit(Opcodes.OP_SIZE);
+      pick(4);
+      emit(Opcodes.OP_SWAP, Opcodes.OP_SUB, Opcodes.OP_TOALTSTACK);
+      emit(...takeRecordFieldsScript()); // [.., in, out, viewIn, viewOut, tail]
+      roll(4); emit(Opcodes.OP_TOALTSTACK); // in
+      roll(3); emit(Opcodes.OP_TOALTSTACK); // out
+      roll(2); emit(Opcodes.OP_TOALTSTACK); // viewIn
+      emit(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // viewOut
+      emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK);
+      emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK);
+      // Main: [.., tail, viewOut, viewIn, out, in, at, table].
+      pick(3);
+      pick(3);
+      emit(...requireRecordShape());
+      roll(3);
+      emit(Opcodes.OP_BIN2NUM);
+      roll(3);
+      emit(Opcodes.OP_BIN2NUM);
+      // Main: [.., tail, viewOut, viewIn, at, table, out, in], the indices as numbers, the sentinel negative. The
+      // walk settles only the indices the transaction has, so a declaration at any other names a record no input or
+      // output carries, whose views a body would read on the frame's word: the larger index must be one the
+      // transaction has, which also refuses a declaration with no index at all.
+      emit(Opcodes.OP_2DUP, Opcodes.OP_MAX, Opcodes.OP_0, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT);
+      emit(Opcodes.OP_MAX, Opcodes.OP_WITHIN, Opcodes.OP_VERIFY);
+      emit(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
       {
-        // One declaration: its four fields come off the front of the block and are parked above the flags, so the
-        // block returns to the top of the main stack after each one.
-        emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // in
-        emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // out
-        emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // viewIn
-        emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // viewOut
-        fromAlt(4);
-        // Main: [in, out, viewIn, viewOut, block, count, segments]. Alt: [seenIn, seenOut, lastView, index].
-        emit(Opcodes.OP_2DUP);
-        emit(...requireRecordShape());
-
-        // Does this declaration read the index under test?
-        copyNumber(0);
-        copyAlt(3);
-        emit(Opcodes.OP_EQUAL);
-        emit(Opcodes.OP_IF);
+        // The declaration reads the record at `in`: `[.., table, out, in, flags, last]`.
+        pick(2);
+        pick(1);
+        entryAt();
+        pick(1);
+        emit(flag(0), Opcodes.OP_EQUAL, Opcodes.OP_IF);
         {
-          // A declaration that reads the index: the chain starts at the commitment the transaction spends, or
-          // carries on from the commitment the previous declaration ended at.
-          // A declaration carries on from the chain when the record has been seen at all: either the input side
-          // was read before, or the record was created at this index by an earlier declaration.
-          copyAlt(0); // seenIn
-          copyAlt(1); // seenOut
-          emit(Opcodes.OP_BOOLOR, Opcodes.OP_NOT);
-          emit(Opcodes.OP_IF);
-          {
-            copyAlt(3); // index
-            emit(Opcodes.OP_UTXOTOKENCOMMITMENT);
-            copy(3); // viewIn
-            emit(Opcodes.OP_EQUALVERIFY);
-            // The value floor applies where the record is written back: a kept record keeps what it held.
-            copyNumber(1); // out
-            emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN, Opcodes.OP_NOT);
-            emit(Opcodes.OP_IF);
-            copyAlt(3);
-            emit(Opcodes.OP_OUTPUTVALUE);
-            copyAlt(3);
-            emit(Opcodes.OP_UTXOVALUE);
-            emit(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
-            emit(Opcodes.OP_ENDIF);
-            replaceAlt(0, () => emit(Opcodes.OP_1)); // seenIn = 1
-          }
-          emit(Opcodes.OP_ELSE);
-          {
-            copy(2); // viewIn
-            copyAlt(2); // lastView
-            emit(Opcodes.OP_EQUALVERIFY);
-          }
-          emit(Opcodes.OP_ENDIF);
-
-          // Where the record goes: kept at its own index, or deleted. The shape check already refused a move.
-          copyNumber(1); // out
-          copyAlt(3);
-          emit(Opcodes.OP_EQUAL);
-          emit(Opcodes.OP_IF);
-          {
-            replaceAlt(2, (held) => copy(3, held)); // lastView = viewOut
-            replaceAlt(1, () => emit(Opcodes.OP_1)); // seenOut = 1
-          }
-          emit(Opcodes.OP_ELSE);
-          {
-            replaceAlt(2, () => emit(absent())); // a deletion ends the chain
-            replaceAlt(1, () => emit(Opcodes.OP_0));
-          }
-          emit(Opcodes.OP_ENDIF);
+          // Not seen yet: the chain starts at the commitment the transaction spends.
+          pick(2);
+          emit(Opcodes.OP_UTXOTOKENCOMMITMENT);
+          pick(7); // viewIn
+          emit(Opcodes.OP_EQUALVERIFY);
+          // The value floor applies where the record is written back: a kept record keeps what it held.
+          pick(3);
+          emit(Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
+          pick(2);
+          emit(Opcodes.OP_OUTPUTVALUE);
+          pick(3);
+          emit(Opcodes.OP_UTXOVALUE, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY, Opcodes.OP_ENDIF);
+          emit(Opcodes.OP_SWAP, flag(SEEN_IN), Opcodes.OP_OR, Opcodes.OP_SWAP);
         }
         emit(Opcodes.OP_ELSE);
         {
-          // A declaration that does not read the index can still create the record at it.
-          copyNumber(1); // out
-          copyAlt(3);
-          emit(Opcodes.OP_EQUAL);
-          emit(Opcodes.OP_IF);
-          {
-            copyNumber(0); // in
-            emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN);
-            emit(Opcodes.OP_VERIFY); // a created record has no index to be read at
-            copy(2); // viewIn
-            emit(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY); // and it starts from nothing
-            copyAlt(1); // seenOut
-            emit(Opcodes.OP_NOT, Opcodes.OP_VERIFY); // and it is created once
-            replaceAlt(2, (held) => copy(3, held)); // lastView = viewOut
-            replaceAlt(1, () => emit(Opcodes.OP_1)); // seenOut = 1
-          }
-          emit(Opcodes.OP_ENDIF);
+          // Seen: it carries on from the view the record was last declared with.
+          pick(6); // viewIn
+          pick(1);
+          viewAt(14);
+          emit(Opcodes.OP_EQUALVERIFY);
         }
         emit(Opcodes.OP_ENDIF);
-
-        // The four fields have been read and judged; the layout is back to [block, count, segments].
-        emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
-        emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_1SUB, Opcodes.OP_SWAP);
-        // The loop repeats until this is true, so the condition is "no declaration is left".
-        emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
-        emit(Opcodes.OP_UNTIL);
+        // Where the record goes: kept at its own index, or deleted, which ends the chain.
+        emit(Opcodes.OP_DROP);
+        pick(2);
+        pick(2);
+        emit(Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+        emit(flag(SEEN_OUT), Opcodes.OP_OR);
+        viewOutOffset(4);
+        emit(Opcodes.OP_ELSE);
+        emit(flag(0xff ^ SEEN_OUT), Opcodes.OP_AND, Opcodes.OP_0);
+        emit(Opcodes.OP_ENDIF);
+        packEntry();
+        roll(3);
+        pick(2);
+        writeEntry();
+      }
+      emit(Opcodes.OP_ELSE);
+      {
+        pick(1);
+        emit(Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
+        {
+          // No input index: the record is created at `out`, from nothing, and once.
+          pick(4); // viewIn
+          emit(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
+          pick(2);
+          pick(2);
+          entryAt();
+          emit(Opcodes.OP_DROP);
+          hasFlag(SEEN_OUT);
+          emit(Opcodes.OP_NOT, Opcodes.OP_VERIFY, flag(SEEN_OUT), Opcodes.OP_OR);
+          viewOutOffset(4);
+          packEntry();
+          roll(3);
+          pick(3);
+          writeEntry();
+        }
+        emit(Opcodes.OP_ELSE);
+        // No index at all, which the shape check already refused.
+        roll(2);
+        emit(Opcodes.OP_ENDIF);
       }
       emit(Opcodes.OP_ENDIF);
-      // Main: [block, 0, segments]
-      emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP);
-      emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_1SUB, Opcodes.OP_SWAP);
-      emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
-      emit(Opcodes.OP_UNTIL);
+      // Main: [.., tail, viewOut, viewIn, at, out, in, table']: the table goes back, the fields go.
+      emit(Opcodes.OP_TOALTSTACK, Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_DROP);
+      roll(1);
+      emit(Opcodes.OP_1SUB, Opcodes.OP_SWAP);
+      // The loop repeats until this is true, so the condition is "no declaration is left".
+      pick(1);
+      emit(Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_UNTIL);
     }
-    // The spent counter goes, and the remainder leaves the declared event count, read as the tail walk read it.
-    emit(Opcodes.OP_NIP, ...takeFixedWidthField(2), Opcodes.OP_DROP, Opcodes.OP_BIN2NUM);
+    emit(Opcodes.OP_ENDIF, Opcodes.OP_NIP);
+    roll(1);
+    emit(Opcodes.OP_1SUB, Opcodes.OP_SWAP);
+    pick(1);
+    emit(Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_UNTIL);
+  }
+  // The spent counter goes, and the remainder leaves the declared event count, read as the tail walk read it.
+  emit(Opcodes.OP_NIP, ...takeFixedWidthField(2), Opcodes.OP_DROP, Opcodes.OP_BIN2NUM);
 
-    // The pass's closing checks: what the chain ended at, and the census at this index.
-    copyAlt(1); // seenOut
-    emit(Opcodes.OP_IF);
-    {
-      copyAlt(2); // lastView
-      copyAlt(3); // index
-      emit(Opcodes.OP_OUTPUTTOKENCOMMITMENT);
-      emit(Opcodes.OP_EQUALVERIFY);
-    }
-    emit(Opcodes.OP_ENDIF);
-    emit(...indexCensusScript('input', addressPayloadOffset));
-    emit(...indexCensusScript('output', addressPayloadOffset));
-
-    // The pass's own values go with it; the index is the loop's.
-    fromAlt(3);
-    emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
-    emit(Opcodes.OP_FROMALTSTACK);
-
-    // [seen, declared, index]: a bare own-category output is counted, and the count never passes the events listed.
+  // Every index once. Main: [section, length, table, address, declared, seen, index].
+  emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_SWAP);
+  emit(Opcodes.OP_0, Opcodes.OP_0);
+  emit(Opcodes.OP_BEGIN);
+  {
+    pick(4);
+    pick(1);
+    entryAt();
+    // [.., index, flags, last]: a record written back ends at the commitment the transaction writes.
+    emit(Opcodes.OP_SWAP);
+    hasFlag(SEEN_OUT);
+    emit(Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_IF, Opcodes.OP_DUP);
+    viewAt(9);
+    pick(3);
+    emit(Opcodes.OP_OUTPUTTOKENCOMMITMENT, Opcodes.OP_EQUALVERIFY, Opcodes.OP_ENDIF);
+    emit(Opcodes.OP_DROP);
+    // [.., table, address, declared, seen, index, flags]: the census at the index, on either side.
+    emit(...indexCensusScript('input', 4), ...indexCensusScript('output', 4));
+    emit(Opcodes.OP_DROP);
+    // [.., declared, seen, index]: a bare own-category output is counted, and the count never passes the events
+    // listed.
     emit(Opcodes.OP_DUP, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_LESSTHAN, Opcodes.OP_IF);
     emit(Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY);
     emit(num(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP, Opcodes.OP_EQUAL);
     emit(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
-    emit(num(3), Opcodes.OP_ROLL, Opcodes.OP_ADD, Opcodes.OP_ROT);
+    emit(Opcodes.OP_ROT, Opcodes.OP_ADD);
+    pick(2);
     emit(Opcodes.OP_OVER, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY, Opcodes.OP_SWAP);
   }
   emit(Opcodes.OP_1ADD);
@@ -1096,60 +1097,54 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
   emit(Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX);
   emit(Opcodes.OP_GREATERTHANOREQUAL);
   emit(Opcodes.OP_UNTIL);
-  emit(Opcodes.OP_2DROP);
+  emit(Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_DROP);
   return new Uint8Array(bytes);
 }
 
 /**
- * Requires the transaction to carry a state token at the index under test exactly when the pass said it does.
+ * Requires the transaction to carry a state token at the index under test exactly when the walk said it does.
  *
- * The index is visited whatever side it names, and the side that has no item at that index is skipped rather than
- * read. A validator of the contract's own category is recreated in place at the contract address carrying the same
- * mutable token a record does with an empty commitment, and that index is not a record: the census admits exactly
- * that token beside the ones the pass saw.
+ * Entry and exit `[.., index, flags]`, where `flags` is the index's settlement entry flag byte and the contract
+ * address the walk read once sits `addressDepth` items beneath `flags`. The index is visited whatever side it names,
+ * and the side that has no item at that index is skipped rather than read. A validator of the contract's own category
+ * is recreated in place at the contract address carrying the same mutable token a record does with an empty
+ * commitment, and that index is not a record: the census admits exactly that token beside the ones the walk saw.
  */
-function indexCensusScript(side: 'input' | 'output', addressPayloadOffset: number): number[] {
+function indexCensusScript(side: 'input' | 'output', addressDepth: number): number[] {
   const countOpcode = side === 'input' ? Opcodes.OP_TXINPUTCOUNT : Opcodes.OP_TXOUTPUTCOUNT;
   const otherCountOpcode = side === 'input' ? Opcodes.OP_TXOUTPUTCOUNT : Opcodes.OP_TXINPUTCOUNT;
   const tokenOpcode = side === 'input' ? Opcodes.OP_UTXOTOKENCATEGORY : Opcodes.OP_OUTPUTTOKENCATEGORY;
-  const flagDepth = side === 'input' ? 0 : 1;
+  const bit = encodeDataPush(new Uint8Array([side === 'input' ? SEEN_IN : SEEN_OUT]));
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
-  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-  const copyAlt = (depth: number): void => {
-    for (let item = 0; item <= depth; item += 1) emit(Opcodes.OP_FROMALTSTACK);
-    emit(Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK);
-    for (let held = 0; held < depth; held += 1) emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
-  };
+  const pick = (depth: number): void => { emit(encodeDataPush(scriptNumber(depth)), Opcodes.OP_PICK); };
 
-  // The index under test is at alt depth 3, and the flag that says whether this side carries the record at 0.
-  copyAlt(3);
+  pick(1);
   emit(countOpcode, Opcodes.OP_LESSTHAN);
   emit(Opcodes.OP_IF);
   {
-    // What the transaction carries at the index, against the token a record is pinned with.
-    copyAlt(3);
-    emit(tokenOpcode);
-    emit(...mutableRecordPin());
-    emit(Opcodes.OP_EQUAL);
-    // The flag the pass ended at.
-    copyAlt(flagDepth);
-    emit(Opcodes.OP_EQUAL);
+    // What the transaction carries at the index, against the token a record is pinned with, and the flag the walk
+    // ended at.
+    pick(1);
+    emit(tokenOpcode, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+    pick(1);
+    emit(bit, Opcodes.OP_AND, bit, Opcodes.OP_EQUAL, Opcodes.OP_EQUAL);
     // Or a validator of the contract's own category, recreated in place at the contract address: both sides exist
     // at the index, both locks are the address, and both tokens are the mutable one a record carries, with the
     // empty commitment a validator is deployed with.
-    copyAlt(3);
+    pick(2);
     emit(countOpcode, Opcodes.OP_LESSTHAN);
-    copyAlt(3);
-    emit(otherCountOpcode, Opcodes.OP_LESSTHAN);
-    emit(Opcodes.OP_BOOLAND);
+    pick(3);
+    emit(otherCountOpcode, Opcodes.OP_LESSTHAN, Opcodes.OP_BOOLAND);
     emit(Opcodes.OP_IF);
     {
       // One copy of the index serves every read: `[index, admitted]`, the index dropped at the end.
-      copyAlt(3);
-      emit(Opcodes.OP_DUP, Opcodes.OP_UTXOBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
-      emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
-      emit(Opcodes.OP_BOOLAND);
+      pick(2);
+      emit(Opcodes.OP_DUP, Opcodes.OP_UTXOBYTECODE);
+      pick(addressDepth + 3);
+      emit(Opcodes.OP_EQUAL, Opcodes.OP_OVER, Opcodes.OP_OUTPUTBYTECODE);
+      pick(addressDepth + 4);
+      emit(Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
       emit(Opcodes.OP_OVER, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
       emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
       emit(Opcodes.OP_OVER, Opcodes.OP_UTXOTOKENCOMMITMENT, Opcodes.OP_0, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);

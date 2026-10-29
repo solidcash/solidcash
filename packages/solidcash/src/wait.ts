@@ -23,6 +23,9 @@ export function attachWait(details: TransactionDetails, provider: NetworkProvide
       }
     }
     if (!known) throw new Error(`Transaction ${details.txid} was not confirmed within the wait timeout.`);
+    // The chain keeps no transaction that failed, so a known one succeeded.
+    details.status ??= 1;
+    details.blockNumber ??= await provider.getBlockHeight();
 
     if (confirmations > 1) {
       const start = await provider.getBlockHeight();

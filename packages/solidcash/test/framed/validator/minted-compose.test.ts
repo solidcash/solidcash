@@ -154,8 +154,8 @@ function proxyMaster(): DraftMintedMaster {
 }
 
 /** The full shape: a minted proxy root delegates to an implementation frame that calls the writer, while creating
- * the proxy's record. Participants are the validator (0), its facet (1), the implementation master (2) and the
- * writer master (3); the minted proxy is output 4 and the created record output 5. */
+ * the proxy's record. Participants are the validator (0), its two facets (1 and 2), the implementation master (3)
+ * and the writer master (4); the minted proxy is output 5 and the created record output 6. */
 function fullPlan(): CompositionDraftPlan {
   const writerDraft: DraftMaster = {
     master: WRITER_MASTER,
@@ -209,8 +209,8 @@ function fullPlan(): CompositionDraftPlan {
     }],
     retval: new Uint8Array(0),
     segments: [
-      [{ in: INDEX_NONE, out: 5, viewIn: new Uint8Array(0), viewOut: RECORD_COMMITMENT }],
-      [{ in: INDEX_NONE, out: 5, viewIn: RECORD_COMMITMENT, viewOut: RECORD_COMMITMENT }],
+      [{ in: INDEX_NONE, out: 6, viewIn: new Uint8Array(0), viewOut: RECORD_COMMITMENT }],
+      [{ in: INDEX_NONE, out: 6, viewIn: RECORD_COMMITMENT, viewOut: RECORD_COMMITMENT }],
     ],
     events: [],
     sends: [],
@@ -275,7 +275,7 @@ function fullPlan(): CompositionDraftPlan {
         masters: [],
         validator: {
           id: VALIDATOR,
-          settles: [{ category: proxyCategory, stateInputs: [], createdOutputs: [5] }],
+          settles: [{ category: proxyCategory, stateInputs: [], createdOutputs: [6] }],
         },
         state: [],
       },
@@ -294,7 +294,7 @@ function fullPlan(): CompositionDraftPlan {
     validator: {
       id: VALIDATOR,
       covers: ['impl', 'writer'],
-      settles: [{ category: proxyCategory, stateInputs: [], createdOutputs: [5] }],
+      settles: [{ category: proxyCategory, stateInputs: [], createdOutputs: [6] }],
       redeemScript: validatorRedeemScript(writerCategory, PROGRAM),
     },
   };
@@ -348,13 +348,14 @@ describe('the minted-master shape, as the composer builds it', () => {
     const draft = composeDraft(plan());
     const program = draft.programFor(WRITER_MASTER);
     const model = toModel(program);
-    // The composer lays the writer's master first, then its validator and facet, so the head is input 1.
+    // The composer lays the writer's master first, then its validator and two facets, so the head is input 1.
     const decided = decideValidator(model, { validatorTemplate: PROGRAM, validatorInputIndex: 1 });
     expect(decided.accepted).toBe(true);
 
-    // The writer's caller is the minted proxy master, and its origin is INDEX_NONE.
+    // The writer's caller is the minted proxy master, the output after those four participants, and its origin is
+    // INDEX_NONE.
     const writerBlock = draft.blockOf(WRITER_MASTER);
-    expect(writerBlock.callerRef).toBe(mintedRef(3));
+    expect(writerBlock.callerRef).toBe(mintedRef(4));
     expect(writerBlock.originRef).toBe(INDEX_NONE);
 
     // The transcript is the genesis-shape codec, carrying the proxy's block inline at its minted output.
@@ -370,13 +371,13 @@ describe('the minted-master shape, as the composer builds it', () => {
     const mintedBlock = draft.blockOf(PROXY_MASTER);
     expect(mintedBlock.callerRef).toBe(INDEX_NONE);
     expect(mintedBlock.originRef).toBe(INDEX_NONE);
-    expect(mintedBlock.calls[0]!.calleeRef).toBe(2);
-    // The implementation master is entered by the minted root (flagged reference to output 4) with an INDEX_NONE
-    // origin, and its segment creates the proxy record at the trailing output 5.
+    expect(mintedBlock.calls[0]!.calleeRef).toBe(3);
+    // The implementation master is entered by the minted root (flagged reference to output 5) with an INDEX_NONE
+    // origin, and its segment creates the proxy record at the trailing output 6.
     const implBlock = draft.blockOf(IMPL_MASTER);
-    expect(implBlock.callerRef).toBe(mintedRef(4));
+    expect(implBlock.callerRef).toBe(mintedRef(5));
     expect(implBlock.originRef).toBe(INDEX_NONE);
     expect(implBlock.segments[0]![0]!.in).toBe(INDEX_NONE);
-    expect(implBlock.segments[0]![0]!.out).toBe(5);
+    expect(implBlock.segments[0]![0]!.out).toBe(6);
   });
 });

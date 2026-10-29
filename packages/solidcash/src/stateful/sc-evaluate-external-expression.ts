@@ -521,8 +521,11 @@ export function evaluateExternalExpression(
       if (expression.operator === '+') return a + b;
       if (expression.operator === '-') return a - b;
       if (expression.operator === '*') return a * b;
-      if (expression.operator === '/') return a / b;
-      if (expression.operator === '%') return a % b;
+      // A division by zero reverts where the covenant computes it, so it has no value a plan could state.
+      if (expression.operator === '/') return b === 0n ? undefined : a / b;
+      if (expression.operator === '%') return b === 0n ? undefined : a % b;
+      // A constant such as `10**3`. The exponent is bounded before the power is taken, as a shift count is below.
+      if (expression.operator === '**') return b >= 0n && b <= 256n ? a ** b : undefined;
       if (expression.operator === '&') return a & b;
       if (expression.operator === '|') return a | b;
       if (expression.operator === '^') return a ^ b;

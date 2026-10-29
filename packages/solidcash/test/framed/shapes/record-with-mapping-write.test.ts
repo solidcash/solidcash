@@ -299,12 +299,13 @@ describe('an entry that keeps its record and writes a mapping batch', () => {
         : output)),
     };
     const vm = compositionMachine();
-    // The category is unshared and unsettled, so the master's own frame is what refuses the tamper.
-    const state = vm.evaluate({
-      inputIndex: participant(draft.layout, MASTER).index,
-      sourceOutputs: program.sourceOutputs, transaction,
-    });
-    expect(vm.stateSuccess(state)).not.toBe(true);
+    // The validator covers the master, so it settles the master's contract (V8) and refuses the tamper; the master
+    // leaves that settlement to it.
+    const at = (id: string): boolean | string => vm.stateSuccess(vm.evaluate({
+      inputIndex: participant(draft.layout, id).index, sourceOutputs: program.sourceOutputs, transaction,
+    }));
+    expect(at(VALIDATOR_ID)).not.toBe(true);
+    expect(at(MASTER)).toBe(true);
   });
 
   it('refuses the same plan with the state record declared after its groups', () => {

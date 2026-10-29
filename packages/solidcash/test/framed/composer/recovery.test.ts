@@ -356,7 +356,7 @@ describe('a composed framed recovery in a frame that runs on its caller\'s recor
     const outcome = composeAndDerive(plan, [artifacts.Proxy!, artifacts.Impl!], [rootOf('Proxy', '__fallback', 'proxy-1')]);
     for (const verdict of outcome.verdicts) expect(verdict.accepted, verdict.participant).toBe(true);
     expect(outcome.verdicts.map((verdict) => verdict.participant)).toStrictEqual(
-      ['proxy-1', 'validator', 'validator/1', 'record', 'impl-1', ...ids]);
+      ['proxy-1', 'validator', 'validator/1', 'validator/2', 'record', 'impl-1', ...ids]);
   }, 120_000);
 });
 

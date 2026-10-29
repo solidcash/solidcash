@@ -16,6 +16,7 @@ import {
   type ValidatorReasonName,
 } from '../../../../solidc/src/framed/validator/index.js';
 import { materialise, planComposition, type Composition, type CompositionPlan } from '../validator/fixture.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import { abbaPlan } from '../validator/plans.js';
 
 /** The bytes every master hashes and every address derives from. */
@@ -28,11 +29,14 @@ type VmProgram = Parameters<ReturnType<typeof machine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmSourceOutput = NonNullable<VmProgram['sourceOutputs']>[number];
 
-/** The relaxed local machine: a case decides what the program accepts, not what it costs. */
+/**
+ * The relaxed local machine: a case decides what the program accepts, not what it costs. A head is decided with its
+ * census facet, from the checkpoint the head computes, as a builder fills it.
+ */
 function machine(): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
-  return createVirtualMachineBch2026ForProvider(
+  return settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
 }
 
 /** The fixture's token shape as the machine states it. */

@@ -26,8 +26,11 @@ import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropPrefix,
   readOwnWitnessBlockScript,
+  skipRecordScript,
+  takeFixedWidthField,
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
+  takeRecordFieldsScript,
 } from './witness-reader.js';
 import { callSectionWalkScript } from './frame-tail.js';
 import { declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript } from './declared-view.js';
@@ -132,6 +135,13 @@ export interface BatchTargetsDerivationOptions {
    * count above its operands, the count on top, in place of `Trailing` and `Extra`.
    */
   readonly continues?: boolean;
+  /**
+   * Per target and key, in `keyDepths` order, whether the key is a Solidity `address`, which the slot hashes as its
+   * 20-byte identity, as the body's own key hash does (`emitMappingKeyIdentity`).
+   */
+  readonly identityKeys?: readonly (readonly boolean[])[];
+  /** The script that leaves an address's 20-byte identity in place of the address on top. */
+  readonly identityScript?: Uint8Array;
 }
 
 /**
@@ -208,6 +218,9 @@ class BatchTargetsDerivationBuilder {
       const keys = this.options.keyDepths[target]!;
       keys.forEach((depth, index) => {
         this.pickKey(depth, `key_${target}_${index}`);
+        if (this.options.identityKeys?.[target]?.[index] === true && this.options.identityScript !== undefined) {
+          this.raw(this.options.identityScript);
+        }
         this.unary(Opcodes.OP_SHA256, 'hash');
         if (index > 0) this.binary(Opcodes.OP_CAT, `key_hashes_${target}`);
       });
@@ -243,6 +256,9 @@ class BatchTargetsDerivationBuilder {
         this.raw(declaredSegmentsSkipScript(this.options.segmentIndex!));
       }
     }
+    // The segment leads with its length: cut it out alone, so the record list ends where the segment does.
+    this.raw(takeFixedWidthField(2));
+    this.op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT, Opcodes.OP_DROP);
     this.takeFixedField(2, 'record_count');
     // The declared count is parked beneath the operands the walk parks, and checked once they are back.
     this.op(Opcodes.OP_SWAP);
@@ -275,12 +291,7 @@ class BatchTargetsDerivationBuilder {
    * The list is the item on top, so each field read and drop leaves it in place: the modelled stack is unchanged.
    */
   private skipLeadingStateRecords(): void {
-    for (let record = 0; record < (this.options.leadingRecords ?? 0); record += 1) {
-      this.dropFixedField(2); // in
-      this.dropFixedField(2); // out
-      this.dropLengthField32(); // viewIn
-      this.dropLengthField32(); // viewOut
-    }
+    for (let record = 0; record < (this.options.leadingRecords ?? 0); record += 1) this.raw(skipRecordScript());
   }
 
   /** Derives one target's operands from its record group while the frame stays put. */
@@ -289,10 +300,7 @@ class BatchTargetsDerivationBuilder {
     this.pick(`slot_${target}`);
     this.toAlt(`slot_result_${target}`);
 
-    this.takeFixedField(2, `in0_${target}`);
-    this.takeFixedField(2, `out0_${target}`);
-    this.takeLengthField32(`view_in0_${target}`);
-    this.takeLengthField32(`view_out0_${target}`);
+    this.takeRecord(`in0_${target}`, `out0_${target}`, `view_in0_${target}`, `view_out0_${target}`);
 
     // The first record's written node carries the target slot exactly when the target is rewritten in place.
     this.pick(`view_out0_${target}`);
@@ -327,21 +335,21 @@ class BatchTargetsDerivationBuilder {
    * Leaves whether the record after the group's first is the node the target's insert creates: one no input holds,
    * declared from the empty view, whose view carries the target's slot.
    *
-   * The walk's list runs on past the segment into the rest of the block, so the bytes after the group may be another
-   * section's, of any shape: a copy is read, every field only where the bytes hold it, and anything that is not such
-   * a record reads as none.
+   * The group may be the segment's last, so the bytes after it may hold nothing: a copy is read, every field only
+   * where the bytes hold it, and anything that is not such a record reads as none.
    */
   private nextRecordCarriesSlot(target: number): void {
     this.pick('records');
     // An in, an out and the two length fields of the views.
-    this.op(Opcodes.OP_SIZE); this.num(12); this.op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
+    this.op(Opcodes.OP_SIZE); this.num(8); this.op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
     this.num(2); this.op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP);
     this.raw(encodeDataPush(INDEX_NONE_BYTES)); this.op(Opcodes.OP_EQUAL, Opcodes.OP_SWAP); // [none, rest]
     this.num(2); this.op(Opcodes.OP_SPLIT, Opcodes.OP_NIP); // out
-    this.num(4); this.op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP);
-    this.raw(encodeDataPush(new Uint8Array(4))); this.op(Opcodes.OP_EQUAL); // the empty view in: [none, rest, empty]
+    this.num(2); this.op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP);
+    this.raw(encodeDataPush(new Uint8Array(2))); this.op(Opcodes.OP_EQUAL); // the empty view in: [none, rest, empty]
     this.op(Opcodes.OP_ROT, Opcodes.OP_BOOLAND, Opcodes.OP_SWAP); // [created, rest]
-    this.num(4); this.op(Opcodes.OP_SPLIT, Opcodes.OP_NIP); // the view out's length
+    // The view out's length; the empty view in takes no bytes, so the view out follows it.
+    this.num(2); this.op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
     this.op(Opcodes.OP_SIZE); this.num(32); this.op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_IF);
     this.num(32); this.op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
     // Two items stand where the copy did: the flag beneath the view's slot.
@@ -406,10 +414,7 @@ class BatchTargetsDerivationBuilder {
   /** A relinked predecessor then a created node: the predecessor proves the link and is recreated at its output. */
   private deriveInsert(target: number): void {
     this.drop(); // the compared viewOut copy
-    this.takeFixedField(2, `in1_${target}`);
-    this.takeFixedField(2, `out1_${target}`);
-    this.takeLengthField32(`view_in1_${target}`);
-    this.takeLengthField32(`view_out1_${target}`);
+    this.takeRecord(`in1_${target}`, `out1_${target}`, `view_in1_${target}`, `view_out1_${target}`);
     this.pushProofCoordinate(target);
     this.pushRecordsOwner('records_owner');
     this.binary(Opcodes.OP_SUB, 'proof');
@@ -608,9 +613,13 @@ class BatchTargetsDerivationBuilder {
     this.op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
   }
 
-  private takeLengthField32(name: string): void {
-    this.raw(takeLengthPrefixedField32());
-    this.leaveField(name);
+  /**
+   * Takes one record off the record list on top, leaving its in, out, viewIn and viewOut beneath the rest of the
+   * list, each under its name.
+   */
+  private takeRecord(inName: string, outName: string, viewInName: string, viewOutName: string): void {
+    this.raw(takeRecordFieldsScript());
+    for (const name of [inName, outName, viewInName, viewOutName]) this.leaveField(name);
   }
 
   private dropLengthField(): void {

@@ -290,6 +290,16 @@ class ActivationSerializer {
     this.visible = entry.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   }
 
+  /**
+   * `value` as the body holds it where `statement` runs, a statement on no branch of the body's top level, or
+   * undefined when the frame's facts do not state it there.
+   */
+  valueAt(statement: Node, value: ExpressionNode): ExternalCallExpression | undefined {
+    const path = pathTo(this.entry.body, statement);
+    if (path === undefined || path.guards.length > 0) return undefined;
+    return this.serialize(value, { prior: path.prior, following: new Set() });
+  }
+
   /** The conjunction of the predicates on the path to `write`, or undefined when one is not the frame's to decide. */
   activationOf(write: Node): ExternalCallExpression | undefined {
     const path = pathTo(this.entry.body, write);
@@ -494,6 +504,37 @@ export function framedWriteActivation(
   const write = framedSlotWrite(entry, slotIndex);
   const activation = write === undefined ? undefined : new ActivationSerializer(entry, constants).activationOf(write);
   return activation ?? UNDECIDED_WRITE_ACTIVATION;
+}
+
+/** One state variable a framed body leaves at a value its frame's own facts state (`framedStateWrites`). */
+export interface FramedStateWrite {
+  readonly name: string;
+  readonly value: ExternalCallExpression;
+}
+
+/**
+ * The scalar state a framed body leaves wherever it completes, as the frame's own facts state it: each state
+ * variable the body assigns once, at its top level — on no branch and in no loop — with the value serialized where
+ * the body assigns it. A planner reads a later frame of the contract in the same transaction against these, since the
+ * records an earlier frame writes are not the deployment's yet. A variable any other statement writes, or a value the
+ * frame's facts do not state, is left out.
+ */
+export function framedStateWrites(
+  entry: FunctionDefinitionNode,
+  constants: ReadonlyMap<string, ExpressionNode>,
+): readonly FramedStateWrite[] {
+  const statements = entry.body?.statements ?? [];
+  if (entry.body === undefined) return [];
+  const serializer = new ActivationSerializer(entry, constants);
+  const writes: FramedStateWrite[] = [];
+  for (const statement of statements) {
+    if (!(statement instanceof StateAssignNode)) continue;
+    const others = statements.filter((other) => other !== statement);
+    if (namesWritten(others).has(statement.name)) continue;
+    const value = serializer.valueAt(statement, statement.expression);
+    if (value !== undefined) writes.push({ name: statement.name, value });
+  }
+  return writes;
 }
 
 /**

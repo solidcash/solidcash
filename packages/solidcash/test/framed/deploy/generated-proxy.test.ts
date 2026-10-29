@@ -137,10 +137,10 @@ describe('a generated proxy', () => {
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
-    // The derived hop spends the proxy's master, its validator and facet, the implementation's master and the
+    // The derived hop spends the proxy's master, its validator and two facets, the implementation's master and the
     // record, then the deployer's own coin. It is never broadcast: the proxy's genesis mints what it wrote.
     expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
-    expect(deployment.initialize.transaction.inputs.length).toBe(6);
+    expect(deployment.initialize.transaction.inputs.length).toBe(7);
 
     // The entry computed the state it wrote: the flag set and the version written, with the address still there.
     const written = commitment(artifacts.Impl!.stateLayout!, {

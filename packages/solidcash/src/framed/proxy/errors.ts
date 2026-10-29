@@ -13,3 +13,13 @@ export class FramedProxyDeployError extends Error {
     super(message);
   }
 }
+
+/**
+ * A low-level call the planner cannot place because its callee has no body to run for it: the EVM's call fails there,
+ * returning `false` to the caller, whose own check over its success refuses with `failedCallMessage`.
+ */
+export class FramedFailedCallSite extends FramedProxyDeployError {
+  public constructor(message: string, public readonly failedCallMessage: string) {
+    super(message);
+  }
+}

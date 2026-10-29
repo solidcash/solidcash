@@ -171,11 +171,13 @@ function expectMutatedRecordRefused(answered: CallResult): void {
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
       : output)),
   };
-  const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
-  expect(master).toBeGreaterThanOrEqual(0);
+  // The entry runs beside a validator that settles its contract (V8), so the validator holds the record's last
+  // declaration to the output: its census facet, which weighs every record's ends, is the input that refuses it.
+  const census = answered.verdicts.find((verdict) => verdict.id === 'validator/2');
+  expect(census?.accepted).toBe(true);
   const vm = compositionMachine();
   const state = vm.evaluate({
-    inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
+    inputIndex: census!.index, sourceOutputs: answered.sourceOutputs, transaction: mutated,
   });
   expect(vm.stateSuccess(state)).not.toBe(true);
 }

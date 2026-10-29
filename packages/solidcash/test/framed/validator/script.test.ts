@@ -27,13 +27,13 @@ import {
   validatorRedeemScript,
 } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import {
   MOCK_RELAXED_OPERATION_COST,
   MockNetworkProvider,
 } from '../../../src/network/mock/index.js';
 import { decideReference } from '../../../src/framed/validator/reference/index.js';
 import {
-  VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_REASONS,
   buildValidatorFacets,
   buildValidatorProgram,
@@ -80,9 +80,9 @@ const OP_COST_PER_BYTE = 800;
  * `runs the reference composition at the published operation-cost density` measures, and there it does fit.
  */
 const relaxedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvider> =>
-  createVirtualMachineBch2026ForProvider(
+  settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
 
 /**
  * The machine at the *published* operation-cost density, which `MockNetworkProvider`'s default carries.
@@ -93,7 +93,7 @@ const relaxedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvi
  * asserts the one fact that matters — that the reference composition's validator input still runs.
  */
 const publishedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvider> =>
-  createVirtualMachineBch2026ForProvider(new MockNetworkProvider());
+  settlingCensus(createVirtualMachineBch2026ForProvider(new MockNetworkProvider()));
 
 type VmProgram = Parameters<ReturnType<typeof relaxedMachine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -1025,15 +1025,16 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
-  test('refuses a call chain 31 levels deep, beside a chain 25 levels deep (V6)', () => {
-    // The head's visit recurses once per call level, three of the machine's 100 control-stack entries a level, as it
-    // gathers a settled contract's records in order. The derivation has no such bound and accepts both chains, so the
-    // refusal is the machine's limit, met at the head (the facet's walk is iterative and is not asked).
+  test('refuses a call chain 32 levels deep, beside a chain 25 levels deep (V6)', () => {
+    // The head's settlement walk recurses once per call level, three of the machine's 100 control-stack entries a
+    // level: the segment loop, the branch that visits the call's callee, and the invocation. The derivation has no
+    // such bound and accepts both chains, so the refusal is the machine's limit, met at the head (the facet's walk is
+    // iterative and is not asked).
     const shallow = laidOut(chainPlan(25));
     const shallowModelled = materialise(shallow);
     expect(derivationOf(shallowModelled, shallow.validatorIndex).accepted).toBe(true);
     expect(accepted(shallowModelled, shallow.validatorIndex)).toBe(true);
-    const deep = laidOut(chainPlan(31));
+    const deep = laidOut(chainPlan(32));
     const modelled = materialise(deep);
     expect(derivationOf(modelled, deep.validatorIndex).accepted).toBe(true);
     const verdict = inputVerdict(modelled, deep.validatorIndex);
@@ -1352,6 +1353,31 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a master minted at an output past the inputs (T53)', () => {
+    // An index past the inputs holds an output alone, so a master of a settled contract there is one the
+    // transaction mints. A master every spend of which names a validator leaves the pool to it, so the census
+    // refuses that output wherever it sits, not only over an input.
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const master = modelled.inputs.find((input) =>
+      input.token.hasNft && input.token.capability === TokenCapability.MINTING);
+    expect(master).toBeDefined();
+    const outputs = [...modelled.outputs];
+    while (outputs.length < modelled.inputs.length) {
+      outputs.push({
+        index: outputs.length, value: 1_000n, lockingBytecode: contractLockOf(seedBytes('plain-output', 8)),
+        token: emptyToken(),
+      });
+    }
+    outputs.push({ index: outputs.length, value: 1_000n, lockingBytecode: master!.lockingBytecode, token: master!.token });
+    const tampered: ModelledTransaction = { ...modelled, outputs };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_MINTING_NOT_RECREATED');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('runs the reference composition at the published operation-cost density', () => {
     // A measurement, not a gate. A validator is a head and the facets it binds, and each of those inputs runs its
     // own part on its own bytes: the real profile budgets 800 operation-cost units per byte of an input's own
@@ -1398,9 +1424,6 @@ describe('the validator program refuses each rule it enforces', () => {
     for (const input of measured) {
       expect(input.maximumOperationCost ?? 0, `validator input ${input.validatorInput}`).toBeGreaterThan(0);
     }
-    // The padding block is what buys an input's operation-cost budget; the number is reported with the rest so the
-    // comparison against it stays visible when this becomes a gate.
-    console.log('padding', VALIDATOR_INPUT_PADDING_BYTES);
   });
 
   // A measurement rather than a gate, so it runs at milestones (`FRAMED_FULL=1`).

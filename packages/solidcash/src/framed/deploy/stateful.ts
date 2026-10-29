@@ -45,7 +45,9 @@ import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
+import { registerFunctionSplit } from './split-registry.js';
 import { blockhashKeeperGenesisOutput } from '../../oracle/blockhash-keeper-deployment.js';
+import { labelNextBroadcast } from '../../tx-survey.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
 export class FramedDeployError extends Error {
@@ -91,8 +93,11 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + `Got vout ${options.fundingUtxo.vout}.`,
     );
   }
-  // The masters pin the oracle lock the contract's calls co-spend.
+  // The masters pin the oracle lock the contract's calls co-spend, each entry shard's as the logical program's.
   bindProviderBlockOracle(options.provider, artifact);
+  for (const program of [...options.functionSplit?.shards ?? [], ...options.functionSplit?.internalCuts ?? []]) {
+    bindProviderBlockOracle(options.provider, program.artifact);
+  }
 
   const funderLock = options.funder.generateLockingBytecode();
   // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the
@@ -358,7 +363,10 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     builder.outputs.pop();
   }
 
+  labelNextBroadcast(`deploy ${artifact.contractName}`);
   const tx = options.broadcast === false ? unbroadcastGenesis(builder) : await builder.send();
+  // Every later frame of this category runs the shard its selector names, at that shard's lock.
+  if (options.functionSplit !== undefined) registerFunctionSplit(options.provider, categoryId, options.functionSplit);
 
   // A framed artifact bakes its constructor arguments into the filled program the genesis published rather than
   // into the handle's redeem script, so the handle is built without repeating them.

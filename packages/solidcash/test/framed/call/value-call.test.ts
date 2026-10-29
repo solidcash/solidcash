@@ -4,10 +4,15 @@ import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/u
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import type { SnapshotRestorer } from '../../../src/network/MockNetworkProvider.js';
-import { satoshiContainerLockingBytecode, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
-  FramedCallError, callFramedEntry, sendFramedValue, type FramedCallResult,
+  drainedRunMarkerLockingBytecode, readFramedDeployment, satoshiContainerLockingBytecode, stateRecordLockingBytecode,
+} from '../../../src/framed/deploy/index.js';
+import {
+  FramedCallError, callFramedEntry, sendFramedValue, sendFramedValueFromSigner, type FramedCallResult,
 } from '../../../src/framed/call/index.js';
+import { Signer } from '../../../src/index.js';
+import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
+import { alicePriv } from '../../fixture/vars.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   addressOf, callerOf, containerValue, currentCaller, deploy, deployBeside, type Deployed,
@@ -81,6 +86,17 @@ describe('a value send to a deployed framed contract', () => {
     await expect(sendFramedValue({ ...callerOf(deployed), value: AMOUNT }))
       .rejects.toThrow(/contract "Plain" has no receive\(\)/);
   });
+
+  it('is sent from a signer, which pays it from its own coin as a handle\'s call does', async () => {
+    const deployed = await deployedVault();
+    const signer = new Signer(alicePriv, deployed.provider);
+    const sent = await sendFramedValueFromSigner({
+      provider: deployed.provider, artifact: vault, categoryId: deployed.categoryId, signer, value: AMOUNT,
+    });
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    const set = await readFramedDeployment(deployed.provider, deployed.categoryId, vault.stateLayout!);
+    expect(set.records[0]!.token!.nft!.commitment).toBe(received(AMOUNT));
+  });
 });
 
 describe('a call to a payable entry carrying value', () => {
@@ -115,6 +131,19 @@ const WALLET_SOURCE = 'pragma solidcash ^0.14.0;'
 
 const wallet = compileStringMulti(WALLET_SOURCE, { composition: 'framed' }).Wallet!;
 const deployedWallet = sharedDeployment(wallet);
+
+/**
+ * The output a contract's run of sends starts from when it keeps nothing: its drained run's marker, which carries no
+ * value, and the send to the caller right after it.
+ */
+function expectDrainedRun(result: FramedCallResult, categoryId: string, callerLock: Uint8Array): void {
+  const outputs = result.broadcast?.outputs ?? [];
+  const marker = binToHex(drainedRunMarkerLockingBytecode(categoryId));
+  const at = outputs.findIndex((output) => binToHex(output.lockingBytecode) === marker);
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(outputs[at]!.valueSatoshis).toBe(0n);
+  expect(binToHex(outputs[at + 1]!.lockingBytecode)).toBe(binToHex(callerLock));
+}
 
 /** The value the broadcast pays to the caller's own lock outside its change, which is the last output. */
 function paidToCaller(result: FramedCallResult, callerLock: Uint8Array): bigint {
@@ -158,6 +187,9 @@ describe('an entry that sends, paid from the contract\'s containers', () => {
     });
     expect(forward.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(forward, deployed.callerLock)).toBe(7_000n);
+    // It keeps nothing of the value, so no container stands up for it: the funder gives the contract nothing.
+    expect(containerValue(forward, deployed.categoryId)).toBe(0n);
+    expectDrainedRun(forward, deployed.categoryId, deployed.callerLock);
   });
 });
 
@@ -277,7 +309,26 @@ describe('an entry that pays a contract through its receive()', () => {
     expect(containerValue(result, deployed.categoryId)).toBe(13_000n);
   });
 
-  it('is refused by name when the recipient has no receive(), or is not among the externals', async () => {
+  it('pays a recipient the provider registers, which the call\'s externals do not name', async () => {
+    const deployed = await deployedPayer();
+    const vaultCategory = await deployBeside(deployed, payments.Vault!, '47'.repeat(31) + 'b9');
+    const vaultLock = binToHex(addressOf(payments.Vault!, vaultCategory));
+    // The recipient is registered with the provider as a project's deployment is (`ContractFactory`).
+    registerDeployment(deployed.provider, {
+      contractName: 'Vault', address: vaultLock, lockingBytecode: vaultLock,
+      contract: { artifact: payments.Vault!, categoryId: vaultCategory },
+    });
+    await sendFramedValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const result = await callFramedEntry({
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [addressOf(payments.Vault!, vaultCategory), 7_000n],
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Vault.__receive()', 'Payer.pay()']);
+    expect(containerValue(result, vaultCategory)).toBe(7_000n);
+  });
+
+  it('is refused by name when the recipient has no receive(), or neither the externals nor a registration name it', async () => {
     const deployed = await deployedPayer();
     // Both are refused from the artifacts and the call's externals, before any recipient deployment is read.
     const closedCategory = '48'.repeat(31) + 'b7';
@@ -291,7 +342,9 @@ describe('an entry that pays a contract through its receive()', () => {
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(payments.Vault!, '49'.repeat(32)), 7_000n],
-    })).rejects.toThrow(/entry "pay" sends to the contract at [0-9a-f]+, which the call's externals do not name/);
+    })).rejects.toThrow(
+      /entry "pay" sends to the contract at [0-9a-f]+, which neither the call's externals nor the provider's registrations name/,
+    );
   });
 });
 
@@ -321,8 +374,9 @@ describe('an entry that reads its own balance', () => {
     const emptied = await callFramedEntry({ ...(await currentCaller(deployed)), functionName: 'empty' });
     expect(emptied.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(emptied, deployed.callerLock)).toBe(25_000n);
-    // Both containers are spent; the one the send follows keeps only what the caller put in to stand it up.
-    expect(containerValue(emptied, deployed.categoryId)).toBe(1_000n);
+    // Both containers are spent and the contract keeps nothing, so its send follows the drained run's marker.
+    expect(containerValue(emptied, deployed.categoryId)).toBe(0n);
+    expectDrainedRun(emptied, deployed.categoryId, deployed.callerLock);
   });
 });
 

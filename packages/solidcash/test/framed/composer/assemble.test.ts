@@ -15,6 +15,8 @@ import { FrameKind } from '@solidcash/utils';
  */
 
 const CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xa5 : 0x5a));
+/** The callee contract's own category, which a validator that covers its master settles. */
+const VAULT_CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0xb6 : 0x6b));
 const USER_ID = 'user';
 const USER_INDEX = 0;
 const SENDER = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
@@ -46,6 +48,7 @@ const callerMaster = (calls: PlannedMaster['calls']): PlannedMaster => ({
   sends: [],
   argumentPushes: [],
   redeemScript: new Uint8Array([0x51, 0x52]),
+  category: CATEGORY,
 });
 
 /**
@@ -77,6 +80,7 @@ const calleeMaster = (
   sends: [],
   argumentPushes: [...argumentPushes],
   redeemScript: new Uint8Array([0x53, 0x54]),
+  category: overrides.contract === 'Ledger' ? CATEGORY : VAULT_CATEGORY,
   ...overrides,
 });
 
@@ -99,8 +103,7 @@ const planWithValidator = (): CompositionPlan => ({
   masters: [callerMaster([callToVault()]), calleeMaster([SELECTOR, ARG])],
   validator: {
     id: 'validator',
-    // B is covered although it is not settled: it has one master that self-settles, but the call into it still
-    // needs its edge bound.
+    // B is covered, so the call into it has its edge bound and the validator settles its contract too (V8).
     covers: ['Vault'],
     redeemScript: new Uint8Array([...CATEGORY, 0x01, 0x51, 0x52]),
     settles: [],
@@ -176,9 +179,12 @@ describe('assembling a composition', () => {
     // Ledger#0@0, Ledger#1@1, validator@2, DA@3, Vault#0@4. Ledger#0 is the only root and every master is covered.
     expect(transcript.roots).toStrictEqual([0]);
     expect(transcript.masters).toStrictEqual([0, 1, 4]);
-    expect(transcript.settles).toHaveLength(1);
+    // The plan settles the ledger; the vault, whose one master the validator covers, is settled from its block.
+    expect(transcript.settles).toHaveLength(2);
     expect(transcript.settles[0]!.stateInputs).toStrictEqual([3]);
     expect(transcript.settles[0]!.category.length).toBe(32);
+    expect(transcript.settles[1]!.category).toStrictEqual(VAULT_CATEGORY);
+    expect(transcript.settles[1]!.stateInputs).toStrictEqual([]);
   });
 
   it('leaves the validator reference absent for a standalone master', () => {

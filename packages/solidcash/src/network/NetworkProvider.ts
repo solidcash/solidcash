@@ -35,6 +35,11 @@ export interface ConsensusLimits {
   hashDigestIterationsPerByteStandard?: number;
   /** Nonstandard (consensus) hash-iteration allowance. Real BCH-2026 value: 3.5. See the note above. */
   hashDigestIterationsPerByteNonstandard?: number;
+  /**
+   * The most satoshis one output, or a transaction's inputs together, may hold. Real BCH value: 21 million coins
+   * (`MAX_MONEY`), which applies when this is absent; a development network may raise it to carry larger values.
+   */
+  maximumMoney?: bigint;
 }
 
 /** A live output as an in-process simulator's own ledger holds it. */

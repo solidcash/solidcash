@@ -43,7 +43,8 @@ const placeholders = artifact.composition!.placeholders;
 
 /** A deployment whose filled bytes and stated address need not agree, so the gate's read-back is what is asked. */
 function deployment(script: Uint8Array, address: Uint8Array): DeployedMaster {
-  return { script, address, lockingBytecode: encodeLockingBytecodeP2sh32(hash256(script)) };
+  // No CREATE2 identity: the contract presents its own address as `address(this)`.
+  return { script, address, self: address, lockingBytecode: encodeLockingBytecodeP2sh32(hash256(script)) };
 }
 
 /** The reference composition with its root frame presenting the other contract's own address. */

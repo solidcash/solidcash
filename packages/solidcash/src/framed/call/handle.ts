@@ -26,6 +26,7 @@
  * built on the state that one left rather than spending the same coin or master twice.
  */
 
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact, StateValue } from '@solidcash/utils';
 import {
   encodeFunctionArgument, normalizeSolidityBytesArgument, resolveAddressArguments, type FunctionArgument,
@@ -33,8 +34,10 @@ import {
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
-import { callFramedEntry, FramedCallError, type FramedCallResult } from './call.js';
+import { callFramedEntry, FramedCallError, sendFramedValue, type FramedCallResult } from './call.js';
 import { callFramedProxyEntry } from '../proxy/deploy.js';
+import { lockOfIdentity } from '../proxy/address-identity.js';
+import { registeredFramedAddresses } from '../proxy/external-calls.js';
 import { readFramedEntry, FramedReadError, type FramedReadResult } from '../read/index.js';
 import { FramedCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
 import { framedSendQueue, framedSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
@@ -48,7 +51,11 @@ export interface FramedHandleContract {
    * The ABI row the call names, whose `writesState` decides whether the call is a transaction or a read, and whose
    * `payable` modifier decides whether it may carry value.
    */
-  readonly abiEntry: { readonly writesState?: boolean; readonly modifiers?: readonly string[] };
+  readonly abiEntry: {
+    readonly writesState?: boolean;
+    readonly modifiers?: readonly string[];
+    readonly outputs?: readonly { readonly type: string; readonly name?: string }[];
+  };
   readonly categoryId: string;
   readonly provider: NetworkProvider;
   readonly signer?: Signer;
@@ -128,7 +135,9 @@ export class FramedFunctionCall {
     const named = artifact.abi.filter((entry) => entry.name === this.functionName);
     const entry = named.find((candidate) => visible(candidate).length === this.args.length) ?? named[0];
     if (entry === undefined) return this.args;
-    const resolved = await resolveAddressArguments(visible(entry), this.args, artifact.structs);
+    const resolved = await identifiedContracts(
+      this.contract.provider, visible(entry), await resolveAddressArguments(visible(entry), this.args, artifact.structs),
+    );
     const args = artifact.compiler?.options?.evmCompat === true
       ? resolved.map((arg, index) => normalizeSolidityBytesArgument(arg, visible(entry)[index]?.type ?? '')) : resolved;
     visible(entry).forEach((input, index) => {
@@ -254,7 +263,7 @@ export class FramedFunctionCall {
     onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
     const run: Promise<TransactionDetails | StateValue> = this.isRead()
-      ? this.readValue()
+      ? this.staticValue()
       : this.send();
     return run.then(onFulfilled, onRejected);
   }
@@ -274,7 +283,47 @@ export class FramedFunctionCall {
         `the read of "${this.functionName}" was refused, so it returned no value: ${read.objection ?? 'refused'}`,
       );
     }
-    return read.value;
+    return this.answer(read.values, read.value);
+  }
+
+  /**
+   * The value the entry answers with, as ethers' `staticCall` reports it: the decoded return, never broadcast.
+   *
+   * A read-only entry is read; a read the read path cannot plan — one that reaches a contract through an address
+   * its own state holds — is composed as a call instead, which plans every frame from the live deployments. A
+   * writing entry is composed without being sent, so what it answers is what the call would return.
+   */
+  public async staticValue(): Promise<StateValue> {
+    if (this.isRead()) {
+      try {
+        return await this.readValue();
+      } catch (error) {
+        if (!(error instanceof FramedReadError) || this.contract.signer === undefined) throw error;
+      }
+    }
+    const result = await this.compose();
+    if (!result.accepted) {
+      if (result.refusal?.innermost !== undefined) throw new FramedCompositionRefusedError(result.refusal);
+      const refused = result.verdicts.filter((verdict) => !verdict.accepted)
+        .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
+      throw new FramedCallError(`the call to "${this.functionName}" was refused, so it returned no value: ${refused}`);
+    }
+    return this.answer(result.values, result.value);
+  }
+
+  /** A return as a caller reads it: one value as itself, a tuple as an ethers-style result. */
+  private answer(values: readonly StateValue[], value: StateValue): StateValue {
+    const outputs = this.contract.abiEntry.outputs ?? [];
+    if (outputs.length <= 1) return value;
+    // A tuple return answers as an ethers-style result: the values in declaration order, each also under its name.
+    const tuple = [...values] as StateValue[] & Record<string, StateValue>;
+    outputs.forEach((output, index) => {
+      if (output.name === undefined || output.name === '' || output.name in tuple) return;
+      Object.defineProperty(tuple, output.name, {
+        value: values[index], enumerable: true, writable: true, configurable: true,
+      });
+    });
+    return tuple as unknown as StateValue;
   }
 
   /** The rejection arm of `then`, so a refused call can be handled where it is awaited. */
@@ -283,6 +332,68 @@ export class FramedFunctionCall {
   ): Promise<TransactionDetails | StateValue | TResult> {
     return this.then(undefined, onRejected);
   }
+}
+
+/**
+ * The arguments with each `address` given as the 20-byte identity a Solidity-compat read returns (D13) named as the
+ * contract that has it, when a framed deployment the provider registers does: the lock its own frames present, as a
+ * call's arguments name it (`lockOfIdentity`). An identity no registered contract has is a key's hash and stays as
+ * given, which the encoder reads as that key's P2PKH lock.
+ */
+async function identifiedContracts(
+  provider: NetworkProvider, inputs: readonly { readonly type: string }[], args: readonly FunctionArgument[],
+): Promise<FunctionArgument[]> {
+  const identityOf = (arg: FunctionArgument): Uint8Array | undefined => {
+    if (arg instanceof Uint8Array) return arg.length === 20 ? arg : undefined;
+    return typeof arg === 'string' && /^(0x)?[0-9a-fA-F]{40}$/.test(arg) ? hexToBin(arg.replace(/^0x/, '')) : undefined;
+  };
+  if (!args.some((arg, index) => /^address( payable)?$/.test(inputs[index]?.type ?? '') && identityOf(arg) !== undefined)) {
+    return [...args];
+  }
+  const { framedValidator } = await import('@solidcash/solidc/runtime');
+  const contracts = registeredFramedAddresses(provider, framedValidator.buildValidatorProgram());
+  return args.map((arg, index) => {
+    const identity = /^address( payable)?$/.test(inputs[index]?.type ?? '') ? identityOf(arg) : undefined;
+    if (identity === undefined || identity.every((byte) => byte === 0)) return arg;
+    const lock = lockOfIdentity(identity, contracts);
+    return lock.length === 25 ? arg : lock;
+  });
+}
+
+/**
+ * Sends `value` from `signer` to a deployed framed contract, which runs its `receive()`, else its payable
+ * `fallback()`, with the value, as an EVM transfer to a contract does (`sendFramedValue`). The send waits its turn
+ * behind the provider's earlier sends as a handle's call does, and one the contract refuses is reported as a refused
+ * call is: by the body's own reason when its publication names one.
+ */
+export async function sendFramedValueFromSigner(options: {
+  readonly provider: NetworkProvider;
+  readonly artifact: Artifact;
+  readonly categoryId: string;
+  readonly signer: Signer;
+  readonly value: bigint;
+}): Promise<TransactionDetails> {
+  const { provider, artifact, categoryId, signer, value } = options;
+  const resources = framedSendResources({ callerLockingBytecode: signer.getLockingBytecode(), categoryIds: [categoryId] });
+  const result = await framedSendQueue(provider).hold(resources, async () => {
+    const callerUtxo = await callerCoin(provider, signer);
+    if (callerUtxo === undefined) {
+      throw new FramedCallError(`the sender's address ${signer.getAddress()} holds no tokenless UTXO to pay the send with`);
+    }
+    return sendFramedValue({
+      provider, artifact, categoryId, callerUtxo, callerLockingBytecode: signer.getLockingBytecode(),
+      funder: signer.unlockP2PKH(), changeAddress: signer.getAddress(), value,
+    });
+  });
+  if (result.broadcast === undefined) {
+    if (result.refusal?.innermost !== undefined) throw new FramedCompositionRefusedError(result.refusal);
+    const refused = result.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
+    throw new FramedCallError(
+      `the value send to "${artifact.contractName}" was refused, so nothing was broadcast: ${refused}`,
+    );
+  }
+  return result.broadcast;
 }
 
 /**

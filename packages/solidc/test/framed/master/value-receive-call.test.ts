@@ -88,8 +88,11 @@ function verdicts(payment: Payment = {}): Record<'payer' | 'vault' | 'validator'
   const recipient = payment.recipient ?? { name: 'Vault', selector: RECEIVE_SELECTOR };
   const payerProgram = program('Payer', CATEGORY_PAYER, ADDRESS_PAYER);
   const vaultProgram = program(recipient.name, CATEGORY_VAULT, ADDRESS_VAULT);
+  // The validator settles both covered masters' contracts, and so weighs both contracts' containers (V7).
   const validator = validatorSpend(CATEGORY_PAYER, {
-    roots: [PAYER_INDEX], masters: [PAYER_INDEX, VAULT_INDEX], settles: [],
+    roots: [PAYER_INDEX],
+    masters: [PAYER_INDEX, VAULT_INDEX],
+    settles: [{ category: CATEGORY_PAYER, stateInputs: [] }, { category: CATEGORY_VAULT, stateInputs: [] }],
   });
   const facets = validatorFacetPlacements();
   const payerBlock: WitnessBlock = {
@@ -180,12 +183,12 @@ describe('a contract paying another contract through its receive(), compiled fra
     expect(verdicts({ payerIn: [], payerOut: [] })).toStrictEqual({ payer: true, vault: true, validator: true });
   });
 
-  it('is refused by the recipient when its containers receive less than the value', () => {
-    expect(verdicts({ vaultOut: [AMOUNT - 1n] }).vault).toBe(false);
+  it('is refused by the validator when the recipient\'s containers receive less than the value (V7)', () => {
+    expect(verdicts({ vaultOut: [AMOUNT - 1n] })).toStrictEqual({ payer: true, vault: true, validator: false });
   });
 
-  it('is refused by the payer when its containers give up more than the call carries', () => {
-    expect(verdicts({ payerOut: [30_000n] }).payer).toBe(false);
+  it('is refused by the validator when the payer\'s containers give up more than the call carries (V7)', () => {
+    expect(verdicts({ payerOut: [30_000n] })).toStrictEqual({ payer: true, vault: true, validator: false });
   });
 
   it('is refused by the payer when the record carries another value than the amount', () => {

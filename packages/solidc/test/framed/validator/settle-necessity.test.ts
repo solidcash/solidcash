@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
 import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../../../../solidcash/src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../../solidcash/src/network/createVirtualMachine.js';
+import { fillCensusCheckpoints } from '../../../../solidcash/src/framed/composer/census.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
@@ -35,6 +36,7 @@ import {
   type FramedTransaction,
   type TokenShape,
 } from '../../../src/framed/validator/index.js';
+import { seededCategory } from '../master/validator-input.js';
 import { compositionMachine } from '../machine.js';
 import { validatorSpend } from '../master/validator-input.js';
 
@@ -44,9 +46,10 @@ import { validatorSpend } from '../master/validator-input.js';
  * The derivation refuses a settle entry for a contract nothing needs settled, and the shipped program decides the
  * same rule. The composition below is entered through the shipped composer and carried through its derivation and
  * the real machine: one user-entered Caller whose body calls Callee's entry twice, so Callee is the contract with
- * two masters and Caller the one with a single master and no borrowed context. Callee therefore has to be settled
- * and Caller must not be; the case adds Caller to the settle list and requires both sides to refuse it, and the
- * controls require the same composition without that entry, and Callee's own settlement, to stay accepted.
+ * two masters and Caller the one with a single master. Both are covered, so both have to be settled, and the composer
+ * settles Caller from its own block where the plan names only Callee. The case adds a contract no covered master
+ * belongs to and requires both sides to refuse it, and the controls require the same composition without that
+ * entry to stay accepted.
  */
 
 const CALLER_LABEL = 'settle necessity caller';
@@ -71,6 +74,8 @@ const caller = contracts.Caller!;
 const callee = contracts.Callee!;
 const CATEGORY_CALLER = caller.category;
 const CATEGORY_CALLEE = callee.category;
+/** A category no covered master belongs to and no frame borrows. */
+const CATEGORY_STRANGER = seededCategory('settle necessity stranger');
 const PROGRAM = buildValidatorProgram();
 const FACETS = buildValidatorFacets();
 /** How many inputs the validator runs in: the head plus the facets the head binds after it. */
@@ -219,7 +224,8 @@ function compose(settles: readonly PlannedSettlement[]): Composed {
   deriveComposition([rootOf('Caller', 'enter', CALLER_ID)], host);
   requireLearnedViews(draft);
   const head = participant(draft.layout, VALIDATOR_ID).index;
-  const program = draft.programFor(CALLER_ID);
+  // The census facet carries the checkpoint the head computes, as a builder fills it.
+  const program = fillCensusCheckpoints(draft.programFor(CALLER_ID), draft.layout.participants);
   const composed = { program, transaction: program.transaction!, head };
   composedBySettles.set(settles, composed);
   return composed;
@@ -254,7 +260,7 @@ describe('a settlement naming the contract two covered masters run on', () => {
   it('accepts it on the chain profile and in the derivation', () => {
     const { program, head } = compose(settles);
     expect(derivationReason(program, head)).toBeUndefined();
-    expect(validatorVerdicts(program, head)).toStrictEqual([true, true]);
+    expect(validatorVerdicts(program, head)).toStrictEqual([true, true, true]);
   });
 
   it('fits the validator inputs inside the chain input cap', () => {
@@ -265,7 +271,7 @@ describe('a settlement naming the contract two covered masters run on', () => {
   });
 
   it('is the contract with two masters, while Caller has one', () => {
-    // Two masters of Callee is what forces it to be settled; Caller's single master is what means nothing needs it.
+    // Callee has two masters and Caller one; a covered master's contract is settled either way.
     const { program } = compose(settles);
     // A master carries its category with the minting capability; the validator's mutable token does not.
     const masters = toModel(program).inputs.filter((input) => input.token.capability === 2);
@@ -276,9 +282,9 @@ describe('a settlement naming the contract two covered masters run on', () => {
   });
 });
 
-/** The gap: a settle entry for Caller, whose one master and no borrowed context means nothing needs it. */
+/** The gap: a settle entry for a contract no covered master belongs to and no frame borrows. */
 describe('a settlement that also names a contract nothing needs settled', () => {
-  const settles: readonly PlannedSettlement[] = [NEEDED_SETTLE, { category: CATEGORY_CALLER, stateInputs: [] }];
+  const settles: readonly PlannedSettlement[] = [NEEDED_SETTLE, { category: CATEGORY_STRANGER, stateInputs: [] }];
 
   it('is refused by the derivation with the rule', () => {
     const { program, head } = compose(settles);
@@ -287,7 +293,8 @@ describe('a settlement that also names a contract nothing needs settled', () => 
 
   it('is refused by the shipped program on the chain profile', () => {
     const { program, head } = compose(settles);
-    // The head accepts: the settle rule runs in the facet at `head + 1`, which the head binds and which refuses.
-    expect(validatorVerdicts(program, head)).toStrictEqual([true, false]);
+    // The head accepts, since the transaction holds nothing of the stranger: the settle rule runs in the facet at
+    // `head + 1`, which the head binds and which refuses. The census finds nothing of the stranger's to weigh.
+    expect(validatorVerdicts(program, head)).toStrictEqual([true, false, true]);
   });
 });

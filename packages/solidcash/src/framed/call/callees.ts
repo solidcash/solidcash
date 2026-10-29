@@ -34,10 +34,13 @@
  * from the views it left.
  */
 
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, sha256, witnessKindOf, type Artifact, type FunctionSplitBundle,
-  type PublishedWriteSegment, type RecordEntry,
+  bytesEqual, bytesToHex, FrameKind, INDEX_NONE, parsePushdataCommitment, sha256, witnessKindOf, type Artifact,
+  type FunctionSplitBundle, type PublishedWriteSegment, type RecordEntry,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
@@ -62,8 +65,9 @@ import {
   type RecoverySideCars,
   type TransactionLayout,
 } from '../composer/index.js';
+import { eventFundedAtLeastDust } from '../composer/dust.js';
 import {
-  entryRecordReadUnlock, eventCloseOf, eventLockingBytecode, eventSentinel, readComputedDeclaration,
+  entryRecordReadUnlock, eventChunkLockingBytecode, eventCloseOf, eventSentinel, readComputedDeclaration,
   stateRecordUnlockingBytecode, type FramedDeploymentSet,
 } from '../deploy/index.js';
 import {
@@ -71,15 +75,16 @@ import {
 } from '../proxy/deploy.js';
 import { EnclosingValueLearned, learnEnclosingValues } from '../proxy/enclosed-values.js';
 import { sharedNodeId } from '../proxy/entry-writes.js';
-import { FramedProxyDeployError } from '../proxy/errors.js';
+import { FramedFailedCallSite, FramedProxyDeployError } from '../proxy/errors.js';
+import { hopTrace, hopTraceOn } from '../proxy/hop-trace.js';
 import {
-  chainedNodeIds, deploymentStateValues, planHopExternalCalls, requireSatisfiableReachWrites, routingOf,
-  sharedNodeWritersBefore,
+  WrittenValueAwaited, calleeRepeatsSlot, chainedNodeIds, deploymentStateValues, planHopExternalCalls,
+  requireSatisfiableReachWrites, routingOf, sharedNodeWritersBefore,
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type FramedProxyExternal,
 } from '../proxy/external-calls.js';
-import { blockOracleSideCarId } from './block-oracle.js';
 import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
+import { sendRecipient } from './send-recipient.js';
 import {
   framedTokenSendSentinels, learnEmptyNftCommitment, learnTokenSend, unlearnedRun, type LearnedRun,
 } from './token-containers.js';
@@ -88,7 +93,8 @@ import {
 export class FramedCalleeError extends Error {
   public readonly name = 'FramedCalleeError';
 
-  public constructor(message: string) {
+  /** `failedCallMessage` is set for a low-level call the plan found failing (`FramedFailedCallSite`). */
+  public constructor(message: string, public readonly failedCallMessage?: string) {
     super(message);
   }
 }
@@ -99,6 +105,8 @@ export interface PlannedCallees {
   readonly calls: readonly DraftCall[];
   /** For each published call site of the entry, the position of its first call in `calls`, or `-1` for none. */
   readonly callBases: readonly number[];
+  /** Each site's calls' positions in `calls`, for an entry whose loop sites' calls interleave (`HopCallee`). */
+  readonly callPositions?: readonly (readonly number[])[];
   /** The callsite id of each published call site, parallel to `callBases`. */
   readonly callsiteIds: readonly number[];
   /**
@@ -129,6 +137,30 @@ export interface PlannedCallees {
    * return them, never enough to broadcast.
    */
   readonly blocked?: HopPlanBlock;
+  /**
+   * The refusal a run meets when a callee frame makes both writes of a slot its batch writes twice, the later kept as
+   * a skipped target (`calleeRepeatsSlot`): the call raises it for a run refused with no reason of its own.
+   */
+  readonly repeatedSlotRefusal?: FramedCalleeError;
+  /** The sends to a user's lock each callee frame that makes any lists, by master (`calleeListedSends`). */
+  readonly listedSends?: ReadonlyMap<string, CalleeListedSends>;
+}
+
+/**
+ * The sends to a user's lock a callee frame may make, which its frame lists as the entry lists its own: every send of
+ * its entry not to a contract, bar one its reach's facts decide the body skips (`HopCallee.skippedSends`).
+ */
+export interface CalleeListedSends {
+  /** How many outputs the frame lists, fewer than it may make once a run showed it made fewer. */
+  readonly count: number;
+  /** How many of those no branch guards, which every run of the body to its end makes. */
+  readonly unconditional: number;
+}
+
+/** A listed send of a callee frame as its own pin handed it back: a field is absent while it carries its sentinel. */
+export interface LearnedCalleeSend {
+  readonly lock?: Uint8Array;
+  readonly amount?: bigint;
 }
 
 /** What the callee frames' own bodies computed, by master, as far as the plan has learned it. */
@@ -149,6 +181,8 @@ export interface CalleeValues {
    * send still carries its sentinel (`framedTokenSendSentinels`).
    */
   readonly tokenSends?: ReadonlyMap<string, readonly LearnedRun[]>;
+  /** Each frame's listed sends, by master, in send order (`LearnedCalleeSend`). */
+  readonly sends?: ReadonlyMap<string, readonly LearnedCalleeSend[]>;
 }
 
 /**
@@ -195,6 +229,12 @@ export interface CalleePlanOptions {
   readonly blockClock?: Readonly<Record<string, bigint>>;
   /** The results earlier calls returned, as a stopped plan's frames handed them back (`reachedResultKey`). */
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
+  /** The arguments runs of the entry's body hashed where no published expression states them (`hashedArgumentsKey`). */
+  readonly hashedArguments?: ReadonlyMap<string, readonly Uint8Array[]>;
+  /** The end views a settle of an earlier plan's frames learned, per frame master, in each frame's learning order. */
+  readonly calleeWriteViews?: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+  /** The entry's own site to stop the plan before: the calls before it are placed and nothing after. */
+  readonly stopBefore?: number;
   /** The results the entry's own guards read, by callsite id, as the callees of an earlier plan returned them. */
   readonly externalReturns?: ReadonlyMap<number, FunctionArgument>;
   /**
@@ -202,6 +242,21 @@ export interface CalleePlanOptions {
    * it (`CalleeValues.writeValues`): the write is planned from it, which sizes its run of chunk records.
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /**
+   * Whether each guarded write a callee frame's facts do not decide runs, by the callee's master and the write's
+   * entry-access slot (`HopEntryWrites.undecidedSlots`): the call plans again with other assumptions when the
+   * machine refuses a plan made from them.
+   */
+  readonly calleeAssumedActivations?: ReadonlyMap<string, ReadonlyMap<number, boolean>>;
+  /**
+   * Whether each conditional site no fact of the caller decides is taken (`undecidedCallKey`): the call plans again
+   * with other assumptions when the machine refuses a plan made from them.
+   */
+  readonly assumedCalls?: ReadonlyMap<string, boolean>;
+  /** Told each conditional site no fact decides that the plan meets unassumed, and the way it planned it. */
+  readonly noteUndecidedCall?: (key: string, taken: boolean) => void;
+  /** The entry's own `msg.value`, which a call's argument or target published as `state:__msg_value` reads. */
+  readonly msgValue?: bigint;
   /**
    * The per-entry bundle the root belongs to.
    *
@@ -211,6 +266,8 @@ export interface CalleePlanOptions {
   readonly split?: FunctionSplitBundle;
   /** Outpoints already claimed, keyed by category, so a callee does not spend the root's master. */
   readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** How many sends each callee frame lists, by master, where a run showed it made fewer than it may. */
+  readonly calleeListedSends?: ReadonlyMap<string, number>;
 }
 
 /** The keys the root and the caller's named deployments are handed to the planner under, which no interface can be. */
@@ -285,10 +342,16 @@ function namedRecordIds(callee: HopCallee): readonly string[] {
     .filter((id): id is string => id !== undefined);
 }
 
-/** The events one callee frame's entry emits, in emit order. */
-function emitsOf(callee: HopCallee): readonly { readonly eventSignature: string; readonly emitIndex: number }[] {
+/**
+ * The event outputs one callee frame's entry lists, in emit order: one per emit, and one per chunk of a wide emit's
+ * payload (`EmitAbi.chunks`), the first at the event covenant and each further one at its continuation covenant.
+ */
+function emitsOf(callee: HopCallee): readonly {
+  readonly eventSignature: string; readonly emitIndex: number; readonly chunk: number;
+}[] {
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-  return [...(abi?.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex);
+  return [...(abi?.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex)
+    .flatMap((emit) => Array.from({ length: emit.chunks ?? 1 }, (_unused, chunk) => ({ ...emit, chunk })));
 }
 
 /**
@@ -340,6 +403,7 @@ const FALLBACK_ENTRY = '__fallback';
  */
 function spelledCalls(
   artifact: Artifact, entry: string, calls: readonly DraftCall[], callBases: readonly number[],
+  callPositions?: readonly (readonly number[])[],
 ): DraftCall[] {
   const identity = `${artifact.contractName}.${entry}()`;
   const sites = readPublishedStopSites(artifact).entries
@@ -353,7 +417,9 @@ function spelledCalls(
     const selector = row.functionName === FALLBACK_ENTRY ? sites[site]?.selector : undefined;
     const kind = row.callMode === 'staticcall' ? FrameKind.STATIC
       : row.callMode === 'call' ? FrameKind.CALL : undefined;
-    for (let at = base; at < end; at += 1) {
+    // A site whose visits a loop interleaves with other sites' spells exactly the calls it made.
+    const own = callPositions?.[site] ?? Array.from({ length: end - base }, (_unused, offset) => base + offset);
+    for (const at of own) {
       const call = spelled[at]!;
       const argumentPushes = selector === undefined
         ? call.argumentPushes : [hexToBin(selector), ...call.argumentPushes.slice(1)];
@@ -365,9 +431,9 @@ function spelledCalls(
 
 /** A plan whose calls, and the callee frames they enter, carry what each site's own code binds. */
 function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: string): HopExternalPlan {
-  const calls = spelledCalls(artifact, entry, plan.calls, plan.callBases);
+  const calls = spelledCalls(artifact, entry, plan.calls, plan.callBases, plan.callPositions);
   const callees = plan.callees.map((callee) => ({
-    ...callee, calls: spelledCalls(callee.artifact, callee.entry, callee.calls, callee.callBases),
+    ...callee, calls: spelledCalls(callee.artifact, callee.entry, callee.calls, callee.callBases, callee.callPositions),
   }));
   const kindOf = new Map([...calls, ...callees.flatMap((callee) => callee.calls)]
     .map((call) => [call.callee, call.kind]));
@@ -376,31 +442,34 @@ function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: stri
   };
 }
 
-/** Compute side-cars remain unsupported; an oracle is placed as the hop places its shared oracle. */
-function sideCarRefusal(label: string, master: string, sideCars: RecoverySideCars | undefined): string | undefined {
-  if (sideCars === undefined || sideCars.ids.length === 0) return undefined;
-  if (sideCars.ids.every((id) => id === blockOracleSideCarId(master))) {
-    return undefined;
-  }
-  return `${label} co-spends a side-car, which this call path does not plan yet`;
+/** How many of the sends a callee's reach decides its body makes are not calls the plan placed into a contract. */
+function unplannedTakenSends(callee: HopCallee): number {
+  return (callee.takenSends ?? []).filter((index) => !(callee.valueSends ?? []).includes(index)).length;
 }
 
-/** The shape one callee frame takes that this path does not settle yet, or undefined for one it does. */
-function unservedCallee(callee: HopCallee, sideCars: RecoverySideCars | undefined): string | undefined {
+/**
+ * The shape one callee frame takes that this path does not settle yet, or undefined for one it does.
+ *
+ * A callee's compute side-cars and its block oracle sit right after its master, as the root's do: its block names
+ * them (`ContractBlock.recovery`), its inputs and live UTXOs are the plan's, and the values its body computes for
+ * them are learned with the root's (`computedWitnesses`).
+ */
+function unservedCallee(
+  callee: HopCallee, _sideCars: RecoverySideCars | undefined, listed: readonly number[],
+): string | undefined {
   const label = `the callee "${callee.functionName}"`;
-  const sideCarWhy = sideCarRefusal(label, callee.master, sideCars);
-  // A legal internal cut writes no state. Its further calls are other cuts of the same contract. The
-  // write-segment refusal below is for a frame whose artifact publishes a write this path cannot place.
+  // An internal cut runs in its caller's context (`calleeIdentity`), and the records it reads and writes are the
+  // caller's, which the validator chains through it.
   if (callee.kind === FrameKind.INTERNAL) {
     if (callee.retvalFrom !== undefined || callee.recordOwner !== undefined) {
       return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
     }
     const internalAbi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-    const internalSend = (internalAbi?.transfers ?? []).some((transfer) => transfer.condition === undefined);
-    if (internalSend || (callee.takenSends?.length ?? 0) > 0) {
+    const internalSend = (internalAbi?.transfers ?? []).some((transfer) => transfer.condition === undefined
+      && !(callee.valueSends ?? []).includes(transfer.transferIndex));
+    if (internalSend || unplannedTakenSends(callee) > 0) {
       return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
     }
-    if (sideCarWhy !== undefined) return sideCarWhy;
     if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
       return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for `
         + 'a callee yet';
@@ -414,16 +483,20 @@ function unservedCallee(callee: HopCallee, sideCars: RecoverySideCars | undefine
     return `${label} sits behind a proxy, whose delegate frame this call path does not plan yet`;
   }
   const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
-  // A send the call reaches pays from the callee's containers, which this path does not plan for a callee: one no
-  // branch guards, which runs whenever the body does, and one whose condition the reach's facts decide holds
-  // (`takenSends`). Any other send is listed by none, as the hop's callee frames list none: one those facts decide the
-  // body skips pays no output (`skippedSends`), and one they do not decide (a row whose condition its artifact does
-  // not reproduce, or a send with no row) is the body's own to settle, which skips it or refuses the send it reaches.
-  const unguarded = (abi?.transfers ?? []).some((transfer) => transfer.condition === undefined);
-  if (unguarded || (callee.takenSends?.length ?? 0) > 0) {
-    return `${label} sends value on a path the call reaches, which this call path does not plan for a callee yet`;
+  // A send the call reaches pays from the callee's containers. One to a contract is the call into its value entry the
+  // plan placed (`valueSends`), paid as `call.ts` pays it; one to a user's lock is a listed send of the frame's own
+  // (`calleeListedSends`), paid as the entry pays its own. A send to a contract no call was placed for is one this path
+  // does not plan: one no branch guards, which runs whenever the body does, and one whose condition the reach's facts
+  // decide holds (`takenSends`). A send those facts decide the body skips pays no output (`skippedSends`), and one to a
+  // contract they do not decide is the body's own to settle, which skips it or refuses the send it reaches.
+  const placed = (transferIndex: number): boolean => (callee.valueSends ?? []).includes(transferIndex)
+    || listed.includes(transferIndex);
+  const unguarded = (abi?.transfers ?? []).some((transfer) => transfer.condition === undefined
+    && !placed(transfer.transferIndex));
+  if (unguarded || (callee.takenSends ?? []).some((transferIndex) => !placed(transferIndex))) {
+    return `${label} sends value to a contract on a path the call reaches, which this call path does not plan for a `
+      + 'callee yet';
   }
-  if (sideCarWhy !== undefined) return sideCarWhy;
   if (publishedLoopEffects(callee.artifact, callee.entry) !== undefined) {
     return `${label} emits, sends or hashes once per turn of a loop, which this call path does not plan for a callee `
       + 'yet';
@@ -448,8 +521,9 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
     .find((candidate) => candidate.functionName === identity);
   const count = published?.calls.length ?? 0;
   if (count === 0) return undefined;
-  const refuse = (why: string): never => {
-    throw new FramedCalleeError(`entry "${options.functionName}" makes ${count} external call(s): ${why}`);
+  const refuse = (why: string, failedCallMessage?: string): never => {
+    throw new FramedCalleeError(`entry "${options.functionName}" makes ${count} external call(s): ${why}`,
+      failedCallMessage);
   };
   const layout = options.artifact.stateLayout!;
   // Every deployment the caller names, and the root itself, is found by the address its category derives: the
@@ -469,26 +543,51 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       externals,
       validatorProgram: options.validatorProgram,
       stateValues: { ...deploymentStateValues(layout, options.categoryId, options.deployment),
-        ...options.blockClock },
+        ...options.blockClock, ...(options.msgValue === undefined ? {} : { __msg_value: options.msgValue }) },
       entryDeployment: { categoryId: options.categoryId, deployment: options.deployment, layout },
       selfAddress: options.selfAddress,
       senderAddress: options.senderAddress,
       ...(options.reachedResults === undefined ? {} : { reachedResults: options.reachedResults }),
+      ...(options.hashedArguments === undefined ? {} : { hashedArguments: options.hashedArguments }),
+      ...(options.calleeWriteViews === undefined ? {} : { calleeWriteViews: options.calleeWriteViews }),
+      ...(options.stopBefore === undefined ? {} : { stopBefore: options.stopBefore }),
       ...(options.externalReturns === undefined ? {} : { externalReturns: options.externalReturns }),
       ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
+      ...(options.calleeAssumedActivations === undefined
+        ? {} : { calleeAssumedActivations: options.calleeAssumedActivations }),
+      ...(options.assumedCalls === undefined ? {} : { assumedCalls: options.assumedCalls }),
+      ...(options.noteUndecidedCall === undefined ? {} : { noteUndecidedCall: options.noteUndecidedCall }),
       ...(options.split === undefined ? {} : { split: options.split, splitCategoryId: options.categoryId }),
       ...(options.takenMasters === undefined ? {} : { takenMasters: options.takenMasters }),
+      // A callee's send to a contract is planned as the call into that contract's value entry it makes, a call back
+      // to the entry's own address as a further frame of the entry's deployment, and a callee's site the planner
+      // refuses as a stop the frame meets there.
+      calleeValueCalls: true,
+      rootReentry: true,
+      calleeSiteRefusals: true,
+      // A callee's undecided write is planned skipped first, the call planning it again the other way on a refusal.
+      assumesUndecided: true,
     });
   } catch (error) {
-    if (!(error instanceof FramedProxyDeployError)) throw error;
-    return refuse(error.message);
+    // A frame that waits on a view an earlier frame of the call leaves is the call's to learn, not a refusal.
+    if (error instanceof WrittenValueAwaited || !(error instanceof FramedProxyDeployError)) throw error;
+    return refuse(error.message, error instanceof FramedFailedCallSite ? error.failedCallMessage : undefined);
   }
   plan = withSpelledCalls(plan, options.artifact, options.functionName);
   // A site that reads earlier calls' results stops the plan before it, and a guard of the entry's own over one states
   // the site from the results the plan was made from: the call learns those results from the calls' own frames and
   // plans again (`call.ts`).
+  // The sends to a user's lock each frame may make, read from their recipes with the frame's own facts: its
+  // arguments, its records and its caller, which a frame the entry calls sees as the entry's address.
+  const listedSends = new Map<string, CalleeListedSends & { readonly transfers: readonly number[] }>();
+  const rootIdentity = { sender: options.senderAddress, self: options.selfAddress, value: options.msgValue ?? 0n };
+  plan.callees.forEach((callee, calleeIndex) => {
+    const { sender } = calleeIdentity(plan.callees, calleeIndex, rootIdentity, () => 0n);
+    const listed = calleeListedSends(callee, sender, options.calleeListedSends?.get(callee.master));
+    if (listed.transfers.length > 0) listedSends.set(callee.master, listed);
+  });
   for (const callee of plan.callees) {
-    const why = unservedCallee(callee, plan.sideCars.get(callee.master));
+    const why = unservedCallee(callee, plan.sideCars.get(callee.master), listedSends.get(callee.master)?.transfers ?? []);
     if (why !== undefined) refuse(why);
   }
   // A deployment entered more than once is settled by the validator, which chains its records' views across its
@@ -532,15 +631,130 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
   const artifacts = [...new Set(plan.callees.map((callee) => callee.artifact))];
   const eventCount = plan.callees.reduce((total, callee) => total + emitsOf(callee).length, 0);
   const learnable = eventCount + plan.callees.reduce((total, callee) => total + (callee.returns ? 1 : 0)
-    + (callee.entryWrites?.learningCandidates.length ?? 0)
+    + (callee.entryWrites?.learningCandidates.length ?? 0) + 2 * (listedSends.get(callee.master)?.count ?? 0)
     + calleeTokenRunSends(callee).reduce((sum, run) => sum + 2 * run.sends + 3 * run.nftSends, 0), 0);
+  const repeats = plan.callees.map(calleeRepeatsSlot).find((refusal) => refusal !== undefined);
   return {
     calls: plan.calls, callBases: plan.callBases, callsiteIds: plan.callsiteIds,
+    ...(plan.callPositions === undefined ? {} : { callPositions: plan.callPositions }),
     conditionalProducers: plan.conditionalProducers, callees: plan.callees, utxos: plan.utxos,
     sideCars: plan.sideCars, blocks,
     contracts: [...byBlock.keys()], artifacts, eventCount, learnable,
     ...(plan.blocked === undefined ? {} : { blocked: plan.blocked }),
+    ...(repeats === undefined ? {} : {
+      repeatedSlotRefusal: new FramedCalleeError(
+        `entry "${options.functionName}" makes ${count} external call(s): ${repeats.message}`,
+      ),
+    }),
+    ...(listedSends.size === 0 ? {} : {
+      listedSends: new Map([...listedSends].map(([master, { count: listed, unconditional }]) =>
+        [master, { count: listed, unconditional }] as const)),
+    }),
   };
+}
+
+/**
+ * The sends to a user's lock a callee frame may make, as the entry's own are listed: each send its entry makes whose
+ * recipe names a key's lock, or a lock only the running code holds, bar one the reach's facts decide the body skips
+ * and one the plan placed as a call into a contract's value entry. `override` is the count a run showed the frame
+ * makes, fewer than it may.
+ */
+/** The `msg.sender`, `address(this)` and `msg.value` a frame runs with. */
+interface FrameIdentity {
+  readonly sender: Uint8Array;
+  readonly self: Uint8Array;
+  readonly value: bigint;
+}
+
+/**
+ * The identity the callee at `index` runs with. A message call is entered with its caller's address as `msg.sender`,
+ * at its own address, carrying the value `valueOf` names for it; an internal frame runs in the frame that entered it,
+ * so it keeps that frame's sender, address and value (V5), and a root-entered one keeps `root`'s.
+ */
+function calleeIdentity(
+  callees: readonly HopCallee[], index: number, root: FrameIdentity, valueOf: (callee: HopCallee) => bigint,
+): FrameIdentity {
+  const callee = callees[index]!;
+  const entering = callee.enteredBy === null ? root : calleeIdentity(callees, callee.enteredBy, root, valueOf);
+  if (callee.kind === FrameKind.INTERNAL) return entering;
+  return { sender: entering.self, self: callee.selfAddress, value: valueOf(callee) };
+}
+
+function calleeListedSends(
+  callee: HopCallee, sender: Uint8Array, override: number | undefined,
+): CalleeListedSends & { readonly transfers: readonly number[] } {
+  const abi = callee.artifact.abi.find((candidate) => candidate.name === callee.entry);
+  const layout = callee.artifact.stateLayout;
+  const context = {
+    args: callee.args ?? [],
+    inputs: (abi?.inputs ?? []).filter((input) => !input.name.startsWith('__internal__')),
+    structs: callee.artifact.structs,
+    callerLock: sender,
+    state: layout === undefined ? [] : callee.records.map((record, nftIndex) =>
+      parsePushdataCommitment(binToHex(record.commitment), layout, nftIndex)),
+  };
+  const listed = (abi?.transfers ?? []).filter((transfer) => {
+    if ((callee.skippedSends ?? []).includes(transfer.transferIndex)
+      || (callee.valueSends ?? []).includes(transfer.transferIndex)) return false;
+    const lock = sendRecipient(transfer.recipientRecipe, context);
+    return lock === undefined || lock.length === 25;
+  });
+  const count = Math.min(override ?? listed.length, listed.length);
+  return {
+    count,
+    unconditional: Math.min(count, listed.filter((transfer) => transfer.condition === undefined).length),
+    transfers: listed.map((transfer) => transfer.transferIndex),
+  };
+}
+
+/** The amount a callee frame's listed send output carries until the body's own pin hands back the one it computed. */
+const CALLEE_SEND_AMOUNT_SENTINEL = 1_234_667_891n;
+
+/**
+ * The lock and the amount each listed send of a callee frame starts from, which the body's own pin fails against: a
+ * key's lock no key holds, and an amount no other frame's sentinel takes, distinct per frame and send.
+ */
+export function calleeSendSentinels(
+  planned: PlannedCallees, callee: HopCallee,
+): { readonly locks: readonly Uint8Array[]; readonly amounts: readonly bigint[] } {
+  const count = planned.listedSends?.get(callee.master)?.count ?? 0;
+  const ordinal = planned.callees.indexOf(callee);
+  const positions = Array.from({ length: count }, (_unused, position) => position);
+  return {
+    locks: positions.map((position) => encodeLockingBytecodeP2pkh(sha256(new TextEncoder().encode(
+      `framed callee send lock\u0000${callee.artifact.contractName}\u0000${callee.entry}\u0000${callee.master}`
+      + `\u0000${position}`,
+    )).slice(0, 20))),
+    amounts: positions.map((position) => CALLEE_SEND_AMOUNT_SENTINEL + BigInt(1_000 * ordinal + position)),
+  };
+}
+
+/** True while a callee frame owes a listed send's lock or amount its own pin hands back. */
+function owesSends(planned: PlannedCallees, callee: HopCallee, values: CalleeValues): boolean {
+  const count = planned.listedSends?.get(callee.master)?.count ?? 0;
+  const learned = values.sends?.get(callee.master) ?? [];
+  return Array.from({ length: count }, (_unused, at) => learned[at])
+    .some((send) => send?.lock === undefined || send.amount === undefined);
+}
+
+/**
+ * The callee frames whose run made fewer listed sends than the frame lists, each with how many it made, as the entry
+ * stops at its own count (`call.ts`): having pinned the sends it made in order, a run that made at least the sends no
+ * branch guards leaves every send past them carrying both its sentinels, and those are on branches it did not take.
+ */
+export function calleeShortSends(planned: PlannedCallees, values: CalleeValues): ReadonlyMap<string, number> {
+  const short = new Map<string, number>();
+  for (const callee of planned.callees) {
+    const listed = planned.listedSends?.get(callee.master);
+    if (listed === undefined || listed.count === 0) continue;
+    const learned = Array.from({ length: listed.count }, (_unused, at) => values.sends?.get(callee.master)?.[at]);
+    const made = learned.findIndex((send) => send?.lock === undefined || send.amount === undefined);
+    if (made < 0 || made < listed.unconditional) continue;
+    if (learned.slice(made).every((send) => send?.lock === undefined && send?.amount === undefined)) {
+      short.set(callee.master, made);
+    }
+  }
+  return short;
 }
 
 /** True when a callee frame writes its contract's records: a data record or a mapping node. */
@@ -590,9 +804,14 @@ export interface CalleeFrames {
 export function calleeFrames(options: {
   readonly planned: PlannedCallees;
   readonly layout: TransactionLayout;
-  /** The root's master, address and origin, which a first-level callee is entered by. */
+  /**
+   * The root's master, address and origin, which a first-level callee is entered by, and the sender and value the
+   * root runs with, which an internal frame it enters keeps.
+   */
   readonly rootMaster: string;
   readonly rootAddress: Uint8Array;
+  readonly rootSender: Uint8Array;
+  readonly rootValue: bigint;
   readonly origin: string;
   /** What each callee's own body computed, once learned. */
   readonly values: CalleeValues;
@@ -624,6 +843,16 @@ export function calleeFrames(options: {
    * contract entered by several frames does.
    */
   readonly rootBlock?: string;
+  /**
+   * The segments the root's own body writes each of its data records in, by record id, in segment order, each with
+   * the view that write leaves (the root's unstated end there). A callee frame on the root's block that runs past such
+   * a write starts from the view it left, unless a frame the walk reaches after the write wrote the record since.
+   */
+  readonly rootWrites?: ReadonlyMap<string, readonly { readonly segment: number; readonly view: Uint8Array }[]>;
+  /** The position of the root's call each frame the root calls is entered by, by master: it runs after that segment. */
+  readonly rootCallPositions?: ReadonlyMap<string, number>;
+  /** The outputs each callee frame's listed sends pay, by master, in send order (`PlannedCallees.listedSends`). */
+  readonly sends?: ReadonlyMap<string, readonly number[]>;
 }): CalleeFrames {
   const { planned, layout, values } = options;
   const { callees } = planned;
@@ -636,14 +865,48 @@ export function calleeFrames(options: {
   const indexOf = (id: string): number => participant(layout, id).index;
   // The master that writes each record, which the record's covenant names as the spend's authority.
   const writerOf = new Map<string, string>();
-  // Each data record's view where the frames placed so far leave it. A contract's frames are placed in the order the
-  // validator walks their first segments (V6), so a frame starts from the view the last write before it leaves: that
-  // frame's unstated end, which the derivation learns from its own close. A frame that runs inside another of its own
-  // contract moves the record between two of that frame's segments, so a record a frame writes on a contract the
-  // calls enter more than once is restated by the walk over every frame, as the hop chains it (`chainedRecords`),
-  // and so is a node (`chain`). A frame inside a writer of its contract starts from the view that writer's own run
-  // leaves a node, learned before the frame is read (`learnCalleeValue`).
-  const chainEnds = new Map<string, Uint8Array>();
+  // Each data record's writes, in the order the validator walks the frames (V6), so a frame starts from the view the
+  // last write before it leaves: the writer's unstated end in the segment it wrote, which the derivation learns from
+  // that frame's own close. A frame entered by its caller's call at position `q` runs after the caller's segment `q`
+  // and before its next one, so a caller's write in a later segment comes after it: each write is keyed by the path of
+  // call positions from the root to its frame, then its segment, and keys order as the walk does, a key before any
+  // longer key it leads (`walkOrder`). A frame whose path is unknown is ordered as it is placed. A record a frame
+  // writes on a contract the calls enter more than once is also restated by the walk over every frame, as the hop
+  // chains it (`chainedRecords`), and so is a node (`chain`). A frame inside a writer of its contract starts from the
+  // view that writer's own run leaves a node, learned before the frame is read (`learnCalleeValue`).
+  const writeLog = new Map<string, { readonly key: readonly number[] | undefined; readonly view: Uint8Array }[]>();
+  const logWrite = (id: string, key: readonly number[] | undefined, view: Uint8Array): void => {
+    writeLog.set(id, [...(writeLog.get(id) ?? []), { key, view }]);
+  };
+  for (const [id, writes] of options.rootWrites ?? []) {
+    for (const write of writes) logWrite(id, [write.segment], write.view);
+  }
+  const pathOf = (index: number): readonly number[] | undefined => {
+    const callee = callees[index]!;
+    if (callee.enteredBy === null) {
+      const at = options.rootCallPositions?.get(callee.master);
+      return at === undefined || at < 0 ? undefined : [at];
+    }
+    const caller = pathOf(callee.enteredBy);
+    const at = callees[callee.enteredBy]!.calls.findIndex((call) => call.callee === callee.master);
+    return caller === undefined || at < 0 ? undefined : [...caller, at];
+  };
+  /** The view the last write the walk reaches before frame `index` starts leaves record `id` at, if any did. */
+  const lastWriteBefore = (id: string, index: number): Uint8Array | undefined => {
+    const writes = writeLog.get(id) ?? [];
+    const path = pathOf(index);
+    if (path === undefined) return writes.at(-1)?.view;
+    const start = [...path, 0];
+    let last: { readonly key: readonly number[] | undefined; readonly view: Uint8Array } | undefined;
+    for (const write of writes) {
+      // A write whose frame's path is unknown was placed before this frame, so it is taken as before it.
+      if (write.key !== undefined && walkOrder(write.key, start) >= 0) continue;
+      if (last === undefined || last.key === undefined || write.key === undefined || walkOrder(write.key, last.key) > 0) {
+        last = write;
+      }
+    }
+    return last?.view;
+  };
   const enteredOf = new Map<string, number>();
   for (const callee of callees) enteredOf.set(callee.block, (enteredOf.get(callee.block) ?? 0) + 1);
   // The root spends a master of this block beside the callees. A record written here chains across the root's own
@@ -668,7 +931,11 @@ export function calleeFrames(options: {
   const writeTransitions = new Set<DraftRecordEntry>();
   const relinkTransitions = new Set<DraftRecordEntry>();
   const createdOf = new Map<string, number[]>();
-  const masters = callees.map((callee): DraftMaster => {
+  const rootIdentity = { sender: options.rootSender, self: options.rootAddress, value: options.rootValue };
+  // A frame a callee's send enters takes the amount the send's call carries.
+  const callValueOf = (callee: HopCallee): bigint =>
+    options.callValues?.get(callee.master) ?? callTo.get(callee.master)?.value ?? 0n;
+  const masters = callees.map((callee, calleeIndex): DraftMaster => {
     const caller = callee.enteredBy === null ? undefined : callees[callee.enteredBy];
     const positions = callee.calls.length + 1;
     const writes = publishedRecordWrites(callee.artifact, callee.entry, callee.calls.length);
@@ -679,16 +946,17 @@ export function calleeFrames(options: {
     const payloads = values.events.get(callee.master) ?? [];
     const definitions = new Map((callee.artifact.events ?? []).map((definition) => [definition.signature, definition]));
     const events = emitsOf(callee).map((emit, position): number => {
-      eventOutputs.push({
-        lockingBytecode: eventLockingBytecode(
-          callee.category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true,
+      // At least its own dust threshold, which a wide payload raises past the fixed amount.
+      eventOutputs.push(eventFundedAtLeastDust({
+        lockingBytecode: eventChunkLockingBytecode(
+          callee.category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true, emit.chunk,
         ),
         valueSatoshis: EVENT_OUTPUT_SATOSHIS,
         token: {
           category: callee.category, amount: 0n,
           nft: { capability: 'none', commitment: payloads[position] ?? sentinels[position]! },
         },
-      });
+      }));
       return options.eventBase + eventOutputs.length - 1;
     });
     // The frame's mapping write, authorized by its own master, its created nodes past the frames laid before it.
@@ -722,6 +990,10 @@ export function calleeFrames(options: {
     const learnedViews = values.views.get(callee.master) ?? [];
     const writeEntries = (laid?.entries ?? []).map((entry): RecordEntry => {
       const learned = learnedViews[candidates.findIndex((candidate) => bytesEqual(candidate, entry.viewIn))];
+      if (learned !== undefined && hopTraceOn()) {
+        hopTrace(`write-entry-learned ${callee.master} in=${String(entry.in)} viewIn=${binToHex(entry.viewIn.slice(-4))} `
+          + `learned=${binToHex(learned.slice(-4))} viewOut=${binToHex(entry.viewOut.slice(-4))}`);
+      }
       return learned === undefined ? entry : { ...entry, viewIn: learned };
     });
     const relinked = new Set(laid?.relinked ?? []);
@@ -730,15 +1002,27 @@ export function calleeFrames(options: {
       if (relinked.has(entry)) relinkTransitions.add(writeEntries[at]!);
     });
     // Each node the write spends is kept on either side of the segment it lands in: at the view it was spent with
-    // before, and at the view the write left after.
+    // before, and at the view the write left after. A node no input holds is the write's own creation, which exists
+    // only where it lands, or one an earlier frame of the contract created and this one continues: that one is kept
+    // the same way at the output that carries it, so a read before the write finds it.
     const writesAt = (position: number): DraftRecordEntry[] => {
       if (position === landing) return [...writeEntries];
-      const kept = new Map<number, Uint8Array>();
+      const kept = new Map<number, DraftRecordEntry>();
       for (const entry of writeEntries) {
-        if (entry.in === INDEX_NONE || (position < landing && kept.has(entry.in))) continue;
-        kept.set(entry.in, position < landing ? entry.viewIn : entry.viewOut);
+        const continued = entry.in === INDEX_NONE && entry.out !== INDEX_NONE && entry.viewIn.length > 0;
+        if (entry.in === INDEX_NONE && !continued) continue;
+        const key = continued ? -1 - entry.out : entry.in;
+        if (position < landing && kept.has(key)) continue;
+        if (continued) {
+          kept.set(key, position < landing
+            ? { in: INDEX_NONE, out: entry.out, viewIn: entry.viewIn, viewOut: entry.viewIn }
+            : { in: INDEX_NONE, out: entry.out, viewIn: 'carried', viewOut: 'carried' });
+          continue;
+        }
+        const view = position < landing ? entry.viewIn : entry.viewOut;
+        kept.set(key, { in: entry.in, out: entry.in, viewIn: view, viewOut: view });
       }
-      return [...kept].map(([index, view]) => ({ in: index, out: index, viewIn: view, viewOut: view }));
+      return [...kept.values()];
     };
     const readEntries = callee.readNodes.map((node): DraftRecordEntry => {
       // A node an earlier frame of this contract created carries no input, so the frame names it at the output that
@@ -761,9 +1045,10 @@ export function calleeFrames(options: {
         const nftIndex = callee.records.indexOf(record);
         const written = writes.get(nftIndex) ?? [];
         const first = Math.min(...written);
-        // A record an earlier frame of this contract wrote starts from that frame's end; one a frame beside the
-        // callees wrote before this one runs starts from the view that frame left.
-        const start = chainEnds.get(record.id)
+        // A record a frame wrote before the walk reaches this one starts from the view the last such write left, the
+        // root's own and a caller's in the segments before its call among them; one a frame beside the callees wrote
+        // before this one runs starts from the view that frame left.
+        const start = lastWriteBefore(record.id, calleeIndex)
           ?? options.beside?.startViews.get(callee.master)?.get(record.id) ?? record.commitment;
         if (written.length === 0 || position < first) {
           return { in: index, out: index, viewIn: start, viewOut: start };
@@ -815,12 +1100,16 @@ export function calleeFrames(options: {
         segment[declared.length + ordinal] = { ...read, viewIn: spent.viewIn, viewOut: spent.viewIn };
       });
     }
-    // A record this frame writes ends where its last write leaves it: the placeholder the composer declares for that
-    // segment's unstated end, at the record's own place among the segment's entries.
+    // Each segment this frame writes a record in leaves it at the placeholder the composer declares for that segment's
+    // unstated end, at the record's own place among the segment's entries, which the walk reaches at that segment.
     declared.forEach((record, entryIndex) => {
       const written = writes.get(callee.records.indexOf(record)) ?? [];
       if (written.length === 0) return;
-      chainEnds.set(record.id, unstatedViewPlaceholder(callee.master, Math.max(...written), entryIndex));
+      const path = pathOf(calleeIndex);
+      for (const segment of [...new Set(written)].sort((left, right) => left - right)) {
+        logWrite(record.id, path === undefined ? undefined : [...path, segment],
+          unstatedViewPlaceholder(callee.master, segment, entryIndex));
+      }
     });
     // The long values the body reads from its frame, one per value-witness slot, as the hop lists its callee's.
     const valueWitnesses = calleeValueWitnesses(callee.readNodes, laid);
@@ -834,21 +1123,19 @@ export function calleeFrames(options: {
         callerIsUser: false, originEqualsCaller: false, makesExternalCall: callee.calls.length > 0,
         mastersOfContract: mastersOf.get(callee.block) ?? 1,
       },
-      frame: {
-        kind: callee.kind, sender: caller?.selfAddress ?? options.rootAddress, self: callee.selfAddress,
-        value: options.callValues?.get(callee.master) ?? 0n,
-      },
+      frame: { kind: callee.kind, ...calleeIdentity(callees, calleeIndex, rootIdentity, callValueOf) },
       enteredBy: caller?.master ?? options.rootMaster,
       origin: options.origin,
       calls: callee.calls,
       ...(callee.callBases.length === 0 ? {} : { callBaseBySite: callee.callBases }),
+      ...(callee.callPositions === undefined ? {} : { callPositionsBySite: callee.callPositions }),
       retval: callee.returns
         ? values.retvals.get(callee.master) ?? calleeRetvalPlaceholder(callee)
         : new Uint8Array(0),
       segments,
       ...(valueWitnesses === undefined ? {} : { values: valueWitnesses }),
       events,
-      sends: [],
+      sends: options.sends?.get(callee.master) ?? [],
       // The frame's call data is the pushes of the call that reaches it.
       argumentPushes: callTo.get(callee.master)?.argumentPushes ?? [],
       redeemScript: callee.deployed.script,
@@ -907,10 +1194,12 @@ export function calleeFrames(options: {
       };
     });
   // A contract several frames enter, one of which writes its nodes, declares each node's views as one chain in the
-  // order the validator walks the frames, which its caller states over every frame of the call.
+  // order the validator walks the frames, which its caller states over every frame of the call. The root is one more
+  // frame of its own block: a node it reads that a callee below it writes is such a node.
   const chained = planned.blocks.some((block) => {
     const frames = callees.filter((callee) => callee.block === block.contract);
-    return frames.length > 1 && frames.some((frame) => frame.entryWrites !== undefined);
+    const entered = frames.length + (block.contract === options.rootBlock ? 1 : 0);
+    return entered > 1 && frames.some((frame) => frame.entryWrites !== undefined);
   });
   const nodes = new Set<number>();
   if (chained) {
@@ -928,6 +1217,18 @@ export function calleeFrames(options: {
   };
 }
 
+/**
+ * The order the validator walks two points of a call in, each the path of call positions from the root to a frame and
+ * then a segment of it: the first position they differ at decides, and a point the other extends comes first, as a
+ * caller's segment precedes the frame its call there enters. Negative when `left` comes first.
+ */
+function walkOrder(left: readonly number[], right: readonly number[]): number {
+  for (let at = 0; at < Math.min(left.length, right.length); at += 1) {
+    if (left[at] !== right[at]) return left[at]! - right[at]!;
+  }
+  return left.length - right.length;
+}
+
 /** How deep a callee sits below the root: `1` for a frame the root calls. */
 function depthOf(callees: readonly HopCallee[], index: number): number {
   let depth = 1;
@@ -935,8 +1236,11 @@ function depthOf(callees: readonly HopCallee[], index: number): number {
   return depth;
 }
 
-/** True while a callee's body still owes the plan its return, an event's payload or a written node's view. */
-function owesValue(callee: HopCallee, values: CalleeValues): boolean {
+/**
+ * True while a callee's body still owes the plan its return, an event's payload, a written node's view or a listed
+ * send's lock or amount.
+ */
+function owesValue(planned: PlannedCallees, callee: HopCallee, values: CalleeValues): boolean {
   const payloads = values.events.get(callee.master) ?? [];
   const views = values.views.get(callee.master) ?? [];
   const learned = values.tokenSends?.get(callee.master);
@@ -944,7 +1248,8 @@ function owesValue(callee: HopCallee, values: CalleeValues): boolean {
     || emitsOf(callee).some((emit, position) => payloads[position] === undefined
       && !(callee.skippedEmits?.includes(emit.emitIndex) ?? false))
     || (callee.entryWrites?.learningCandidates ?? []).some((_candidate, position) => views[position] === undefined)
-    || calleeTokenRunSends(callee).some((run, at) => runOwesSends(learned?.[at], run.sends, run.nftSends));
+    || calleeTokenRunSends(callee).some((run, at) => runOwesSends(learned?.[at], run.sends, run.nftSends))
+    || owesSends(planned, callee, values);
 }
 
 /**
@@ -989,10 +1294,10 @@ function readyCalleeFrames(planned: PlannedCallees, values: CalleeValues): reado
   };
   const writersBefore = sharedNodeWritersBefore(callees);
   return calleeSettleOrder(callees, callees.map((_callee, index) => index)
-    .filter((index) => owesValue(callees[index]!, values)
+    .filter((index) => owesValue(planned, callees[index]!, values)
       && !callees.some((_other, other) => owesReturn(other) && below(other, index)))
     .sort((left, right) => depthOf(callees, right) - depthOf(callees, left)))
-    .filter((index) => !(writersBefore.get(index) ?? []).some((writer) => owesValue(callees[writer]!, values)));
+    .filter((index) => !(writersBefore.get(index) ?? []).some((writer) => owesValue(planned, callees[writer]!, values)));
 }
 
 /**
@@ -1168,6 +1473,23 @@ export function learnCalleeValue(options: {
         return { ...values, writeValues: new Map([...values.writeValues ?? [], [master, value]]) };
       }
     }
+    // A listed send's pin compares the output's lock, then its amount, with what the body computed: an output still
+    // carrying its sentinel leaves it as the declared operand, the body's own value as the computed one.
+    const sentinels = calleeSendSentinels(options.planned, callee);
+    if (sentinels.locks.length > 0) {
+      const sends = sentinels.locks.map((_sentinel, at) => values.sends?.get(master)?.[at] ?? {});
+      const learnSend = (at: number, send: LearnedCalleeSend): CalleeValues => ({
+        ...values,
+        sends: new Map([...values.sends ?? [], [master, sends.map((held, position) => (position === at ? send : held))]]),
+      });
+      const lockAt = sentinels.locks.findIndex((sentinel, at) => sends[at]!.lock === undefined
+        && bytesEqual(sentinel, reading.declared));
+      if (lockAt >= 0) return learnSend(lockAt, { ...sends[lockAt]!, lock: Uint8Array.from(reading.computed) });
+      const amountAt = sentinels.amounts.findIndex((sentinel, at) => sends[at]!.amount === undefined
+        && bytesEqual(bigIntToVmNumber(sentinel), reading.declared));
+      const amount = vmNumberToBigInt(reading.computed);
+      if (amountAt >= 0 && typeof amount === 'bigint') return learnSend(amountAt, { ...sends[amountAt]!, amount });
+    }
     // A token send's pin leaves the listed output's sentinel field above what the body computed.
     const runs = calleeTokenRunSends(callee);
     const learnedRuns = values.tokenSends?.get(master) ?? runs.map((run) => unlearnedRun(run.sends, run.nftSends));
@@ -1231,7 +1553,7 @@ function enclosingWriterValues(
  * frame a stopped plan states only the first calls of stops at the site the plan stops before, so it owes nothing.
  */
 export function calleeValuesOwed(planned: PlannedCallees, values: CalleeValues): boolean {
-  return planned.callees.some((callee) => callee.truncated !== true && owesValue(callee, values));
+  return planned.callees.some((callee) => callee.truncated !== true && owesValue(planned, callee, values));
 }
 
 /**

@@ -13,13 +13,14 @@ import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address
 import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
-import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
+import type { Artifact, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
 import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
   DeployedContract, DeployContractOptions,
 } from '@solidcash/solidcash/stateful';
 import { listDeployments } from '@solidcash/solidcash/stateful';
+import { framedDeploy } from '@solidcash/solidcash/framed';
 import { Network as Networks } from '@solidcash/solidcash/dist/interfaces.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
@@ -306,6 +307,15 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
   );
 }
 
+/**
+ * The per-entry bundle a `split: 'func'` compile published for a framed contract (`<Contract>.func.json`), or
+ * undefined when the contract is published as one program.
+ */
+export function loadFunctionSplitByName(artifactsDir: string, name: string): FunctionSplitBundle | undefined {
+  const bundlePath = path.join(solidcashArtifactsPath(artifactsDir), `${name}.func.json`);
+  return fs.existsSync(bundlePath) ? JSON.parse(fs.readFileSync(bundlePath, 'utf-8')) as FunctionSplitBundle : undefined;
+}
+
 export function loadArtifactOrSplitByName(artifactsDir: string, name: string): Artifact | SplitArtifactBundle {
   const base = solidcashArtifactsPath(artifactsDir);
   const splitPath = path.join(base, `${name}.split.json`);
@@ -316,6 +326,8 @@ export function loadArtifactOrSplitByName(artifactsDir: string, name: string): A
 interface EthersOptions {
   artifactsDir: string;
   composition?: 'direct' | 'framed';
+  /** The contract a framed CREATE2 over a code value stands up, by the code's keccak256 as hex. */
+  create2Templates?: Record<string, string>;
   accountsPath?: string;
   /** `accounts.initialIndex`: the first derived account, so signer i is wallet initialIndex + i. */
   accountsInitialIndex?: number;
@@ -391,6 +403,33 @@ function withEthersMessageSigning<T extends Signer>(signer: T): T {
       return new EthersSigningKey(signer.privateKey).sign(digest).serialized;
     },
   });
+  // ethers' plain value transfer. To a framed contract it is a value send that runs the contract's `receive()`, else
+  // its payable `fallback()`, as an EVM transfer to a contract does; call data and a wallet-to-wallet payment have no
+  // composed form here and are refused by name.
+  Object.defineProperty(signer, 'sendTransaction', {
+    configurable: true,
+    value: async (request: { readonly to?: unknown; readonly value?: unknown; readonly data?: unknown }) => {
+      const target = request.to as { getAddress?: () => Promise<string> | string; target?: unknown } | string;
+      const to = typeof target === 'string' ? target
+        : typeof target?.getAddress === 'function' ? await target.getAddress() : String(target?.target ?? target);
+      if (request.data !== undefined && request.data !== '0x' && request.data !== '') {
+        throw new Error('sendTransaction() carries call data; call the contract through its handle instead');
+      }
+      const value = BigInt((request.value as bigint | number | string | undefined) ?? 0);
+      const { findDeploymentByAddress } = await import('@solidcash/solidcash/stateful');
+      const deployed = findDeploymentByAddress(signer.provider as never, to)?.contract as {
+        categoryId?: string; inner?: { artifact?: Artifact };
+      } | undefined;
+      const artifact = deployed?.inner?.artifact;
+      if (deployed?.categoryId === undefined || artifact?.composition?.convention !== 'framed') {
+        throw new Error(`sendTransaction() to ${to}: only a value send to a framed contract is composed`);
+      }
+      const { framedCall } = await import('@solidcash/solidcash/framed');
+      return framedCall.sendFramedValueFromSigner({
+        provider: signer.provider, artifact, categoryId: deployed.categoryId, signer, value,
+      });
+    },
+  });
   Object.defineProperty(signer, 'connect', {
     configurable: true,
     value: (nextProvider: NetworkProvider): Signer => withEthersMessageSigning(connect(nextProvider)),
@@ -420,8 +459,28 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
     if (fanOut) await fanOutPlainUtxos(signer, REGTEST_PLAIN_COINS);
   };
+  // A framed contract a `split: 'func'` compile published as a bundle deploys one master pool per entry.
+  const withFunctionSplit = (defaults: DeployContractOptions, artifact: Artifact): DeployContractOptions => {
+    if (artifact.composition?.convention !== 'framed') return defaults;
+    const functionSplit = loadFunctionSplitByName(artifactsDir, artifact.contractName);
+    return functionSplit === undefined ? defaults : { ...defaults, functionSplit };
+  };
   const resolveArtifact = <T extends Artifact>(a: T | SplitArtifactBundle | string): T | SplitArtifactBundle =>
     (typeof a === 'string' ? loadArtifactOrSplitByName(artifactsDir, a) : a) as T | SplitArtifactBundle;
+
+  // A local HD signer is one object per account, so every handle on an account, the factory's default deployer
+  // included, counts its logical nonce once: two objects for one key would number two deployments alike, and the
+  // second would land at the first's address. The mock provider keeps its own signers; this serves the others.
+  const localSigners = new Map<string, Signer>();
+  const localSigner = (index: number, accountMnemonic: string): Signer => {
+    const key = `${accountMnemonic}\u0000${index}`;
+    let signer = localSigners.get(key);
+    if (signer === undefined) {
+      [signer] = signersFromMnemonic(accountMnemonic, provider, { count: 1, path: accountsPath, initialIndex: index });
+      localSigners.set(key, signer!);
+    }
+    return signer!;
+  };
 
   // hardhat `getContractFactory("Name")` binds to the default deployer = signers[0]. Derive it synchronously
   // (same identity `getSigners()` funds), so `factory.deploy(...)` funds the genesis from that account.
@@ -434,7 +493,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     const cacheable = provider as unknown as { getCachedSigner?: (index: number, opts: object) => Signer };
     cachedSigner ??= typeof cacheable.getCachedSigner === 'function'
       ? cacheable.getCachedSigner(accountsInitialIndex, { mnemonic, path: accountsPath })
-      : signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath, initialIndex: accountsInitialIndex })[0];
+      : localSigner(accountsInitialIndex, mnemonic);
     return cachedSigner;
   };
 
@@ -456,10 +515,8 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         fundingUtxos: 512, genesisFundingUtxos: 4, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
       })).map(withEthersMessageSigning);
     }
-    const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
-      count, path: accountsPath, initialIndex: accountsInitialIndex,
-    })
-      .map(withEthersMessageSigning);
+    const signers = Array.from({ length: count }, (_unused, at) =>
+      withEthersMessageSigning(localSigner(accountsInitialIndex + at, o.mnemonic ?? mnemonic)));
     const satoshis = o.satoshis ?? opts.accountSatoshis ?? 100_000_000n;
     const fundingUtxos = o.fundingUtxos ?? 4;
     for (const [index, signer] of signers.entries()) {
@@ -469,6 +526,23 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
     return signers;
   };
+
+  // A framed creation evaluates to its child's EVM identity, and the call planner asks for the child there before
+  // the creating transaction: the default deployer stands it up with the creator as its constructor's sender.
+  if (opts.composition === 'framed') {
+    for (const [codeHash, contractName] of Object.entries(opts.create2Templates ?? {})) {
+      framedDeploy.registerFramedCreate2Template(provider, hexToBin(codeHash.replace(/^0x/, '')), contractName);
+    }
+    framedDeploy.setFramedCreate2ChildDeployer(provider, async (request) => {
+      const artifact = loadArtifactByName(artifactsDir, request.contractName);
+      const functionSplit = loadFunctionSplitByName(artifactsDir, request.contractName);
+      const [signer] = await getSigners(1);
+      await framedDeploy.standUpFramedCreate2Child({
+        provider, artifact, creatorSelf: request.creatorSelf, identity: request.identity, signer: signer!,
+        ...(functionSplit === undefined ? {} : { functionSplit }),
+      });
+    });
+  }
 
   const verifyMessageP2pkh: SolidcashEthers['verifyMessageP2pkh'] = (message, signature) => {
     const recovered = EthersSigningKey.recoverPublicKey(hashEvmMessage(message), signature);
@@ -546,12 +620,12 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     }
   };
 
-  const wrapFactoryDeploy = <T extends Artifact>(factory: ContractFactory<T>): ContractFactory<T> => {
+  const wrapFactoryDeploy = <T extends Artifact>(factory: ContractFactory<T>, loaded: Artifact): ContractFactory<T> => {
     const original = factory.deploy.bind(factory);
     factory.deploy = (async (...args: Parameters<ContractFactory<T>['deploy']>) => {
       const deployed = await original(...args);
       registerDeployTargetChildren(deployed as Registerable);
-      return deployed;
+      return presentAddresses(deployed as object, loaded) as typeof deployed;
     }) as ContractFactory<T>['deploy'];
     return factory;
   };
@@ -563,7 +637,10 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     if (isSplitBundle(loaded)) {
       return new HardhatSplitContractFactory(loaded, boundRunner);
     }
-    return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner, deployDefaults));
+    return wrapFactoryDeploy(
+      sdkGetContractFactory(loaded as T, boundRunner, withFunctionSplit(deployDefaults, loaded as Artifact)),
+      loaded as Artifact,
+    );
   }) as SolidcashEthers['getContractFactory'];
   // ethers semantics: (taker) contract methods win a name collision with a framework member. The SDK's dispatch
   // proxy lets a framework member keep its own name, so `pair.name()` would resolve the contract-name getter;
@@ -580,6 +657,42 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
           }
         }
         return Reflect.get(target, prop, receiver);
+      },
+    });
+  };
+  // A Solidity-compat read answers an `address` with its 20-byte identity (DECISIONS D13), while a handle's
+  // `getAddress()` names a contract by its address, so a test that compares a getter's answer with a contract's
+  // address by `===`, as ethers lets it, would never find them equal. A framed handle answers an identity that names a
+  // deployment the provider registers with that deployment's address instead; any other identity, a key's hash or the
+  // zero address, is answered as given, and a handle the contract connects to a signer answers the same way.
+  const presentAddresses = <T extends object>(contract: T, loaded: Artifact): T => {
+    if (loaded.composition?.convention !== 'framed') return contract;
+    const addressGetters = new Set((loaded.abi ?? [])
+      .filter((entry) => entry.outputs?.length === 1 && entry.outputs[0]!.type === 'address')
+      .map((entry) => entry.name));
+    const addressOf = (value: unknown): unknown => {
+      if (!(value instanceof Uint8Array) || value.length !== 20) return value;
+      const identity = binToHex(value);
+      const registered = [...listDeployments(provider as never)].reverse().find((entry) => entry.address === identity
+        || (entry.lockingBytecode !== undefined && binToHex(hash160(hexToBin(entry.lockingBytecode))) === identity));
+      const named = (registered?.contract as { _framedAddress?: string } | undefined)?._framedAddress;
+      return named ?? (registered !== undefined && registered.address !== identity ? registered.address : value);
+    };
+    return new Proxy(contract, {
+      get(target, prop, receiver) {
+        const member = Reflect.get(target, prop, receiver);
+        if (prop === 'connect' && typeof member === 'function') {
+          return (...args: unknown[]) => presentAddresses((member as (...a: unknown[]) => object).apply(target, args),
+            loaded);
+        }
+        if (typeof prop !== 'string' || !addressGetters.has(prop) || typeof member !== 'function') return member;
+        const getter = member as ((...args: unknown[]) => unknown) & { staticCall?: (...args: unknown[]) => unknown };
+        const answered = (...args: unknown[]): Promise<unknown> =>
+          Promise.resolve(getter.apply(target, args)).then(addressOf);
+        return Object.assign(answered, {
+          staticCall: (...args: unknown[]) => Promise.resolve((getter.staticCall ?? getter).apply(target, args))
+            .then(addressOf),
+        });
       },
     });
   };
@@ -622,6 +735,12 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
         const options: Record<string, unknown> = { provider, addressType: 'p2sh32' };
         if (registered.salt !== undefined) options.salt = hexToBin(registered.salt);
         const child = SC.from(loaded as T, [], options as never, registered.category);
+        // A framed deployment is addressed by the lock its frames present, which a CREATE2 child presents as its
+        // identity: the rebuilt handle keeps the address the deployed one carries, so `getAddress()` names it.
+        const deployedHandle = registered.contract as { _framedAddress?: string } | undefined;
+        if (deployedHandle?._framedAddress !== undefined) {
+          (child as unknown as { _framedAddress?: string })._framedAddress = deployedHandle._framedAddress;
+        }
         // ethers parity: `getContractAt` connects the default signer just like `.at()` does. Without it the
         // builder provisions no native P2PKH input, and a covenant reading msg.sender/tx.origin (emitTxOrigin
         // scans for exactly that input) refuses the transaction with an empty origin.
@@ -632,7 +751,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
           (child as unknown as { _signer?: unknown })._signer = runner;
           (child as unknown as { _logicalNonceSigner?: unknown })._logicalNonceSigner = runner;
         }
-        return preferAbiMethods(child as object, loaded) as typeof child;
+        return presentAddresses(preferAbiMethods(child as object, loaded), loaded) as typeof child;
       }
       if (lookupAddress === undefined) {
         throw new Error(
@@ -642,8 +761,14 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // `at` is async (it eagerly resolves the category); await it before the dispatch proxy wraps the handle,
       // otherwise the proxy shadows `Promise.prototype.then` and the caller's `await` throws.
       const connected = await SC.at(lookupAddress, loaded as T, runner ?? defaultRunner());
+      // A framed deployment is addressed by the lock its frames present: the connected handle keeps the address the
+      // registered one carries, so `getAddress()` names the contract the identity named, as the child branch does.
+      const registeredHandle = registered?.contract as { _framedAddress?: string } | undefined;
+      if (registeredHandle?._framedAddress !== undefined) {
+        (connected as unknown as { _framedAddress?: string })._framedAddress = registeredHandle._framedAddress;
+      }
       registerDeployTargetChildren(connected as Registerable);
-      return preferAbiMethods(connected as object, loaded) as typeof connected;
+      return presentAddresses(preferAbiMethods(connected as object, loaded), loaded) as typeof connected;
     })();
   }) as SolidcashEthers['getContractAt'];
   const contractDeploy = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
@@ -662,10 +787,13 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       const initialBalance = overrides?.initialBalance ?? (valueMoving ? 200_000n : undefined);
       const deployed = await sdkDeployContract(
         loaded as T, args, runner ?? defaultRunner(),
-        { ...deployDefaults, ...(initialBalance === undefined ? {} : { initialBalance }), ...overrides },
+        {
+          ...withFunctionSplit(deployDefaults, loaded as Artifact),
+          ...(initialBalance === undefined ? {} : { initialBalance }), ...overrides,
+        },
       );
       registerDeployTargetChildren(deployed as Registerable);
-      return deployed;
+      return presentAddresses(deployed as object, loaded as Artifact) as typeof deployed;
     })();
   }) as SolidcashEthers['deployContract'];
 
@@ -686,6 +814,16 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     (ethersProvider as { getBalance?: (address: string | { address?: string }) => Promise<bigint> }).getBalance =
       async (address: string | { address?: string }): Promise<bigint> => {
         const value = typeof address === 'string' ? address : address?.address ?? String(address);
+        // A framed contract's balance is the value its satoshi containers hold (spec 4b): the coins at its own
+        // address carry its validator and masters, whose dust is no part of what the contract owns.
+        const { findDeploymentByAddress } = await import('@solidcash/solidcash/stateful');
+        const deployed = findDeploymentByAddress(provider as never, value)?.contract as {
+          categoryId?: string; inner?: { artifact?: Artifact };
+        } | undefined;
+        if (deployed?.categoryId !== undefined && deployed.inner?.artifact?.composition?.convention === 'framed') {
+          const containers = await framedDeploy.readSatoshiContainers(provider, deployed.categoryId);
+          return containers.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
+        }
         const utxos = await provider.getUtxos(value);
         return utxos.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
       };
@@ -724,10 +862,7 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
           satoshis: opts.accountSatoshis, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
         }));
       }
-      const [signer] = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
-        initialIndex: accountsInitialIndex + index, count: 1, path: accountsPath,
-      });
-      const connected = withEthersMessageSigning(signer);
+      const connected = withEthersMessageSigning(localSigner(accountsInitialIndex + index, o.mnemonic ?? mnemonic));
       await fundRegtestSigner(
         connected, o.satoshis ?? opts.accountSatoshis ?? 100_000_000n, index === 0 ? 16 : 4,
       );
@@ -787,6 +922,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     artifactsDir: config.paths.artifacts,
     composition: config.composition ?? (config.compiler?.composition === 'framed' ? 'framed'
       : 'direct'),
+    ...(config.create2Templates === undefined ? {} : { create2Templates: config.create2Templates }),
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
     accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,

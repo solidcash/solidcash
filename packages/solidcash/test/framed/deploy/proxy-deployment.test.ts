@@ -46,11 +46,11 @@ const SOURCE = 'pragma solidcash ^0.14.0;'
 const ENTRY = 'initialize';
 
 // A framed genesis leads with its authhead, then mints the resolved pool - masters, then validators -
-// followed by the facet pool, the contract's own record, and change. These indices read the default pool the
-// deployment funds.
+// followed by the facet pool (one output per facet the validator binds), the contract's own record, and change.
+// These indices read the default pool the deployment funds.
 const POOL = DEFAULT_MASTER_POOL_SIZE;
 const FIRST_MASTER = 1;
-const FACET_OUTPUTS = 1;
+const FACET_OUTPUTS = 2;
 const RECORD_OUTPUT = FIRST_MASTER + POOL.masters + POOL.validators + FACET_OUTPUTS;
 const GENESIS_OUTPUTS = RECORD_OUTPUT + 2;
 
@@ -218,8 +218,8 @@ describe('a framed proxy deployment', () => {
       = [at('proxy-master'), at('validator'), at(proxyRecordParticipantId(0)), at('implementation-master')];
 
     // Every participant recreates at the index it was spent at, and the deployer's signed input follows them.
-    expect(transaction.inputs.length).toBe(6);
-    expect(transaction.outputs.length).toBe(6);
+    expect(transaction.inputs.length).toBe(7);
+    expect(transaction.outputs.length).toBe(7);
     // The token each input spends: the proxy's minting NFT, its validator and record as mutable NFTs, the
     // implementation's minting NFT, and the deployer's plain funding.
     expect(sourceOutputs[proxyIndex]!.token!.nft!.capability).toBe('minting');
@@ -251,8 +251,8 @@ describe('a framed proxy deployment', () => {
     const recordIndex = draft.layout.participants.find((placed) => placed.id === proxyRecordParticipantId(0))!.index;
 
     // One input and one output per participant, then the deployer's own input and change.
-    expect(transaction.inputs.length).toBe(6);
-    expect(transaction.outputs.length).toBe(6);
+    expect(transaction.inputs.length).toBe(7);
+    expect(transaction.outputs.length).toBe(7);
     // The record is kept: the output carries exactly the commitment the proxy's genesis minted.
     const proxyRecord = deployment.proxy.tx.outputs[RECORD_OUTPUT]!;
     expect(bytesToHex(transaction.outputs[recordIndex]!.token!.nft!.commitment))

@@ -496,7 +496,7 @@ contract Ledger {
     expect(Object.keys(bundle.facets).length).toBeGreaterThan(0);
   });
 
-  it('keeps the historical head unless INTERNAL or DELEGATE is admitted', () => {
+  it('keeps the historical head unless INTERNAL is admitted', () => {
     const head = (frameKinds: number[]): Buffer => Buffer.from(buildMasterHeadScript({
       blockOnTop: false, frameKinds, reservesValidatorHashSlot: true, calls: [],
     }).script);
@@ -506,8 +506,8 @@ contract Ledger {
     const withInternal = head([0, 1, 2, 3, 4]);
     const onlyInternal = head([4]);
     expect(narrow.equals(withStatic)).toBe(true);
-    // G0: a master that admits DELEGATE frames settles its own category on a delegate frame.
-    expect(four.equals(withStatic)).toBe(false);
+    // V8: the validator settles the context a delegate frame runs on, so admitting DELEGATE leaves the head as it is.
+    expect(four.equals(withStatic)).toBe(true);
     expect(withInternal.equals(four)).toBe(false);
     expect(onlyInternal.equals(four)).toBe(false);
   });

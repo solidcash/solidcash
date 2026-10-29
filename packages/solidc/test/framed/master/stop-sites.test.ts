@@ -111,8 +111,9 @@ describe('the stop-site table published from a real compile', () => {
       functionName: 'Solo.ping()',
       calls: [],
       // A body that writes no record of its own publishes an empty write list, which tells a builder it rewrites
-      // nothing rather than that its write's segment is unstated.
+      // nothing rather than that its write's segment is unstated; it reads none either.
       writeSegments: [],
+      readSegments: [],
       sites: {
         version: 1,
         functionName: 'Solo.ping()',
@@ -142,6 +143,7 @@ describe('the stop-site table published from a real compile', () => {
           selector: toHex(SELECTOR),
         }],
         writeSegments: [],
+        readSegments: [],
         sites: {
           version: 1,
           functionName: 'Caller.a()',
@@ -162,6 +164,7 @@ describe('the stop-site table published from a real compile', () => {
           selector: toHex(PONG_SELECTOR),
         }],
         writeSegments: [],
+        readSegments: [],
         sites: {
           version: 1,
           functionName: 'Caller.b()',

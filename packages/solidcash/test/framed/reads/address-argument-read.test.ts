@@ -46,9 +46,10 @@ const PAYLOAD = new Uint8Array(20).fill(0x5a);
 const LOCK = encodeLockingBytecodeP2pkh(PAYLOAD);
 const HELD = 77n;
 
-/** The live list the body's own write leaves: the head, and one node at the lock's slot holding the value. */
+/** The live list the body's own write leaves: the head, and one node at the slot the collection keys the lock by. */
 const BATCH = planMappingBatch({
   writes: [{ keys: [LOCK], value: encodeIntegerValue(HELD) }],
+  keyEncoding: COLLECTION,
   inventory: [headSentinelCommitment()],
   encodeValue: (encoded: Uint8Array) => encoded,
 });
@@ -115,8 +116,8 @@ describe('reading a mapping keyed by an address', () => {
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(HELD);
 
-    // The node the frame declares is the one the lock's slot names, not the payload's own bytes.
-    expect(spentNodeSlot(result)).toBe(bytesToHex(keyToSlotMulti([LOCK])));
+    // The node the frame declares is the one the lock's slot names, which the collection keys by its 20-byte identity.
+    expect(spentNodeSlot(result)).toBe(bytesToHex(keyToSlotMulti([LOCK], COLLECTION)));
     const program = result.draft.programFor('read');
     expect(verdict(program, program.inputIndex)).toBe('accepted');
   });
@@ -127,7 +128,7 @@ describe('reading a mapping keyed by an address', () => {
     const result = await read(provider, LOCK);
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(HELD);
-    expect(spentNodeSlot(result)).toBe(bytesToHex(keyToSlotMulti([LOCK])));
+    expect(spentNodeSlot(result)).toBe(bytesToHex(keyToSlotMulti([LOCK], COLLECTION)));
   });
 
   it('reads a key the list does not hold as the absent value the body proves', async () => {

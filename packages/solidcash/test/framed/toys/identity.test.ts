@@ -548,8 +548,8 @@ describe('Escrow.refund reached through Market.refund sees the root user in tx.o
         { contract: 'Market', masters: ['market-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Escrow', masters: ['escrow-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: [{ id: 'user', index: 4 }],
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: [{ id: 'user', index: 5 }],
       masters: [
         master({
           master: 'market-1', contract: 'Market', entry: 'refund', program: market.program,
@@ -888,8 +888,8 @@ describe('a call to the contract\'s own address on a second master runs as the c
       blocks: [{
         contract: 'Tok', masters: ['tok-1', 'tok-2'], validator: { id: 'validator', settles: [] }, state: [],
       }],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: [{ id: 'user', index: 4 }],
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: [{ id: 'user', index: 5 }],
       masters: [
         master({
           master: 'tok-1', contract: 'Tok', entry: 'callG', program: tok.program,

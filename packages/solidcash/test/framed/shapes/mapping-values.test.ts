@@ -271,7 +271,9 @@ describe('a string-keyed string mapping set', () => {
       inputIndex: input.index, sourceOutputs: program.sourceOutputs,
       transaction: { ...program.transaction, outputs: drained },
     })) !== true).map((input) => input.id);
-    expect(refusedBy).toStrictEqual([ENTRY_MASTER]);
+    // The validator covers the entry's master, so it settles the entry's contract (V8), the value floor included: its
+    // census facet weighs the floor, and the machine decides the head with that facet.
+    expect(refusedBy).toStrictEqual([VALIDATOR_ID, `${VALIDATOR_ID}/2`]);
   });
 
   it('refuses a close the body did not compute', () => {

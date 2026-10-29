@@ -181,6 +181,8 @@ export class ContractNode extends Node implements Named {
   // A per-entry function shard keeps the logical state declarations and must not regain them as extra
   // dispatchable getters. The logical artifact owns that surface.
   suppressSynthesizedGetters: boolean = false;
+  // The one public state getter a per-entry getter shard serves: synthesized although the rest are suppressed.
+  synthesizedGetterOnly?: string;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
@@ -488,6 +490,8 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** A framed entry's top-level state writes, as its frame's own facts state them (`framedStateWrites`). */
+  framedStateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
   /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
   compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
@@ -1955,6 +1959,9 @@ export class CastNode extends ExpressionNode implements Typed {
   // to its width as two's complement (the EVM cleans the word on use); under evmCompat a bytesN follows the EVM
   // word layout too (compileEvmWordCast in generation/utils.ts). Native bytesN keeps the checked conversion.
   evmWord?: boolean;
+  // Set by the Yul lowering on the address a `create2` over a runtime code value takes: the salt and the code it was
+  // given, which a framed compile derives the EVM identity from instead (`LowerFramedCreate2Address`).
+  runtimeCreate2?: { readonly salt: ExpressionNode; readonly code: ExpressionNode };
   constructor(
     public type: Type,
     public expression: ExpressionNode,
@@ -2923,6 +2930,13 @@ export enum ExternalCallMode {
 export interface LowLevelRoute {
   readonly mode: 'call' | 'staticcall';
   readonly fallback?: { readonly selector: Uint8Array };
+  /**
+   * Set for a payload named by its selector alone, on a target the source types as a bare address: the callee's
+   * own return data is the call's, whatever the callee declares, so the site keeps the record's result as bytes.
+   */
+  readonly opaqueResult?: true;
+  /** The local the call's success is bound to (`(bool ok, bytes data) = target.call(..)`), which its check reads. */
+  readonly successLocal?: string;
 }
 
 export interface ExternalFunctionCallInfo {
@@ -3007,6 +3021,8 @@ export interface ExternalCallArgSource {
   indexValue?: number;
   indexStepValue?: number;
   initialValue?: string;
+  /** For a `loopIndex` with no literal start: the counter's value where its loop opens, from the loop's domain. */
+  initialExpression?: ExternalCallExpression;
   stepValue?: string;
   stepExpression?: ExternalCallExpression;
   counterName?: string;
@@ -3019,6 +3035,8 @@ export interface ExternalCallArgSource {
 }
 
 export interface ExternalCallExpression {
+  /** On an `unsupported` node, the contract whose `type(C).creationCode` it stands for (folded before publishing). */
+  creationCodeOf?: string;
   kind: string;
   /** Compiler-internal source identity for compute-call association; ignored by SDK expression replay. */
   computeSourceSite?: string;
@@ -3483,6 +3501,8 @@ export class TransferStatementNode extends StatementNode {
 
   /** Relative source order among all runtime effects in this repeated segment. */
   runtimeLoopEffectOrder?: number;
+  /** The local a low-level value call lowered to this send bound its success to (`(bool ok, ) = to.call{...}("")`). */
+  successLocal?: string;
 
   constructor(
     public lockingBytecode: ExpressionNode,

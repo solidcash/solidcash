@@ -9,6 +9,7 @@
 import { test, expect } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import {
   MOCK_RELAXED_OPERATION_COST,
   MockNetworkProvider,
@@ -35,9 +36,9 @@ import {
 import { userPlan } from './plans.js';
 
 const relaxedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvider> =>
-  createVirtualMachineBch2026ForProvider(
+  settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
 
 type VmProgram = Parameters<ReturnType<typeof relaxedMachine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;

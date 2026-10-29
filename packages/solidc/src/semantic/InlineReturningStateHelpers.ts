@@ -622,7 +622,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // checks a transaction signature, and a file-level one that hashes (freeFunctionHashes).
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn))) {
+          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn)
+          || (this.keepSelfMessageCalls && this.framedLibraryHashes(fn)))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -928,6 +929,30 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
       return callee !== undefined && callee !== fn && this.eligibleShape(callee)
         && this.freeFunctionHashes(callee, seen);
+    });
+  }
+
+  /**
+   * A library member reaching keccak256, directly or through another free function (`UniswapV2Library.pairFor`), in
+   * a framed compile. A framed body reads each hash's side-car at the step its own count of calls names, after its
+   * master's input, so a hash an OP_INVOKE subroutine makes reads the side-car of the subroutine's own ordinal on
+   * every invocation, and the entry publishes none for it. Inlined, each call site is a hash of the entry's own.
+   */
+  private framedLibraryHashes(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (!this.freeFns.includes(fn) || this.ambiguousInlineKeys.has(key)) return false;
+    if (this.containsKeccak(fn)) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const libPrefix = fn.name.includes('.') ? fn.name.slice(0, fn.name.lastIndexOf('.') + 1) : '';
+    return this.nodesOf(fn).some((node) => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const name = node.identifier.name;
+      const callee = this.lookupOverload(name, node.parameters.length)
+        ?? (libPrefix !== '' && !name.includes('.')
+          ? this.lookupOverload(libPrefix + name, node.parameters.length) : undefined);
+      return callee !== undefined && callee !== fn && this.eligibleShape(callee)
+        && this.framedLibraryHashes(callee, seen);
     });
   }
 
@@ -1395,7 +1420,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return node;
   }
 
-  /** Resolve a direct, uniquely named event helper which the ordinary returning-helper pass can inline. */
+  /**
+   * Resolve a direct, uniquely named helper which the ordinary returning-helper pass can inline and whose expansion
+   * the arm of a conditional position must own: an event helper, or a framed one that hashes (`framedArmHashes`).
+   */
   private lazyEventHelper(call: FunctionCallNode): FunctionDefinitionNode | undefined {
     const key = inlineKey(call.identifier.name, call.parameters.length);
     // Overload choice is a semantic/type decision. This pre-semantic rewrite must never guess between same-arity
@@ -1404,7 +1432,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const callee = this.lookupOverload(call.identifier.name, call.parameters.length)
       ?? this.funcByName.get(call.identifier.name);
     if (!callee || !this.inlinedFns.has(call.identifier.name)
-      || !this.transitivelyContainsEvent(callee)) return undefined;
+      || !(this.transitivelyContainsEvent(callee) || this.framedArmHashes(callee))) return undefined;
     // A recursive body is deliberately left to the established diagnostic. Expanding one frame would neither
     // make the call graph finite nor provide an exact event occurrence domain.
     const reachesSelf = (fn: FunctionDefinitionNode, target: string, seen = new Set<string>()): boolean => {
@@ -1421,6 +1449,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return false;
     };
     return reachesSelf(callee, key) ? undefined : callee;
+  }
+
+  /**
+   * A framed helper that hashes. As an OP_INVOKE subroutine its calls read side-cars by its own ordinals on every
+   * invocation (`framedLibraryHashes`), so a conditional position that calls it expands it in the arm that makes the
+   * call, as an event helper is: each of its hashes is then one of the entry's own, made where the arm is taken.
+   */
+  private framedArmHashes(fn: FunctionDefinitionNode): boolean {
+    return this.keepSelfMessageCalls
+      && (this.containsKeccak(fn) || this.freeFunctionHashes(fn) || this.framedLibraryHashes(fn));
   }
 
   private containsLazyEventHelper(node: Node): boolean {

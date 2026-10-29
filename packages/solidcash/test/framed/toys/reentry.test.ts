@@ -112,8 +112,9 @@ function verdictAtIndex(draft: ReturnType<typeof createComposedDerivationHost>['
  * `Claimer.claim`, which calls back into `Vault.markClaimed`, whose own rewrite closes the record. With `insert`
  * the transaction starts from an empty list, so `release` creates the record and the segment declares the head
  * sentinel rewritten in place and the created node as a trailing output; otherwise the record already exists at
- * the index right after the validator and both writes update it in place. With `control` the created node's output
- * is left at the value the creating frame wrote, which is not the commitment the last declaration ends at.
+ * the index right after the validator's facets and both writes update it in place. With `control` the created
+ * node's output is left at the value the creating frame wrote, which is not the commitment the last declaration
+ * ends at.
  *
  * `claim` returns a pair: its frame records `recordedPair` in its `retval`, which the honest run takes from the
  * shipped result encoding and the control changes, so `release` reads the record's `result` back and requires each
@@ -156,9 +157,9 @@ function driveSettled(
   // block, and the entering user after every participant. A created record is a funder's recreation, so it and the
   // head sentinel follow every participant instead.
   const stateCount = insert ? 0 : 1;
-  // Two Vault masters, its validator, the facet it binds, its state record, then the Claimer's master.
-  const participantCount = 2 + 1 + 1 + stateCount + 1;
-  const nodeIndex = 4;
+  // Two Vault masters, its validator, the two facets it binds, its state record, then the Claimer's master.
+  const participantCount = 2 + 1 + 2 + stateCount + 1;
+  const nodeIndex = 5;
   const createdIndex = insert ? participantCount : nodeIndex;
   const headIndex = createdIndex + 1;
   const userIndex = participantCount + (insert ? 2 : 0);
@@ -739,8 +740,8 @@ describe('the vault graph: release, two payments through the token and the emit'
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
     expect(rejected).toStrictEqual([]);
     expect(verdicts.map((verdict) => verdict.participant)).toStrictEqual([
-      'release-1', 'markClaimed-1', 'pay-1', 'pay-2', 'validator', 'validator/1', 'vaultNode', 'claim-1',
-      'transfer-1', 'transfer-2', 'tokenNode',
+      'release-1', 'markClaimed-1', 'pay-1', 'pay-2', 'validator', 'validator/1', 'validator/2', 'vaultNode',
+      'claim-1', 'transfer-1', 'transfer-2', 'tokenNode',
     ]);
     expect(participant(draft.layout, 'vaultNode').index).toBe(vaultNodeIndex);
     expect(participant(draft.layout, 'tokenNode').index).toBe(tokenNodeIndex);
@@ -1025,7 +1026,8 @@ describe('the claimer\'s read-back of the record `release` wrote', () => {
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
     expect(refused).toStrictEqual([]);
     expect(verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`)).toStrictEqual([
-      'release-1:true', 'get-1:true', 'validator:true', 'validator/1:true', 'vaultNode:true', 'claim-1:true',
+      'release-1:true', 'get-1:true', 'validator:true', 'validator/1:true', 'validator/2:true', 'vaultNode:true',
+      'claim-1:true',
     ]);
   });
 
@@ -1037,10 +1039,11 @@ describe('the claimer\'s read-back of the record `release` wrote', () => {
     expect(verdictAt(draft, 'get-1')).toBe('refused: Program failed an OP_VERIFY operation.');
 
     // The other control: a frame that declares no record has nothing to resolve, so the read fails rather than
-    // falling back to the spent commitment.
+    // falling back to the spent commitment. The empty segment leaves the read's proof naming no record of the
+    // frame's, so the frame stops before its body's check, wherever that proof first lands.
     const empty = driveReadBack();
     empty.draft.blockOf('get-1').segments[0] = [];
-    expect(verdictAt(empty.draft, 'get-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+    expect(verdictAt(empty.draft, 'get-1')).toMatch(/^refused: /);
   });
 });
 

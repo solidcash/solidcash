@@ -28,6 +28,7 @@ import {
   TokenCapability,
   TRANSCRIPT_VERSION,
   TRANSCRIPT_VERSION_MINTED,
+  KEPT_VIEW_LENGTH,
   WITNESS_BLOCK_MAGIC,
   WITNESS_BLOCK_VERSION,
   argsHash,
@@ -590,6 +591,15 @@ class ReferenceRun {
         if (!intact) this.reject('V7', 'A_MINTING_NFT_IS_NOT_RECREATED_IN_PLACE', index);
       }
     }
+    // An index past the inputs holds an output alone, so a master there is one the transaction mints: only a minted
+    // master the transcript lists is (R2b, T53).
+    for (let index = this.transaction.inputs.length; index < this.transaction.outputs.length; index += 1) {
+      const output = this.transaction.outputs[index]!;
+      if (masterToken(output.token) && eq(output.token.category, category)
+        && !this.mintedMasters.some((minted) => minted.output === index)) {
+        this.reject('V7', 'A_MINTING_NFT_IS_NOT_RECREATED_IN_PLACE', index);
+      }
+    }
 
     for (const output of this.transaction.outputs) {
       if (!eq(output.token.category, category)) continue;
@@ -618,18 +628,11 @@ class ReferenceRun {
   }
 
   checkV8(): void {
-    // A contract's masters are counted over the whole transaction: one that is not its category's only master leaves
-    // its records to a validator, whichever validator covers the others.
-    const counts = new Map<string, number>();
-    for (const input of this.transaction.inputs) {
-      if (!masterToken(input.token)) continue;
-      const key = keyOf(input.token.category);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
+    // Every spent covered master's contract is settled here: a master a validator covers never settles its own
+    // records. A minted master runs nothing, so it asks for no settlement of its own contract.
     const needed = new Set<string>();
     for (const master of this.masters) {
-      const key = keyOf(this.ownCategory(master));
-      if ((counts.get(key) ?? 0) >= 2) needed.add(key);
+      if (!isMintedRef(master)) needed.add(keyOf(this.ownCategory(master)));
     }
     for (const master of this.masters) {
       const kind = this.master(master).kind;
@@ -701,6 +704,8 @@ class ReferenceRun {
     for (const master of this.masters) {
       const block = this.master(master);
       if (!selfIsCodeConstant(block.kind)) continue;
+      // A CREATE2 child presents the 20-byte EVM identity its creator derived, which its own master binds.
+      if (block.self.length === 20) continue;
       const expected = validatorAddress(this.ownCategory(master), this.context.validatorTemplate);
       if (!eq(block.self, expected)) this.reject('V11', 'A_FRAME_PRESENTS_AN_ADDRESS_THAT_IS_NOT_ITS_OWN', master);
     }
@@ -799,7 +804,8 @@ function splitPushFrames(unlockingBytecode: Uint8Array): Uint8Array[] {
 
 /**
  * Reads a master's witness block in section 16's layout:
- * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call, and a trailing value list.
+ * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call, each segment led by its byte
+ * length, and a trailing value list.
  *
  * This is an independent restatement of the frozen codec's layout for differential checks: the codec's encoder and
  * decoder agree on that exact field order, so the model reader and the codec are kept in lockstep rather than one
@@ -836,22 +842,32 @@ function readBlock(payload: Uint8Array): WitnessBlock {
     };
   });
 
-  const segments = reader.readCounted16((inner): RecordEntry[] =>
-    inner.readCounted16((entries): RecordEntry => {
+  // Each segment is led by its byte length, and each record by its indices and its views' lengths; a kept record's
+  // `viewOut` is its `viewIn`, which the wire does not repeat.
+  const segments = reader.readCounted16((inner): RecordEntry[] => {
+    const segment = new ByteReader(inner.readLp16());
+    const entries = segment.readCounted16((entries): RecordEntry => {
+      const index = { in: entries.readUint16(), out: entries.readUint16() };
+      const inLength = entries.readUint16();
+      const outLength = entries.readUint16();
+      if (inLength === KEPT_VIEW_LENGTH) throw new FramedEncodingError('a record view is the kept sentinel long');
+      const viewIn = entries.readBytes(inLength);
       const entry: RecordEntry = {
-        in: entries.readUint16(),
-        out: entries.readUint16(),
-        viewIn: entries.readLp32(),
-        viewOut: entries.readLp32(),
+        ...index, viewIn, viewOut: outLength === KEPT_VIEW_LENGTH ? viewIn : entries.readBytes(outLength),
       };
       assertRecordEntry(entry);
       return entry;
-    }));
+    });
+    segment.assertEnd();
+    return entries;
+  });
 
   const events = reader.readCounted16((inner): number => inner.readUint16());
   const sends = reader.readCounted16((inner): number => inner.readUint16());
-  // The values a body reads are bound by the master against its records, so the validator only reads past them.
+  // The values a body reads are bound by the master against its records, so the validator only reads past them, and
+  // past the padding, which nothing reads.
   reader.readCounted16((inner): Uint8Array => inner.readLp32());
+  reader.readLp16();
   reader.assertEnd();
   if (segments.length !== calls.length + 1) throw new FramedEncodingError('segment and call counts disagree');
   return { kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends };

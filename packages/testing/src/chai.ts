@@ -930,6 +930,11 @@ class Assertion {
     return run();
   }
 
+  /** `expect(tx).to.revert(ethers)`, the newer matchers' spelling of `reverted`: the call reverts, for any reason. */
+  revert(_ethers?: unknown): Promise<void> {
+    return this.reverted;
+  }
+
   revertedWith(reason: RegExp | string): Promise<void> {
     return this.revertExpectation(reason).promise;
   }

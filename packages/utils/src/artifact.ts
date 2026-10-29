@@ -259,6 +259,12 @@ export interface EmitAbi {
    * `{ kind: 'unsupported' }` marks an emit whose condition those facts do not decide, learned from that close.
    */
   activation?: ExternalCallExpression;
+  /**
+   * The event outputs a framed frame lists for this emit when its payload can outgrow one NFT commitment: chunk `c`
+   * at the emit's `c`-th output, the first under the event covenant and each further one under its continuation
+   * covenant, a chunk past the payload with the empty commitment. Absent for an emit that takes one output.
+   */
+  chunks?: number;
 }
 
 /** One segment of the source-ordered runtime event plan. Exactly one repeat source is present. */
@@ -361,6 +367,8 @@ export type LibraryCallArg =
 
 export interface AbiOutput {
   type: string;
+  /** The output's name, as a framed entry's source declares it (`returns (uint amountA, ...)`). */
+  name?: string;
 }
 
 /** Versioned tuple-wide wire representation for authenticated external-call results. */
@@ -490,6 +498,8 @@ export interface FixedBchTransferAbi {
   callOption?: 'value';
   /** Exact source-path predicate. Null explicitly means that source reachability is not reproducible. */
   condition?: ExternalCallExpression | null;
+  /** For a send made as a low-level call (`to.call{value: v}("")`), its `ExternalCallAbi.failedCallMessage`. */
+  failedCallMessage?: string;
 }
 
 /** Completely folded, constructor-only initial state for one child deployment site. */
@@ -723,6 +733,11 @@ export interface AbiFunction {
   /** Local call-result values forwarded as arguments into later external callsites. */
   resultConsumers?: readonly ExternalResultConsumerAbi[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
+  /**
+   * A framed entry's top-level state writes, each a variable the body assigns once on no branch, with the value as its
+   * frame's own facts state it. A planner reads a later frame of the contract in the same transaction against them.
+   */
+  stateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
   emits?: readonly EmitAbi[];
   runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
   runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
@@ -1328,6 +1343,8 @@ export interface ArgSource {
   indexValue?: number;     // for 'arrayElement': fixed index, or the index at occurrence zero when indexStepValue is present
   indexStepValue?: number; // for 'arrayElement': per-occurrence index delta of a loop induction variable index
   initialValue?: string;   // for 'loopIndex': value at occurrence zero
+  // for 'loopIndex' with no literal start: the counter's value at occurrence zero, where its loop opens
+  initialExpression?: ExternalCallExpression;
   stepValue?: string;      // for 'loopIndex': delta per reached occurrence
   stepExpression?: ExternalCallExpression; // for 'loopIndex': runtime delta from public arguments
   counterName?: string;  // compiler-bound induction variable for nested-domain coordinate selection
@@ -1341,6 +1358,11 @@ export interface ExternalCallExpression {
   kind: string;
   /** Source-site identity for compiler-owned compute ordinal checks; has no replay semantics. */
   computeSourceSite?: string;
+  /**
+   * On an `unsupported` node, the contract whose `type(C).creationCode` it stands for. The compiler folds a
+   * `keccak256` of it to the digest of the child's program before publishing, so a builder never reads this.
+   */
+  creationCodeOf?: string;
   /** Closed typed fixed-effect predicate; callers without authenticated entry context must leave it unknown. */
   fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
@@ -1357,6 +1379,11 @@ export interface ExternalCallExpression {
   sourceCallsiteId?: number;
   /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
   resultIndex?: number;
+  /**
+   * On a `stateAccess`, true when the read runs where the frame starts: it is a local's value declared before any
+   * statement of the entry writes the mapping, so a builder reads it from the frame's own nodes.
+   */
+  readAtEntry?: boolean;
   /** Authenticated receiver expression for a returning external call. */
   target?: ExternalCallExpression;
   type?: string;
@@ -1626,6 +1653,12 @@ export interface ExternalCallAbi {
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
   rawSelector?: string; // decoded abi.encodeWithSelector selector when the source function name is unavailable
   rawArgSources?: readonly ArgSource[];
+  /**
+   * The message of the caller's own `require` over this low-level call's success: what the EVM reports when the call
+   * fails, since a low-level call returns `false` to its caller rather than reverting it. Absent for a typed call,
+   * whose failure is the callee's own, and for a low-level call no `require` checks.
+   */
+  failedCallMessage?: string;
   batchInvocations?: readonly {
     selector: string;
     /**
@@ -1982,6 +2015,12 @@ export interface CompositionPlaceholders {
    * the expected program, and the expected program's hash is only known once the validator is deployed.
    */
   templateHashOffset?: number;
+  /**
+   * Byte offset of the 20-byte identity slot, which follows the address slot. Zero for a contract that presents its
+   * category's address; a CREATE2 child presents the EVM identity its creator derived, which deployment fills here.
+   * Absent on a master compiled before the slot existed.
+   */
+  identityOffset?: number;
 }
 
 /**
@@ -2021,6 +2060,15 @@ export interface PublishedCallSite {
  * `collection` names the verified mapping a batch write targets, `variable` names the dynamic value whose run
  * of chunk records the write occupies, and `turns` names a mapping write a run-time loop makes once per turn.
  */
+/** A segment a framed entry's own code reads a record in: see `PublishedEntryStopSites.readSegments`. */
+export interface PublishedReadSegment {
+  /** One of the entry's data records, by its NFT index. */
+  readonly record?: number;
+  /** A collection the read reaches a node of, or a dynamic value whose chunk run it reads, by name. */
+  readonly collection?: string;
+  readonly segment: number;
+}
+
 export interface PublishedWriteSegment {
   readonly record?: number;
   readonly collection?: string;
@@ -2085,6 +2133,11 @@ export interface PublishedLoopEffectRun {
   readonly ids: readonly number[];
   /** The loop's recurrence for a run a loop repeats once per turn; absent for a run the body makes once. */
   readonly iterationDomain?: ExternalCallIterationDomainAbi;
+  /**
+   * For a run some of whose effects are on a branch, the predicate each is made under on a turn, aligned with `ids`:
+   * read with the loop's counter bound, as its `continueCondition` is. `null` is an effect made on every turn.
+   */
+  readonly conditions?: readonly (ExternalCallExpression | null)[];
 }
 
 /**
@@ -2129,6 +2182,16 @@ export interface PublishedEntryStopSites {
    */
   readonly writeSegments?: readonly PublishedWriteSegment[];
   /**
+   * The segments the entry's own code reads its records in, one fact per record and segment.
+   *
+   * A read runs in the segment the calls before it close, so a read whose calls vary with the arms taken is in each
+   * segment its range of calls names. With `writeSegments` it says which records a segment's code touches: a builder
+   * may leave out of a segment a record the code neither reads nor writes there, which keeps its view across that
+   * segment for the frames around it. Absent means a read's segment is not bounded, and the builder declares every
+   * record in every segment.
+   */
+  readonly readSegments?: readonly PublishedReadSegment[];
+  /**
    * For each value send of the entry, in transfer order, how many external calls the entry makes before it.
    *
    * A send to a contract is a call into its `receive()` made where the send is, so its record follows those calls
@@ -2136,6 +2199,12 @@ export interface PublishedEntryStopSites {
    * Absent means the entry makes no send, or makes one whose place among its calls the source does not fix.
    */
   readonly sendCallsBefore?: readonly number[];
+  /**
+   * For each value send of the entry, in transfer order, whether the entry makes no external call after it: a send
+   * to a contract then makes its call after every call the entry makes, however many a loop before it makes, which
+   * places it where `sendCallsBefore` leaves its place open. Absent means the entry makes no send.
+   */
+  readonly sendsAfterCalls?: readonly boolean[];
   /** The effects the entry makes once per turn of a loop, when it makes any. */
   readonly loopEffects?: PublishedLoopEffects;
   /** The sites in the order the driver reaches them, validated before publication. */
@@ -2249,6 +2318,15 @@ export interface Artifact {
      * lock. Absent when the master calls no cut helper.
      */
     internalHelperLocks?: readonly InternalHelperLockSlot[];
+    /**
+     * The contracts the master's bodies create with CREATE2, each addressed by its EVM identity
+     * `keccak256(0xff ++ creator ++ salt ++ keccak256(code))[12:]`. A builder stands such a child up at that identity
+     * before the creating transaction. A creation from `type(C).creationCode` (`new C{salt: s}()`) names the child
+     * contract; one from a code value the contract holds names the state variable holding it, and the builder
+     * stands up the artifact its template table names for the value's keccak256. Absent when the master creates
+     * nothing.
+     */
+    creates?: readonly { readonly contractName?: string; readonly codeStateVariable?: string }[];
   };
   messageBus?: {
     version: 1;
@@ -2675,6 +2753,11 @@ export interface FunctionSplitInternalCut {
   wholeSpendBytes: number;
   /** Selectors of the entries whose call record names this helper. */
   callerSelectors: readonly string[];
+  /**
+   * The helper's own ABI row: the parameters a call into it carries and the results it hands back. The helper's
+   * artifact publishes no entry for it, so nothing reaches it but its callers' INTERNAL frames.
+   */
+  entry?: AbiFunction;
 }
 
 /**

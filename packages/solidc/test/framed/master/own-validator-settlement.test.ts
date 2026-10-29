@@ -15,14 +15,14 @@ import {
 } from './validator-input.js';
 
 /**
- * A self-settling master beside the validator of its own category (spec S2).
+ * A covered master's contract, settled by the validator of its own category (spec V7, V8).
  *
  * The caller is its contract's only master and makes a message call, so a validator of its category covers the
- * frame while the master settles its own record. The validator's UTXO is a mutable token of the contract's category
- * at the contract's own address, recreated in place, which the master's census would otherwise take for an
- * undeclared record. The census admits exactly that token: the category's mutable NFT with an empty commitment, at
- * the address, on both sides of one index. A second mutable token with a commitment, or one at another lock, is still
- * an undeclared record and is refused.
+ * frame and settles the caller's contract, as it settles every covered master's. The validator's UTXO is a mutable
+ * token of the contract's category at the contract's own address, recreated in place, which its census would
+ * otherwise take for an undeclared record. The census admits exactly that token: the validator's own recreation. A
+ * second mutable token, with a commitment or at another lock, is a state UTXO the settlement does not list, and an
+ * immutable NFT or a fungible amount of the category is one no frame lists, so each is refused.
  */
 
 const label = (text: string): Uint8Array => sha256(new TextEncoder().encode(text));
@@ -94,7 +94,11 @@ interface Verdicts {
 
 /** `minted` is an output past every other, which no input carries. */
 function verdicts(extra?: ExtraPair, minted?: VmOutput): Verdicts {
-  const validator = validatorSpend(CATEGORY_CALLER, { roots: [CALLER], masters: [CALLER, CALLEE], settles: [] });
+  const validator = validatorSpend(CATEGORY_CALLER, {
+    roots: [CALLER],
+    masters: [CALLER, CALLEE],
+    settles: [{ category: CATEGORY_CALLER, stateInputs: [STATE] }, { category: CATEGORY_CALLEE, stateInputs: [] }],
+  });
   const outpoint = (index: number): Uint8Array => label(`beside validator outpoint ${index}`);
   const input = (index: number, unlockingBytecode: Uint8Array): VmInput => ({
     outpointIndex: 0, outpointTransactionHash: outpoint(index), sequenceNumber: 0xffffffff, unlockingBytecode,
@@ -168,27 +172,30 @@ function verdicts(extra?: ExtraPair, minted?: VmOutput): Verdicts {
   };
 }
 
-describe('a self-settling master beside the validator of its own category', () => {
+/** The masters accept and the validator refuses: what the settlement alone decides. */
+const SETTLEMENT_REFUSES: Verdicts = { caller: true, callee: true, validator: false };
+
+describe('a covered master\'s contract, settled by the validator of its own category', () => {
   it('settles its record while its validator is recreated in place', () => {
     expect(verdicts()).toStrictEqual({ caller: true, callee: true, validator: true });
   });
 
   it('refuses a second mutable token of its category with a commitment, at the contract address', () => {
-    expect(verdicts({ lock: ADDRESS_CALLER, commitment: AFTER }).caller).toBe(false);
+    expect(verdicts({ lock: ADDRESS_CALLER, commitment: AFTER })).toStrictEqual(SETTLEMENT_REFUSES);
   });
 
   it('refuses a second mutable token of its category at another lock', () => {
-    expect(verdicts({ lock: dataRecordLock(CATEGORY_CALLER), commitment: EMPTY }).caller).toBe(false);
-    expect(verdicts({ lock: dataRecordLock(CATEGORY_CALLER), commitment: AFTER }).caller).toBe(false);
+    expect(verdicts({ lock: dataRecordLock(CATEGORY_CALLER), commitment: EMPTY })).toStrictEqual(SETTLEMENT_REFUSES);
+    expect(verdicts({ lock: dataRecordLock(CATEGORY_CALLER), commitment: AFTER })).toStrictEqual(SETTLEMENT_REFUSES);
   });
 
-  it('refuses an immutable NFT or a fungible amount of its category, which its validator does not settle', () => {
-    // S2's census is the caller's alone: the validator settles no contract here, so it and the callee accept.
+  it('refuses an immutable NFT or a fungible amount of its category', () => {
     const minted = (held: VmOutput['token']): VmOutput =>
       ({ lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: held });
     const forged = { category: CATEGORY_CALLER, amount: 0n, nft: { capability: 'none' as const, commitment: AFTER } };
-    expect(verdicts(undefined, minted(forged))).toStrictEqual({ caller: false, callee: true, validator: true });
+    expect(verdicts(undefined, minted(forged))).toStrictEqual(SETTLEMENT_REFUSES);
+    // The caller's own code refuses the fungible amount as well.
     expect(verdicts(undefined, minted({ category: CATEGORY_CALLER, amount: 3n })))
-      .toStrictEqual({ caller: false, callee: true, validator: true });
+      .toStrictEqual({ caller: false, callee: true, validator: false });
   });
 });

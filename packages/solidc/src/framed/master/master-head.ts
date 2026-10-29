@@ -33,7 +33,8 @@ import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruc
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { TokenCapability } from '@solidcash/utils';
 import {
-  CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, placeholderPrefixLength, placeholderPush,
+  CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, IDENTITY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH,
+  placeholderPrefixLength, placeholderPush,
 } from './placeholders.js';
 import {
   dropFirstPushScript,
@@ -45,9 +46,6 @@ import {
 } from './witness-reader.js';
 import {
   assertP2pkhShapeScript,
-  blockRecordsNoContextCallScript,
-  countCategoryHoldersScript,
-  countMastersScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
   selfSettlementScript,
@@ -124,6 +122,28 @@ export function callCountSlotName(): string {
 }
 
 /**
+ * The tracked slot holding the frame's call records, each led by its own length as a two-byte number.
+ *
+ * The head's tail walk keeps them for a master whose bodies make calls, so a call site steps to its own record from
+ * here, one split a record, instead of reading the block again and stepping over the frame's header.
+ */
+export function callsSlotName(): string {
+  return '__internal__frameCalls';
+}
+
+/**
+ * The tracked slot holding the frame's segments, each its declared record count and records, led by its own length as
+ * a two-byte number.
+ *
+ * The head's tail walk keeps them for a master that reads its records from its frame, so each of the body's reads
+ * steps to the segment it names from here, one split a segment, instead of reading the block again and stepping over
+ * the frame's header, its call records and every field of the earlier segments.
+ */
+export function segmentsSlotName(): string {
+  return '__internal__frameSegments';
+}
+
+/**
  * The tracked slot the body reads the number of events the witness block declares.
  *
  * The head parks the block's declared event count above the event output slots it leaves. A body pins the number
@@ -189,6 +209,8 @@ export function valueWitnessSlotName(slot: number): string {
 const HASH_TYPE_ALL = 0x41;
 /** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
 const HASH_TYPE_UTXOS_BIT_MASK = 0xdf;
+/** A P2SH32 lock's length, `OP_HASH256 <32 bytes> OP_EQUAL`: the push a drained run's marker carries its lock in. */
+const P2SH32_LOCK_BYTES = 35;
 
 /** The head a compiled master opens with, and where its deployment-time constants sit. */
 export interface MasterHead {
@@ -260,23 +282,22 @@ export interface MasterHeadOptions {
    */
   readonly callCount?: number;
   /**
-   * True when every body the master serves makes a `DELEGATE` or `INTERNAL` call on every path, as a proxy's sole
-   * forwarding fallback does. No frame of it then settles its own records, so the head carries no walk for them.
-   * Otherwise a master with such a site reads the calls the frame's block records, and settles alone when they
-   * hold none.
-   */
-  readonly contextCallsOnEveryPath?: boolean;
-  /**
    * The event and send counts, and any per-segment record counts, the entry fixes. Without one the walk requires
    * no event, no send and no record in any segment.
    */
   readonly tail?: MasterTailShape;
   /**
-   * True when the master settles its own records: a standalone master is the contract's only one, so its segment's
-   * record declarations are compared with the commitments the transaction spends and writes and with the state
-   * UTXOs it spends. A master that stands alongside another does not settle them; the validator does.
+   * True when the master settles its own records when it stands alone: with no validator, its segment's record
+   * declarations are compared with the commitments the transaction spends and writes and with the state UTXOs it
+   * spends. A master a validator covers never settles them; the validator settles every covered master's contract
+   * (V8).
    */
   readonly settlesOwnRecords?: boolean;
+  /**
+   * True when every spend of the master names a validator, as a per-entry shard's does: the head then carries no
+   * standalone arm, and a frame whose `validatorRef` is `INDEX_NONE` is refused where the validator is recognised.
+   */
+  readonly requiresValidator?: boolean;
   /**
    * True when the head keeps the first segment's declared record indices as slots: a body with data NFTs reads
    * its state block where the frame's own block declared it instead of at a fixed offset from its input.
@@ -346,7 +367,6 @@ class HeadEmitter {
   private validatorHashSlot = -1;
   private readonly callSites: readonly MasterCallSite[];
   private readonly callCount: number;
-  private readonly contextCallsOnEveryPath: boolean;
   private readonly tailShape: MasterTailShape;
   private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
@@ -356,6 +376,7 @@ class HeadEmitter {
   private readonly callDataSelectorUnconsumed: boolean;
   private readonly soleEntrySelector: Uint8Array | undefined;
   private readonly settlesOwnRecords: boolean;
+  private readonly requiresValidator: boolean;
   private readonly keepsRecordIndices: boolean;
   private readonly returnsValue: boolean;
   private readonly acceptsValue: boolean;
@@ -367,7 +388,6 @@ class HeadEmitter {
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
     this.callCount = options.callCount ?? this.callSites.length;
-    this.contextCallsOnEveryPath = options.contextCallsOnEveryPath === true;
     this.tailShape = options.tail ?? zeroTailShape(this.callCount);
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.requestedFrameKinds = options.frameKinds;
@@ -375,6 +395,7 @@ class HeadEmitter {
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
     this.soleEntrySelector = options.soleEntrySelector;
     this.settlesOwnRecords = options.settlesOwnRecords === true;
+    this.requiresValidator = options.requiresValidator === true;
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
     this.acceptsValue = options.acceptsValue === true;
@@ -428,13 +449,23 @@ class HeadEmitter {
     this.emitInputIndex();
     this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'inputLock');
     this.equalVerify();
-    this.dup();
-    this.emitInputIndex();
-    this.emitPopPush(Opcodes.OP_OUTPUTTOKENCATEGORY, 'outputCategory');
-    this.equalVerify();
-    // The pool: no entry mints a master or retires one (spec R2b).
-    this.emitBytes(mastersRecreatedInPlaceScript());
-    this.pop(1);
+    if (this.requiresValidator) {
+      // The pool: no entry mints a master or retires one (spec R2b). Every spend of this master names a validator,
+      // which settles its contract (V8): it requires every master of the category to be one it covers, each covered
+      // master to be recreated in place, and a master output at any index, past the inputs included, to stand over a
+      // master input or be one the transcript mints (V7). So the pool is not walked here.
+      this.emitInputIndex();
+      this.emitPopPush(Opcodes.OP_OUTPUTTOKENCATEGORY, 'outputCategory');
+      this.equalVerify();
+    } else {
+      this.dup();
+      this.emitInputIndex();
+      this.emitPopPush(Opcodes.OP_OUTPUTTOKENCATEGORY, 'outputCategory');
+      this.equalVerify();
+      // The pool: no entry mints a master or retires one (spec R2b).
+      this.emitBytes(mastersRecreatedInPlaceScript());
+      this.pop(1);
+    }
     this.emitInputIndex();
     this.emitPopPush(Opcodes.OP_OUTPUTTOKENCOMMITMENT, 'commitment');
     this.emit0();
@@ -459,8 +490,10 @@ class HeadEmitter {
     this.leaveSendSlots();
     if (this.handlesValue) this.valueChecks();
     this.leaveEventSlots();
+    this.leaveSegmentsSlot();
     this.leaveRecordSlots();
     this.leaveCallCountSlot();
+    this.leaveCallsSlot();
     this.leaveRetvalSlot();
     this.leaveCategoryOwnerSlot();
   }
@@ -537,6 +570,35 @@ class HeadEmitter {
   private leaveCallCountSlot(): void {
     this.emitOp(Opcodes.OP_FROMALTSTACK);
     this.push(callCountSlotName());
+  }
+
+  /** True when some body makes a call, so the head keeps the call records for the sites that bind them. */
+  private get keepsCalls(): boolean {
+    return this.callCount > 0;
+  }
+
+  /**
+   * Moves the frame's call records off the alt stack, where the tail walk parked them beneath the call count, so a
+   * body's call sites bind their records from here.
+   *
+   * Popped after the call count, which was parked later than them, and before `retval`, which was parked first.
+   */
+  private leaveCallsSlot(): void {
+    if (!this.keepsCalls) return;
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(callsSlotName());
+  }
+
+  /**
+   * Moves the frame's segments off the alt stack, where the tail walk parked them above the record indices, so a
+   * body's reads of its records start at the segment they resolve against.
+   *
+   * Popped after the event region, which was parked later, and before the record indices, which were parked first.
+   */
+  private leaveSegmentsSlot(): void {
+    if (!this.keepsRecordIndices) return;
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(segmentsSlotName());
   }
 
   /**
@@ -645,6 +707,7 @@ class HeadEmitter {
       keepsRecordIndices: this.keepsRecordIndices,
       returnsValue: this.returnsValue,
       eventOwnerBelowTail: true,
+      keepsCalls: this.keepsCalls,
     }));
     this.forget('rest');
     this.dropTailCategoryOwner();
@@ -685,6 +748,7 @@ class HeadEmitter {
       keepsRecordIndices: this.keepsRecordIndices,
       returnsValue: this.returnsValue,
       eventOwnerBelowTail: true,
+      keepsCalls: this.keepsCalls,
     }));
     this.forget('rest');
     // A frame that handles value keeps whose containers it pays from: the owner of the records it runs on.
@@ -694,7 +758,6 @@ class HeadEmitter {
     this.computeOrigin();
     this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
-    this.assertDelegateCategoryUntouchedIfAdmitted();
     if (!this.handlesValue) this.assertZeroValue();
     this.branchOnValidatorNeed();
     // Whether the frame settles alone, and whose containers it pays from, are parked while the frame values are
@@ -747,6 +810,8 @@ class HeadEmitter {
       // Deployment still fills the reserved address. This master presents its caller's address, so the witness
       // self is not compared with the slot.
       this.pushAddressSlot();
+      this.pushIdentitySlot();
+      this.dropName('identity');
       this.dropName('addrX');
       return;
     }
@@ -912,61 +977,6 @@ class HeadEmitter {
   }
 
   /**
-   * Closes residual G0: a delegate frame's own category is settled by nobody when its master is its only one.
-   *
-   * A `DELEGATE` frame runs on its caller's records, so neither the master's own walk (S) nor the validator's
-   * census (V8) settles this contract when it is its category's only master in the transaction. Left open, a
-   * forwarding proxy could delegate into any framed contract and co-spend its records, containers and events while
-   * nobody holds them: its records rewritten (an owner takeover), its containers drained, events of its category
-   * minted. The guard requires the category untouched - present on exactly one input and one output, which the
-   * prologue already fixed as the recreated master - so no record, container token or event NFT of it is co-spent.
-   * A value-handling master also holds its own satoshi containers to not shrink, since those carry no token of the
-   * category and the count would miss them. Emitted only when the master admits delegate frames, and run only when
-   * the frame is one and the category has a single master; a second master routes settlement to the validator.
-   */
-  private assertDelegateCategoryUntouchedIfAdmitted(): void {
-    if (!this.admittedKinds.includes(FRAME_KIND_DELEGATE)) return;
-    this.emitBranch(
-      () => this.frameKindIs(FRAME_KIND_DELEGATE),
-      () => this.emitBranch(
-        () => {
-          this.emitInputIndex();
-          this.emitOp(Opcodes.OP_UTXOTOKENCATEGORY);
-          this.replaceTop('pin');
-          this.emitBytes(countMastersScript());
-          this.forget('pin');
-          this.push('masterCount');
-          this.pushNumber(1);
-          this.numequal();
-        },
-        () => this.assertDelegateCategoryUntouched(),
-        () => {},
-      ),
-      () => {},
-    );
-  }
-
-  /**
-   * Requires the running master's own category to appear on exactly one input and one output - the recreated
-   * master - and, for a value-handling master, its satoshi containers not to shrink. Model-neutral: it consumes
-   * everything it pushes, so the branch's two arms leave the same stack.
-   */
-  private assertDelegateCategoryUntouched(): void {
-    // The 32-byte category the active input carries, without the capability byte.
-    this.emitOp(Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY);
-    this.emitBytes(encodeDataPush(new Uint8Array([32])));
-    this.emitOp(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
-    this.emitOp(Opcodes.OP_DUP);
-    this.emitBytes(countCategoryHoldersScript('input'));
-    this.emitOp(Opcodes.OP_1, Opcodes.OP_NUMEQUALVERIFY);
-    this.emitBytes(countCategoryHoldersScript('output'));
-    this.emitOp(Opcodes.OP_1, Opcodes.OP_NUMEQUALVERIFY);
-    // A tokenless satoshi container carries no category token, so the counts above miss it; a master that holds
-    // value keeps its own containers from shrinking the way a standalone one does (audit FRAMED-CONT-1).
-    if (this.handlesValue) this.assertContainersDidNotShrink();
-  }
-
-  /**
    * An internal call: the callee runs its own code on the caller's records, so `address(this)` is the caller's.
    * The validator binds that frame. The head only admits the kind and, for a sole entry, the selector salt.
    */
@@ -1006,6 +1016,28 @@ class HeadEmitter {
    * condition for standing alone has to hold.
    */
   private branchOnValidatorNeed(): void {
+    const covered = (): void => {
+      if (!this.reservesValidatorHashSlot) {
+        throw new Error('master head: a validator reference needs a reserved validator program hash slot');
+      }
+      // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed.
+      this.pushValidatorHashSlot();
+      this.pick('validatorRef');
+      this.bin2num();
+      // A master every spend of which is covered defines the framework library the recognised program carries, so its
+      // body invokes the shared routines (framework-library.ts).
+      this.emitBytes(recogniseValidatorScriptAgainstReservedHash(this.requiresValidator));
+      this.pop(1);
+      this.forget('validatorHashSlot');
+      // A covered frame never settles its own records: the validator settles every covered master's contract (V8).
+      if (this.handlesValue) this.pushAlone(false);
+    };
+    // A master every spend of which names a validator has no standalone arm: `INDEX_NONE` names no input, so the
+    // recognition refuses it.
+    if (this.requiresValidator) {
+      covered();
+      return;
+    }
     this.emitBranch(
       () => {
         // The reference is a `u16` sentinel, so it is compared in its own encoding rather than as a script number.
@@ -1014,19 +1046,7 @@ class HeadEmitter {
         this.equal();
       },
       () => this.assertStandalone(),
-      () => {
-        if (!this.reservesValidatorHashSlot) {
-          throw new Error('master head: a validator reference needs a reserved validator program hash slot');
-        }
-        // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed.
-        this.pushValidatorHashSlot();
-        this.pick('validatorRef');
-        this.bin2num();
-        this.emitBytes(recogniseValidatorScriptAgainstReservedHash());
-        this.pop(1);
-        this.forget('validatorHashSlot');
-        this.assertSelfSettlementWhenAlone();
-      },
+      covered,
     );
   }
 
@@ -1052,65 +1072,26 @@ class HeadEmitter {
   }
 
   /**
-   * Settles the master's own records when it is its category's only master, even though a validator covers it.
-   *
-   * A master whose frame a validator binds still settles its own records when it is its contract's only master in
-   * the transaction, because a contract with one master is not one its validator settles. The count of the masters
-   * is a fact about the transaction rather than about the contract, so the walk runs behind it: with more than one
-   * master the validator settles the records instead.
-   *
-   * A `DELEGATE` or `INTERNAL` call runs on the records of the caller's context contract, which the validator then
-   * settles (V8), so a master that made one never settles its own. Whether it made one is a fact of the execution:
-   * a body may skip such a site, and another body of the same master may have none. So the frame's own block is
-   * asked, whose records are exactly the calls the execution made. Only a master all of whose bodies make one on
-   * every path skips the walk outright. A message or read-only call runs on the callee's own records, which its own
-   * master or validator settles, so such a caller still settles its own.
-   *
-   * A master that handles value leaves whether the frame settles alone, which its value checks read.
+   * Requires the output bytecode on top to name the payer of the run it leads (spec 4b): the container lock on the
+   * stack, which a frame that keeps value leaves a container at, or `OP_RETURN <that lock>`, the zero-value marker a
+   * frame that keeps nothing leaves in its place, since a container cannot hold nothing. Either names one contract,
+   * so two contracts' runs still never share a lead. Consumes the bytecode.
    */
-  private assertSelfSettlementWhenAlone(): void {
-    const contextCalls = this.callSites.some(
-      (site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC,
-    );
-    if (contextCalls && this.contextCallsOnEveryPath) {
-      if (this.handlesValue) this.pushAlone(false);
-      return;
-    }
-    if (!this.settlesOwnRecords && !this.handlesValue) return;
-    this.emitBranch(
-      () => {
-        this.emitInputIndex();
-        this.emitOp(Opcodes.OP_UTXOTOKENCATEGORY);
-        this.replaceTop('pin');
-        this.emitBytes(countMastersScript());
-        this.forget('pin');
-        this.push('masterCount');
-        this.pushNumber(1);
-        this.numequal();
-        // A delegate frame runs on its caller's records, so it never settles the records of its own category here.
-        this.frameKindIs(FRAME_KIND_DELEGATE);
-        this.emitOp(Opcodes.OP_NOT);
-        this.pop(1);
-        this.push('bool');
-        this.emitOp(Opcodes.OP_BOOLAND);
-        this.pop(2);
-        this.push('bool');
-        if (contextCalls) {
-          // The frame settles alone only when it made no call that runs on its context contract's records.
-          this.emitBytes(blockRecordsNoContextCallScript());
-          this.push('bool');
-          this.emitOp(Opcodes.OP_BOOLAND);
-          this.pop(2);
-          this.push('bool');
-        }
-        if (this.handlesValue) {
-          this.replaceTop('alone');
-          this.dup();
-        }
-      },
-      () => this.assertSelfSettlement(),
-      () => {},
-    );
+  private runLeadVerify(): void {
+    this.dup();
+    this.pick('lock');
+    this.equal();
+    this.emitOp(Opcodes.OP_SWAP);
+    const top = this.stack[0]!;
+    this.stack[0] = this.stack[1]!;
+    this.stack[1] = top;
+    this.emitBytes(encodeDataPush(Uint8Array.of(Opcodes.OP_RETURN, P2SH32_LOCK_BYTES)));
+    this.push('markerHead');
+    this.pick('lock');
+    this.opCat();
+    this.equal();
+    this.emitOp(Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY);
+    this.pop(2);
   }
 
   /** Leaves whether the frame settles alone as a constant, where the transaction does not decide it. */
@@ -1125,8 +1106,9 @@ class HeadEmitter {
    * The value is non-negative, and zero unless some body is payable. A frame that settles alone receives value and
    * pays from its contract's containers: their growth plus what its sends and its calls pay covers the value. A frame
    * that does not is weighed by the validator with every other frame of its context (V7). Either way the output
-   * before the first send is a container of the contract whose records the frame runs on, the caller's for a
-   * delegate frame, and the sends follow it in a run, so two contracts' sends never overlap. A master that sends may
+   * before the first send names the contract whose records the frame runs on, the caller's for a delegate frame - its
+   * container, or the drained run's marker where the frame keeps none (`runLeadVerify`) - and the sends follow it in
+   * a run, so two contracts' sends never overlap. A master that sends may
    * pay a contract through a call into its `receive()`, whose record carries the value, and a master whose calls
    * carry value pays through their records the same way. Consumes the settle-alone flag and the records' owner.
    */
@@ -1154,8 +1136,7 @@ class HeadEmitter {
         () => {
           this.pick(sendBaseSlotName());
           this.emitOp(Opcodes.OP_1SUB, Opcodes.OP_OUTPUTBYTECODE);
-          this.pick('lock');
-          this.equalVerify();
+          this.runLeadVerify();
         },
         () => {},
       );
@@ -1165,8 +1146,7 @@ class HeadEmitter {
         () => {
           this.pick(sendOutputSlotName(0));
           this.emitOp(Opcodes.OP_1SUB, Opcodes.OP_OUTPUTBYTECODE);
-          this.pick('lock');
-          this.equalVerify();
+          this.runLeadVerify();
         },
         () => {},
       );
@@ -1345,10 +1325,26 @@ class HeadEmitter {
     this.emitBytes(assertP2pkhShapeScript());
   }
 
+  /**
+   * `self` is the address the code holds. A contract presents the address its category derives (`addrX`), and a
+   * CREATE2 child presents the 20-byte EVM identity its creator derived, which deployment fills into the identity
+   * slot right after the address slot. So a 20-byte `self` is compared with the identity and any other with `addrX`.
+   * The identity slot of every other contract stays zero, and the zero identity is never one a frame presents.
+   */
   private assertSelfEqualsReservedAddress(): void {
     this.pick('self');
     this.pushAddressSlot();
-    this.equalVerify();
+    this.pushIdentitySlot();
+    // [self, addrX, identity]
+    this.emitNumber(2);
+    this.emitOp(Opcodes.OP_PICK, Opcodes.OP_SIZE, Opcodes.OP_NIP);
+    this.emitNumber(IDENTITY_SLOT_LENGTH);
+    this.emitOp(Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+    this.emitOp(Opcodes.OP_NIP, Opcodes.OP_OVER);
+    this.emitBytes(encodeDataPush(new Uint8Array(IDENTITY_SLOT_LENGTH)));
+    this.emitOp(Opcodes.OP_EQUAL, Opcodes.OP_NOT, Opcodes.OP_VERIFY, Opcodes.OP_EQUALVERIFY);
+    this.emitOp(Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_EQUALVERIFY, Opcodes.OP_ENDIF);
+    this.pop(3);
   }
 
   /**
@@ -1378,6 +1374,11 @@ class HeadEmitter {
     this.addressSlot = this.bytes.length;
     this.emitBytes(placeholderPush(ADDRESS_SLOT_LENGTH));
     this.push('addrX');
+  }
+
+  private pushIdentitySlot(): void {
+    this.emitBytes(placeholderPush(IDENTITY_SLOT_LENGTH));
+    this.push('identity');
   }
 
   private pushValidatorHashSlot(): void {

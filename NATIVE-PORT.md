@@ -17,6 +17,7 @@ EVM contracts and tests in `/Code/sushi-port` are untouched.
 
 - 23 sources compile to 31 artifacts.
 - 28 native tests pass.
+- The original EVM suite passes 192/192 compiled framed (see "Original EVM suite parity, framed composition").
 - Covered natively: `TestERC20` (mint, transfer, allowance, fee, failure modes), the `UniswapV2Factory`
   admin and read surface, the BCH pair registry, pair address prediction, a directly deployed
   `UniswapV2Pair` (initialize, reserves, LP ERC20, approvals),
@@ -638,3 +639,206 @@ reverting-callee cases through the shipped planner (deployment registration, no 
 original TransferHelper block in `Libraries` covers the value-only account case. `Libraries` is 37/37;
 `Factory` 15/15, `ERC20` 14/14, `Pair` 27/36, `Router` 11/74, `SushiRoll` 3/16 are unchanged. The BCH-native
 suite is 28/28 and the original Hardhat suite 192/192.
+
+## Original EVM suite parity, framed composition
+
+`.parity-framed-orig` compiles the original contracts with `composition: 'framed'`, where each contract call is a
+frame of one composed transaction (`docs/framed/SPEC_FRAMED_TRANSACTION.md`), and runs the six original test files,
+unchanged, under SolidHat. Two contracts and the shared test helper carry parity adapters, each commented in place:
+
+- `UniswapV2Pair.mint` computes the protocol fee without writing it and makes every balance write after its last
+  call: a framed body's balance writes are one sorted batch, which lands in one segment. The first-mint guard reads
+  the stored supply, which is zero exactly where the supply the fee leaves is.
+- `TestFactory` keeps the hash of the pair code rather than the code, which a BCH master cannot run; each pair's
+  identity commits to that hash as CREATE2 does.
+- `test/helpers.ts`, as in `.parity-project`, keeps a genesis-eligible coin after each deploy, hands the factory the
+  code hash, and sorts tokens by the covenant's own order of address values.
+
+```sh
+cd .parity-framed-orig
+rm -rf artifacts cache && SOLIDC_COMPILE_CACHE=0 node ../packages/testing/dist/cli.js compile   # 30 sources -> 41 artifacts
+npx vitest run --config vitest.solidhat.config.ts --hookTimeout=900000 --testTimeout=1200000 \
+  --no-file-parallelism --maxWorkers=1 test
+```
+
+One vitest worker per run, since a framed worker holds 2-3.5 GB. Splitting the tests between two such runs, each
+given its share of the test names with `-t`, takes about 55 minutes.
+
+Result on the final build, 2026-10-27, in one run, and again after the closed gaps and callee sends below (two
+shards, 4,819 s with the size survey on):
+
+| Suite | Passing / Total |
+|---|---|
+| `Libraries` | 37 / 37 |
+| `SushiRoll` | 16 / 16 |
+| `UniswapV2ERC20` | 14 / 14 |
+| `UniswapV2Factory` | 15 / 15 |
+| `UniswapV2Pair` | 36 / 36 |
+| `UniswapV2Router02` | 74 / 74 |
+| **Total** | **192 / 192** |
+
+The BCH-native suite stays at 28/28 and the original Hardhat suite at 192/192.
+
+What the framed run needed, each with its regression test:
+
+| Behaviour | Where | Regression test |
+|---|---|---|
+| A callee's failure under a low-level call is reported by the caller's own check over the call's success (D52); a low-level call to a contract with no body for it, likewise | compiler `failedCallMessage`, SDK refusal report | `solidc/test/FailedCallMessage.test.ts`, `solidcash/test/framed/call/low-level-call-failure.test.ts` |
+| A send to a contract after a loop of calls is placed after every call | compiler `sendsAfterCalls`, SDK call path | `solidc/test/framed/SendsAfterCalls.test.ts`, `solidcash/test/framed/call/send-after-loop.test.ts` |
+| A hash a loop makes on a branch, or through a function the body invokes, is counted on the turns that make it; a hashing helper a branch arm calls is expanded in the arm | compiler loop effects and returning-helper expansion, SDK loop turns | `solidc/test/framed/master/loop-effects.test.ts`, `solidcash/test/framed/call/branch-hash-loop.test.ts` |
+| A loop whose body calls at several sites is placed turn by turn | SDK planner and composer | `solidcash/test/framed/call/loop-sites-in-turn.test.ts` |
+| A callee frame's site the planner refuses stops the plan inside that frame, which meets its own checks first | SDK planner | `solidcash/test/framed/call/callee-site-refusal.test.ts` |
+| A callback into a root that is a CREATE2 child is a frame of the root's deployment | SDK planner | `solidcash/test/framed/call/child-root-callback.test.ts` |
+| A value send pays a contract the provider registers | SDK call path | `solidcash/test/framed/call/value-call.test.ts` |
+| Two writes of one sorted batch that meet at run time let the body meet its own check first, on the plain call path's root entry (D53) | compiler batch derivation, SDK mapping plan | `solidcash/test/framed/call/repeated-slot-batch.test.ts`, `solidcash/test/framed/composer/mapping-plan.test.ts` |
+| A callee frame's batch that names one slot with two writes keeps the later as a skipped target, so a pair's mint whose fee and minimum both name the zero address settles; a run that makes both writes is refused for it by name (D53) | SDK callee writes, call path and hop | `solidcash/test/framed/call/callee-repeated-slot.test.ts`, `solidcash/test/framed/call/payouts-into-one-list.test.ts` |
+| A write a branch guards under a condition the frame's facts do not decide, at a key the list does not hold, is planned each way on the plain call path | SDK entry writes | `solidcash/test/framed/call/guarded-mapping-write.test.ts` |
+| A call argument read from a mapping at the frame's start is one a local holds from its declaration on; a cached value the body updates is read where the call is | compiler entry-time reads | `solidc/test/framed/EntryTimeRead.test.ts` |
+| A read's nested call whose target the caller computes from its own arguments reaches the deployment each turn's target names, and two deployments of one contract are blocks of their own over their own records | SDK read path | `solidcash/test/framed/reads/per-turn-callee-read.test.ts` |
+| A read plans each calling frame's calls from its live records, so a call reaches the address the caller keeps in its own state, an argument may be a stored field, and a loop runs as many turns as a stored bound holds | SDK read path | `solidcash/test/framed/reads/per-turn-callee-read.test.ts`, `solidcash/test/framed/reads/read-through-external.test.ts`, `solidcash/test/framed/reads/loop-bound-from-result-read.test.ts`, `solidcash/test/framed/ahead/two-deployments-one-artifact.test.ts` |
+| A batch target whose write a branch guards, declared skipped where its key meets an earlier target's (D53), is read through that earlier target's group, so a key the list holds reads its node wherever the body reads it, a value cached at the frame's start among them | compiler sorted-entry read (`emitFramedMetTargetRead`) | `solidcash/test/framed/call/callee-repeated-slot.test.ts` (the inline pool) |
+| A callee frame's send to a user's lock is listed by the callee's own frame, as the entry lists its own: an output at the recipient's lock led by the paying contract's container or its drained marker, its lock and amount learned from the body's own pin, paid from the value the frame is entered with and then from its contract's containers; a run that makes fewer sends than the frame lists is planned again listing those it made | SDK callee frames and call path | `solidcash/test/framed/call/callee-listed-send.test.ts`, `solidcash/test/framed/call/plain-callee-untaken-send.test.ts`, `solidcash/test/framed/call/plain-callee-undecided-send.test.ts` |
+| A P2SH20 CashAddress is coded as the 20-byte identity it names | testing ABI coder | `testing/test/cash-abi-coder.test.ts` |
+| A getter's `address` that names a registered framed contract is that contract's `getAddress()`, so the two compare equal by `===` (D54); a handle opened on the 20-byte identity itself names the deployed contract | testing handles and `getContractAt` | `testing/test/framed/identity-handle.test.ts` |
+
+Remaining, outside the parity suite:
+
+- **Callee sends on the hop.** A proxied entry's callee frames (`callFramedProxyEntry`) still list no sends to a
+  user's lock, so a callee body that reaches one fails its own send pin there; the plain call path, which SolidHat
+  handles use, lists them.
+- **Callee sends from a loop or an internal cut.** A callee frame that sends once per turn of a loop, and an
+  `INTERNAL` frame that sends, are refused by name, as before.
+- **Two paying frames of one contract.** A call in which two callee frames of one contract pay value, or a callee
+  frame of the entry's own contract lists sends, is refused by name, since each would count the other's containers.
+- **Master growth near the cap.** The address keys this branch normalizes to their 20-byte identity (162 B) and the
+  CREATE2 identity slot every master now checks (59 B) grow `ConstructorDynamicMint`, a reference contract that sat
+  just under the cap, by 221 B over `176c080d0`: master 9,443 to 9,664 B, genesis input 9,964 to 10,185 B (9,999 to
+  10,220 B tagged), so `solidcash/test/framed/deploy/constructor-dynamic-mint.test.ts`, which pins the real 10,000 B
+  cap, fails. Gating either behind what a compile knows (an address key that can arrive as an identity, a contract that
+  can be a CREATE2 child) would win the bytes back; the Sushi masters are 15-53 kB either way (survey below).
+
+## Transaction and input size survey, framed composition
+
+Every transaction the mock chain accepted during the 192-test framed parity run of 2026-10-27, read with
+`SOLIDCASH_TX_SURVEY` (docs/kernel-diagnostics.md): 2,948 transactions, 1,807 calls and 1,141 deployments, over 80
+spend paths. A spend path is the frames one call runs (`Root.entry() > Callee.entry() > ...`) or one contract's
+genesis. The parity network relaxes the limits a real chain applies (`.parity-framed-orig/solidcash.config.ts`), so
+the survey measures each transaction against the real limits rather than being refused by them. An input's
+operation cost is what its evaluation spent on the relaxed profile, against the budget a real chain grants an input
+of its unlocking length. The contracts compile unsplit, as the parity project compiles them.
+
+| Real BCH limit (2026, libauth `ConsensusBch2026`) | Value |
+|---|---|
+| Transaction, relay policy (consensus) | 100,000 B (1,000,000 B) |
+| Unlocking bytecode per input, consensus and relay | 10,000 B |
+| Operation cost per input | (41 + unlocking length) × 800 units |
+| NFT commitment | 128 B |
+| Locking bytecode, relay policy | 201 B |
+
+Calls, by the entry the user calls, every spend path under it together (the frames vary with the pair a router
+reaches, a first mint against a later one, and so on). The columns are each path's worst transaction:
+
+| Root entry | Txs | Paths | Bytes (kB) | Inputs | Masters | Largest input (B) | Worst op cost (input) | Widest commitment (B) |
+|---|---|---|---|---|---|---|---|---|
+| `SushiRoll.migrateWithPermit()` | 1 | 1 | 671.6 | 58 | 20 | 52912 (master) | 4315% (validator) | 136 |
+| `SushiRoll.migrate()` | 9 | 3 | 495.1-570.5 | 51 | 18 | 52912 (master) | 3778% (validator) | 136 |
+| `UniswapV2Router02.swapExactTokensForTokensSupportingFeeOnTransferTokens()` | 2 | 2 | 353.0-567.8 | 47 | 16 | 48585 (master) | 2685% (validator) | 190 |
+| `UniswapV2Router02.removeLiquidityETHWithPermitSupportingFeeOnTransferTokens()` | 2 | 1 | 544.5-544.7 | 45 | 15 | 53045 (master) | 2797% (validator) | 136 |
+| `UniswapV2Router02.removeLiquidityETHWithPermit()` | 2 | 2 | 520.1-520.1 | 44 | 14 | 53045 (master) | 2686% (validator) | 136 |
+| `UniswapV2Router02.swapExactTokensForTokens()` | 2 | 2 | 286.7-484.2 | 47 | 12 | 48585 (master) | 2190% (validator) | 190 |
+| `SushiRollHarness.addLiquidityExternal()` | 3 | 1 | 463.9 | 42 | 14 | 51052 (master) | 2428% (validator) | 128 |
+| `UniswapV2Router02.removeLiquidityETHSupportingFeeOnTransferTokens()` | 1 | 1 | 458.1 | 38 | 14 | 53045 (master) | 2430% (validator) | 136 |
+| `UniswapV2Router02.removeLiquidityETH()` | 1 | 1 | 432.9 | 36 | 13 | 53045 (master) | 2313% (validator) | 136 |
+| `UniswapV2Router02.removeLiquidityWithPermit()` | 2 | 1 | 429.2-429.3 | 39 | 11 | 52902 (master) | 1927% (validator) | 128 |
+| `UniswapV2Router02.addLiquidityETH()` | 42 | 2 | 338.6-428.0 | 41 | 13 | 51064 (master) | 1950% (validator) | 128 |
+| `UniswapV2Router02.addLiquidity()` | 39 | 2 | 330.6-405.4 | 41 | 12 | 51052 (master) | 1842% (validator) | 128 |
+| `UniswapV2Router02.swapExactTokensForETHSupportingFeeOnTransferTokens()` | 1 | 1 | 393.6 | 33 | 11 | 48673 (master) | 1589% (validator) | 200 |
+| `UniswapV2Router02.swapExactETHForTokensSupportingFeeOnTransferTokens()` | 1 | 1 | 374.7 | 31 | 11 | 48657 (master) | 1201% (validator) | 190 |
+| `UniswapV2Router02.swapTokensForExactETH()` | 1 | 1 | 352.7 | 33 | 9 | 48673 (master) | 1376% (validator) | 200 |
+| `UniswapV2Router02.swapExactTokensForETH()` | 1 | 1 | 352.7 | 33 | 9 | 48673 (master) | 1376% (validator) | 200 |
+| `UniswapV2Router02.removeLiquidity()` | 1 | 1 | 342.2 | 31 | 10 | 52902 (master) | 1602% (validator) | 126 |
+| `UniswapV2Router02.swapETHForExactTokens()` | 2 | 1 | 309.3-309.4 | 30 | 8 | 48656 (master) | 957% (validator) | 190 |
+| `UniswapV2Router02.swapExactETHForTokens()` | 1 | 1 | 309.1 | 30 | 8 | 48657 (master) | 952% (validator) | 190 |
+| `UniswapV2Router02.swapTokensForExactTokens()` | 1 | 1 | 286.7 | 29 | 7 | 48585 (master) | 868% (validator) | 190 |
+| `UniswapV2Pair.burn()` | 2 | 1 | 241.2-242.9 | 25 | 8 | 52892 (master) | 622% (facet) | 128 |
+| `UniswapV2Pair.swap()` | 8 | 3 | 136.1-180.2 | 19 | 6 | 49141 (master) | 414% (validator) | 209 |
+| `UniswapV2Pair.skim()` | 1 | 1 | 171.8 | 16 | 5 | 49058 (master) | 383% (validator) | 84 |
+| `TestMigrator.mint()` | 1 | 1 | 168.8 | 20 | 7 | 51699 (master) | 424% (facet) | 128 |
+| `UniswapV2Pair.mint()` | 68 | 5 | 138.7-155.1 | 18 | 5 | 51046 (master) | 292% (facet) | 128 |
+| `UniswapV2Pair.sync()` | 1 | 1 | 119.7 | 13 | 3 | 48080 (master) | 170% (facet) | 84 |
+| `UniswapV2Pair.permit()` | 2 | 1 | 101.6-101.6 | 15 | 1 | 47883 (master) | 187% (state) | 128 |
+| `TestFactory.createPair()` | 22 | 1 | 93.8-94.2 | 13 | 2 | 47020 (master) | 154% (master) | 128 |
+| `UniswapV2Factory.createPair()` | 56 | 1 | 92.6-93.5 | 13 | 2 | 47020 (master) | 146% (master) | 128 |
+| `UniswapV2Pair.transferFrom()` | 2 | 1 | 70.8-70.9 | 11 | 1 | 47723 (master) | 168% (state) | 97 |
+| `UniswapV2Pair.transfer()` | 4 | 1 | 69.9-70.3 | 10 | 1 | 47491 (master) | 163% (state) | 84 |
+| `UniswapV2Pair.approve()` | 30 | 1 | 69.6-70.0 | 9 | 1 | 47545 (master) | 163% (state) | 128 |
+| `TransferHelperTest.safeTransferFrom()` | 2 | 2 | 45.4-50.9 | 9 | 2 | 24745 (master) | 102% (state) | 128 |
+| `TransferHelperTest.safeTransfer()` | 2 | 2 | 44.8-50.3 | 8 | 2 | 24577 (master) | 97% (state) | 128 |
+| `TransferHelperTest.safeApprove()` | 2 | 2 | 44.2-49.7 | 7 | 2 | 24431 (master) | 97% (state) | 128 |
+| `TestERC20.approve()` | 643 | 1 | 44.2-44.4 | 6 | 1 | 24517 (master) | 97% (state) | 128 |
+| `TestERC20.mint()` | 791 | 1 | 43.7-44.2 | 6 | 1 | 24431 (master) | 96% (state) | 128 |
+| `TestERC20.setFeeBps()` | 24 | 1 | 43.1-43.1 | 5 | 1 | 24038 (master) | 41% (facet) | 19 |
+| `TestERC20.setFailTransfers()` | 5 | 1 | 43.0-43.1 | 5 | 1 | 24036 (master) | 41% (facet) | 18 |
+| `TestERC20.setRevertTransfers()` | 2 | 1 | 43.0 | 5 | 1 | 24016 (master) | 41% (facet) | 8 |
+| `TestNoReturnERC20.approve()` | 1 | 1 | 38.8 | 6 | 1 | 19183 (master) | 72% (state) | 128 |
+| `TestNoReturnERC20.mint()` | 3 | 1 | 38.8-38.8 | 6 | 1 | 19182 (master) | 72% (state) | 128 |
+| `UniswapV2Factory.setMigrator()` | 5 | 1 | 33.9-33.9 | 5 | 1 | 14882 (master) | 36% (facet) | 66 |
+| `UniswapV2Factory.setFeeTo()` | 10 | 1 | 33.9-33.9 | 5 | 1 | 14862 (master) | 36% (facet) | 56 |
+| `UniswapV2Factory.setFeeToSetter()` | 1 | 1 | 33.9 | 5 | 1 | 14835 (master) | 36% (facet) | 30 |
+| `TestMigrator.setDesired()` | 3 | 1 | 25.1-25.2 | 5 | 1 | 8986 (validator) | 31% (master) | 35 |
+| `TransferHelperTest.safeTransferETH()` | 1 | 1 | 23.4 | 4 | 1 | 8986 (validator) | 34% (master) | 0 |
+| 17 contracts' genesis (`deploy <Contract>`) | 1141 | 17 | 1.7-2.6 | 1 | 0 | 100 (funding coin) | 25% | 128 |
+
+Master inputs, by contract. A master input carries its contract's whole program in its unlocking bytecode, with the
+frame's witness block:
+
+| Contract | Master inputs | Unlocking (B) | Worst op cost |
+|---|---|---|---|
+| `UniswapV2Pair` | 535 | 46960-53045 | 452% |
+| `UniswapV2Router02` | 127 | 42050-44674 | 278% |
+| `TestERC20` | 2071 | 24016-24851 | 95% |
+| `WETH9` | 173 | 23391-24074 | 40% |
+| `TestNoReturnERC20` | 10 | 18970-19493 | 93% |
+| `SushiRollHarness` | 3 | 17705 | 429% |
+| `TestFactory` | 436 | 14966-16649 | 190% |
+| `SushiRoll` | 10 | 15265-16390 | 799% |
+| `UniswapV2Factory` | 167 | 14835-16292 | 146% |
+| `TestCallee` | 1 | 6978 | 131% |
+| `TestMigrator` | 5 | 6057-6222 | 46% |
+| `TransferHelperTest` | 7 | 5200-5378 | 84% |
+
+The other inputs, by role:
+
+| Input role | Inputs | Unlocking (B) | Worst op cost |
+|---|---|---|---|
+| compute side-car | 1045 | 167-9964 | 99% |
+| validator head | 1807 | 8986-9239 | 4315% |
+| validator facet | 1807 | 8665 | 3199% |
+| record or mapping node | 6077 | 220-713 | 187% |
+| satoshi container | 9 | 240 | 84% |
+| caller's coin | 1807 | 100 | 25% |
+
+What binds, read from these numbers:
+
+- **Master code.** Every Sushi contract's master input is 15-53 kB against the 10,000 B per-input cap, so on a real
+  chain every call through them is refused before evaluation. Of the 1,807 calls, 1,803 carry such an input; the four
+  that fit (`TestMigrator.setDesired()` three times and `TransferHelperTest.safeTransferETH()`) run masters of 5-7
+  kB. 1,494 calls fail on master size alone: with every master inside the cap and its cost inside its budget, nothing
+  else of theirs exceeds a limit. Code splitting, one shard per entry, is the path (spec section 12, open point 11).
+- **Operation cost.** 313 calls carry an input whose evaluation spends more than its length buys: a facet in 274 of
+  them, a master in 270, a record in 221, the validator head in 186. The validator head (9.0-9.2 kB) and its facet
+  (8.7 kB) fit the cap, and within budget for a call of one master (32% and 91% at most), but their cost grows with
+  the frames they cover, to 43 and 32 times the budget for the 20 masters of `SushiRoll.migrateWithPermit()`. More
+  facets, or padding that buys budget, is the path (spec section 24, open point 7).
+- **Transaction size.** Each frame's master carries its code, so a call's size follows the frames it runs and their
+  contracts: 23-102 kB for one master (1,527 calls), 169-672 kB for the 7-20 masters of a router path, a mint through
+  the migrator or a migration. 198 calls exceed the 100 kB relay limit and none the 1,000,000 B consensus limit.
+  Splitting shrinks each frame's master to its entry's shard.
+- **Records.** A record or mapping node input is 220-713 B, and in 221 calls its covenant's checks overrun the small
+  budget that length buys (up to 187%), nearly all of them paths that write a pair's records, each mint and each
+  `approve` among them.
+- **Events.** 36 calls carry an event commitment over 128 B, up to 209 B: the pair's swaps, and the router's swaps,
+  ETH removals and migrations. A framed event is one NFT with no continuation chunks yet, and the parity network
+  allows 256 B.
+- **Deployments.** All 1,141 genesis transactions fit: 1.7-2.6 kB, one funding input, 20-26 outputs. Compute side-cars
+  (167-9,964 B) and satoshi containers (240 B) fit too.

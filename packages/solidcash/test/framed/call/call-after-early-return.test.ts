@@ -42,12 +42,17 @@ const SOURCE = 'pragma solidity ^0.8.0;'
 
 type CallResult = Awaited<ReturnType<typeof callFramedEntry>>;
 
-/** The artifact without the call's published condition, as a builder that ignores the return would read it. */
+/**
+ * The artifact without the call's published condition, as a builder that ignores the return would read it: the call
+ * is made once, whatever `skip` is. A conditional row whose condition is gone would be one the planner tries both
+ * ways, and it would find the plan the body accepts.
+ */
 function withoutCondition(artifact: Artifact): Artifact {
   const copy = JSON.parse(JSON.stringify(artifact)) as Artifact;
   for (const entry of copy.abi) {
-    for (const row of (entry as { externalCalls?: { condition?: unknown }[] }).externalCalls ?? []) {
+    for (const row of (entry as { externalCalls?: { condition?: unknown; occurrence?: string }[] }).externalCalls ?? []) {
       delete row.condition;
+      if (row.occurrence === 'conditional') row.occurrence = 'once';
     }
   }
   for (const entry of copy.composition?.stopSites?.entries ?? []) {

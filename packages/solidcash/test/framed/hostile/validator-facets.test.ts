@@ -25,8 +25,9 @@ function setting(): {
 } {
   const { composition, transaction, index } = reference();
   const honest = composition.transcript;
-  // `B` has one master, which settles its own record, so only the facet's settle rule objects to settling it here.
-  const extra = { category: categoryOf('B'), stateInputs: [composition.slotIndex.get('DB')!] };
+  // A contract no covered master belongs to and no frame borrows: the head's settlement of it holds vacuously, since
+  // the transaction spends and creates nothing of it, so only the facet's settle rule objects to settling it here.
+  const extra = { category: categoryOf('stranger'), stateInputs: [] };
   const hostile = { ...honest, settles: [...honest.settles, extra] };
   return { transaction, index, honest, hostile, redeem: composition.inputs[index]!.validator!.redeemScript };
 }
@@ -123,11 +124,13 @@ describe('the shipped validator head holds the facet it binds', () => {
 
   test('refuses a head whose unlocking carries another transcript ahead of the one it runs', () => {
     // A facet reads the first push of its head's unlocking bytecode, and the head runs on the push its redeem script
-    // follows. An honest transcript pushed first is what the facet checks and accepts, while the head runs the one
-    // only a facet refuses; the machine refuses the head for the extra item its run leaves on the stack.
+    // follows. An honest transcript pushed first is what the facet checks, while the head runs the one only a facet
+    // refuses; the machine refuses the head for the extra item its run leaves on the stack. The facet reads the
+    // program's bytes from the push after the transcript, where a head that succeeds has its redeem script, so it
+    // derives its addresses from the hostile transcript's bytes here and refuses too.
     const { transaction, index, honest, hostile, redeem } = setting();
     const spent = headSpending(transaction, index, [encodeTranscript(honest), encodeTranscript(hostile), redeem]);
-    expect(inputAccepted(spent, index + 1)).toBe(true);
     expect(inputAccepted(spent, index)).toBe(false);
+    expect(inputAccepted(spent, index + 1)).toBe(false);
   });
 });

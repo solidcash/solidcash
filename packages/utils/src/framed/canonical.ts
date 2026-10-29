@@ -54,6 +54,44 @@ export function encodeCallDataArguments(values: readonly Uint8Array[]): Uint8Arr
 }
 
 /**
+ * The values an argument list carries, in the order its pushes are concatenated: the inverse of
+ * `encodeArgumentList`, or `undefined` for bytes that are not exactly a run of minimal pushes.
+ */
+export function decodeArgumentList(pushes: Uint8Array): Uint8Array[] | undefined {
+  const values: Uint8Array[] = [];
+  let at = 0;
+  while (at < pushes.length) {
+    const opcode = pushes[at]!;
+    let start = at + 1;
+    let length = 0;
+    if (opcode >= 0x01 && opcode <= 0x4b) {
+      length = opcode;
+    } else if (opcode >= 0x4c && opcode <= 0x4e) {
+      const width = opcode === 0x4c ? 1 : opcode === 0x4d ? 2 : 4;
+      if (start + width > pushes.length) return undefined;
+      for (let byte = width - 1; byte >= 0; byte -= 1) length = length * 256 + pushes[start + byte]!;
+      start += width;
+    } else if (opcode !== 0x00 && opcode !== 0x4f && (opcode < 0x51 || opcode > 0x60)) {
+      return undefined;
+    }
+    if (start + length > pushes.length) return undefined;
+    const value = opcode === 0x4f ? Uint8Array.of(0x81)
+      : opcode >= 0x51 ? Uint8Array.of(opcode - 0x50)
+        : pushes.slice(start, start + length);
+    // The wire allows one push per value, so a value pushed any other way is no argument list.
+    if (!bytesEqual(encodeArgumentPayload(value), pushes.subarray(at, start + length))) return undefined;
+    values.push(value);
+    at = start + length;
+  }
+  return values;
+}
+
+/** The values a call's call data carries, in parameter order: the inverse of `encodeCallDataArguments`. */
+export function decodeCallDataArguments(pushes: Uint8Array): Uint8Array[] | undefined {
+  return decodeArgumentList(pushes)?.reverse();
+}
+
+/**
  * The hash a caller records for a call and a callee recomputes for the same call: the selector followed by the
  * argument pushes.
  */

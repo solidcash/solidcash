@@ -32,8 +32,8 @@ import {
 
 const PROXY_LABEL = 'proxy hop proxy';
 const IMPL_LABEL = 'proxy hop implementation';
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits after the caller, the validator's head and the two facets it binds.
+const RECORD_INDEX = 4;
 
 const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' contract Impl {'
@@ -120,8 +120,8 @@ function compose(): Composition {
       { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
       { contract: 'Impl', masters: ['impl-1'], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs(['user'], 5),
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: userInputs(['user'], 6),
     masters: [proxy, impl],
     inputs: {
       'proxy-1': { source: masterInput(proxyContract) },

@@ -242,7 +242,7 @@ export default class SynthesizePublicGetters extends AstTraversal {
     // A split facet needs the logical contract's public state declarations intact while semantic analysis treats
     // that contract as its own external-call interface (e.g. `masterContract.swappers(x)`). It must not regain
     // those declarations as dispatchable getter entry points: the logical root owns the complete getter surface.
-    if (node.isSplitFacet || node.suppressSynthesizedGetters) {
+    if (node.isSplitFacet || (node.suppressSynthesizedGetters && node.synthesizedGetterOnly === undefined)) {
       node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
       return node;
     }
@@ -443,7 +443,10 @@ export default class SynthesizePublicGetters extends AstTraversal {
       this.indexedGetterArities.set(coll.name, indexed.keys.length);
     }
 
-    node.functions = [...node.functions, ...getters];
+    // A getter shard serves its one getter; every other is the logical contract's.
+    const served = node.synthesizedGetterOnly === undefined ? getters
+      : getters.filter((fn) => fn.name === node.synthesizedGetterOnly);
+    node.functions = [...node.functions, ...served];
     node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
     return node;
   }

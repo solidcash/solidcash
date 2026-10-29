@@ -43,6 +43,7 @@
  * the running execution holds, a loop width the caller's facts do not fix — is refused by name.
  */
 
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
@@ -63,6 +64,7 @@ import {
   unpackFixedWidthArray,
   validatorAddress,
   VALUE_INLINE_LIMIT,
+  type AbiFunction,
   type ArgSource,
   type Artifact,
   type ExternalCallAbi,
@@ -73,24 +75,31 @@ import {
   type FunctionSplitBundle,
   type StateVariableInfo,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../../Argument.js';
+import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName, listDeployments,
 } from '../../stateful/deployment-registry.js';
+import { bindBlockOracleLock, blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
 import { externalReturnsForCallsites } from '../../stateful/external-returns-for-callsites.js';
 import { mappingKeySlotCandidates } from '../../stateful/mapping-key-lookup.js';
 import type { DraftCall } from '../composer/draft.js';
-import { deploymentBlockId, readPublishedStopSites } from '../composer/index.js';
-import { masterForEntry, prepareFunctionSplitDeployment } from '../deploy/entry-pool.js';
+import {
+  deploymentBlockId, mappingBatchRepeatsSlot, readPublishedStopSites, type PublishedEntryStopSites,
+} from '../composer/index.js';
+import { masterForEntry, prepareFunctionSplitDeployment, requireFunctionSplitShard } from '../deploy/entry-pool.js';
+import { functionSplitFor } from '../deploy/split-registry.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
+import { framedCreate2ChildDeployerOf, framedCreate2TemplateOf } from '../deploy/create2-child.js';
+import { isCreate2ChildIdentity } from '../../create2-identity-registry.js';
+import { lockingBytecodeToSolidityAddressPayload } from '../../utils.js';
 import {
   chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode,
   type FramedDeploymentSet,
 } from '../deploy/records.js';
 import {
-  entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
+  entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall, unresolvedCallArguments,
   type AbiEntryRow, type CallResolver, type HopCallInputs, type MappingValueReader, type ResolvedCall,
 } from './call-resolution.js';
 import {
@@ -105,13 +114,15 @@ import {
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedTouch } from './enclosed-reads.js';
-import { FramedProxyDeployError } from './errors.js';
+import { FramedFailedCallSite, FramedProxyDeployError } from './errors.js';
 import { reachedNodeValue } from './reached-values.js';
 import { lockOfIdentity } from './address-identity.js';
 import {
   EntryWriteValueAwaited, entryWriteValueKey, statedMappingWrites, writeLandsBefore, type StatedMappingWrite,
 } from './written-values.js';
 import { skippedEmits, skippedSends, takenSends, type WriteActivationFacts } from './write-activation.js';
+import { sendRecipient } from '../call/send-recipient.js';
+import { valueEntryOrRefusal, valueSendCallData } from '../call/value-entry.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
 export interface FramedProxyExternal {
@@ -253,6 +264,11 @@ export interface HopCallee {
    * not the source's own ordinals.
    */
   readonly callBases: readonly number[];
+  /**
+   * For a frame a loop of which calls at several sites, each site's calls' positions in `calls`: the loop makes its
+   * turns one after another, so a site's calls interleave with the other sites' rather than following its base.
+   */
+  readonly callPositions?: readonly (readonly number[])[];
   /** Index in `callees` of the master that calls this callee, or null for the implementation's own master. */
   readonly enteredBy: number | null;
   /**
@@ -282,6 +298,11 @@ export interface HopCallee {
    * branch guards, and one whose condition holds. Absent when none is.
    */
   readonly takenSends?: readonly number[];
+  /**
+   * The transfer indices of the frame's sends to a contract the plan placed as calls into that contract's value entry
+   * (`HopExternalPlanOptions.calleeValueCalls`), each a deferred record in `calls`.
+   */
+  readonly valueSends?: readonly number[];
 }
 
 /** The live facts one callee frame's own write plan is built from, kept so the write can be planned again. */
@@ -290,6 +311,12 @@ export interface HopCalleeWriteInputs {
   readonly args: readonly FunctionArgument[];
   /** The frame's `msg.sender`, which a key it writes can resolve to. */
   readonly senderAddress: Uint8Array | undefined;
+  /** The frame's own address, which an `address(this)` key it writes resolves to. */
+  readonly selfAddress?: Uint8Array;
+  /** Whether each guarded write the frame's facts do not decide runs, by entry-access slot. */
+  readonly assumedActivations?: ReadonlyMap<number, boolean>;
+  /** True when the plan's caller plans the frame's undecided writes again, assumed the other way (`assumesUndecided`). */
+  readonly assumesUndecided?: boolean;
   /** The deployment the frame runs on: its own records and nodes, or the proxy's for a delegate frame. */
   readonly live: HopLiveDeployment;
   /** The category the frame's nodes are placed under, which names a shared node. */
@@ -318,10 +345,26 @@ export interface HopPlanBlock {
   readonly path: string;
   /** The waiting call, as a refusal names it. */
   readonly where: string;
-  /** What the site reads the results for, or `refusal` for a stop before a site whose frames are refused. */
-  readonly reads: 'argument' | 'loop-bound' | 'refusal';
+  /**
+   * What the site reads the results for, or `refusal` for a stop before a site whose frames are refused. `target`
+   * is a site whose address names no deployment yet, while an earlier site whose guard reads the results may be the
+   * call that creates what it reaches. `computed` is a site whose arguments the body computes in a way no published
+   * expression states, which a run of the body up to the site hashes (`computed`).
+   */
+  readonly reads: 'argument' | 'computed' | 'loop-bound' | 'refusal' | 'target';
   /** The earlier call sites of the same frame whose results the site reads, by callsite id. */
   readonly producers: readonly number[];
+  /**
+   * On a `computed` stop, the call whose arguments a run reads back (`hashedCallArguments`): the key they are held
+   * under (`hashedArgumentsKey`), the callee's selector and arity, and the canonical value of each argument the
+   * caller's facts do resolve, which a hashed list has to agree with to be this call's.
+   */
+  readonly computed?: {
+    readonly key: string;
+    readonly selector: Uint8Array;
+    readonly arity: number;
+    readonly resolved: readonly (Uint8Array | undefined)[];
+  };
   /** On a `refusal` stop, the failure met at the site: the planner's refusal of its frames, or a stop's failure. */
   readonly refusal?: Error;
 }
@@ -336,11 +379,18 @@ export function reachedResultKey(callerPath: string, callsiteId: number): string
   return `${callerPath}|${callsiteId}`;
 }
 
+/** The key the arguments a run hashed for one visit of a site are held under: the frame, the site and the turn. */
+export function hashedArgumentsKey(callerPath: string, callsiteId: number, occurrence: number): string {
+  return `${callerPath}|${callsiteId}.${occurrence}`;
+}
+
 /** What the implementation frame's calls and the callee frames they reach are planned as. */
 export interface HopExternalPlan {
   readonly calls: readonly DraftCall[];
   /** For each published call site of the implementation's entry, the position of its first call in `calls`. */
   readonly callBases: readonly number[];
+  /** Each site's calls' positions in `calls`, for an entry whose loop sites' calls interleave (`HopCallee`). */
+  readonly callPositions?: readonly (readonly number[])[];
   /** The callsite id of each published call site, parallel to `callBases`, or `-1` for a site that publishes none. */
   readonly callsiteIds: readonly number[];
   /**
@@ -715,6 +765,27 @@ export function occurrenceCountOf(
 }
 
 /**
+ * True when no fact of the caller decides whether a conditional site's call runs: the artifact states no guard for
+ * it, or the guard is neither true nor false (a value the evaluator cannot compute) once every result it reads that
+ * the plan places is held. `occurrenceCountOf` plans such a site one way, taken without a guard or over the caller's
+ * own facts and skipped over a result; the body is the authority on which it was. A guard over the frame's own writes
+ * is left to the rule that plans it taken.
+ */
+function undecidedGuard(
+  row: ExternalCallAbi, resolver: CallResolver, artifact: Artifact, writtenState: HopWrittenState, siteIndex: number,
+  routing: readonly ExternalCallAbi[], placed: readonly unknown[],
+  producerResults: ReadonlyMap<number, FunctionArgument> | undefined,
+): boolean {
+  if ((row.occurrence ?? 'once') !== 'conditional') return false;
+  if (row.condition === undefined || row.condition === null) return true;
+  if (conditionReadsWrittenState(row.condition, artifact, writtenState, siteIndex)) return false;
+  if (waitingProducers([row.condition], siteIndex, routing, placed, producerResults).length > 0) return false;
+  return resolver.evaluate(
+    row.condition, 0, undefined, conditionExternalReturns(row.condition, routing, producerResults),
+  ) === undefined;
+}
+
+/**
  * The turns of a site that make its call, out of the `count` its visits reach.
  *
  * A loop whose body guards its call (`if (parts[i] > 0) sink.take(parts[i])`) publishes that guard as the site's condition
@@ -886,7 +957,7 @@ function keySlotsOf(collection: MappingCollection, keys: readonly FunctionArgume
     typeof key === 'bigint' || typeof key === 'boolean' || typeof key === 'string' || key instanceof Uint8Array
   ));
   if (scalarKeys.length !== keys.length) return undefined;
-  return mappingKeySlotCandidates(scalarKeys, collection.keyTypes ?? [collection.keyType]);
+  return mappingKeySlotCandidates(scalarKeys, collection.keyTypes ?? [collection.keyType], collection);
 }
 
 /**
@@ -905,6 +976,13 @@ function keySlotsOf(collection: MappingCollection, keys: readonly FunctionArgume
  * plan's placeholder until a settle learns it: the bytes that reach left are the value its plan states or the view a
  * settle learned (`recordWrittenNodes`), and a value its body computes that neither states is refused by name.
  */
+/**
+ * A frame reads a node an earlier reach of the same call rewrote at a value that reach's body computes. The call is
+ * planned again once a settle of the reaches before the frame has learned the view the node ends at
+ * (`calleeWriteViews`), which states the value the frame reads.
+ */
+export class WrittenValueAwaited extends FramedProxyDeployError {}
+
 export function liveMappingValueReader(
   artifact: Artifact,
   live: HopLiveDeployment,
@@ -920,7 +998,7 @@ export function liveMappingValueReader(
     const left = (reached: NonNullable<HopLiveDeployment['rewrittenNodes']>[number]): FunctionArgument | undefined => {
       if (reached.value !== undefined) return held(reached.value);
       if (collection.chunkableValue === true) return held(joinedNodeValue(collection, reached.commitment, live));
-      throw new FramedProxyDeployError(
+      throw new WrittenValueAwaited(
         `a call is routed through mapping "${name}" at a node an earlier reach of the hop leaves at a value its body `
         + 'computes, which the hop has not learned, so the call cannot be stated from it',
       );
@@ -972,8 +1050,11 @@ function wholeMappingReads(row: ExternalCallAbi): ReadonlySet<string> {
   const names = new Set<string>();
   const visit = (value: unknown, fieldOf: boolean): void => {
     if (value === null || typeof value !== 'object') return;
-    const node = value as { readonly kind?: string; readonly name?: string };
-    if (node.kind === 'stateAccess' && typeof node.name === 'string' && !fieldOf) names.add(node.name);
+    const node = value as { readonly kind?: string; readonly name?: string; readonly readAtEntry?: boolean };
+    // A read the compiler places where the frame starts reads the frame's own nodes, whatever the entry writes after.
+    if (node.kind === 'stateAccess' && typeof node.name === 'string' && !fieldOf && node.readAtEntry !== true) {
+      names.add(node.name);
+    }
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (Array.isArray(child)) child.forEach((entry) => visit(entry, false));
       else visit(child, node.kind === 'field' && key === 'expression');
@@ -1122,6 +1203,136 @@ export function registeredExternalFor(
     ?? externalOfName(provider, interfaceName);
 }
 
+/**
+ * The address a call names by a 20-byte identity: a CREATE2 child's own (the identity itself), or the address of a
+ * contract the plan can reach whose identity it is. An identity neither names is a child the caller's own creation is
+ * about to make, which is stood up first; whatever is left stays the identity, which no deployment answers.
+ */
+async function identityTarget(
+  ctx: PlanContext, caller: HopCallInputs, row: ExternalCallAbi, identity: Uint8Array,
+): Promise<Uint8Array> {
+  const reached = reachedIdentity(ctx, identity);
+  if (reached !== undefined) return reached;
+  await standUpCreatedChild(ctx.provider, caller, row, identity);
+  return identity;
+}
+
+/**
+ * The address a 20-byte identity names among the deployments a plan can reach: a CREATE2 child's own, which is the
+ * identity itself, or the address of a contract whose identity it is. `undefined` when neither names it.
+ */
+export function reachedIdentity(scope: ReachableScope, identity: Uint8Array): Uint8Array | undefined {
+  if (isCreate2ChildIdentity(identity)) return identity;
+  for (const address of reachableAddresses(scope)) {
+    const projected = lockingBytecodeToSolidityAddressPayload(address);
+    if (projected !== undefined && bytesEqual(projected, identity)) return address;
+  }
+  return undefined;
+}
+
+/**
+ * Stands up the CREATE2 child a caller's own creation names, when the call reaches its identity before it exists.
+ *
+ * A creating body calls its child at the 20-byte EVM identity its creation evaluates to, and the child's frames need
+ * masters of their own, so the child is deployed beforehand by the provider's deployer
+ * (`setFramedCreate2ChildDeployer`). A target that already names a deployment, or a caller that creates nothing, is
+ * left to the ordinary resolution.
+ */
+async function standUpCreatedChild(
+  provider: NetworkProvider, caller: HopCallInputs, row: ExternalCallAbi, target: Uint8Array,
+): Promise<void> {
+  if (target.length !== 20) return;
+  if (findDeploymentByLockingBytecode(provider, binToHex(target)) !== undefined) return;
+  const child = createdChildOf(provider, caller, row);
+  if (child === undefined) return;
+  const deployer = framedCreate2ChildDeployerOf(provider);
+  if (deployer === undefined || child.creatorSelf === undefined) {
+    throw new FramedProxyDeployError(
+      `the call to "${row.interfaceName}.${row.functionName}" reaches the ${child.contractName} child at `
+      + `${binToHex(target)}, which "${caller.artifact.contractName}" creates and no deployer stands up`,
+    );
+  }
+  await deployer({
+    provider,
+    creatorArtifact: caller.artifact,
+    creatorSelf: child.creatorSelf,
+    identity: target,
+    contractName: child.contractName,
+  });
+}
+
+/**
+ * The child a call reaches at an identity no deployment holds: one the caller's own creation names
+ * (`composition.creates`), or one its target computes as a CREATE2 address over a code hash a template names
+ * (`registerFramedCreate2Template`) — `keccak256(0xff ++ creator ++ salt ++ codeHash)`, whose creator the target
+ * names as well. Absent when neither describes the call.
+ */
+function createdChildOf(
+  provider: NetworkProvider, caller: HopCallInputs, row: ExternalCallAbi,
+): { readonly contractName: string; readonly creatorSelf: Uint8Array | undefined } | undefined {
+  const creates = caller.artifact.composition?.creates ?? [];
+  if (creates.length > 0) {
+    const named = creates.length === 1 ? creates[0]
+      : creates.find((site) => site.contractName === row.interfaceName.replace(/^I/, ''));
+    if (named === undefined) return undefined;
+    return {
+      contractName: named.contractName ?? createdFromCode(provider, caller, row, named.codeStateVariable),
+      creatorSelf: caller.selfAddress,
+    };
+  }
+  const fields = create2TargetFields(row);
+  if (fields === undefined) return undefined;
+  const resolver = makeCallResolver(caller);
+  const codeHash = resolver.evaluate(fields.codeHash, 0);
+  const creator = resolver.evaluate(fields.creator, 0);
+  if (!(codeHash instanceof Uint8Array) || codeHash.length !== 32 || !(creator instanceof Uint8Array)) return undefined;
+  const contractName = framedCreate2TemplateOf(provider, codeHash);
+  return contractName === undefined ? undefined : { contractName, creatorSelf: creator };
+}
+
+/** The creator and code hash of a target the routing computes as a CREATE2 address, or absent for any other. */
+function create2TargetFields(
+  row: ExternalCallAbi,
+): { readonly creator: ExternalCallExpression; readonly codeHash: ExternalCallExpression } | undefined {
+  const source = row.addressSource;
+  if (source?.kind !== 'expression') return undefined;
+  let expression: ExternalCallExpression | undefined = source.expression;
+  while (expression?.kind === 'cast') expression = expression.expression;
+  if (expression?.kind !== 'call' || expression.name !== 'keccak256' || expression.args?.length !== 1) return undefined;
+  const packed = expression.args[0];
+  if (packed?.kind !== 'abiEncodePacked' || packed.args?.length !== 4) return undefined;
+  const [prefix, creator, , codeHash] = packed.args;
+  if (prefix?.kind !== 'literal' || String(prefix.value).toLowerCase() !== 'ff' || creator === undefined
+    || codeHash === undefined) return undefined;
+  return { creator, codeHash };
+}
+
+/**
+ * The contract a creation from the code the creator holds stands up: the template registered for the code's
+ * keccak256, which is the hash the child's identity commits to (`registerFramedCreate2Template`).
+ */
+function createdFromCode(
+  provider: NetworkProvider, caller: HopCallInputs, row: ExternalCallAbi, codeStateVariable: string | undefined,
+): string {
+  const where = `the call to "${row.interfaceName}.${row.functionName}"`;
+  const code = codeStateVariable === undefined ? undefined : caller.stateValues[codeStateVariable];
+  if (!(code instanceof Uint8Array)) {
+    throw new FramedProxyDeployError(
+      `${where} reaches a child "${caller.artifact.contractName}" creates from code it holds in `
+      + `"${codeStateVariable ?? '<unnamed>'}", which its state does not carry as bytes`,
+    );
+  }
+  const codeHash = Uint8Array.from(keccak_256(code));
+  const contractName = framedCreate2TemplateOf(provider, codeHash);
+  if (contractName === undefined) {
+    throw new FramedProxyDeployError(
+      `${where} reaches a child "${caller.artifact.contractName}" creates from code whose keccak256 is `
+      + `${binToHex(codeHash)}, which no CREATE2 template names (registerFramedCreate2Template)`,
+    );
+  }
+  return contractName;
+}
+
 /** The successor a reach left one node of a collection with. */
 interface ReachedLink {
   readonly collection: string;
@@ -1154,6 +1365,12 @@ interface PlanContext {
   readonly blocks: Map<string, string>;
   /** The live deployments already read, keyed by category id. */
   readonly deployments: Map<string, FramedDeploymentSet>;
+  /**
+   * The state each category's placed frames leave, as their entries' own published writes state it
+   * (`AbiFunction.stateWrites`): a later reach of the contract in the same transaction reads its records as those
+   * frames left them, which the deployment does not hold yet.
+   */
+  readonly reachedState: Map<string, Readonly<Record<string, unknown>>>;
   /** The records of each callee category, shared by every master the hop places for that deployment. */
   readonly records: Map<string, readonly HopCalleeRecord[]>;
   /**
@@ -1202,6 +1419,12 @@ interface PlanContext {
    * a settle of the hop's own entry learned its write leaves a node at are held under `entryWriteValueKey`.
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /** Whether each callee frame's undecided guarded writes run, by master and entry-access slot. */
+  readonly calleeAssumedActivations?: ReadonlyMap<string, ReadonlyMap<number, boolean>>;
+  /** Whether each conditional site no fact of the caller decides is taken, by `undecidedCallKey`. */
+  readonly assumedCalls?: ReadonlyMap<string, boolean>;
+  /** Told each conditional site no fact decides (`undecidedGuard`), by `undecidedCallKey`, and the way it was planned. */
+  readonly noteUndecidedCall?: (key: string, taken: boolean) => void;
   /** Callee frames in placement order; a slot is reserved before the callee's own calls are planned. */
   readonly callees: HopCallee[];
   readonly utxos: Map<string, Utxo>;
@@ -1216,6 +1439,11 @@ interface PlanContext {
   readonly producerResults?: { readonly artifact: Artifact; readonly values: ReadonlyMap<number, FunctionArgument> };
   /** The results settled earlier calls returned, keyed by `reachedResultKey`: the calling frame's path and site. */
   readonly reachedResults: ReadonlyMap<string, FunctionArgument>;
+  /**
+   * The arguments runs of the calling bodies hashed for visits whose arguments no published expression states, in
+   * parameter order and keyed by `hashedArgumentsKey`.
+   */
+  readonly hashedArguments?: ReadonlyMap<string, readonly Uint8Array[]>;
   /** The site the plan stops before, once one is found: nothing after it in execution order is placed. */
   readonly stop: { blocked?: HopPlanBlock };
   /** The entry's own site the plan is asked to stop before (`HopExternalPlanOptions.stopBefore`). */
@@ -1233,10 +1461,26 @@ interface PlanContext {
   readonly selfAddress?: Uint8Array;
   /** Masters already claimed, keyed by category, so a later frame does not spend them again. */
   readonly takenMasters: Map<string, Set<string>>;
+  /**
+   * True when a callee frame's send to a contract is planned as the call it is (`HopExternalPlanOptions`), absent
+   * where such a send is left to the frame's own refusal.
+   */
+  readonly calleeValueCalls?: boolean;
+  /** True when a call to the root's own address re-enters the root's deployment (`HopExternalPlanOptions`). */
+  readonly rootReentry?: boolean;
+  /** The category the root's own records sit at (`HopExternalPlanOptions.entryDeployment`). */
+  readonly rootCategoryId?: string;
+  /** True when a callee frame's site the planner refuses stops the plan there (`HopExternalPlanOptions`). */
+  readonly calleeSiteRefusals?: boolean;
+  /** True when a callee frame's undecided writes are planned again, assumed the other way (`HopExternalPlanOptions`). */
+  readonly assumesUndecided?: boolean;
 }
 
 /** The addresses of the contracts a plan can reach: the caller's named externals, then the latest registrations. */
-function* reachableAddresses(ctx: PlanContext): Generator<Uint8Array> {
+/** What names the deployments a plan can reach: the caller's externals and the provider's registrations. */
+type ReachableScope = Pick<PlanContext, 'externals' | 'provider' | 'validatorProgram'>;
+
+function* reachableAddresses(ctx: ReachableScope): Generator<Uint8Array> {
   for (const external of Object.values(ctx.externals)) {
     yield validatorAddress(hexToBin(external.categoryId), ctx.validatorProgram);
   }
@@ -1244,6 +1488,67 @@ function* reachableAddresses(ctx: PlanContext): Generator<Uint8Array> {
     const external = externalOfRegistered(registered);
     if (external !== undefined) yield validatorAddress(hexToBin(external.categoryId), ctx.validatorProgram);
   }
+}
+
+/** The addresses of the framed deployments the provider registers, latest first, as their frames present them. */
+export function registeredFramedAddresses(provider: NetworkProvider, validatorProgram: Uint8Array): Uint8Array[] {
+  return [...listDeployments(provider)].reverse().flatMap((registered) => {
+    const external = externalOfRegistered(registered);
+    return external === undefined ? [] : [validatorAddress(hexToBin(external.categoryId), validatorProgram)];
+  });
+}
+
+/**
+ * The per-entry bundle the frame making a call runs from, with its category: the bundle of the deployment the frame
+ * names, or the root's own for a frame that names none.
+ */
+function callerSplitOf(
+  ctx: PlanContext, caller: HopCallInputs,
+): { readonly split: FunctionSplitBundle; readonly categoryId: string } | undefined {
+  const categoryId = caller.categoryId ?? ctx.splitCategoryId;
+  if (categoryId === undefined) return undefined;
+  const split = splitOf(ctx, categoryId);
+  return split === undefined ? undefined : { split, categoryId };
+}
+
+/** The per-entry bundle a category runs from: the root's own, or the one its genesis registered on the provider. */
+function splitOf(ctx: PlanContext, categoryId: string): FunctionSplitBundle | undefined {
+  if (ctx.split !== undefined && ctx.splitCategoryId !== undefined
+    && categoryId.toLowerCase() === ctx.splitCategoryId.toLowerCase()) return ctx.split;
+  return functionSplitFor(ctx.provider, categoryId);
+}
+
+/** The program a split callee's entry runs: its shard, with any helper lock the shard names filled. */
+function shardArtifactOf(
+  ctx: PlanContext, split: FunctionSplitBundle, categoryId: string,
+  call: { readonly selector: string; readonly functionName: string },
+): Artifact {
+  const shard = split.shards.find((candidate) => candidate.selector.toLowerCase() === call.selector.toLowerCase());
+  if (shard === undefined) throw new FramedProxyDeployError(`function "${call.functionName}" has no shard`);
+  if ((shard.artifact.composition?.internalHelperLocks?.length ?? 0) === 0) return shard.artifact;
+  const prepared = prepareFunctionSplitDeployment(split, hexToBin(categoryId), ctx.validatorProgram);
+  const filled = prepared.shardArtifacts.get(shard.selector.toLowerCase());
+  if (filled === undefined) throw new FramedProxyDeployError(`function "${call.functionName}" is not in the prepared split`);
+  return filled;
+}
+
+/**
+ * The deployment a call reaches, as the callee frame runs it: a category deployed from a per-entry bundle, the root's
+ * own or another's, runs the callee entry's shard. The address stays addrV; the lock is the shard's. A split contract
+ * has no shard for a function its logical contract does not define: the call then reaches no body, which `entryRowOf`
+ * names, and a low-level call fails there as the EVM's does.
+ */
+function withCalleeShard(
+  ctx: PlanContext, external: FramedProxyExternal,
+  call: { readonly selector: string; readonly functionName: string }, functionName: string,
+): FramedProxyExternal {
+  const split = splitOf(ctx, external.categoryId);
+  if (split === undefined) return external;
+  const definesShard = split.shards.some((candidate) =>
+    candidate.selector.toLowerCase() === call.selector.toLowerCase());
+  const logicalDefines = external.artifact.abi.some((candidate) => candidate.name === functionName);
+  return definesShard || logicalDefines
+    ? { ...external, artifact: shardArtifactOf(ctx, split, external.categoryId, call) } : external;
 }
 
 /** The deployment a call reaches: the caller's named externals first, then the provider's registrations. */
@@ -1325,7 +1630,7 @@ function knownResultsOf(
 function argumentReturnsOf(
   row: ExternalCallAbi, routing: readonly ExternalCallAbi[], known: ReadonlyMap<number, FunctionArgument> | undefined,
 ): ReadonlyMap<string, FunctionArgument> | undefined {
-  const sources = row.argSources ?? [];
+  const sources = [...row.argSources ?? [], ...row.addressSource === undefined ? [] : [row.addressSource]];
   if (known === undefined || sources.every((source) => producerCallsitesOf(source).length === 0)) return undefined;
   try {
     const bound = externalReturnsForCallsites(sources, known, routing);
@@ -1365,10 +1670,14 @@ export function waitingProducers(
 interface ResolvedSite {
   readonly entry: AbiEntryRow;
   readonly external: FramedProxyExternal;
+  /** The deployment each resolved call reaches, parallel to `resolved`: a loop's turns may reach different ones. */
+  readonly externals: readonly FramedProxyExternal[];
   readonly resolved: readonly ResolvedCall[];
   readonly where: string;
   /** The turn each resolved call runs in, parallel to `resolved`: a guarded loop's skipped turns are left out. */
   readonly turns: readonly number[];
+  /** Every turn the site calls on, past the ones `turns` resolves when the pass stopped inside the site. */
+  readonly callingTurns: readonly number[];
 }
 
 /** Where a site's callee frames sit in the plan: the calling frame's path, the site and its callsite id. */
@@ -1384,9 +1693,13 @@ interface CalleeReach {
 interface PlannedEntryCalls {
   readonly calls: DraftCall[];
   readonly callBases: number[];
+  /** Each site's calls' positions in `calls`, for a plan whose loop sites' calls interleave (`HopCallee`). */
+  readonly callPositions?: readonly (readonly number[])[];
   readonly callsiteIds: number[];
   /** True when the plan stopped before one of this entry's own sites or inside a callee one of them reached. */
   readonly truncated: boolean;
+  /** The transfer indices of the sends to a contract the plan placed as calls (`calleeValueSends`). */
+  readonly valueSends?: readonly number[];
 }
 
 /**
@@ -1419,23 +1732,57 @@ function helperArtifactWithStub(
   functionName: string,
   selector: string,
   row: ExternalCallAbi,
+  entry?: AbiFunction,
 ): Artifact {
-  const inputs = (row.argSources ?? []).map((source, index) => ({
-    name: `arg${index}`,
-    type: source.type ?? 'int',
-  }));
-  return {
+  // The cut publishes the helper's own row. A cut that predates it is read from the call site: its arguments' and
+  // results' types, as the caller states them.
+  const stated = entry ?? {
+    name: functionName,
+    inputs: (row.argSources ?? []).map((source, index) => ({ name: `arg${index}`, type: source.type ?? 'int' })),
+    outputs: (row.returnTypes ?? []).map((type, index) => ({ name: `ret${index}`, type })),
+    ...(row.resultEncoding === undefined ? {} : { resultEncoding: row.resultEncoding }),
+  };
+  const stub: Artifact = {
     ...artifact,
     abi: [
       ...artifact.abi.filter((fn) => fn.name !== functionName),
-      {
-        name: functionName,
-        selector: selector.replace(/^0x/i, '').toLowerCase(),
-        inputs,
-        outputs: [],
-      },
+      { ...stated, name: functionName, selector: selector.replace(/^0x/i, '').toLowerCase() },
     ],
   };
+  // The stub is the helper's own program, so its masters pin the block oracle the helper's deployment bound.
+  const oracleLock = blockOracleLockFor(artifact);
+  if (oracleLock !== undefined) bindBlockOracleLock(stub, oracleLock);
+  return stub;
+}
+
+/**
+ * What a `computed` stop names for one visit: its key, the callee's selector and arity, and the canonical value of
+ * each integer or byte-string argument the caller's facts resolve. An address is not compared, since the body digests
+ * one it holds as an identity as that identity (`identityArguments`), nor is a `bool`, whose push this side does not
+ * pin.
+ */
+function computedStop(
+  row: ExternalCallAbi, calleeEntry: AbiEntryRow, resolver: CallResolver, occurrence: number, key: string,
+): NonNullable<HopPlanBlock['computed']> {
+  if (calleeEntry.selector === undefined) {
+    throw new FramedProxyDeployError(
+      `the callee entry "${calleeEntry.name}" publishes no selector, so the call carries no call data`,
+    );
+  }
+  const visible = calleeEntry.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  const resolved = (row.argSources ?? []).map((source, index): Uint8Array | undefined => {
+    const type = visible[index]?.type;
+    if (type === undefined || !/^(u?int\d*|bytes\d*|string)$/.test(type)) return undefined;
+    const value = resolver.resolveArgument(source, occurrence);
+    if (value === undefined) return undefined;
+    try {
+      const encoded = encodeFunctionArgument(value, type);
+      return encoded instanceof Uint8Array ? encoded : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  return { key, selector: hexToBin(calleeEntry.selector), arity: visible.length, resolved };
 }
 
 async function planEntryCalls(
@@ -1447,7 +1794,9 @@ async function planEntryCalls(
   const identity = `${caller.artifact.contractName}.${caller.functionName}()`;
   const published = readPublishedStopSites(caller.artifact).entries
     .find((entry) => entry.functionName === identity);
-  if (published === undefined || published.calls.length === 0) {
+  // A callee frame's sends to a contract are calls into the contract's value entry, made where its body sends.
+  const valueSends = path !== '' && ctx.calleeValueCalls === true ? calleeValueSends(caller, published) : [];
+  if (published === undefined || (published.calls.length === 0 && valueSends.length === 0)) {
     return { calls: [], callBases: [], callsiteIds: [], truncated: false };
   }
   const routing = routingOf(caller.artifact, caller.functionName);
@@ -1467,6 +1816,9 @@ async function planEntryCalls(
   // settle has learned ends the pass: the sites after it are planned once that result is learned.
   const sites: (ResolvedSite | undefined)[] = [];
   let ownStop: HopPlanBlock | undefined;
+  // The results the guards of the sites skipped so far read and the pass does not hold: such a site fills nothing
+  // yet, and a later site may reach a contract its call creates (a factory's `createPair` ahead of the pair's call).
+  const guardWaits = new Set<number>();
   for (const [index, call] of published.calls.entries()) {
     // A plan asked to stop before one of the entry's own sites places the calls before it and nothing after.
     if (path === '' && index === ctx.stopBefore) {
@@ -1505,19 +1857,45 @@ async function planEntryCalls(
         caller.readMappingValue, caller.artifact, writtenBefore, where, root ? index : undefined),
     };
     const siteBase = siteCaller === caller ? resolver : makeCallResolver(siteCaller);
-    const count = occurrenceCountOf(
+    const counted = occurrenceCountOf(
       row, caller.args, siteBase, where, caller.artifact, writtenState, index, routing, known,
     );
+    // A conditional site no fact of the caller decides is decided by the execution alone: the plan takes the way it
+    // counted as an assumption the caller tries both ways, since a frame that skips a planned call, or makes one the
+    // plan skipped, binds every later record a place off.
+    const undecided = undecidedGuard(row, siteBase, caller.artifact, writtenState, index, routing, sites, known);
+    const key = undecidedCallKey(path, index);
+    const assumed = undecided ? ctx.assumedCalls?.get(key) : undefined;
+    if (undecided && assumed === undefined) ctx.noteUndecidedCall?.(key, counted > 0);
+    const count = assumed === undefined ? counted : assumed ? 1 : 0;
     const turns = callingTurnsOf(row, count, siteBase, caller.artifact, writtenState, index, routing, known);
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
     if (turns.length === 0) {
+      // A guard over a result the pass does not hold yet ends the pass, as an argument over one does: the calls the
+      // site would make (a factory's `createPair`) may create or write what the sites after it reach, so nothing
+      // after it is planned until the settle learns the result and the next pass decides the guard.
+      const guardReads = (row.occurrence ?? 'once') !== 'loop' && row.condition !== undefined && row.condition !== null
+        ? waitingProducers([row.condition], index, routing, sites, known) : [];
+      if (guardReads.length > 0) {
+        for (const producer of guardReads) guardWaits.add(producer);
+        ownStop = { path, where, reads: 'argument', producers: guardReads };
+        break;
+      }
       sites.push(undefined);
       continue;
     }
     const argumentWaits = waitingProducers(row.argSources ?? [], index, routing, sites, known);
     if (argumentWaits.length > 0) {
       ownStop = { path, where, reads: 'argument', producers: argumentWaits };
+      break;
+    }
+    // A target the caller computes from an earlier call's result (the factory it asks a router for, or a pair address
+    // hashed from it) waits for that result as an argument over one does, and is resolved from it on the next pass.
+    const targetWaits = row.addressSource === undefined
+      ? [] : waitingProducers([row.addressSource], index, routing, sites, known);
+    if (targetWaits.length > 0) {
+      ownStop = { path, where, reads: 'argument', producers: targetWaits };
       break;
     }
     const argumentReturns = argumentReturnsOf(row, routing, known);
@@ -1528,15 +1906,17 @@ async function planEntryCalls(
     const effective: ExternalCallAbi = row.addressLiteral === undefined && call.target.length > 0
       ? { ...row, addressLiteral: call.target }
       : row;
-    const target = resolveCallTarget(effective, siteCaller, siteResolver, turns[0]!);
+    const resolvedTarget = resolveCallTarget(effective, siteCaller, siteResolver, turns[0]!);
     // A target the source names as the zero address has no deployment to place a callee on. The hop states no
     // record for the site and lets the entry's own body decide: a body that guards the call never reaches it and
     // is settled on its own refusal, while one that does reach it stalls on the record the hop never filled rather
     // than reaching a contract it did not name.
-    if (target === undefined) {
+    if (resolvedTarget === undefined) {
       sites.push(undefined);
       continue;
     }
+    const target = resolvedTarget.length === 20 && call.interfaceName !== '__FunctionSplitInternal'
+      ? await identityTarget(ctx, caller, row, resolvedTarget) : resolvedTarget;
     // A cut helper's target is its filled lock, not addrV, so it is not a registered external. The stub row
     // lets the existing planner place the cut; the frame kind is INTERNAL, which the ABI cannot state.
     const internalCut = call.interfaceName === '__FunctionSplitInternal';
@@ -1544,28 +1924,33 @@ async function planEntryCalls(
     let reentry = false;
     let forcedKind: FrameKindValue | undefined;
     if (internalCut) {
-      if (ctx.split === undefined || ctx.splitCategoryId === undefined) {
+      // The cut is a helper of the contract the calling frame runs on, which may be a callee's rather than the root's.
+      const own = callerSplitOf(ctx, caller);
+      if (own === undefined) {
         throw new FramedProxyDeployError(
           `${where} is an internal helper cut, which this call places only for a function split`,
         );
       }
-      const matches = ctx.split.internalCuts.filter((cut) =>
+      const named = own.split.internalCuts.filter((cut) =>
         cut.name === call.functionName || cut.name.startsWith(`${call.functionName}(`));
+      // Helpers two entries cut apart, each compiled beside that entry's other cuts, are told apart by their caller.
+      const callerSelector = caller.artifact.abi.find((fn) => fn.name === caller.functionName)?.selector?.toLowerCase();
+      const ownCaller = named.filter((cut) => callerSelector !== undefined
+        && cut.callerSelectors.some((selector) => selector.toLowerCase() === callerSelector));
+      const matches = named.length > 1 && ownCaller.length === 1 ? ownCaller : named;
       if (matches.length !== 1) {
         throw new FramedProxyDeployError(`${where} matches ${matches.length} internal helper cuts`);
       }
       const cut = matches[0]!;
-      const prepared = prepareFunctionSplitDeployment(
-        ctx.split, hexToBin(ctx.splitCategoryId), ctx.validatorProgram,
-      );
+      const prepared = prepareFunctionSplitDeployment(own.split, hexToBin(own.categoryId), ctx.validatorProgram);
       const helper = prepared.cutArtifacts.get(cut.name);
       if (helper === undefined) {
         throw new FramedProxyDeployError(`${where} has no filled helper lock`);
       }
-      external = {
-        artifact: helperArtifactWithStub(helper, call.functionName, call.selector, row),
-        categoryId: ctx.splitCategoryId,
-      };
+      const stub = helperArtifactWithStub(helper, call.functionName, call.selector, row, cut.entry);
+      // A deployment binds the provider's oracle into the helper it mints, so the stub its masters are found by does too.
+      bindProviderBlockOracle(ctx.provider, stub);
+      external = { artifact: stub, categoryId: own.categoryId };
       forcedKind = FrameKind.INTERNAL;
       // The cut is another master of the contract this hop already places, not a second deployment of it.
       reentry = true;
@@ -1574,21 +1959,37 @@ async function planEntryCalls(
       // A split direct call names it by address: the target is address(this), so the root external is the
       // deployment the caller already runs, and the shard swap below selects the callee entry's master. A monolith
       // has no second master to give it, so its call to address(this) meets the refusal below.
-      const callsSelf = ctx.split !== undefined && ctx.selfAddress !== undefined
+      const callsSelf = (ctx.split !== undefined || ctx.rootReentry === true) && ctx.selfAddress !== undefined
         && bytesEqual(target, ctx.selfAddress);
       reentry = targetsRoot(ctx.root, target) || callsSelf;
-      external = reentry && ctx.root !== undefined ? ctx.root.external : resolveExternal(ctx, row, target);
-      // A same-category call spends the callee entry's shard. The address stays addrV; the lock is the shard's.
-      if (ctx.split !== undefined && external.categoryId === ctx.splitCategoryId) {
-        const shard = ctx.split.shards.find((candidate) =>
-          candidate.selector.toLowerCase() === call.selector.toLowerCase());
-        if (shard === undefined) {
-          throw new FramedProxyDeployError(`function "${call.functionName}" has no shard`);
-        }
-        external = { ...external, artifact: shard.artifact };
+      try {
+        external = reentry && ctx.root !== undefined ? ctx.root.external : resolveExternal(ctx, row, target);
+      } catch (error) {
+        // An identity no deployment sits at yet, past a site whose guard waits on a result, may be the contract that
+        // site's call creates: the pass stops here, and the next one plans that site from the result first.
+        // So may one an earlier site's callee creates: an earlier call whose result the pass does not hold yet (a
+        // factory's `createPair`) is settled first, and the next pass finds the child its frame stood up.
+        const creators = sites.flatMap((site, at) => {
+          const callsiteId = routing[at]?.callsiteId;
+          return site !== undefined && callsiteId !== undefined && known?.has(callsiteId) !== true
+            && (site.entry.outputs ?? []).length > 0 ? [callsiteId] : [];
+        });
+        if (!(error instanceof FramedProxyDeployError) || target.length !== 20
+          || guardWaits.size + creators.length === 0) throw error;
+        ownStop = { path, where, reads: 'target', producers: [...guardWaits, ...creators] };
+        break;
       }
+      external = withCalleeShard(ctx, external, call, row.functionName);
     }
-    const entry = entryRowOf(external.artifact, row.functionName);
+    const entry = ((): ReturnType<typeof entryRowOf> => {
+      try {
+        return entryRowOf(external.artifact, row.functionName);
+      } catch (error) {
+        // A low-level call to a contract with no body for it fails, as the EVM's does, where the caller makes it.
+        if (!(error instanceof FramedProxyDeployError) || row.failedCallMessage === undefined) throw error;
+        throw new FramedFailedCallSite(error.message, row.failedCallMessage);
+      }
+    })();
     // A body the compiler refused publishes no call sites, so the hop could declare no record for it and would
     // settle its frame against a program whose calls stay unbound. The refusal is named here, before any frame is
     // placed, exactly as the hop names a refused entry of its own.
@@ -1601,10 +2002,35 @@ async function planEntryCalls(
     }
     // An address the caller holds as the identity a call result carried reaches the callee as the lock it names.
     const lockOf = (carried: Uint8Array): Uint8Array => lockOfIdentity(carried, reachableAddresses(ctx));
-    const resolved = turns.map((turn) => {
-      const stated = resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf);
-      return forcedKind === undefined ? stated : { ...stated, kind: forcedKind };
-    });
+    // A turn whose arguments the body computes in a way no published expression states is planned from what a run of
+    // the body hashed for it. The turns before the first one no run has read are placed, and the pass stops there:
+    // a run of the body up to that turn hashes its arguments, and the next pass plans it from them.
+    const resolved: ResolvedCall[] = [];
+    for (const turn of turns) {
+      const hashed = row.callsiteId === undefined
+        ? undefined : ctx.hashedArguments?.get(hashedArgumentsKey(path, row.callsiteId, turn));
+      if (hashed === undefined && row.callsiteId !== undefined && path === ''
+        && unresolvedCallArguments(effective, siteResolver, turn).length > 0) {
+        ownStop = {
+          path, where, reads: 'computed', producers: [],
+          computed: computedStop(row, entryRowOf(external.artifact, row.functionName), siteResolver, turn,
+            hashedArgumentsKey(path, row.callsiteId, turn)),
+        };
+        break;
+      }
+      let stated: ResolvedCall;
+      try {
+        stated = resolvePublishedCall(
+          effective, external.artifact, siteCaller, siteResolver, turn, lockOf, hashed);
+      } catch (error) {
+        // A callee frame's site the planner refuses is met only once the frame reaches it (spec V6): the frame is
+        // placed with the calls before the site, and a check of its own that stops it first names its own reason.
+        if (path === '' || ctx.calleeSiteRefusals !== true || !(error instanceof FramedProxyDeployError)) throw error;
+        ownStop = { path, where, reads: 'refusal', producers: [], refusal: error };
+        break;
+      }
+      resolved.push(forcedKind === undefined ? stated : { ...stated, kind: forcedKind });
+    }
     // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
     // fixes: a call back to the root itself is placed on the root's own deployment, and any other reach of the
     // implementation is refused by name here, before any live record is read.
@@ -1619,7 +2045,24 @@ async function planEntryCalls(
         );
       }
     }
-    sites.push({ entry, external, resolved, where, turns });
+    // A loop's turns may reach different deployments, one pair per hop of a path: a turn whose target is not the first
+    // turn's is placed on the deployment its own target names, found the way the first turn's is.
+    const externals: FramedProxyExternal[] = [];
+    for (const turnCall of resolved) {
+      if (externals.length === 0 || internalCut || reentry || bytesEqual(turnCall.target, resolved[0]!.target)) {
+        externals.push(external);
+        continue;
+      }
+      const turnTarget = turnCall.target.length === 20
+        ? await identityTarget(ctx, caller, row, turnCall.target) : turnCall.target;
+      externals.push(withCalleeShard(ctx, resolveExternal(ctx, row, turnTarget), call, row.functionName));
+    }
+    if (resolved.length > 0) {
+      sites.push({
+        entry, external, externals, resolved, where, turns: turns.slice(0, resolved.length), callingTurns: turns,
+      });
+    }
+    if (ownStop !== undefined) break;
   }
 
   // Pass two: read each callee's live deployment, take a master per reach from its pool, plan the callee's own
@@ -1628,27 +2071,226 @@ async function planEntryCalls(
   const calls: DraftCall[] = [];
   const callBases: number[] = [];
   const callsiteIds: number[] = [];
-  for (const [index, site] of sites.entries()) {
-    if (ctx.stop.blocked !== undefined) break;
+  const placedSends: number[] = [];
+  // A send is made after the calls its body makes before it, each site before it making one call as its own
+  // `sendCallsBefore` counts them; a site that may make none or several leaves the send's place open, which is
+  // refused by name rather than guessed.
+  const placeSendsBefore = async (index: number): Promise<void> => {
+    for (const send of valueSends.filter((candidate) => candidate.callsBefore === index)) {
+      const open = published.calls.slice(0, index).findIndex((_call, at) => {
+        const row = routing[at];
+        return (row?.occurrence ?? 'once') !== 'once' || (row?.condition !== undefined && row?.condition !== null);
+      });
+      if (open >= 0) {
+        throw new FramedProxyDeployError(
+          `the entry "${caller.functionName}" sends to the contract at ${binToHex(send.recipient)} after a call that `
+          + 'may be made once, many times or not at all, so the call the send makes has no fixed place among its calls',
+        );
+      }
+      await placeValueSend(ctx, caller, enteredBy, path, send, calls);
+      placedSends.push(send.transferIndex);
+    }
+  };
+  // Each site's calls' positions in `calls`, which a loop whose body calls at several sites interleaves.
+  const positions: number[][] = [];
+  /** Places the resolved turns `[from, to)` of a site, the consecutive ones that reach one deployment together. */
+  const placeTurns = async (index: number, site: ResolvedSite, from: number, to: number): Promise<void> => {
     const callsiteId = routing[index]!.callsiteId ?? -1;
-    callsiteIds.push(callsiteId);
-    if (site === undefined) {
-      callBases.push(-1);
-      continue;
+    const { externals, entry, resolved, where, turns } = site;
+    for (let start = from; start < to && ctx.stop.blocked === undefined;) {
+      const external = externals[start]!;
+      let end = start + 1;
+      while (end < to && externals[end]!.categoryId === external.categoryId) end += 1;
+      const reach: CalleeReach = { callerPath: path, site: index, callsiteId, turns: turns.slice(start, end) };
+      const run = resolved.slice(start, end);
+      start = end;
+      const before = calls.length;
+      // A callee whose address names a framed proxy is placed as the same chain the root hop places for its own
+      // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
+      if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
+        await placeProxiedCallee(ctx, caller, enteredBy, external, entry, run, calls, where, reach);
+      } else {
+        await placeCalleeMasters(ctx, caller, enteredBy, external, entry, run, calls, where, reach);
+      }
+      for (let at = before; at < calls.length; at += 1) positions[index]!.push(at);
     }
-    callBases.push(calls.length);
-    const { external, entry, resolved, where, turns } = site;
-    const reach: CalleeReach = { callerPath: path, site: index, callsiteId, turns };
-    // A callee whose address names a framed proxy is placed as the same chain the root hop places for its own
-    // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
-    if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
-      await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls, where, reach);
-      continue;
+  };
+  // The loop a site's calls are made in, for a site a single loop repeats.
+  const loopOf = (index: number): number | undefined => {
+    const row = routing[index];
+    return row?.occurrence === 'loop' && row.nestedIterationDomains === undefined
+      ? row.iterationDomain?.sourceLoopId : undefined;
+  };
+  for (let index = 0; index < sites.length; index += 1) {
+    if (ctx.stop.blocked !== undefined) break;
+    await placeSendsBefore(index);
+    if (ctx.stop.blocked !== undefined) break;
+    // The sites one loop's body calls at are made turn by turn: a turn makes its calls in the order the body does,
+    // before any of the next turn's, so their frames are placed in that order and each record falls where the body
+    // binds it, by the number of calls it has made. A site the pass resolved no further ends the placement there.
+    const loop = loopOf(index);
+    let last = index;
+    while (loop !== undefined && last + 1 < published.calls.length && loopOf(last + 1) === loop) last += 1;
+    const members = Array.from({ length: Math.min(last, sites.length - 1) - index + 1 }, (_unused, at) => index + at);
+    for (const member of members) positions[member] = [];
+    let stopped = false;
+    if (last === index) {
+      const site = sites[index];
+      if (site !== undefined) await placeTurns(index, site, 0, site.resolved.length);
+    } else {
+      const lastTurn = Math.max(-1, ...members.flatMap((member) => sites[member]?.callingTurns ?? []));
+      for (let turn = 0; turn <= lastTurn && !stopped; turn += 1) {
+        for (let member = index; member <= last && !stopped; member += 1) {
+          const site = member < sites.length ? sites[member] : undefined;
+          if (member >= sites.length) {
+            stopped = true;
+          } else if (site !== undefined) {
+            const at = site.turns.indexOf(turn);
+            if (at >= 0) await placeTurns(member, site, at, at + 1);
+            else if (site.callingTurns.includes(turn)) stopped = true;
+            if (ctx.stop.blocked !== undefined) stopped = true;
+          }
+        }
+      }
     }
-    await placeCalleeMasters(ctx, caller, enteredBy, external, entry, resolved, calls, where, reach);
+    for (const member of members) {
+      callsiteIds.push(routing[member]!.callsiteId ?? -1);
+      callBases.push(positions[member]![0] ?? -1);
+    }
+    index = members[members.length - 1]!;
+    if (stopped) break;
+  }
+  // Positions are stated only where a loop interleaves its sites' calls; elsewhere each site's run from its base is.
+  const interleaved = positions.some((list) => list.some((at, turn) => turn > 0 && at !== list[turn - 1]! + 1));
+  // The sends the body makes after its last site, or in a body that makes no other call.
+  if (ctx.stop.blocked === undefined && ownStop === undefined) {
+    for (let index = sites.length; index <= Math.max(sites.length, ...valueSends.map((send) => send.callsBefore));
+      index += 1) {
+      await placeSendsBefore(index);
+    }
   }
   if (ctx.stop.blocked === undefined && ownStop !== undefined) ctx.stop.blocked = ownStop;
-  return { calls, callBases, callsiteIds, truncated: ctx.stop.blocked !== undefined };
+  return {
+    calls, callBases, callsiteIds, truncated: ctx.stop.blocked !== undefined,
+    ...(interleaved ? { callPositions: callBases.map((_base, site) => positions[site] ?? []) } : {}),
+    ...(placedSends.length === 0 ? {} : { valueSends: placedSends }),
+  };
+}
+
+/** One send a callee frame's body makes to a contract: the call into the contract's value entry it makes there. */
+interface CalleeValueSend {
+  readonly transferIndex: number;
+  /** The contract's address, as the send's published recipe names it. */
+  readonly recipient: Uint8Array;
+  readonly amount: bigint;
+  /** How many of the entry's calls the body makes before the send (`sendCallsBefore`). */
+  readonly callsBefore: number;
+  /** The send's `FixedBchTransferAbi.failedCallMessage`, for one its body checks. */
+  readonly failedCallMessage?: string;
+}
+
+/**
+ * The sends a callee frame's body makes to a contract (spec 4b), each the call into the contract's value entry the
+ * body makes where it sends: a send its reach's facts decide the body makes, to a recipient its published recipe
+ * names, of an amount its source states. A send to a user's lock is a listed send, none of which this plans; a send
+ * whose recipient, amount or place the facts leave open is left to the frame's own refusal.
+ */
+function calleeValueSends(
+  caller: HopCallInputs, published: PublishedEntryStopSites | undefined,
+): readonly CalleeValueSend[] {
+  const abi = caller.artifact.abi.find((candidate) => candidate.name === caller.functionName);
+  const transfers = abi?.transfers ?? [];
+  if (transfers.length === 0 || caller.senderAddress === undefined || published === undefined) return [];
+  const facts = {
+    stateValues: caller.stateValues as Readonly<Record<string, StateValue>>,
+    ...(caller.readMappingValue === undefined ? {} : { readMappingValue: caller.readMappingValue }),
+  };
+  const taken = new Set(takenSends({
+    artifact: caller.artifact, functionName: caller.functionName, args: caller.args,
+    senderAddress: caller.senderAddress, facts,
+  }));
+  const resolver = makeCallResolver(caller);
+  const inputs = (abi?.inputs ?? []).filter((input) => !input.name.startsWith('__internal__'));
+  return transfers.flatMap((transfer): CalleeValueSend[] => {
+    // A send no branch guards runs whenever the body does; a guarded one runs where the reach's facts decide it does.
+    if (transfer.condition !== undefined && !taken.has(transfer.transferIndex)) return [];
+    const recipient = sendRecipient(transfer.recipientRecipe, {
+      args: caller.args, inputs, structs: caller.artifact.structs, callerLock: caller.senderAddress!,
+      state: [caller.stateValues as Record<string, StateValue>],
+    });
+    if (recipient === undefined || recipient.length === 25) return [];
+    const amount = transfer.amount === undefined ? undefined : resolver.resolve(transfer.amount, 0);
+    const callsBefore = published.sendCallsBefore?.[transfer.transferIndex];
+    if (typeof amount !== 'bigint' || callsBefore === undefined) return [];
+    return [{
+      transferIndex: transfer.transferIndex, recipient, amount, callsBefore,
+      ...(transfer.failedCallMessage === undefined ? {} : { failedCallMessage: transfer.failedCallMessage }),
+    }];
+  });
+}
+
+/** The site index a callee frame's value send to a contract names its callee frame by, past every published site. */
+const VALUE_SEND_SITE_BASE = 1 << 16;
+
+/**
+ * Places the call a callee frame's send to a contract makes: the frame of the recipient's value entry, entered by the
+ * sending frame with no arguments, and the sending frame's call record, carrying the amount. No stop site names the
+ * call, so its record is deferred: its callee reference is filled when the draft is built, and the value entry's
+ * frame is derived as a request of its own.
+ */
+async function placeValueSend(
+  ctx: PlanContext, caller: HopCallInputs, enteredBy: number | null, path: string, send: CalleeValueSend,
+  calls: DraftCall[],
+): Promise<void> {
+  const where = `the send of ${send.amount} from "${caller.artifact.contractName}.${caller.functionName}" to the `
+    + `contract at ${binToHex(send.recipient)}`;
+  const external = Object.values(ctx.externals).find((candidate) =>
+    bytesEqual(validatorAddress(hexToBin(candidate.categoryId), ctx.validatorProgram), send.recipient))
+    ?? externalOfAddress(ctx.provider, send.recipient);
+  if (external === undefined) {
+    throw new FramedProxyDeployError(`${where} reaches no deployment the call's externals or the provider name`);
+  }
+  // A per-entry bundle's value entry is its logical contract's, and runs from that entry's own shard. The external
+  // that names a split deployment may carry another entry's shard, as the root's does.
+  const split = splitOf(ctx, external.categoryId);
+  const picked = valueEntryOrRefusal(split?.logical ?? external.artifact, where);
+  if ('refusal' in picked) throw new FramedProxyDeployError(picked.refusal);
+  const callee = split === undefined ? external : {
+    ...external,
+    artifact: shardArtifactOf(ctx, split, external.categoryId, {
+      selector: requireFunctionSplitShard(split, picked.entry.name).selector, functionName: picked.entry.name,
+    }),
+  };
+  const entry = entryRowOf(callee.artifact, picked.entry.name);
+  const reach: CalleeReach = {
+    callerPath: path, site: VALUE_SEND_SITE_BASE + send.transferIndex, callsiteId: -1, turns: [0],
+  };
+  const at = calls.length;
+  await placeCalleeMasters(ctx, caller, enteredBy, callee, entry, [{
+    kind: FrameKind.CALL, target: send.recipient, argumentValues: [],
+    argumentPushes: [valueSendCallData(callee.artifact)],
+    ...(send.failedCallMessage === undefined ? {} : { failedCallMessage: send.failedCallMessage }),
+  }], calls, where, reach);
+  if (calls.length > at) calls[at] = { ...calls[at]!, value: send.amount, deferred: true };
+}
+
+/**
+ * Folds the state one placed frame leaves into its category's reached state: each write its entry publishes
+ * (`AbiFunction.stateWrites`), evaluated over the frame's own inputs. A write those inputs do not state leaves the
+ * variable as the reached state held it.
+ */
+function recordReachedState(
+  ctx: PlanContext, categoryId: string, artifact: Artifact, entryName: string, inputs: HopCallInputs,
+): void {
+  const writes = artifact.abi.find((candidate) => candidate.name === entryName)?.stateWrites ?? [];
+  if (writes.length === 0) return;
+  const resolver = makeCallResolver(inputs);
+  const left: Record<string, unknown> = { ...(ctx.reachedState.get(categoryId) ?? {}) };
+  for (const write of writes) {
+    const value = resolver.evaluate(write.value, 0);
+    if (value !== undefined) left[write.name] = value;
+  }
+  ctx.reachedState.set(categoryId, left);
 }
 
 /** The live deployment a category names, read once however many sites reach it. */
@@ -1674,7 +2316,7 @@ function reachedDeploymentOf(
 }
 
 /** The live deployment a frame's own writes are planned against, as `hopEntryWrites` states it. */
-function liveDeploymentOf(
+export function liveDeploymentOf(
   categoryId: string, deployment: FramedDeploymentSet, layout: StateLayout,
   written: readonly {
     readonly collection: string;
@@ -1883,7 +2525,9 @@ function readNamesWrittenKey(accesses: readonly AccessKey[] | undefined, node: H
  * `readNodes`, declared kept ahead of the batch's groups as its code counts them, so it is planned, not refused.
  *
  * A body that writes a sorted mapping walks every group of its batch whichever path it takes, so a batch this planner
- * cannot state is refused by name, naming the callee, rather than left to a frame that cannot settle; so is a read
+ * cannot state is refused by name, naming the callee, rather than left to a frame that cannot settle. A later write of
+ * a slot the batch already writes is the exception: it is kept as a skipped target, because a body may take at most
+ * one of them, and a run that makes both is refused for it after the run (`calleeRepeatsSlot`). So is a read
  * naming a node the batch also spends under another id or another key, which one transaction cannot spend twice. A
  * read of the same key the write names, an allowance a token reads before it rewrites it, is one input. A dynamic
  * value's run is read only where its write runs, so an entry that writes no batch keeps a plan without the run: a
@@ -1898,6 +2542,10 @@ function calleeEntryWrites(
   readNodes: readonly HopCalleeReadNode[],
   categoryId: string,
   learnedValue?: Uint8Array,
+  selfAddress?: Uint8Array,
+  assumedActivations?: ReadonlyMap<number, boolean>,
+  producerResults?: ReadonlyMap<number, FunctionArgument>,
+  assumesUndecided?: boolean,
 ): HopEntryWrites | undefined {
   const callee = `${artifact.contractName}.${functionName}()`;
   // The values the nodes hold as the reaches before this one left them.
@@ -1909,6 +2557,14 @@ function calleeEntryWrites(
       functionName,
       args,
       callerLockingBytecode: senderAddress ?? new Uint8Array(0),
+      ...(selfAddress === undefined ? {} : { selfAddress }),
+      ...(assumedActivations === undefined ? {} : { assumedActivations }),
+      ...(assumesUndecided === true ? { assumesUndecided: true } : {}),
+      // Two writes of one slot, such as two mints whose recipients the frame's facts leave at one address, are kept,
+      // the later one as a skipped target, so a body that makes one of them settles (`calleeRepeatsSlot`).
+      keepsRepeatedSlots: true,
+      // A key the write reads back through one of the frame's own calls is what that call returned, once it answered.
+      ...(producerResults === undefined ? {} : { producerResults }),
       liveDeployment: live,
       writtenCommitments: live.recordCommitments,
       declaredReadSlots: readNodes.map((node) => node.slotIndex),
@@ -1971,6 +2627,7 @@ async function calleeSideCars(
     || (abiFunction.ecrecoverEvmFlags ?? []).length > 0;
   const computed = hashes || recovers ? await entrySideCars({
     provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
+    taken: new Set([...ctx.utxos.values()].map((utxo) => `${utxo.txid}:${utxo.vout}`)),
   }) : undefined;
   const oracle = abiFunction.usesBlockOracle === true ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
   const sideCars = oracle === undefined ? computed : withBlockOracleSideCar(master, computed, oracle);
@@ -1990,6 +2647,20 @@ async function unplacedBlockOracle(
 }
 
 /**
+ * The refusal a callee frame's run meets when it makes both writes of a slot its batch writes twice.
+ *
+ * The batch keeps the later write as a skipped target, which the write site refuses if the write runs, so a run of
+ * the frame refused with no reason of its own made it: the batch is one this hop cannot declare, refused as the
+ * planner refuses any other. A frame whose batch names no slot twice has none.
+ */
+export function calleeRepeatsSlot(callee: HopCallee): FramedProxyDeployError | undefined {
+  const slot = callee.entryWrites?.repeatedSlots?.[0];
+  if (slot === undefined) return undefined;
+  return new FramedProxyDeployError(`the callee "${callee.functionName}" writes records this hop cannot declare: `
+    + mappingBatchRepeatsSlot(slot).message);
+}
+
+/**
  * A callee frame's own write plan as the value its body computed implies it, or absent when it writes none.
  *
  * A chunkable mapping write whose value the artifact does not publish is planned once with its run unstated, so
@@ -2002,7 +2673,7 @@ export function planCalleeWrites(callee: HopCallee, learnedValue?: Uint8Array): 
   if (inputs === undefined) return undefined;
   return calleeEntryWrites(
     callee.artifact, callee.entry, inputs.args, inputs.senderAddress, inputs.live, callee.readNodes,
-    inputs.categoryId, learnedValue,
+    inputs.categoryId, learnedValue, inputs.selfAddress, inputs.assumedActivations, undefined, inputs.assumesUndecided,
   );
 }
 
@@ -2023,6 +2694,8 @@ function calleeReadNodes(options: {
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
   readonly senderAddress: Uint8Array | undefined;
+  /** The address the frame presents as `address(this)`, which a key the body reads at its own address names. */
+  readonly selfAddress?: Uint8Array;
   readonly categoryId: string;
   readonly deployment: FramedDeploymentSet;
   /**
@@ -2100,6 +2773,7 @@ function calleeReadNodes(options: {
         functionName: options.functionName,
         args: options.args,
         callerLockingBytecode: options.senderAddress ?? new Uint8Array(0),
+        ...(options.selfAddress === undefined ? {} : { selfAddress: options.selfAddress }),
         categoryId: options.categoryId,
         nodesByCollection: options.deployment.nodesByCollection,
         slotIndex: slot.slotIndex!,
@@ -2220,8 +2894,9 @@ function calleeRecordSet(
 ): readonly HopCalleeRecord[] {
   const cached = ctx.records.get(categoryId);
   if (cached !== undefined) return cached;
-  const ownCategory = ctx.selfAddress !== undefined
-    && bytesEqual(validatorAddress(hexToBin(categoryId), ctx.validatorProgram), ctx.selfAddress);
+  // The root's own category, whichever form its address takes: a CREATE2 child presents its 20-byte identity.
+  const ownCategory = categoryId === ctx.rootCategoryId || (ctx.selfAddress !== undefined
+    && bytesEqual(validatorAddress(hexToBin(categoryId), ctx.validatorProgram), ctx.selfAddress));
   const records = Array.from({ length: layout.dataNftCount }, (_unused, nftIndex): HopCalleeRecord => {
     const utxo = deployment.records[nftIndex];
     const commitment = utxo?.token?.nft?.commitment;
@@ -2298,18 +2973,24 @@ async function placeCalleeMasters(
   const categoryId = external.categoryId;
   const layout = external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
   const deployment = await deploymentOf(ctx, categoryId, layout);
+  // The masters claimed before this plan, the root's own on a call back into its deployment, are no reach's: the
+  // reaches take the pool's other masters, in slot order.
+  const calleeSplit = splitOf(ctx, categoryId);
+  const claimed = calleeSplit === undefined ? ctx.takenMasters.get(categoryId) : undefined;
+  const pool = claimed === undefined ? deployment.masters
+    : deployment.masters.filter((utxo) => !claimed.has(`${utxo.txid}:${utxo.vout}`));
   const base = ctx.masterSlots.get(categoryId) ?? 0;
   const needed = base + resolved.length;
-  if (ctx.split === undefined && deployment.masters.length < needed) {
+  if (calleeSplit === undefined && pool.length < needed) {
     throw new FramedProxyDeployError(
       `${where} reaches "${contract}", which this hop already places; its category ${categoryId} holds `
-      + `${deployment.masters.length} master(s), so it cannot be entered ${needed} time(s)`,
+      + `${pool.length} master(s) it may take, so it cannot be entered ${needed} time(s)`,
     );
   }
   ctx.masterSlots.set(categoryId, needed);
   const block = deploymentBlockId(ctx.blocks, contract, categoryId);
   const records = calleeRecordSet(ctx, block, categoryId, layout, deployment);
-  const stateValues = deploymentStateValues(layout, categoryId, deployment);
+  const deployedState = deploymentStateValues(layout, categoryId, deployment);
   const category = hexToBin(categoryId);
   const nodeIdOf = (collection: string, slot: Uint8Array): string => sharedNodeId(categoryId, collection, slot);
   for (const [position, call] of resolved.entries()) {
@@ -2317,6 +2998,7 @@ async function placeCalleeMasters(
     if (ctx.stop.blocked !== undefined) break;
     // Each visit is planned against what the visits and reaches before it wrote, a loop's earlier turns included.
     const live = reachedDeploymentOf(ctx, categoryId, deployment, layout);
+    const stateValues = { ...deployedState, ...(ctx.reachedState.get(categoryId) ?? {}) };
     const readMappingValue = liveMappingValueReader(external.artifact, live, external.artifact.structs);
     // The turn the call runs in names the frame; its place among the site's calls takes the master.
     const occurrence = reach.turns[position] ?? position;
@@ -2324,8 +3006,8 @@ async function placeCalleeMasters(
     const master = `callee-master-${calleeIndex + 1}`;
     const path = calleePath(reach.callerPath, reach.site, occurrence);
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
-    let masterUtxo = deployment.masters[base + position];
-    if (ctx.split !== undefined) {
+    let masterUtxo = pool[base + position];
+    if (calleeSplit !== undefined) {
       const taken = ctx.takenMasters.get(categoryId) ?? new Set<string>();
       try {
         masterUtxo = masterForEntry({
@@ -2349,14 +3031,15 @@ async function placeCalleeMasters(
     // The nodes the entry only reads, from the reach's own call data; they lead any batch's groups.
     const readNodes = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
-      senderAddress: caller.selfAddress, categoryId, deployment, nodeIdOf,
+      senderAddress: caller.selfAddress, selfAddress: deployed.self, categoryId, deployment, nodeIdOf,
       createdNodes: ctx.writtenNodes.get(categoryId) ?? [], rewrittenNodes: ctx.rewrittenNodes.get(categoryId) ?? [],
     });
     // The frame's own write is planned from the reach's own call data, so two reaches that pass different values
     // write different nodes.
     const writes = calleeEntryWrites(
       external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, readNodes, categoryId,
-      ctx.calleeWriteValues?.get(master));
+      ctx.calleeWriteValues?.get(master), deployed.self, ctx.calleeAssumedActivations?.get(master),
+      knownResultsOf(ctx, external.artifact, path), ctx.assumesUndecided);
     for (const node of readNodes) if (node.utxo !== undefined) ctx.utxos.set(node.id, node.utxo);
     // A mapping node the frame writes sits on a live UTXO the deployment's classification already placed, so the
     // hop hands the rebuild its outpoint rather than have it search the category again.
@@ -2380,13 +3063,18 @@ async function placeCalleeMasters(
       kind: call.kind,
       masterSatoshis: masterUtxo.satoshis,
       returns: (entry.outputs ?? []).length > 0,
-      selfAddress: deployed.address,
+      selfAddress: deployed.self,
       records,
       readNodes,
       utxos: new Map<string, Utxo>([[master, masterUtxo]]),
       ...(writes === undefined ? {} : { entryWrites: writes }),
       ...(writes === undefined ? {} : {
-        writeInputs: { args: call.argumentValues, senderAddress: caller.selfAddress, live, categoryId },
+        writeInputs: {
+          args: call.argumentValues, senderAddress: caller.selfAddress, selfAddress: deployed.self, live, categoryId,
+          ...(ctx.calleeAssumedActivations?.get(master) === undefined
+            ? {} : { assumedActivations: ctx.calleeAssumedActivations.get(master)! }),
+          ...(ctx.assumesUndecided === true ? { assumesUndecided: true } : {}),
+        },
       }),
       args: call.argumentValues,
       calls: [],
@@ -2395,9 +3083,9 @@ async function placeCalleeMasters(
       path,
       origin: { callerPath: reach.callerPath, callsiteId: reach.callsiteId, occurrence },
       ...reachSkippedEmits(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
-        { stateValues, selfAddress: deployed.address, readMappingValue }),
+        { stateValues, selfAddress: deployed.self, readMappingValue }),
       ...reachDecidedSends(external.artifact, entry.name, call.argumentValues, caller.selfAddress,
-        { stateValues, selfAddress: deployed.address, readMappingValue }),
+        { stateValues, selfAddress: deployed.self, readMappingValue }),
     };
     // Reserve the slot before planning the callee's own calls, so a frame it reaches names this master as its
     // caller and sits after it.
@@ -2407,24 +3095,34 @@ async function placeCalleeMasters(
       functionName: entry.name,
       args: call.argumentValues,
       stateValues,
-      selfAddress: deployed.address,
+      selfAddress: deployed.self,
+      categoryId,
       readMappingValue,
       ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
     }, calleeIndex, path);
     ctx.callees[calleeIndex] = {
       ...frame, calls: nested.calls, callBases: nested.callBases, ...(nested.truncated ? { truncated: true } : {}),
+      ...(nested.callPositions === undefined ? {} : { callPositions: nested.callPositions }),
+      ...(nested.valueSends === undefined ? {} : { valueSends: nested.valueSends }),
     };
+    recordReachedState(ctx, categoryId, external.artifact, entry.name, {
+      artifact: external.artifact, functionName: entry.name, args: call.argumentValues, stateValues,
+      selfAddress: deployed.self, readMappingValue,
+      ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
+    });
     ctx.utxos.set(master, masterUtxo);
     calls.push({
       kind: call.kind, callee: master, target: call.target, value: 0n,
       argumentPushes: call.argumentPushes,
+      ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
     });
     if (hopTraceOn()) {
       const byTarget = findDeploymentByAddress(ctx.provider, binToHex(call.target))
         ?? findDeploymentByLockingBytecode(ctx.provider, binToHex(call.target));
       hopTrace(`callee ${master} entry=${entry.name} self=${binToHex(deployed.address).slice(0, 12)} `
         + `target=${binToHex(call.target).slice(0, 12)} cat=${categoryId.slice(-12)} `
-        + `byTarget=${byTarget?.contractName ?? 'none'}`);
+        + `byTarget=${byTarget?.contractName ?? 'none'} args=[${call.argumentValues.map((value) => (value instanceof Uint8Array
+          ? binToHex(value).slice(0, 12) : String(value))).join(',')}]`);
     }
   }
 }
@@ -2554,7 +3252,8 @@ async function placeProxiedCallee(
     // The nodes the entry only reads are the proxy's own, planned against the proxy's deployment.
     const implementationReads = calleeReadNodesOrNone({
       artifact: external.artifact, functionName: entry.name, args: call.argumentValues,
-      senderAddress: caller.selfAddress, categoryId: external.categoryId, deployment: proxyDeployment,
+      senderAddress: caller.selfAddress, selfAddress: proxyDeployed.self, categoryId: external.categoryId,
+      deployment: proxyDeployment,
       recordLayout: proxyReadLayout,
       nodeIdOf: (collection, slot) => sharedNodeId(external.categoryId, collection, slot),
       createdNodes: ctx.writtenNodes.get(external.categoryId) ?? [],
@@ -2563,7 +3262,7 @@ async function placeProxiedCallee(
     // The implementation entry's own write is planned from this reach's call data, against the proxy's deployment.
     const implementationWrites = calleeEntryWrites(
       external.artifact, entry.name, call.argumentValues, caller.selfAddress, live, implementationReads,
-      external.categoryId, ctx.calleeWriteValues?.get(implementationMaster));
+      external.categoryId, ctx.calleeWriteValues?.get(implementationMaster), proxyDeployed.address);
     for (const node of implementationReads) if (node.utxo !== undefined) ctx.utxos.set(node.id, node.utxo);
     for (const [id, utxo] of implementationWrites?.spentUtxos ?? []) ctx.utxos.set(id, utxo);
     // A node this reach creates or rewrites is one the reaches placed after it have to be told about, as a call
@@ -2594,7 +3293,8 @@ async function placeProxiedCallee(
       ...(implementationWrites === undefined ? {} : { entryWrites: implementationWrites }),
       ...(implementationWrites === undefined ? {} : {
         writeInputs: {
-          args: call.argumentValues, senderAddress: caller.selfAddress, live, categoryId: external.categoryId,
+          args: call.argumentValues, senderAddress: caller.selfAddress, selfAddress: proxyDeployed.address, live,
+          categoryId: external.categoryId,
         },
       }),
       args: call.argumentValues,
@@ -2623,11 +3323,13 @@ async function placeProxiedCallee(
         args: call.argumentValues,
         stateValues,
         selfAddress: proxyDeployed.address,
+        categoryId: external.categoryId,
         readMappingValue,
         ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
       }, implementationIndex, path);
     ctx.callees[implementationIndex] = {
       ...implementationBaseFrame, calls: nested.calls, callBases: nested.callBases,
+      ...(nested.callPositions === undefined ? {} : { callPositions: nested.callPositions }),
       ...(nested.truncated ? { truncated: true } : {}),
     };
     ctx.utxos.set(proxyMaster, proxyMasterUtxo);
@@ -2635,6 +3337,7 @@ async function placeProxiedCallee(
     calls.push({
       kind: call.kind, callee: proxyMaster, target: call.target, value: 0n,
       argumentPushes: call.argumentPushes,
+      ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
     });
     if (hopTraceOn()) {
       hopTrace(`callee ${proxyMaster} entry=__fallback self=${binToHex(proxyDeployed.address).slice(0, 12)} `
@@ -2835,7 +3538,10 @@ function chunkingNode(touches: readonly NodeTouch[]): boolean {
  * successor its plan states. That covers reads, updates and relinks of a fixed-width value in any order. Two touches
  * where one frame enters the other are refused by name, since their segments interleave in an order this hop does not
  * settle, but for a read or an in-place rewrite after the entering frame's write of the node, which lands before the
- * call that leads there (`enclosed-reads.ts`).
+ * call that leads there (`enclosed-reads.ts`), and for a node the entering frame only reads: the walk keeps the view
+ * that frame read in its segments up to the call and the one the frames inside it leave in the segments past it, and
+ * those frames settle before it resumes. A helper a split cut out of a body that reads a balance and then burns it is
+ * such a pair.
  *
  * A node whose values chunk is chainable in the same way, except that the bytes a later reach continues from are
  * the ones the reach before it wrote: a reach whose chunkable write states no value leaves none, which
@@ -2850,6 +3556,8 @@ function requireChainableNodes(callees: readonly HopCallee[]): void {
         if (!entersFrame(callees, outer.frame, inner.frame) && !entersFrame(callees, inner.frame, outer.frame)) continue;
         // A read or rewrite of a node a frame it runs inside wrote before entering it chains (`enclosed-reads.ts`).
         if (chainsEnclosedTouch(callees, outer, inner, collection, id)) continue;
+        // So does any touch inside a frame that only reads the node.
+        if ((entersFrame(callees, outer.frame, inner.frame) ? outer : inner).kind === 'read') continue;
         throw new FramedProxyDeployError(
           `the hop's reaches "${outer.functionName}" and "${inner.functionName}" touch one node of collection `
           + `"${collection}", and one of them enters the other, so their segments interleave in an order this hop `
@@ -3053,6 +3761,12 @@ export interface HopExternalPlanOptions {
    */
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
   /**
+   * The arguments runs of the entry's body hashed where it calls, keyed by `hashedArgumentsKey`. A visit whose
+   * arguments no published expression states is planned from these; absent or missing one, the plan stops before
+   * that visit (`computed`).
+   */
+  readonly hashedArguments?: ReadonlyMap<string, readonly Uint8Array[]>;
+  /**
    * The end views a previous settle learned, per frame master for a callee and once for the entry, in each frame's
    * own learning order.
    *
@@ -3071,6 +3785,15 @@ export interface HopExternalPlanOptions {
    * a site after the write is planned from (`EntryWriteValueAwaited`).
    */
   readonly calleeWriteValues?: ReadonlyMap<string, Uint8Array>;
+  /** Whether each callee frame's undecided guarded writes run, by master and entry-access slot. */
+  readonly calleeAssumedActivations?: ReadonlyMap<string, ReadonlyMap<number, boolean>>;
+  /** Whether each conditional site no fact of the caller decides is taken, by `undecidedCallKey`. */
+  readonly assumedCalls?: ReadonlyMap<string, boolean>;
+  /**
+   * Told each conditional site no fact of the caller decides (`undecidedGuard`) that the plan meets with no assumption
+   * for it, by `undecidedCallKey`, and whether the plan took it, however the plan ends.
+   */
+  readonly noteUndecidedCall?: (key: string, taken: boolean) => void;
   /**
    * The compute side-cars the caller already built for the implementation's own entry, keyed by its master.
    *
@@ -3097,6 +3820,31 @@ export interface HopExternalPlanOptions {
   readonly splitCategoryId?: string;
   /** Outpoints already claimed before this plan, keyed by category. */
   readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * Plans a callee frame's send to a contract as the call into the contract's value entry the body makes where it
+   * sends (spec 4b): a deferred call record carrying the amount, which no stop site names, and the value entry's frame
+   * it enters. Absent, such a send is left to the frame's own refusal.
+   */
+  readonly calleeValueCalls?: boolean;
+  /**
+   * Plans a call whose target is the root's own address (`selfAddress`) as a call back into the root's deployment: a
+   * further master of the root's pool, on the root's records, in the root's block. Absent, such a call is refused by
+   * name, as a contract that reaches itself below itself.
+   */
+  readonly rootReentry?: boolean;
+  /**
+   * Stops the plan inside a callee frame at a site of its own the planner refuses (`reads: 'refusal'`, the stop
+   * carrying the refusal): the frame is placed with the calls before the site, and nothing the execution reaches from
+   * it on, so a check of the frame's own that stops it first names its own reason (spec V6). Absent, the refusal is
+   * raised, and met at the entry's own site that leads to the frame.
+   */
+  readonly calleeSiteRefusals?: boolean;
+  /**
+   * Plans a callee frame's undecided write at a key its list does not hold as skipped, for a caller that plans the
+   * frame again with the write assumed run when the frame refuses (`calleeAssumedActivations`). Absent, such a write is
+   * refused by name.
+   */
+  readonly assumesUndecided?: boolean;
 }
 
 /** The hop's own root as a call back to it reaches it, or undefined for a plan that admits no such call. */
@@ -3148,18 +3896,24 @@ export async function planHopExternalCalls(
     masterSlots: new Map(),
     blocks: new Map(),
     deployments: new Map(),
+    reachedState: new Map(),
     records: new Map(),
     writtenNodes: new Map(),
     rewrittenNodes: new Map(),
     reachedLinks: new Map(),
     ...(options.calleeWriteViews === undefined ? {} : { calleeWriteViews: options.calleeWriteViews }),
+    ...(options.calleeAssumedActivations === undefined
+      ? {} : { calleeAssumedActivations: options.calleeAssumedActivations }),
     ...(options.calleeWriteValues === undefined ? {} : { calleeWriteValues: options.calleeWriteValues }),
+    ...(options.assumedCalls === undefined ? {} : { assumedCalls: options.assumedCalls }),
+    ...(options.noteUndecidedCall === undefined ? {} : { noteUndecidedCall: options.noteUndecidedCall }),
     callees: [],
     utxos: new Map(),
     sideCars: new Map(options.sideCars ?? []),
     ...(options.externalReturns === undefined || options.externalReturns.size === 0
       ? {} : { producerResults: { artifact: options.artifact, values: options.externalReturns } }),
     reachedResults: options.reachedResults ?? new Map(),
+    ...(options.hashedArguments === undefined ? {} : { hashedArguments: options.hashedArguments }),
     stop: {},
     ...(options.stopBefore === undefined ? {} : { stopBefore: options.stopBefore }),
     ...(options.split === undefined ? {} : { split: options.split, splitCategoryId: options.splitCategoryId }),
@@ -3167,6 +3921,11 @@ export async function planHopExternalCalls(
     takenMasters: new Map(
       [...(options.takenMasters ?? [])].map(([category, taken]) => [category, new Set(taken)]),
     ),
+    ...(options.calleeValueCalls === true ? { calleeValueCalls: true } : {}),
+    ...(options.rootReentry === true ? { rootReentry: true } : {}),
+    ...(options.entryDeployment === undefined ? {} : { rootCategoryId: options.entryDeployment.categoryId }),
+    ...(options.calleeSiteRefusals === true ? { calleeSiteRefusals: true } : {}),
+    ...(options.assumesUndecided === true ? { assumesUndecided: true } : {}),
   };
   for (const sideCars of ctx.sideCars.values()) {
     for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
@@ -3194,12 +3953,14 @@ export async function planHopExternalCalls(
     stateValues: options.stateValues ?? {},
     ...(readMappingValue === undefined ? {} : { readMappingValue }),
     ...(options.selfAddress === undefined ? {} : { selfAddress: options.selfAddress }),
+    ...(own === undefined ? {} : { categoryId: own.categoryId }),
     ...(options.senderAddress === undefined ? {} : { senderAddress: options.senderAddress }),
     ...(options.constructorArgs === undefined ? {} : { constructorArgs: options.constructorArgs }),
   }, null, '');
   return {
     calls: root.calls,
     callBases: root.callBases,
+    ...(root.callPositions === undefined ? {} : { callPositions: root.callPositions }),
     callsiteIds: root.callsiteIds,
     conditionalProducers: conditionalProducerCallsites(options.artifact, options.functionName),
     callees: ctx.callees,
@@ -3208,4 +3969,9 @@ export async function planHopExternalCalls(
     ...(options.heldContinuations === true ? { heldContinuations: true } : {}),
     ...(ctx.stop.blocked === undefined ? {} : { blocked: ctx.stop.blocked }),
   };
+}
+
+/** The key a conditional site the plan cannot decide is assumed under: the frame's path and the site's call index. */
+export function undecidedCallKey(path: string, index: number): string {
+  return `${path}#${index}`;
 }

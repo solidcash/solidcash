@@ -399,7 +399,8 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     const keptChunkIds = built.records.filter((record) => record.role === 'kept').map((record) => record.id);
     expect(keptChunkIds.length).toBeGreaterThan(0);
     expect([...asked].sort()).toStrictEqual(
-      [PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...keptChunkIds].sort(),
+      [PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID, ...keptChunkIds]
+        .sort(),
     );
   });
 

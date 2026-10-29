@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { FrameKind } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import {
   MOCK_RELAXED_OPERATION_COST,
   MockNetworkProvider,
@@ -46,9 +47,9 @@ type VmSourceOutput = NonNullable<VmProgram['sourceOutputs']>[number];
 
 /** The relaxed local machine: a case should decide what the program accepts, not what it costs. */
 function machine(): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
-  return createVirtualMachineBch2026ForProvider(
+  return settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
 }
 
 /** The fixture's token shape as the machine states it. */

@@ -927,13 +927,14 @@ describe('the obstacles this flow replica works around', () => {
 
   it('refuses the same pull when its groups are declared in the body\'s write order', () => {
     // The derivation walks the groups in the published target order, so the recipient's walk reads the holder's
-    // node, takes it for an insert's predecessor, and the holder's walk then reads past the segment.
+    // node, takes it for an insert's predecessor, and the holder's walk then reads past the segment: it asks the
+    // exhausted segment for a record's eight-byte header.
     const written = buildOnePullPlan('written');
     expect(derivationRefusal(written.plan, written.artifacts, 'pull-1')).toStrictEqual({
       message: 'FRAMED_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
         + '(close of segment 0)',
       objection: 'Program called an OP_SPLIT operation with an invalid index. '
-        + 'stack item length: 2; requested split index: 4.',
+        + 'stack item length: 0; requested split index: 8.',
     });
   });
 });

@@ -40,6 +40,9 @@ const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' }';
 
 const compile = (): ReturnType<typeof compileString> => compileString(SOURCE, { composition: 'framed' });
+/** The program as the generator emitted it: no span is shared out of it, so each check sits where it is emitted. */
+const compileEmitted = (): ReturnType<typeof compileString> =>
+  compileString(SOURCE, { composition: 'framed', optimise: false });
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
@@ -77,7 +80,7 @@ describe('a compiled framed master', () => {
   });
 
   it('opens the program with the head: the block drop, then the reserved category slot', () => {
-    const artifact = compile();
+    const artifact = compileEmitted();
     const script = scriptBytes(artifact);
     const { categoryOffset } = artifact.composition!.placeholders;
     // The unlocking bytecode's own copy of the block is removed from the bottom of the frame, then the head starts
@@ -89,7 +92,7 @@ describe('a compiled framed master', () => {
   });
 
   it('carries the ownership check, the recreation check and the witness-block reader', () => {
-    const script = scriptBytes(compile());
+    const script = scriptBytes(compileEmitted());
     // Ownership: the reserved category slot, the capability byte, then the introspection comparison.
     expect(contains(script, [0x20, ...new Array<number>(CATEGORY_SLOT_LENGTH).fill(0)])).toBe(true);
     expect(contains(script, [0x52, 0x7e, 0x76, 0xc0, 0xce, 0x88])).toBe(true); // OP_2 OP_CAT DUP INPUTINDEX UTXOCATEGORY EQV
@@ -100,17 +103,17 @@ describe('a compiled framed master', () => {
     expect(contains(script, [...mastersRecreatedInPlaceScript(), 0xc0, 0xd2, 0x00, 0x88])).toBe(true);
     expect(contains(script, [0xc0, 0xcc, 0xc0, 0xc6, 0xa2, 0x69])).toBe(true); // ... OUTPUTVALUE >= UTXOVALUE VERIFY
     // W0: the reader compares the block's leading magic and version with its constant.
-    expect(contains(script, [0x03, 0x50, 0x57, 0x01, 0x88])).toBe(true);
+    expect(contains(script, [0x03, 0x50, 0x57, 0x02, 0x88])).toBe(true);
   });
 
   it('carries the frame-kind branch and the root-frame checks', () => {
-    const script = scriptBytes(compile());
+    const script = scriptBytes(compileEmitted());
     // The head branches on the frame kind: 0 is a user's frame, 1 a message call.
     expect(contains(script, [0x57, 0x79, 0x81, 0x00, 0x9c, 0x63])).toBe(true); // OP_7 PICK BIN2NUM 0 NUMEQUAL IF
     expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9c, 0x63])).toBe(true); // OP_7 PICK BIN2NUM 1 NUMEQUAL IF
     // The call arm requires kind 1, then takes the call data's unconsumed selector from the bottom and requires it
     // to be the entry's own: OP_DEPTH OP_1SUB OP_ROLL <selector> OP_EQUALVERIFY.
-    const selector = [...Buffer.from(compile().abi.find((row) => row.name === 'bump')!.selector!, 'hex')];
+    const selector = [...Buffer.from(compileEmitted().abi.find((row) => row.name === 'bump')!.selector!, 'hex')];
     expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9d, 0x74, 0x8c, 0x7a, 0x04, ...selector, 0x88])).toBe(true);
     // A caller reference is never this input: OP_5 PICK BIN2NUM INPUTINDEX NUMNOTEQUAL VERIFY.
     expect(contains(script, [0x55, 0x79, 0x81, 0xc0, 0x9e, 0x69])).toBe(true);
@@ -124,7 +127,7 @@ describe('a compiled framed master', () => {
     expect(contains(script, [0x57, 0x79, 0x81, 0x00, 0x9d])).toBe(true); // standalone: kind == 0
     // The reserved address slot is pushed right before the self comparison, inside the arm that admits the frame
     // kinds whose `address(this)` is their own code constant.
-    const { addressOffset, templateHashOffset } = compile().composition!.placeholders;
+    const { addressOffset, templateHashOffset } = compileEmitted().composition!.placeholders;
     expect(script.subarray(addressOffset, addressOffset + 36).subarray(0, 1))
       .toEqual(new Uint8Array([ADDRESS_SLOT_LENGTH]));
     expect(script.subarray(addressOffset - 1, addressOffset + 1))
@@ -136,7 +139,7 @@ describe('a compiled framed master', () => {
   });
 
   it('checks the caller signature\'s hash type in the root arm', () => {
-    const script = scriptBytes(compile());
+    const script = scriptBytes(compileEmitted());
     // The signature's last byte: SIZE 1SUB SPLIT NIP, then clear bit 5 and compare with `SIGHASH_ALL` (`0x41`).
     expect(contains(script, [0x82, 0x8c, 0x7f, 0x77, 0x01, 0xdf, 0x84, 0x01, 0x41, 0x88])).toBe(true);
   });

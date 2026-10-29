@@ -172,7 +172,9 @@ function refusingParticipants(draft: CompositionDraft, master: string): readonly
   })) !== true).map((placed) => placed.id);
 }
 
-const partySlot = (party: Uint8Array): Uint8Array => keyToSlotMulti([party]);
+/** How the deed keys a holder's balance: by the 20-byte identity, as a Solidity collection does. */
+const BALANCE_KEYS = deed.stateLayout!.collections!.find((collection) => collection.name === '_balances')!;
+const partySlot = (party: Uint8Array): Uint8Array => keyToSlotMulti([party], BALANCE_KEYS);
 
 describe('a mapping write keyed by a value read out of a node the body writes', () => {
   it('publishes the debit\'s key as the read and declares the record\'s batch ahead of the balances', () => {

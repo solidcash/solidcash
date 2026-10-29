@@ -231,14 +231,14 @@ describe('receive(), compiled framed', () => {
     })).toStrictEqual({ accepted: true });
   });
 
-  it('leaves the value to the validator when another master of its contract shares the transaction', () => {
-    const alone = { source: RECEIVE_SOURCE, containersOut: [AMOUNT], validator: { secondMaster: false } };
-    expect(verdict({ ...alone, value: AMOUNT })).toStrictEqual({ accepted: true });
-    expect(verdict({ ...alone, value: AMOUNT, containersOut: [] }).accepted).toBe(false);
-    // Shared, the frame is weighed with every other frame of its contract by the validator (V7), not by itself.
-    const shared = { ...alone, validator: { secondMaster: true } };
-    expect(verdict({ ...shared, value: AMOUNT })).toStrictEqual({ accepted: true });
-    expect(verdict({ ...shared, value: AMOUNT, containersOut: [] })).toStrictEqual({ accepted: true });
+  it('leaves the value to the validator whenever one covers the frame', () => {
+    // A covered frame is weighed with every other frame of its contract by the validator (V7), not by itself, whether
+    // or not another master of its contract shares the transaction.
+    for (const secondMaster of [false, true]) {
+      const covered = { source: RECEIVE_SOURCE, containersOut: [AMOUNT], validator: { secondMaster } };
+      expect(verdict({ ...covered, value: AMOUNT })).toStrictEqual({ accepted: true });
+      expect(verdict({ ...covered, value: AMOUNT, containersOut: [] })).toStrictEqual({ accepted: true });
+    }
   });
 });
 

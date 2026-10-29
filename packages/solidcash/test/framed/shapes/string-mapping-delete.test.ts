@@ -76,9 +76,6 @@ const HUB_MASTER_ID = 'hub-1';
 const NODE_ID = 'node';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
-/** The node's own master sits second, after the hub block's master and validator. */
-// The Tags master sits after the Hub, its validator and the facet the validator binds.
-const NODE_MASTER_INDEX = 3;
 
 const { artifacts, contracts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Tags: TAGS_LABEL });
 const HUB = contracts.Hub!;
@@ -169,7 +166,8 @@ function buildPlan(): {
       [NODE_ID]: {
         source: nodeSource,
         output: { ...nodeSource, token: token(TAGS.category, 'mutable', NODE_AFTER) },
-        unlockingBytecode: entryUnlock(NODE_MASTER_INDEX, 1n),
+        // The node names the Tags master, which the layout puts after the Hub, its validator and the facets.
+        unlockingBytecode: entryUnlock(tagsIndex, 1n),
       },
       [USER_ID]: userInput(),
     },

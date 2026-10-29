@@ -286,10 +286,10 @@ describe('a read that states a callee\'s arguments', () => {
     expect(result.value).toBe(11n);
   });
 
-  it('refuses an argument the caller\'s own live state records hold', async () => {
-    // The read holds no live record of the caller's own state, so it names the source rather than reading a value.
-    await expect(readRoot('fromState')).rejects.toThrow(
-      'whose argument 0 comes from a "expression" of kind "state"',
-    );
+  it('states an argument the caller\'s own live state records hold', async () => {
+    // The read plans the call from the root's live record, so the callee answers with the seed that record holds.
+    const result = await readRoot('fromState');
+    expect(result.accepted).toBe(true);
+    expect(result.value).toBe(4n);
   });
 });

@@ -7,17 +7,23 @@
  *
  * Wire layout (little-endian, `lp16`/`lp32` as in `primitives`):
  *
- *     "PW" 01
+ *     "PW" 02
  *     kind:u8  callerRef:u16 originRef:u16 validatorRef:u16
  *     sender:lp16  self:lp16  value:u64
  *     retval:lp32
  *     callCount:u16 { kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32 }
- *     segCount:u16  { recCount:u16 { in:u16 out:u16 viewIn:lp32 viewOut:lp32 } }
+ *     segCount:u16  { segLen:u16 recCount:u16 { in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut } }
  *     eventCount:u16 { out:u16 }
  *     sendCount:u16  { out:u16 }
  *     valueCount:u16 { value:lp32 }
+ *     padding:lp16
  *
  * `segCount` is always `callCount + 1`: a call splits the execution, so a program with no calls has one segment.
+ * `segLen` is the byte length of the segment that follows it, its record count included, so a reader steps over a
+ * segment with one cut. A record leads with its two indices and both views' lengths, so a reader steps over a record
+ * with two cuts; an `outLen` of `KEPT_VIEW_LENGTH` is a record the segment leaves as it found it, whose `viewOut` is
+ * its `viewIn` and is not written again. `padding` is zero bytes nothing reads: a builder lengthens an input's
+ * unlocking bytecode with it, which is what the machine's operation-cost budget is measured over.
  * `values` are the long mapping values the body reads, one per value-witness slot in slot order; the body checks
  * each against the hash its record holds, so a value the frame does not read is empty.
  */
@@ -36,7 +42,13 @@ import {
 
 /** Magic and version of the witness block, frozen with the validator program. */
 export const WITNESS_BLOCK_MAGIC = new Uint8Array([0x50, 0x57]); // "PW"
-export const WITNESS_BLOCK_VERSION = 0x01;
+export const WITNESS_BLOCK_VERSION = 0x02;
+
+/**
+ * The `outLen` of a record the segment leaves as it found it: its `viewOut` is its `viewIn`, which the wire does not
+ * carry twice. No view is this long, since a view is an NFT commitment.
+ */
+export const KEPT_VIEW_LENGTH = 0xffff;
 
 /** Length of the `argsHash` field: the hash of a call's selector and argument pushes. */
 export const ARGS_HASH_LENGTH = 32;
@@ -113,6 +125,8 @@ export interface WitnessBlock {
   sends: number[];
   /** The long mapping values the body reads, by value-witness slot; omitted when there are none. */
   values?: Uint8Array[];
+  /** How many zero bytes pad the block, which buy the input's operation-cost budget; omitted when there are none. */
+  padding?: number;
 }
 
 /** Encodes a witness block. */
@@ -161,18 +175,47 @@ export function encodeWitnessBlock(block: WitnessBlock): Uint8Array {
         .pushBytes(call.argsHash)
         .pushLp32(call.result);
     })
-    .pushCounted16(block.segments, (out, segment) => {
-      out.pushCounted16(segment, (entries, entry) => {
-        entries.pushUint16(entry.in)
-          .pushUint16(entry.out)
-          .pushLp32(entry.viewIn)
-          .pushLp32(entry.viewOut);
-      });
-    })
+    .pushCounted16(block.segments, (out, segment) => { out.pushLp16(encodeSegment(segment)); })
     .pushCounted16(block.events, (out, outputIndex) => { out.pushUint16(outputIndex); })
     .pushCounted16(block.sends, (out, outputIndex) => { out.pushUint16(outputIndex); })
     .pushCounted16(block.values ?? [], (out, value) => { out.pushLp32(value); })
+    .pushLp16(new Uint8Array(block.padding ?? 0))
     .finish();
+}
+
+/** One segment's bytes past its length: the record count, then each record with its views' lengths first. */
+function encodeSegment(segment: readonly RecordEntry[]): Uint8Array {
+  return new ByteWriter().pushCounted16(segment, (entries, entry) => {
+    for (const view of [entry.viewIn, entry.viewOut]) {
+      if (view.length >= KEPT_VIEW_LENGTH) throw new FramedEncodingError(`a record view is ${view.length} bytes long`);
+    }
+    const kept = bytesEqual(entry.viewIn, entry.viewOut);
+    entries.pushUint16(entry.in)
+      .pushUint16(entry.out)
+      .pushUint16(entry.viewIn.length)
+      .pushUint16(kept ? KEPT_VIEW_LENGTH : entry.viewOut.length)
+      .pushBytes(entry.viewIn);
+    if (!kept) entries.pushBytes(entry.viewOut);
+  }).finish();
+}
+
+/** Reads one segment's records from the bytes its length names, requiring every byte to be a record's. */
+function decodeSegment(payload: Uint8Array): RecordEntry[] {
+  const reader = new ByteReader(payload);
+  const entries = reader.readCounted16((inner): RecordEntry => {
+    const index = { in: inner.readUint16(), out: inner.readUint16() };
+    const inLength = inner.readUint16();
+    const outLength = inner.readUint16();
+    if (inLength === KEPT_VIEW_LENGTH) throw new FramedEncodingError('a record view is the kept sentinel long');
+    const viewIn = inner.readBytes(inLength);
+    const entry: RecordEntry = {
+      ...index, viewIn, viewOut: outLength === KEPT_VIEW_LENGTH ? viewIn : inner.readBytes(outLength),
+    };
+    assertRecordEntry(entry);
+    return entry;
+  });
+  reader.assertEnd();
+  return entries;
 }
 
 /**
@@ -218,21 +261,13 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
     };
   });
 
-  const segments = reader.readCounted16((inner): RecordEntry[] =>
-    inner.readCounted16((entries): RecordEntry => {
-      const entry: RecordEntry = {
-        in: entries.readUint16(),
-        out: entries.readUint16(),
-        viewIn: entries.readLp32(),
-        viewOut: entries.readLp32(),
-      };
-      assertRecordEntry(entry);
-      return entry;
-    }));
+  const segments = reader.readCounted16((inner): RecordEntry[] => decodeSegment(inner.readLp16()));
 
   const events = reader.readCounted16((inner): number => inner.readUint16());
   const sends = reader.readCounted16((inner): number => inner.readUint16());
   const values = reader.readCounted16((inner): Uint8Array => inner.readLp32());
+  const padding = reader.readLp16();
+  if (padding.some((byte) => byte !== 0)) throw new FramedEncodingError('a witness block pads with a nonzero byte');
   reader.assertEnd();
 
   if (segments.length !== calls.length + 1) {
@@ -245,6 +280,7 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
   return {
     kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends,
     ...(values.length > 0 ? { values } : {}),
+    ...(padding.length > 0 ? { padding: padding.length } : {}),
   };
 }
 

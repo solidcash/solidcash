@@ -11,7 +11,10 @@ import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
-import { addressToLockScript, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
+import {
+  addressToLockScript, publicKeyToP2PKHLockingBytecode, randomUtxo, solidCashOutputToLibauthOutput,
+} from '../utils.js';
+import { surveyOn, surveyTransaction } from '../tx-survey.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
@@ -761,6 +764,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     // limit is scoped to the common value for this synchronous mock check; 0.0.10 - the version this package
     // declares - overrides those operations natively in its own verifier, which leaves this scoping as a 0.0.8
     // compatibility layer. It is a candidate for removal once nothing supports 0.0.8.
+    if (surveyOn()) await this.surveyBroadcast(txHex);
     const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
     const previousStackItemLength = commonConsensus.maximumStackItemLength;
     commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
@@ -802,6 +806,21 @@ export default class MockNetworkProvider implements NetworkProvider {
     });
 
     return result.txid;
+  }
+
+  /** States a transaction to the size survey while the outputs it spends are still live (`tx-survey.ts`). */
+  private async surveyBroadcast(txHex: string): Promise<void> {
+    const raw = hexToBin(txHex);
+    const transaction = this.preparedTransaction?.transaction ?? decodeTransaction(raw);
+    if (typeof transaction === 'string') return;
+    const sourceOutputs = await Promise.all(transaction.inputs.map(async (input) => {
+      const spent = await this.getLedgerOutput(binToHex(input.outpointTransactionHash), input.outpointIndex);
+      return spent === undefined ? undefined : solidCashOutputToLibauthOutput({
+        to: spent.lockingBytecode, amount: spent.satoshis, ...(spent.token === undefined ? {} : { token: spent.token }),
+      });
+    }));
+    const { createVirtualMachineBch2026ForProvider } = await import('./createVirtualMachine.js');
+    surveyTransaction(raw, transaction, sourceOutputs, createVirtualMachineBch2026ForProvider(this));
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {

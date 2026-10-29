@@ -141,8 +141,8 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: USER_ID, index: 4 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 5 }],
     masters: [callerMaster, calleeMaster],
     inputs: {
       [CALLER_MASTER]: {
@@ -175,12 +175,12 @@ const ROOT = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.R
 /**
  * The inputs the composition itself is: the caller's master, the validator that covers it and the callee's master.
  *
- * The fourth input is the user's P2PKH, which entered the composition. Its signature is filler in these tests, the
+ * The last input is the user's P2PKH, which entered the composition. Its signature is filler in these tests, the
  * way every other framed test fills it, so the machine would fail it for the signature and not for anything the
- * composer built; the composed spend is the three contract inputs.
+ * composer built; the composed spend is the contract inputs.
  */
-// The validator's facet is a participant too, so it is input 2 and the callee follows it.
-const CONTRACT_INPUTS = [0, 1, 2, 3];
+// The validator's two facets are participants too, so they are inputs 2 and 3 and the callee follows them.
+const CONTRACT_INPUTS = [0, 1, 2, 3, 4];
 
 /** The machine's verdict on one input of the composed transaction. */
 function verdict(
@@ -233,8 +233,8 @@ describe('a composed transaction through the shipped compile, deployment and com
     const { draft } = deriveComposition();
     expect(participant(draft.layout, CALLER_MASTER).index).toBe(0);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(1);
-    // The facet the validator binds sits at 2, so the callee follows at 3.
-    expect(participant(draft.layout, CALLEE_MASTER).index).toBe(3);
+    // The two facets the validator binds sit at 2 and 3, so the callee follows at 4.
+    expect(participant(draft.layout, CALLEE_MASTER).index).toBe(4);
     expect(draft.layout).toBe(draft.assembly.layout);
     // The draft is the assembly: the derivation filled the same sites assembly resolved, not a private copy.
     expect(draft.unlockingBytecodeOf(CALLER_MASTER))
@@ -243,8 +243,8 @@ describe('a composed transaction through the shipped compile, deployment and com
 
   it('answers the same verdict twice on the same bytes', () => {
     const { vm, transaction, sourceOutputs } = deriveComposition();
-    // The caller, the validator, its facet, the callee, then the user.
-    expect(transaction.inputs).toHaveLength(5);
+    // The caller, the validator, its two facets, the callee, then the user.
+    expect(transaction.inputs).toHaveLength(6);
     const ask = (): ReturnType<typeof verdict>[] =>
       CONTRACT_INPUTS.map((index) => verdict(vm, transaction, sourceOutputs, index));
     const first = ask();

@@ -48,10 +48,37 @@ export class FramedDeploymentError extends Error {
 export interface DeployedMaster {
   /** The master program (`code_X`) with both slots filled. */
   readonly script: Uint8Array;
-  /** The contract's address, `addrV(category)`: a 35-byte P2SH32 locking bytecode. */
+  /**
+   * `addrV(category)`: a 35-byte P2SH32 locking bytecode, where the contract's validators sit. It is the contract's
+   * address unless the contract is a CREATE2 child, which presents its EVM identity instead (`self`).
+   */
   readonly address: Uint8Array;
+  /** The address the contract presents as `address(this)`: its CREATE2 identity when it has one, else `address`. */
+  readonly self: Uint8Array;
   /** The master lock, `lockX = P2SH32(hash256(script))`: where the master UTXOs sit. */
   readonly lockingBytecode: Uint8Array;
+}
+
+/**
+ * The EVM identities CREATE2 children present, by category.
+ *
+ * A child created with `new C{salt: s}()` presents `keccak256(0xff ++ creator ++ s ++ keccak256(creationCode))[12:]`
+ * as `address(this)`, which its master holds in its identity slot. The identity is a fact of the child's creation,
+ * not of its category, so whoever stands the child up records it here before the child's master is first filled.
+ */
+const create2Identities = new Map<string, Uint8Array>();
+
+/** Records the EVM identity the CREATE2 child of `category` presents. */
+export function registerFramedCreate2Identity(category: Uint8Array, identity: Uint8Array): void {
+  if (identity.length !== 20) {
+    throw new FramedDeploymentError(`a CREATE2 identity is 20 bytes: got ${identity.length}`);
+  }
+  create2Identities.set(binToHex(category), Uint8Array.from(identity));
+}
+
+/** The EVM identity the CREATE2 child of `category` presents, or undefined for a contract that has none. */
+export function framedCreate2Identity(category: Uint8Array): Uint8Array | undefined {
+  return create2Identities.get(binToHex(category));
 }
 
 /** Reads the placeholder descriptor an artifact must publish to be deployable. */
@@ -141,7 +168,8 @@ export function deployMaster(
   const cached = filled?.bytecode === artifact.bytecode
     ? filled.byLock.get(lockKey)?.get(category)?.get(validatorProgram)
     : undefined;
-  if (cached !== undefined) return cached;
+  const identity = framedCreate2Identity(category);
+  if (cached !== undefined && (identity === undefined || bytesEqual(cached.self, identity))) return cached;
   const placeholders = requirePlaceholders(artifact);
   const address = validatorAddress(category, validatorProgram);
   const assembled = programBytes(artifact);
@@ -154,13 +182,19 @@ export function deployMaster(
   const templateHash = placeholders.templateHashOffset === undefined
     ? undefined
     : validatorTemplateHash(validatorProgram);
+  if (identity !== undefined && placeholders.identityOffset === undefined) {
+    throw new FramedDeploymentError(
+      `artifact "${artifact.contractName}" reserves no identity slot, so it cannot present a CREATE2 identity`,
+    );
+  }
   const script = fillPlaceholders(original, placeholders, {
     // The slot is compared with OP_UTXOTOKENCATEGORY, which answers in the chain's order.
     category: chainCategory(category),
     contractAddress: address,
     ...(templateHash === undefined ? {} : { templateHash }),
+    ...(identity === undefined ? {} : { identity }),
   });
-  const deployed = { script, address, lockingBytecode: masterLock(script) };
+  const deployed = { script, address, self: identity ?? address, lockingBytecode: masterLock(script) };
   let remembered = filledMasters.get(artifact);
   if (remembered === undefined || remembered.bytecode !== artifact.bytecode) {
     remembered = { bytecode: artifact.bytecode, byLock: new Map() };

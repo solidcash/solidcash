@@ -71,10 +71,10 @@ function composeFresh(): {
       { contract: 'Emitter', masters: ['emitter-1'], state: [] },
     ],
     userInputs: [
-      // The facet the validator binds is one participant ahead of the users.
-      { id: 'event-caller', index: 4 },
-      { id: 'event-emitter', index: 5 },
-      { id: 'user', index: 6 },
+      // The two facets the validator binds are two participants ahead of the users.
+      { id: 'event-caller', index: 5 },
+      { id: 'event-emitter', index: 6 },
+      { id: 'user', index: 7 },
     ],
     masters: [
       {
@@ -90,8 +90,8 @@ function composeFresh(): {
             kind: FrameKind.CALL, callee: 'emitter-1', target: emitter.address, value: 0n, argumentPushes: [fire],
           }],
         }),
-        // The facet the validator binds is one participant ahead of the events.
-        events: [4],
+        // The two facets the validator binds are two participants ahead of the events.
+        events: [5],
       },
       {
         ...master({
@@ -103,8 +103,8 @@ function composeFresh(): {
           frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
           enteredBy: 'caller-1', origin: 'user', argumentPushes: [fire],
         }),
-        // The facet the validator binds is one participant ahead of the events.
-        events: [5],
+        // The two facets the validator binds are two participants ahead of the events.
+        events: [6],
       },
     ],
     inputs: {

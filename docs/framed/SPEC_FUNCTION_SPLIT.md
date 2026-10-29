@@ -310,6 +310,12 @@ compiles.
 - [ ] **FS-6.6** A foreign contract's typed call stores and checks `addrV`, not the function lock. The
   co-spent input is the callee's function master. The caller's script does not embed the callee's shard
   table.
+- [x] **FS-6.7** Every frame the planner places on a split contract runs that frame's own shard: each turn of
+  a loop whose turns reach different deployments (one pair per hop of a swap path) runs its callee entry's
+  shard at the deployment its own turn names, and a value send to a split contract runs the shard of the value
+  entry its logical contract defines (`receive()`, else a payable `fallback()`), whichever shard the external
+  that names the recipient carries. Covered by `UniswapV2Router02`'s multi-hop swaps and its sends of Ether
+  from `WETH9.withdraw` to the router.
 
 ### FS-7. Internal shards, last
 
@@ -339,6 +345,26 @@ Not required for FS-1 through FS-7.
   serves every master of that function in the transaction.
 - [x] **FS-8.2** A single shared loader lock, with the function id only in the witness or the commitment, is
   rejected. Discovery at rest stays a lock comparison against the v2 table.
+
+### FS-9. Stateful cuts, for the chain's own input limit
+
+Measured on the SushiSwap V2 suite, where `UniswapV2Pair.mint` (10,930 B) and `burn` (9,978 B) do not fit one
+10,000-byte input with their witness.
+
+- [x] **FS-9.1** A helper that writes state, writes a mapping or returns a value is a legal cut. Its `INTERNAL`
+  frame runs on its caller's records, which the validator settles (V8), keeps its caller's sender, address and value,
+  and hands its result back through the caller's call record. A helper that sends value stays a refused cut.
+- [x] **FS-9.2** Cuts are taken greedily, heaviest closure first, and each is kept only when the entry shrinks, still
+  compiles and is not refused; the ones declined, and why, are published (`declinedCuts`).
+- [x] **FS-9.3** Two calls to one helper share its cut and its caller selectors. Two that need different closures of
+  it are refused (`SPLIT_HELPER_CUT_DIVERGES`).
+- [x] **FS-9.4** With `framedWitnessReserve`, the cap counts the witness an entry's spend carries beside its program
+  (the frame header, its call records, its segments' declared views, its writes and events), so a shard that fits
+  the cap fits the input it is spent in.
+- [x] **FS-9.5** The SDK places a cut as another master of its caller's deployment. A record the caller wrote before
+  the call reaches the cut at the view the caller left, a node the caller reads and the cut rewrites is one input
+  whose views chain across both frames, and a call whose guard no fact of the caller decides is planned both ways
+  until the machine accepts one.
 
 ## 7. Out of scope
 

@@ -101,8 +101,18 @@ export function callSiteCheckScript(
      * data byte for byte. Only a site whose digest the caller computes names any.
      */
     readonly identityArguments?: readonly number[];
+    /**
+     * True when the caller has put the call records the head keeps (`callsSlotName`) on top of the values it
+     * computed, so the site steps to its record from there instead of reading the block. A site that requires a
+     * validator reads the block's header, so it is never given them.
+     */
+    readonly callsOnTop?: boolean;
   } = {},
 ): Uint8Array {
+  const callsOnTop = options.callsOnTop === true;
+  if (callsOnTop && options.requiresValidator === true) {
+    throw new Error('a call site that requires a validator reads the block, so it takes no kept call records');
+  }
   const digestFromStack = options.digestFromStack === true;
   const targetFromStack = options.targetFromStack === true;
   const valueFromStack = options.valueFromStack === true;
@@ -113,6 +123,21 @@ export function callSiteCheckScript(
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   // The values the caller computed go where the walk can reach them: beneath the walk's own scratch, on the
   // alternate stack. The target is retrieved before the digest, so it is parked last and comes up first.
+  if (callsOnTop) {
+    // The kept records lie on top of the values, so each value is taken from beneath them.
+    if (digestFromStack) emit(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
+    if (valueFromStack) emit(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
+    if (targetFromStack) emit(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
+    // The records before this site's, one split each: a fixed number when the source fixes the position, and the
+    // number the execution has reached, which the caller left beneath the values, when it does not.
+    if (indexFromStack) emit(Opcodes.OP_SWAP, ...skipKeptRecordsScript());
+    else for (let earlier = 0; earlier < index; earlier += 1) emit(...skipKeptRecord());
+    emit(...cutKeptRecord());
+    emit(...bindCallRecord(site, usesResult, {
+      digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck, identityArguments,
+    }));
+    return new Uint8Array(bytes);
+  }
   if (digestFromStack) emit(Opcodes.OP_TOALTSTACK);
   if (valueFromStack) emit(Opcodes.OP_TOALTSTACK);
   if (targetFromStack) emit(Opcodes.OP_TOALTSTACK);
@@ -148,6 +173,71 @@ export function callSiteCheckScript(
     digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck, identityArguments,
   }));
   return new Uint8Array(bytes);
+}
+
+/**
+ * Leaves the `result` of the frame's `index`-th call record, read from the master's own witness block.
+ *
+ * Entry `[...]`, exit `[..., result]`. The record is the one a call site at a fixed position binds, so a value the
+ * body reads back through that call is known wherever the body runs: the site later requires the result it uses
+ * to be this record's, which is what lets a derivation that runs before the call hash a key the call returns.
+ */
+export function readCallRecordResultScript(index: number, callsOnTop = false): Uint8Array {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  if (callsOnTop) {
+    // The call records the head keeps are on top: the record is stepped to and cut out alone.
+    for (let earlier = 0; earlier < index; earlier += 1) emit(...skipKeptRecord());
+    emit(...cutKeptRecord());
+  } else {
+    emit(...readOwnWitnessBlockScript());
+    emit(...readFrameHeaderScript());
+    emit(Opcodes.OP_TOALTSTACK, Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_FROMALTSTACK);
+    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP); // sender
+    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP); // self
+    emit(...takeFixedWidthField(8), Opcodes.OP_NIP); // value
+    emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP); // retval
+    emit(...takeFixedWidthField(2), Opcodes.OP_NIP); // callCount
+    for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
+  }
+  emit(...takeFixedWidthField(1), Opcodes.OP_NIP); // kind
+  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP); // target
+  emit(...takeFixedWidthField(8), Opcodes.OP_NIP); // value
+  emit(...takeFixedWidthField(2), Opcodes.OP_NIP); // calleeRef
+  emit(...takeFixedWidthField(32), Opcodes.OP_NIP); // argsHash
+  emit(...takeLengthPrefixedField32(), Opcodes.OP_DROP); // result, the rest of the tail dropped
+  return new Uint8Array(bytes);
+}
+
+/** Steps one of the head's kept call records, led by its two-byte length, off the front of the run. */
+function skipKeptRecord(): number[] {
+  return [...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT, Opcodes.OP_NIP];
+}
+
+/** Leaves the record at the front of the head's kept run alone, its length dropped and the rest of the run gone. */
+function cutKeptRecord(): number[] {
+  return [...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT, Opcodes.OP_DROP];
+}
+
+/**
+ * Steps a run-time number of the head's kept call records off the front of the run.
+ *
+ * Entry `[..., run, count]`, exit `[..., run']`. A count of zero steps over none.
+ */
+function skipKeptRecordsScript(): number[] {
+  return [
+    Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_BEGIN,
+    ...skipKeptRecord(),
+    Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_NIP,
+  ];
 }
 
 /** Steps one call record off the front of the tail without reading it. */

@@ -20,7 +20,7 @@ import {
  * the value its body reads from its frame. Two posts settle, the first inserting the id's nodes and the second
  * rewriting them in place with the run grown, and the array, its elements and the count are read back through the
  * views. A plan whose log frame declares one of the run's chunk records otherwise than the transaction creates it is
- * refused by the log's own frame.
+ * refused by the validator, which settles the log's contract beside the poster's (V8).
  */
 
 const SOURCE = [
@@ -135,7 +135,7 @@ describe('a plain root whose callee appends a value that chunks beside its count
     expect(await view(c, 'countOf', [ID])).toBe(2n);
   }, 600_000);
 
-  it('refuses at the log\'s frame a plan that declares a chunk record of the grown run otherwise', async () => {
+  it('refuses at the validator a plan that declares a chunk record of the grown run otherwise', async () => {
     const c = await chain();
     const settled = await post(c, THIRD);
     expect(refusedOn(settled, structuredClone(settled.transaction) as VmTransaction)).toStrictEqual([]);
@@ -151,6 +151,8 @@ describe('a plain root whose callee appends a value that chunks beside its count
     const last = declared.length - 1;
     declared[last] = declared[last]! ^ 0x01;
     chunk!.viewOut = declared;
-    expect(refusedOn(settled, withBlock(settled, log!.master, block))).toContain(log!.master);
+    // The log's master leaves its contract's settlement to the validator that covers it (V8), whose census facet
+    // holds the declaration to the record the transaction creates; the machine decides the head with that facet.
+    expect(refusedOn(settled, withBlock(settled, log!.master, block))).toStrictEqual(['validator', 'validator/2']);
   }, 600_000);
 });

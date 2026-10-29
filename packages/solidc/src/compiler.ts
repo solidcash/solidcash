@@ -11,6 +11,7 @@ import {
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
@@ -73,7 +74,7 @@ import { assessFramedMasterShape, directRefusedEntries, stripFrameParameters } f
 import { requireUpgradeLayouts, type UpgradesFrom } from './framed/upgrade-layout.js';
 import type { MasterCallSite } from './framed/master/frame-tail.js';
 import {
-  extractFramedLifecycle, framedLifecycleFunctions, publishLifecycle, wrapLifecycleArm,
+  extractFramedLifecycle, framedLifecycleFunctions, publishLifecycle, withValidatorSettledDefinition, wrapLifecycleArm,
   type FramedLifecycleEntry,
 } from './framed/master/lifecycle.js';
 import {
@@ -83,11 +84,11 @@ import {
 } from './framed/master/stop-sites.js';
 import {
   alignCensusAddressOffset,
-  padFramedMasterScript,
   findPlaceholderOffsets,
   isFramedMaster,
   setFramedMaster,
 } from './framed/master/master-program.js';
+import { outlineFramedMasterProgram, type FramedOutlinedFunction } from './framed/master/program-outline.js';
 import {
   admittedHandlerNamesFromAnalysis,
   assertPublishedHandlersMatchAdmission,
@@ -236,6 +237,7 @@ import {
 } from './semantic/CaptureConstructedKeyVectorProvenance.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
+import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/LowerFramedCreate2Address.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
@@ -679,6 +681,8 @@ type InternalCompilerOptions = CompilerOptions & {
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   __framedCallCount?: number;
   __framedRefusedEntries?: Map<string, string>;
+  /** The CREATE2 children the master's bodies create, which the builder stands up at their EVM identities. */
+  __framedCreates?: readonly FramedCreateSite[];
   /** Refused bodies no selector reaches whose definitions are emitted as refusal stubs; never published. */
   __framedStubbedDefinitions?: Map<string, string>;
   __framedBalanceReaders?: readonly string[];
@@ -1362,6 +1366,12 @@ export interface SplitCompileOptions extends CompileOptions {
    * unlocking bytecode, not just the redeem script.
    */
   maxShardBytes?: number;
+  /**
+   * Count each framed shard's witness block against `maxShardBytes` beside its redeem script. The block shares a
+   * framed master's input with the script, so with a cap that is the input limit the pair fits the input. The block
+   * is estimated from what the shard publishes, at the widest view each of its records can hold.
+   */
+  framedWitnessReserve?: boolean;
   /** Split eligible entry points even when the original artifact already fits. Useful for testing/tuning. */
   forceSplit?: boolean;
   /** Keep named public entry points in the state-owning root instead of delegating them. */
@@ -15941,6 +15951,14 @@ function compileResolvedAst(
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   if (needsInlineAssembly) ast = ast.accept(new LowerInlineAssembly()) as Ast;
+  // A framed master's CREATE2 child is addressed by its EVM identity and stood up by the builder beforehand, so the
+  // creation lowers to that identity here, after the Yul `create2` became `new C{salt}()`. Published so a builder
+  // knows which child an address names (`composition.creates`).
+  if (mergedCompilerOptions.composition === 'framed') {
+    const create2 = new LowerFramedCreate2Address();
+    ast = ast.accept(create2) as Ast;
+    if (create2.creates.length > 0) (mergedCompilerOptions as InternalCompilerOptions).__framedCreates = create2.creates;
+  }
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
@@ -16910,6 +16928,7 @@ function compileResolvedAst(
   const compiledBytecodes = ast.importedContracts.length === 0
     ? new Map<string, Uint8Array>()
     : compileReferencedContracts(ast, code, mergedCompilerOptions);
+  foldPublishedCreationCodeHashes(ast.contract, compiledBytecodes);
   // Code generation lowers selected handlers in place. Snapshot deployment provenance at the last semantic
   // boundary so publication does not depend on which representation the backend chose for a handler body.
   const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => fn.messageBusSignatureIdentity
@@ -17219,28 +17238,47 @@ function compileResolvedAst(
 
   // The census baked its address offset before this rewrite. Point it at the slot the finished script contains.
   // The comparison above is the two optimisers against each other, so the retarget stays outside it.
+  let framedOutlinedFunctions: FramedOutlinedFunction[] = [];
   if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__framedReservesValidatorHash === true;
     // The lifecycle arm wraps the optimised master, so the census is retargeted after it moves the master's bytes.
     const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
+    // A master that asks whether a validator settles it beside another master of its contract computes the answer
+    // once, ahead of its own head, and every segment that asks invokes it. A lifecycle spend carries no witness block
+    // to read the answer from, so the definition sits inside the master's arm.
+    Object.assign(optimisationResult, withValidatorSettledDefinition(optimisationResult, ast.contract.location));
     if (lifecycle !== undefined) {
       Object.assign(optimisationResult, wrapLifecycleArm(optimisationResult, lifecycle, ast.contract.location));
     }
-    // The padding comes after the census retarget: it is appended, so no earlier offset moves, and the artefact,
-    // the published slots and the fingerprint are all built from the padded script.
-    optimisationResult.script = padFramedMasterScript(
-      alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash),
-      (mergedCompilerOptions as InternalCompilerOptions).__framedCallCount ?? 0,
-    );
+    // The whole program's repeated spans are shared once it is final, the lifecycle arm included, and before the
+    // census retarget, which reads the offsets the definitions move. An unoptimised compile keeps the generator's
+    // own instructions, and `SOLIDCASH_NO_OUTLINE` keeps it inline.
+    if (mergedCompilerOptions.optimise !== false && !solidcEnvFlagEnabled('SOLIDCASH_NO_OUTLINE')) {
+      const outlined = outlineFramedMasterProgram(optimisationResult, reservesValidatorHash);
+      Object.assign(optimisationResult, outlined.parts);
+      framedOutlinedFunctions = outlined.functions;
+    }
+    optimisationResult.script = alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash);
   }
 
   // Attach debug information
   const functionDebug = traversal.entryPointDebugInfo.size > 0
     ? Object.fromEntries(traversal.entryPointDebugInfo)
     : undefined;
-  const invokeDebug = traversal.invokeDebugInfo.size > 0
-    ? Object.fromEntries(traversal.invokeDebugInfo)
+  // A function the framed pass defined runs in its own instruction space, as a compiler helper does, and holds no
+  // require or log site: those stay in the program.
+  const invokeDebug = traversal.invokeDebugInfo.size > 0 || framedOutlinedFunctions.length > 0
+    ? {
+      ...Object.fromEntries(traversal.invokeDebugInfo),
+      ...Object.fromEntries(framedOutlinedFunctions.map((fn) => [fn.id, {
+        bytecode: binToHex(scriptToBytecode(fn.script)),
+        name: `outlined master span ${fn.id}`,
+        requires: [],
+        logs: [],
+        sourceMap: generateSourceMap(fn.locationData, mergedCompilerOptions.sourceMap !== false),
+      }])),
+    }
     : undefined;
 
   // A helper body an entry OP_INVOKEs runs in its own instruction space, so its `require` pointers are recorded
@@ -17311,6 +17349,13 @@ function compileResolvedAst(
     }
     const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
     if (lifecycle !== undefined) composition.lifecycle = publishLifecycle(lifecycle);
+    const creates = (mergedCompilerOptions as InternalCompilerOptions).__framedCreates;
+    if (creates !== undefined && creates.length > 0) {
+      composition.creates = creates.map((site) => ({
+        ...(site.contractName === undefined ? {} : { contractName: site.contractName }),
+        ...(site.codeStateVariable === undefined ? {} : { codeStateVariable: site.codeStateVariable }),
+      }));
+    }
     artifact.composition = composition;
   } else {
     // A direct artifact names its functions refused for a loop guard as a master names its refused entries, with
@@ -18780,7 +18825,10 @@ function compileResolvedAst(
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   const blockOracleLockSlots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
-  if (ast.contract.usesBlockOracle) {
+  // A framed entry the master refuses runs none of its body, so a contract whose only clock read is in such a body
+  // reads no oracle.
+  const refusedOnly = (artifact.composition?.refusedEntries?.length ?? 0) > 0;
+  if (ast.contract.usesBlockOracle && !(refusedOnly && blockOracleLockSlots.length === 0)) {
     if (blockOracleLockSlots.length === 0) {
       throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
     }
@@ -19253,6 +19301,7 @@ type SplitHelperCutProfile = {
   readsLocalState: boolean;
   writesState: boolean;
   externalCalls: boolean;
+  sendsValue: boolean;
   unknown: boolean;
 };
 
@@ -19307,7 +19356,9 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
     options: compilerOptions,
     host: {
       prepare(source, options) {
-        probe = prepareSplitAst(source, normalizeCompilerOptions(stripSplitPlanning(options)), errorListener);
+        probe = prepareSplitAst(
+          source, normalizeCompilerOptions(stripSplitPlanning(options)), errorListener, compilerOptions.primaryContractName,
+        );
         return probe;
       },
       compileMonolith(source, options) {
@@ -19432,7 +19483,7 @@ function compileStringSplitUnchecked(
   // Split preparation is source-wide and independent of physical placement. Keep one template and clone it for
   // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
   // every packing probe made split compilation scale with (candidate count * front-end cost).
-  const probe = prepareSplitAst(code, merged, errorListener);
+  const probe = prepareSplitAst(code, merged, errorListener, compilerOptions.primaryContractName);
   Object.assign(merged, splitLogicalEventOptions(baseline, probe));
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
@@ -19901,6 +19952,7 @@ function splitHelperCutProfiles(
           resource.startsWith('state:') || resource.startsWith('collection:')),
         writesState: footprint.writes.length > 0,
         externalCalls: footprint.effects.includes('external-call') || hasTransitiveTypedExternalCall(helper),
+        sendsValue: footprint.effects.includes('value'),
         unknown: footprint.unknown,
       });
     }
@@ -20097,8 +20149,10 @@ function splitPreLowersFnPtrArrays(_options: CompilerOptions): boolean {
  * inherited entry points, inherited state, and modifier-injected calls/effects. */
 function prepareSplitAst(
   code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
+  primaryContractName: string | undefined,
 ): Ast {
-  let ast = parseAndResolve(code, options, listener);
+  // The split is of the contract the compile names, as the monolith it is checked against is.
+  let ast = parseAndResolve(code, options, listener, primaryContractName);
   if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
     ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
   }
@@ -20360,6 +20414,37 @@ function generateInterfaceArtifact(
     return generateDeclarationArtifact(ast, code, compilerOptions);
   } finally {
     ast.libraryName = savedLibraryName;
+  }
+}
+
+/**
+ * Folds `keccak256(type(C).creationCode)` in the expressions a contract publishes for its external calls.
+ *
+ * The routing a builder evaluates is serialized before the referenced contracts are compiled, so the creation code
+ * of a child is not yet known there and the serializer marks it (`creationCodeOf`). Once the children are compiled,
+ * each such hash is the digest of the child's program, which is what code generation folds the body's own hash to.
+ */
+function foldPublishedCreationCodeHashes(contract: ContractNode, compiledBytecodes: ReadonlyMap<string, Uint8Array>): void {
+  const fold = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(fold);
+    if (value === null || typeof value !== 'object' || value instanceof Node || value instanceof Uint8Array) return value;
+    const record = value as Record<string, unknown>;
+    const args = record.args;
+    if (record.kind === 'call' && record.name === 'keccak256' && Array.isArray(args) && args.length === 1) {
+      const child = (args[0] as { creationCodeOf?: unknown } | undefined)?.creationCodeOf;
+      const bytes = typeof child === 'string' ? compiledBytecodes.get(child) : undefined;
+      if (bytes !== undefined) {
+        return { kind: 'literal', type: 'bytes32', value: binToHex(Uint8Array.from(keccak_256(bytes))) };
+      }
+    }
+    for (const key of Object.keys(record)) {
+      const folded = fold(record[key]);
+      if (folded !== record[key]) record[key] = folded;
+    }
+    return record;
+  };
+  for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
+    for (const slot of fn?.externalCalls ?? []) fold(slot);
   }
 }
 

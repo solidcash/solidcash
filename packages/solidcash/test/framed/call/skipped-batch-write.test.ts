@@ -59,6 +59,8 @@ const SOURCE = [
 
 const OPTIONS = { evmCompat: true, composition: 'framed' } as never;
 const TOKEN = compileStringMulti(SOURCE, OPTIONS).Token!;
+/** How the token keys a holder: by the 20-byte identity, as a Solidity collection does. */
+const BALANCES = TOKEN.stateLayout!.collections!.find((collection) => collection.name === 'balances')!;
 const PROXY = buildProxyArtifact(TOKEN);
 
 const ADMIN = encodeLockingBytecodeP2pkh(alicePkh);
@@ -167,7 +169,7 @@ function expectRestatedSkipRefused(result: FramedProxyCallResult, from: Uint8Arr
   // segment declares kept.
   const lockOf = (index: number): string => binToHex(result.sourceOutputs[index]!.lockingBytecode);
   const debited = records.find((record) => record.viewIn.length >= 64
-    && bytesToHex(decodeEntryCommitment(record.viewIn).slot) === bytesToHex(keyToSlotMulti([from])))!;
+    && bytesToHex(decodeEntryCommitment(record.viewIn).slot) === bytesToHex(keyToSlotMulti([from], BALANCES)))!;
   const kept = records.filter((record) => record.in !== 0xffff && lockOf(record.in) === lockOf(debited.in)
     && bytesToHex(record.viewIn) === bytesToHex(record.viewOut));
   expect(kept.length).toBe(1);

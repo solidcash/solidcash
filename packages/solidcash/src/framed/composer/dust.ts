@@ -45,6 +45,20 @@ export function fundedAtLeastDust<T extends DraftSourceOutput>(output: T): T {
   return output.valueSatoshis >= floor ? output : { ...output, valueSatoshis: floor };
 }
 
+/** The most an event output carries: every master's emit check holds the output it emits at to this. */
+export const EVENT_OUTPUT_CEILING_SATOSHIS = 1200n;
+
+/**
+ * A composed event output carrying at least its own dust threshold, but no more than the ceiling the emitting master
+ * holds it to. Every event whose commitment the consensus limit admits sits below that ceiling (a 128-byte commitment
+ * at an event covenant needs 1,065 satoshis); a wider one, which only a relaxed commitment limit admits, stays at it.
+ */
+export function eventFundedAtLeastDust<T extends DraftSourceOutput>(output: T): T {
+  const funded = fundedAtLeastDust(output);
+  return funded.valueSatoshis <= EVENT_OUTPUT_CEILING_SATOSHIS
+    ? funded : { ...funded, valueSatoshis: EVENT_OUTPUT_CEILING_SATOSHIS };
+}
+
 const dataNftLocks = new Map<string, Uint8Array>();
 
 /**

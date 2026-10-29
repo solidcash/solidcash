@@ -291,7 +291,9 @@ describe('a master whose declared segments are out of order (T9, T30)', () => {
     expect(decisionOf(composed).accepted).toBe(true);
     // The control is a spend every input accepts, so the swap below is the only difference from an honest spend.
     expect(composed.outcome.verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`))
-      .toStrictEqual(['a-f:true', 'a-k:true', 'validator:true', 'validator/1:true', 'record:true', 'b-g:true']);
+      .toStrictEqual([
+        'a-f:true', 'a-k:true', 'validator:true', 'validator/1:true', 'validator/2:true', 'record:true', 'b-g:true',
+      ]);
   });
 
   it('refuses the swapped spend by name, and the machine refuses it at the validator', () => {

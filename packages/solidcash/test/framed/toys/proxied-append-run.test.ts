@@ -656,7 +656,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     expect([...asked].sort()).toStrictEqual([
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-      VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...built.records.map((record) => record.id),
+      VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID, ...built.records.map((record) => record.id),
     ].sort());
   });
 
@@ -768,7 +768,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
       HUB_MASTER,
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-      VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...built.records.map((record) => record.id),
+      VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID, ...built.records.map((record) => record.id),
     ].sort());
   });
 

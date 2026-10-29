@@ -5,6 +5,7 @@ import {
 import { encodeWitnessBlock, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordViewScript, declaredRecordsKeptScript,
+  defineValidatorSettledScript,
 } from '../../../src/framed/master/declared-view.js';
 import { compositionMachine } from '../machine.js';
 
@@ -145,7 +146,10 @@ describe('the declared-record walks over a run whose calls the block fixes', () 
   });
 
   it('requires every record the running segment declares kept, with the frame\'s own pair exempt', () => {
-    const walk = declaredRecordsKeptScript({ runtimeCounts: true, exempt: 1 });
+    // A master defines its validator-settled flag before its body runs, as every compiled one does.
+    const walk = new Uint8Array([
+      ...defineValidatorSettledScript(), ...declaredRecordsKeptScript({ runtimeCounts: true, exempt: 1 }),
+    ]);
     const verdicts = [0, 1].map((segmentIndex) => run(
       TWO_CALLS, walk, [numberPush(RECORD_INDEX), numberPush(RECORD_INDEX), numberPush(segmentIndex)], false,
     ));
@@ -158,7 +162,10 @@ describe('the declared-record walks over a run whose calls the block fixes', () 
       [kept(RECORD_INDEX, VIEW)],
       [kept(RECORD_INDEX, VIEW)],
     ]);
-    const walk = declaredRecordsKeptScript({ runtimeCounts: true, exempt: 1 });
+    // A master defines its validator-settled flag before its body runs, as every compiled one does.
+    const walk = new Uint8Array([
+      ...defineValidatorSettledScript(), ...declaredRecordsKeptScript({ runtimeCounts: true, exempt: 1 }),
+    ]);
     expect(run(created, walk, [numberPush(RECORD_INDEX), numberPush(RECORD_INDEX), numberPush(0)], false).accepted)
       .toBe(false);
   });

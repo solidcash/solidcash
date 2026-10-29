@@ -107,6 +107,11 @@ function participantIds(result: FramedCallResult): readonly string[] {
   return result.draft.layout.participants.map((placed) => placed.id);
 }
 
+/** The output the layout gave a trailing output: the event, the send's container, the send, the created record. */
+function trailingIndex(result: FramedCallResult, at: 'event' | 'container' | 'send' | 'created'): number {
+  return result.draft.trailingOutputs[['event', 'container', 'send', 'created'].indexOf(at)]!.index;
+}
+
 /** The settled transaction, cloned so a case can mutate it without reaching the next. */
 function cloned(result: FramedCallResult): VmTransaction {
   return structuredClone(result.transaction) as VmTransaction;
@@ -158,6 +163,8 @@ function accepted(result: FramedCallResult, transaction: VmTransaction): boolean
 const MASTER = 'master';
 const VALIDATOR = 'validator';
 const FACET = 'validator/1';
+/** The census facet: record ends, output classes and value totals are weighed there (V7). */
+const CENSUS = 'validator/2';
 const RECORD = 'record-0';
 const NODE = 'mapping-node-'
   + '0000000000000000000000000000000000000000000000000000000000000000';
@@ -166,7 +173,7 @@ describe('the settlement binds the frame fields a builder states', () => {
   it('accepts the settled composition every case below differs from', () => {
     const { result } = composition();
     expect(result.accepted).toBe(true);
-    expect(participantIds(result)).toStrictEqual([MASTER, VALIDATOR, FACET, RECORD, NODE]);
+    expect(participantIds(result)).toStrictEqual([MASTER, VALIDATOR, FACET, CENSUS, RECORD, NODE]);
     expect(accepted(result, cloned(result))).toBe(true);
   });
 
@@ -211,13 +218,15 @@ describe('the settlement binds the frame fields a builder states', () => {
       block.self[5] = (block.self[5]! ^ 0xff) & 0xff;
     }));
     expect(refuses).toContain(MASTER);
-    expect(refuses).toContain(VALIDATOR);
+    // The address rule (V11) runs in the facet, whose walk reads every master's block once.
+    expect(refuses).toContain(FACET);
   });
 
   it('refuses a value the execution did not carry', () => {
     const { result } = composition();
     const refuses = refusals(result, withBlock(result, (block) => { block.value = 9999n; }));
-    expect(refuses).toContain(MASTER);
+    // The validator weighs a covered frame's value against its contract's containers (V7).
+    expect(refuses).toContain(VALIDATOR);
   });
 
   it('refuses a retval the execution did not compute', () => {
@@ -271,13 +280,15 @@ describe('the settlement binds the frame fields a builder states', () => {
 
   it('refuses a created record landing at an output the execution did not build', () => {
     const { result } = composition();
-    const refuses = refusals(result, withBlock(result, (block) => { block.segments[0]![2]!.out = 6; }));
+    const container = trailingIndex(result, 'container');
+    const refuses = refusals(result, withBlock(result, (block) => { block.segments[0]![2]!.out = container; }));
     expect(refuses).toContain(MASTER);
   });
 
   it('refuses an event the frame did not emit, and an event list emptied of one it did', () => {
     const { result } = composition();
-    const repointed = refusals(result, withBlock(result, (block) => { block.events = [6]; }));
+    const container = trailingIndex(result, 'container');
+    const repointed = refusals(result, withBlock(result, (block) => { block.events = [container]; }));
     expect(repointed).toContain(MASTER);
     const emptied = refusals(result, withBlock(result, (block) => { block.events = []; }));
     expect(emptied).toContain(MASTER);
@@ -285,7 +296,8 @@ describe('the settlement binds the frame fields a builder states', () => {
 
   it('refuses a send the frame did not make, and a send list emptied of one it did', () => {
     const { result } = composition();
-    const repointed = refusals(result, withBlock(result, (block) => { block.sends = [6]; }));
+    const container = trailingIndex(result, 'container');
+    const repointed = refusals(result, withBlock(result, (block) => { block.sends = [container]; }));
     expect(repointed).toContain(MASTER);
     const emptied = refusals(result, withBlock(result, (block) => { block.sends = []; }));
     expect(emptied).toContain(MASTER);
@@ -304,10 +316,10 @@ describe('the settlement binds the frame fields a builder states', () => {
   });
 
   it('refuses a created record that declares a start view', () => {
-    // A record the transaction creates begins at the empty commitment, which the frame's own self-settlement branch
-    // holds the declared `viewIn` to, so a builder cannot state a start view the execution never read. (The
-    // validator's record-chain rule states the same thing; the call path plans no settled category, so the frame's
-    // own check is what binds it here.)
+    // A record the transaction creates begins at the empty commitment, so a builder cannot state a start view the
+    // execution never read. The frame leaves its contract's settlement to the validator that covers it (V8): the
+    // frame's own input accepts the declaration, and the validator's head, whose walk reads every declaration of
+    // the contracts it settles, refuses it.
     const { result } = composition();
     const transaction = withBlock(result, (block) => { block.segments[0]![2]!.viewIn = Uint8Array.from([1]); });
     // The mutation reached the wire: the rebuilt block states the nonempty start view.
@@ -333,7 +345,9 @@ describe('the settlement binds the transaction fields a builder states', () => {
     transaction.outputs[indexOf(result, RECORD)] = {
       ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment } },
     };
-    expect(refusals(result, transaction)).toContain(MASTER);
+    // The validator settles every contract a covered master belongs to, so the record's chain is its to refuse (V7):
+    // its census facet holds every record's input to its output.
+    expect(refusals(result, transaction)).toContain(CENSUS);
   });
 
   it('refuses a master output that is not the master recreated in place', () => {
@@ -366,13 +380,15 @@ describe('the settlement binds the transaction fields a builder states', () => {
   it('refuses a created record output whose commitment the execution did not write', () => {
     const { result } = composition();
     const transaction = cloned(result);
-    const created = transaction.outputs[8]!;
+    const index = trailingIndex(result, 'created');
+    const created = transaction.outputs[index]!;
     const commitment = Uint8Array.from(created.token!.nft!.commitment);
     commitment[commitment.length - 1] = (commitment[commitment.length - 1]! ^ 0xff) & 0xff;
-    transaction.outputs[8] = {
+    transaction.outputs[index] = {
       ...created, token: { ...created.token!, nft: { ...created.token!.nft!, commitment } },
     };
-    expect(refusals(result, transaction)).toContain(MASTER);
+    // A created record's chain ends at its output, which the census facet holds to the frame's declaration (V7).
+    expect(refusals(result, transaction)).toContain(CENSUS);
   });
 
   it('refuses a spent record whose commitment is not the one the execution read', () => {
@@ -385,7 +401,7 @@ describe('the settlement binds the transaction fields a builder states', () => {
       return { ...source, token: { ...source.token!, nft: { ...source.token!.nft!, commitment } } };
     });
     const refuses = refusals(result, cloned(result), sources as unknown as VmSourceOutputs);
-    expect(refuses).toContain(MASTER);
+    expect(refuses).toContain(VALIDATOR);
   });
 
   it('refuses a validator input that is not the facet the head binds', () => {
@@ -557,7 +573,7 @@ describe('the settlement binds the dynamic run a builder states', () => {
 
   it('refuses a created chunk whose commitment the execution did not write', () => {
     // The created chunk's commitment carries the bytes the body computed; the validator's settlement reads the run
-    // the record's declaration names and refuses a chunk of it that is not the one the body wrote.
+    // the record's declaration names, and its census facet refuses a chunk of it that is not the one the body wrote.
     const result = proxyComposition();
     const index = result.draft.trailingOutputs[0]!.index;
     const transaction = structuredClone(result.transaction) as VmTransaction;
@@ -568,15 +584,16 @@ describe('the settlement binds the dynamic run a builder states', () => {
     transaction.outputs[index] = {
       ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } },
     };
-    expect(proxyRefusals(result, transaction)).toStrictEqual([VALIDATOR]);
+    expect(proxyRefusals(result, transaction)).toStrictEqual([CENSUS]);
   });
 
   it('refuses a live chunk view the execution did not read', () => {
     // The implementation frame declares the run it reads from the deployment's live chunks; a chunk view that is not
     // the live one fails the body's own read of it, and the validator's settlement refuses the same frame.
     const result = proxyComposition();
+    const chunk = result.draft.layout.participants.find((placed) => placed.id === 'dynamic-chunk-posts-0')!.index;
     const transaction = withProxyBlock(result, 'implementation-master', (block) => {
-      const entry = block.segments[0]!.find((candidate) => candidate.in === 4)!;
+      const entry = block.segments[0]!.find((candidate) => candidate.in === chunk)!;
       const view = Uint8Array.from(entry.viewIn);
       view[view.length - 1] = (view[view.length - 1]! ^ 0xff) & 0xff;
       entry.viewIn = view;
@@ -586,7 +603,8 @@ describe('the settlement binds the dynamic run a builder states', () => {
 
   it('refuses a record width the execution did not write', () => {
     // The record's commitment carries the value's byte length, which names the run's width; the frame's segment view
-    // and the created chunk's covenant both follow it, so a record output that states another length is refused.
+    // and the created chunk's covenant both follow it, so a record output that states another length is refused, by
+    // the census facet that holds each record's input to its output.
     const result = proxyComposition();
     const index = result.draft.layout.participants.find((placed) => placed.id === 'proxy-record-0')!.index;
     const transaction = structuredClone(result.transaction) as VmTransaction;
@@ -596,6 +614,6 @@ describe('the settlement binds the dynamic run a builder states', () => {
     transaction.outputs[index] = {
       ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment } },
     };
-    expect(proxyRefusals(result, transaction)).toStrictEqual([VALIDATOR]);
+    expect(proxyRefusals(result, transaction)).toStrictEqual([CENSUS]);
   });
 });

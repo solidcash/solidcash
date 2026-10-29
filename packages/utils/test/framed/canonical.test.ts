@@ -6,6 +6,8 @@ import {
   SELECTOR_LENGTH,
   argsHash,
   assertAddressValue,
+  decodeArgumentList,
+  decodeCallDataArguments,
   decodeIntegerValue,
   encodeArgumentList,
   encodeArgumentPayload,
@@ -52,6 +54,29 @@ describe('canonical argument encoding', () => {
     expect(toHex(encodeCallDataArguments(values))).toBe('0002aabb53');
     expect(toHex(encodeCallDataArguments(values))).toBe(toHex(encodeArgumentList([...values].reverse())));
     expect(toHex(encodeCallDataArguments(values))).not.toBe(toHex(encodeArgumentList(values)));
+  });
+
+  for (const vector of ARGUMENT_PUSHES) {
+    it(`reads ${vector.name} back from its push`, () => {
+      expect(decodeArgumentList(hexToBytes(vector.expected))?.map(toHex)).toEqual([vector.value]);
+    });
+  }
+
+  it('reads an argument list and call data back in the order each was encoded from', () => {
+    const values = [Uint8Array.of(0x03), hexToBytes('aabb'), new Uint8Array(0)];
+    expect(decodeArgumentList(encodeArgumentList(values))?.map(toHex)).toEqual(values.map(toHex));
+    expect(decodeCallDataArguments(encodeCallDataArguments(values))?.map(toHex)).toEqual(values.map(toHex));
+    expect(decodeArgumentList(new Uint8Array(0))).toEqual([]);
+  });
+
+  it('reads no list from bytes that are not exactly minimal pushes', () => {
+    // 0x01 pushed directly is OP_1's value, a PUSHDATA1 of two bytes is a direct push's, and OP_DUP pushes nothing.
+    expect(decodeArgumentList(hexToBytes('0101'))).toBeUndefined();
+    expect(decodeArgumentList(hexToBytes('4c02aabb'))).toBeUndefined();
+    expect(decodeArgumentList(hexToBytes('76'))).toBeUndefined();
+    // A push that runs past the end, or a length field cut short.
+    expect(decodeArgumentList(hexToBytes('02aa'))).toBeUndefined();
+    expect(decodeArgumentList(hexToBytes('4d00'))).toBeUndefined();
   });
 });
 

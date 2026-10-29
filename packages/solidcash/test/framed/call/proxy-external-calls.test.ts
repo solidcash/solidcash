@@ -444,7 +444,7 @@ describe('a proxied entry that calls another deployed contract', () => {
       args: [3n],
       externals: externals(),
       validatorProgram: VALIDATOR_PROGRAM,
-    })).rejects.toThrow(/reaches "Oracle".*holds 1 master\(s\), so it cannot be entered 3 time\(s\)/);
+    })).rejects.toThrow(/reaches "Oracle".*holds 1 master\(s\) it may take, so it cannot be entered 3 time\(s\)/);
   });
 
   it("refuses a target held in a state field the caller's own state does not carry, naming it", async () => {

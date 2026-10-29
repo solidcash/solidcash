@@ -148,6 +148,8 @@ export async function getEntries(
           && (value < parsedType.minValue || value > parsedType.maxValue)) {
           throw new Error(`getEntries: value ${value} out of range for type '${type}'`);
         }
+      } else if (isRawFixedWidthValue(type, raw)) {
+        value = raw;
       } else {
         try {
           value = attachDecodedAccessors(decodePushdataValue(raw, 0, type, structs).value) as StateValue;
@@ -161,4 +163,18 @@ export async function getEntries(
   }
 
   return entries;
+}
+
+/** The widths an `address` value's own bytes take: empty, a 20-byte identity, or a P2SH20, P2PKH or P2SH32 lock. */
+const ADDRESS_VALUE_WIDTHS = new Set([0, 20, 23, 25, 35]);
+
+/**
+ * True when a node's value is the value's own bytes rather than a push of them: an address or `bytesN` value of
+ * exactly its type's width. Its first byte is data, so reading it as a push length would truncate the value; a pushed
+ * value is one byte longer than any width it can take.
+ */
+function isRawFixedWidthValue(type: string, raw: Uint8Array): boolean {
+  if (type === 'address' || type === 'address payable') return ADDRESS_VALUE_WIDTHS.has(raw.length);
+  const fixed = /^bytes([1-9]|[12][0-9]|3[0-2])$/.exec(type);
+  return fixed !== null && raw.length === Number(fixed[1]);
 }

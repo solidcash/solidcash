@@ -49,6 +49,7 @@ import { readComputedDeclaration } from '../deploy/declaration.js';
 import {
   INDEX_NONE_REFERENCE,
   assembleComposition,
+  facetUnlockingBytecode,
   bindContractValidators,
   type CompositionAssembly,
   type CompositionPlan,
@@ -60,6 +61,7 @@ import {
   validatorFacetsOf,
 } from './assemble.js';
 import type { EntryFacts } from './need-test.js';
+import { sparseBlock, sparseDeclarationsOf, type SparseDeclarations } from './sparse.js';
 import { viewUnlearned } from './refusals.js';
 import type { FrameRequest } from './derivation.js';
 import type { FrameWitness } from './witness.js';
@@ -245,6 +247,11 @@ export interface DraftCall {
    * is filled when the draft is built, and its callee is derived as a request of its own.
    */
   readonly deferred?: boolean;
+  /**
+   * For a low-level call, the message of the caller's own check over its success (`failedCallMessage`): the reason a
+   * failure below the call is reported by, since the EVM's call returns it to the caller as `false`.
+   */
+  readonly failedCallMessage?: string;
 }
 
 /**
@@ -289,6 +296,12 @@ export interface DraftMaster {
    * the plan states one call per site in order, which is the site's own published position.
    */
   readonly callBaseBySite?: readonly number[];
+  /**
+   * For each published call site, the position in `calls` of each of its visits, for a frame a loop of which calls
+   * at several sites: a turn makes all of its calls before the next turn's, so a site's visits interleave with the
+   * other sites' rather than running on from its base. Absent means each site's visits run on from its base.
+   */
+  readonly callPositionsBySite?: readonly (readonly number[])[];
   readonly retval: Uint8Array;
   readonly segments: readonly (readonly DraftRecordEntry[])[];
   readonly events: readonly number[];
@@ -451,6 +464,7 @@ function toCompositionPlan(
         value: call.value,
         argumentPushes: call.argumentPushes,
         result: callResultOf(call, retvals),
+        ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
       })),
       retval: master.retval,
       segments: segments.get(master.master)!,
@@ -458,6 +472,8 @@ function toCompositionPlan(
       sends: master.sends,
       argumentPushes: master.argumentPushes,
       redeemScript: master.redeemScript,
+      ...(plan.inputs[master.master]?.source.token === undefined ? {}
+        : { category: plan.inputs[master.master]!.source.token!.category }),
       ...(master.values === undefined ? {} : { values: master.values }),
       ...(master.dispatches === undefined ? {} : { dispatches: master.dispatches }),
     })),
@@ -473,6 +489,7 @@ function toCompositionPlan(
           value: call.value,
           argumentPushes: call.argumentPushes,
           result: callResultOf(call, retvals),
+          ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
         })),
         retval: minted.retval,
         segments: segments.get(minted.master)!,
@@ -508,6 +525,11 @@ export interface ComposeDraftOptions {
    * limit; a contract compiled with a larger `commitmentLimit` raises it.
    */
   readonly maximumCommitmentBytes?: number;
+  /**
+   * The declarations each master's block leaves out of a segment, by master (`sparseDeclarationsOf`): the
+   * transaction carries the shorter block, and the draft keeps the full one its learned views name.
+   */
+  readonly sparse?: ReadonlyMap<string, SparseDeclarations>;
 }
 
 /**
@@ -694,9 +716,10 @@ export function composeDraft(
   }
 
   // Inputs in index order, each with the source output the machine reads and how its unlocking bytecode is built.
-  const facetCode = new Map<string, Uint8Array>();
+  // Each facet's code, and its place `k` after its head.
+  const facetCode = new Map<string, { readonly code: Uint8Array; readonly k: number }>();
   for (const validator of binding.hosted) {
-    validatorFacetsOf(validator).forEach((code, at) => facetCode.set(facetId(validator.id, at + 1), code));
+    validatorFacetsOf(validator).forEach((code, at) => facetCode.set(facetId(validator.id, at + 1), { code, k: at + 1 }));
   }
   const inputCount = Math.max(0, ...indices.values()) + 1;
   const byIndex = new Array<{ id: string } | undefined>(inputCount).fill(undefined);
@@ -714,9 +737,9 @@ export function composeDraft(
     if (input !== undefined) return input.source;
     // A validator's facets are a function of the validator program, so no plan states their UTXOs: a facet UTXO
     // holds no token and pins no category, so any UTXO of its code serves any composition.
-    const code = facetCode.get(id);
-    if (code !== undefined) {
-      return { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)), valueSatoshis: FACET_SATOSHIS };
+    const facet = facetCode.get(id);
+    if (facet !== undefined) {
+      return { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(facet.code)), valueSatoshis: FACET_SATOSHIS };
     }
     throw new CompositionDraftError(`input "${id}" has no source output`);
   };
@@ -825,12 +848,14 @@ export function composeDraft(
   const unlockingFor = (id: string, block?: WitnessBlock): Uint8Array => {
     const master = mastersById.get(id);
     if (master !== undefined) {
-      return buildMasterUnlockingBytecode(block ?? blocks.get(id)!, master.argumentPushes, master.redeemScript);
+      return buildMasterUnlockingBytecode(
+        sparseBlock(block ?? blocks.get(id)!, options.sparse?.get(id)), master.argumentPushes, master.redeemScript,
+      );
     }
     const validator = validatorUnlocking.get(id);
     if (validator !== undefined) return validator;
     const facet = facetCode.get(id);
-    if (facet !== undefined) return encodeMinimalDataPush(facet);
+    if (facet !== undefined) return facetUnlockingBytecode(facet.k, facet.code);
     const provided = settled.get(id)?.unlockingBytecode ?? plan.inputs[id]?.unlockingBytecode;
     if (provided === undefined) {
       throw new CompositionDraftError(`input "${id}" is not a master, a validator or a facet, so it needs unlocking bytecode`);
@@ -1025,8 +1050,11 @@ export function composeDraft(
         // this step does not own and leave the site that owns it with a reference already filled.
         const laterBases = master.callBaseBySite?.filter((candidate) => candidate > base) ?? [];
         const limit = laterBases.length === 0 ? master.calls.length : Math.min(...laterBases);
-        const callIndex = site.repeated === true ? base + visit : base;
-        if (callIndex >= limit) return {};
+        // A loop that calls at several sites places each visit where its turn made it, past the other sites' calls.
+        const positions = master.callPositionsBySite?.[site.site];
+        const callIndex = positions !== undefined ? positions[visit] ?? master.calls.length
+          : site.repeated === true ? base + visit : base;
+        if (positions === undefined ? callIndex >= limit : callIndex >= master.calls.length) return {};
         const call = master.calls[callIndex];
         // A repeated site's execution may have moved past every record the plan declares, which is what ends the
         // resumption. Any other site names the record it binds, so a plan without it is a plan the composer refuses.
@@ -1101,9 +1129,16 @@ export function createComposedDerivationHost(options: {
   readonly maximumCommitmentBytes?: number;
   readonly onRun?: ShippedHostOptions['onRun'];
 }): { readonly host: ReturnType<typeof createShippedDerivationHost>; readonly draft: CompositionDraft } {
+  // Each master leaves out of a segment the records its entry's code does not touch there.
+  const sparse = new Map<string, SparseDeclarations>();
+  for (const master of options.plan.masters) {
+    const declarations = sparseDeclarationsOf(options.artifacts, master.functionName, master.frame.kind);
+    if (declarations !== undefined) sparse.set(master.master, declarations);
+  }
   const draft = composeDraft(options.plan, {
     ...(options.vm === undefined ? {} : { vm: options.vm }),
     ...(options.maximumCommitmentBytes === undefined ? {} : { maximumCommitmentBytes: options.maximumCommitmentBytes }),
+    ...(sparse.size === 0 ? {} : { sparse }),
   });
   const host = createShippedDerivationHost({
     artifacts: options.artifacts,

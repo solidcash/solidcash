@@ -521,7 +521,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
       .toStrictEqual([PROXY_MASTER, IMPL_MASTER, ...STORE_PROXY_MASTERS, ...STORE_IMPL_MASTERS,
-        VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, HEADER_ID, built.chunkId].sort());
+        VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID, HEADER_ID, built.chunkId].sort());
   });
 
   it('reaches the store as a delegate frame on the store proxy\'s record, entered by a call frame', () => {

@@ -90,6 +90,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { evaluateExternalExpression } from '../../stateful/sc-evaluate-external-expression.js';
 import type { Utxo } from '../../interfaces.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../../utils.js';
@@ -195,6 +196,8 @@ interface HopMappingBatch {
   readonly collection: string;
   readonly signature: string;
   readonly plan: MappingBatchPlan;
+  /** The entry-access slots of the writes a branch guards that the frame's facts do not decide. */
+  readonly undecidedSlots?: readonly number[];
   /**
    * True when the writes are the turns of a run-time loop the entry's own source runs.
    *
@@ -242,8 +245,33 @@ export interface HopEntryWritesRequest {
   readonly artifact: Artifact;
   readonly functionName: string;
   readonly args?: readonly FunctionArgument[];
+  /**
+   * What the frame's own calls returned, by callsite id, as far as the plan has learned it. A key the body reads
+   * back through one of its calls (`producer:<callsite>:<result>`) is that result; one not learned yet is stated as
+   * a placeholder, and the caller plans again once the call answered (`producerKeyCallsites`).
+   */
+  readonly producerResults?: ReadonlyMap<number, FunctionArgument>;
+  /**
+   * Whether each write a branch guards runs, by entry-access slot, where the frame's facts do not decide it. The
+   * frame's own execution is the authority: a caller that saw a plan refused names the writes it assumes the other
+   * way and plans again (`HopEntryWrites.undecidedSlots`).
+   */
+  readonly assumedActivations?: ReadonlyMap<number, boolean>;
+  /**
+   * True for a caller that plans again with the writes it saw refused assumed the other way (`assumedActivations`):
+   * an undecided write at a key the list does not hold is then planned as skipped first. Absent, such a write is
+   * refused by name, since nothing the caller runs plans it the other way.
+   */
+  readonly assumesUndecided?: boolean;
+  /**
+   * True for a caller that keeps the later write of a slot a batch writes twice as skipped and reports a run refused
+   * past it by the batch's own refusal (`HopEntryWrites.repeatedSlots`). Absent, such a batch is refused.
+   */
+  readonly keepsRepeatedSlots?: boolean;
   /** The frame's caller lock, which a `msg.sender` key resolves to. */
   readonly callerLockingBytecode: Uint8Array;
+  /** The frame's own address (`FrameWitness.self`), which an `address(this)` key resolves to. */
+  readonly selfAddress?: Uint8Array;
   /**
    * The deployment the hop runs against, when it is a call rather than a deployment's own first hop.
    *
@@ -464,6 +492,13 @@ export interface HopEntryWrites {
    * reads to tell two reaches that write one collection apart.
    */
   readonly reachWrites: readonly ReachWrite[];
+  /**
+   * The entry-access slots of the writes a branch guards whose condition the frame's facts do not decide, each planned
+   * as `assumedActivations` states it or, absent that, as written where its key's node exists and skipped where not.
+   */
+  readonly undecidedSlots?: readonly number[];
+  /** The slots a batch's later write named again, kept as skipped targets (`keepsRepeatedSlots`). */
+  readonly repeatedSlots?: readonly Uint8Array[];
   /** The placeholder each value-dependent record's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
   /**
@@ -535,6 +570,12 @@ function encodedArgument(
 }
 
 /** The labels that name the frame's own caller, which a struct field may read as its address. */
+/** The labels the artifact publishes `address(this)` under: the lock of the input the frame runs on. */
+const SELF_VALUE_LABELS = new Set([
+  'cast:address(unop:tx.inputs[i].lockingBytecode(nullop:this.activeInputIndex))',
+  'unop:tx.inputs[i].lockingBytecode(nullop:this.activeInputIndex)',
+]);
+
 const CALLER_VALUE_LABELS = new Set([
   'nullop:msg.sender', 'sender:msg.sender', 'call:_msgSender()', 'nullop:tx.origin',
 ]);
@@ -804,11 +845,11 @@ function nodeFieldValue(
   if (deployment === undefined) return getDefaultStateValue(fieldType, context.structs);
   // A node an earlier reach of this hop wrote is read as that reach left it, and one whose bytes that reach did not
   // state leaves the field unstated (`reached-values.ts`).
-  const reached = reachedNodeValue(deployment, collectionName, keyToSlotMulti([key]));
+  const reached = reachedNodeValue(deployment, collectionName, keyToSlotMulti([key], collection));
   if (reached !== undefined) {
     return reached.value === undefined ? undefined : decodedField(reached.value, collection, fieldName, context);
   }
-  const node = liveNode(collection, keyToSlotMulti([key]), deployment);
+  const node = liveNode(collection, keyToSlotMulti([key], collection), deployment);
   if (node === undefined) return getDefaultStateValue(fieldType, context.structs);
   const commitment = node.token?.nft?.commitment;
   if (commitment === undefined) return undefined;
@@ -1008,8 +1049,8 @@ function resolveHopKey(
   access: NonNullable<AbiFunction['entryAccesses']>[number],
   index: number,
 ): Uint8Array {
-  const args = [...(request.args ?? [])];
   const visible = visibleInputs(fn);
+  const args = keyArguments(request.args ?? [], visible);
   const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
   const source = access.keySources?.[index];
   if (source?.kind === 'msgSender') return request.callerLockingBytecode;
@@ -1017,6 +1058,13 @@ function resolveHopKey(
   // A key that names the frame's own caller is that caller's lock, whichever way the artifact serialized it: an
   // imported interface publishes `msg.sender` as an expression label rather than as the `msgSender` kind.
   if (label !== undefined && CALLER_VALUE_LABELS.has(label)) return request.callerLockingBytecode;
+  // A key that names the frame's own contract is the address the frame presents, which a CREATE2 child presents as
+  // its identity rather than as its master's lock.
+  if (label !== undefined && SELF_VALUE_LABELS.has(label) && request.selfAddress !== undefined) {
+    return request.selfAddress;
+  }
+  const produced = producerKeyValue(label, request.producerResults);
+  if (produced !== undefined) return produced;
   const evaluated = evalComputedKey(
     label, args, visible, request.liveDeployment?.state, request.stateLengthDeltas, request.readMappingValue,
   );
@@ -1028,6 +1076,62 @@ function resolveHopKey(
     + `hop cannot resolve from its call data (${label ?? '<unnamed>'})`,
   );
 }
+
+/**
+ * A frame's arguments as a key expression reads them: a scalar `address` stated as a CashAddress is the lock the body
+ * receives, so a key that orders or hashes it computes over the same bytes the body does.
+ */
+export function keyArguments(
+  args: readonly FunctionArgument[], inputs: readonly { readonly type?: string }[],
+): FunctionArgument[] {
+  return args.map((arg, index) => {
+    const type = inputs[index]?.type;
+    if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
+    try {
+      const encoded = encodeFunctionArgument(arg, 'address');
+      return encoded instanceof Uint8Array ? encoded : arg;
+    } catch {
+      return arg;
+    }
+  });
+}
+
+/** A key label naming what one of the frame's own calls returned: `producer:<callsite>:<result>`. */
+const PRODUCER_KEY_LABEL = /^producer:(\d+):(\d+)$/;
+
+/** The callsite ids of the frame's own calls whose results its mapping keys read. */
+export function producerKeyCallsites(artifact: Artifact, functionName: string): readonly number[] {
+  const fn = artifact.abi.find((candidate) => candidate.name === functionName);
+  const ids = new Set<number>();
+  for (const access of fn?.entryAccesses ?? []) {
+    for (const [index, source] of (access.keySources ?? []).entries()) {
+      const label = source?.expressionLabel ?? source?.paramName ?? access.keyParams[index];
+      const matched = label === undefined ? null : PRODUCER_KEY_LABEL.exec(label);
+      if (matched !== null) ids.add(Number(matched[1]));
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * The key a producer label names, from the results learned so far: the call's result, or the placeholder a key not
+ * learned yet is planned under. Undefined for a label that names no call.
+ */
+export function producerKeyValue(
+  label: string | undefined, results: ReadonlyMap<number, FunctionArgument> | undefined,
+): Uint8Array | undefined {
+  const matched = label === undefined ? null : PRODUCER_KEY_LABEL.exec(label);
+  if (matched === null) return undefined;
+  const value = results?.get(Number(matched[1]));
+  const element = Array.isArray(value) ? value[Number(matched[2])] : value;
+  if (element instanceof Uint8Array) return element;
+  if (typeof element === 'string') return encodeFunctionArgument(element, 'address') as Uint8Array;
+  if (typeof element === 'bigint') return bigIntToVmNumber(element);
+  return UNLEARNED_PRODUCER_KEY;
+}
+
+/** The key a write is planned under while the call it reads its key from has not answered yet. */
+const UNLEARNED_PRODUCER_KEY = Uint8Array.from({ length: 20 }, () => 0xee);
 
 /** One target of a collection's write: the access it came from, and the key(s) it writes under. */
 interface HopTargetWrite {
@@ -1087,7 +1191,7 @@ function planHopLoopBatch(
     value: loopStoredValue(each),
   }))), loop);
   return turned
-    ? { ...batch, loopRun: run, loopMints: loopRecordMints(request.functionName, run, batch.plan.written) }
+    ? { ...batch, loopRun: run, loopMints: loopRecordMints(request.functionName, run, batch.plan.written, request.artifact) }
     : batch;
 }
 
@@ -1127,6 +1231,10 @@ function planHopCollectionBatch(
   let unstatedValue = false;
   // The slots of writes a branch guards whose condition the frame's facts do not decide.
   const undecided: Uint8Array[] = [];
+  // The entry-access slots of those writes, which a caller may assume one way or the other.
+  const undecidedSlots: number[] = [];
+  // The positions, among the writes, of the undecided ones no assumption decides.
+  const undecidedPositions: number[] = [];
   const activationFrame = {
     artifact: request.artifact, functionName: request.functionName, args,
     senderAddress: request.callerLockingBytecode,
@@ -1171,7 +1279,11 @@ function planHopCollectionBatch(
     // its node, or its absent key's predecessor. One those facts do not decide is planned as written, its node's end
     // view learned from whichever check the body stops at, the write's close or the arm not taken's; a node it would
     // create cannot be so declared, and is refused once the inventory shows the key absent.
-    const runs = writeRuns(activationFrame, access.activation);
+    const decided = writeRuns(activationFrame, access.activation);
+    const assumed = decided === undefined && access.slotIndex !== undefined
+      ? request.assumedActivations?.get(access.slotIndex) : undefined;
+    if (decided === undefined && access.slotIndex !== undefined) undecidedSlots.push(access.slotIndex);
+    const runs = decided ?? assumed;
     if (runs === false) return { keys: [...keys], value: new Uint8Array(0), stated: false, skipped: true };
     if (runs === undefined) {
       if (chunkable) {
@@ -1181,7 +1293,8 @@ function planHopCollectionBatch(
           + 'chunk records the write may take',
         );
       }
-      undecided.push(keyToSlotMulti([...keys]));
+      undecided.push(keyToSlotMulti([...keys], collection));
+      undecidedPositions.push(position);
     }
     // A framed body compiles `delete m[k]` as an upsert of the value type's default, so the node stays in place
     // and takes the default tail. The commitment is the body's to compute and is learned from its close, so only
@@ -1228,7 +1341,7 @@ function planHopCollectionBatch(
       .filter((candidate, index, all) => all.indexOf(candidate) === index)) {
       if (access.slotIndex === undefined || !access.operations.includes('read')) continue;
       const keys = access.keyParams.map((_param, index) => resolveHopKey(request, fn, access, index));
-      const slot = keyToSlotMulti([...keys]);
+      const slot = keyToSlotMulti([...keys], collection);
       // A node earlier frames of this hop wrote holds what the last of them left (`reached-values.ts`): the deployment
       // holds neither a node they created nor the bytes a rewrite left, so the read materializes those bytes.
       const reached = reachedNodeValue(request.liveDeployment, collection.name, slot);
@@ -1304,19 +1417,25 @@ function planHopCollectionBatch(
   for (const commitment of continuedBySlot.values()) inventory.push(reached(commitment));
   const held = (slot: Uint8Array): boolean => inventory.some((commitment) =>
     bytesEqual(decodeEntryCommitment(commitment).slot, slot));
-  const absent = undecided.find((slot) => !held(slot));
-  if (absent !== undefined) {
+  // An undecided write at a key the list does not hold cannot be planned as written, whose node would be created
+  // whether or not the body writes it. It is planned as skipped, and the caller that sees the frame refuse it assumes
+  // the other way (`assumedActivations`); the execution is the authority on which it was. A caller that plans no
+  // other way refuses it by name.
+  if (request.assumesUndecided !== true && undecided.some((slot) => !held(slot))) {
     throw new FramedProxyDeployError(
       `the implementation's "${request.functionName}" entry writes mapping "${collection.name}" under a condition `
       + 'this hop cannot decide from the frame\'s facts, at a key the collection does not hold, so it cannot declare '
       + 'whether the write creates the key\'s node',
     );
   }
+  const assumedSkipped = writes.map((write, position) => (undecidedPositions.includes(position)
+    && !held(keyToSlotMulti([...write.keys], collection))
+    ? { keys: write.keys, value: new Uint8Array(0), stated: false, skipped: true } : write));
   // A landing write at a key the list holds is skipped, and the delete's group names the node at the value the body
   // computes. At a key it does not hold, the write is planned as written beside the delete's kept bracket.
-  const landed = writes.map((write, at) => {
+  const landed = assumedSkipped.map((write, at) => {
     const pair = landing.find((candidate) => candidate.write === at || candidate.owner === at);
-    if (pair === undefined || !held(keyToSlotMulti([...write.keys]))) return write;
+    if (pair === undefined || !held(keyToSlotMulti([...write.keys], collection))) return write;
     return pair.write === at
       ? { keys: write.keys, value: new Uint8Array(0), stated: false, skipped: true }
       : { keys: write.keys, value: new Uint8Array(1), stated: false };
@@ -1324,8 +1443,10 @@ function planHopCollectionBatch(
   // A guarded delete creates no node (DS-6): at a key the list does not hold, run or not, its group is the kept node
   // that brackets the key, which the frame reads as skipped; a write beside it may relink that node.
   const settled = landed.map((write, at) => (guardedDelete(fn, targets[at]!.access)
-    && !held(keyToSlotMulti([...write.keys])) ? { ...write, stated: false, skipped: true } : write));
+    && !held(keyToSlotMulti([...write.keys], collection)) ? { ...write, stated: false, skipped: true } : write));
   const plan = planMappingBatch({
+    keyEncoding: collection,
+    ...(request.keepsRepeatedSlots === true ? { keepsRepeatedSlot: true } : {}),
     writes: settled, inventory,
     encodeValue: chunkable ? encodeChunkableValueTail : (encoded: Uint8Array) => encoded,
     ...(chunkable ? { chunkable: (value: Uint8Array) => value } : {}),
@@ -1339,7 +1460,7 @@ function planHopCollectionBatch(
     // reach placed after this one is refused rather than told to continue from it.
     for (const write of settled) {
       if (!write.stated) continue;
-      rawValues.set(bytesToHex(keyToSlotMulti([...write.keys])), write.value);
+      rawValues.set(bytesToHex(keyToSlotMulti([...write.keys], collection)), write.value);
     }
   }
 
@@ -1404,6 +1525,7 @@ function planHopCollectionBatch(
     learningSlots,
     learningCandidates,
     ...(unstatedValue ? { unstatedValue: true } : {}),
+    ...(undecidedSlots.length === 0 ? {} : { undecidedSlots }),
     rawValues,
     utxoBySlot,
     valueWitnesses,
@@ -1655,7 +1777,7 @@ function resolveAppendedMappingValue(
     request, context.fn, stored.expression, elementType, liveStateValues(request),
   );
   if (element === undefined) return undefined;
-  const live = liveNodeValue(collection, keyToSlotMulti([...keys]), request);
+  const live = liveNodeValue(collection, keyToSlotMulti([...keys], collection), request);
   if (live === undefined) {
     throw new FramedProxyDeployError(
       `the implementation's "${context.fn.name}" entry appends to mapping "${collection.name}" a value whose live `
@@ -2211,6 +2333,10 @@ export function hopEntryWrites(rawRequest: HopEntryWritesRequest): HopEntryWrite
         ? { value: batch.rawValues.get(bytesToHex(node.slot))! } : {}),
     }))),
     spentUtxos,
+    ...(batches.some((batch) => (batch.undecidedSlots?.length ?? 0) > 0)
+      ? { undecidedSlots: batches.flatMap((batch) => batch.undecidedSlots ?? []) } : {}),
+    ...(batches.some((batch) => (batch.plan.repeatedSlots?.length ?? 0) > 0)
+      ? { repeatedSlots: batches.flatMap((batch) => batch.plan.repeatedSlots ?? []) } : {}),
     ...(batches.some((batch) => batch.unstatedValue === true) ? { awaitsValue: true } : {}),
     ...(batches[0]?.loopMints === undefined ? {} : { loopRun: batches[0].loopRun, loopMints: batches[0].loopMints }),
     ...(sized?.declaredChunks === undefined

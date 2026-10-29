@@ -126,8 +126,11 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     Opcodes.OP_1,
   ]);
 
+  // The validator settles both covered masters' contracts, neither of which holds a record here.
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+    roots: [CALLER_INDEX],
+    masters: [CALLER_INDEX, CALLEE_INDEX],
+    settles: [{ category: CATEGORY_CALLER, stateInputs: [] }, { category: CATEGORY_CALLEE, stateInputs: [] }],
   });
   const validatorLock = validator.lock;
   const facets = validatorFacetPlacements();

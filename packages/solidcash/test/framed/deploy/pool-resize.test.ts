@@ -223,7 +223,8 @@ describe('an entry neither mints nor retires a master', () => {
         { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Callee', masters: ['callee-1'], state: [] },
       ],
-      userInputs: userInputs(['user'], 4),
+      // The two facets the validator binds are participants ahead of the user.
+      userInputs: userInputs(['user'], 5),
       masters: [
         draftMaster({
           master: 'caller-1', contract: 'Caller', entry: 'callIt', program: callerContract.program,

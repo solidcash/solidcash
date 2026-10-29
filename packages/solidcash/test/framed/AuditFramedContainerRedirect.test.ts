@@ -17,13 +17,14 @@ import { expectScriptRejection } from '../test-util.js';
 import { callerOf, currentCaller, deploy } from './call/value-harness.js';
 
 /**
- * FRAMED-CONT-1 (docs/security/security-audit-2026-10-16.md): a standalone framed spend (no validator input) that handles
- * no value used to leave its containers unprotected. The container covenants are built without a master lock for
- * the framed convention, and the master's container accounting only looked at the satoshi lock.
+ * FRAMED-CONT-1 (docs/security/security-audit-2026-10-16.md): a framed spend on one master that handles no value used
+ * to leave its containers unprotected. The container covenants are built without a master lock for the framed
+ * convention, and the master's container accounting only looked at the satoshi lock.
  *
  * These cases drive the shipped framed call harness: the honest no-value call is captured, then the same
  * transaction is rebuilt with the container co-spent and its value/tokens redirected. The forged spend must be
- * refused and the captured honest spend must settle.
+ * refused and the captured honest spend must settle. The call runs beside the validator that admits its root, which
+ * settles the contract's containers with its records (V8), so the validator is the input that refuses the redirect.
  */
 const SOURCE = `pragma solidcash ^0.14.0;
 contract Vault {
@@ -36,7 +37,7 @@ const vault = compileStringMulti(SOURCE, { composition: 'framed' }).Vault!;
 
 /** Capture the shipped no-value call's broadcast bytes, then rewind the chain to before it. */
 async function captureNoValueCall(deployed: Awaited<ReturnType<typeof deploy>>): Promise<{
-  hex: string; masterIndex: number; masterUnlocking: Uint8Array;
+  hex: string; masterIndex: number; validatorIndex: number; masterUnlocking: Uint8Array;
 }> {
   const snapshot = await deployed.provider.takeSnapshot();
   const result = await callFramedEntry({
@@ -47,10 +48,11 @@ async function captureNoValueCall(deployed: Awaited<ReturnType<typeof deploy>>):
   expect(result.accepted).toBe(true);
   expect(result.broadcast).toBeDefined();
   const masterIndex = result.draft.layout.participants[0]!.index;
+  const validatorIndex = result.draft.layout.participants.find((placed) => placed.kind === 'validator')!.index;
   const hex = result.broadcast!.hex;
   const masterUnlocking = decodeTransactionUnsafe(hexToBin(hex)).inputs[masterIndex]!.unlockingBytecode.slice();
   await snapshot.restore();
-  return { hex, masterIndex, masterUnlocking };
+  return { hex, masterIndex, validatorIndex, masterUnlocking };
 }
 
 describe('FRAMED-CONT-1: a standalone framed spend keeps its containers', () => {
@@ -58,7 +60,7 @@ describe('FRAMED-CONT-1: a standalone framed spend keeps its containers', () => 
     const deployed = await deploy(vault);
     // A value send creates the contract's satoshi container through the shipped path.
     await sendFramedValue({ ...callerOf(deployed), value: 3_000n });
-    const { hex, masterIndex } = await captureNoValueCall(deployed);
+    const { hex, masterIndex, validatorIndex } = await captureNoValueCall(deployed);
     const container = (await readSatoshiContainers(deployed.provider, deployed.categoryId))[0]!;
 
     const forged = decodeTransactionUnsafe(hexToBin(hex)) as ReturnType<typeof decodeTransactionUnsafe>;
@@ -77,7 +79,7 @@ describe('FRAMED-CONT-1: a standalone framed spend keeps its containers', () => 
     const outcome = await deployed.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
     expect(outcome).not.toBe('ACCEPTED');
-    expectScriptRejection(outcome, masterIndex);
+    expectScriptRejection(outcome, validatorIndex);
 
     // The captured call without the container settles.
     await expect(deployed.provider.sendRawTransaction(hex)).resolves.toBeTypeOf('string');

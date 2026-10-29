@@ -934,7 +934,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
   /**
    * Clear provider caches without rewinding the chain. Fixture snapshots own chain rewinds; a reset that
-   * invalidated blocks would also invalidate those snapshots, so the chain is left alone here.
+   * invalidated blocks would also invalidate those snapshots, so the chain is left alone here, and so is the
+   * node's mock clock its blocks and mempool were stamped with. Put back on the wall clock, the node's next
+   * admission would expire every mempool entry the mock clock dates years earlier, an unmined oracle update
+   * among them, and the wallet would go on counting that update as the oracle's spend and stop listing the oracle.
    */
   async reset(): Promise<void> {
     this.fundingCandidates = undefined;
@@ -944,8 +947,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.feeFunderByRequest.clear();
     runMockNetworkProviderResetHooks();
     this.pendingBlockTimestamp = undefined;
-    this.mockTime = 0;
-    await this.setMockTime(0);
     this.tipTime = await this.readTipTime();
   }
 

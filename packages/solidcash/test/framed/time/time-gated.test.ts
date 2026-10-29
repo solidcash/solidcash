@@ -153,8 +153,8 @@ function buildComposition(gate: number, locktime: number): {
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: USER_ID, index: 4 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 5 }],
     masters: [callerMaster, calleeMaster],
     locktime,
     sequenceNumber: NON_FINAL_SEQUENCE,
@@ -210,8 +210,8 @@ function verdict(vm: Vm, transaction: VmTransaction, sourceOutputs: VmSourceOutp
 }
 
 /** The composition's contract inputs: the caller, the validator and the callee. */
-// The caller, the validator, the facet it binds and the callee.
-const CONTRACT_INPUTS = [0, 1, 2, 3];
+// The caller, the validator, the two facets it binds and the callee.
+const CONTRACT_INPUTS = [0, 1, 2, 3, 4];
 
 describe('a framed composition whose rule is strictly after the payment block', () => {
   it('advances the mock clock strictly, so a later block time exists', () => {
@@ -292,8 +292,8 @@ describe('a framed composition whose rule is strictly after the payment block', 
     early.locktime = paymentTime;
 
     const caller = verdict(vm, early, sourceOutputs, 0);
-    // The facet the validator binds sits at 2, so the callee is at 3.
-    const callee = verdict(vm, early, sourceOutputs, 3);
+    // The two facets the validator binds sit at 2 and 3, so the callee is at 4.
+    const callee = verdict(vm, early, sourceOutputs, 4);
     expect(caller.accepted).toBe(false);
     expect(callee.accepted).toBe(false);
     expect(caller.objection).toContain('OP_CHECKLOCKTIMEVERIFY');

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   FrameKind, buildPushdataCommitment, bytesToHex, encodeEventCommitment, encodeIntegerValue, encodeResultList,
-  type Artifact, type EventDefinitionAbi,
+  splitEventPayload, type Artifact, type EventDefinitionAbi,
 } from '@solidcash/utils';
 import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import {
+  eventChunkLockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../../../src/framed/deploy/index.js';
@@ -203,8 +204,13 @@ function buildPlan(userLock: Uint8Array = SELLER_LOCK): {
   const storeRecordIndex = participant(layout, STORE_RECORD_ID).index;
 
   // The events take the trailing outputs: the root's two first, the escrow's large one last, in the masters' order.
+  // Five 32-byte words are wider than one 128-byte commitment, so the escrow lists two outputs for its event: the
+  // first 128 bytes of the payload at the event covenant and the rest at its continuation covenant.
   const rootEventIndices = [base, base + 1];
-  const escrowEventIndex = base + 2;
+  const escrowEventIndices = [base + 2, base + 3];
+  const released = built.artifacts.Escrow!.events![0]!;
+  const [releasedHead, releasedRest] = splitEventPayload(
+    encodeEventCommitment(released.parameters, [BIG, BIG, BIG, BIG, BIG]));
 
   const rootMaster: DraftMaster = {
     ...master({
@@ -250,7 +256,7 @@ function buildPlan(userLock: Uint8Array = SELLER_LOCK): {
         [{ in: escrowRecordIndex, out: escrowRecordIndex, viewIn: ESCROW_AFTER, viewOut: ESCROW_AFTER }],
       ],
     }),
-    events: [escrowEventIndex],
+    events: escrowEventIndices,
   };
   const ledgerMaster: DraftMaster = {
     ...master({
@@ -320,8 +326,11 @@ function buildPlan(userLock: Uint8Array = SELLER_LOCK): {
         encodeEventCommitment(built.artifacts.Root!.events![0]!.parameters, [1n])),
       eventOutput(root.category, built.artifacts.Root!.events![1]!.signature,
         encodeEventCommitment(built.artifacts.Root!.events![1]!.parameters, [2n])),
-      eventOutput(escrow.category, built.artifacts.Escrow!.events![0]!.signature,
-        encodeEventCommitment(built.artifacts.Escrow!.events![0]!.parameters, [BIG, BIG, BIG, BIG, BIG])),
+      eventOutput(escrow.category, released.signature, releasedHead!),
+      {
+        ...eventOutput(escrow.category, released.signature, releasedRest!),
+        lockingBytecode: eventChunkLockingBytecode(escrow.category, released.signature, false, 1),
+      },
     ],
     validator: {
       id: VALIDATOR_ID, covers: ['Escrow', 'Ledger', 'Token', 'Store'],
@@ -440,8 +449,8 @@ describe('the escrow\'s event', () => {
     expect(decoded).not.toBeNull();
     expect(decoded).toStrictEqual({ a: BIG, b: BIG, c: BIG, d: BIG, e: BIG });
 
-    // The commitment the receipt reads back is the encoder's own bytes, and no size refusal stands in its way: the
-    // composition machine runs the relaxed profile whose `maximumNftCommitmentBytes` admits this payload.
+    // The commitment the receipt reads back is the encoder's own bytes: the escrow's frame lists the payload as two
+    // chunks within the 128-byte commitment size, and the receipt joins the continuation onto the event's output.
     const { outcome, base } = settledSellerRun();
     const released = compositionEventLogs(outcome.draft, ARTIFACTS, { validatorProgram: VALIDATOR_PROGRAM })
       .find((log) => log.eventName === 'Released')!;

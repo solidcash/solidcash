@@ -62,6 +62,25 @@ export function satoshiContainerLockingBytecode(categoryId: string): Uint8Array 
 }
 
 /**
+ * The output a contract's run of sends follows when its frame keeps nothing: zero satoshis at
+ * `OP_RETURN <the contract's container lock>`. It names the payer as a container would (spec 4b, "A send's payer"),
+ * where a container cannot hold nothing and a dust one would be a gift the EVM never makes.
+ */
+export function drainedRunMarkerLockingBytecode(categoryId: string): Uint8Array {
+  const lock = satoshiContainerLockingBytecode(categoryId);
+  return Uint8Array.from([0x6a, lock.length, ...lock]);
+}
+
+/** The output a contract's run of sends follows: the container that keeps `kept`, or the drained run's marker. */
+export function runLeadOutput(
+  categoryId: string, kept: bigint,
+): { readonly lockingBytecode: Uint8Array; readonly valueSatoshis: bigint } {
+  return kept > 0n
+    ? { lockingBytecode: satoshiContainerLockingBytecode(categoryId), valueSatoshis: kept }
+    : { lockingBytecode: drainedRunMarkerLockingBytecode(categoryId), valueSatoshis: 0n };
+}
+
+/**
  * The unlocking a satoshi container carries on its master path: the minting NFT at `masterInputIndex` authorizes
  * the spend, and that master's own checks account for the value.
  */

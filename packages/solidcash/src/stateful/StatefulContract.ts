@@ -4221,7 +4221,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         callStatic: (...args: unknown[]) => Promise<unknown>;
         send: (...args: unknown[]) => Promise<unknown>;
       };
-      wrapper.staticCall = (...args: unknown[]) => invoke(args).staticCall();
+      // A framed call answers ethers' `staticCall` with its decoded value (`FramedFunctionCall.staticValue`).
+      wrapper.staticCall = (...args: unknown[]) => {
+        const call = invoke(args) as { staticCall: () => Promise<unknown>; staticValue?: () => Promise<unknown> };
+        return typeof call.staticValue === 'function' ? call.staticValue() : call.staticCall();
+      };
       wrapper.callStatic = wrapper.staticCall;
       wrapper.send = (...args: unknown[]) => invoke(args).send();
       ethersStyleFunctions.set(name, wrapper);

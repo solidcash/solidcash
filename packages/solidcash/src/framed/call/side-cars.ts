@@ -53,6 +53,17 @@ export interface EntrySideCarOptions {
    * its execution makes, each preimage left to the body, which binds them in the order it makes the calls.
    */
   readonly hashes?: number;
+  /**
+   * The keccak256 calls' jobs as a settled plan of the same frame found them (`keccakJobsToShare`): a job the call's
+   * side-car states, or `null` for a call whose job another side-car holds, which then takes none. Absent for a frame
+   * planned with one side-car per call.
+   */
+  readonly jobs?: readonly (Uint8Array | null)[];
+  /**
+   * The outpoints other frames of the same transaction already spend, as `txid:vout`: a side-car is a UTXO at a
+   * shared covenant lock, and one transaction spends each UTXO once, so this frame's side-cars are taken past them.
+   */
+  readonly taken?: ReadonlySet<string>;
 }
 
 /** The side-cars one frame co-spends, over live UTXOs, in the order its body reads them. */
@@ -66,16 +77,24 @@ export async function entrySideCars(options: EntrySideCarOptions): Promise<Recov
     );
   }
   const calls = recoveryCallsOf(abiFunction, argumentPushes, leadingPushes);
-  const preimages = options.hashes === undefined
+  const planned = options.hashes === undefined
     ? keccakPreimagesOf(abiFunction, argumentPushes, leadingPushes)
     : Array.from({ length: options.hashes }, (): Uint8Array | undefined => undefined);
+  // A call another side-car serves takes none, and a call whose job is known is built over it.
+  const preimages = options.jobs === undefined ? planned : planned.flatMap((preimage, call) => {
+    const job = options.jobs![call];
+    return job === null ? [] : [job ?? preimage];
+  });
   const salt = SHARED_LIBRARY_SALT;
   const projections = calls.filter((call) => call.evm).length;
   // The EVM projections' side-cars and the keccak256 calls' side-cars share the stateful keccak covenant's lock.
+  const taken = options.taken ?? new Set<string>();
   const [a, b, keccak] = await Promise.all([
-    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'A'), calls.length, 'recovery side-car A'),
-    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'B'), calls.length, 'recovery side-car B'),
-    livePool(provider, keccakComputeLockingBytecode(salt, true), projections + preimages.length, 'keccak256 side-car'),
+    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'A'), calls.length, 'recovery side-car A', taken),
+    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'B'), calls.length, 'recovery side-car B', taken),
+    livePool(
+      provider, keccakComputeLockingBytecode(salt, true), projections + preimages.length, 'keccak256 side-car', taken,
+    ),
   ]);
   const recovery = buildRecoverySideCars(master, calls, salt, { a, b, k: keccak.slice(0, projections) });
   const hashing = buildKeccakSideCars(master, preimages, salt, keccak.slice(projections));
@@ -87,22 +106,31 @@ export async function entrySideCars(options: EntrySideCarOptions): Promise<Recov
   };
 }
 
-/** The first `count` mutable UTXOs at a side-car covenant's lock, minting stand-ins on a provider that can. */
+/**
+ * The first `count` mutable UTXOs at a side-car covenant's lock that no other frame of the transaction spends
+ * (`taken`), minting stand-ins on a provider that can.
+ */
 async function livePool(
   provider: NetworkProvider,
   lock: Uint8Array,
   count: number,
   name: string,
+  taken: ReadonlySet<string> = new Set(),
 ): Promise<readonly Utxo[]> {
   if (count === 0) return [];
   const mutable = async (): Promise<Utxo[]> => (await provider.getUtxosForLockingBytecode(lock))
-    .filter((utxo) => utxo.token?.nft?.capability === 'mutable');
+    .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && !taken.has(`${utxo.txid}:${utxo.vout}`));
   let utxos = await mutable();
   const addUtxo = (provider as { addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
   if (utxos.length < count && typeof addUtxo === 'function') {
-    for (let index = utxos.length; index < count; index += 1) {
+    const present = await provider.getUtxosForLockingBytecode(lock);
+    // Stand-ins are numbered from the first, so one another frame takes is passed over for the next.
+    let free = utxos.length;
+    for (let index = 0; free < count && index < count + taken.size + present.length; index += 1) {
       const standIn = computeSideCarStandIn(`framed ${name}`, lock, index);
-      if (!hasOutpoint(utxos, standIn)) await addUtxo.call(provider, binToHex(lock), standIn);
+      if (taken.has(`${standIn.txid}:${standIn.vout}`) || hasOutpoint(present, standIn)) continue;
+      await addUtxo.call(provider, binToHex(lock), standIn);
+      free += 1;
     }
     utxos = await mutable();
   }

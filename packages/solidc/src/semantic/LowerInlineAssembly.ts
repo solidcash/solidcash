@@ -2476,7 +2476,8 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
       content = reconstructBuffer(bufPtr.buffer, BigInt(args[2].raw), call);
     } else if (codeLocal) content = loc(new IdentifierNode(codeLocal), call);
     if (content) {
-      const salt = loc(new CastNode(BYTES32, lowerValue(args[3]), false), call);
+      const rawSalt = lowerValue(args[3]);
+      const salt = loc(new CastNode(BYTES32, rawSalt, false), call);
       const saltSeg = loc(new BytesConcatNode([
         loc(new HexLiteralNode(Uint8Array.from([0x20])), call), salt,
         loc(new HexLiteralNode(Uint8Array.from([0x75])), call),
@@ -2487,7 +2488,10 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         loc(new HexLiteralNode(Uint8Array.from([0xaa, 0x20])), call), hashed,
         loc(new HexLiteralNode(Uint8Array.from([0x87])), call),
       ]), call);
-      return loc(new CastNode(new AddressType(), p2sh, false), call);
+      const address = loc(new CastNode(new AddressType(), p2sh, false), call);
+      // A framed compile takes the child's EVM identity from the same salt and code (LowerFramedCreate2Address).
+      address.runtimeCreate2 = { salt: rawSalt, code: content };
+      return address;
     }
     throw new YulNotLowerable();
   }

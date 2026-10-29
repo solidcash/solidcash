@@ -34,9 +34,9 @@ import {
  * the composer laying the composition out and assembling it, the shipped derivation filling the call site, and the
  * BCH-2026 machine asked for a verdict on the caller's own input.
  *
- * The layout puts the record at the third index, away from the master that reads it, and the two declarations chain
- * from the commitment the transaction spends to the commitment it writes. The control removes the declarations,
- * which is the state the direct path would read: the same transaction is then refused.
+ * The layout puts the record after the validator and the two facets it binds, away from the master that reads it,
+ * and the two declarations chain from the commitment the transaction spends to the commitment it writes. The control
+ * removes the declarations, which is the state the direct path would read: the same transaction is then refused.
  */
 
 const CATEGORY_LEDGER = seededCategory('records composition ledger');
@@ -54,8 +54,8 @@ const CALLEE_MASTER = 'callee-1';
 const VALIDATOR_ID = 'validator';
 const RECORD_ID = 'record';
 const USER_ID = 'user';
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits two participants on: the caller, the validator's head, the two facets it binds, then the record.
+const RECORD_INDEX = 4;
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const VALUE = 20_000n;
 
@@ -183,8 +183,8 @@ function buildComposition(options: {
       },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: USER_ID, index: 5 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 6 }],
     masters: [ledgerMaster, calleeMaster],
     inputs: {
       [LEDGER_MASTER]: {

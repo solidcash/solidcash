@@ -61,7 +61,7 @@ describe('a framed frame reads an entry\'s presence at its declared coordinate',
       ],
     });
     expect(verdict.accepted).toBe(false);
-    // The head's walk refuses the index before the body reads presence there.
+    // The settlement walk refuses the index before the body reads presence there.
     expect(verdict.objection).toBe('Program failed an OP_VERIFY operation.');
   });
 });

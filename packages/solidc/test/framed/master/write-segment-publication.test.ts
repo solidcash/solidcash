@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import {
-  declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript,
+  declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript, keptSegmentsSkipRuntimeScript, keptSegmentsSkipScript,
 } from '../../../src/framed/master/declared-view.js';
 
 /**
@@ -145,6 +145,9 @@ const sizedFieldAfterCall =
 
 const RUNTIME_SKIP = Buffer.from(declaredSegmentsSkipRuntimeScript()).toString('hex');
 const SKIP_ONE = Buffer.from(declaredSegmentsSkipScript(1)).toString('hex');
+// A read of the entry's own record steps over the segments the head keeps, one split each.
+const KEPT_RUNTIME_SKIP = Buffer.from(keptSegmentsSkipRuntimeScript()).toString('hex');
+const KEPT_SKIP_ONE = Buffer.from(keptSegmentsSkipScript(1)).toString('hex');
 
 describe('the segment a derived mapping write lands in, as an artifact publishes it', () => {
   it('publishes the frame\'s opening segment for a write that precedes the entry\'s calls', () => {
@@ -172,12 +175,12 @@ describe('the segment a write to the entry\'s own record lands in, as an artifac
   it('publishes the fixed index a call precedes the record write in', () => {
     expect(publishedWriteSegment(recordWriteAfterOneCall, 'Ledger', 'bump')).toBe(1);
     // The record is rebuilt and compared against the declaration of the segment its write landed in.
-    expect(emittedProgram(recordWriteAfterOneCall)).toContain(SKIP_ONE);
+    expect(emittedProgram(recordWriteAfterOneCall)).toContain(KEPT_SKIP_ONE);
   });
 
   it('publishes the run\'s last segment for a record write every call precedes', () => {
     expect(publishedWriteSegment(recordWriteAfterGuardedCall, 'Ledger', 'bump')).toBe('last');
-    expect(emittedProgram(recordWriteAfterGuardedCall)).toContain(RUNTIME_SKIP);
+    expect(emittedProgram(recordWriteAfterGuardedCall)).toContain(KEPT_RUNTIME_SKIP);
   });
 });
 

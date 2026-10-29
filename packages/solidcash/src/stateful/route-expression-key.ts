@@ -191,6 +191,14 @@ export function evalComputedKey(
             ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
       }
+      // An address or bytesN ordering compares the byte values as unsigned big-endian numbers, as the covenant's
+      // own comparison does (`emitBytesCompare`).
+      if (left instanceof Uint8Array && right instanceof Uint8Array
+        && (m[1] === '<' || m[1] === '<=' || m[1] === '>' || m[1] === '>=')) {
+        const number = (bytes: Uint8Array): bigint => bytes.reduce((value, byte) => (value << 8n) | BigInt(byte), 0n);
+        const [l, r] = [number(left), number(right)];
+        return m[1] === '<' ? l < r : m[1] === '<=' ? l <= r : m[1] === '>' ? l > r : l >= r;
+      }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
       if (m[1] === '-') return left - right;

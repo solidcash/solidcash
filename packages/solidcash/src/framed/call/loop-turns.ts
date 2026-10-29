@@ -55,8 +55,27 @@ export function entryLoopTurns(inputs: HopCallInputs): EntryLoopTurns {
     if (runs === undefined) return undefined;
     const ids: number[] = [];
     for (const run of runs) {
-      const turns = run.iterationDomain === undefined ? 1 : turnsOf(run.iterationDomain, resolver, where);
-      for (let turn = 0; turn < turns; turn += 1) ids.push(...run.ids);
+      const domain = run.iterationDomain;
+      if (domain === undefined) {
+        ids.push(...run.ids);
+        continue;
+      }
+      // An effect on a branch is made on the turns its predicate holds, read with the turn's counter bound.
+      for (const counter of countersOf(domain, resolver, where)) {
+        run.ids.forEach((id, position) => {
+          const condition = run.conditions?.[position];
+          if (condition === undefined || condition === null) {
+            ids.push(id);
+            return;
+          }
+          const holds = resolver.evaluate(condition, 0, new Map([[domain.counterName, counter]]));
+          if (typeof holds !== 'boolean') {
+            throw new FramedLoopTurnsError(`${where} makes an effect on a branch of a loop whose predicate its own `
+              + 'arguments do not fix, so the frame cannot state how many outputs and side-cars its turns take');
+          }
+          if (holds) ids.push(id);
+        });
+      }
     }
     return ids;
   };
@@ -70,17 +89,16 @@ export function entryLoopTurns(inputs: HopCallInputs): EntryLoopTurns {
   };
 }
 
-/** How many turns a loop's recurrence runs for, read with the counter bound on each turn. */
-function turnsOf(domain: ExternalCallIterationDomainAbi, resolver: CallResolver, where: string): number {
+/** The counter's value on each turn a loop's recurrence runs, read with the counter bound on each turn. */
+function countersOf(domain: ExternalCallIterationDomainAbi, resolver: CallResolver, where: string): bigint[] {
   const initial = resolver.evaluate(domain.initialValue, 0);
   const step = resolver.evaluate(domain.stepValue, 0);
   if (typeof initial !== 'bigint' || typeof step !== 'bigint') {
     throw new FramedLoopTurnsError(`${where} runs a loop whose counter its own arguments do not fix`);
   }
   if (step === 0n) throw new FramedLoopTurnsError(`${where} runs a loop whose counter never advances`);
-  let turns = 0;
-  let counter = initial;
-  for (; turns < domain.maximumIterations; turns += 1) {
+  const counters: bigint[] = [];
+  for (let counter = initial; counters.length < domain.maximumIterations; counter += step) {
     const holds = resolver.evaluate(domain.continueCondition, 0, new Map([[domain.counterName, counter]]));
     if (holds === undefined) {
       throw new FramedLoopTurnsError(
@@ -89,7 +107,7 @@ function turnsOf(domain: ExternalCallIterationDomainAbi, resolver: CallResolver,
       );
     }
     if (!holds) break;
-    counter += step;
+    counters.push(counter);
   }
-  return turns;
+  return counters;
 }

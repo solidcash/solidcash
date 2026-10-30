@@ -50,6 +50,11 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   the stack, which is the address.
 - The factory's `createPair` shard with the check is 6,386 B of program and an 8,289 B whole spend, still inside the
   10,000-byte input limit.
+- The out-of-band stand-up (`create2-child.ts`'s deployer and `addUtxo` funding), the identity registry and V11's
+  20-byte `self` exception are removed. A covered frame presents `addrV` of its category, and a created child is
+  reached at its own `addrV(K)` in the transaction that mints it.
+- The planner test `lookup-then-call.test.ts` proves a call whose target an earlier call returned, on the shipped
+  path: the factory's `getPair`, then the pair's own `getReserves` frame, on a master of the pair's category.
 
 - A framed `create2` is `addrV(K)`, computed by the creating body from its block's validator reference and the
   transaction's origin coin (`child-address-in-body.test.ts`).

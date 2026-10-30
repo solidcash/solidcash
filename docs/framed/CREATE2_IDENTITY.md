@@ -109,6 +109,13 @@ What a creator's transaction needs, and where each piece sits, from reading the 
   `.func` shard would publish it (`composition.creates[].foldedCall`), and `deriveFramedGenesis` would run it against
   the constructor's state — the proxy deployment's `initializedProxyState` (`framed/proxy/deploy.ts:1643`) is the
   working precedent for reading a hop's state back out of its plan.
+- **The fragment's stack accounting.** The create-site fragment is emitted only after outlining folds shared spans, so
+  its physical stack effect has to match the generator's model exactly. The form that works reads the block, drops
+  `rest` and nips twice (leaving the frame kind beneath the validator index), then leaves the address on top; reading
+  the block's `origin` reference instead — the user's coin, which is the coin `K` should name — shifts the body's
+  PHD depths and the entry's retval write then reads the wrong slot (measured: an output-index refusal). Either the
+  composer leads with the caller's coin as input 0 (what the shipped fragment expects) or the fragment's accounting
+  is redone against the body's stack model.
 - **V11.** `checkV11` and `addressCheckScript` both skip a 20-byte `self`; removing the skip is the last step, once no
   deployment presents an identity (`create2-child.ts`, `create2-identity-registry.ts` and the `identityTarget`
   stand-up in `framed/proxy/external-calls.ts` are the paths to delete with it).

@@ -74,3 +74,35 @@ uses for `internalHelperLocks`. The sentinel route needs no compile ordering and
 would mint a pair initialized with arbitrary tokens. The creator has to compute the folded `initialize` values and
 check the records' commitments (the `foldedStateInit` path), which is the part that makes this a genesis replay rather
 than a lock allow-list.
+
+## Seams measured for the in-transaction composition (2026-10-30)
+
+What a creator's transaction needs, and where each piece sits, from reading the shipped composer:
+
+- **The coin whose outpoint is `K`.** `childAddressScript()` (packages/solidc/src/framed/master/child-address.ts) reads
+  `OP_0 OP_OUTPOINTTXHASH`, so the genesis-eligible coin (a token-free coin at vout 0) must be transaction input 0.
+  `callFramedEntry` places the caller among user inputs after the participants (`call.ts:3490`,
+  `placeUserInputs([CALLER_ID, ...])`), so the composer has to move it to input 0, or the snippet has to scan inputs
+  for the first token-free vout-0 coin. The coin is also the child's category, so the composer must know it before it
+  builds any output.
+- **The child's outputs.** A framed call's non-participant outputs are the draft's `trailingOutputs`
+  (`composer/draft.ts:187`, assembled at `call.ts:2744`); the broadcast lays out `participantCount + trailingOutputs`
+  (`call.ts:3962`). The child's genesis is a list of such outputs: `deployMaster(shard.artifact, K, validator)` per
+  shard lock, one validator at `addrV(K)`, the data-NFT records at `stateRecordLockingBytecode(K)`, and the authhead at
+  `authheadLockingBytecode(K)`. The records' commitments are what `deriveFramedGenesis` computes from the constructor
+  (and, with a fold, from the folded call).
+- **The creator's check.** The test shows what the snippet needs: the validator input's index, which the head parses
+  but drops before the body (`master-head.ts:~806`). A body can re-read its own witness block
+  (`readFrameHeaderScript()` over `OP_INPUTINDEX OP_INPUTBYTECODE`'s first push) to get `validatorRef` again, and then
+  `childAddressScript()` leaves `addrV(K)`. The child's shard locks are not derivable in script, so they must be
+  deployment-filled sentinels (the `internalHelperLocks` pattern in `split/function-split.ts:773` and
+  `framed/deploy/entry-pool.ts`), with the artifact publishing the blob's offset and the SDK filling it from the
+  child's prepared split (`MasterPoolDeployment.getEntryLocks()`).
+- **The fold.** `UniswapV2Pair(pair).initialize(...)` is a framed external call whose target is a local holding the
+  `create2` value. `LowerFramedCreate2Address` would have to record the call on the creating local and drop it, the
+  `.func` shard would publish it (`composition.creates[].foldedCall`), and `deriveFramedGenesis` would run it against
+  the constructor's state — the proxy deployment's `initializedProxyState` (`framed/proxy/deploy.ts:1643`) is the
+  working precedent for reading a hop's state back out of its plan.
+- **V11.** `checkV11` and `addressCheckScript` both skip a 20-byte `self`; removing the skip is the last step, once no
+  deployment presents an identity (`create2-child.ts`, `create2-identity-registry.ts` and the `identityTarget`
+  stand-up in `framed/proxy/external-calls.ts` are the paths to delete with it).

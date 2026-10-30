@@ -73,7 +73,9 @@ describe("addLiquidityETH on BCH", () => {
     await factory.registerPair(await token.getAddress(), await weth.getAddress(), pairAddress);
 
     const amountToken = 1_000_000n;
-    const amountNative = 100_000n;
+    // The caller's coin is 1e9 satoshis, so the value plus the fee needs a second coin: the composer funds the rest
+    // of the value from more of the caller's coins and returns the change.
+    const amountNative = 1_000_000_000n;
     await router.addLiquidityETH(
       await token.getAddress(), amountToken, 0n, 0n, signer.address, 2n ** 40n, { value: amountNative },
     );

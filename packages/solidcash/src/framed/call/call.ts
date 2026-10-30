@@ -1614,18 +1614,31 @@ async function callInShape(
       && run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category)));
   // The sends of every run but the last sit at indices whose inputs are not containers: the caller's coin and its
   // deposits fill them first, then more tokenless coins at the caller's lock.
-  const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0)
-    - 1 - tokenDeposits.length;
-  const fillerCoins = fillersNeeded <= 0 ? [] : (await withoutIdentityOutputs(
+  const runFillersNeeded = Math.max(0,
+    tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0) - 1 - tokenDeposits.length);
+  // The value the call carries is paid from the caller's own coins, so a value larger than the coin it starts with
+  // takes more of them: the change returns what the call does not spend. The margin covers the fee and the dust of
+  // the outputs the call creates.
+  const candidates = await withoutIdentityOutputs(
     provider, await provider.getUtxosForLockingBytecode(options.callerLockingBytecode),
-  ))
-    .filter((utxo) => utxo.token === undefined
-      && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout))
-    .slice(0, fillersNeeded);
+  );
+  const spendable = candidates.filter((utxo) => utxo.token === undefined
+    && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout));
+  const valueNeeded = (options.value ?? 0n) + 20_000n;
+  let valueFillers = 0;
+  let covered = options.callerUtxo.satoshis;
+  while (covered < valueNeeded && valueFillers < spendable.length) {
+    covered += spendable[valueFillers]!.satoshis;
+    valueFillers += 1;
+  }
+  const fillersNeeded = Math.max(runFillersNeeded, valueFillers);
+  const fillerCoins = spendable.slice(0, fillersNeeded);
   if (fillerCoins.length < fillersNeeded) {
     throw new FramedCallError(
-      `entry "${functionName}" pays from ${tokenRuns.length} token runs, which need ${fillersNeeded} more tokenless `
-      + `coins at the caller's lock between them, and it holds ${fillerCoins.length}`,
+      `entry "${functionName}" needs ${fillersNeeded} more tokenless coin(s) at the caller's lock`
+      + (tokenRuns.length > 1 ? ` for its ${tokenRuns.length} token runs` : '')
+      + ((options.value ?? 0n) > 0n ? ` and to pay the ${options.value} satoshis it carries` : '')
+      + `, and it holds ${fillerCoins.length}`,
     );
   }
 

@@ -61,9 +61,14 @@ Measured shape for the check:
   count establish the rule without per-lock multiplicity: count every output of category `K` (nK), count per allowed
   lock the outputs of category `K` at that lock, and require the sum to equal nK. Padding uses a lock no output can
   carry, so it counts zero.
-- Counting loops follow the call-batch template (`OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP …
-  OP_DUP OP_NOT OP_UNTIL`, with `OP_n OP_PICK` fetching the target), and the generator's named stack slots
-  (`pushToStack`/`emitReplace`) are how the sum and nK are carried, rather than raw depth arithmetic.
+- Counting loops follow the call-batch template; the layout below is the one the emitted block was worked out for,
+  with `L` a compile-time constant push and the body emitted once per allowed lock:
+  `[K, nK, sum, L]` → `OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP OP_OUTPUTTOKENCATEGORY
+  OP_SIZE OP_NIP 32 OP_GREATERTHANOREQUAL OP_IF OP_DUP 32 OP_SPLIT OP_DROP <K by pick> OP_EQUAL OP_IF
+  OP_NIP OP_DUP OP_OUTPUTBYTECODE <L by pick> OP_EQUAL OP_IF <sum++> OP_ENDIF OP_ENDIF OP_ENDIF
+  OP_DUP OP_NOT OP_UNTIL`, then drop the index and `L`. In-place increment with the new value on top and the old at
+  depth `k` is `OP_k OP_ROLL OP_DROP`; `nK` itself is one more such loop counting `category == K` without the
+  bytecode test, and the final `OP_EQUALVERIFY` compares `nK` with the summed count.
 - Fungible amounts of `K` must be refused as well: a minted amount at creation is unbacked LP, and a minting NFT at a
   substituted lock could mint it later. The allow-list above refuses both, because a matching lock is required.
 

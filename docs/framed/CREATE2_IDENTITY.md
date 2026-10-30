@@ -45,6 +45,20 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   coin's outpoint (`atomic-create2.test.ts`: the returned address, each shard's master, the validator and a
   record, all read off the derivation the machine accepted).
 
+### Measured: the check block runs, the category comparison does not match
+
+An attempt emitted the category check (loop over outputs, category compared with `K`, fungible amount forbidden,
+NFT present, 35-byte P2SH32 lock). Two probes pin the failure:
+
+- An immediate `OP_0 OP_VERIFY` at the block's start made the accepted path fail, so the block is reachable and runs.
+- With the fungible-amount test set to expect `1` instead of `0`, the accepted path *passed*: no output of category
+  `K` ever compared equal to the category the loop read, so the branch never executes.
+
+The byte order is the suspect, and the quick probe was invalid (it pushed a raw length byte instead of a data push,
+so both orders "matched" empty items). The next step is a correct isolated VM test of
+`OP_OUTPUTTOKENCATEGORY`'s first 32 bytes against the fragment's `K` (which is the order `validatorAddress` pins,
+as `child-address-in-body.test.ts` already establishes) before re-emitting the block.
+
 ### The creator's allow-list, as the next unit
 
 The creator has to refuse any output of category `K` that is not one of the child's: the masters at their shard

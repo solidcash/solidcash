@@ -64,6 +64,27 @@ only if the comparisons stay compact. The shape that does: push each sentinel on
 `composition.creates` for the split pass to rewrite per shard and the SDK to fill from
 `MasterPoolDeployment.getEntryLocks()`.
 
+### Measured: the module is right, the generator's derived locks are not
+
+The check was extracted into `child-category-check.ts` with a fixed contract — entry `[K, addrV, recordLock,
+authheadLock, S0…S7]`, exit unchanged — and driven by a synthetic transaction. With fixed locks it passes all four
+cases (the child's genesis, a foreign P2SH32 lock, a fungible amount of `K`, a category output with no NFT), and the
+probes pin the loop's depths:
+
+- the category item is 33 bytes for an NFT output, and its first 32 compare equal to `K` at depth 14 of that entry;
+- the validator's address sits at depth 13 once a comparison has duplicated the output's lock;
+- the `OP_0 TOALTSTACK … FROMALTSTACK BOOLOR TOALTSTACK … VERIFY` flag matches at that depth.
+
+Two bugs the probes found: the output's lock must be dropped after the comparisons (it stayed on the stack and the
+next loop turn read it as its index), and `SPLIT` leaves the suffix on top, so the P2SH32 prefix comparison needs
+`OP_SWAP` before `EQUALVERIFY`.
+
+Wired into the generator, the same module refuses the child's genesis, while the plan passes with the module skipped:
+the failure is in the *locks the generator derives* — the record covenant and the authhead — or in the values the
+deployment fills. The sentinels themselves are found and replaced in the deployed shard. Next: compare the generator's
+record and authhead derivations against `stateRecordLockingBytecode` and `authheadLockingBytecode` in a probe, then
+re-wire. The module and its test are ready to restore from this note's shape.
+
 ### Measured: the sentinel allow-list refuses real locks too
 
 An attempt added the master-lock sentinels (one 35-byte placeholder per slot, filled at deployment from the child's

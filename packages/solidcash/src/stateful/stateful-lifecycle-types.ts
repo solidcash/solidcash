@@ -66,6 +66,11 @@ export interface DeployOptions {
    */
   functionSplit?: FunctionSplitBundle;
   /**
+   * The entry locks of the child a creating contract mints, in the order its category check reserves them
+   * (docs/framed/CREATE2_IDENTITY.md). Only a creator's deployment needs them.
+   */
+  childLocks?: readonly Uint8Array[];
+  /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
    * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while

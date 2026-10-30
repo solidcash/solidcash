@@ -347,6 +347,8 @@ import {
   dropFirstPushScript, dropLastPushScript, dropPrefix, readFrameHeaderScript, splitFirstPushScript,
 } from '../framed/master/witness-reader.js';
 import { childAddressFromProgramScript, validatorProgramScript } from '../framed/master/child-address.js';
+import { childCategoryCheckScript } from '../framed/master/child-category-check.js';
+import { AUTHHEAD_BODY, CHILD_LOCK_CAPACITY, childLockSentinel } from '@solidcash/utils';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
   declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
@@ -18801,9 +18803,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * The creating body's check of the outputs of category `K` (docs/framed/CREATE2_IDENTITY.md).
    *
-   * Entry `[..., address]`, exit `[..., address]`. `K` is recomputed from the frame's own block. Every output is
-   * inspected: one that carries the category must carry an NFT and no fungible amount, at a 35-byte P2SH32 lock. The
-   * child's own master locks join the allow-list as deployment-filled sentinels (design note).
+   * Entry `[..., address]`, exit `[..., address]`. `K` is recomputed from the frame's own block and laid beneath the
+   * address, then the record's covenant lock and the authhead's lock are derived from it and the child's master-lock
+   * sentinels are pushed. `childCategoryCheckScript()` inspects every output of the transaction against that set and
+   * leaves the stack as it found it.
    */
   private emitChildGenesisCheck(locationData: SingleLocationData): void {
     this.emit(Op.OP_INPUTINDEX, locationData);
@@ -18822,72 +18825,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BIN2NUM, locationData);
     this.emit(Op.OP_OUTPOINTTXHASH, locationData);
     this.emit(Op.OP_REVERSEBYTES, locationData); // [K, address, kind]
-    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
-    this.emit(Op.OP_BEGIN, locationData);
-    this.emit(Op.OP_1SUB, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData); // [category, index, K, address, kind]
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_GREATERTHANOREQUAL, locationData); // a token output carries at least its 32-byte category
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_DROP, locationData); // the output's category, 32 bytes
-    this.emit(Op.OP_3, locationData);
+    // Laid beneath the address, which is the check's first pair: `[K, addrV, …]`.
+    this.emit(Op.OP_SWAP, locationData); // [address, K, kind]
+    // The record lock, from a copy of K (depth 1 under the address): the covenant takes the category in chain order.
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record, K, address, kind]
+    // The authhead lock: P2SH32 of `push(pin(K)) ++ AUTHHEAD_BODY`. K is two deep now, under the record and the
+    // address.
+    this.emit(Op.OP_2, locationData);
     this.emit(Op.OP_PICK, locationData); // K
-    this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData); // the category item, leaving the index
-    // No fungible amount: a minted amount of `K` at creation is unbacked liquidity.
     this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
-    this.emit(Op.OP_0, locationData);
-    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
-    // An NFT, so the capability byte follows the category (`SIZE > 32`).
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(32n), locationData);
-    this.emit(Op.OP_GREATERTHAN, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    // A 35-byte P2SH32 lock: `aa20 <32> 87`, the only shape a framed covenant output has.
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(35n), locationData);
-    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-    this.emit(encodeInt(2n), locationData);
-    this.emit(Op.OP_SPLIT, locationData); // [suffix, prefix]
-    this.emit(Op.OP_SWAP, locationData); // [prefix, suffix]
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_CAT, locationData); // pin
+    this.emit(Uint8Array.of(0x21), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // push(pin)
+    this.emit(AUTHHEAD_BODY, locationData);
+    this.emit(Op.OP_CAT, locationData); // the redeem script
+    this.emit(Op.OP_NIP, locationData); // K is no part of the lock
+    this.emit(Op.OP_HASH256, locationData);
     this.emit(Uint8Array.of(0xaa, 0x20), locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.emit(Op.OP_DROP, locationData); // the suffix, leaving the index
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-    this.emit(encodeInt(34n), locationData);
-    this.emit(Op.OP_SPLIT, locationData);
-    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
     this.emit(Uint8Array.of(0x87), locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData); // another category: its category item
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData); // no token at all: the empty category item
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_NOT, locationData);
-    this.emit(Op.OP_UNTIL, locationData);
-    this.emit(Op.OP_DROP, locationData); // the spent index
-    this.emit(Op.OP_DROP, locationData); // K, leaving the address on top
+    this.emit(Op.OP_CAT, locationData); // [authhead, record, K, address, kind]
+    for (let slot = 0; slot < CHILD_LOCK_CAPACITY; slot += 1) {
+      this.emit(childLockSentinel(slot), locationData); // [S0..S7, authhead, record, K, address, kind]
+    }
+    this.emit(bytecodeToScript(Uint8Array.from(childCategoryCheckScript())), locationData);
+    // The check leaves the stack as it found it; the sentinels and the derived locks are no part of the value.
+    for (let drop = 0; drop < CHILD_LOCK_CAPACITY + 2; drop += 1) {
+      this.emit(Op.OP_DROP, locationData);
+    }
+    this.emit(Op.OP_NIP, locationData); // K, beneath the address
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {

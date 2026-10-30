@@ -36,6 +36,8 @@ export interface DeployContractOptions {
   threadCount?: number;
   /** Number of validator UTXOs a framed genesis mints; defaults to the composing pool size. */
   validatorCount?: number;
+  /** The entry locks of the child a creating contract mints (docs/framed/CREATE2_IDENTITY.md). */
+  childLocks?: readonly Uint8Array[];
   /**
    * The lock a constructor that reads `msg.sender` sees. Defaults to the runner's own lock; a contract another contract
    * creates states its creator's, which is the `factory` a pair records.
@@ -455,6 +457,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         threadCount: overrides.threadCount,
         validatorCount: overrides.validatorCount,
         ...(overrides.functionSplit === undefined ? {} : { functionSplit: overrides.functionSplit }),
+        ...(overrides.childLocks === undefined ? {} : { childLocks: overrides.childLocks }),
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),

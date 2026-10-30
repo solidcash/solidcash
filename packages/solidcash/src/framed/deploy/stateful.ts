@@ -39,6 +39,7 @@ import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/ide
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { bindProviderBlockOracle } from '../call/block-oracle.js';
+import { patchChildLockSentinels } from './child-locks.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -98,7 +99,23 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   options: DeployOptions,
   prepared: PreparedMetadata = {},
 ): Promise<DeployResult<T>> {
-  if (artifact.stateLayout === undefined) {
+  // A creator's check names the child's master locks, which exist only now: fill its reserved slots from the entry
+  // locks the deployment was given, on the artifact and on every shard and cut of its bundle.
+  const childLocks = options.childLocks;
+  const shippedArtifact = (childLocks === undefined || childLocks.length === 0
+    ? artifact : patchChildLockSentinels(artifact, childLocks)) as typeof artifact;
+  const split = childLocks === undefined || childLocks.length === 0 || options.functionSplit === undefined
+    ? options.functionSplit
+    : {
+      ...options.functionSplit,
+      shards: options.functionSplit.shards.map((shard) => ({
+        ...shard, artifact: patchChildLockSentinels(shard.artifact, childLocks),
+      })),
+      internalCuts: options.functionSplit.internalCuts.map((cut) => ({
+        ...cut, artifact: patchChildLockSentinels(cut.artifact, childLocks),
+      })),
+    };
+  if (shippedArtifact.stateLayout === undefined) {
     throw new FramedDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
   }
   if (options.fundingUtxo.vout !== 0) {
@@ -108,8 +125,8 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     );
   }
   // The masters pin the oracle lock the contract's calls co-spend, each entry shard's as the logical program's.
-  bindProviderBlockOracle(options.provider, artifact);
-  for (const program of [...options.functionSplit?.shards ?? [], ...options.functionSplit?.internalCuts ?? []]) {
+  bindProviderBlockOracle(options.provider, shippedArtifact);
+  for (const program of [...split?.shards ?? [], ...split?.internalCuts ?? []]) {
     bindProviderBlockOracle(options.provider, program.artifact);
   }
 
@@ -160,7 +177,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // A supplied state (a proxy's, as its derived `initialize` left it) replaces the constructor frame's derivation.
   const minted = options.mintedState;
   const genesis = minted !== undefined ? undefined : deriveFramedGenesis({
-    artifact,
+    artifact: shippedArtifact,
     category,
     validatorProgram,
     provider: options.provider,
@@ -172,7 +189,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     ...(options.provider.consensusLimits?.maximumNftCommitmentBytes === undefined
       ? {} : { maximumNftCommitmentBytes: options.provider.consensusLimits.maximumNftCommitmentBytes }),
   });
-  const master = genesis?.master ?? deployMaster(artifact, category, validatorProgram);
+  const master = genesis?.master ?? deployMaster(shippedArtifact, category, validatorProgram);
 
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
@@ -190,18 +207,18 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(`validatorCount must be a positive integer, got ${options.validatorCount}`);
   }
   const pool = resolveMasterPoolSize({ masters: options.threadCount, validators: options.validatorCount });
-  if (options.functionSplit !== undefined && options.functionSplit.logicalContractName !== artifact.contractName) {
+  if (split !== undefined && split.logicalContractName !== shippedArtifact.contractName) {
     throw new FramedDeployError(
-      `function split bundle is ${options.functionSplit.logicalContractName}, not ${artifact.contractName}`,
+      `function split bundle is ${split.logicalContractName}, not ${shippedArtifact.contractName}`,
     );
   }
   // A function-split genesis mints one pool per entry lock. A monolith genesis mints the one filled master.
-  const splitPools = options.functionSplit === undefined ? undefined : MasterPoolDeployment.createFunctionSplit({
-    bundle: options.functionSplit, category, validatorProgram, size: pool,
+  const splitPools = split === undefined ? undefined : MasterPoolDeployment.createFunctionSplit({
+    bundle: split, category, validatorProgram, size: pool,
   });
   if (splitPools !== undefined && !bytesEqual(splitPools.getAddress(), master.address)) {
     throw new FramedDeployError(
-      `function split shards of ${artifact.contractName} do not share the genesis addrV`,
+      `function split shards of ${shippedArtifact.contractName} do not share the genesis addrV`,
     );
   }
   const entryLocks = splitPools?.getEntryLocks() ?? [master.lockingBytecode];
@@ -380,7 +397,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   labelNextBroadcast(`deploy ${artifact.contractName}`);
   const tx = options.broadcast === false ? unbroadcastGenesis(builder) : await builder.send();
   // Every later frame of this category runs the shard its selector names, at that shard's lock.
-  if (options.functionSplit !== undefined) registerFunctionSplit(options.provider, categoryId, options.functionSplit);
+  if (split !== undefined) registerFunctionSplit(options.provider, categoryId, split);
 
   // A framed artifact bakes its constructor arguments into the filled program the genesis published rather than
   // into the handle's redeem script, so the handle is built without repeating them.

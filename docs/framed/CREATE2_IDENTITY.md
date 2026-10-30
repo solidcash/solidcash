@@ -37,6 +37,20 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
 
 ## Landed
 
+- The creating body's category check (`framed/master/child-category-check.ts`, `child-category-check.test.ts`): every
+  output of `K` must carry an NFT, mint no fungible amount, sit at a 35-byte P2SH32 lock, and be one of the locks the
+  child's genesis names — the validator at `addrV(K)`, the data record's covenant, the authhead contract, or one of the
+  master locks the deployment fills into the check's sentinels (`child-locks.ts` on both sides,
+  `DeployOptions.childLocks`). `atomic-create2.test.ts` proves both sides in one planned transaction: the child's
+  genesis passes, a fungible amount of `K` is refused, and a minting NFT at a foreign P2SH32 lock is refused.
+- Two bugs that cost a round, kept here: the output's lock must be dropped after the membership comparisons (it
+  otherwise stays on the stack and the next loop turn reads it as its index), and `SPLIT` leaves the suffix on top, so
+  a P2SH32 prefix comparison needs `OP_SWAP` before `EQUALVERIFY`. In the generator, the record and authhead locks must
+  be derived from a *copy of K at its actual depth* (depth 1 before the record, depth 2 after it), not from the top of
+  the stack, which is the address.
+- The factory's `createPair` shard with the check is 6,386 B of program and an 8,289 B whole spend, still inside the
+  10,000-byte input limit.
+
 - A framed `create2` is `addrV(K)`, computed by the creating body from its block's validator reference and the
   transaction's origin coin (`child-address-in-body.test.ts`).
 - The call derivation states the real outpoints of the inputs the plan holds, so a body reading

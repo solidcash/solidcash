@@ -5,12 +5,15 @@ import { framedValidator } from '@solidcash/solidc/runtime';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringSplit } from '../../../../solidc/src/compiler.js';
 import { SignatureTemplate } from '../../../src/index.js';
-import type { Utxo } from '../../../src/interfaces.js';
+import type { Output, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { stateRecordLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { deployMaster } from '../../../src/framed/deploy/material.js';
+import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
+import { bindProviderBlockOracle } from '../../../src/framed/call/block-oracle.js';
+import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 /**
@@ -18,12 +21,8 @@ import { alicePkh, alicePriv } from '../../fixture/vars.js';
  *
  * The creating entry's call composes the child's genesis into the same transaction: the caller's genesis-eligible
  * coin is its category `K`, so `create2` returns `addrV(K)`, and the transaction mints the child's masters at their
- * shard locks, its validator at `addrV(K)` and its records — the outputs a deployment would mint, as trailing
- * outputs of the creator's transaction.
- *
- * The assertions are read off the transaction the composer derived and the machine accepted: the address the entry
- * returned, and each output the child's genesis must carry, at a lock computed from the child's own artifact rather
- * than from the composer's list.
+ * shard locks, its validator at `addrV(K)` and its records. The creator's own code checks what the transaction mints
+ * for that category: an output of `K` must be one of those locks, carry an NFT and mint no fungible amount.
  */
 
 const FRAMED = {
@@ -66,30 +65,46 @@ function shardsOf(primaryContractName: string): FunctionSplitBundle {
 describe('a child created with create2 in one transaction', () => {
   const creator = shardsOf('Creator');
   const child = shardsOf('Child');
+  const pool = { masters: 2, validators: 1 };
+  /** A P2SH32 lock no part of the child sits at. */
+  const foreignLock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x11), 0x87]);
 
-  /** A creator deployed on its own chain, and the genesis-eligible coin its `make` call will carry. */
-  const deployCreator = async () => {
+  /** The entry locks the child's masters deploy at, for a category of no consequence (constant shard locks). */
+  const childLocksOf = (provider: MockNetworkProvider): readonly Uint8Array[] => {
+    // The locks depend on the provider's block oracle, exactly as the deployment's and the composer's do.
+    bindProviderBlockOracle(provider, child.logical);
+    for (const shard of [...child.shards, ...child.internalCuts]) bindProviderBlockOracle(provider, shard.artifact);
+    return MasterPoolDeployment.createFunctionSplit({
+      bundle: child, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR, size: pool,
+    }).getEntryLocks();
+  };
+
+  /** Plans `make` on a creator whose sentinels the deployment filled, with any outputs after the genesis. */
+  const plan = async (extra?: (caller: Utxo) => readonly Output[]) => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = nextCoin(1_500_000n);
     await provider.addUtxo(binToHex(callerLock), funding);
     const { categoryId } = await deployStatefulContract(creator.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator,
+      childLocks: childLocksOf(provider),
     });
     const caller = nextCoin(900_000n);
     await provider.addUtxo(binToHex(callerLock), caller);
-    return { provider, categoryId, caller };
+    // The deployment filled the sentinels and registered the bundle it deployed; a call runs that one.
+    const split = functionSplitFor(provider, categoryId) ?? creator;
+    const result = await callFramedEntry({
+      provider, artifact: creator.logical, categoryId, functionName: 'make', args: [new Uint8Array(32)],
+      callerUtxo: caller, callerLockingBytecode: callerLock, funder, split,
+      vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
+      creates: { artifact: child.logical, split: child, pool },
+      ...(extra === undefined ? {} : { extraOutputs: extra(caller) }),
+    });
+    return { provider, caller, result };
   };
 
   it('lives at the address create2 returned and carries its masters, validator and records', async () => {
-    const { provider, categoryId, caller } = await deployCreator();
-    const pool = { masters: 2, validators: 1 };
-    const result = await callFramedEntry({
-      provider, artifact: creator.logical, categoryId, functionName: 'make', args: [new Uint8Array(32)],
-      callerUtxo: caller, callerLockingBytecode: callerLock, funder, split: creator,
-      vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
-      creates: { artifact: child.logical, split: child, pool },
-    });
+    const { provider, caller, result } = await plan();
     const refused = result.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
     expect(result.accepted, refused).toBe(true);
@@ -103,7 +118,6 @@ describe('a child created with create2 in one transaction', () => {
 
     // (b) The genesis carries the child's masters at their shard locks, its validator at `addrV(K)`, and its
     // records — each an output of this same transaction carrying category K.
-    // A token category is reported in display order, as the caller coin's txid is.
     const ofCategory = result.transaction.outputs.filter((output) => output.token !== undefined
       && bytesEqual(output.token.category, category));
     expect(ofCategory.length).toBeGreaterThan(0);
@@ -121,19 +135,26 @@ describe('a child created with create2 in one transaction', () => {
       && output.token!.nft?.capability === 'mutable');
     expect(record, 'state record').toBeDefined();
     expect((record!.token!.nft?.commitment ?? '').length).toBeGreaterThan(0);
+    expect(childLocksOf(provider).length).toBeGreaterThan(0);
   }, 240_000);
 
-  it('refuses a transaction that adds an output of the child\'s category', async () => {
-    const { provider, categoryId, caller } = await deployCreator();
-    const result = await callFramedEntry({
-      provider, artifact: creator.logical, categoryId, functionName: 'make', args: [new Uint8Array(32)],
-      callerUtxo: caller, callerLockingBytecode: callerLock, funder, split: creator,
-      vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
-      creates: { artifact: child.logical, split: child, pool: { masters: 2, validators: 1 } },
-      // An output no child genesis mints: a fungible amount of the new category at the caller's own key. Minting it
-      // alongside the genesis would create unbacked liquidity.
-      extraOutputs: [{ to: callerLock, amount: 1_000n, token: { category: caller.txid, amount: 1n } }],
-    });
+  it('refuses a transaction that adds a fungible amount of the child\'s category', async () => {
+    const { result } = await plan((caller) => [{
+      // An output no child genesis mints: unbacked liquidity of the new category at the caller's own key.
+      to: callerLock, amount: 1_000n, token: { category: caller.txid, amount: 1n },
+    }]);
+    expect(result.accepted).toBe(false);
+    const objection = result.verdicts.find((verdict) => !verdict.accepted)?.objection ?? '';
+    expect(objection).toMatch(/VERIFY|verify/);
+  }, 240_000);
+
+  it('refuses a category output at a lock that is not one of the child\'s', async () => {
+    const { result } = await plan((caller) => [{
+      // A minting NFT of the new category at a P2SH32 lock no master of the child sits at: without the deployment's
+      // allow-list it would pass every shape rule and could mint the child's token later.
+      to: foreignLock, amount: 1_000n,
+      token: { category: caller.txid, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+    }]);
     expect(result.accepted).toBe(false);
     const objection = result.verdicts.find((verdict) => !verdict.accepted)?.objection ?? '';
     expect(objection).toMatch(/VERIFY|verify/);

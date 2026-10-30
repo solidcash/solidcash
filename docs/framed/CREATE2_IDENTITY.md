@@ -45,6 +45,28 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   coin's outpoint (`atomic-create2.test.ts`: the returned address, each shard's master, the validator and a
   record, all read off the derivation the machine accepted).
 
+### The creator's allow-list, as the next unit
+
+The creator has to refuse any output of category `K` that is not one of the child's: the masters at their shard
+locks, the validator at `addrV(K)`, the records at the data-NFT covenant, and the authhead. Two of those it derives
+from `K` in script (`addrV`, and the record lock through the framework's `data record lock` routine; the authhead is
+`push(pin(K)) ++ AUTHHEAD_BODY` hashed); the masters' locks come from the child's artifact, and with the block
+oracle binding they are only known at deployment.
+
+Measured shape for the check:
+
+- The compiler emits one 35-byte sentinel push per allowed master lock (a fixed capacity, refused by the SDK when the
+  child has more), so each comparison has a compile-time stack depth; the SDK fills them at deploy from
+  `MasterPoolDeployment.getEntryLocks()`, as `patchInternalHelperLocks` fills helper locks. Distinct locks let a
+  count establish the rule without per-lock multiplicity: count every output of category `K` (nK), count per allowed
+  lock the outputs of category `K` at that lock, and require the sum to equal nK. Padding uses a lock no output can
+  carry, so it counts zero.
+- Counting loops follow the call-batch template (`OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP …
+  OP_DUP OP_NOT OP_UNTIL`, with `OP_n OP_PICK` fetching the target), and the generator's named stack slots
+  (`pushToStack`/`emitReplace`) are how the sum and nK are carried, rather than raw depth arithmetic.
+- Fungible amounts of `K` must be refused as well: a minted amount at creation is unbacked LP, and a minting NFT at a
+  substituted lock could mint it later. The allow-list above refuses both, because a matching lock is required.
+
 ## Work
 
 1. solidc: masters without baked category/address (read from the own token and the validator input); constant shard

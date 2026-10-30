@@ -101,6 +101,8 @@ import {
 import { requireFramedFunderSighash } from '../sighash.js';
 import { hashedCallArguments } from './hashed-arguments.js';
 import { WrittenValueAwaited, registeredExternalFor, type HopCallee } from '../proxy/external-calls.js';
+import type { Output } from '../../interfaces.js';
+import { addressToLockScript } from '../../utils.js';
 import { functionSplitFor } from '../deploy/split-registry.js';
 import { childGenesisOutputs } from '../deploy/genesis-outputs.js';
 import { traceBroadcast } from '../../tx-trace.js';
@@ -277,6 +279,12 @@ export interface FramedCallOptions {
    * `addrV(K)` names. `null` mints nothing.
    */
   readonly creates?: FramedCallCreation | null;
+  /**
+   * Outputs the caller states after the composition's own, each as it will sit on chain. A creating entry's category
+   * check runs over every output, so this is also how a transaction that adds an output of the child's category is
+   * planned and judged.
+   */
+  readonly extraOutputs?: readonly Output[];
 }
 
 /** Tokens a call pays into a container: the coin they come from, its unlocker, and the amount the container takes. */
@@ -2763,6 +2771,13 @@ async function callInShape(
         valueSatoshis: output.amount,
         ...(output.token === undefined ? {} : { token: draftToken(output.token) }),
       }));
+    for (const output of options.extraOutputs ?? []) {
+      createdOutputs.push({
+        lockingBytecode: typeof output.to === 'string' ? addressToLockScript(output.to) : output.to,
+        valueSatoshis: output.amount,
+        ...(output.token === undefined ? {} : { token: draftToken(output.token) }),
+      });
+    }
     return {
       blocks,
       // The chain's own time, read from the provider: a body that reads the transaction's locktime sees it.

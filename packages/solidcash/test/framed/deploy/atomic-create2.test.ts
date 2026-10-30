@@ -67,7 +67,8 @@ describe('a child created with create2 in one transaction', () => {
   const creator = shardsOf('Creator');
   const child = shardsOf('Child');
 
-  it('lives at the address create2 returned and carries its masters, validator and records', async () => {
+  /** A creator deployed on its own chain, and the genesis-eligible coin its `make` call will carry. */
+  const deployCreator = async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = nextCoin(1_500_000n);
     await provider.addUtxo(binToHex(callerLock), funding);
@@ -75,9 +76,13 @@ describe('a child created with create2 in one transaction', () => {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator,
     });
-
     const caller = nextCoin(900_000n);
     await provider.addUtxo(binToHex(callerLock), caller);
+    return { provider, categoryId, caller };
+  };
+
+  it('lives at the address create2 returned and carries its masters, validator and records', async () => {
+    const { provider, categoryId, caller } = await deployCreator();
     const pool = { masters: 2, validators: 1 };
     const result = await callFramedEntry({
       provider, artifact: creator.logical, categoryId, functionName: 'make', args: [new Uint8Array(32)],
@@ -116,5 +121,21 @@ describe('a child created with create2 in one transaction', () => {
       && output.token!.nft?.capability === 'mutable');
     expect(record, 'state record').toBeDefined();
     expect((record!.token!.nft?.commitment ?? '').length).toBeGreaterThan(0);
+  }, 240_000);
+
+  it('refuses a transaction that adds an output of the child\'s category', async () => {
+    const { provider, categoryId, caller } = await deployCreator();
+    const result = await callFramedEntry({
+      provider, artifact: creator.logical, categoryId, functionName: 'make', args: [new Uint8Array(32)],
+      callerUtxo: caller, callerLockingBytecode: callerLock, funder, split: creator,
+      vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
+      creates: { artifact: child.logical, split: child, pool: { masters: 2, validators: 1 } },
+      // An output no child genesis mints: a fungible amount of the new category at the caller's own key. Minting it
+      // alongside the genesis would create unbacked liquidity.
+      extraOutputs: [{ to: callerLock, amount: 1_000n, token: { category: caller.txid, amount: 1n } }],
+    });
+    expect(result.accepted).toBe(false);
+    const objection = result.verdicts.find((verdict) => !verdict.accepted)?.objection ?? '';
+    expect(objection).toMatch(/VERIFY|verify/);
   }, 240_000);
 });

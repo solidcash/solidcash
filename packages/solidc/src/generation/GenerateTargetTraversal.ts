@@ -18791,7 +18791,103 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, locationData); // [kind, program, origin]
     this.emit(Op.OP_BIN2NUM, locationData);
     this.emit(bytecodeToScript(Uint8Array.from(childAddressFromProgramScript('stack'))), locationData);
+    // The child's genesis is minted by this transaction, so what it mints is this frame's to refuse: every output of
+    // category `K` must carry an NFT and no fungible amount, at a 35-byte P2SH32 lock. A fungible amount minted at
+    // creation is unbacked liquidity, and a lock that is not a covenant holds no code the child's validator names.
+    this.emitChildGenesisCheck(locationData);
     this.pushToStack('(value)');
+  }
+
+  /**
+   * The creating body's check of the outputs of category `K` (docs/framed/CREATE2_IDENTITY.md).
+   *
+   * Entry `[..., address]`, exit `[..., address]`. `K` is recomputed from the frame's own block. Every output is
+   * inspected: one that carries the category must carry an NFT and no fungible amount, at a 35-byte P2SH32 lock. The
+   * child's own master locks join the allow-list as deployment-filled sentinels (design note).
+   */
+  private emitChildGenesisCheck(locationData: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_INPUTBYTECODE, locationData);
+    this.emit(bytecodeToScript(splitFirstPushScript()), locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(bytecodeToScript(readFrameHeaderScript()), locationData); // [kind, caller, origin, validatorRef, rest]
+    this.emit(Op.OP_DROP, locationData); // rest
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_ROLL, locationData); // origin on top
+    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(Op.OP_NIP, locationData); // caller
+    this.emit(Op.OP_DROP, locationData); // validator reference, unused here
+    this.emit(Op.OP_DROP, locationData); // frame kind
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    this.emit(Op.OP_REVERSEBYTES, locationData); // [K, address, kind]
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData); // [category, index, K, address, kind]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_GREATERTHANOREQUAL, locationData); // a token output carries at least its 32-byte category
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData); // the output's category, 32 bytes
+    this.emit(Op.OP_3, locationData);
+    this.emit(Op.OP_PICK, locationData); // K
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData); // the category item, leaving the index
+    // No fungible amount: a minted amount of `K` at creation is unbacked liquidity.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    // An NFT, so the capability byte follows the category (`SIZE > 32`).
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    // A 35-byte P2SH32 lock: `aa20 <32> 87`, the only shape a framed covenant output has.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(35n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_SPLIT, locationData); // [suffix, prefix]
+    this.emit(Op.OP_SWAP, locationData); // [prefix, suffix]
+    this.emit(Uint8Array.of(0xaa, 0x20), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DROP, locationData); // the suffix, leaving the index
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.emit(encodeInt(34n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Uint8Array.of(0x87), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData); // another category: its category item
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData); // no token at all: the empty category item
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.emit(Op.OP_DROP, locationData); // the spent index
+    this.emit(Op.OP_DROP, locationData); // K, leaving the address on top
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {

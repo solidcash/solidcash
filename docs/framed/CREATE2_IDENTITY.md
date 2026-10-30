@@ -64,6 +64,23 @@ only if the comparisons stay compact. The shape that does: push each sentinel on
 `composition.creates` for the split pass to rewrite per shard and the SDK to fill from
 `MasterPoolDeployment.getEntryLocks()`.
 
+### Measured: the sentinel allow-list refuses real locks too
+
+An attempt added the master-lock sentinels (one 35-byte placeholder per slot, filled at deployment from the child's
+entry locks), the record and authhead locks derived from `K`, and an OR-accumulated membership over all of them.
+Results, each probed separately:
+
+- The sentinels are found and replaced in the deployed `make` shard (scanned standalone: one push per slot, replaced).
+- Both refusals work: a fungible amount of `K`, and a minting NFT at a foreign P2SH32 lock, are refused.
+- The accepted path fails: at least one legitimate output's lock is not matched, so the attempt was reverted to the
+  shipped shape rules (fungible/NFT/P2SH32) rather than land a check that refuses the child's own genesis.
+
+What is already ruled out: the authhead formula (checked off chain: it matches `authheadLockingBytecode` when the
+pinned category is the reverse of the display order, which is the order `K` is in), and the sentinel replacement.
+What remains to instrument is the membership comparison itself, one allowed lock at a time, plus the inline record
+builder's order: `emitP2sh32FromCovenant(buildDataNftCovenantScript)` may expect the display-order category, and both
+orders were tried without isolating the record output alone.
+
 ### Measured: the check block runs, the category comparison does not match
 
 An attempt emitted the category check (loop over outputs, category compared with `K`, fungible amount forbidden,

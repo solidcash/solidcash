@@ -10,6 +10,8 @@ interface ProjectSource {
   path: string;
   imports: string[];
   declarations: string[];
+  /** Names the source creates, by `type(C).creationCode` or `new C`, before they are matched to declarations. */
+  creates: string[];
   dependencies: string[];
   hash: string;
 }
@@ -52,6 +54,12 @@ export interface ProjectCompileResult {
   artifacts: ArtifactMap;
   compiledRoots: string[];
   cacheHits: string[];
+  /**
+   * The contracts the project's framed sources create, sorted. A caller that compiles the same sources again (the
+   * per-entry `split: 'func'` bundles) names them too, so every compile of a created contract carries constant master
+   * locks.
+   */
+  creationTargets: readonly string[];
 }
 
 /** Opt-in worker-thread fan-out for the per-source compiler jobs. */
@@ -280,8 +288,12 @@ function readSource(
     .map((match) => match[1]);
   const declarations = [...code.matchAll(/\b(?:abstract\s+)?(?:contract|interface|library)\s+([A-Za-z_$][\w$]*)/g)]
     .map((match) => match[1]);
+  const creates = [
+    ...[...code.matchAll(/\btype\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\.\s*creationCode\b/g)].map((match) => match[1]),
+    ...[...code.matchAll(/\bnew\s+([A-Za-z_$][\w$]*)\s*[({]/g)].map((match) => match[1]),
+  ];
   const metadata: ProjectSource = {
-    path: absolute, imports, declarations, dependencies: [], hash: sourceHash,
+    path: absolute, imports, declarations, creates, dependencies: [], hash: sourceHash,
   };
   memo.set(absolute, metadata);
   metadata.dependencies = imports
@@ -327,6 +339,16 @@ export async function compileSolidityProject(
   const manifest = loadManifest(cache?.directory);
   const allSources = new Map<string, ProjectSource>();
   const sources = sourceFiles.map((file) => readSource(file, manifest, allSources));
+  // A framed creator and its child need not share a source, so the contracts the project creates are gathered across
+  // every source and named to each compile: the child is compiled with constant master locks, which its creator checks
+  // the child's genesis against (docs/framed/CREATE2_IDENTITY.md). A name no source declares as a contract (`new
+  // bytes(n)`) is not one.
+  const declaredContracts = new Set([...allSources.values()].flatMap((source) => source.declarations));
+  const creationTargets = new Set([
+    ...[...allSources.values()].flatMap((source) => source.creates).filter((name) => declaredContracts.has(name)),
+    ...((options.framedCreationTargets as readonly string[] | undefined) ?? []),
+  ]);
+  if (creationTargets.size > 0) options = { ...options, framedCreationTargets: [...creationTargets].sort() };
   const projectPaths = new Set(sources.map((source) => source.path));
   const selectedDeclarations = new Set(sources.flatMap((source) => source.declarations));
   const imported = new Set<string>();
@@ -449,5 +471,5 @@ export async function compileSolidityProject(
     }
   }
   if (cache) writeAtomic(path.join(cache.directory, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  return { artifacts, compiledRoots, cacheHits };
+  return { artifacts, compiledRoots, cacheHits, creationTargets: [...creationTargets].sort() };
 }

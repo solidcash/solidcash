@@ -298,6 +298,14 @@ export interface MasterHeadOptions {
    */
   readonly requiresValidator?: boolean;
   /**
+   * Set for a master of a contract another contract creates: the head reserves no deployment slot, so every master of
+   * the program has one lock whatever its category, and the creator checks its child's genesis against that lock. The
+   * category is read from the master's own token, `address(this)` is the validator's to bind (V11), and the validator
+   * is recognised against `validatorTemplateHash`, the hash of the one validator program the toolchain deploys.
+   * Requires `requiresValidator`: a master with no deployment slot has no standalone arm to settle by its address.
+   */
+  readonly constantLock?: { readonly validatorTemplateHash: Uint8Array };
+  /**
    * True when the head keeps the first segment's declared record indices as slots: a body with data NFTs reads
    * its state block where the frame's own block declared it instead of at a fixed offset from its input.
    */
@@ -368,6 +376,7 @@ class HeadEmitter {
   private readonly callCount: number;
   private readonly tailShape: MasterTailShape;
   private readonly reservesValidatorHashSlot: boolean;
+  private readonly constantLock: { readonly validatorTemplateHash: Uint8Array } | undefined;
   private readonly admittedKinds: readonly number[];
   /** The caller's set, when one was passed. Omitted stays on the historical four-arm head. */
   private readonly requestedFrameKinds: readonly number[] | undefined;
@@ -395,6 +404,10 @@ class HeadEmitter {
     this.soleEntrySelector = options.soleEntrySelector;
     this.settlesOwnRecords = options.settlesOwnRecords === true;
     this.requiresValidator = options.requiresValidator === true;
+    this.constantLock = options.constantLock;
+    if (this.constantLock !== undefined && !this.requiresValidator) {
+      throw new Error('master head: a constant-lock master has no standalone arm, so every spend has to name a validator');
+    }
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
     this.acceptsValue = options.acceptsValue === true;
@@ -434,14 +447,24 @@ class HeadEmitter {
 
   /** The prologue, with the category pin assembled at run time from the reserved slot. */
   prologue(): void {
-    this.pushCategorySlot();
-    this.pushData(new Uint8Array([TokenCapability.MINTING]));
-    this.opCat();
-    // Ownership: the spent UTXO carries this category with minting capability.
-    this.dup();
-    this.emitInputIndex();
-    this.emitPopPush(Opcodes.OP_UTXOTOKENCATEGORY, 'utxoCategory');
-    this.equalVerify();
+    if (this.constantLock !== undefined) {
+      // Ownership: the spent UTXO carries a category with minting capability, and that category is this master's.
+      this.emitInputIndex();
+      this.emitPopPush(Opcodes.OP_UTXOTOKENCATEGORY, 'pin');
+      this.dup();
+      this.emitOp(Opcodes.OP_SIZE, Opcodes.OP_1SUB, Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+      this.pushData(new Uint8Array([TokenCapability.MINTING]));
+      this.equalVerify();
+    } else {
+      this.pushCategorySlot();
+      this.pushData(new Uint8Array([TokenCapability.MINTING]));
+      this.opCat();
+      // Ownership: the spent UTXO carries this category with minting capability.
+      this.dup();
+      this.emitInputIndex();
+      this.emitPopPush(Opcodes.OP_UTXOTOKENCATEGORY, 'utxoCategory');
+      this.equalVerify();
+    }
     // Recreation in place: same lock, same category and capability, empty commitment, at least the value.
     this.emitInputIndex();
     this.emitPopPush(Opcodes.OP_OUTPUTBYTECODE, 'outputLock');
@@ -748,7 +771,8 @@ class HeadEmitter {
     // address check goes before it: a deployment finds the validator hash slot as the first reserved one after the
     // address slot (`findPlaceholderOffsets`).
     if (this.requiresValidator) {
-      this.assertSelfAddressForCodeConstantKinds();
+      // A constant-lock master holds no address of its own; the validator binds a covered frame's `self` (V11).
+      if (this.constantLock === undefined) this.assertSelfAddressForCodeConstantKinds();
       this.recogniseValidator();
     }
     this.emitBytes(verifyTailScript(this.tailShape, {
@@ -1052,8 +1076,14 @@ class HeadEmitter {
     if (!this.reservesValidatorHashSlot) {
       throw new Error('master head: a validator reference needs a reserved validator program hash slot');
     }
-    // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed.
-    this.pushValidatorHashSlot();
+    // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed. A constant-lock
+    // master carries the hash itself: the toolchain deploys one validator program.
+    if (this.constantLock !== undefined) {
+      this.emitBytes(encodeDataPush(this.constantLock.validatorTemplateHash));
+      this.push('validatorHashSlot');
+    } else {
+      this.pushValidatorHashSlot();
+    }
     this.pick('validatorRef');
     this.bin2num();
     // A master every spend of which is covered defines the framework library the recognised program carries, so its

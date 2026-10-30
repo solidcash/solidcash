@@ -340,9 +340,15 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     let compilerJobs = 0;
     let cacheHits = 0;
     try {
+      // A contract a creator reaches through the template table (a CREATE2 over a code value) is a child too.
+      const templateChildren = Object.values(hre.config.create2Templates ?? {});
       const result = await compileSolidityProject(
         solFiles,
-        { evmCompat: true, ...compilerOptions },
+        {
+          evmCompat: true,
+          ...compilerOptions,
+          ...(templateChildren.length === 0 ? {} : { framedCreationTargets: templateChildren }),
+        },
         compileFileMulti,
         artifactCache ? {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
@@ -379,6 +385,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         try {
           split = compileFileSplit(full, {
             evmCompat: true, ...compilerOptions, maxShardBytes,
+            ...(result.creationTargets.length === 0 ? {} : { framedCreationTargets: result.creationTargets }),
           });
         } catch (error: any) {
           // Keep sharding the remaining sources. Aborting here reports one wall per run, which on a large
@@ -411,6 +418,9 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
                 // The cap is the input limit, which a framed master shares with its witness block.
                 evmCompat: true, ...compilerOptions, maxShardBytes, framedWitnessReserve: true, split: 'func',
                 primaryContractName: name,
+                // A contract another source creates carries constant master locks in its bundle too, which is the
+                // form the app deploys.
+                ...(result.creationTargets.length === 0 ? {} : { framedCreationTargets: result.creationTargets }),
               });
               fs.writeFileSync(path.join(outputDir, `${name}.func.json`), formatSplitArtifactBundle(bundle, 'json'));
               if (!args.quiet) console.log(`Split ${name} -> ${bundle.shards.length} entry shard(s)`);

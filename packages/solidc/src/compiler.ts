@@ -86,6 +86,7 @@ import {
   alignCensusAddressOffset,
   findPlaceholderOffsets,
   isFramedMaster,
+  framedConstantLockMaster,
   setFramedMaster,
 } from './framed/master/master-program.js';
 import { outlineFramedMasterProgram, type FramedOutlinedFunction } from './framed/master/program-outline.js';
@@ -691,6 +692,11 @@ type InternalCompilerOptions = CompilerOptions & {
   __framedStopSites?: PublishedFramedStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
   __framedReservesValidatorHash?: boolean;
+  /**
+   * Set for a contract another contract of the compile unit creates: its masters that every spend covers reserve no
+   * deployment slot, so each has one lock whatever its category, which the creator checks the child's genesis against.
+   */
+  __framedConstantLock?: boolean;
   /** The source's `split(n)` and `merge(n)`, served by the master's lifecycle arm rather than its head. */
   __framedLifecycle?: readonly FramedLifecycleEntry[];
   /**
@@ -17242,6 +17248,7 @@ function compileResolvedAst(
   if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__framedReservesValidatorHash === true;
+    const constantLockMaster = framedConstantLockMaster(mergedCompilerOptions as InternalCompilerOptions);
     // The lifecycle arm wraps the optimised master, so the census is retargeted after it moves the master's bytes.
     const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
     // A master that asks whether a validator settles it beside another master of its contract computes the answer
@@ -17255,11 +17262,13 @@ function compileResolvedAst(
     // census retarget, which reads the offsets the definitions move. An unoptimised compile keeps the generator's
     // own instructions, and `SOLIDCASH_NO_OUTLINE` keeps it inline.
     if (mergedCompilerOptions.optimise !== false && !solidcEnvFlagEnabled('SOLIDCASH_NO_OUTLINE')) {
-      const outlined = outlineFramedMasterProgram(optimisationResult, reservesValidatorHash);
+      const outlined = outlineFramedMasterProgram(optimisationResult, reservesValidatorHash, constantLockMaster);
       Object.assign(optimisationResult, outlined.parts);
       framedOutlinedFunctions = outlined.functions;
     }
-    optimisationResult.script = alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash);
+    optimisationResult.script = alignCensusAddressOffset(
+      optimisationResult.script, reservesValidatorHash, constantLockMaster,
+    );
   }
 
   // Attach debug information
@@ -17325,10 +17334,12 @@ function compileResolvedAst(
     // for the validator program's hash; one that stands alone reserves two.
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__framedReservesValidatorHash === true;
-    const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash);
+    // A constant-lock master reserves no slot: its lock is the same for every category it is deployed as.
     const composition: NonNullable<Artifact['composition']> = {
       convention: 'framed',
-      placeholders: { version: 1, ...offsets },
+      placeholders: framedConstantLockMaster(mergedCompilerOptions as InternalCompilerOptions)
+        ? { version: 1, constantLock: true }
+        : { version: 1, ...findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash) },
     };
     // The stop sites a builder resumes each served entry from.
     const stopSites = (mergedCompilerOptions as InternalCompilerOptions).__framedStopSites;
@@ -19125,6 +19136,36 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * Abstract contracts are excluded (not deployable). `compileString` is unchanged (single primary artifact).
  * See docs/multi-contract-artifacts.md.
  */
+/**
+ * The contracts the given contracts create: every `type(C).creationCode` and every `new C(...)` names its child. The
+ * walk follows each node's fields once, so references back up the tree (a resolved contract) end it.
+ */
+function framedCreationTargetsOf(contracts: readonly ContractNode[]): string[] {
+  const targets = new Set<string>();
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof TypeIntrospectionNode && value.property === 'creationCode') targets.add(value.typeArgText);
+    if (value instanceof InstantiationNode) targets.add(value.identifier.name);
+    for (const field of Object.values(value)) walk(field);
+  };
+  for (const contract of contracts) walk(contract);
+  return [...targets];
+}
+
+/**
+ * The contracts a source creates, by `type(C).creationCode` or `new C(...)`, its imports included. A project compiler
+ * gathers them across every source and passes them to each compile (`framedCreationTargets`), since a creator and its
+ * child need not share a source.
+ */
+export function framedCreationTargetsOfSource(code: string, options: CompileStringOptions = {}): string[] {
+  const parsed = parseAndResolve(code, normalizeCompilerOptions(withFilesResolver(options)), options.errorListener);
+  return framedCreationTargetsOf(
+    [...parsed.importedContracts, parsed.contract].filter((contract): contract is ContractNode => contract !== undefined),
+  );
+}
+
 export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
   const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
@@ -19194,6 +19235,12 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   });
   const allContracts = [...probe.importedContracts, probe.contract].filter(Boolean);
   const interfaces = probe.interfaceDefinitions ?? [];
+  // The contracts another contract of the unit creates: their masters carry no deployment slot, so each shard has one
+  // lock its creator can check the child's genesis against (docs/framed/CREATE2_IDENTITY.md).
+  const creationTargets = new Set([
+    ...framedCreationTargetsOf(allContracts.filter((contract): contract is ContractNode => contract !== undefined)),
+    ...(artifactCompilerOptions.framedCreationTargets ?? []),
+  ]);
   // Taken from the pristine probe: the last primary's pipeline consumes it.
   const implementers = artifactCompilerOptions.callBatch === undefined
     ? interfaceImplementers(interfaces, allContracts) : new Map<string, string[]>();
@@ -19234,6 +19281,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       suppressWarnings,
       primaryContractName: contract.name,
       __parsedAst: parsedAst,
+      ...(creationTargets.has(contract.name) ? { __framedConstantLock: true } : {}),
     } as CompileOptions);
     const compiled = map[contract.name];
     profileLog('multi-contract', contractStarted, {
@@ -19366,12 +19414,20 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
         return logical;
       },
       compileParsed(source, options, ast, frameKinds) {
+        // A contract the unit (or the project, through the option) creates: its shards carry no deployment slot.
+        const creationTarget = probe !== undefined && new Set([
+          ...framedCreationTargetsOf([...probe.importedContracts, probe.contract].filter(
+            (contract): contract is ContractNode => contract !== undefined,
+          )),
+          ...(options.framedCreationTargets ?? []),
+        ]).has(probe.contract.name);
         return compileStringUnchecked(source, {
           ...stripSplitPlanning(options),
           errorListener,
           __parsedAst: ast,
           __functionSplitPrepared: true,
           __functionSplitFrameKinds: frameKinds,
+          ...(creationTarget ? { __framedConstantLock: true } : {}),
           ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
             ? { __framedContractHoldsTokens: true } : {}),
           ...(logical === undefined ? {} : splitLogicalEventOptions(logical, probe)),

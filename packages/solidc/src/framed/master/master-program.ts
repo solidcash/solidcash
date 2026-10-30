@@ -32,6 +32,16 @@ export function isFramedMaster(options: FramedMasterOptionCarrier): boolean {
   return options.__framedMaster === true;
 }
 
+/**
+ * True when this framed master reserves no deployment slot: its contract is one another contract of the compile unit
+ * creates, and every spend of it names a validator (a per-entry shard), so its lock is the same for every category.
+ */
+export function framedConstantLockMaster(
+  options: FramedMasterOptionCarrier & { __framedConstantLock?: boolean; __functionSplitFrameKinds?: readonly number[] },
+): boolean {
+  return isFramedMaster(options) && options.__framedConstantLock === true && options.__functionSplitFrameKinds !== undefined;
+}
+
 /** Marks this compile as emitting a framed master program. */
 export function setFramedMaster(options: FramedMasterOptionCarrier): void {
   options.__framedMaster = true;
@@ -117,7 +127,9 @@ function allOffsets(script: Uint8Array, pattern: Uint8Array): number[] {
  * contract would be refused. The slot itself is found afterwards, by its reserved push; this rewrites the census
  * to that payload. A master that does not settle its own records has no such read, and is left unchanged.
  */
-export function alignCensusAddressOffset(script: Script, declaresTemplateHash: boolean): Script {
+export function alignCensusAddressOffset(script: Script, declaresTemplateHash: boolean, constantLock = false): Script {
+  // A constant-lock master reserves no address slot and so carries no read of one.
+  if (constantLock) return script;
   let current = script;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const aligned = retargetCensusAddress(current, declaresTemplateHash);

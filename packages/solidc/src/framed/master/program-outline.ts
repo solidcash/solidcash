@@ -57,9 +57,10 @@ const MINIMUM_SPAN_ELEMENTS = 8;
 export function outlineFramedMasterProgram(
   parts: MasterProgramParts,
   declaresTemplateHash: boolean,
+  constantLock = false,
 ): { parts: MasterProgramParts; functions: FramedOutlinedFunction[] } {
   const ids = new FunctionIdPool(functionIdsInUse(parts.script));
-  const anchors = programAnchors(parts, declaresTemplateHash);
+  const anchors = programAnchors(parts, declaresTemplateHash, constantLock);
   const first = outlineSharedSpans(
     [{ script: parts.script, locationData: parts.locationData, anchors }],
     () => ids.allocate(), () => ids.peekPushBytes(), 'savings', MINIMUM_SPAN_ELEMENTS, 12288, undefined, 6,
@@ -110,7 +111,7 @@ export function outlineFramedMasterProgram(
 }
 
 /** The instructions no shared span may contain: debug sites, reserved slots and the address reads. */
-function programAnchors(parts: MasterProgramParts, declaresTemplateHash: boolean): number[] {
+function programAnchors(parts: MasterProgramParts, declaresTemplateHash: boolean, constantLock: boolean): number[] {
   const anchors = [
     ...parts.requires.map((entry) => entry.ip),
     ...parts.logs.flatMap((log) => [log.ip, ...log.data.flatMap((item) => (typeof item === 'string' ? [] : [item.ip]))]),
@@ -119,7 +120,8 @@ function programAnchors(parts: MasterProgramParts, declaresTemplateHash: boolean
     if (element !== Op.OP_ACTIVEBYTECODE) return;
     for (let offset = 0; offset <= ADDRESS_READ_TAIL_ELEMENTS; offset += 1) anchors.push(index + offset);
   });
-  const offsets = findPlaceholderOffsets(scriptToBytecode(parts.script), declaresTemplateHash);
+  // A constant-lock master reserves no slot a deployment writes.
+  const offsets = constantLock ? {} : findPlaceholderOffsets(scriptToBytecode(parts.script), declaresTemplateHash);
   const slots = new Set<number>(Object.values(offsets).filter((offset): offset is number => offset !== undefined));
   let byte = 0;
   parts.script.forEach((element, index) => {

@@ -177,12 +177,19 @@ export function deployMaster(
     ? applyBlockOracleLock(assembled, oracleLock, artifact.blockOracleLockSlots)
     : assembled;
   assertPlaceholders(original, placeholders);
+  // A constant-lock master is a creator's child: it presents its own category's address, never a CREATE2 identity,
+  // and its program is the same for every category (docs/framed/CREATE2_IDENTITY.md).
+  if (placeholders.constantLock === true && identity !== undefined) {
+    throw new FramedDeploymentError(
+      `artifact "${artifact.contractName}" is a constant-lock master, which presents its own address, not an identity`,
+    );
+  }
   // The hash is only filled where the descriptor reserves a slot for it: a master that cannot be reached through a
   // call never reads it, and passing it to a script with no slot is refused.
-  const templateHash = placeholders.templateHashOffset === undefined
+  const templateHash = placeholders.constantLock === true || placeholders.templateHashOffset === undefined
     ? undefined
     : validatorTemplateHash(validatorProgram);
-  if (identity !== undefined && placeholders.identityOffset === undefined) {
+  if (identity !== undefined && placeholders.constantLock !== true && placeholders.identityOffset === undefined) {
     throw new FramedDeploymentError(
       `artifact "${artifact.contractName}" reserves no identity slot, so it cannot present a CREATE2 identity`,
     );
@@ -237,6 +244,21 @@ export function verifyMasterDeployment(
     throw new FramedDeploymentError(
       `the deployed script is ${deployed.script.length} bytes, not the artifact's ${original.length}`,
     );
+  }
+  // A constant-lock master carries no deployment constant: it is the compiled program (with its network's oracle
+  // lock where it reads one), and its lock is that program's, whatever the category.
+  if (placeholders.constantLock === true) {
+    const oracleLock = blockOracleLockFor(artifact);
+    const expected = oracleLock !== undefined && artifact.blockOracleLockSlots !== undefined
+      ? applyBlockOracleLock(original, oracleLock, artifact.blockOracleLockSlots)
+      : original;
+    if (!bytesEqual(deployed.script, expected)) {
+      throw new FramedDeploymentError('a constant-lock master is deployed as other bytes than its compiled program');
+    }
+    if (!bytesEqual(deployed.lockingBytecode, masterLock(deployed.script))) {
+      throw new FramedDeploymentError('the master lock is not the P2SH32 of the deployed program');
+    }
+    return;
   }
 
   const readBack = readPlaceholders(deployed.script, placeholders);

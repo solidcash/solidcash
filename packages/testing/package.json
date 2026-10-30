@@ -54,6 +54,10 @@
       "types": "./dist/hre.d.ts",
       "default": "./dist/hre.js"
     },
+    "./ethers-runtime": {
+      "types": "./dist/ethers-runtime.d.ts",
+      "default": "./dist/ethers-runtime.js"
+    },
     "./tasks": {
       "types": "./dist/tasks.d.ts",
       "default": "./dist/tasks.js"

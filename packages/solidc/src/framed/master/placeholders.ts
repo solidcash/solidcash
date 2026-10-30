@@ -81,6 +81,8 @@ export function placeholdersAt(
 export function declaredSlots(
   placeholders: CompositionPlaceholders,
 ): readonly { readonly offset: number; readonly length: number; readonly what: string }[] {
+  // A constant-lock master reserves no slot: nothing in it depends on the category it is deployed as.
+  if (placeholders.constantLock === true) return [];
   const slots = [
     { offset: placeholders.categoryOffset, length: CATEGORY_SLOT_LENGTH, what: 'category' },
     { offset: placeholders.addressOffset, length: ADDRESS_SLOT_LENGTH, what: 'address' },
@@ -141,6 +143,11 @@ export function fillPlaceholders(
   placeholders: CompositionPlaceholders,
   values: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array; identity?: Uint8Array },
 ): Uint8Array {
+  // A constant-lock master is deployed as it was compiled: every category runs the same program.
+  if (placeholders.constantLock === true) {
+    assertPlaceholders(script, placeholders);
+    return Uint8Array.from(script);
+  }
   if (values.category.length !== CATEGORY_SLOT_LENGTH) {
     throw new FramedEncodingError(
       `a category is ${CATEGORY_SLOT_LENGTH} bytes: got ${values.category.length}`,
@@ -193,6 +200,9 @@ export function readPlaceholders(
   script: Uint8Array,
   placeholders: CompositionPlaceholders,
 ): { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array; identity?: Uint8Array } {
+  if (placeholders.constantLock === true) {
+    throw new FramedEncodingError('a constant-lock master holds no deployment constant to read back');
+  }
   const bounds = (offset: number, length: number): void => {
     if (offset < 0 || offset + placeholderPushLength(length) > script.length) {
       throw new FramedEncodingError(`slot at ${offset} is outside a ${script.length}-byte script`);

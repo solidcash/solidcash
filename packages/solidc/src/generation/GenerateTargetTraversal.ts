@@ -114,6 +114,7 @@ import {
   resolveAddressForm,
   INVALID_FUNCTION_POINTER_ID,
   implicitlyCastable,
+  validatorTemplateHash,
   type AbiFunction,
   type AddressForm,
 } from '@solidcash/utils';
@@ -338,6 +339,8 @@ import {
   eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, segmentsSlotName,
   sendBaseSlotName, sendCountSlotName, sendOutputSlotName, valueWitnessSlotName,
 } from '../framed/master/master-head.js';
+import { framedConstantLockMaster } from '../framed/master/master-program.js';
+import { buildValidatorProgram } from '../framed/validator/program.js';
 import { loopEffectKinds } from '../framed/master/loop-effects.js';
 import { callSiteCheckScript, readCallRecordResultScript, sourceReadsCallResult } from '../framed/master/call-site.js';
 import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../framed/master/witness-reader.js';
@@ -1485,6 +1488,13 @@ const isAggregate = (type: unknown): boolean =>
 
 /** The name a batch derivation's emitted key is tracked under: its target and its position among that target's keys. */
 const framedBatchKeyName = (slot: number, keyIndex: number): string => `(framed_batch_key_${slot}_${keyIndex})`;
+
+/** The hash of the one validator program the toolchain deploys, which a constant-lock master recognises it by. */
+let validatorTemplateHashMemo: Uint8Array | undefined;
+function constantLockValidatorTemplateHash(): Uint8Array {
+  validatorTemplateHashMemo ??= validatorTemplateHash(buildValidatorProgram());
+  return validatorTemplateHashMemo;
+}
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
@@ -4369,6 +4379,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // commitments the transaction spends and writes, and the state UTXOs spent are the records it declared.
       settlesOwnRecords: true,
       ...(requiresValidator ? { requiresValidator: true } : {}),
+      // A contract another contract creates carries no deployment slot: the creator checks its child's masters
+      // against the one lock each shard then has (docs/framed/CREATE2_IDENTITY.md).
+      ...(framedConstantLockMaster(this.compilerOptions as Parameters<typeof framedConstantLockMaster>[0])
+        ? { constantLock: { validatorTemplateHash: constantLockValidatorTemplateHash() } }
+        : {}),
       callCount,
       ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
       ...(returnsValue ? { returnsValue: true } : {}),

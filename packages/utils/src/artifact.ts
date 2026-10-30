@@ -32,6 +32,13 @@ export interface AbiFunctionReference {
 export type AddressForm = 'bytecode' | 'hash';
 
 export interface CompilerOptions {
+  /**
+   * Framed composition: contracts a framed contract creates without naming them in source (a CREATE2 over a code
+   * value it holds, which the project's template table maps to a contract). A contract a source does name, by
+   * `type(C).creationCode` or `new C`, is found by the compiler. Each is compiled with constant master locks, which its
+   * creator checks the child's genesis against (docs/framed/CREATE2_IDENTITY.md).
+   */
+  framedCreationTargets?: readonly string[];
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
@@ -1999,9 +2006,23 @@ export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
  * known once the contract exists. The offsets are authoritative and are checked before a fill, because a wrong fill
  * would overwrite live script bytes.
  */
-export interface CompositionPlaceholders {
+export type CompositionPlaceholders = SlottedPlaceholders | ConstantLockPlaceholders;
+
+/**
+ * A master that reserves no deployment slot: its contract is one another contract creates, so it reads its category
+ * from its own token and leaves `address(this)` to the validator, and every master of the program has one lock
+ * whatever its category, which the creator checks its child's genesis against (docs/framed/CREATE2_IDENTITY.md).
+ */
+export interface ConstantLockPlaceholders {
+  version: 1;
+  constantLock: true;
+}
+
+/** The slots a master's deployment fills: its category, its address and, for a master reached by calls, more. */
+export interface SlottedPlaceholders {
   /** Schema version, so a script and its descriptor cannot be paired across a format change. */
   version: 1;
+  constantLock?: undefined;
   /** Byte offset of the 32-byte state category slot within the script. */
   categoryOffset: number;
   /** Byte offset of the 35-byte contract address slot within the script. */

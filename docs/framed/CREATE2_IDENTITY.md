@@ -35,6 +35,16 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   factory's users find its children by its events and its pair mapping, and the mapping refuses a second pair. Callers
   that predicted a pair by hashing (`UniswapV2Library.pairFor`) look it up in the factory instead.
 
+## Landed
+
+- A framed `create2` is `addrV(K)`, computed by the creating body from its block's validator reference and the
+  transaction's origin coin (`child-address-in-body.test.ts`).
+- The call derivation states the real outpoints of the inputs the plan holds, so a body reading
+  `OP_OUTPOINTTXHASH` sees the coin the broadcast spends.
+- `FramedCallOptions.creates` appends the child's genesis to the composition's trailing outputs at the caller
+  coin's outpoint (`atomic-create2.test.ts`: the returned address, each shard's master, the validator and a
+  record, all read off the derivation the machine accepted).
+
 ## Work
 
 1. solidc: masters without baked category/address (read from the own token and the validator input); constant shard

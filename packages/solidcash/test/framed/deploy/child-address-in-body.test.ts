@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hash160, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hash160, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { validatorAddress, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
@@ -15,18 +15,15 @@ import { alicePkh, alicePriv } from '../../fixture/vars.js';
  * A created child's address, as the creating body computes it.
  *
  * In a framed master, `create2` is the child's real address, `addrV(K)`, where `K` is the outpoint of the
- * genesis-eligible coin the creating transaction leads with: no caller can hash it, so the body derives it from the
+ * genesis-eligible coin the creating transaction carries: no caller can hash it, so the body derives it from the
  * transaction itself (docs/framed/CREATE2_IDENTITY.md). The body reads its own witness block for the validator input
- * its frame co-spends, then reads that input's program and hashes `push(pin(K)) ++ program`, which is the P2SH32
- * address the child's validator settles at.
+ * its frame co-spends and for the transaction's origin input — the root user's own coin — then reads the validator
+ * program from that input and hashes `push(pin(K)) ++ program`, the P2SH32 address the child's validator settles at.
  *
- * The test drives the compiled creating master through the shipped call path: the value the entry returns is what the
- * fragment left, and it must be `addrV` of the transaction's own leading outpoint. The negative is the same outpoint
- * with one byte changed: a fragment that ignored `K`, or baked an address in, would not tell the two apart.
- *
- * The derivation runs on the composer's stand-in outpoints (`01…01`, `02…02`, …), so this pins the script's own
- * reading of the transaction. Composing a real creating transaction — the child's genesis minted in the same one —
- * replaces the stand-in with the caller's coin and is the next step (docs/framed/CREATE2_IDENTITY.md).
+ * The test drives the compiled creating master through the shipped call path, with the coin the test itself funded:
+ * the derivation states that coin's real outpoint, so the address the entry returns must be `addrV` of it, and it must
+ * move when the coin does. A value baked in at compile time, or read from the derivation's stand-in outpoint, would
+ * satisfy neither.
  */
 
 const FRAMED = {
@@ -58,7 +55,7 @@ const callerAddress = (() => {
 })();
 
 let coins = 0;
-/** A coin no earlier transaction spent, so a deployment and its call lead with outpoints of their own. */
+/** A coin no earlier transaction spent, so a deployment and its call carry outpoints of their own. */
 function nextCoin(satoshis: bigint): Utxo {
   coins += 1;
   return { txid: (0x10 + coins).toString(16).padStart(64, '0'), vout: 0, satoshis };
@@ -71,41 +68,52 @@ function shardsOf(primaryContractName: string): FunctionSplitBundle {
 describe('the address a creating body computes', () => {
   const creator = shardsOf('Creator');
 
-  it('is the child address the compiled creator returns for its leading outpoint, and no other', async () => {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funding = nextCoin(900_000n);
-    await provider.addUtxo(binToHex(callerLock), funding);
-    const { categoryId } = await deployStatefulContract(creator.logical, [], {
-      provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
-      threadCount: 1, validatorCount: 1, functionSplit: creator,
-    });
+  it('is addrV of the caller coin the transaction carries, and it moves with the coin', async () => {
+    /** A creator deployed on its own chain, and the genesis-eligible coin its `make` call will carry. */
+    const deployCreator = async () => {
+      const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+      const funding = nextCoin(900_000n);
+      await provider.addUtxo(binToHex(callerLock), funding);
+      const { categoryId } = await deployStatefulContract(creator.logical, [], {
+        provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
+        threadCount: 1, validatorCount: 1, functionSplit: creator,
+      });
+      const caller = nextCoin(300_000n);
+      await provider.addUtxo(binToHex(callerLock), caller);
+      return { provider, categoryId, caller };
+    };
 
-    const callerUtxo = nextCoin(300_000n);
-    await provider.addUtxo(binToHex(callerLock), callerUtxo);
-    const result = await callFramedEntry({
-      provider, artifact: creator.logical, categoryId, functionName: 'make', args: [new Uint8Array(32)],
-      callerUtxo, callerLockingBytecode: callerLock, funder, split: creator,
-      vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
-    });
-    const refused = result.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
-    expect(result.accepted, refused).toBe(true);
+    /** Calls `make`, and answers the address it returned and the coin it carried. */
+    const make = async (deployment: { provider: MockNetworkProvider; categoryId: string; caller: Utxo }) => {
+      const result = await callFramedEntry({
+        provider: deployment.provider, artifact: creator.logical, categoryId: deployment.categoryId,
+        functionName: 'make', args: [new Uint8Array(32)],
+        callerUtxo: deployment.caller, callerLockingBytecode: callerLock, funder, split: creator,
+        vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
+      });
+      const refused = result.verdicts.filter((verdict) => !verdict.accepted)
+        .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
+      expect(result.accepted, refused).toBe(true);
+      const value = result.values[0];
+      expect(value).toBeInstanceOf(Uint8Array);
+      expect((value as Uint8Array).length).toBe(20);
+      return { computed: value as Uint8Array, caller: deployment.caller };
+    };
 
-    const value = result.values[0];
-    expect(value).toBeInstanceOf(Uint8Array);
-    const computed = value as Uint8Array;
-    expect(computed.length).toBe(20);
+    /** A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13). */
+    const identityOf = (txid: string) => hash160(validatorAddress(hexToBin(txid), VALIDATOR));
 
-    // OP_OUTPOINTTXHASH answers in hash order; a category is that reversed (`childAddressScript`).
-    const leading = result.transaction.inputs[0]!.outpointTransactionHash;
-    const category = Uint8Array.from(leading).reverse();
-    // A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13).
-    expect(binToHex(computed)).toBe(binToHex(hash160(validatorAddress(category, VALIDATOR))));
+    const first = await make(await deployCreator());
+    expect(binToHex(first.computed)).toBe(binToHex(identityOf(first.caller.txid)));
 
-    // The same transaction with the leading outpoint's first byte changed: the body's value must follow the
-    // transaction, so it names no address the changed category derives.
-    const other = Uint8Array.from(category);
+    // Another deployment's coin is another outpoint, so the body's value must be another address's identity.
+    const second = await make(await deployCreator());
+    expect(binToHex(second.computed)).toBe(binToHex(identityOf(second.caller.txid)));
+    expect(binToHex(second.computed)).not.toBe(binToHex(first.computed));
+
+    // One byte of the coin's txid changed: the body's value names no address that category derives.
+    const other = hexToBin(first.caller.txid);
     other[0] = other[0]! ^ 0xff;
-    expect(binToHex(computed)).not.toBe(binToHex(hash160(validatorAddress(other, VALIDATOR))));
+    expect(binToHex(first.computed)).not.toBe(binToHex(hash160(validatorAddress(other, VALIDATOR))));
   }, 240_000);
 });

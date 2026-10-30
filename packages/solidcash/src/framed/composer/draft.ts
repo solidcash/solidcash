@@ -28,6 +28,7 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
 import {
   INDEX_NONE,
@@ -199,6 +200,14 @@ export interface DraftTrailingOutput {
 export interface DraftInput {
   readonly source: DraftSourceOutput;
   readonly unlockingBytecode?: Uint8Array;
+  /**
+   * The outpoint the input spends, when the plan knows it.
+   *
+   * The derivation states it so a body that reads `OP_OUTPOINTTXHASH` (a creating body's `addrV(K)`, whose `K` is
+   * the genesis-eligible coin) sees the coin it will spend on the chain; an input without one keeps the stand-in the
+   * derivation uses. The broadcast restates the real inputs, so a value computed from a stand-in would not survive it.
+   */
+  readonly outpoint?: { readonly txid: string; readonly vout: number };
   /**
    * The output this input recreates, when that output is not the input unchanged.
    *
@@ -874,12 +883,18 @@ export function composeDraft(
   ): ShippedVmProgram['transaction'] =>
     ({
       version: 2,
-      inputs: orderedIds.map((id, index) => ({
-        outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(index + 1),
-        sequenceNumber,
-        unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
-      })),
+      inputs: orderedIds.map((id, index) => {
+        // A known outpoint is stated as the chain holds it: display order reversed into the transaction's byte order.
+        const known = plan.inputs[id]?.outpoint;
+        return {
+          outpointIndex: known?.vout ?? 0,
+          outpointTransactionHash: known === undefined
+            ? new Uint8Array(32).fill(index + 1)
+            : Uint8Array.from(hexToBin(known.txid).reverse()),
+          sequenceNumber,
+          unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
+        };
+      }),
       outputs: transactionOutputs(),
       locktime,
     });

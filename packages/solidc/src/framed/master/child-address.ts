@@ -43,23 +43,34 @@ function scriptNumber(value: number): Uint8Array {
 }
 
 /**
- * Leaves the child's address, `addrV(K)` of input 0's outpoint.
+ * Leaves the validator program the child's address commits to.
  *
- * Entry `[..., validatorIndex]`, exit `[..., lock]`. `validatorIndex` names the input carrying the validator
+ * Entry `[..., validatorIndex]`, exit `[..., program]`. `validatorIndex` names the input carrying the validator
  * program, which the frame's block already fixes for the head; the caller pushes it again for this read. The
- * transaction is expected to lead with the genesis-eligible coin, whose outpoint txid is the child's category.
+ * program is what follows the transcript push and the redeem script's pin push in that input's unlocking bytecode.
  */
-export function childAddressScript(): number[] {
+export function validatorProgramScript(): number[] {
   return [
-    // The template first: `OP_INPUTBYTECODE` consumes the index, so it has to be read while that is on top. The
-    // program is what follows the transcript push and the redeem script's pin push.
     Opcodes.OP_INPUTBYTECODE,
     ...dropFirstPushScript(),
     ...encodeDataPush(scriptNumber(REDEEM_PUSH_HEADER_LENGTH)), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
     ...encodeDataPush(scriptNumber(VALIDATOR_PIN_PUSH_LENGTH)), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
-    // K: input 0's outpoint txid. The opcode answers in OP_HASH256 byte order, and a token category is the
+  ];
+}
+
+/**
+ * Wraps `push(pin(K)) ++ program` into the P2SH32 address `addrV(K)`.
+ *
+ * Entry `[..., program]`, exit `[..., lock]`. `coin` says where `K`'s input index comes from: `input0` reads input
+ * 0's outpoint (a transaction that leads with the genesis-eligible coin), and `stack` reads the index already on
+ * top (`[..., program, coinIndex]`), which is how a body names the transaction's `tx.origin` input.
+ */
+export function childAddressFromProgramScript(coin: 'input0' | 'stack' = 'input0'): number[] {
+  return [
+    // K: the coin's outpoint txid. The opcode answers in OP_HASH256 byte order, and a token category is the
     // reverse of it, which is the order `OP_UTXOTOKENCATEGORY` answers in.
-    Opcodes.OP_0, Opcodes.OP_OUTPOINTTXHASH, Opcodes.OP_REVERSEBYTES,
+    ...(coin === 'input0' ? [Opcodes.OP_0, Opcodes.OP_OUTPOINTTXHASH] : [Opcodes.OP_OUTPOINTTXHASH]),
+    Opcodes.OP_REVERSEBYTES,
     // pin(K, MUTABLE): the category and its capability byte, pushed as data.
     Opcodes.OP_1, Opcodes.OP_CAT,
     ...encodeDataPush(PIN_PUSH_OPCODE), Opcodes.OP_SWAP, Opcodes.OP_CAT,
@@ -69,4 +80,14 @@ export function childAddressScript(): number[] {
     ...encodeDataPush(P2SH32_FRONT), Opcodes.OP_SWAP, Opcodes.OP_CAT,
     ...encodeDataPush(P2SH32_END), Opcodes.OP_CAT,
   ];
+}
+
+/**
+ * Leaves the child's address, `addrV(K)` of input 0's outpoint.
+ *
+ * Entry `[..., validatorIndex]`, exit `[..., lock]`. The transaction is expected to lead with the
+ * genesis-eligible coin, whose outpoint txid is the child's category.
+ */
+export function childAddressScript(): number[] {
+  return [...validatorProgramScript(), ...childAddressFromProgramScript('input0')];
 }

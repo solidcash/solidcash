@@ -102,6 +102,7 @@ import { requireFramedFunderSighash } from '../sighash.js';
 import { hashedCallArguments } from './hashed-arguments.js';
 import { WrittenValueAwaited, registeredExternalFor, type HopCallee } from '../proxy/external-calls.js';
 import { functionSplitFor } from '../deploy/split-registry.js';
+import { childGenesisOutputs } from '../deploy/genesis-outputs.js';
 import { traceBroadcast } from '../../tx-trace.js';
 import { labelNextBroadcast, surveyOn } from '../../tx-survey.js';
 import {
@@ -268,6 +269,14 @@ export interface FramedCallOptions {
    * what an entry such as BchNative's `wrap` reads as the container's growth. A coin's remainder returns to the caller.
    */
   readonly tokenDeposits?: readonly FramedTokenDeposit[];
+  /**
+   * The child this entry creates with `create2`, minted in this same transaction (docs/framed/CREATE2_IDENTITY.md).
+   *
+   * Its genesis outputs are appended after the composition's own, carrying the caller coin's outpoint as their
+   * category `K`: the coin must be genesis-eligible (vout 0), and its outpoint is what the creating body's
+   * `addrV(K)` names. `null` mints nothing.
+   */
+  readonly creates?: FramedCallCreation | null;
 }
 
 /** Tokens a call pays into a container: the coin they come from, its unlocker, and the amount the container takes. */
@@ -275,6 +284,17 @@ export interface FramedTokenDeposit {
   readonly utxo: Utxo;
   readonly unlocker: Unlocker;
   readonly amount: bigint;
+}
+
+/** A child a call's account creates, with the artifact its genesis mints from. */
+export interface FramedCallCreation {
+  readonly artifact: Artifact;
+  /** The per-entry bundle the child runs its entries from, when its contract is published as one. */
+  readonly split?: FunctionSplitBundle;
+  /** The constructor's arguments, in parameter order. */
+  readonly constructorArgs?: readonly FunctionArgument[];
+  /** The master pool the genesis funds per entry lock. */
+  readonly pool?: { readonly masters: number; readonly validators: number };
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -2472,18 +2492,26 @@ async function callInShape(
       ...(payeeLaid[index]!.mapping?.values === undefined ? {} : { values: payeeLaid[index]!.mapping!.values }),
     }));
 
+    // Every input whose UTXO the plan holds states its real outpoint, so a body that reads one (a creating body's
+    // `addrV(K)`) sees the coin the broadcast will spend rather than the derivation's stand-in.
     const inputs: Record<string, DraftInput> = {
-      [MASTER_ID]: { source: masterSource(deployed.lockingBytecode, category, master.satoshis) },
+      [MASTER_ID]: {
+        source: masterSource(deployed.lockingBytecode, category, master.satoshis),
+        outpoint: { txid: master.txid, vout: master.vout },
+      },
       [VALIDATOR_ID]: {
         source: mutableSource(deployed.address, validator.satoshis, category, new Uint8Array(0)),
+        outpoint: { txid: validator.txid, vout: validator.vout },
       },
       [CALLER_ID]: {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerUtxo.satoshis },
         unlockingBytecode: callerUnlocking(),
+        outpoint: { txid: options.callerUtxo.txid, vout: options.callerUtxo.vout },
       },
       ...Object.fromEntries(fillerCoins.map((utxo, index) => [fillerCoinInputId(index), {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: utxo.satoshis },
         unlockingBytecode: callerUnlocking(),
+        outpoint: { txid: utxo.txid, vout: utxo.vout },
       }])),
     };
     for (const record of declared) {
@@ -2496,6 +2524,7 @@ async function callInShape(
         },
         // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
         unlockingBytecode: stateRecordUnlockingBytecode(categoryId, masterIndex, 1),
+        outpoint: { txid: record.utxo.txid, vout: record.utxo.vout },
       };
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
@@ -2714,6 +2743,26 @@ async function callInShape(
     const calleeCreated = chain === undefined
       ? callees?.createdOutputs ?? [] : withCreatedChainEnds(callees!.createdOutputs, calleeCreatedBase, chain.createdEnds);
 
+    // The child a creating entry mints: its genesis outputs are trailing outputs of this same transaction, so the
+    // caller coin's outpoint is the category they carry and the creating body's `addrV(K)` names them.
+    const createdOutputs: DraftSourceOutput[] = options.creates === undefined || options.creates === null
+      ? []
+      : childGenesisOutputs({
+        artifact: options.creates.artifact,
+        category: hexToBin(options.callerUtxo.txid),
+        validatorProgram,
+        provider,
+        constructorArgs: options.creates.constructorArgs ?? [],
+        // The child's constructor reads `msg.sender` as the contract that creates it, which is this frame's own.
+        senderLockingBytecode: deployed.address,
+        ...(options.creates.split === undefined ? {} : { split: options.creates.split }),
+        ...(options.creates.pool === undefined ? {} : { pool: options.creates.pool }),
+        ownerLock: options.callerLockingBytecode,
+      }).outputs.map((output) => ({
+        lockingBytecode: output.to as Uint8Array,
+        valueSatoshis: output.amount,
+        ...(output.token === undefined ? {} : { token: draftToken(output.token) }),
+      }));
     return {
       blocks,
       // The chain's own time, read from the provider: a body that reads the transaction's locktime sees it.
@@ -2761,6 +2810,7 @@ async function callInShape(
             lockingBytecode: satoshiContainerLockingBytecode(calleePaying.categoryId), valueSatoshis: calleePaying.kept,
           }])),
         ...depositOutputs,
+        ...createdOutputs,
       ],
       validator: {
         id: VALIDATOR_ID,

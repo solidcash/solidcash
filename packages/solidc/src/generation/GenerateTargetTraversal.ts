@@ -346,7 +346,7 @@ import { callSiteCheckScript, readCallRecordResultScript, sourceReadsCallResult 
 import {
   dropFirstPushScript, dropLastPushScript, dropPrefix, readFrameHeaderScript, splitFirstPushScript,
 } from '../framed/master/witness-reader.js';
-import { childAddressScript } from '../framed/master/child-address.js';
+import { childAddressFromProgramScript, validatorProgramScript } from '../framed/master/child-address.js';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
   declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
@@ -18763,12 +18763,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The running frame's child address, `addrV(K)` of the genesis-eligible coin the transaction leads with.
+   * The running frame's child address, `addrV(K)` of the genesis-eligible coin its transaction carries.
    *
-   * Entry `[]`, exit `[address]`. The frame's own `validatorRef` names the input whose unlocking carries the
-   * validator program; the head parsed it and dropped it before the body, so the body reads its own witness block
-   * again: the block leads its unlocking bytecode, and its header holds the three references after the frame kind.
-   * `childAddressScript` then takes that index and leaves the address the child's validator settles at.
+   * Entry `[]`, exit `[..., address]` with the frame kind left beneath it, which is the shape the entry's own stack
+   * model expects of the fragment. `K` is the outpoint of the transaction's `tx.origin` input, the root user's own
+   * coin, which a creating transaction makes genesis-eligible (vout 0). The frame's own `validatorRef` names the
+   * input whose unlocking carries the validator program; the head parsed both references and dropped them before the
+   * body, so the body reads its own witness block again: the block leads its unlocking bytecode, and its header holds
+   * the frame kind and the three references. The validator program then comes from that input's redeem script, and
+   * hashing `push(pin(K)) ++ program` leaves the address the child's validator settles at.
    */
   private emitChildAddress(locationData: SingleLocationData): void {
     this.emit(Op.OP_INPUTINDEX, locationData);
@@ -18776,13 +18779,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(bytecodeToScript(splitFirstPushScript()), locationData);
     this.emit(Op.OP_DROP, locationData); // the rest of the unlocking, keeping the block
     this.emit(bytecodeToScript(readFrameHeaderScript()), locationData); // [kind, caller, origin, validatorRef, rest]
-    this.emit(Op.OP_DROP, locationData); // rest
-    // caller, origin, kind, leaving the validator index on top
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_DROP, locationData); // rest, leaving [kind, caller, origin, validatorRef]
+    // Park the origin input's index (depth 1: the validator reference is on top), which is the coin `K` names.
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_ROLL, locationData); // [kind, caller, validatorRef, origin]
+    this.emit(Op.OP_TOALTSTACK, locationData); // [kind, caller, validatorRef]
+    this.emit(Op.OP_NIP, locationData); // caller, leaving [kind, validatorRef]
     // The block states each reference in a fixed width, so the index is not a minimal VM number until it is read as one.
     this.emit(Op.OP_BIN2NUM, locationData);
-    this.emit(bytecodeToScript(Uint8Array.from(childAddressScript())), locationData); // [addrV(K)]
+    this.emit(bytecodeToScript(Uint8Array.from(validatorProgramScript())), locationData); // [kind, program]
+    this.emit(Op.OP_FROMALTSTACK, locationData); // [kind, program, origin]
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(bytecodeToScript(Uint8Array.from(childAddressFromProgramScript('stack'))), locationData);
     this.pushToStack('(value)');
   }
 

@@ -12,6 +12,7 @@ export * from './split-registry.js';
 export * from './create-lookahead.js';
 export * from './create-lookahead-session.js';
 export * from './genesis.js';
+export * from './genesis-outputs.js';
 export * from './stateful.js';
 export * from './create2-child.js';
 export * from './records.js';

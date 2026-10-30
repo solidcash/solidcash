@@ -1,0 +1,177 @@
+/**
+ * A child's genesis, as the list of outputs a creator's transaction mints for it.
+ *
+ * A framed deployment builds these outputs for its own genesis transaction (`framed/deploy/stateful.ts` is the
+ * oracle this mirrors). A CREATOR mints them inside its own transaction instead, appended after the frames it runs,
+ * so the same list has to be available without a transaction around it: the child's master pool at each entry lock,
+ * the validator pool at `addrV(category)`, the tokenless facet UTXOs, the state records the constructor's frame
+ * computed, the entries and chunks it wrote, the events it emitted, and the authhead at output 0.
+ *
+ * The creator's own code checks the child's outputs against the locks it embeds; this list is what a composer
+ * places, and both work from the same artifacts (docs/framed/CREATE2_IDENTITY.md).
+ */
+
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { bytesEqual, hash256, validatorAddress, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
+import { framedValidator } from '@solidcash/solidc/runtime';
+import { FACET_SATOSHIS } from '../composer/index.js';
+import { satoshisAtLeastDust } from '../composer/dust.js';
+import { bindProviderBlockOracle } from '../call/block-oracle.js';
+import { authheadLockingBytecode } from '../../bcmr/index.js';
+import type NetworkProvider from '../../network/NetworkProvider.js';
+import type { FunctionArgument } from '../../Argument.js';
+import type { Output } from '../../interfaces.js';
+import { deriveFramedGenesis } from './genesis.js';
+import { deployMaster, type DeployedMaster } from './material.js';
+import { MasterPoolDeployment } from './pool.js';
+import {
+  entryRecordLockingBytecode, stateRecordLockingBytecode,
+} from './records.js';
+
+/** Raised when a child's genesis cannot be laid out from the artifact and its constructor's arguments. */
+export class FramedChildGenesisError extends Error {
+  public readonly name = 'FramedChildGenesisError';
+  public constructor(message: string) {
+    super(message);
+  }
+}
+
+export interface ChildGenesisOutputsOptions {
+  readonly artifact: Artifact;
+  /** The category the child's genesis mints: `K`, the outpoint of the transaction's genesis-eligible coin. */
+  readonly category: Uint8Array;
+  readonly validatorProgram: Uint8Array;
+  readonly provider: NetworkProvider;
+  /** The constructor's arguments, in parameter order. */
+  readonly constructorArgs?: readonly FunctionArgument[];
+  /** The lock the constructor reads as `msg.sender`: the creator's own. */
+  readonly senderLockingBytecode?: Uint8Array;
+  /** The per-entry bundle the child is deployed from, when its contract is published as one. */
+  readonly split?: FunctionSplitBundle;
+  /** The master pool the genesis funds per entry lock. Defaults to the composing pool size. */
+  readonly pool?: { readonly masters: number; readonly validators: number };
+  /** The authhead's owner commitment: the lock whose key may move the identity. */
+  readonly ownerLock: Uint8Array;
+}
+
+export interface ChildGenesisOutputs {
+  /** The child's master, whose `address` is `addrV(category)`. */
+  readonly master: DeployedMaster;
+  /** The outputs the genesis mints, in the order the deployment lays them (the authhead first). */
+  readonly outputs: readonly Output[];
+}
+
+/** The outputs a creator mints for the child its `create2` names. */
+export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildGenesisOutputs {
+  const { artifact, category, validatorProgram, provider } = options;
+  const categoryId = binToHex(category);
+  // A master of a contract that reads `block.timestamp` is bound to the provider's block oracle, exactly as the
+  // deployment binds it; a lock computed without that binding would not be the one the genesis mints.
+  bindProviderBlockOracle(provider, artifact);
+  for (const program of [...options.split?.shards ?? [], ...options.split?.internalCuts ?? []]) {
+    bindProviderBlockOracle(provider, program.artifact);
+  }
+  if (artifact.stateLayout === undefined) {
+    throw new FramedChildGenesisError(`Contract ${artifact.contractName} is not a stateful contract`);
+  }
+
+  const genesis = deriveFramedGenesis({
+    artifact,
+    category,
+    validatorProgram,
+    provider,
+    constructorArgs: options.constructorArgs ?? [],
+    ...(options.senderLockingBytecode === undefined
+      ? {} : { senderLockingBytecode: options.senderLockingBytecode }),
+    ...(provider.consensusLimits?.maximumNftCommitmentBytes === undefined ? {} : {
+      maximumCommitmentBytes: provider.consensusLimits.maximumNftCommitmentBytes,
+    }),
+  } as never);
+  const master = genesis?.master ?? deployMaster(artifact, category, validatorProgram);
+  const size = options.pool ?? { masters: 1, validators: 1 };
+  const entryLocks = options.split === undefined
+    ? [master.lockingBytecode]
+    : MasterPoolDeployment.createFunctionSplit({
+      bundle: options.split, category, validatorProgram, size,
+    }).getEntryLocks();
+  if (!bytesEqual(master.address, validatorAddress(category, validatorProgram))) {
+    throw new FramedChildGenesisError('the child\'s master does not present the validator address its category derives');
+  }
+
+  const masterAmount = 1200n;
+  const dataNftAmount = 1200n;
+  const outputs: Output[] = [];
+  // Output 0 is the category's authhead, never a master: every call spends a master, as every deployment's genesis
+  // does (bcmr/DESIGN.md 4.2).
+  const owner = options.ownerLock;
+  outputs.push({
+    to: authheadLockingBytecode(categoryId),
+    amount: dataNftAmount,
+    token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(owner) } },
+  });
+  for (const lock of entryLocks) {
+    for (let index = 0; index < size.masters; index += 1) {
+      outputs.push({
+        to: lock,
+        amount: masterAmount,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+    }
+  }
+  for (let index = 0; index < size.validators; index += 1) {
+    outputs.push({
+      to: master.address,
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+    });
+  }
+  // The validator's facets: tokenless UTXOs at each facet's own lock, so any composition can spend any UTXO of its
+  // code. They carry no category, so a creator's check of the child's category does not name them.
+  for (const code of framedValidator.buildValidatorFacets()) {
+    outputs.push({ to: encodeLockingBytecodeP2sh32(hash256(code)), amount: FACET_SATOSHIS });
+  }
+  for (const event of genesis?.events ?? []) {
+    outputs.push({
+      to: event.lockingBytecode,
+      amount: dataNftAmount,
+      token: {
+        category: categoryId, amount: 0n,
+        nft: { capability: 'none', commitment: binToHex(event.commitment) },
+      },
+    });
+  }
+  const recordLock = stateRecordLockingBytecode(categoryId);
+  for (const commitment of genesis?.commitments ?? []) {
+    outputs.push({
+      to: recordLock,
+      amount: satoshisAtLeastDust(dataNftAmount, {
+        to: recordLock,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
+      }),
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
+    });
+  }
+  for (const entry of genesis?.entries ?? []) {
+    const signature = entry.signature
+      ?? artifact.stateLayout?.collections?.find((candidate) => candidate.name === entry.collection)?.signature;
+    if (signature === undefined) {
+      throw new FramedChildGenesisError(
+        `the child's constructor minted a node for collection "${entry.collection}", which the artifact does not publish`,
+      );
+    }
+    outputs.push({
+      to: entryRecordLockingBytecode(categoryId, signature),
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: entry.commitment } },
+    });
+  }
+  for (const chunk of genesis?.chunks ?? []) {
+    outputs.push({
+      to: chunk.lockingBytecode,
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: chunk.commitment } },
+    });
+  }
+  return { master, outputs };
+}

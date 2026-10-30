@@ -45,6 +45,25 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   coin's outpoint (`atomic-create2.test.ts`: the returned address, each shard's master, the validator and a
   record, all read off the derivation the machine accepted).
 
+### Landed: the category check
+
+The create site now refuses, for every output carrying `K`: a fungible amount (unbacked liquidity), a missing NFT,
+and a lock that is not a 35-byte P2SH32 (`aa20 … 87`). `atomic-create2.test.ts` proves both sides on the shipped path:
+the child's own genesis passes, and a transaction that adds a fungible `K` at the caller's key is refused with the
+entry's `OP_VERIFY` objection. Two bugs the probes found are worth keeping: the branch's index must be dropped with
+`OP_DROP` (an `OP_NIP` removes the loop index underneath), and a `SPLIT` leaves the suffix on top, so the prefix
+comparison needs `OP_SWAP` before `OP_EQUALVERIFY`.
+
+### Still open: the masters' locks in that check (measured budget)
+
+The child's master locks are still not in the allow-list, so a minting NFT of `K` at a substituted P2SH32 lock would
+pass. Binding them needs deployment-filled sentinels, and the budget is measured: the SushiSwap factory's `createPair`
+shard is 5,640 B of program and a 7,543 B whole spend, so a 23-lock set (805 B of pushes plus 23 comparisons) fits
+only if the comparisons stay compact. The shape that does: push each sentinel once before the output loop, accumulate
+`found = OR(found, lock == S_i)` over them with depths computed at emission, and publish each sentinel's offset under
+`composition.creates` for the split pass to rewrite per shard and the SDK to fill from
+`MasterPoolDeployment.getEntryLocks()`.
+
 ### Measured: the check block runs, the category comparison does not match
 
 An attempt emitted the category check (loop over outputs, category compared with `K`, fungible amount forbidden,

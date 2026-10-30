@@ -30,6 +30,6 @@ export {
   type ConsensusLimits,
   type NetworkPolicy,
 } from './network/index.js';
-export { randomUtxo, randomToken, randomNFT } from './utils.js';
+export { randomUtxo, randomToken, randomNFT, addressToLockScript, scriptToLockingBytecode } from './utils.js';
 export { gatherBchUtxos, gatherFungibleTokenUtxos, type GatherUtxosResult } from './transaction-utils.js';
 export type { ExtractEventNames, EventMatcherArgs, EmittingContract } from './types/event-inference.js';

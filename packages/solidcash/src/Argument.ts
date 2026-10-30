@@ -1,5 +1,4 @@
 import { hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { isCreate2ChildIdentity } from './create2-identity-registry.js';
 import {
   type AbiFunction,
   AddressType,
@@ -305,13 +304,13 @@ export function encodeFunctionArgument(
   // A CREATE2 child's address is its 20-byte EVM identity, which is what every contract that names it carries, and
   // its P2SH20 address names the same identity.
   if (type instanceof AddressType && argument.byteLength === 23 && argument[0] === 0xa9 && argument[1] === 0x14
-    && argument[22] === 0x87 && isCreate2ChildIdentity(argument.subarray(2, 22))) {
+    && argument[22] === 0x87) {
     argument = argument.slice(2, 22);
   }
   // An `address` given in the 20-byte payload form an EVM ABI carries names its locking bytecode: the compiler's
   // `address` is a lock, so a value passed as the payload would otherwise reach the contract as an address no other
   // form of the same address equals (a mapping keyed by one reads under a different key than the body wrote).
-  if (type instanceof AddressType && argument.byteLength === 20 && !isCreate2ChildIdentity(argument)) {
+  if (type instanceof AddressType && argument.byteLength === 20) {
     argument = addressPayloadToLockingBytecode(argument);
   }
 

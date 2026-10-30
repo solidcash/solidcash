@@ -91,8 +91,7 @@ import {
 import { masterForEntry, prepareFunctionSplitDeployment, requireFunctionSplitShard } from '../deploy/entry-pool.js';
 import { functionSplitFor } from '../deploy/split-registry.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
-import { framedCreate2ChildDeployerOf, framedCreate2TemplateOf } from '../deploy/create2-child.js';
-import { isCreate2ChildIdentity } from '../../create2-identity-registry.js';
+import { framedCreate2TemplateOf } from '../deploy/create2-child.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../utils.js';
 import {
   chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode,
@@ -1204,61 +1203,23 @@ export function registeredExternalFor(
 }
 
 /**
- * The address a call names by a 20-byte identity: a CREATE2 child's own (the identity itself), or the address of a
- * contract the plan can reach whose identity it is. An identity neither names is a child the caller's own creation is
- * about to make, which is stood up first; whatever is left stays the identity, which no deployment answers.
+ * The address a call names by a 20-byte identity: the address of a contract the plan can reach whose identity it is.
+ * An identity no deployment answers stays the identity, which no callee resolves: a created child is reached at its
+ * own `addrV(K)` in the transaction that mints it (docs/framed/CREATE2_IDENTITY.md), so nothing is stood up here.
  */
 async function identityTarget(
-  ctx: PlanContext, caller: HopCallInputs, row: ExternalCallAbi, identity: Uint8Array,
+  _ctx: PlanContext, _caller: HopCallInputs, _row: ExternalCallAbi, identity: Uint8Array,
 ): Promise<Uint8Array> {
-  const reached = reachedIdentity(ctx, identity);
-  if (reached !== undefined) return reached;
-  await standUpCreatedChild(ctx.provider, caller, row, identity);
-  return identity;
+  return reachedIdentity(_ctx, identity) ?? identity;
 }
 
-/**
- * The address a 20-byte identity names among the deployments a plan can reach: a CREATE2 child's own, which is the
- * identity itself, or the address of a contract whose identity it is. `undefined` when neither names it.
- */
+/** The address a 20-byte identity names among the deployments a plan can reach, if one projects to it. */
 export function reachedIdentity(scope: ReachableScope, identity: Uint8Array): Uint8Array | undefined {
-  if (isCreate2ChildIdentity(identity)) return identity;
   for (const address of reachableAddresses(scope)) {
     const projected = lockingBytecodeToSolidityAddressPayload(address);
     if (projected !== undefined && bytesEqual(projected, identity)) return address;
   }
   return undefined;
-}
-
-/**
- * Stands up the CREATE2 child a caller's own creation names, when the call reaches its identity before it exists.
- *
- * A creating body calls its child at the 20-byte EVM identity its creation evaluates to, and the child's frames need
- * masters of their own, so the child is deployed beforehand by the provider's deployer
- * (`setFramedCreate2ChildDeployer`). A target that already names a deployment, or a caller that creates nothing, is
- * left to the ordinary resolution.
- */
-async function standUpCreatedChild(
-  provider: NetworkProvider, caller: HopCallInputs, row: ExternalCallAbi, target: Uint8Array,
-): Promise<void> {
-  if (target.length !== 20) return;
-  if (findDeploymentByLockingBytecode(provider, binToHex(target)) !== undefined) return;
-  const child = createdChildOf(provider, caller, row);
-  if (child === undefined) return;
-  const deployer = framedCreate2ChildDeployerOf(provider);
-  if (deployer === undefined || child.creatorSelf === undefined) {
-    throw new FramedProxyDeployError(
-      `the call to "${row.interfaceName}.${row.functionName}" reaches the ${child.contractName} child at `
-      + `${binToHex(target)}, which "${caller.artifact.contractName}" creates and no deployer stands up`,
-    );
-  }
-  await deployer({
-    provider,
-    creatorArtifact: caller.artifact,
-    creatorSelf: child.creatorSelf,
-    identity: target,
-    contractName: child.contractName,
-  });
 }
 
 /**

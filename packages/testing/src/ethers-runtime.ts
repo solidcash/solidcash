@@ -354,21 +354,12 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
     return signers;
   };
 
-  // A framed creation evaluates to its child's EVM identity, and the call planner asks for the child there before
-  // the creating transaction: the default deployer stands it up with the creator as its constructor's sender.
+  // A CREATE2 over a code value is resolved through the template table; the child is created in its creator's own
+  // transaction (docs/framed/CREATE2_IDENTITY.md), so no deployer is installed.
   if (opts.composition === 'framed') {
     for (const [codeHash, contractName] of Object.entries(opts.create2Templates ?? {})) {
       framedDeploy.registerFramedCreate2Template(provider, hexToBin(codeHash.replace(/^0x/, '')), contractName);
     }
-    framedDeploy.setFramedCreate2ChildDeployer(provider, async (request) => {
-      const artifact = artifacts.artifact(request.contractName);
-      const functionSplit = artifacts.functionSplit(request.contractName);
-      const [signer] = await getSigners(1);
-      await framedDeploy.standUpFramedCreate2Child({
-        provider, artifact, creatorSelf: request.creatorSelf, identity: request.identity, signer: signer!,
-        ...(functionSplit === undefined ? {} : { functionSplit }),
-      });
-    });
   }
 
   const verifyMessageP2pkh: SolidcashEthers['verifyMessageP2pkh'] = (message, signature) => {

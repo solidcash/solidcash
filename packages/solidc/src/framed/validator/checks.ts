@@ -45,8 +45,6 @@ import { ValidatorReason, type ExecutionStep } from './reasons.js';
 
 /** What the checks share: the transaction, what was parsed, and what was derived. */
 
-/** The length of the EVM identity a CREATE2 child presents as `self`. */
-const CREATE2_IDENTITY_LENGTH = 20;
 export interface DerivationState {
   readonly transaction: import('./model.js').FramedTransaction;
   readonly context: import('./model.js').ValidatorContext;
@@ -766,15 +764,13 @@ export function checkV10(state: DerivationState): void {
 /**
  * V11. A frame whose `address(this)` comes from its code constant presents `addrV` of its own category.
  *
- * A CREATE2 child presents the 20-byte EVM identity its creator derived instead, which its own master binds to the
- * identity its code holds. The validator does not yet bind that identity to its creator, so a 20-byte `self` is left
- * to the master's own check.
+ * Every framed contract presents the address its category derives; a created child is no exception, and a 20-byte EVM
+ * identity is no address a framed frame may present (docs/framed/CREATE2_IDENTITY.md).
  */
 export function checkV11(state: DerivationState): void {
   for (const master of state.masterSet) {
     const block = blockOf(state, master);
     if (!selfIsCodeConstant(block.kind)) continue;
-    if (block.self.length === CREATE2_IDENTITY_LENGTH) continue;
     const expected = validatorAddress(ownCategory(state, master), state.context.validatorTemplate);
     if (!bytesEqual(block.self, expected)) check('V11', 'V11_SELF_NOT_CONTRACT_ADDRESS', master);
   }

@@ -68,15 +68,6 @@ export interface DeployedMaster {
  */
 const create2Identities = new Map<string, Uint8Array>();
 
-/** Records the EVM identity the CREATE2 child of `category` presents. */
-export function registerFramedCreate2Identity(category: Uint8Array, identity: Uint8Array): void {
-  if (identity.length !== 20) {
-    throw new FramedDeploymentError(`a CREATE2 identity is 20 bytes: got ${identity.length}`);
-  }
-  create2Identities.set(binToHex(category), Uint8Array.from(identity));
-}
-
-/** The EVM identity the CREATE2 child of `category` presents, or undefined for a contract that has none. */
 export function framedCreate2Identity(category: Uint8Array): Uint8Array | undefined {
   return create2Identities.get(binToHex(category));
 }

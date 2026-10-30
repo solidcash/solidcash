@@ -103,21 +103,13 @@ export function addressCheckScript(source: ProgramBytesSource): Uint8Array {
     // `[pin, sender, self, value, rest]`. Keep `self`.
     readFrameFieldsScript(),
     op(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_NIP, Opcodes.OP_SWAP),
-    // `[self, pin]`. A CREATE2 child presents the 20-byte EVM identity its creator derived, which its own master
-    // binds to the identity its code holds; the rule decides only an address its category derives.
-    op(Opcodes.OP_OVER, Opcodes.OP_SIZE, Opcodes.OP_NIP),
-    pushInt(CREATE2_IDENTITY_LENGTH),
-    op(Opcodes.OP_NUMEQUAL, Opcodes.OP_IF, Opcodes.OP_2DROP, Opcodes.OP_ELSE),
-    // `[self, address]`, compared raw.
+    // `[self, address]`, compared raw: every covered frame presents the address its category derives.
     addressFromPinScript(source),
     op(Opcodes.OP_EQUALVERIFY),
-    op(Opcodes.OP_ENDIF),
     op(Opcodes.OP_ENDIF),
   );
 }
 
-/** The length of the EVM identity a CREATE2 child presents as `self`. */
-const CREATE2_IDENTITY_LENGTH = 20;
 
 /** A minimal script number, pushed the way `encodeInt` encodes every other integer in the toolchain. */
 function pushInt(value: number): Uint8Array {

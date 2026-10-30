@@ -343,7 +343,10 @@ import { framedConstantLockMaster } from '../framed/master/master-program.js';
 import { buildValidatorProgram } from '../framed/validator/program.js';
 import { loopEffectKinds } from '../framed/master/loop-effects.js';
 import { callSiteCheckScript, readCallRecordResultScript, sourceReadsCallResult } from '../framed/master/call-site.js';
-import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../framed/master/witness-reader.js';
+import {
+  dropFirstPushScript, dropLastPushScript, dropPrefix, readFrameHeaderScript, splitFirstPushScript,
+} from '../framed/master/witness-reader.js';
+import { childAddressScript } from '../framed/master/child-address.js';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
   declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
@@ -18759,6 +18762,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  /**
+   * The running frame's child address, `addrV(K)` of the genesis-eligible coin the transaction leads with.
+   *
+   * Entry `[]`, exit `[address]`. The frame's own `validatorRef` names the input whose unlocking carries the
+   * validator program; the head parsed it and dropped it before the body, so the body reads its own witness block
+   * again: the block leads its unlocking bytecode, and its header holds the three references after the frame kind.
+   * `childAddressScript` then takes that index and leaves the address the child's validator settles at.
+   */
+  private emitChildAddress(locationData: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_INPUTBYTECODE, locationData);
+    this.emit(bytecodeToScript(splitFirstPushScript()), locationData);
+    this.emit(Op.OP_DROP, locationData); // the rest of the unlocking, keeping the block
+    this.emit(bytecodeToScript(readFrameHeaderScript()), locationData); // [kind, caller, origin, validatorRef, rest]
+    this.emit(Op.OP_DROP, locationData); // rest
+    // caller, origin, kind, leaving the validator index on top
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    // The block states each reference in a fixed width, so the index is not a minimal VM number until it is read as one.
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(bytecodeToScript(Uint8Array.from(childAddressScript())), locationData); // [addrV(K)]
+    this.pushToStack('(value)');
+  }
+
   visitNullaryOp(node: NullaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -18783,6 +18810,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // (`chainId & 0xff`: mainnet 0, chipnet 1, testnet4 2, regtest 255) so it is a valid non-negative
         // uint256, encoded minimally (<=2 bytes) rather than a fixed-width 32-byte value.
         this.emit(encodeInt(BigInt(this.compilerOptions.chainId ?? 0) & 0xffn), locationData);
+        break;
+      case NullaryOperator.CHILD_ADDRESS:
+        this.emitChildAddress(locationData);
         break;
       case NullaryOperator.BLOCK_PREVRANDAO:
         // Transaction-local randomness shim: abs(int(sha256(input[0] prevout txid))). No secure source on

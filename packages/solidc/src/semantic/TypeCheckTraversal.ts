@@ -3269,6 +3269,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       case NullaryOperator.TX_ORIGIN:
         node.type = new AddressType(node.legacyPayableAddress);
         return node;
+      case NullaryOperator.CHILD_ADDRESS:
+        // A creating body's child address is the locking bytecode `addrV(K)` the child's validator settles at.
+        node.type = new AddressType(false);
+        return node;
       default:
         return node;
     }

@@ -79,6 +79,12 @@ than a lock allow-list.
 
 What a creator's transaction needs, and where each piece sits, from reading the shipped composer:
 
+- **The derivation's outpoints are stand-ins.** A `callFramedEntry` derivation lays its inputs at
+  `01…01:0`, `02…02:0`, … (`result.transaction.inputs`), so anything a body computes from
+  `OP_OUTPOINTTXHASH` is the stand-in's, not the UTXO's. A broadcast restates the real inputs and re-signs, and a
+  plan whose *value* depended on a stand-in fails there (measured: the creator's `make` refused at broadcast).
+  Composing a creating transaction therefore has to lead with the caller's real coin *in the derivation*, not
+  only in the broadcast.
 - **The coin whose outpoint is `K`.** `childAddressScript()` (packages/solidc/src/framed/master/child-address.ts) reads
   `OP_0 OP_OUTPOINTTXHASH`, so the genesis-eligible coin (a token-free coin at vout 0) must be transaction input 0.
   `callFramedEntry` places the caller among user inputs after the participants (`call.ts:3490`,

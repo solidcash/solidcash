@@ -1,11 +1,9 @@
-import { AddressType, BytesType, parseType } from '@solidcash/utils';
+
 import AstTraversal from '../ast/AstTraversal.js';
 import {
-  AbiEncodePackedNode,
   CastNode,
   ExpressionNode,
   FunctionCallNode,
-  HexLiteralNode,
   IdentifierNode,
   InstantiationNode,
   Node,
@@ -17,7 +15,7 @@ import {
   ContractNode,
   FunctionDefinitionNode,
 } from '../ast/AST.js';
-import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { NullaryOperator } from '../ast/Operator.js';
 import { SolidcDiagnosticError } from '../Errors.js';
 
 /** One contract a framed master creates with CREATE2, published so a builder can stand the child up at its address. */
@@ -94,11 +92,7 @@ export default class LowerFramedCreate2Address extends AstTraversal {
     if (!this.creates.some((site) => site.codeStateVariable === codeStateVariable)) {
       this.creates.push({ codeStateVariable });
     }
-    const codeHash = withLocation(new FunctionCallNode(
-      withLocation(new IdentifierNode('keccak256'), node),
-      [this.visit(created.code) as ExpressionNode],
-    ), node);
-    return create2Identity(node, this.visit(created.salt) as ExpressionNode, codeHash);
+    return childAddressValue(node);
   }
 
   /** The state variable a code value is read from: the variable itself, or a local initialized from it. */
@@ -130,42 +124,22 @@ export default class LowerFramedCreate2Address extends AstTraversal {
       );
     }
     if (!this.creates.some((site) => site.contractName === childName)) this.creates.push({ contractName: childName });
-    const codeHash = withLocation(new FunctionCallNode(
-      withLocation(new IdentifierNode('keccak256'), node),
-      [withLocation(new TypeIntrospectionNode(childName, 'creationCode'), node)],
-    ), node);
-    return create2Identity(node, this.visit(salt) as ExpressionNode, codeHash);
+    return childAddressValue(node);
   }
+}
+
+/**
+ * The address the creation leaves: `addrV(K)`, which the creating body computes from the transaction's leading coin
+ * (docs/framed/CREATE2_IDENTITY.md). The salt and the code no longer name the child; the coin's outpoint does.
+ */
+function childAddressValue(source: Node): ExpressionNode {
+  return withLocation(new NullaryOpNode(NullaryOperator.CHILD_ADDRESS), source);
 }
 
 /** `created`, placed at `source`'s location. */
 function withLocation<T extends Node>(created: T, source: Node): T {
   created.location = source.location;
   return created;
-}
-
-/**
- * `address(uint160(uint256(keccak256(abi.encodePacked(hex"ff", address(this), bytes32(salt), codeHash)))))`, the
- * address the EVM's CREATE2 gives a child of the creator, placed at `source`.
- */
-function create2Identity(source: Node, salt: ExpressionNode, codeHash: ExpressionNode): ExpressionNode {
-  const at = <T extends Node>(created: T): T => withLocation(created, source);
-  // address(this): the creator's own address, which the encoding packs as its 20-byte identity.
-  const self = at(new CastNode(
-    new AddressType(false),
-    at(new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, at(new NullaryOpNode(NullaryOperator.INPUT_INDEX)))),
-    false,
-  ));
-  const prefix = at(new HexLiteralNode(Uint8Array.of(0xff)));
-  prefix.isHexStringLiteral = true;
-  const saltWord = at(new CastNode(new BytesType(32), salt, false));
-  const digest = at(new FunctionCallNode(
-    at(new IdentifierNode('keccak256')),
-    [at(new AbiEncodePackedNode([prefix, self, saltWord, codeHash]))],
-  ));
-  const word = at(new CastNode(parseType('uint256'), digest, false));
-  const narrowed = at(new CastNode(parseType('uint160'), word, false));
-  return at(new CastNode(new AddressType(false), narrowed, false));
 }
 
 /** Records each local `body` declares with the expression it is initialized from. */

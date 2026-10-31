@@ -109,8 +109,14 @@ describe('the address a creating body computes', () => {
       return { computed: value as Uint8Array, caller: deployment.caller };
     };
 
-    /** A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13). */
-    const identityOf = (txid: string) => hash160(validatorAddress(hexToBin(txid), VALIDATOR));
+    /**
+     * A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13).
+     *
+     * This call mints no child (`creates: null`), so its plan keeps the composer's internal outpoint order; a
+     * creating call states the display order the node's wire carries (`AtomicPairCreatePair` covers that path).
+     */
+    const identityOf = (txid: string) =>
+      hash160(validatorAddress(Uint8Array.from(hexToBin(txid)).reverse(), VALIDATOR));
 
     const first = await make(await deployCreator());
     expect(binToHex(first.computed)).toBe(binToHex(identityOf(first.caller.txid)));
@@ -123,6 +129,8 @@ describe('the address a creating body computes', () => {
     // One byte of the coin's txid changed: the body's value names no address that category derives.
     const other = hexToBin(first.caller.txid);
     other[0] = other[0]! ^ 0xff;
-    expect(binToHex(first.computed)).not.toBe(binToHex(hash160(validatorAddress(other, VALIDATOR))));
+    expect(binToHex(first.computed)).not.toBe(
+      binToHex(validatorAddress(Uint8Array.from(other).reverse(), VALIDATOR)),
+    );
   }, 240_000);
 });

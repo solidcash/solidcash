@@ -704,8 +704,6 @@ class ReferenceRun {
     for (const master of this.masters) {
       const block = this.master(master);
       if (!selfIsCodeConstant(block.kind)) continue;
-      // A CREATE2 child presents the 20-byte EVM identity its creator derived, which its own master binds.
-      if (block.self.length === 20) continue;
       const expected = validatorAddress(this.ownCategory(master), this.context.validatorTemplate);
       if (!eq(block.self, expected)) this.reject('V11', 'A_FRAME_PRESENTS_AN_ADDRESS_THAT_IS_NOT_ITS_OWN', master);
     }

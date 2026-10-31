@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import {
-  chainCategory,
   concatBytes,
   validatorAddress,
   validatorRedeemScript,
@@ -39,7 +38,9 @@ function spendAt(expected: Uint8Array): boolean {
     version: 2,
     inputs: [
       {
-        outpointTransactionHash: chainCategory(CATEGORY),
+        // A creating transaction states the outpoint in the display order the node's wire carries; the address
+        // snippet reads it back in that order and pins it into `addrV`.
+        outpointTransactionHash: CATEGORY,
         outpointIndex: 0,
         sequenceNumber: 0,
         unlockingBytecode: concatBytes([encodeDataPush(transcript), encodeDataPush(redeem)]),

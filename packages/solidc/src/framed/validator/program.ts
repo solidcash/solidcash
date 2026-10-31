@@ -1083,10 +1083,9 @@ function emitVisit(s: NamedStack): void {
   s.op(2, ['borrowed'], O.OP_BOOLOR);
 
   // V11: a frame in its own context presents its category's address; a borrowed frame presents its caller's, which
-  // the edge rule binds. A CREATE2 child presents the 20-byte EVM identity its creator derived, which its own master
-  // binds to the identity its code holds, so the rule decides only an address its category derives.
-  s.pick('borrowed', 'b').op(1, ['ownContext'], O.OP_NOT).pick('self', 'x').op(1, ['size'], O.OP_SIZE, O.OP_NIP)
-    .count(2 + 20, 'identity').op(2, ['derived'], O.OP_NUMNOTEQUAL).op(2, ['addressed'], O.OP_BOOLAND);
+  // the edge rule binds. A CREATE2 child's frames present `addrV(K)` as every other frame does, so the rule decides
+  // every covered frame.
+  s.pick('borrowed', 'b').op(1, ['ownContext'], O.OP_NOT);
   s.branch(() => s.call((fs) => {
     fs.pick('index', 'i').emit(1, ['address'], (em) => {
       em.op(O.OP_UTXOTOKENCATEGORY).count(32).op(O.OP_SPLIT, O.OP_DROP);

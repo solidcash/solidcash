@@ -18876,6 +18876,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * `[K, ...]` -> `[authhead, K, ...]`: the authhead lock from the category copy on top.
+   *
+   * The pin is `push(K ++ MUTABLE)` before the authhead body; the helper consumes nothing below its category copy.
+   */
+  private emitAuthheadLock(locationData: SingleLocationData): void {
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_CAT, locationData); // pin
+    this.emit(Uint8Array.of(0x21), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // push(pin)
+    this.emit(AUTHHEAD_BODY, locationData);
+    this.emit(Op.OP_CAT, locationData); // the redeem script
+    this.emit(Op.OP_NIP, locationData); // K is no part of the lock
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(Uint8Array.of(0xaa, 0x20), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Uint8Array.of(0x87), locationData);
+    this.emit(Op.OP_CAT, locationData);
+  }
+
+  /**
    * The creating body's check of the outputs of category `K` (docs/framed/CREATE2_IDENTITY.md).
    *
    * Entry `[..., address]`, exit `[..., address]`. `K` is recomputed from the frame's own block and laid beneath the
@@ -18905,35 +18928,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, locationData);
     this.emit(Op.OP_PICK, locationData);
     this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record, K, address, kind]
-    // The record's other byte order, then the authhead's in both orders: a deployment's locks are built from the
-    // display-order txid, and which order the covenant stores is the VM's. Deriving both accepts the child's
-    // genesis whichever order its outpoint read answers in.
+    // The authhead lock: P2SH32 of `push(pin(K)) ++ AUTHHEAD_BODY`. K is two deep now, under the record and the
+    // address.
     this.emit(Op.OP_2, locationData);
-    this.emit(Op.OP_PICK, locationData); // K, under the record and the address
+    this.emit(Op.OP_PICK, locationData); // K
+    this.emitAuthheadLock(locationData); // [authhead, record, K, address, kind]
+    // The record's and the authhead's other byte order. A deployment's locks are built from the display-order txid,
+    // and which order the covenant stores is the VM's; these sit above the base authhead so the check's extra lock
+    // slots stay one contiguous block under its sentinels.
+    this.emit(Op.OP_3, locationData);
+    this.emit(Op.OP_PICK, locationData); // K, under the authhead and the record
     this.emit(Op.OP_REVERSEBYTES, locationData);
     this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record', authhead, record, K, address, kind]
-    for (let variant = 0; variant < 2; variant += 1) {
-      // The authhead lock: P2SH32 of `push(pin(K)) ++ AUTHHEAD_BODY`. K is four deep under the record' and the
-      // authhead, then one deeper for the second variant.
-      this.emit(encodeInt(BigInt(3 + variant)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      if (variant === 1) this.emit(Op.OP_REVERSEBYTES, locationData);
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_1, locationData);
-      this.emit(Op.OP_CAT, locationData); // pin
-      this.emit(Uint8Array.of(0x21), locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData); // push(pin)
-      this.emit(AUTHHEAD_BODY, locationData);
-      this.emit(Op.OP_CAT, locationData); // the redeem script
-      this.emit(Op.OP_NIP, locationData); // K is no part of the lock
-      this.emit(Op.OP_HASH256, locationData);
-      this.emit(Uint8Array.of(0xaa, 0x20), locationData);
-      this.emit(Op.OP_SWAP, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.emit(Uint8Array.of(0x87), locationData);
-      this.emit(Op.OP_CAT, locationData);
-    }
+    this.emit(Op.OP_4, locationData);
+    this.emit(Op.OP_PICK, locationData); // K, under the record', the authhead and the record
+    this.emit(Op.OP_REVERSEBYTES, locationData);
+    this.emitAuthheadLock(locationData); // [authhead', record', authhead, record, K, address, kind]
     // Each sorted collection's empty head is minted at genesis at its entry covenant's lock, which takes the
     // category `K`; the check accepts each one, in both byte orders of it and against the slot's
     // deployment-filled collection hash.

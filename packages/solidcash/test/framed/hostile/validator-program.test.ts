@@ -195,6 +195,20 @@ describe('the shipped validator program refuses a covered master that is not at 
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
   });
 
+  test('refuses a 20-byte identity presented in place of the derived address', () => {
+    const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
+    const index = composition.validatorIndex;
+    // An EVM identity is 20 bytes. It used to be skipped by the address rule; every covered frame now presents
+    // `addrV` of its category, so the identity is refused like any other unrelated address.
+    const identity = Uint8Array.from({ length: 20 }, (_value, at) => 0x40 + at);
+    composition.blocks.get('A.go')!.self = identity;
+    composition.blocks.get('B.g')!.self = identity;
+    const modelled = materialise(composition);
+    expect(decideValidator(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: index }).rejection?.reason)
+      .toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a covered master whose presented address is not the one derived for its category', () => {
     const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
     const index = composition.validatorIndex;

@@ -17,7 +17,10 @@ import { compositionMachine } from '../machine.js';
  */
 
 const DISPLAY = Uint8Array.from({ length: 32 }, (_value, index) => 0x30 + index);
-const K = Uint8Array.from(DISPLAY).reverse();
+// `K` is the provider's display-order txid, which the outpoint read and the node's wire carry; the transaction's
+// category lives in the chain's internal order, which the VM answers with.
+const INTERNAL = Uint8Array.from(DISPLAY).reverse();
+const K = Uint8Array.from(DISPLAY);
 const OTHER = Uint8Array.from({ length: 32 }, (_value, index) => 0x70 + index);
 const ADDRESS = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x21), 0x87]);
 const RECORD = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x22), 0x87]);
@@ -34,11 +37,11 @@ const nft = (category: Uint8Array, capability: 'none' | 'mutable' | 'minting' = 
 
 function genesis(overrides: ({ index: number } & Partial<Output>)[] = []): Output[] {
   const outputs: Output[] = [
-    { lockingBytecode: AUTHHEAD, valueSatoshis: 1200n, token: nft(DISPLAY) },
-    { lockingBytecode: RECORD, valueSatoshis: 1200n, token: nft(DISPLAY) },
-    { lockingBytecode: ADDRESS, valueSatoshis: 1200n, token: nft(DISPLAY) },
-    { lockingBytecode: SENTINELS[0]!, valueSatoshis: 1200n, token: nft(DISPLAY, 'minting') },
-    { lockingBytecode: SENTINELS[5]!, valueSatoshis: 1200n, token: nft(DISPLAY, 'minting') },
+    { lockingBytecode: AUTHHEAD, valueSatoshis: 1200n, token: nft(INTERNAL) },
+    { lockingBytecode: RECORD, valueSatoshis: 1200n, token: nft(INTERNAL) },
+    { lockingBytecode: ADDRESS, valueSatoshis: 1200n, token: nft(INTERNAL) },
+    { lockingBytecode: SENTINELS[0]!, valueSatoshis: 1200n, token: nft(INTERNAL, 'minting') },
+    { lockingBytecode: SENTINELS[5]!, valueSatoshis: 1200n, token: nft(INTERNAL, 'minting') },
     { lockingBytecode: P2PKH, valueSatoshis: 10_000n },
     { lockingBytecode: P2PKH, valueSatoshis: 1_000n, token: nft(OTHER) },
   ];
@@ -48,7 +51,7 @@ function genesis(overrides: ({ index: number } & Partial<Output>)[] = []): Outpu
 
 /** The state commitment the SDK writes: SHA256 over each category output's SHA256(lock ++ commitment), in order. */
 function stateCommitment(outputs: Output[]): Uint8Array {
-  const parts = outputs.filter((output) => output.token?.category === DISPLAY)
+  const parts = outputs.filter((output) => output.token?.category === INTERNAL)
     .map((output) => sha256(Uint8Array.from([...output.lockingBytecode,
       ...hexToBin(output.token!.nft?.commitment ?? '')])));
   const joined = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -115,7 +118,7 @@ describe('the creating body\'s category check', () => {
   });
 
   it('refuses an extra output of the child\'s category', () => {
-    const extra = { lockingBytecode: RECORD, valueSatoshis: 1200n, token: nft(DISPLAY) };
+    const extra = { lockingBytecode: RECORD, valueSatoshis: 1200n, token: nft(INTERNAL) };
     expect(accepted([...genesis(), extra])).toBe(false);
   });
 });

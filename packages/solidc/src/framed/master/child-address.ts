@@ -67,10 +67,8 @@ export function validatorProgramScript(): number[] {
  */
 export function childAddressFromProgramScript(coin: 'input0' | 'stack' = 'input0'): number[] {
   return [
-    // K: the coin's outpoint txid. The opcode answers in OP_HASH256 byte order, and a token category is the
-    // reverse of it, which is the order `OP_UTXOTOKENCATEGORY` answers in.
+    // K: the coin's outpoint txid in the provider's display order, the order the node's wire and the category use.
     ...(coin === 'input0' ? [Opcodes.OP_0, Opcodes.OP_OUTPOINTTXHASH] : [Opcodes.OP_OUTPOINTTXHASH]),
-    Opcodes.OP_REVERSEBYTES,
     // pin(K, MUTABLE): the category and its capability byte, pushed as data.
     Opcodes.OP_1, Opcodes.OP_CAT,
     ...encodeDataPush(PIN_PUSH_OPCODE), Opcodes.OP_SWAP, Opcodes.OP_CAT,

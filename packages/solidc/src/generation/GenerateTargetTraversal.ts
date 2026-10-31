@@ -18823,8 +18823,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, locationData); // frame kind
     this.emit(Op.OP_FROMALTSTACK, locationData);
     this.emit(Op.OP_BIN2NUM, locationData);
-    this.emit(Op.OP_OUTPOINTTXHASH, locationData);
-    this.emit(Op.OP_REVERSEBYTES, locationData); // [K, address, kind]
+    this.emit(Op.OP_OUTPOINTTXHASH, locationData); // [K, address, kind], in the provider's display order
     // Laid beneath the address, which is the check's first pair: `[K, addrV, …]`.
     this.emit(Op.OP_SWAP, locationData); // [address, K, kind]
     // The record lock, from a copy of K (depth 1 under the address): the covenant takes the category in chain order.

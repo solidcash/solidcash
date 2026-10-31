@@ -2880,6 +2880,9 @@ async function callInShape(
       // A stated locktime means nothing to `OP_CHECKLOCKTIMEVERIFY` on a final input, and the builder's own
       // default is non-final, so the call states the same rather than leaving the composer's final default.
       sequenceNumber: 0xfffffffe,
+      // A creating call reads the child's category and address from its funding coin's outpoint; the node's wire,
+      // `TransactionBuilder` and the broadcast read that outpoint in display order.
+      displayOutpoints: creates !== undefined && creates !== null,
       userInputs: [...placeUserInputs([
         CALLER_ID,
         ...fillerCoins.map((_utxo, index) => fillerCoinInputId(index)),

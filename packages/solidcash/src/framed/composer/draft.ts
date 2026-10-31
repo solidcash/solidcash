@@ -344,6 +344,12 @@ export interface CompositionDraftPlan {
   /** The length of each token run the trailing outputs lead with: a container recreated, then its token sends. */
   readonly tokenRuns?: readonly number[];
   /**
+   * State known input outpoints in the provider's display order, as the node's wire and `TransactionBuilder` do.
+   * A creator's child address and category read the funding coin's outpoint, and the node reads that outpoint in
+   * display order; a derivation that creates a child states it the same way.
+   */
+  readonly displayOutpoints?: boolean;
+  /**
    * The transaction's nLocktime, fixed before any derivation runs.
    *
    * On this convention `block.timestamp` is the transaction's locktime, so a body that reads it sees this value in
@@ -890,7 +896,8 @@ export function composeDraft(
           outpointIndex: known?.vout ?? 0,
           outpointTransactionHash: known === undefined
             ? new Uint8Array(32).fill(index + 1)
-            : Uint8Array.from(hexToBin(known.txid).reverse()),
+            : plan.displayOutpoints === true ? hexToBin(known.txid)
+              : Uint8Array.from(hexToBin(known.txid).reverse()),
           sequenceNumber,
           unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
         };

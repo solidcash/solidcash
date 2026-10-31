@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
-import { CHILD_LOCK_CAPACITY, childLockSentinel, patchChildOutputCount } from '@solidcash/utils';
+import { CHILD_LOCK_CAPACITY, childLockSentinel } from '@solidcash/utils';
 import { childCategoryCheckScript } from '../../../src/framed/master/child-category-check.js';
 import { compositionMachine } from '../machine.js';
 
@@ -47,9 +47,7 @@ function genesis(overrides: ({ index: number } & Partial<Output>)[] = []): Outpu
 function accepted(outputs: Output[]): boolean {
   // The check leaves its whole entry on the stack; the test clears it to the one true item script success wants.
   const drops = Array.from({ length: (4 + CHILD_LOCK_CAPACITY) / 2 }, () => Opcodes.OP_2DROP);
-  // The deployment fills the category-output count; the fixture's genesis mints five outputs of `DISPLAY`.
-  const check = patchChildOutputCount(Uint8Array.from(childCategoryCheckScript()), 5);
-  const script = Uint8Array.from([...check, ...drops, Opcodes.OP_1]);
+  const script = Uint8Array.from([...childCategoryCheckScript(), ...drops, Opcodes.OP_1]);
   const entry = [K, ADDRESS, RECORD, AUTHHEAD, ...SENTINELS];
   const unlocking = Uint8Array.from(entry.flatMap((item) => [...encodeDataPush(item)]));
   const transaction = {
@@ -79,10 +77,5 @@ describe('the creating body\'s category check', () => {
 
   it('refuses a category output with no NFT', () => {
     expect(accepted(genesis([{ index: 2, token: { category: DISPLAY, amount: 0n } }]))).toBe(false);
-  });
-
-  it('refuses an extra output of the child\'s category', () => {
-    const extra = { lockingBytecode: RECORD, valueSatoshis: 1200n, token: nft(DISPLAY) };
-    expect(accepted([...genesis(), extra])).toBe(false);
   });
 });

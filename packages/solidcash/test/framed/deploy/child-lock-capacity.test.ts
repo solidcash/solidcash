@@ -13,7 +13,6 @@ import { bindProviderBlockOracle } from '../../../src/framed/call/block-oracle.j
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
 import { deployMaster } from '../../../src/framed/deploy/material.js';
-import { childGenesisOutputCount } from '../../../src/framed/deploy/genesis-outputs.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 /**
@@ -79,10 +78,6 @@ describe('a child as wide as the allow-list', () => {
     const { categoryId } = await deployStatefulContract(creator.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator, childLocks,
-      childOutputCount: childGenesisOutputCount({
-        artifact: child.logical, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
-        provider, split: child, pool, ownerLock: callerLock,
-      }),
     });
     const caller = nextCoin(9_000_000n);
     await provider.addUtxo(binToHex(callerLock), caller);

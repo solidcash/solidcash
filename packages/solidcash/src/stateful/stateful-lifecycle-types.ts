@@ -71,11 +71,6 @@ export interface DeployOptions {
    */
   childLocks?: readonly Uint8Array[];
   /**
-   * How many outputs of the child's category a creation mints, when the child's entry locks are given: the creator's
-   * check counts them and refuses a transaction that mints any other number.
-   */
-  childOutputCount?: number;
-  /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
    * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while

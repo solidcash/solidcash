@@ -13,7 +13,7 @@
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import { CHILD_LOCK_CAPACITY, childOutputCountSentinel } from '@solidcash/utils';
+import { CHILD_LOCK_CAPACITY } from '@solidcash/utils';
 
 const P2SH32_PREFIX = Uint8Array.of(0xaa, 0x20);
 const P2SH32_SUFFIX = Uint8Array.of(0x87);
@@ -79,26 +79,5 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL,
     Opcodes.OP_DROP,
   );
-  // The transaction mints exactly the outputs of `K` the deployment states: a per-category count in the second loop,
-  // kept on the altstack (the membership loop's flag is gone). The count's push is the deployment's placeholder.
-  script.push(
-    Opcodes.OP_0, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
-    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
-    Opcodes.OP_IF,
-    ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(COUNT_K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_ENDIF,
-    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
-    Opcodes.OP_FROMALTSTACK, ...childOutputCountSentinel(), Opcodes.OP_BIN2NUM,
-    Opcodes.OP_NUMEQUALVERIFY,
-  );
   return script;
 }
-
-/** `K`'s depth in the counting loop: the entry, the loop's index and the output's category above it. */
-const COUNT_K_DEPTH = 4 + CHILD_LOCK_CAPACITY + 1;

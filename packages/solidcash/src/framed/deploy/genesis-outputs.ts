@@ -67,14 +67,6 @@ export interface ChildGenesisOutputs {
   readonly outputs: readonly Output[];
 }
 
-/** How many outputs of the child's category its genesis mints: masters, validators, records, authhead and events. */
-export function childGenesisOutputCount(options: ChildGenesisOutputsOptions): number {
-  const categoryId = binToHex(options.category);
-  return childGenesisOutputs(options).outputs.filter(
-    (output) => output.token !== undefined && output.token.category === categoryId,
-  ).length;
-}
-
 /** The outputs a creator mints for the child its `create2` names. */
 export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildGenesisOutputs {
   const { artifact, category, validatorProgram, provider } = options;

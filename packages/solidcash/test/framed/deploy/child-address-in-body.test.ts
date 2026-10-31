@@ -10,6 +10,7 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
+import { sha256 } from '@solidcash/utils';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 /**
@@ -94,8 +95,10 @@ describe('the address a creating body computes', () => {
         // The deployment patched the shard for the folded-output count, so the call runs the registered split.
         split: functionSplitFor(deployment.provider, deployment.categoryId) ?? creator,
         vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
-        // The test derives the address the body computes; it mints no child.
+        // The test derives the address the body computes; it mints no child. Its creator states a zero-output
+        // category, so the folded-state digest is over nothing and the check still wants the OP_RETURN it commits to.
         creates: null,
+        extraOutputs: [{ to: Uint8Array.from([0x6a, 0x20, ...sha256(new Uint8Array())]), amount: 0n }],
       });
       const refused = result.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');

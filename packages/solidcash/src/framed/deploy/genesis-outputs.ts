@@ -12,8 +12,8 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { bytesEqual, hash256, validatorAddress, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { bytesEqual, hash256, sha256, validatorAddress, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust } from '../composer/dust.js';
@@ -186,6 +186,18 @@ export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildG
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: chunk.commitment } },
     });
+  }
+  // The folded state's commitment: a tokenless OP_RETURN over the category outputs' locks and commitments, in the
+  // order the transaction lays them out.
+  if (genesis !== undefined) {
+    const carried = outputs.filter((output) => output.token !== undefined && output.token.category === categoryId);
+    const parts = carried.map((output) => sha256(Uint8Array.from([...(output.to as Uint8Array),
+      ...hexToBin(String(output.token?.nft?.commitment ?? ''))])));
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const joined = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) { joined.set(part, offset); offset += part.length; }
+    outputs.push({ to: Uint8Array.from([0x6a, 0x20, ...sha256(joined)]), amount: 0n });
   }
   return { master, outputs };
 }

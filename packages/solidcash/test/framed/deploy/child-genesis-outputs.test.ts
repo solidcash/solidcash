@@ -75,6 +75,8 @@ describe('a creator\'s list of the child\'s genesis outputs', () => {
     let matched = 0;
     for (const output of listed.outputs) {
       if (output.token === undefined) {
+        // The state commitment is an OP_RETURN, not a UTXO; nothing on chain carries it.
+        if ((output.to as Uint8Array)[0] === 0x6a) continue;
         // A facet: any UTXO of its code serves, so it only has to exist.
         const at = await atLock(output.to as Uint8Array);
         expect(at.length, 'facet output').toBeGreaterThan(0);

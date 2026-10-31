@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { sha256 } from '@solidcash/utils';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { CHILD_LOCK_CAPACITY, childLockSentinel, patchChildOutputCount } from '@solidcash/utils';
 import { childCategoryCheckScript } from '../../../src/framed/master/child-category-check.js';
@@ -44,7 +46,31 @@ function genesis(overrides: ({ index: number } & Partial<Output>)[] = []): Outpu
   return outputs;
 }
 
-function accepted(outputs: Output[]): boolean {
+/** The state commitment the SDK writes: SHA256 over each category output's SHA256(lock ++ commitment), in order. */
+function stateCommitment(outputs: Output[]): Uint8Array {
+  const parts = outputs.filter((output) => output.token?.category === DISPLAY)
+    .map((output) => sha256(Uint8Array.from([...output.lockingBytecode,
+      ...hexToBin(output.token!.nft?.commitment ?? '')])));
+  const joined = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { joined.set(part, offset); offset += part.length; }
+  return sha256(joined);
+}
+
+/** The fixture's commitments are hex for the JS hash; the VM's outputs carry bytes. */
+function vmOutputs(outputs: Output[]): Output[] {
+  return outputs.map((output) => output.token === undefined ? output : {
+    ...output,
+    token: {
+      ...output.token,
+      ...(output.token.nft === undefined ? {} : {
+        nft: { ...output.token.nft, commitment: hexToBin(output.token.nft.commitment) },
+      }),
+    },
+  } as Output);
+}
+
+function accepted(outputs: Output[], committed = stateCommitment(genesis())): boolean {
   // The check leaves its whole entry on the stack; the test clears it to the one true item script success wants.
   const drops = Array.from({ length: (4 + CHILD_LOCK_CAPACITY) / 2 }, () => Opcodes.OP_2DROP);
   // The deployment fills the category-output count; the fixture's genesis mints five outputs of `DISPLAY`.
@@ -55,7 +81,7 @@ function accepted(outputs: Output[]): boolean {
   const transaction = {
     version: 2,
     inputs: [{ outpointTransactionHash: new Uint8Array(32).fill(9), outpointIndex: 0, sequenceNumber: 0, unlockingBytecode: unlocking }],
-    outputs,
+    outputs: vmOutputs([...outputs, { lockingBytecode: Uint8Array.from([0x6a, 0x20, ...committed]), valueSatoshis: 0n }]),
     locktime: 0,
   };
   const sourceOutputs = [{ lockingBytecode: script, valueSatoshis: 1_000n }];
@@ -79,6 +105,13 @@ describe('the creating body\'s category check', () => {
 
   it('refuses a category output with no NFT', () => {
     expect(accepted(genesis([{ index: 2, token: { category: DISPLAY, amount: 0n } }]))).toBe(false);
+  });
+
+  it('refuses a record whose commitment the folded state does not commit to', () => {
+    const tampered = genesis([{ index: 1, token: {
+      category: DISPLAY, amount: 0n, nft: { capability: 'mutable', commitment: 'ff' },
+    } }]);
+    expect(accepted(tampered, stateCommitment(genesis()))).toBe(false);
   });
 
   it('refuses an extra output of the child\'s category', () => {

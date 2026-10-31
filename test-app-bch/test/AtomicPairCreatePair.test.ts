@@ -114,5 +114,22 @@ describe("UniswapV2Factory.createPair", () => {
 
     const widths = result.transaction.inputs.map((input) => input.unlockingBytecode.length);
     expect(Math.max(...widths)).toBeLessThan(10_000);
+
+    // A composer that supplies an arbitrary commitment for a pair record is refused: the record output's digest no
+    // longer matches the one the folded state committed to (and the category-output count is one too many).
+    const tamperedCaller = { txid: "72".repeat(32), vout: 0, satoshis: 20_000_000n };
+    await provider.addUtxo(callerAddress, tamperedCaller);
+    const tampered = await framedCall.callFramedEntry({
+      provider, artifact: factory.artifact, categoryId, functionName: "createPair",
+      args: [Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x41), 0x87]),
+        Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87])],
+      callerUtxo: tamperedCaller, callerLockingBytecode: callerLock, funder, split,
+      validatorProgram: VALIDATOR, publish: false,
+      extraOutputs: [{
+        to: stateRecordLockingBytecode(binToHex(hexToBin(tamperedCaller.txid))), amount: 1200n,
+        token: { category: tamperedCaller.txid, amount: 0n, nft: { capability: "mutable", commitment: "ff" } },
+      }],
+    } as never);
+    expect(tampered.accepted).toBe(false);
   }, 600_000);
 });

@@ -97,6 +97,47 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_FROMALTSTACK, ...childOutputCountSentinel(), Opcodes.OP_BIN2NUM,
     Opcodes.OP_NUMEQUALVERIFY,
   );
+  // The folded state's digest, folded in the order the outputs sit in the transaction.
+  script.push(
+    Opcodes.OP_0, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
+    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_IF,
+    ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...push(COUNT_K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCOMMITMENT,
+    Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_OUTPUTBYTECODE,
+    Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_CAT, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ELSE, Opcodes.OP_DROP,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_SHA256,
+  );
+  // The tokenless `OP_RETURN <digest>` output the SDK appends carries the digest.
+  script.push(
+    Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
+    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_DROP,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_DROP,
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE,
+    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(34), Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_DUP, ...push(2), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...encodeDataPush(Uint8Array.of(0x6a, 0x20)), Opcodes.OP_EQUALVERIFY,
+    ...push(2), Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ELSE, Opcodes.OP_DROP,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_EQUALVERIFY,
+  );
   return script;
 }
 

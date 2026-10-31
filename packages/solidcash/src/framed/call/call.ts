@@ -2960,6 +2960,12 @@ async function callInShape(
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
   // The value each typed call carries, by its position among the typed calls, once its site's close handed it back.
   let learnedTypedValues: ReadonlyMap<number, bigint> = prior.typedValues ?? new Map();
+  /**
+   * The earlier results as a plan that starts again reads them. A typed call's value is learned from the body's own
+   * close, so a plan that starts again from what was learned keeps it.
+   */
+  const carried = (): EarlierResults => (
+    learnedTypedValues.size === 0 ? prior : { ...prior, typedValues: learnedTypedValues });
   let learnedPayees: readonly PayeeLearned[] = payees.map((_payee, index) => ({
     events: payeeEventSentinels[index]!.map(() => undefined),
     views: payeeCandidates[index]!.map(() => undefined),
@@ -3257,7 +3263,6 @@ async function callInShape(
         && !sameEndViews(laterStartViews, prior.calleeWriteViews)) {
         return callInShape(options, shape, {
           ...prior, calleeWriteViews: laterStartViews, viewPasses: (prior.viewPasses ?? 0) + 1,
-          ...(learnedTypedValues.size === 0 ? {} : { typedValues: learnedTypedValues }),
         });
       }
       // A callee frame whose run made fewer listed sends than its frame lists stops at its count, as the entry does: the
@@ -3819,7 +3824,9 @@ async function callInShape(
     ...(refusal === undefined ? {} : { refusal }),
     ...(broadcast === undefined ? {} : { broadcast }),
     ...(mappingRecords?.undecidedSlots === undefined ? {} : { undecidedSlots: mappingRecords.undecidedSlots }),
-    plannedFrom: prior,
+    // A value the body's own close handed back is a fact about the execution, so a plan that assumes an undecided
+    // write or call runs again from the values learned here.
+    plannedFrom: carried(),
     ...(() => {
       const calleeUndecidedSlots = new Map((calleePlan?.callees ?? []).flatMap((callee) => {
         const slots = callee.entryWrites?.undecidedSlots ?? [];
@@ -3923,7 +3930,7 @@ async function callAssumingActivations(options: FramedCallOptions, shape: SendSh
     try {
       result = await callInShape({
         ...options, assumedActivations, ...(byMaster.size === 0 ? {} : { calleeAssumedActivations: byMaster }),
-      }, shape, (first.plannedFrom as EarlierResults | undefined) ?? NO_EARLIER_RESULTS);
+      }, shape);
     } catch (error) {
       if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment) throw error;
       continue;

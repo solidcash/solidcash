@@ -20,25 +20,23 @@ const P2SH32_SUFFIX = Uint8Array.of(0x87);
 const push = (value: number): number[] => [...encodeDataPush(bigIntToVmNumber(BigInt(value)))];
 
 /**
- * K's depth at every category comparison: the split copy and the original category, the loop's index, the sentinels
- * and the three locks. The membership, count and digest loops keep the same shape, so one constant serves all three.
+ * The check's script, over the creator's fixed lock slots and any entry-covenant locks it derives from `K` at run
+ * time (`extraLocks`), which a child's sorted collections' empty heads sit at.
  */
-const K_DEPTH = 3 + CHILD_LOCK_CAPACITY + 3;
-
-/**
- * Each allowed lock's depth once a comparison has duplicated the output's lock.
- *
- * Top-first under the loop index: the sentinels (S7 first), then the authhead, the record lock and the validator's
- * address; `K` sits past them and is the category, not a lock.
- */
-const ALLOWED_DEPTHS: readonly number[] = [
-  ...Array.from({ length: CHILD_LOCK_CAPACITY }, (_unused, slot) => 3 + slot),
-  3 + CHILD_LOCK_CAPACITY,
-  4 + CHILD_LOCK_CAPACITY,
-  5 + CHILD_LOCK_CAPACITY,
-];
-
-export function childCategoryCheckScript(): number[] {
+export function childCategoryCheckScript(extraLocks = 0): number[] {
+  // K's depth at every category comparison: the split copy and the original category, the loop's index, the lock
+  // slots and the three derived locks. The membership, count and digest loops keep the same shape, so one constant
+  // serves all three.
+  const kDepth = 3 + CHILD_LOCK_CAPACITY + extraLocks + 3;
+  // Each allowed lock's depth once a comparison has duplicated the output's lock. Top-first under the loop index:
+  // the fixed slots and the derived entry locks, then the authhead, the record lock and the validator's address;
+  // `K` sits past them and is the category, not a lock.
+  const allowedDepths: readonly number[] = [
+    ...Array.from({ length: CHILD_LOCK_CAPACITY + extraLocks }, (_unused, slot) => 3 + slot),
+    3 + CHILD_LOCK_CAPACITY + extraLocks,
+    4 + CHILD_LOCK_CAPACITY + extraLocks,
+    5 + CHILD_LOCK_CAPACITY + extraLocks,
+  ];
   const script: number[] = [
     Opcodes.OP_TXOUTPUTCOUNT,
     Opcodes.OP_BEGIN,
@@ -48,7 +46,7 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_IF,
     Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(K_DEPTH), Opcodes.OP_PICK,
+    ...push(kDepth), Opcodes.OP_PICK,
     Opcodes.OP_EQUAL,
     Opcodes.OP_IF,
     Opcodes.OP_DROP,
@@ -68,7 +66,7 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE,
     Opcodes.OP_0, Opcodes.OP_TOALTSTACK,
   ];
-  for (const depth of ALLOWED_DEPTHS) {
+  for (const depth of allowedDepths) {
     script.push(
       Opcodes.OP_DUP, ...push(depth), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
       Opcodes.OP_FROMALTSTACK, Opcodes.OP_BOOLOR, Opcodes.OP_TOALTSTACK,
@@ -93,7 +91,7 @@ export function childCategoryCheckScript(): number[] {
     // The category is compared through a copy, as the membership loop does, so `K` sits at `K_DEPTH` in every loop;
     // the original stays for the true branch to drop before it reads the loop index.
     Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    ...push(kDepth), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
     Opcodes.OP_IF,
     Opcodes.OP_DROP,
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_TOALTSTACK,
@@ -113,7 +111,7 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_IF,
     // The same category copy and drop as the count loop: `K` is read at `K_DEPTH`.
     Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    ...push(kDepth), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
     Opcodes.OP_IF,
     Opcodes.OP_DROP,
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCOMMITMENT,

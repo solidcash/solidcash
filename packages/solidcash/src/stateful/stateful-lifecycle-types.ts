@@ -76,6 +76,11 @@ export interface DeployOptions {
    */
   childOutputCount?: number;
   /**
+   * The 20-byte hashes of the child's sorted collections, whose empty heads its genesis mints: the creator's check
+   * derives each entry covenant's lock from `K` and that hash.
+   */
+  childCollections?: readonly Uint8Array[];
+  /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
    * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while

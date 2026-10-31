@@ -40,6 +40,30 @@ export function childLockFiller(): Uint8Array {
  */
 export const CHILD_OUTPUT_COUNT_SENTINEL = 0x2dc1;
 
+/**
+ * How many sorted collections of a child the creator's check derives an entry-head lock for.
+ *
+ * A child's empty heads are minted at its genesis and sit at each collection's entry covenant, whose lock takes the
+ * category `K`; the check derives those locks from `K` and a collection hash the deployment fills. A child with more
+ * sorted collections than the artifact reserved is refused at deployment by name.
+ */
+export const CHILD_COLLECTION_CAPACITY = 4;
+
+/** The 20-byte placeholder push a creator reserves for the child's `index`-th sorted collection hash. */
+export function childCollectionSentinel(index: number): Uint8Array {
+  if (!Number.isInteger(index) || index < 0 || index >= CHILD_COLLECTION_CAPACITY) {
+    throw new Error(`a child collection sentinel is 0..${CHILD_COLLECTION_CAPACITY - 1}: got ${index}`);
+  }
+  const bytes = new Uint8Array(20);
+  for (let at = 0; at < 20; at += 1) bytes[at] = (0xc3 + index * 0x1d + at * 5) & 0xff;
+  return bytes;
+}
+
+/** The hash an unused slot is filled with, which derives no output's lock. */
+export function childCollectionFiller(): Uint8Array {
+  return new Uint8Array(20);
+}
+
 /** The 3-byte push a creator reserves for the child's category-output count. */
 export function childOutputCountSentinel(): Uint8Array {
   return Uint8Array.from([0x02, CHILD_OUTPUT_COUNT_SENTINEL & 0xff, CHILD_OUTPUT_COUNT_SENTINEL >> 8]);

@@ -9,7 +9,9 @@ import { framedCall, framedDeploy } from "@solidcash/solidcash/framed";
 import { stateRecordLockingBytecode } from "@solidcash/solidcash/dist/framed/deploy/records.js";
 import { deployMaster } from "@solidcash/solidcash/dist/framed/deploy/material.js";
 import { MasterPoolDeployment } from "@solidcash/solidcash/dist/framed/deploy/pool.js";
-import { childGenesisOutputCount } from "@solidcash/solidcash/dist/framed/deploy/genesis-outputs.js";
+import {
+  childCollectionHashes, childGenesisOutputCount,
+} from "@solidcash/solidcash/dist/framed/deploy/genesis-outputs.js";
 import { deployStatefulContract } from "@solidcash/solidcash/dist/stateful/sc-deploy.js";
 import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/block-oracle.js";
 
@@ -60,6 +62,7 @@ describe("the pair created with create2", () => {
     const { categoryId } = await deployStatefulContract(creator.artifact, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator.bundle, childLocks,
+      childCollections: childCollectionHashes(pair.artifact),
       childOutputCount: childGenesisOutputCount({
         artifact: pair.artifact, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
         provider, split: pair.bundle, pool, ownerLock: callerLock,

@@ -8,7 +8,8 @@
  */
 
 import {
-  CHILD_LOCK_CAPACITY, ChildOutputCountError, childLockFiller, childLockSentinel,
+  CHILD_COLLECTION_CAPACITY, CHILD_LOCK_CAPACITY, ChildOutputCountError, childCollectionFiller,
+  childCollectionSentinel, childLockFiller, childLockSentinel,
   patchChildOutputCount as patchOutputCountScript, type Artifact,
 } from '@solidcash/utils';
 import { asmToBytecode, bytecodeToAsm } from '@solidcash/utils';
@@ -83,4 +84,29 @@ function findPushes(program: Uint8Array, payload: Uint8Array): number[] {
     if (same) offsets.push(index);
   }
   return offsets;
+}
+
+
+/** A clone of `artifact` with every collection-hash sentinel filled; an artifact without one is returned unchanged. */
+export function patchChildCollectionSentinels(artifact: Artifact, collections: readonly Uint8Array[]): Artifact {
+  if (collections.length > CHILD_COLLECTION_CAPACITY) {
+    throw new ChildLockSlotError(
+      `the child has ${collections.length} sorted collections, and its creator reserves ${CHILD_COLLECTION_CAPACITY}: `
+      + 'the creator could not derive every entry head it must allow',
+    );
+  }
+  const program = Uint8Array.from(asmToBytecode(artifact.bytecode));
+  let filled = 0;
+  for (let slot = 0; slot < CHILD_COLLECTION_CAPACITY; slot += 1) {
+    const hash = collections[slot] ?? childCollectionFiller();
+    if (hash.length !== 20) {
+      throw new ChildLockSlotError(`a collection hash is 20 bytes: slot ${slot} holds ${hash.length}`);
+    }
+    for (const offset of findPushes(program, childCollectionSentinel(slot))) {
+      program.set(hash, offset + 1);
+      filled += 1;
+    }
+  }
+  if (filled === 0) return artifact;
+  return { ...artifact, bytecode: bytecodeToAsm(program) } as Artifact;
 }

@@ -43,6 +43,8 @@ export interface DeployContractOptions {
    * them and refuses a transaction that mints any other number.
    */
   childOutputCount?: number;
+  /** The hashes of the child's sorted collections, whose empty heads its genesis mints. */
+  childCollections?: readonly Uint8Array[];
   /**
    * The lock a constructor that reads `msg.sender` sees. Defaults to the runner's own lock; a contract another contract
    * creates states its creator's, which is the `factory` a pair records.
@@ -464,6 +466,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         ...(overrides.functionSplit === undefined ? {} : { functionSplit: overrides.functionSplit }),
         ...(overrides.childLocks === undefined ? {} : { childLocks: overrides.childLocks }),
         ...(overrides.childOutputCount === undefined ? {} : { childOutputCount: overrides.childOutputCount }),
+        ...(overrides.childCollections === undefined ? {} : { childCollections: overrides.childCollections }),
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),

@@ -39,7 +39,7 @@ import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/ide
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { bindProviderBlockOracle } from '../call/block-oracle.js';
-import { patchChildLockSentinels, patchChildOutputCount } from './child-locks.js';
+import { patchChildCollectionSentinels, patchChildLockSentinels, patchChildOutputCount } from './child-locks.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -113,16 +113,21 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     ? target : patchChildLockSentinels(target, childLocks));
   const withCount = (target: Artifact): Artifact => (childOutputCount === undefined
     ? target : patchChildOutputCount(target, childOutputCount));
-  const shippedArtifact = withCount(withLockSlots(artifact)) as typeof artifact;
-  const split = (childLocks === undefined || childLocks.length === 0) && childOutputCount === undefined
+  const withCollections = (target: Artifact): Artifact => (options.childCollections === undefined
+    ? target : patchChildCollectionSentinels(target, options.childCollections));
+  const withChildSlots = (target: Artifact): Artifact => withCollections(withCount(withLockSlots(target)));
+  const patchesChild = (childLocks !== undefined && childLocks.length > 0)
+    || childOutputCount !== undefined || options.childCollections !== undefined;
+  const shippedArtifact = withChildSlots(artifact) as typeof artifact;
+  const split = !patchesChild
     ? options.functionSplit
     : options.functionSplit === undefined ? undefined : {
       ...options.functionSplit,
       shards: options.functionSplit.shards.map((shard) => ({
-        ...shard, artifact: withCount(withLockSlots(shard.artifact)),
+        ...shard, artifact: withChildSlots(shard.artifact),
       })),
       internalCuts: options.functionSplit.internalCuts.map((cut) => ({
-        ...cut, artifact: withCount(withLockSlots(cut.artifact)),
+        ...cut, artifact: withChildSlots(cut.artifact),
       })),
     };
   if (shippedArtifact.stateLayout === undefined) {

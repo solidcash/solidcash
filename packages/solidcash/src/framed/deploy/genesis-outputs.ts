@@ -13,7 +13,10 @@
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { bytesEqual, hash256, sha256, validatorAddress, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
+import {
+  bytesEqual, computeCollectionHash, hash256, sha256, validatorAddress,
+  type Artifact, type FunctionSplitBundle,
+} from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust } from '../composer/dust.js';
@@ -67,6 +70,13 @@ export interface ChildGenesisOutputs {
   readonly outputs: readonly Output[];
 }
 
+/** The 20-byte hashes of a child's sorted collections, whose empty heads its genesis mints. */
+export function childCollectionHashes(artifact: Artifact): Uint8Array[] {
+  return (artifact.stateLayout?.collections ?? [])
+    .filter((collection) => collection.sorted === true)
+    .map((collection) => computeCollectionHash(collection.signature));
+}
+
 /** How many outputs of the child's category its genesis mints: masters, validators, records, authhead and events. */
 export function childGenesisOutputCount(options: ChildGenesisOutputsOptions): number {
   const categoryId = binToHex(options.category);
@@ -89,12 +99,19 @@ export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildG
     throw new FramedChildGenesisError(`Contract ${artifact.contractName} is not a stateful contract`);
   }
 
+  // Every sorted collection an entry can write needs its empty head minted here, as a deployment mints it: a head
+  // exists only at genesis, so a child whose creator leaves it out cannot insert beside it later.
+  const headCollections = (artifact.stateLayout.collections ?? [])
+    .filter((collection) => collection.sorted === true)
+    .map((collection) => ({ name: collection.name, signature: collection.signature }));
   const genesis = deriveFramedGenesis({
     artifact,
     category,
     validatorProgram,
     provider,
     constructorArgs: options.constructorArgs ?? [],
+    ...(headCollections.length === 0 ? {} : { headCollections }),
+
     ...(options.initializer === undefined ? {} : { initializer: options.initializer }),
     ...(options.senderLockingBytecode === undefined
       ? {} : { senderLockingBytecode: options.senderLockingBytecode }),

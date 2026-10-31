@@ -348,7 +348,9 @@ import {
 } from '../framed/master/witness-reader.js';
 import { childAddressFromProgramScript, validatorProgramScript } from '../framed/master/child-address.js';
 import { childCategoryCheckScript } from '../framed/master/child-category-check.js';
-import { AUTHHEAD_BODY, CHILD_LOCK_CAPACITY, childLockSentinel } from '@solidcash/utils';
+import {
+  AUTHHEAD_BODY, CHILD_COLLECTION_CAPACITY, CHILD_LOCK_CAPACITY, childCollectionSentinel, childLockSentinel,
+} from '@solidcash/utils';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
   declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
@@ -18764,6 +18766,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  /** The static parts of an entry covenant around its category and collection hash, built once per compile. */
+  private entryCovenantTemplate?: { readonly a: Uint8Array; readonly b: Uint8Array; readonly c: Uint8Array };
+
   /**
    * The running frame's child address, `addrV(K)` of the genesis-eligible coin its transaction carries.
    *
@@ -18798,6 +18803,68 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // creation is unbacked liquidity, and a lock that is not a covenant holds no code the child's validator names.
     this.emitChildGenesisCheck(locationData);
     this.pushToStack('(value)');
+  }
+
+  /**
+   * One collection's empty-head lock, derived from `K` on the stack: `P2SH32(entryCovenant(K, collection))`.
+   *
+   * The covenant's bytes are static around two values: the chain-order category and the 20-byte collection hash.
+   * A template built with placeholders splits into those three parts once, and each slot's hash sentinel is patched
+   * at deployment, so the check derives the child's entry-head locks from `K` without knowing the child at compile
+   * time. Entry `[..., authhead, record, K, address, kind]`, exit with the lock pushed on top.
+   */
+  private entryCovenantParts(): { readonly a: Uint8Array; readonly b: Uint8Array; readonly c: Uint8Array } {
+    if (this.entryCovenantTemplate !== undefined) return this.entryCovenantTemplate;
+    const category = new Uint8Array(32).fill(0x5a);
+    const hash = new Uint8Array(20).fill(0x3c);
+    const templated = scriptToBytecode(buildEntryNftCovenantScript(category, hash));
+    const find = (needle: Uint8Array): number => {
+      for (let index = 0; index + needle.length <= templated.length; index += 1) {
+        if (needle.every((byte, offset) => templated[index + offset] === byte)) return index;
+      }
+      return -1;
+    };
+    const categoryAt = find(Uint8Array.from([0x20, ...category]));
+    const hashAt = find(Uint8Array.from([0x14, ...hash]));
+    if (categoryAt < 0 || hashAt < 0 || hashAt < categoryAt) {
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        'an entry covenant does not carry its category and collection hash where the creator\'s check reads them',
+        { requested: 'framed', reason: 'entry-covenant-template' },
+      );
+    }
+    this.entryCovenantTemplate = {
+      // Each part keeps the push prefix of the value the runtime joins in after it.
+      a: templated.slice(0, categoryAt + 1),
+      b: templated.slice(categoryAt + 33, hashAt + 1),
+      c: templated.slice(hashAt + 21),
+    };
+    return this.entryCovenantTemplate;
+  }
+
+  /** Pushes the empty-head lock of the collection-hash slot `slot`, derived from `K`. */
+  private emitEntryHeadLock(slot: number, locationData: SingleLocationData): void {
+    const { a, b, c } = this.entryCovenantParts();
+    this.emit(childCollectionSentinel(slot), locationData); // [hash, earlier heads, authhead, record, address, K, kind]
+    // Each slot's lock stays on the stack, so K sits one deeper for every earlier slot.
+    this.emit([Op.OP_4, Op.OP_5, Op.OP_6, Op.OP_7][slot]!, locationData);
+    this.emit(Op.OP_PICK, locationData); // K: under the hash, the earlier heads, the two locks and the address
+    // The stack's K is already the chain order the covenant stores, as the address helpers read it.
+    this.emit(a, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // a ++ category
+    this.emit(b, locationData);
+    this.emit(Op.OP_CAT, locationData); // a ++ category ++ b
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // ... ++ hash
+    this.emit(c, locationData);
+    this.emit(Op.OP_CAT, locationData); // the entry covenant
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(Uint8Array.of(0xaa, 0x20), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Uint8Array.of(0x87), locationData);
+    this.emit(Op.OP_CAT, locationData); // [entry head lock, authhead, record, K, address, kind]
   }
 
   /**
@@ -18849,12 +18916,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(Uint8Array.of(0x87), locationData);
     this.emit(Op.OP_CAT, locationData); // [authhead, record, K, address, kind]
-    for (let slot = 0; slot < CHILD_LOCK_CAPACITY; slot += 1) {
-      this.emit(childLockSentinel(slot), locationData); // [S0..S7, authhead, record, K, address, kind]
+    // Each sorted collection's empty head is minted at genesis at its entry covenant's lock, which takes the
+    // category `K`; the check accepts each one, derived from `K` and the slot's pool of collection hashes the
+    // deployment fills, so a child whose first insert needs a head can be created atomically.
+    for (let slot = 0; slot < CHILD_COLLECTION_CAPACITY; slot += 1) {
+      this.emitEntryHeadLock(slot, locationData);
     }
-    this.emit(bytecodeToScript(Uint8Array.from(childCategoryCheckScript())), locationData);
+    for (let slot = 0; slot < CHILD_LOCK_CAPACITY; slot += 1) {
+      this.emit(childLockSentinel(slot), locationData); // [S0..S7, heads, authhead, record, K, address, kind]
+    }
+    this.emit(bytecodeToScript(Uint8Array.from(childCategoryCheckScript(CHILD_COLLECTION_CAPACITY))), locationData);
     // The check leaves the stack as it found it; the sentinels and the derived locks are no part of the value.
-    for (let drop = 0; drop < CHILD_LOCK_CAPACITY + 2; drop += 1) {
+    for (let drop = 0; drop < CHILD_LOCK_CAPACITY + 2 + CHILD_COLLECTION_CAPACITY; drop += 1) {
       this.emit(Op.OP_DROP, locationData);
     }
     this.emit(Op.OP_NIP, locationData); // K, beneath the address

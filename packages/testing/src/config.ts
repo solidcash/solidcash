@@ -50,7 +50,11 @@ export interface NetworkConfig {
     /** Bootstrap height; headers `0..height` exist. */
     chainId?: string;
   };
-  /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */
+  /**
+   * Consensus overrides. A mock enforces them; a mem-cash entry states them as the limits a compile reads before it
+   * connects, which the node's advertised profile then replaces. Defaults to 1MB inputs/stack items and 10MB
+   * transactions.
+   */
   consensus?: Partial<{
     maximumInputBytes: number;
     maximumStackItemBytes: number;

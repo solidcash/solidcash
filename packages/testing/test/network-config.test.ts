@@ -65,6 +65,17 @@ describe('configured SolidHat networks', () => {
     expect(capped.consensusLimits?.maximumInputBytes).toBe(10_000);
   });
 
+  it('a mem-cash network states the limits a compile reads before it connects', () => {
+    // A compile reads consensusLimits without connecting, so the network entry's consensus is the pre-connect value.
+    const provider = createProvider('localhost', {
+      type: 'mem-cash',
+      memCash: { url: 'http://127.0.0.1:8496' },
+      consensus: { maximumNftCommitmentBytes: 128, maximumStackItemBytes: 10_000 },
+    });
+    expect(provider.consensusLimits?.maximumNftCommitmentBytes).toBe(128);
+    expect(provider.consensusLimits?.maximumStackItemBytes).toBe(10_000);
+  });
+
   it('TOOLS-7 a shared mnemonic cannot sign on two live chains', async () => {
     const phrase = 'test test test test test test test test test test test junk';
     const shared = resolveConfig({

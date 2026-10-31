@@ -141,6 +141,8 @@ export function createProvider(
         // Undefined lets the provider adopt the node's advertised branch, which is the value that must agree.
         ...(config?.accounts?.path === undefined ? {} : { derivationPath: config.accounts.path }),
         ...(config?.accounts?.initialIndex === undefined ? {} : { initialIndex: config.accounts.initialIndex }),
+        // Before the socket connects, the compile reads these limits. The node's advertised profile replaces them.
+        ...(netCfg?.consensus === undefined ? {} : { consensusLimits: netCfg.consensus as ConsensusLimits }),
       });
     }
     case 'bitcoin-rpc': {

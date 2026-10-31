@@ -35,6 +35,12 @@ export interface MemCashProviderOptions {
   /** Forward `hardhat_reset` to the shared node. Default false (no-op). */
   readonly controlChain?: boolean;
   readonly blockOracleCategory?: Uint8Array;
+  /**
+   * The limits the network is expected to enforce before the node's advertised profile arrives. A compile reads
+   * `consensusLimits` without connecting, so a project whose contracts need a wider commitment than the pre-connect
+   * default states them here.
+   */
+  readonly consensusLimits?: Partial<ConsensusLimits>;
 }
 
 export interface SignerOptions {
@@ -130,6 +136,9 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     this.options = options;
     this.mnemonic = options.mnemonic ?? MEM_CASH_DEFAULT_MNEMONIC;
     if (options.blockOracleCategory !== undefined) this.blockOracleCategory = options.blockOracleCategory;
+    if (options.consensusLimits !== undefined) {
+      this.consensusLimits = { ...this.consensusLimits, ...options.consensusLimits };
+    }
   }
 
   get _internalBlockNumber(): { respTime: number; blockNumber: number } {

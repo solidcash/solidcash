@@ -73,13 +73,17 @@ function vmOutputs(outputs: Output[]): Output[] {
   } as Output);
 }
 
-function accepted(outputs: Output[], committed = stateCommitment(genesis())): boolean {
+function accepted(
+  outputs: Output[], committed = stateCommitment(genesis()), extraLocks: Uint8Array[] = [],
+): boolean {
   // The check leaves its whole entry on the stack; the test clears it to the one true item script success wants.
-  const drops = Array.from({ length: (4 + CHILD_LOCK_CAPACITY) / 2 }, () => Opcodes.OP_2DROP);
+  const items = 4 + CHILD_LOCK_CAPACITY + extraLocks.length;
+  const drops = Array.from({ length: Math.floor(items / 2) }, () => Opcodes.OP_2DROP);
+  const odd = items % 2 === 1 ? [Opcodes.OP_DROP] : [];
   // The deployment fills the category-output count; the fixture's genesis mints five outputs of `DISPLAY`.
-  const check = patchChildOutputCount(Uint8Array.from(childCategoryCheckScript()), 5);
-  const script = Uint8Array.from([...check, ...drops, Opcodes.OP_1]);
-  const entry = [K, ADDRESS, RECORD, AUTHHEAD, ...SENTINELS];
+  const check = patchChildOutputCount(Uint8Array.from(childCategoryCheckScript(extraLocks.length)), 5);
+  const script = Uint8Array.from([...check, ...drops, ...odd, Opcodes.OP_1]);
+  const entry = [K, ADDRESS, RECORD, AUTHHEAD, ...extraLocks, ...SENTINELS];
   const unlocking = Uint8Array.from(entry.flatMap((item) => [...encodeDataPush(item)]));
   const transaction = {
     version: 2,
@@ -90,6 +94,9 @@ function accepted(outputs: Output[], committed = stateCommitment(genesis())): bo
   const sourceOutputs = [{ lockingBytecode: script, valueSatoshis: 1_000n }];
   const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: 0, sourceOutputs, transaction } as never);
+  if ((state as any).error !== undefined && (globalThis as any).process?.env?.CCC_DEBUG === '1') {
+
+  }
   return (state as any).error === undefined;
 }
 
@@ -115,6 +122,12 @@ describe('the creating body\'s category check', () => {
       category: DISPLAY, amount: 0n, nft: { capability: 'mutable', commitment: 'ff' },
     } }]);
     expect(accepted(tampered, stateCommitment(genesis()))).toBe(false);
+  });
+
+  it('accepts a derived entry-head lock among the extra lock slots', () => {
+    const head = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x44), 0x87]);
+    const outputs = genesis([{ index: 3, lockingBytecode: head }]);
+    expect(accepted(outputs, stateCommitment(outputs), [head, Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x45), 0x87])])).toBe(true);
   });
 
   it('refuses an extra output of the child\'s category', () => {

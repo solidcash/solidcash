@@ -18842,14 +18842,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.entryCovenantTemplate;
   }
 
-  /** Pushes the empty-head lock of the collection-hash slot `slot`, derived from `K`. */
-  private emitEntryHeadLock(slot: number, locationData: SingleLocationData): void {
+  /**
+   * Pushes the empty-head lock of the collection-hash slot `slot`, derived from the category at `pickDepth`.
+   *
+   * Both byte orders of the category are derived: the transaction's outpoint and its token categories carry the
+   * category in the same order on any VM, but a deployment's own locks are built from the display-order txid, so
+   * which of the two the covenant stores depends on the VM's order. Deriving both makes the check accept the head
+   * either way, and both candidates are the same collection's covenant.
+   */
+  private emitEntryHeadLock(
+    pickDepth: number, slot: number, reversed: boolean, locationData: SingleLocationData,
+  ): void {
     const { a, b, c } = this.entryCovenantParts();
-    this.emit(childCollectionSentinel(slot), locationData); // [hash, earlier heads, authhead, record, address, K, kind]
-    // Each slot's lock stays on the stack, so K sits one deeper for every earlier slot.
-    this.emit([Op.OP_4, Op.OP_5, Op.OP_6, Op.OP_7][slot]!, locationData);
-    this.emit(Op.OP_PICK, locationData); // K: under the hash, the earlier heads, the two locks and the address
-    // The stack's K is already the chain order the covenant stores, as the address helpers read it.
+    this.emit(childCollectionSentinel(slot), locationData); // [hash, earlier locks, authhead, record, address, K, kind]
+    this.emit(encodeInt(BigInt(pickDepth)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (reversed) this.emit(Op.OP_REVERSEBYTES, locationData);
     this.emit(a, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // a ++ category
@@ -18864,7 +18872,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);
     this.emit(Uint8Array.of(0x87), locationData);
-    this.emit(Op.OP_CAT, locationData); // [entry head lock, authhead, record, K, address, kind]
+    this.emit(Op.OP_CAT, locationData);
   }
 
   /**
@@ -18897,37 +18905,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1, locationData);
     this.emit(Op.OP_PICK, locationData);
     this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record, K, address, kind]
-    // The authhead lock: P2SH32 of `push(pin(K)) ++ AUTHHEAD_BODY`. K is two deep now, under the record and the
-    // address.
+    // The record's other byte order, then the authhead's in both orders: a deployment's locks are built from the
+    // display-order txid, and which order the covenant stores is the VM's. Deriving both accepts the child's
+    // genesis whichever order its outpoint read answers in.
     this.emit(Op.OP_2, locationData);
-    this.emit(Op.OP_PICK, locationData); // K
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_CAT, locationData); // pin
-    this.emit(Uint8Array.of(0x21), locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData); // push(pin)
-    this.emit(AUTHHEAD_BODY, locationData);
-    this.emit(Op.OP_CAT, locationData); // the redeem script
-    this.emit(Op.OP_NIP, locationData); // K is no part of the lock
-    this.emit(Op.OP_HASH256, locationData);
-    this.emit(Uint8Array.of(0xaa, 0x20), locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Uint8Array.of(0x87), locationData);
-    this.emit(Op.OP_CAT, locationData); // [authhead, record, K, address, kind]
+    this.emit(Op.OP_PICK, locationData); // K, under the record and the address
+    this.emit(Op.OP_REVERSEBYTES, locationData);
+    this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record', authhead, record, K, address, kind]
+    for (let variant = 0; variant < 2; variant += 1) {
+      // The authhead lock: P2SH32 of `push(pin(K)) ++ AUTHHEAD_BODY`. K is four deep under the record' and the
+      // authhead, then one deeper for the second variant.
+      this.emit(encodeInt(BigInt(3 + variant)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (variant === 1) this.emit(Op.OP_REVERSEBYTES, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_1, locationData);
+      this.emit(Op.OP_CAT, locationData); // pin
+      this.emit(Uint8Array.of(0x21), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData); // push(pin)
+      this.emit(AUTHHEAD_BODY, locationData);
+      this.emit(Op.OP_CAT, locationData); // the redeem script
+      this.emit(Op.OP_NIP, locationData); // K is no part of the lock
+      this.emit(Op.OP_HASH256, locationData);
+      this.emit(Uint8Array.of(0xaa, 0x20), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Uint8Array.of(0x87), locationData);
+      this.emit(Op.OP_CAT, locationData);
+    }
     // Each sorted collection's empty head is minted at genesis at its entry covenant's lock, which takes the
-    // category `K`; the check accepts each one, derived from `K` and the slot's pool of collection hashes the
-    // deployment fills, so a child whose first insert needs a head can be created atomically.
+    // category `K`; the check accepts each one, in both byte orders of it and against the slot's
+    // deployment-filled collection hash.
+    const extraLocks = 2 + 2 * CHILD_COLLECTION_CAPACITY;
     for (let slot = 0; slot < CHILD_COLLECTION_CAPACITY; slot += 1) {
-      this.emitEntryHeadLock(slot, locationData);
+      for (let variant = 0; variant < 2; variant += 1) {
+        this.emitEntryHeadLock(6 + slot * 2 + variant, slot, variant === 1, locationData);
+      }
     }
     for (let slot = 0; slot < CHILD_LOCK_CAPACITY; slot += 1) {
-      this.emit(childLockSentinel(slot), locationData); // [S0..S7, heads, authhead, record, K, address, kind]
+      this.emit(childLockSentinel(slot), locationData);
     }
-    this.emit(bytecodeToScript(Uint8Array.from(childCategoryCheckScript(CHILD_COLLECTION_CAPACITY))), locationData);
+    this.emit(bytecodeToScript(Uint8Array.from(childCategoryCheckScript(extraLocks))), locationData);
     // The check leaves the stack as it found it; the sentinels and the derived locks are no part of the value.
-    for (let drop = 0; drop < CHILD_LOCK_CAPACITY + 2 + CHILD_COLLECTION_CAPACITY; drop += 1) {
+    for (let drop = 0; drop < CHILD_LOCK_CAPACITY + 2 + extraLocks; drop += 1) {
       this.emit(Op.OP_DROP, locationData);
     }
     this.emit(Op.OP_NIP, locationData); // K, beneath the address

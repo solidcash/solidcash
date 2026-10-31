@@ -76,7 +76,9 @@ describe("UniswapV2Factory.createPair", () => {
 
     const tokenA = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x31), 0x87]);
     const tokenB = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x32), 0x87]);
-    const caller = { txid: "71".repeat(32), vout: 0, satoshis: 20_000_000n };
+    // A non-palindromic txid: a category whose byte order is not its own reverse, so a re-encoded broadcast cannot
+    // pass by accident.
+    const caller = { txid: `${"71".repeat(31)}72`, vout: 0, satoshis: 20_000_000n };
     await provider.addUtxo(callerAddress, caller);
     const split = framedDeploy.functionSplitFor(provider, categoryId) ?? factory.bundle;
     const result = await framedCall.callFramedEntry({
@@ -117,7 +119,7 @@ describe("UniswapV2Factory.createPair", () => {
 
     // A composer that supplies an arbitrary commitment for a pair record is refused: the record output's digest no
     // longer matches the one the folded state committed to (and the category-output count is one too many).
-    const tamperedCaller = { txid: "72".repeat(32), vout: 0, satoshis: 20_000_000n };
+    const tamperedCaller = { txid: `${"73".repeat(31)}74`, vout: 0, satoshis: 20_000_000n };
     await provider.addUtxo(callerAddress, tamperedCaller);
     const tampered = await framedCall.callFramedEntry({
       provider, artifact: factory.artifact, categoryId, functionName: "createPair",

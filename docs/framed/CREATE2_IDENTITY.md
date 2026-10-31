@@ -2,8 +2,7 @@
 
 Status: in progress. The child-address computation, the creator's genesis check, the in-transaction composition of a
 child's genesis, the deploy-then-call fold of its initializer and the creator's count of the child's category outputs
-are implemented and tested. What remains is the creator covenant's check of the folded state's record commitments:
-the allow-list and the count check locks, token shape and output count, not the records' contents. Found while building the SushiSwap BCH web
+are implemented and tested, including the creator's check of the folded state's record commitments. Found while building the SushiSwap BCH web
 layer, whose pairs are CREATE2 children of the factory. A SolidCash-level change for any creator and child: what the
 compiler emits, what the validator checks and what the SDK composes. No contract source changes for it.
 
@@ -78,10 +77,15 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   loop) and requires the deployment-filled `childOutputCount`: an extra record, master or event of the child's
   category is refused even at an allowed lock. `child-category-check.test.ts` refuses an extra record in the module,
   and `atomic-create2.test.ts` drives the same refusal through the shipped call path.
-- Still open: the check does not verify the folded records' *commitments*; an output of the right count at the record
-  lock may carry any commitment (the doc's "Lock membership is not enough"). The pair is correct because the SDK
-  derives the state, but a covenant-verified `foldedStateInit` (an on-chain state-layout encoding of the folded
-  writes) is the remaining security piece. The app's seed and bridge still
+- The folded state's *commitments* are checked: `childGenesisOutputs` appends a tokenless `OP_RETURN <digest>` where
+  the digest is `SHA256(concat over the category outputs, in output order, of SHA256(lock ++ commitment))`, and
+  `childCategoryCheckScript` recomputes it from the transaction's outputs of the child's category and compares it. A
+  record whose commitment a composer altered no longer matches; `child-category-check.test.ts` tampers one (count
+  unchanged) and `AtomicPairCreatePair.test.ts` supplies an arbitrary commitment through the shipped `createPair`
+  call. The fold order is ascending (the outputs' order), measured against a single- and multi-output probe.
+- Still open for the app: its seed and bridge deploy a pair and `registerPair` it; switching them to `createPair`
+  needs the factory deployed with the pair's child locks and count, and the created pair's category registered with
+  the service. The app's seed and bridge still
   deploy a pair and register it (`registerPair`); switching them to `createPair` needs the factory deployed with the
   pair's child locks and the pair's category (the creating transaction's leading coin) registered with the service.
 

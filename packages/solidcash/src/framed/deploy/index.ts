@@ -15,6 +15,7 @@ export * from './genesis.js';
 export * from './genesis-outputs.js';
 export * from './stateful.js';
 export * from './create2-child.js';
+export * from './created-children.js';
 export * from './records.js';
 export * from './reload.js';
 export * from './resize.js';

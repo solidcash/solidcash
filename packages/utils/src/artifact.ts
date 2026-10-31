@@ -2347,7 +2347,19 @@ export interface Artifact {
      * stands up the artifact its template table names for the value's keccak256. Absent when the master creates
      * nothing.
      */
-    creates?: readonly { readonly contractName?: string; readonly codeStateVariable?: string }[];
+    creates?: readonly {
+      readonly contractName?: string;
+      readonly codeStateVariable?: string;
+      /**
+       * The initializer the creator calls on the child it just created, folded into the child's genesis: a builder
+       * evaluates `argumentSources` over the creating entry's own arguments and derives the child's state with it.
+       */
+      readonly foldedCall?: {
+        readonly interfaceName: string;
+        readonly functionName: string;
+        readonly argumentSources: readonly ArgSource[];
+      };
+    }[];
   };
   messageBus?: {
     version: 1;

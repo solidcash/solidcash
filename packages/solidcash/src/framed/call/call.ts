@@ -125,6 +125,8 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
   type FramedDeploymentSet,
+  resolveMasterPoolSize,
+  framedCreatedChildOf,
 } from '../deploy/index.js';
 import { identityCoinRefusal, withoutIdentityOutputs } from '../deploy/own-coin.js';
 import {
@@ -137,6 +139,7 @@ import {
   declaredRunWidth, hopEntryWrites, producerKeyCallsites, sharedNodeId, type HopEntryWrites, type LaidHopEntryWrites,
 } from '../proxy/entry-writes.js';
 import { FramedProxyDeployError } from '../proxy/errors.js';
+import { makeCallResolver } from '../proxy/call-resolution.js';
 import { declareUnstatedCalls } from '../proxy/planning-refusal.js';
 import type { EnclosingRoot } from '../proxy/reentry.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
@@ -303,6 +306,12 @@ export interface FramedCallCreation {
   readonly constructorArgs?: readonly FunctionArgument[];
   /** The master pool the genesis funds per entry lock. */
   readonly pool?: { readonly masters: number; readonly validators: number };
+  /**
+   * The initializer the creating body calls on the child, folded into its genesis (the compiler publishes it as
+   * `composition.creates[].foldedCall`). Its state is derived after the constructor's, because the child's frames
+   * cannot run in the transaction that mints its masters.
+   */
+  readonly initializer?: { readonly functionName: string; readonly args: readonly FunctionArgument[] };
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -1200,6 +1209,49 @@ function sameEndViews(
 const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Map(), passes: 0, writeValues: new Map() };
 
 /** A call planned with the sends `shape` declares, and from the results `prior` holds. */
+/**
+ * The child a creating entry mints, when the project registered the artifact its `create2` names.
+ *
+ * A creator's call mints the child's genesis in the same transaction (`composition.creates`). The child is not
+ * deployed yet, so its artifact comes from the registry the project fills; the folded initializer's arguments are
+ * evaluated over the creating entry's own arguments, exactly as the body computes them.
+ */
+function inferredCreates(
+  provider: NetworkProvider,
+  artifact: Artifact,
+  functionName: string,
+  args: readonly FunctionArgument[],
+  stateValues: Readonly<Record<string, unknown>>,
+  callerLockingBytecode: Uint8Array,
+): FramedCallCreation | undefined {
+  const named = (artifact.composition?.creates ?? []).filter((site) => site.contractName !== undefined);
+  if (named.length !== 1) return undefined;
+  const site = named[0]!;
+  const child = framedCreatedChildOf(provider, site.contractName!);
+  if (child === undefined) return undefined;
+  let initializer: FramedCallCreation['initializer'];
+  if (site.foldedCall !== undefined) {
+    const resolver = makeCallResolver({
+      artifact, functionName, args, stateValues, selfAddress: callerLockingBytecode,
+      senderAddress: callerLockingBytecode,
+    });
+    const resolved = site.foldedCall.argumentSources.map((source) => resolver.resolve(source, 0));
+    if (resolved.some((value) => value === undefined)) {
+      throw new FramedCallError(
+        `entry "${functionName}" creates "${site.contractName}" and folds its "${site.foldedCall.functionName}" `
+        + 'call, whose arguments the call cannot resolve',
+      );
+    }
+    initializer = { functionName: site.foldedCall.functionName, args: resolved as FunctionArgument[] };
+  }
+  return {
+    artifact: child.artifact,
+    ...(child.split === undefined ? {} : { split: child.split }),
+    pool: resolveMasterPoolSize(),
+    ...(initializer === undefined ? {} : { initializer }),
+  };
+}
+
 async function callInShape(
   options: FramedCallOptions, shape: SendShape, prior: EarlierResults = NO_EARLIER_RESULTS,
 ): Promise<FramedCallResult> {
@@ -2766,18 +2818,25 @@ async function callInShape(
 
     // The child a creating entry mints: its genesis outputs are trailing outputs of this same transaction, so the
     // caller coin's outpoint is the category they carry and the creating body's `addrV(K)` names them.
-    const createdOutputs: DraftSourceOutput[] = options.creates === undefined || options.creates === null
+    const creates = options.creates === undefined
+      ? inferredCreates(
+        provider, artifact, functionName, options.args ?? [], activationFacts.stateValues,
+        options.callerLockingBytecode,
+      )
+      : options.creates;
+    const createdOutputs: DraftSourceOutput[] = creates === undefined || creates === null
       ? []
       : childGenesisOutputs({
-        artifact: options.creates.artifact,
+        artifact: creates.artifact,
         category: hexToBin(options.callerUtxo.txid),
         validatorProgram,
         provider,
-        constructorArgs: options.creates.constructorArgs ?? [],
+        constructorArgs: creates.constructorArgs ?? [],
         // The child's constructor reads `msg.sender` as the contract that creates it, which is this frame's own.
         senderLockingBytecode: deployed.address,
-        ...(options.creates.split === undefined ? {} : { split: options.creates.split }),
-        ...(options.creates.pool === undefined ? {} : { pool: options.creates.pool }),
+        ...(creates.split === undefined ? {} : { split: creates.split }),
+        ...(creates.pool === undefined ? {} : { pool: creates.pool }),
+        ...(creates.initializer === undefined ? {} : { initializer: creates.initializer }),
         ownerLock: options.callerLockingBytecode,
       }).outputs.map((output) => ({
         lockingBytecode: output.to as Uint8Array,

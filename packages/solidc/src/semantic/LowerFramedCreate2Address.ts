@@ -6,6 +6,7 @@ import {
   FunctionCallNode,
   IdentifierNode,
   InstantiationNode,
+  MethodCallStatementNode,
   Node,
   NullaryOpNode,
   TypeIntrospectionNode,
@@ -16,6 +17,7 @@ import {
   FunctionDefinitionNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
+import type { ArgSource } from '@solidcash/utils';
 import { SolidcDiagnosticError } from '../Errors.js';
 
 /** One contract a framed master creates with CREATE2, published so a builder can stand the child up at its address. */
@@ -27,6 +29,30 @@ export interface FramedCreateSite {
    * commits to the value's keccak256, and a builder stands up the artifact its template table names for that hash.
    */
   readonly codeStateVariable?: string;
+  /**
+   * The initializer the creating body calls on the child it just created (`IChild(child).initialize(...)`). The
+   * creating frame cannot run it — a child's masters are minted by this transaction, not spent by it — so a builder
+   * folds its effects into the child's genesis state. Filled by {@link LowerFramedCreate2Address}, with the call's
+   * argument sources added after semantic analysis.
+   */
+  initializer?: FramedCreateInitializer;
+  /** The initializer's published call, filled once the call's argument sources are known. */
+  foldedCall?: FramedFoldedCall;
+}
+
+/** The initializer call a creator folds into its child's genesis. */
+export interface FramedCreateInitializer {
+  readonly interfaceName: string;
+  readonly functionName: string;
+  /** The creating frame's local that holds the created child's address. */
+  readonly targetLocal: string;
+}
+
+/** The folded initializer's argument sources, in parameter order. */
+export interface FramedFoldedCall {
+  readonly interfaceName: string;
+  readonly functionName: string;
+  readonly argumentSources: readonly ArgSource[];
 }
 
 /**
@@ -60,6 +86,29 @@ export default class LowerFramedCreate2Address extends AstTraversal {
   visitContract(node: ContractNode): Node {
     this.stateVariables = new Set(node.stateVariables.map((variable) => variable.name));
     return super.visitContract(node);
+  }
+
+  /**
+   * `IChild(created).initialize(...)` right after the creation: recorded on the create site, so the fold can drop the
+   * call once its argument sources are published. The creating frame's own code cannot run the child's frame: the
+   * child's masters are outputs of this transaction.
+   */
+  visitMethodCallStatement(node: MethodCallStatementNode): Node {
+    const call = node.call;
+    const object = call.object;
+    if (call.methodName !== undefined && object instanceof FunctionCallNode
+      && object.identifier instanceof IdentifierNode
+      && object.parameters.length === 1 && object.parameters[0] instanceof IdentifierNode) {
+      const interfaceName = object.identifier.name;
+      const targetLocal = object.parameters[0].name;
+      const childName = interfaceName.replace(/^I(?=[A-Z])/, '');
+      const site = this.creates.find((candidate) => candidate.contractName === childName
+        || candidate.contractName === interfaceName);
+      if (site !== undefined && site.initializer === undefined) {
+        site.initializer = { interfaceName, functionName: call.methodName, targetLocal };
+      }
+    }
+    return super.visitMethodCallStatement(node);
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {

@@ -156,6 +156,19 @@ export interface FramedGenesisOptions {
   readonly maximumNftCommitmentBytes?: number;
   /** A bound on the learning iterations. Defaults to one per data NFT plus a convergence run. */
   readonly maximumIterations?: number;
+  /**
+   * An initializer the creating frame calls on the child it just made, folded into the child's genesis.
+   *
+   * The child's masters are outputs of the creating transaction, so its frames cannot run there. A builder runs the
+   * initializer's body here instead, after the constructor's state, and mints the state it computed.
+   */
+  readonly initializer?: FramedGenesisInitializer;
+}
+
+/** The initializer a creator folds into its child's genesis, with the arguments the creating call states. */
+export interface FramedGenesisInitializer {
+  readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
 }
 
 /**
@@ -310,18 +323,56 @@ export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesi
     stateLayout, options.initialState ?? {}, options.maximumNftCommitmentBytes,
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');
-  if (constructorAbi === undefined) {
-    return {
+  const base: FramedGenesis = constructorAbi === undefined
+    ? {
       master, commitments: zeroCommitments, entries: headSentinelEntries(options, []),
       chunks: [], events: [],
-    };
-  }
+    }
+    : (() => {
+      refuseUnservedShape(artifact, constructorAbi);
+      refuseConstructorArguments(artifact, constructorAbi, options.constructorArgs);
+      const mappings = planConstructorMapping(artifact, constructorAbi, options);
+      const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
+      return deriveConstructorFrame(
+        options, master, zeroCommitments, constructorAbi, mappings, dynamic,
+        options.constructorArgs, constructorSelector(artifact),
+      );
+    })();
+  if (options.initializer === undefined) return base;
 
-  refuseUnservedShape(artifact, constructorAbi);
-  refuseConstructorArguments(artifact, constructorAbi, options.constructorArgs);
-  const mappings = planConstructorMapping(artifact, constructorAbi, options);
-  const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
-  return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mappings, dynamic);
+  // The initializer's frame runs on the constructor's state: the creator is its `msg.sender` (a contract, so the
+  // probe enters it as a message call), and its writes are the commitments the genesis mints.
+  const initializerAbi = artifact.abi.find((candidate) => candidate.name === options.initializer!.functionName);
+  if (initializerAbi?.selector === undefined) {
+    throw new FramedGenesisError(
+      `artifact "${artifact.contractName}" publishes no entry "${options.initializer.functionName}" for the folded `
+      + 'initializer',
+    );
+  }
+  const refusedInitializer = artifact.composition?.refusedEntries?.find((entry) =>
+    entry.functionName === publishedEntryName(artifact.contractName, options.initializer!.functionName));
+  if (refusedInitializer !== undefined) {
+    throw new FramedGenesisError(
+      `the folded initializer "${options.initializer.functionName}" of "${artifact.contractName}" is refused by the `
+      + `compiler: ${refusedInitializer.reason}`,
+    );
+  }
+  refuseUnservedShape(artifact, initializerAbi);
+  refuseConstructorArguments(artifact, initializerAbi, options.initializer.args);
+  const initializerOptions: FramedGenesisOptions = { ...options, constructorArgs: options.initializer.args };
+  const mappings = planConstructorMapping(artifact, initializerAbi, initializerOptions);
+  const dynamic = planConstructorDynamicWrites(artifact, initializerAbi, initializerOptions);
+  const initialized = deriveConstructorFrame(
+    initializerOptions, master, base.commitments, initializerAbi, mappings, dynamic,
+    options.initializer.args, new Uint8Array(hexToBin(initializerAbi.selector)),
+  );
+  return {
+    master: base.master,
+    commitments: initialized.commitments,
+    entries: [...base.entries, ...initialized.entries],
+    chunks: [...base.chunks, ...initialized.chunks],
+    events: [...base.events, ...initialized.events],
+  };
 }
 
 /**
@@ -1229,6 +1280,8 @@ function deriveConstructorFrame(
   constructorAbi: Artifact['abi'][number],
   mappings: readonly ConstructorMapping[],
   dynamic: readonly ConstructorDynamicWrite[],
+  entryArgs: readonly FunctionArgument[] = options.constructorArgs,
+  entrySelector: Uint8Array = constructorSelector(options.artifact),
 ): FramedGenesis {
   const { artifact } = options;
   const stateLayout = artifact.stateLayout!;
@@ -1237,10 +1290,10 @@ function deriveConstructorFrame(
   // lock, so a contract sender enters the constructor as a message call instead, which a validator covers: the head
   // leaves `msg.sender` to the validator there, and the arm still runs only beside the category's genesis outpoint.
   const contractSender = options.senderLockingBytecode !== undefined && options.senderLockingBytecode.length !== 25;
-  const selector = constructorSelector(artifact);
+  const selector = entrySelector;
   const structs = artifact.structs ?? stateLayout.structs;
   const encodedArgs = encodeFunctionArguments(
-    constructorAbi, [...options.constructorArgs], encodeFunctionArgument, structs,
+    constructorAbi, [...entryArgs], encodeFunctionArgument, structs,
   ) as Uint8Array[];
   // The call data carries the pushes with the first parameter's last, so the block's arguments are reversed.
   const argumentPushes = [selector, ...[...encodedArgs].reverse()];

@@ -239,6 +239,7 @@ import {
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/LowerFramedCreate2Address.js';
+import FoldFramedCreate2Initializer from './semantic/FoldFramedCreate2Initializer.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
@@ -16906,6 +16907,14 @@ function compileResolvedAst(
     mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
+  // A creator's `initialize` on the child it just made runs in a later transaction, so its effects are folded into
+  // the child's genesis state: the call is published on the create site and dropped from the creating body.
+  if (mergedCompilerOptions.composition === 'framed') {
+    const creates = (mergedCompilerOptions as InternalCompilerOptions).__framedCreates as FramedCreateSite[] | undefined;
+    if (creates !== undefined && creates.some((site) => site.initializer !== undefined)) {
+      ast = ast.accept(new FoldFramedCreate2Initializer(creates)) as Ast;
+    }
+  }
   publishStoredValueSources(ast.contract, ast.structDefinitions);
   const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
@@ -17365,6 +17374,7 @@ function compileResolvedAst(
       composition.creates = creates.map((site) => ({
         ...(site.contractName === undefined ? {} : { contractName: site.contractName }),
         ...(site.codeStateVariable === undefined ? {} : { codeStateVariable: site.codeStateVariable }),
+        ...(site.foldedCall === undefined ? {} : { foldedCall: site.foldedCall }),
       }));
     }
     artifact.composition = composition;

@@ -1,10 +1,11 @@
 # Framed CREATE2 children at their own address (design, 2026-10-30)
 
-Status: in progress. The child-address computation, the creator's genesis check and the in-transaction composition of a
-child's genesis are implemented and tested; the deploy-then-call fold (`createPair`'s `initialize`) remains. Found
-while building the SushiSwap BCH web layer, whose pairs are CREATE2 children of the factory. A SolidCash-level change
-for any creator and child: what the compiler emits, what the validator checks and what the SDK composes. No contract
-source changes for it.
+Status: in progress. The child-address computation, the creator's genesis check, the in-transaction composition of a
+child's genesis and the deploy-then-call fold of its initializer are implemented and tested. What remains is the
+creator covenant's check of the folded state's record commitments: the initializer's state is derived off chain and
+the allow-list checks locks and token shape, not the records' contents. Found while building the SushiSwap BCH web
+layer, whose pairs are CREATE2 children of the factory. A SolidCash-level change for any creator and child: what the
+compiler emits, what the validator checks and what the SDK composes. No contract source changes for it.
 
 ## The gap
 
@@ -62,10 +63,22 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   AtomicPairCreation.test.ts` creates the *shipped* pair in one caller-funded transaction: `create2` returns
   `hash160(addrV(K))`, every one of the pair's 23 shard masters is minted at its deployment lock, the validator sits at
   `addrV(K)`, the authhead and the pair's records carry `K`, and the creator's widest input is under 10,000 B.
-- `UniswapV2Factory.createPair` still cannot be atomic: its body calls the child's `initialize` after `create2`, and a
-  child's frame runs on a master that only a later transaction spends. The fold named under "Seams" (record the call
-  on the creating local, publish it, replay it through the constructor's state) is the remaining piece; the app deploys
-  a pair and registers it (`registerPair`) until then.
+- The deploy-then-call fold landed: the compiler drops a creator's `IChild(child).initialize(...)` on the child it
+  just made (`FoldFramedCreate2Initializer`), publishes its entry and argument sources as
+  `composition.creates[].foldedCall`, and the SDK runs that body at genesis after the constructor's state
+  (`deriveFramedGenesis`'s `initializer`). `callFramedEntry` infers the creation from the artifact and a project
+  registration of the child's artifact (`registerFramedCreatedChild`), evaluating the folded arguments over the
+  creating entry's own.
+  `test-app-bch/test/AtomicPairCreatePair.test.ts` runs the shipped `UniswapV2Factory.createPair`: the pair's 23
+  shard masters, validator, authhead and nine records are minted in the caller's transaction, the pair's `factory`
+  record is the creator's `addrV`, `token0`/`token1` are the sorted call arguments, `create2` returns `hash160(addrV(K))`,
+  and the creator's widest input stays under 10,000 B. `packages/solidcash/test/framed/deploy/folded-initializer.test.ts`
+  proves the same shape on a synthetic creator.
+- Still open: the creator's covenant does not check the folded records' commitments, so an atomic creator could mint
+  arbitrary initial state (the doc's "Lock membership is not enough"). The pair is correct because the SDK derives the
+  state, but a covenant-verified `foldedStateInit` is the remaining security piece. The app's seed and bridge still
+  deploy a pair and register it (`registerPair`); switching them to `createPair` needs the factory deployed with the
+  pair's child locks and the pair's category (the creating transaction's leading coin) registered with the service.
 
 - A framed `create2` is `addrV(K)`, computed by the creating body from its block's validator reference and the
   transaction's origin coin (`child-address-in-body.test.ts`).

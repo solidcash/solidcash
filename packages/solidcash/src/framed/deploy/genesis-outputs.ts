@@ -53,6 +53,11 @@ export interface ChildGenesisOutputsOptions {
   readonly pool?: { readonly masters: number; readonly validators: number };
   /** The authhead's owner commitment: the lock whose key may move the identity. */
   readonly ownerLock: Uint8Array;
+  /**
+   * The initializer the creator folds into the child's genesis (`composition.creates[].foldedCall`), with its
+   * arguments evaluated over the creating call. Its state is derived after the constructor's.
+   */
+  readonly initializer?: { readonly functionName: string; readonly args: readonly FunctionArgument[] };
 }
 
 export interface ChildGenesisOutputs {
@@ -82,6 +87,7 @@ export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildG
     validatorProgram,
     provider,
     constructorArgs: options.constructorArgs ?? [],
+    ...(options.initializer === undefined ? {} : { initializer: options.initializer }),
     ...(options.senderLockingBytecode === undefined
       ? {} : { senderLockingBytecode: options.senderLockingBytecode }),
     ...(provider.consensusLimits?.maximumNftCommitmentBytes === undefined ? {} : {

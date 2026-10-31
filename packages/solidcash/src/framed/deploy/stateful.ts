@@ -109,23 +109,20 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + 'mints (`childOutputCount`), which its check requires',
     );
   }
-  const withLockSlots = (target: typeof artifact): typeof artifact => (childLocks === undefined || childLocks.length === 0
-    ? target : patchChildLockSentinels(target, childLocks) as typeof artifact);
-  const shippedArtifact = childOutputCount === undefined
-    ? withLockSlots(artifact) : patchChildOutputCount(withLockSlots(artifact), childOutputCount) as typeof artifact;
-  const split = childLocks === undefined || childLocks.length === 0 || options.functionSplit === undefined
+  const withLockSlots = (target: Artifact): Artifact => (childLocks === undefined || childLocks.length === 0
+    ? target : patchChildLockSentinels(target, childLocks));
+  const withCount = (target: Artifact): Artifact => (childOutputCount === undefined
+    ? target : patchChildOutputCount(target, childOutputCount));
+  const shippedArtifact = withCount(withLockSlots(artifact)) as typeof artifact;
+  const split = (childLocks === undefined || childLocks.length === 0) && childOutputCount === undefined
     ? options.functionSplit
-    : {
+    : options.functionSplit === undefined ? undefined : {
       ...options.functionSplit,
       shards: options.functionSplit.shards.map((shard) => ({
-        ...shard, artifact: childOutputCount === undefined
-          ? patchChildLockSentinels(shard.artifact, childLocks)
-          : patchChildOutputCount(patchChildLockSentinels(shard.artifact, childLocks), childOutputCount),
+        ...shard, artifact: withCount(withLockSlots(shard.artifact)),
       })),
       internalCuts: options.functionSplit.internalCuts.map((cut) => ({
-        ...cut, artifact: childOutputCount === undefined
-          ? patchChildLockSentinels(cut.artifact, childLocks)
-          : patchChildOutputCount(patchChildLockSentinels(cut.artifact, childLocks), childOutputCount),
+        ...cut, artifact: withCount(withLockSlots(cut.artifact)),
       })),
     };
   if (shippedArtifact.stateLayout === undefined) {

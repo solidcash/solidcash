@@ -9,6 +9,7 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 /**
@@ -77,6 +78,7 @@ describe('the address a creating body computes', () => {
       const { categoryId } = await deployStatefulContract(creator.logical, [], {
         provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
         threadCount: 1, validatorCount: 1, functionSplit: creator,
+        childOutputCount: 0,
       });
       const caller = nextCoin(300_000n);
       await provider.addUtxo(binToHex(callerLock), caller);
@@ -88,7 +90,9 @@ describe('the address a creating body computes', () => {
       const result = await callFramedEntry({
         provider: deployment.provider, artifact: creator.logical, categoryId: deployment.categoryId,
         functionName: 'make', args: [new Uint8Array(32)],
-        callerUtxo: deployment.caller, callerLockingBytecode: callerLock, funder, split: creator,
+        callerUtxo: deployment.caller, callerLockingBytecode: callerLock, funder,
+        // The deployment patched the shard for the folded-output count, so the call runs the registered split.
+        split: functionSplitFor(deployment.provider, deployment.categoryId) ?? creator,
         vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
         // The test derives the address the body computes; it mints no child.
         creates: null,

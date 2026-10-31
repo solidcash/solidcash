@@ -39,7 +39,7 @@ import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/ide
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
 import { bindProviderBlockOracle } from '../call/block-oracle.js';
-import { patchChildLockSentinels } from './child-locks.js';
+import { patchChildLockSentinels, patchChildOutputCount } from './child-locks.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -102,17 +102,30 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // A creator's check names the child's master locks, which exist only now: fill its reserved slots from the entry
   // locks the deployment was given, on the artifact and on every shard and cut of its bundle.
   const childLocks = options.childLocks;
-  const shippedArtifact = (childLocks === undefined || childLocks.length === 0
-    ? artifact : patchChildLockSentinels(artifact, childLocks)) as typeof artifact;
+  const childOutputCount = options.childOutputCount;
+  if (childLocks !== undefined && childLocks.length > 0 && childOutputCount === undefined) {
+    throw new FramedDeployError(
+      'a creator deployed with its child\'s locks also states how many outputs of the child\'s category its genesis '
+      + 'mints (`childOutputCount`), which its check requires',
+    );
+  }
+  const withLockSlots = (target: typeof artifact): typeof artifact => (childLocks === undefined || childLocks.length === 0
+    ? target : patchChildLockSentinels(target, childLocks) as typeof artifact);
+  const shippedArtifact = childOutputCount === undefined
+    ? withLockSlots(artifact) : patchChildOutputCount(withLockSlots(artifact), childOutputCount) as typeof artifact;
   const split = childLocks === undefined || childLocks.length === 0 || options.functionSplit === undefined
     ? options.functionSplit
     : {
       ...options.functionSplit,
       shards: options.functionSplit.shards.map((shard) => ({
-        ...shard, artifact: patchChildLockSentinels(shard.artifact, childLocks),
+        ...shard, artifact: childOutputCount === undefined
+          ? patchChildLockSentinels(shard.artifact, childLocks)
+          : patchChildOutputCount(patchChildLockSentinels(shard.artifact, childLocks), childOutputCount),
       })),
       internalCuts: options.functionSplit.internalCuts.map((cut) => ({
-        ...cut, artifact: patchChildLockSentinels(cut.artifact, childLocks),
+        ...cut, artifact: childOutputCount === undefined
+          ? patchChildLockSentinels(cut.artifact, childLocks)
+          : patchChildOutputCount(patchChildLockSentinels(cut.artifact, childLocks), childOutputCount),
       })),
     };
   if (shippedArtifact.stateLayout === undefined) {

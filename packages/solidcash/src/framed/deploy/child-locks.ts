@@ -7,7 +7,10 @@
  * refused by name: the check could not name them, and a silent truncation would let an output pass unseen.
  */
 
-import { CHILD_LOCK_CAPACITY, childLockFiller, childLockSentinel, type Artifact } from '@solidcash/utils';
+import {
+  CHILD_LOCK_CAPACITY, ChildOutputCountError, childLockFiller, childLockSentinel,
+  patchChildOutputCount as patchOutputCountScript, type Artifact,
+} from '@solidcash/utils';
 import { asmToBytecode, bytecodeToAsm } from '@solidcash/utils';
 
 /** Raised when a child does not fit the slots its creator's artifact reserved. */
@@ -41,6 +44,25 @@ export function patchChildLockSentinels(artifact: Artifact, locks: readonly Uint
   if (filled === 0) return artifact;
   const clone = structuredClone(artifact);
   clone.bytecode = bytecodeToAsm(program);
+  return clone;
+}
+
+/**
+ * A clone of `artifact` whose reserved category-output count is filled with `count`.
+ *
+ * Only the entries that create carry the count; the rest of a creator's shards pass through unchanged.
+ */
+export function patchChildOutputCount(artifact: Artifact, count: number): Artifact {
+  const program = Uint8Array.from(asmToBytecode(artifact.bytecode));
+  let patched: Uint8Array;
+  try {
+    patched = patchOutputCountScript(program, count);
+  } catch (error) {
+    if (error instanceof ChildOutputCountError && /reserves no/.test(error.message)) return artifact;
+    throw error;
+  }
+  const clone = structuredClone(artifact);
+  clone.bytecode = bytecodeToAsm(patched);
   return clone;
 }
 

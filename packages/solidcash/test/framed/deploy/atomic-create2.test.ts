@@ -12,6 +12,7 @@ import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { stateRecordLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { deployMaster } from '../../../src/framed/deploy/material.js';
 import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
+import { childGenesisOutputCount } from '../../../src/framed/deploy/genesis-outputs.js';
 import { bindProviderBlockOracle } from '../../../src/framed/call/block-oracle.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
@@ -88,6 +89,10 @@ describe('a child created with create2 in one transaction', () => {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator,
       childLocks: childLocksOf(provider),
+      childOutputCount: childGenesisOutputCount({
+        artifact: child.logical, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
+        provider, split: child, pool, ownerLock: callerLock,
+      }),
     });
     const caller = nextCoin(900_000n);
     await provider.addUtxo(binToHex(callerLock), caller);
@@ -142,6 +147,17 @@ describe('a child created with create2 in one transaction', () => {
     const { result } = await plan((caller) => [{
       // An output no child genesis mints: unbacked liquidity of the new category at the caller's own key.
       to: callerLock, amount: 1_000n, token: { category: caller.txid, amount: 1n },
+    }]);
+    expect(result.accepted).toBe(false);
+    const objection = result.verdicts.find((verdict) => !verdict.accepted)?.objection ?? '';
+    expect(objection).toMatch(/VERIFY|verify/);
+  }, 240_000);
+
+  it('refuses an extra output of the child\'s category', async () => {
+    const { result } = await plan((caller) => [{
+      // A record the folded genesis does not mint: the right shape and the right lock, one output too many.
+      to: stateRecordLockingBytecode(caller.txid), amount: 1_000n,
+      token: { category: caller.txid, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     }]);
     expect(result.accepted).toBe(false);
     const objection = result.verdicts.find((verdict) => !verdict.accepted)?.objection ?? '';

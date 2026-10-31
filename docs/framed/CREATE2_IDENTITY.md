@@ -1,9 +1,10 @@
 # Framed CREATE2 children at their own address (design, 2026-10-30)
 
-Status: in progress. The child-address computation is implemented and tested (`child-address.ts`); the creator's
-genesis check, the fold and the composer remain. Found while building the SushiSwap BCH web layer, whose pairs are CREATE2 children
-of the factory. A SolidCash-level change for any creator and child: what the compiler emits, what the validator checks
-and what the SDK composes. No contract source changes for it.
+Status: in progress. The child-address computation, the creator's genesis check and the in-transaction composition of a
+child's genesis are implemented and tested; the deploy-then-call fold (`createPair`'s `initialize`) remains. Found
+while building the SushiSwap BCH web layer, whose pairs are CREATE2 children of the factory. A SolidCash-level change
+for any creator and child: what the compiler emits, what the validator checks and what the SDK composes. No contract
+source changes for it.
 
 ## The gap
 
@@ -55,6 +56,16 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   reached at its own `addrV(K)` in the transaction that mints it.
 - The planner test `lookup-then-call.test.ts` proves a call whose target an earlier call returned, on the shipped
   path: the factory's `getPair`, then the pair's own `getReserves` frame, on a master of the pair's category.
+- The allow-list reserves 26 master-lock slots (`CHILD_LOCK_CAPACITY`), enough for the pair's 23 entries and the
+  helper cuts a bundle adds. `child-lock-capacity.test.ts` creates a 26-entry child atomically and holds the creator's
+  widest input to the production cap; its creator's unlocking bytecode measured 5,161 B. `test-app-bch/
+  AtomicPairCreation.test.ts` creates the *shipped* pair in one caller-funded transaction: `create2` returns
+  `hash160(addrV(K))`, every one of the pair's 23 shard masters is minted at its deployment lock, the validator sits at
+  `addrV(K)`, the authhead and the pair's records carry `K`, and the creator's widest input is under 10,000 B.
+- `UniswapV2Factory.createPair` still cannot be atomic: its body calls the child's `initialize` after `create2`, and a
+  child's frame runs on a master that only a later transaction spends. The fold named under "Seams" (record the call
+  on the creating local, publish it, replay it through the constructor's state) is the remaining piece; the app deploys
+  a pair and registers it (`registerPair`) until then.
 
 - A framed `create2` is `addrV(K)`, computed by the creating body from its block's validator reference and the
   transaction's origin coin (`child-address-in-body.test.ts`).

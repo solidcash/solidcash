@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
-import { childLockSentinel } from '@solidcash/utils';
+import { CHILD_LOCK_CAPACITY, childLockSentinel } from '@solidcash/utils';
 import { childCategoryCheckScript } from '../../../src/framed/master/child-category-check.js';
 import { compositionMachine } from '../machine.js';
 
@@ -20,7 +20,7 @@ const OTHER = Uint8Array.from({ length: 32 }, (_value, index) => 0x70 + index);
 const ADDRESS = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x21), 0x87]);
 const RECORD = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x22), 0x87]);
 const AUTHHEAD = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x23), 0x87]);
-const SENTINELS = Array.from({ length: 8 }, (_unused, slot) => childLockSentinel(slot));
+const SENTINELS = Array.from({ length: CHILD_LOCK_CAPACITY }, (_unused, slot) => childLockSentinel(slot));
 const FOREIGN = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x11), 0x87]);
 const P2PKH = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x11), 0x88, 0xac]);
 
@@ -45,7 +45,8 @@ function genesis(overrides: ({ index: number } & Partial<Output>)[] = []): Outpu
 }
 
 function accepted(outputs: Output[]): boolean {
-  const drops = Array.from({ length: 6 }, () => Opcodes.OP_2DROP);
+  // The check leaves its whole entry on the stack; the test clears it to the one true item script success wants.
+  const drops = Array.from({ length: (4 + CHILD_LOCK_CAPACITY) / 2 }, () => Opcodes.OP_2DROP);
   const script = Uint8Array.from([...childCategoryCheckScript(), ...drops, Opcodes.OP_1]);
   const entry = [K, ADDRESS, RECORD, AUTHHEAD, ...SENTINELS];
   const unlocking = Uint8Array.from(entry.flatMap((item) => [...encodeDataPush(item)]));

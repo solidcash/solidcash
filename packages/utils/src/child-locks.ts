@@ -5,8 +5,12 @@
  * reserves a fixed number of placeholder pushes and the deployment replaces each with the child's entry lock.
  */
 
-/** How many master locks a creator's check names. */
-export const CHILD_LOCK_CAPACITY = 8;
+/**
+ * How many master locks a creator's check names: the shipped SushiSwap pair's 23 entries, with room for the internal
+ * helpers a bundle cuts. A creator whose child has more entries cannot name them all and is refused at deployment by
+ * name.
+ */
+export const CHILD_LOCK_CAPACITY = 26;
 
 /** The 35-byte placeholder push a creator reserves for the child's `index`-th master lock. */
 export function childLockSentinel(index: number): Uint8Array {

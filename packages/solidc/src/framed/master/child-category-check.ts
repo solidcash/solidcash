@@ -19,7 +19,10 @@ const P2SH32_PREFIX = Uint8Array.of(0xaa, 0x20);
 const P2SH32_SUFFIX = Uint8Array.of(0x87);
 const push = (value: number): number[] => [...encodeDataPush(bigIntToVmNumber(BigInt(value)))];
 
-/** K's depth at the category comparison: the category's two items, the index, the sentinels and the three locks. */
+/**
+ * K's depth at every category comparison: the split copy and the original category, the loop's index, the sentinels
+ * and the three locks. The membership, count and digest loops keep the same shape, so one constant serves all three.
+ */
 const K_DEPTH = 3 + CHILD_LOCK_CAPACITY + 3;
 
 /**
@@ -87,10 +90,14 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
     Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_IF,
-    ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(COUNT_K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    // The category is compared through a copy, as the membership loop does, so `K` sits at `K_DEPTH` in every loop;
+    // the original stays for the true branch to drop before it reads the loop index.
+    Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...push(K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
     Opcodes.OP_IF,
+    Opcodes.OP_DROP,
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ELSE, Opcodes.OP_DROP,
     Opcodes.OP_ENDIF,
     Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_ENDIF,
     Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
@@ -104,13 +111,16 @@ export function childCategoryCheckScript(): number[] {
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
     Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_IF,
-    ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(COUNT_K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    // The same category copy and drop as the count loop: `K` is read at `K_DEPTH`.
+    Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...push(K_DEPTH), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
     Opcodes.OP_IF,
+    Opcodes.OP_DROP,
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCOMMITMENT,
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_OUTPUTBYTECODE,
     Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256,
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_CAT, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ELSE, Opcodes.OP_DROP,
     Opcodes.OP_ENDIF,
     Opcodes.OP_ELSE, Opcodes.OP_DROP,
     Opcodes.OP_ENDIF,
@@ -140,6 +150,3 @@ export function childCategoryCheckScript(): number[] {
   );
   return script;
 }
-
-/** `K`'s depth in the counting loop: the entry, the loop's index and the output's category above it. */
-const COUNT_K_DEPTH = 4 + CHILD_LOCK_CAPACITY + 1;

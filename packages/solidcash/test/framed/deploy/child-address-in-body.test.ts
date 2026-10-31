@@ -90,6 +90,8 @@ describe('the address a creating body computes', () => {
         functionName: 'make', args: [new Uint8Array(32)],
         callerUtxo: deployment.caller, callerLockingBytecode: callerLock, funder, split: creator,
         vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
+        // The test derives the address the body computes; it mints no child.
+        creates: null,
       });
       const refused = result.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');

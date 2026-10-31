@@ -2818,12 +2818,35 @@ async function callInShape(
 
     // The child a creating entry mints: its genesis outputs are trailing outputs of this same transaction, so the
     // caller coin's outpoint is the category they carry and the creating body's `addrV(K)` names them.
+    const declaredCreates = artifact.composition?.creates ?? [];
     const creates = options.creates === undefined
       ? inferredCreates(
         provider, artifact, functionName, options.args ?? [], activationFacts.stateValues,
         options.callerLockingBytecode,
       )
       : options.creates;
+    // A creating entry always mints its child: a call that states nothing must refuse rather than compose a
+    // transaction whose `create2` names a category no output carries. `null` is the caller's explicit statement that
+    // it mints nothing (a derivation-only call, as the address tests make).
+    if (declaredCreates.length > 0 && creates === undefined) {
+      const names = declaredCreates.map((site) => site.contractName ?? site.codeStateVariable ?? 'a runtime code')
+        .join(', ');
+      throw new FramedCallError(
+        `entry "${functionName}" creates ${names}, and the call states no child to mint: register the child's artifact `
+        + '(`registerFramedCreatedChild`) or pass `creates`',
+      );
+    }
+    // A creator whose compiler folded the child's initializer must fold it here too: the creating body records no
+    // call to run, so an unstated initializer would mint a child in its default state.
+    const foldedCall = creates === null || creates === undefined
+      ? undefined
+      : declaredCreates.find((site) => site.contractName === creates.artifact.contractName)?.foldedCall;
+    if (foldedCall !== undefined && creates?.initializer === undefined) {
+      throw new FramedCallError(
+        `the creating entry "${functionName}" folds "${creates?.artifact.contractName}.${foldedCall.functionName}()" `
+        + "into the child's genesis, and the call states no initializer: pass `creates.initializer`",
+      );
+    }
     const createdOutputs: DraftSourceOutput[] = creates === undefined || creates === null
       ? []
       : childGenesisOutputs({

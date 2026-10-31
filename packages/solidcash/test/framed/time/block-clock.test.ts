@@ -222,12 +222,14 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
     const marked = await enter(world, 'mark');
     expect(marked.error).toBeUndefined();
     expect(marked.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    // The entry stamps the clock it read; the block that confirms it moves the oracle on to that block's time.
+    // The entry stamps the clock it read. The mock's automine executes the transaction at the tip's own timestamp
+    // (the Hardhat model), so the block that confirms it carries that same time: the clock moves on `evm_increaseTime`
+    // below, not on the confirming block.
     const stamped = await proxyState(world);
     expect(stamped.stamp).toBe(read);
     const confirmed = await oracleClock(world.network);
     expect(confirmed).toBe(BigInt(world.network.getBlockTime()));
-    expect(confirmed).toBeGreaterThan(read);
+    expect(confirmed).toBeGreaterThanOrEqual(read);
 
     const early = await enter(world, 'later');
     expect(early.error).toBeInstanceOf(FramedProxyDeployError);

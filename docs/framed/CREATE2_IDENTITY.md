@@ -1,9 +1,9 @@
 # Framed CREATE2 children at their own address (design, 2026-10-30)
 
 Status: in progress. The child-address computation, the creator's genesis check, the in-transaction composition of a
-child's genesis, the deploy-then-call fold of its initializer and the creator's count of the child's category outputs
-are implemented and tested. What remains is the creator covenant's check of the folded state's record commitments:
-the allow-list and the count check locks, token shape and output count, not the records' contents. Found while building the SushiSwap BCH web
+child's genesis and the deploy-then-call fold of its initializer are implemented and tested. What remains is the
+creator covenant's check of the folded state's record commitments: the initializer's state is derived off chain and
+the allow-list checks locks and token shape, not the records' contents. Found while building the SushiSwap BCH web
 layer, whose pairs are CREATE2 children of the factory. A SolidCash-level change for any creator and child: what the
 compiler emits, what the validator checks and what the SDK composes. No contract source changes for it.
 
@@ -74,14 +74,9 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   record is the creator's `addrV`, `token0`/`token1` are the sorted call arguments, `create2` returns `hash160(addrV(K))`,
   and the creator's widest input stays under 10,000 B. `packages/solidcash/test/framed/deploy/folded-initializer.test.ts`
   proves the same shape on a synthetic creator.
-- The creator's check counts the transaction's outputs of the child's category (`childCategoryCheckScript`'s second
-  loop) and requires the deployment-filled `childOutputCount`: an extra record, master or event of the child's
-  category is refused even at an allowed lock. `child-category-check.test.ts` refuses an extra record in the module,
-  and `atomic-create2.test.ts` drives the same refusal through the shipped call path.
-- Still open: the check does not verify the folded records' *commitments*; an output of the right count at the record
-  lock may carry any commitment (the doc's "Lock membership is not enough"). The pair is correct because the SDK
-  derives the state, but a covenant-verified `foldedStateInit` (an on-chain state-layout encoding of the folded
-  writes) is the remaining security piece. The app's seed and bridge still
+- Still open: the creator's covenant does not check the folded records' commitments, so an atomic creator could mint
+  arbitrary initial state (the doc's "Lock membership is not enough"). The pair is correct because the SDK derives the
+  state, but a covenant-verified `foldedStateInit` is the remaining security piece. The app's seed and bridge still
   deploy a pair and register it (`registerPair`); switching them to `createPair` needs the factory deployed with the
   pair's child locks and the pair's category (the creating transaction's leading coin) registered with the service.
 

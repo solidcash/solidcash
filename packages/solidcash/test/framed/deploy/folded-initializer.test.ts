@@ -12,6 +12,7 @@ import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { bindProviderBlockOracle } from '../../../src/framed/call/block-oracle.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
+import { childGenesisOutputCount } from '../../../src/framed/deploy/genesis-outputs.js';
 import { stateRecordLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
@@ -66,6 +67,11 @@ describe('a creator that initializes the child it makes', () => {
     const { categoryId } = await deployStatefulContract(creator.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator, childLocks,
+      childOutputCount: childGenesisOutputCount({
+        artifact: child.logical, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
+        provider, split: child, pool, ownerLock: callerLock,
+        initializer: { functionName: 'initialize', args: [new Uint8Array(20).fill(1), new Uint8Array(20).fill(2)] },
+      }),
     });
     const caller = nextCoin(9_000_000n);
     await provider.addUtxo(binToHex(callerLock), caller);

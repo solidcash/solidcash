@@ -39,6 +39,11 @@ export interface DeployContractOptions {
   /** The entry locks of the child a creating contract mints (docs/framed/CREATE2_IDENTITY.md). */
   childLocks?: readonly Uint8Array[];
   /**
+   * How many outputs of the child's category a creation mints, stated with `childLocks`: the creator's check counts
+   * them and refuses a transaction that mints any other number.
+   */
+  childOutputCount?: number;
+  /**
    * The lock a constructor that reads `msg.sender` sees. Defaults to the runner's own lock; a contract another contract
    * creates states its creator's, which is the `factory` a pair records.
    */
@@ -458,6 +463,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         validatorCount: overrides.validatorCount,
         ...(overrides.functionSplit === undefined ? {} : { functionSplit: overrides.functionSplit }),
         ...(overrides.childLocks === undefined ? {} : { childLocks: overrides.childLocks }),
+        ...(overrides.childOutputCount === undefined ? {} : { childOutputCount: overrides.childOutputCount }),
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),

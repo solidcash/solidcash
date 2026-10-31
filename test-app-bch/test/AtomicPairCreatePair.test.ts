@@ -9,6 +9,8 @@ import { framedCall, framedDeploy } from "@solidcash/solidcash/framed";
 import { stateRecordLockingBytecode } from "@solidcash/solidcash/dist/framed/deploy/records.js";
 import { deployMaster } from "@solidcash/solidcash/dist/framed/deploy/material.js";
 import { MasterPoolDeployment } from "@solidcash/solidcash/dist/framed/deploy/pool.js";
+import { childGenesisOutputCount } from "@solidcash/solidcash/dist/framed/deploy/genesis-outputs.js";
+import { resolveMasterPoolSize } from "@solidcash/solidcash/dist/framed/deploy/pool.js";
 import { deployStatefulContract } from "@solidcash/solidcash/dist/stateful/sc-deploy.js";
 import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/block-oracle.js";
 
@@ -57,9 +59,18 @@ describe("UniswapV2Factory.createPair", () => {
     }).getEntryLocks();
     expect(childLocks.length).toBe(23);
 
+    const childPool = resolveMasterPoolSize();
     const { categoryId } = await deployStatefulContract(factory.artifact, [callerLock], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: factory.bundle, childLocks,
+      childOutputCount: childGenesisOutputCount({
+        artifact: pair.artifact, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
+        provider, split: pair.bundle, pool: childPool, ownerLock: callerLock,
+        initializer: { functionName: "initialize", args: [
+          Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x31), 0x87]),
+          Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x32), 0x87]),
+        ] },
+      }),
     } as never);
     framedDeploy.registerFramedCreatedChild(provider, "UniswapV2Pair", pair.artifact, pair.bundle);
 

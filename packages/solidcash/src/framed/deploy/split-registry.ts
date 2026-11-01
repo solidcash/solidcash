@@ -9,8 +9,9 @@
  * that forwards property reads (the call path's simulation provider) sees the same bundles.
  */
 
-import type { FunctionSplitBundle } from '@solidcash/utils';
+import type { Artifact, FunctionSplitBundle } from '@solidcash/utils';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import { bindBlockOracleLock, blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
 
 const REGISTRY = Symbol.for('@solidcash/function-split-registry');
 
@@ -19,6 +20,26 @@ function bundlesOf(provider: NetworkProvider): Map<string, FunctionSplitBundle> 
 }
 
 const normal = (categoryId: string): string => categoryId.replace(/^0x/i, '').toLowerCase();
+
+/**
+ * Binds every program of `bundle` that reads the block oracle to the provider's oracle lock, as the process that
+ * minted the category bound them: a master's lock is the P2SH32 of its program with that lock in it. A process that
+ * attaches a category another process deployed registers the bundle from its published JSON, whose programs no
+ * genesis here bound; without this, every entry's lock it computes misses the category's masters. A program already
+ * bound keeps its lock, and a provider that knows no oracle binds nothing.
+ */
+export function bindBundleOracle(provider: NetworkProvider, bundle: FunctionSplitBundle): void {
+  const lock = provider.blockOracleLock;
+  if (lock === undefined) return;
+  const bind = (artifact: Artifact | undefined): void => {
+    if (artifact === undefined || blockOracleLockFor(artifact) !== undefined) return;
+    if ((artifact.blockOracleLockSlots?.length ?? 0) === 0 && artifact.usesBlockOracle !== true) return;
+    bindBlockOracleLock(artifact, lock);
+  };
+  bind((bundle as { logical?: Artifact }).logical);
+  for (const shard of bundle.shards) bind(shard.artifact);
+  for (const cut of bundle.internalCuts ?? []) bind(cut.artifact);
+}
 
 /** Records the bundle a category's genesis minted its entry pools from. */
 export function registerFunctionSplit(
@@ -31,10 +52,14 @@ export function registerFunctionSplit(
       value: bundles, writable: true, enumerable: false, configurable: true,
     });
   }
+  bindBundleOracle(provider, bundle);
   bundles.set(normal(categoryId), bundle);
 }
 
 /** The bundle a category was deployed from, or undefined for a monolith or a category this provider never saw. */
 export function functionSplitFor(provider: NetworkProvider, categoryId: string): FunctionSplitBundle | undefined {
-  return bundlesOf(provider)?.get(normal(categoryId));
+  const bundle = bundlesOf(provider)?.get(normal(categoryId));
+  // A bundle registered before the provider learned its oracle (a devnet advertises it when it connects) binds now.
+  if (bundle !== undefined) bindBundleOracle(provider, bundle);
+  return bundle;
 }

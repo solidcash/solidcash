@@ -83,11 +83,10 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   record whose commitment a composer altered no longer matches; `child-category-check.test.ts` tampers one (count
   unchanged) and `AtomicPairCreatePair.test.ts` supplies an arbitrary commitment through the shipped `createPair`
   call. The fold order is ascending (the outputs' order), measured against a single- and multi-output probe.
-- Still open for the app: its seed and bridge deploy a pair and `registerPair` it; switching them to `createPair`
-  needs the factory deployed with the pair's child locks and count, and the created pair's category registered with
-  the service. The app's seed and bridge still
-  deploy a pair and register it (`registerPair`); switching them to `createPair` needs the factory deployed with the
-  pair's child locks and the pair's category (the creating transaction's leading coin) registered with the service.
+- The app creates its pairs with `createPair`: `scripts/deploy.ts` deploys the factory with the pair's child locks,
+  heads and output count, and the app's BCH client finds a created pair's category from the factory's history (each
+  creating transaction spends the caller coin the category is). The earlier deploy-then-register entry,
+  `registerPair`, is gone from the app's factory.
 
 - A framed `create2` is `addrV(K)`, computed by the creating body from its block's validator reference and the
   transaction's origin coin (`child-address-in-body.test.ts`).

@@ -19,9 +19,8 @@ import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/b
  * The SushiSwap pair created with CREATE2 in its creator's own transaction (docs/framed/CREATE2_IDENTITY.md).
  *
  * The pair has 23 entries and 3 internal helpers, so the creator's allow-list names every one of them: the caller-funded transaction mints every shard master at its deployment lock, the validator at `addrV(K)`,
- * the authhead and the pair's records, and the creator refuses any other output of the category. `createPair`'s
- * `initialize` call is a frame of the child, which runs in a later transaction; `registerPair` initializes the pair
- * the app deploys until the deploy-then-call fold lands.
+ * the authhead and the pair's records, and the creator refuses any other output of the category. The factory's
+ * `createPair`, whose `initialize` call the SDK folds into the same genesis, is AtomicPairCreatePair.test.ts.
  */
 
 const ARTIFACTS = path.resolve(__dirname, "../artifacts/solidcash");

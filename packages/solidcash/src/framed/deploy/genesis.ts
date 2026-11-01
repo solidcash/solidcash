@@ -323,6 +323,9 @@ export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesi
     stateLayout, options.initialState ?? {}, options.maximumNftCommitmentBytes,
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');
+  // The collections the constructor's own writes plan; every other named collection gets its empty head from the
+  // constructor's frame.
+  let constructorCollections: readonly string[] = [];
   const base: FramedGenesis = constructorAbi === undefined
     ? {
       master, commitments: zeroCommitments, entries: headSentinelEntries(options, []),
@@ -332,6 +335,7 @@ export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesi
       refuseUnservedShape(artifact, constructorAbi);
       refuseConstructorArguments(artifact, constructorAbi, options.constructorArgs);
       const mappings = planConstructorMapping(artifact, constructorAbi, options);
+      constructorCollections = mappings.map((mapping) => mapping.collection);
       const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
       return deriveConstructorFrame(
         options, master, zeroCommitments, constructorAbi, mappings, dynamic,
@@ -359,17 +363,39 @@ export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesi
   }
   refuseUnservedShape(artifact, initializerAbi);
   refuseConstructorArguments(artifact, initializerAbi, options.initializer.args);
-  const initializerOptions: FramedGenesisOptions = { ...options, constructorArgs: options.initializer.args };
+  // The initializer's frame runs on the genesis the constructor's frame already seeded, so it mints no empty head of
+  // its own: a second empty head of one collection is a second list head at the same lock, and a later insert that
+  // splices through the head may spend the copy no write ever relinked.
+  const initializerOptions: FramedGenesisOptions = {
+    ...options, constructorArgs: options.initializer.args, headCollections: [],
+  };
   const mappings = planConstructorMapping(artifact, initializerAbi, initializerOptions);
+  // The initializer plans its writes against the empty list, which is the genesis's list only where the constructor
+  // wrote nothing to the collection.
+  const rewritten = mappings.map((mapping) => mapping.collection)
+    .filter((collection) => constructorCollections.includes(collection));
+  if (rewritten.length > 0) {
+    throw new FramedGenesisError(
+      `the folded initializer "${options.initializer.functionName}" of "${artifact.contractName}" writes `
+      + `${rewritten.map((collection) => `"${collection}"`).join(', ')}, which the constructor writes too; a genesis `
+      + 'plans the initializer\'s writes against the empty list only',
+    );
+  }
   const dynamic = planConstructorDynamicWrites(artifact, initializerAbi, initializerOptions);
   const initialized = deriveConstructorFrame(
     initializerOptions, master, base.commitments, initializerAbi, mappings, dynamic,
     options.initializer.args, new Uint8Array(hexToBin(initializerAbi.selector)),
   );
+  // A collection the initializer writes keeps the head its plan relinked in place of the empty one the
+  // constructor's frame minted for it, so each collection still has exactly one head.
+  const initializedCollections = new Set(mappings.map((mapping) => mapping.collection));
+  const emptyHead = binToHex(headSentinelCommitment());
+  const baseEntries = base.entries.filter((entry) =>
+    !(initializedCollections.has(entry.collection) && entry.commitment === emptyHead));
   return {
     master: base.master,
     commitments: initialized.commitments,
-    entries: [...base.entries, ...initialized.entries],
+    entries: [...baseEntries, ...initialized.entries],
     chunks: [...base.chunks, ...initialized.chunks],
     events: [...base.events, ...initialized.events],
   };

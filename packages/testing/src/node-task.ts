@@ -131,10 +131,17 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
 
   const server = (await import('@mem-cash/server')) as unknown as ServerModule;
 
+  // A relaxed devnet takes the selected network's `consensus` over its own profile, and enforces what it then
+  // advertises. A production devnet is BCH mainnet's: mem-cash verifies a profile that enforces dust with libauth's
+  // stock limits whatever the profile states, so a network's `consensus` (a mock's own limits, or the limits a compile
+  // reads before it connects) merged into it would be advertised and never enforced. Clients pad each input to the
+  // advertised operation-cost budget: padded to a project's 1,000,000 units a byte, their transactions were refused at
+  // mainnet's 800. So production takes none of it.
+  const production = consensusName === 'production';
   const consensus = {
-    ...(consensusName === 'production' ? server.PRODUCTION_CONSENSUS : server.RELAXED_CONSENSUS),
+    ...(production ? server.PRODUCTION_CONSENSUS : server.RELAXED_CONSENSUS),
     ...(vm === undefined ? {} : { vmVersion: vm }),
-    ...(netCfg?.consensus ?? {}),
+    ...(production ? {} : netCfg?.consensus ?? {}),
   };
 
   const extensions: unknown[] = [];
@@ -270,6 +277,9 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
   } else {
     const lines: string[] = [];
     lines.push(`mem-cash devnet · ${info.consensus.vmVersion} (${consensusName}) · chain "${handle.chainId}"`);
+    if (production && netCfg?.consensus !== undefined) {
+      lines.push(`  BCH mainnet's limits: networks.${netName}.consensus is not applied to a production devnet`);
+    }
     lines.push('');
     lines.push(`  HTTP        ${handle.httpUrl}`);
     lines.push(`  WebSocket   ${handle.wsUrl}`);

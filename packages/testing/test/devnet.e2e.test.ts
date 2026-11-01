@@ -379,7 +379,8 @@ describe('solidhat node end to end', () => {
         const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
         const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
         const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-        return binToHex(sha256.hash(addressToLockScript(address)));
+        // Electrum's scripthash is the lock's SHA-256 with its bytes reversed, as Fulcrum and the node serve it.
+        return binToHex(sha256.hash(addressToLockScript(address)).reverse());
       })());
       const utxos = await client.request('blockchain.scripthash.listunspent', scripthash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
@@ -407,7 +408,7 @@ describe('solidhat node end to end', () => {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
       const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
       const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(address)));
+      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(address)).reverse());
       const utxos = await clientAgain.request(
         'blockchain.scripthash.listunspent',
         firstScriptHash,

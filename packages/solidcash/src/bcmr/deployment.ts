@@ -132,7 +132,28 @@ export function nativeCategoryStateVariable(artifact: Artifact): string | undefi
     .find((access) => access.keySource === 'state')?.keyStateVariable;
 }
 
-async function readFact(contract: unknown, view: string): Promise<unknown> {
+/** Where the probe reads a framed contract: the staged provider its genesis went to, and the contract's category. */
+interface FramedProbe {
+  readonly provider: DeployOptions['provider'];
+  readonly artifact: Artifact;
+  readonly categoryId: string;
+}
+
+/**
+ * A view of the probe's contract, or undefined when the probe cannot evaluate it. A framed contract answers through
+ * the framed read, which runs a per-entry bundle's view on that entry's own shard: its handle's direct call path
+ * looks for the monolithic master, which a framed genesis never mints.
+ */
+async function readFact(contract: unknown, view: string, framed?: FramedProbe): Promise<unknown> {
+  if (framed !== undefined) {
+    try {
+      const { readFramedEntry } = await import('../framed/read/read.js');
+      const read = await readFramedEntry({ ...framed, functionName: view });
+      return read.accepted ? read.value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   const read = (contract as unknown as { callStatic?: Record<string, () => Promise<unknown>> }).callStatic?.[view];
   if (read === undefined) return undefined;
   try {
@@ -173,19 +194,23 @@ async function probeTokenFacts(
   const { contract } = await probe({
     ...options, provider: staging.provider, bcmr: undefined, metadataProbe: true,
   });
+  // A framed genesis registers a per-entry bundle on the provider it went to, so the framed read finds the shards.
+  const framed: FramedProbe | undefined = artifact.composition?.convention === 'framed'
+    ? { provider: staging.provider, artifact, categoryId: options.fundingUtxo.txid.toLowerCase() }
+    : undefined;
   const facts: {
     name?: string; symbol?: string; decimals?: bigint; totalSupply?: bigint; nativeCategory?: string;
   } = {};
   if (hasErc20Metadata(artifact)) {
-    const name = await readFact(contract, 'name');
-    const symbol = await readFact(contract, 'symbol');
-    const decimals = await readFact(contract, 'decimals');
+    const name = await readFact(contract, 'name', framed);
+    const symbol = await readFact(contract, 'symbol', framed);
+    const decimals = await readFact(contract, 'decimals', framed);
     if (name !== undefined) facts.name = metadataText(name);
     if (symbol !== undefined) facts.symbol = metadataText(symbol);
     if (decimals !== undefined) facts.decimals = metadataInteger(decimals, 'decimals()');
   }
   if (hasTotalSupply(artifact)) {
-    const totalSupply = await readFact(contract, 'totalSupply');
+    const totalSupply = await readFact(contract, 'totalSupply', framed);
     if (totalSupply !== undefined) facts.totalSupply = metadataInteger(totalSupply, 'totalSupply()');
   }
   if (categoryVariable !== undefined) {

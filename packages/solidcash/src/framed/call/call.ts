@@ -3642,7 +3642,9 @@ async function callInShape(
   }
 
   // Each validator's census facet carries what its head's walk computed, then each contract input pads itself to the
-  // budget its own execution spends in this transaction.
+  // budget its own execution spends in this transaction. Every record's first declaration is bound to the commitment
+  // its input spends first: the plan's stated view and the input can come from two reads of the deployment.
+  draft.bindRecordChainStarts();
   const program = padForBudget(
     fillCensusCheckpoints(draft.programFor(MASTER_ID), draft.layout.participants), draft.layout.participants, machine,
     provider.consensusLimits,

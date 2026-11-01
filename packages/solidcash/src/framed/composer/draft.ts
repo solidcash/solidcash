@@ -402,6 +402,15 @@ export interface CompositionDraft {
   unlockingBytecodeOf(master: string): Uint8Array;
   /** The VM program that evaluates a master with the draft as it currently stands. */
   programFor(master: string): ShippedVmProgram;
+  /**
+   * Binds every record's first declaration to the commitment the transaction spends at its input.
+   *
+   * A shipped composition calls this once every view is learned, before it builds the program it judges and signs:
+   * the plan's stated first views and the inputs it spends can come from two reads, and the validator compares them
+   * at the record's first declaration. A plan-level caller that wants the machine's verdict on its own declarations
+   * leaves it alone.
+   */
+  bindRecordChainStarts(): void;
   /** The declarations a plan left unstated that no run has learned yet, each still holding its placeholder. */
   unlearnedViews(): readonly UnstatedView[];
   /**
@@ -796,6 +805,24 @@ export function composeDraft(
   };
 
   /**
+   * Begins every record's declaration chain at the commitment its input carries.
+   *
+   * The transcript declares each record's chain: the first declaration starts where the record does — the token
+   * commitment the transaction spends at its input, or nothing for a record the transaction creates — and a later
+   * one starts at the view the declaration before it left. A plan states those views, and a block can carry the
+   * first declaration from a read that differs from the input's own commitment (a re-plan against a deployment read
+   * again between the two). The validator's first-record check compares the two and refuses the whole transaction
+   * with an opcode failure that names neither, so the input's commitment — the bytes the node actually spends — is
+   * bound to the first declaration here. Only the chain's first view is touched: later declarations carry on from
+   * the view before them, not from the input.
+   */
+  const bindFirstDeclarations = (): void => bindRecordChainStarts(segmentsInWalkOrder(), (index) => {
+    const id = orderedIds[index];
+    if (id === undefined) return undefined;
+    return { id, commitment: sourceOf(id).token?.nft?.commitment };
+  });
+
+  /**
    * The commitment a record's declaration chain ends at, across every block as it currently stands.
    *
    * The chain is linear in the order the validator walks the frames, so the end is the declaration no other one
@@ -1122,6 +1149,7 @@ export function composeDraft(
       if (run === undefined) throw new CompositionDraftError(`no master "${master}"`);
       return run.programFor(run.initialBlock());
     },
+    bindRecordChainStarts: () => bindFirstDeclarations(),
     // A learned placeholder leaves its master's map, so what remains is exactly what no run learned.
     unlearnedViews: () => [...unstatedByMaster.values()].flatMap((byPlaceholder) => [...byPlaceholder.values()]),
     // A caller that evaluates a program itself never resumes it at a site, so nothing would read a plan's unstated
@@ -1169,4 +1197,38 @@ export function createComposedDerivationHost(options: {
     ...(options.onRun === undefined ? {} : { onRun: options.onRun }),
   });
   return { host, draft };
+}
+
+/**
+ * Binds each record's first declaration to the commitment the transaction spends at its input.
+ *
+ * `walked` is every block's segments in the order the validator walks them, so the first entry naming an input is
+ * the declaration whose `viewIn` the validator compares with that input's token commitment. A record whose first
+ * declaration already names it is left alone; a later declaration is never touched, because it starts at the view
+ * the declaration before it left rather than at the input. `spentOf` answers an input's record identity and the
+ * commitment it carries, or `undefined` when the input is not a record.
+ */
+export function bindRecordChainStarts(
+  walked: readonly (readonly RecordEntry[])[],
+  spentOf: (inputIndex: number) => { readonly id: string; readonly commitment: Uint8Array | undefined } | undefined,
+): void {
+  const bound = new Set<string>();
+  for (const segment of walked) {
+    for (let at = 0; at < segment.length; at += 1) {
+      const entry = segment[at]!;
+      if (entry.in === INDEX_NONE || entry.in < 0) continue;
+      const spent = spentOf(entry.in);
+      if (spent === undefined || spent.commitment === undefined || bound.has(spent.id)) continue;
+      bound.add(spent.id);
+      if (bytesEqual(entry.viewIn, spent.commitment)) continue;
+      // eslint-disable-next-line no-param-reassign, functional/immutable-data
+      (segment as RecordEntry[])[at] = { ...entry, viewIn: spent.commitment };
+      if ((globalThis as unknown as { process?: { env: Record<string, string | undefined> } })
+        .process?.env?.FRAMED_VIEW_DEBUG !== undefined) {
+        console.error('view-debug', JSON.stringify({
+          input: entry.in, id: spent.id, declared: entry.viewIn.length, spent: spent.commitment.length,
+        }));
+      }
+    }
+  }
 }

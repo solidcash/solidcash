@@ -2759,6 +2759,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     throw error;
   }
   requireLearnedViews(draft);
+  // Every record's first declaration is bound to the commitment its input spends: the plan's stated view and the
+  // input can come from two reads of the deployment, and the validator compares them at that declaration.
+  draft.bindRecordChainStarts();
   if (trace) {
     hopTrace(`stop root=${PROXY_MASTER_ID} reason=derived `
       + `refs-after=[${traceCallRefs(draft, PROXY_MASTER_ID)}]`);

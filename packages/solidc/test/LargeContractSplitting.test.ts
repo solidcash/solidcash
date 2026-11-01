@@ -308,18 +308,19 @@ describe('large-contract state-local splitting', () => {
         code: 'SPLIT_CLOSURE_CAPACITY',
         context: expect.objectContaining({
           handlers: ['set'],
+          // Each profile states whether the helper sends value, which decides whether it may be cut.
           helperCuts: [
             {
               name: 'current()', returns: true, readsLocalState: true,
-              writesState: false, externalCalls: false, unknown: false,
+              writesState: false, externalCalls: false, sendsValue: false, unknown: false,
             },
             {
               name: 'guard(int256)', returns: false, readsLocalState: false,
-              writesState: false, externalCalls: false, unknown: false,
+              writesState: false, externalCalls: false, sendsValue: false, unknown: false,
             },
             {
               name: 'store(int256)', returns: false, readsLocalState: false,
-              writesState: true, externalCalls: false, unknown: false,
+              writesState: true, externalCalls: false, sendsValue: false, unknown: false,
             },
           ],
         }),

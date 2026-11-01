@@ -38,7 +38,10 @@ describe('Release 1 scalar journal lowering', () => {
     // either shape having regressed - both shrank. A budget on the shipped shape is what still catches growth.
     // Every stateful entry now also sums its satoshi container and scans for foreign containers (about 515 B).
     // The C3 count-path record pin, which holds each own-category record at its own index, added 38 B (1289 -> 1327).
-    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_340);
+    // The data-record covenant that defines its category and authority bind once (590aca164) carries those
+    // definitions in the record lock a direct master rebuilds: 15 B here (1327 -> 1342), for 395 B less in every
+    // record a transaction spends (707 -> 312).
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_355);
   });
 
   it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {

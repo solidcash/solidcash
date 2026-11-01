@@ -34,7 +34,9 @@ import {
 import type { TransactionDetails, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
-import { callFramedEntry, FramedCallError, sendFramedValue, type FramedCallResult } from './call.js';
+import {
+  callFramedEntry, FramedCallError, sendFramedValue, type FramedCallResult, type FramedTokenDeposit,
+} from './call.js';
 import { callFramedProxyEntry } from '../proxy/deploy.js';
 import { lockOfIdentity } from '../proxy/address-identity.js';
 import { registeredFramedAddresses } from '../proxy/external-calls.js';
@@ -74,12 +76,32 @@ export interface FramedHandleContract {
 export class FramedFunctionCall {
   /** The value the call carries: the frame's `msg.value`. */
   private value = 0n;
+  /** The CashTokens the call pays into the contract's token containers. */
+  private tokenDeposits: readonly FramedTokenDeposit[] = [];
 
   public constructor(
     private readonly contract: FramedHandleContract,
     private readonly functionName: string,
     private readonly args: readonly FunctionArgument[],
   ) {}
+
+  /**
+   * Attaches fungible CashTokens the call pays into the contract's container for their category, each from a coin
+   * of the signer's: what an entry such as BchNative's `wrap` reads as the container's growth. A coin's remainder
+   * returns to the signer.
+   */
+  public withTokenDeposits(deposits: readonly FramedTokenDeposit[]): this {
+    for (const deposit of deposits) {
+      if (deposit.utxo.token === undefined) throw new FramedCallError('a token deposit spends a coin that holds tokens');
+      if (deposit.amount <= 0n || deposit.amount > deposit.utxo.token.amount) {
+        throw new FramedCallError(
+          `a token deposit moves 1 to ${deposit.utxo.token.amount} units of its coin, not ${deposit.amount}`,
+        );
+      }
+    }
+    this.tokenDeposits = [...deposits];
+    return this;
+  }
 
   /** Attaches value to a call to a payable entry, paid by the signer into the contract's containers. */
   public withValue(amount: bigint): this {
@@ -207,6 +229,9 @@ export class FramedFunctionCall {
   ): Promise<FramedCallResult> {
     const { artifact, categoryId, proxyImplementationCategoryId } = this.contract;
     if (proxyImplementationCategoryId !== undefined) {
+      if (this.tokenDeposits.length > 0) {
+        throw new FramedCallError(`a call through a proxy carries no token deposits ("${this.functionName}")`);
+      }
       // The hop delegates into the implementation frame: a returning entry's value is recorded in that frame's
       // `retval` and reported back through the proxy hop, or refused by name when the proxy's forwarded call
       // records no result for it to travel in. The call's value is paid into the proxy, whose delegate frame takes
@@ -238,6 +263,7 @@ export class FramedFunctionCall {
       changeAddress: signer.getAddress(),
       ...(publish ? {} : { publish: false }),
       ...(this.value > 0n ? { value: this.value } : {}),
+      ...(this.tokenDeposits.length === 0 ? {} : { tokenDeposits: this.tokenDeposits }),
     });
   }
 

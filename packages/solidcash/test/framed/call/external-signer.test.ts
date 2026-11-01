@@ -91,13 +91,16 @@ describe('a signer whose key a wallet holds', () => {
     const calls = handle.connect(external).call as unknown as { readonly hold: () => FramedFunctionCall };
     const sent = await calls.hold() as unknown as { readonly txid: string };
 
-    // The wallet saw one request: its own coin left empty, every other input as broadcast.
+    // The wallet saw one request with every input empty: its own coin for it to sign, and the framed inputs because no
+    // signature covers another input's unlocking bytecode, which is most of the transaction.
     expect(requests).toHaveLength(1);
     const [request] = requests;
     const ownInputs = request!.sourceOutputs.flatMap((source, index) =>
       (binToHex(source.lockingBytecode) === binToHex(key.getLockingBytecode()) ? [index] : []));
     expect(ownInputs.length).toBeGreaterThan(0);
-    for (const index of ownInputs) expect(request!.transaction.inputs[index]!.unlockingBytecode).toHaveLength(0);
+    expect(ownInputs.length).toBeLessThan(request!.transaction.inputs.length);
+    for (const input of request!.transaction.inputs) expect(input.unlockingBytecode).toHaveLength(0);
+    for (const source of request!.sourceOutputs) expect(source.unlockingBytecode).toHaveLength(0);
     expect(request!.broadcast).toBe(false);
 
     // The record names the wallet's account as msg.sender, and the broadcast is the signed transaction.
@@ -113,6 +116,31 @@ describe('a signer whose key a wallet holds', () => {
       expect(unlocking).toHaveLength(100);
       expect(binToHex(unlocking)).not.toBe(binToHex(externalSignaturePlaceholder()));
     }
+    // The framed inputs, which the wallet never saw, are broadcast with their unlocking bytecode, and the request
+    // was a fraction of the transaction.
+    broadcast.inputs.forEach((input, index) => {
+      if (!ownInputs.includes(index)) expect(input.unlockingBytecode.length).toBeGreaterThan(0);
+    });
+    expect(encodeTransaction(request!.transaction).length * 4).toBeLessThan(hexToBin(raw).length);
+  });
+
+  it('refuses a wallet that fills an input that is not its own, and broadcasts nothing', async () => {
+    const { provider, key, handle } = await deployedPin();
+    const own = binToHex(key.getLockingBytecode());
+    let foreign = -1;
+    const { wallet, requests } = walletOver(key, (signed) => {
+      foreign = signed.inputs.findIndex((input, index) => input.unlockingBytecode.length === 0
+        && binToHex(requests[0]!.sourceOutputs[index]!.lockingBytecode) !== own);
+      signed.inputs[foreign]!.unlockingBytecode = Uint8Array.of(0x51);
+    });
+    const external = Signer.external({ wallet, address: key.getAddress() }, provider);
+    const calls = handle.connect(external).call as unknown as { readonly hold: () => FramedFunctionCall };
+    await expect(calls.hold()).rejects.toThrow(/which is not the wallet's/);
+    expect(foreign).toBeGreaterThanOrEqual(0);
+    const commitment = (await readFramedDeployment(provider, handle.categoryId, pin.stateLayout!))
+      .records[0]!.token!.nft!.commitment;
+    expect(bytesToHex(parsePushdataCommitment(commitment, pin.stateLayout!, 0).holder as Uint8Array))
+      .not.toBe(bytesToHex(key.getLockingBytecode()));
   });
 
   it('signs a plain payment built with the transaction builder', async () => {

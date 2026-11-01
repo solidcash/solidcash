@@ -86,10 +86,16 @@ const sameBytes = (left: Uint8Array, right: Uint8Array): boolean =>
 /**
  * `transaction` with each externally signed input signed by its wallet, or `transaction` itself when no input is.
  *
- * `unlockers[i]` and `sourceOutputs[i]` describe input `i`. Each wallet receives the transaction with its own inputs'
- * unlocking bytecode empty, as `bch_signTransaction` expects, and every other input as it will be broadcast. What a
- * wallet returns must be the same transaction with only those inputs filled in: a wallet that changes an output, an
- * outpoint, a sequence number, the locktime, another input's unlocking bytecode, or leaves one of its inputs empty is
+ * `unlockers[i]` and `sourceOutputs[i]` describe input `i`. Each wallet receives the transaction with every input's
+ * unlocking bytecode empty: its own inputs for it to sign, as `bch_signTransaction` expects, and every other input
+ * because no signature covers another input's unlocking bytecode. A BCH signature commits to the outpoints, sequence
+ * numbers, outputs and (SIGHASH_UTXOS) every source output, and a wc2 wallet signs only the empty inputs at its own
+ * lock. Covenant unlocking bytecode is most of a framed transaction, which reaches 107 kB, while the WalletConnect
+ * relay refuses a wallet's answer over 106,496 bytes of encrypted, base64 envelope, about 39 kB of signed transaction.
+ * The other inputs get their unlocking bytecode back here.
+ *
+ * What a wallet returns must be the transaction it received with only its own inputs filled in: a wallet that changes
+ * an output, an outpoint, a sequence number, the locktime, fills another input, or leaves one of its inputs empty is
  * refused, so a broadcast never carries anything the SDK did not judge.
  */
 export async function applyExternalSignatures(
@@ -117,16 +123,15 @@ export async function applyExternalSignatures(
   let signed: Transaction = transaction;
   for (const [signer, { indices, prompts }] of bySigner) {
     const own = new Set(indices);
-    const request: Transaction = {
+    const sent: Transaction = {
       ...signed,
-      inputs: signed.inputs.map((input, index) => (own.has(index)
-        ? { ...input, unlockingBytecode: Uint8Array.of() } : input)),
+      inputs: signed.inputs.map((input) => ({ ...input, unlockingBytecode: Uint8Array.of() })),
     };
-    const wcSourceOutputs: WcSourceOutput[] = request.inputs.map((input, index) => ({
+    const wcSourceOutputs: WcSourceOutput[] = sent.inputs.map((input, index) => ({
       ...input, ...sourceOutputs[index]!,
     }));
     const response = await signer.signTransaction({
-      transaction: request,
+      transaction: sent,
       sourceOutputs: wcSourceOutputs,
       broadcast: false,
       ...(prompts.length === 0 ? {} : { userPrompt: prompts.join('\n') }),
@@ -138,13 +143,18 @@ export async function applyExternalSignatures(
     if (typeof decoded === 'string') {
       throw new ExternalSigningError(`the wallet returned a transaction that does not decode: ${decoded}`);
     }
-    signed = mergeWalletSignatures(request, decoded, own);
+    signed = mergeWalletSignatures(signed, sent, decoded, own);
   }
   return signed;
 }
 
-/** `request` with the unlocking bytecode `returned` gives the wallet's own inputs, once `returned` matches it. */
-function mergeWalletSignatures(request: Transaction, returned: Transaction, own: ReadonlySet<number>): Transaction {
+/**
+ * `full` with the unlocking bytecode `returned` gives the wallet's own inputs, once `returned` is `request`, what the
+ * wallet received, with only those inputs filled in. Every other input keeps the unlocking bytecode `full` gives it.
+ */
+function mergeWalletSignatures(
+  full: Transaction, request: Transaction, returned: Transaction, own: ReadonlySet<number>,
+): Transaction {
   const refuse = (what: string): never => {
     throw new ExternalSigningError(`the wallet's signed transaction changed ${what}`);
   };
@@ -157,23 +167,24 @@ function mergeWalletSignatures(request: Transaction, returned: Transaction, own:
       refuse(`output ${index}`);
     }
   });
-  const inputs = request.inputs.map((input, index) => {
+  const inputs = full.inputs.map((input, index) => {
     const answer = returned.inputs[index]!;
-    if (answer.outpointIndex !== input.outpointIndex
-      || !sameBytes(answer.outpointTransactionHash, input.outpointTransactionHash)) {
+    const asked = request.inputs[index]!;
+    if (answer.outpointIndex !== asked.outpointIndex
+      || !sameBytes(answer.outpointTransactionHash, asked.outpointTransactionHash)) {
       refuse(`the outpoint of input ${index}`);
     }
-    if (answer.sequenceNumber !== input.sequenceNumber) refuse(`the sequence number of input ${index}`);
+    if (answer.sequenceNumber !== asked.sequenceNumber) refuse(`the sequence number of input ${index}`);
     if (own.has(index)) {
       if (answer.unlockingBytecode.length === 0) {
         throw new ExternalSigningError(`the wallet left its input ${index} unsigned`);
       }
       return { ...input, unlockingBytecode: answer.unlockingBytecode };
     }
-    if (!sameBytes(answer.unlockingBytecode, input.unlockingBytecode)) {
+    if (!sameBytes(answer.unlockingBytecode, asked.unlockingBytecode)) {
       refuse(`the unlocking bytecode of input ${index}, which is not the wallet's`);
     }
     return input;
   });
-  return { ...request, inputs };
+  return { ...full, inputs };
 }

@@ -181,7 +181,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   )
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const {
-      compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
+      compileFile, compileFileMulti, compileFileSplit,
       version: compilerVersion,
     } = await import('@solidcash/solidc');
     const compilerEntry = createRequire(import.meta.url).resolve('@solidcash/solidc');
@@ -288,10 +288,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     for (const full of files) {
       const fn = path.basename(full);
       try {
-        const source = fs.readFileSync(full, 'utf-8');
         // Hardhat mirror: one artifact JSON per CONTRACT (by contract name), nested under the source file dir.
-        // This is what `getContractFactory("Name")` resolves against.
-        const map = compileStringMulti(source, compilerOptions);
+        // This is what `getContractFactory("Name")` resolves against. The file's own resolver serves its imports
+        // (`import { BchNative } from "@solidcash/solidcash/contracts/BchNative.scash"`), as for a `.sol` root.
+        const map = compileFileMulti(full, compilerOptions);
         const nestDir = path.join(outputDir, contractsBase, fn);
         fs.mkdirSync(nestDir, { recursive: true });
         for (const [name, artifact] of Object.entries(map)) {
@@ -302,15 +302,33 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           contracts++;
         }
         // Backward-compat flat artifact (the file's primary contract, by file name) for direct `import` usage.
-        const primary = compileString(source, compilerOptions);
+        const primary = compileFile(full, compilerOptions);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(
           path.join(outputDir, fn.replace('.scash', '.artifact.ts')),
           formatArtifactModule(primary, fn.replace('.scash', '.json')),
         );
         // X149: `bytecode` is an ASM listing; measuring it fires on contracts that actually fit.
-        if (asmToBytecode(primary.bytecode).length > maxShardBytes) {
-          const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes });
+        if (splitMode === 'func' && compilerOptions.composition === 'framed') {
+          // A framed project compiled with `split: 'func'` places a `.scash` contract one entry per master, as it
+          // places a `.sol` one below: a master that carries every entry outgrows an input.
+          for (const [name, artifact] of Object.entries(map)) {
+            if ((artifact as Artifact).composition?.convention !== 'framed'
+              || typeof (artifact as Artifact).bytecode !== 'string' || (artifact as Artifact).bytecode.length === 0) {
+              continue;
+            }
+            try {
+              const bundle = compileFileSplit(full, {
+                ...compilerOptions, maxShardBytes, framedWitnessReserve: true, split: 'func', primaryContractName: name,
+              });
+              fs.writeFileSync(path.join(outputDir, `${name}.func.json`), formatSplitArtifactBundle(bundle, 'json'));
+              if (!args.quiet) console.log(`Split ${name} -> ${bundle.shards.length} entry shard(s)`);
+            } catch (error: any) {
+              console.warn(`Warning: failed to shard ${fn}:${name} (unsplit artifact kept): ${error.message.split('\n')[0]}`);
+            }
+          }
+        } else if (asmToBytecode(primary.bytecode).length > maxShardBytes) {
+          const split = compileFileSplit(full, { ...compilerOptions, maxShardBytes });
           fs.writeFileSync(
             path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
             formatSplitArtifactBundle(split, 'json'),

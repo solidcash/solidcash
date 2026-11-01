@@ -28,8 +28,8 @@ import {
 } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
-  FrameKind, sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement,
-  type RevertArgumentSource,
+  FrameKind, INDEX_NONE, decodeWitnessBlock, sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi,
+  type RequireStatement, type RevertArgumentSource, type WitnessBlock,
 } from '@solidcash/utils';
 import { UNFILLED_CALLEE_REF, type CompositionDraft } from './draft.js';
 import {
@@ -279,6 +279,42 @@ function dumpRefusedParticipant(label: string, inputIndex: number, refused: unkn
     + `error=${String(state.error)}\n  ops=${window(state.instructions ?? [], at)}`
     + `\n  stack(top last)=${(state.stack ?? []).map((item, index) => `${index}:${binToHex(item).slice(0, 100)}`).join(' | ')}`
     + `\n  alt=${(state.alternateStack ?? []).map((item) => binToHex(item).slice(0, 100)).join(' | ')}${callers.join('')}`);
+  const records = declaredRecordsOf(refused, inputIndex);
+  if (records !== undefined) console.error(records);
+}
+
+/**
+ * The records the refused input's witness block declares, each with the commitment the transaction spends at its
+ * input, so a declaration whose record is not the one the input holds, or whose input holds a stale record, reads off
+ * the dump. Undefined when the input's first push is not a witness block.
+ */
+function declaredRecordsOf(refused: unknown, inputIndex: number): string | undefined {
+  type HeldToken = { readonly token?: { readonly nft?: { readonly commitment: Uint8Array } } };
+  const program = (refused as {
+    readonly program?: {
+      readonly transaction?: { readonly inputs: readonly { readonly unlockingBytecode: Uint8Array }[] };
+      readonly sourceOutputs?: readonly HeldToken[];
+    };
+  }).program;
+  const unlocking = program?.transaction?.inputs[inputIndex]?.unlockingBytecode;
+  if (unlocking === undefined) return undefined;
+  const pushed = (decodeAuthenticationInstructions(unlocking)[0] as { readonly data?: Uint8Array } | undefined)?.data;
+  if (pushed === undefined) return undefined;
+  let block: WitnessBlock;
+  try {
+    block = decodeWitnessBlock(pushed);
+  } catch {
+    return undefined;
+  }
+  const lines = block.segments.flatMap((segment, segmentIndex) => segment.map((entry, recordIndex) => {
+    const spent = entry.in === INDEX_NONE ? undefined : program?.sourceOutputs?.[entry.in]?.token?.nft?.commitment;
+    const matches = spent === undefined ? '' : binToHex(spent) === binToHex(entry.viewIn) ? ' (= spent)' : '';
+    return `  segment ${segmentIndex} record ${recordIndex}: in=${entry.in} out=${entry.out}`
+      + `\n    viewIn=${binToHex(entry.viewIn)}${matches}`
+      + (spent === undefined || matches !== '' ? '' : `\n    spent=${binToHex(spent)}`)
+      + `\n    viewOut=${binToHex(entry.viewOut)}`;
+  }));
+  return `FRAMED-REFUSAL-RECORDS input=${inputIndex}\n${lines.join('\n')}`;
 }
 
 /** The body the artifact publishes under `debug.invokeDebug` whose bytecode is `running`, when exactly one is. */

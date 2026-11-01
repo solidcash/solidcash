@@ -226,8 +226,12 @@ export async function resizeFramedPool(
 
   // A master's program is wider than the standard per-input ceiling the builder's own send gate applies, so the
   // provider's BCH-2026 machine judges every input here instead, before anything is broadcast.
-  const transaction = builder.buildLibauthTransaction();
+  // A funder whose wallet holds its key signs first, so every input is judged as it will be broadcast.
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const { applyExternalSignatures } = await import('../../external-signing.js');
+  const transaction = await applyExternalSignatures(
+    builder.inputs.map((input) => input.unlocker), builder.buildLibauthTransaction(), sourceOutputs,
+  );
   const vm = createVirtualMachineBch2026ForProvider(provider);
   transaction.inputs.forEach((_input, inputIndex) => {
     const verdict = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));

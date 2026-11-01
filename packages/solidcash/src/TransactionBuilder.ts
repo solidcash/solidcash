@@ -64,6 +64,7 @@ import {
 import type { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, type WcSourceOutput, type WcTransactionOptions } from './walletconnect-utils.js';
+import { applyExternalSignatures } from './external-signing.js';
 import semver from 'semver';
 import type { WcTransactionObject } from './walletconnect-utils.js';
 import { attachWait } from './wait.js';
@@ -1462,7 +1463,7 @@ export class TransactionBuilder {
 
     // Build the transaction, then debug (for script-level errors), then check fees.
     // This order ensures FailedRequireError takes precedence over fee validation errors.
-    const transaction = this.buildLibauthTransaction();
+    const built = this.buildLibauthTransaction();
 
     const allStandard = this.inputs.every((input) => isStandardUnlockableUtxo(input));
     const hasCovenant = this.inputs.some((input) => isUnlockableUtxo(input) && isCovenantUnlocker(input.unlocker));
@@ -1477,6 +1478,12 @@ export class TransactionBuilder {
       }
     }
 
+    // A wallet that holds an input's key signs it now, over the transaction the debug step judged with its
+    // placeholder; everything after reads the signed bytes (./external-signing.ts).
+    const transaction = await applyExternalSignatures(
+      this.inputs.map((input) => input.unlocker), built,
+      this.lastBuiltSourceOutputs ?? generateLibauthSourceOutputs(this.inputs),
+    );
     this.checkMaxFee(transaction);
     const txBin = encodeTransaction(transaction);
     const tx = binToHex(txBin);

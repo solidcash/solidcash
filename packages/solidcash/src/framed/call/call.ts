@@ -4132,7 +4132,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   // recreated output is replaced by its change below, which is the only non-participant the plan has. That makes the
   // transaction's widths its own, so its census facets lead with checkpoints taken over it.
   const settled = draft.layout.participantCount + draft.trailingOutputs.length;
-  const { builder, transaction, change } = withRestatedCensus(draft.layout.participants, (restated) => {
+  const { builder, transaction: judged, change } = withRestatedCensus(draft.layout.participants, (restated) => {
     const laid = new TransactionBuilder({
       provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
     });
@@ -4167,6 +4167,12 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
 
   const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  // A caller whose wallet holds its key signs its coins now, over the transaction the call was judged as with its
+  // placeholder (../../external-signing.ts); the broadcast carries the wallet's signatures.
+  const { applyExternalSignatures } = await import('../../external-signing.js');
+  const transaction = await applyExternalSignatures(
+    builder.inputs.map((input) => input.unlocker), judged, generateLibauthSourceOutputs(builder.inputs),
+  );
 
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);

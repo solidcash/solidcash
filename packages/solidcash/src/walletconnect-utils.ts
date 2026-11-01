@@ -65,3 +65,13 @@ export const placeholderP2PKHUnlocker = (userAddress: string): PlaceholderP2PKHU
     placeholder: true,
   };
 };
+
+export {
+  ExternalSigningError,
+  applyExternalSignatures,
+  externalSignaturePlaceholder,
+  externallySignedUnlocker,
+  isExternallySignedUnlocker,
+  type ExternalTransactionSigner,
+  type ExternallySignedUnlocker,
+} from './external-signing.js';

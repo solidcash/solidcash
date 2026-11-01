@@ -5433,7 +5433,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   // judges its bytes against the production ceiling and would refuse the hop the provider's own profile accepts, so
   // the hop is materialized by the builder and handed to the provider directly. The provider stays the decider.
   const settled = draft.layout.participantCount + draft.trailingOutputs.length;
-  const { builder, transaction } = withRestatedCensus(draft.layout.participants, (restated) => {
+  const { builder, transaction: judged } = withRestatedCensus(draft.layout.participants, (restated) => {
     const laid = new TransactionBuilder({
       provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
     });
@@ -5455,6 +5455,12 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   });
   if (hopTraceOn()) await traceAssembledHop(builder, provider, program);
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  // A deployer whose wallet holds its key signs its coins now, over the hop as it was judged with its placeholder.
+  const { applyExternalSignatures } = await import('../../external-signing.js');
+  const { generateLibauthSourceOutputs: sourceOutputsOf } = await import('../../utils.js');
+  const transaction = await applyExternalSignatures(
+    builder.inputs.map((input) => input.unlocker), judged, sourceOutputsOf(builder.inputs),
+  );
 
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);

@@ -5,6 +5,8 @@
 
 export { default as SignatureTemplate } from './SignatureTemplate.js';
 export { default as Signer } from './Signer.js';
+export type { ExternalSignerIdentity } from './Signer.js';
+export type { ExternalTransactionSigner } from './external-signing.js';
 export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
 

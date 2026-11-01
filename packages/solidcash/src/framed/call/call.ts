@@ -783,10 +783,11 @@ interface EntryMappingContext {
    */
   readonly learnedViews: readonly (Uint8Array | undefined)[];
   /**
-   * The participant id each node the frame only reads is placed under when a frame of its contract below a call also
-   * touches it: the id those frames share for the node (`sharedNodeId`), so the call spends it once. Absent, its own.
+   * The participant id each node the frame reads or writes is placed under when a frame of its contract below a call
+   * also touches it: the id those frames share for the node (`sharedNodeId`), so the call spends it once. Absent, its
+   * own.
    */
-  readonly sharedReadIds?: ReadonlyMap<string, string>;
+  readonly sharedNodeIds?: ReadonlyMap<string, string>;
   /** The input index of a participant id the layout placed. */
   indexOf(id: string): number;
 }
@@ -800,6 +801,13 @@ interface LaidEntryMapping {
   readonly trailingOutputs: readonly DraftSourceOutput[];
   /** The structural candidate each value-dependent record's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
+  /**
+   * The declarations the frame's writes transition a node with, as `place` lays them, and those of them that only
+   * relink a node: what a walk that chains a node the frame shares with a frame of its contract below a call
+   * (`chainSharedNodeViews`) carries from one view to the next.
+   */
+  readonly writeEntries: readonly DraftRecordEntry[];
+  readonly relinkEntries: readonly DraftRecordEntry[];
   /** For a run of loops, the turn that mints each of `entries`, or undefined for a record no turn mints. */
   readonly entryMints?: readonly (LoopRecordMint | undefined)[];
   /** The long mapping values the body reads, by value-witness slot, which the frame's block lists. */
@@ -831,6 +839,8 @@ interface EntryMapping {
   readonly spentUtxos: ReadonlyMap<string, Utxo>;
   /** The nodes the frame only reads, each under the id `participantIds` names it by. */
   readonly readNodes: readonly ReadNode[];
+  /** The collection and slot of each node the frame's writes spend, by the id `participantIds` names it by. */
+  readonly writtenNodes: ReadonlyMap<string, { readonly collection: string; readonly slot: Uint8Array }>;
   /** The run-time loops that write the collection, in the order the body runs them, when loops write it. */
   readonly loopRun?: readonly CallLoopWritePlan[];
   /** The dynamic run whose width a record's length or the entry's growth fixed, and that width (`hopEntryWrites`). */
@@ -927,6 +937,9 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
     || (fn?.entryAccesses ?? []).some((access) => access.operations.some((operation) => operation !== 'read'));
   const category = new Uint8Array(hexToBin(categoryId));
   const several = new Set(batches.map((batch) => batch.collection)).size > 1;
+  // The node each id the writes spend names, so a node a frame of the contract below a call also touches can be
+  // placed under the id those frames share for it.
+  const writtenNodes = new Map<string, { readonly collection: string; readonly slot: Uint8Array }>();
   let writes: HopEntryWrites | undefined;
   try {
     writes = !writesOwn ? undefined : hopEntryWrites({
@@ -945,7 +958,11 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
         state,
       },
       declaredReadSlots: reads.nodes.map((node) => node.slotIndex),
-      nodeIdOf: (collection, slot) => writtenNodeId(slot, several ? collection : undefined),
+      nodeIdOf: (collection, slot) => {
+        const id = writtenNodeId(slot, several ? collection : undefined);
+        writtenNodes.set(id, { collection, slot });
+        return id;
+      },
       activationFacts: facts,
       ...(request.blockClock === undefined ? {} : { blockClock: request.blockClock }),
       ...valueReader,
@@ -972,21 +989,24 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
     participantIds: [...reads.nodes.map((node) => node.id), ...(writes?.participantIds ?? [])],
     spentUtxos: new Map([...reads.nodes.map((node) => [node.id, node.utxo] as const), ...(writes?.spentUtxos ?? [])]),
     readNodes: reads.nodes,
+    writtenNodes: new Map([...writtenNodes].filter(([id]) => writes?.spentUtxos.has(id) === true)),
     ...(writes?.loopRun === undefined ? {} : { loopRun: writes.loopRun }),
     ...(writes?.sizedRun === undefined ? {} : { sizedRun: writes.sizedRun }),
     ...(writes?.undecidedSlots === undefined ? {} : { undecidedSlots: writes.undecidedSlots }),
     ...(writes?.repeatedSlots === undefined ? {} : { repeatedSlots: writes.repeatedSlots }),
     lay: (context: EntryMappingContext): LaidEntryMapping => {
-      const readIdOf = (id: string): string => context.sharedReadIds?.get(id) ?? id;
-      const laidReads = reads.lay((id) => context.indexOf(readIdOf(id)));
-      const read = {
-        entries: laidReads.entries,
-        inputs: Object.fromEntries(Object.entries(laidReads.inputs).map(([id, input]) => [readIdOf(id), input])),
-      };
+      // A node a frame of the contract below a call also touches is one input under the id those frames share, whether
+      // this frame reads it or writes it.
+      const idOf = (id: string): string => context.sharedNodeIds?.get(id) ?? id;
+      const indexOf = (id: string): number => context.indexOf(idOf(id));
+      const underSharedIds = (inputs: Readonly<Record<string, DraftInput>> | undefined): Record<string, DraftInput> =>
+        Object.fromEntries(Object.entries(inputs ?? {}).map(([id, input]) => [idOf(id), input]));
+      const laidReads = reads.lay(indexOf);
+      const read = { entries: laidReads.entries, inputs: underSharedIds(laidReads.inputs) };
       let laid: LaidHopEntryWrites | undefined;
       try {
         laid = writes?.lay({
-          indexOf: context.indexOf, proxyMasterIndex: context.masterIndex, createdBase: context.createdBase,
+          indexOf, proxyMasterIndex: context.masterIndex, createdBase: context.createdBase,
           recordAmount: context.recordAmount, category, learnedViews: context.learnedViews,
           releasedLock: request.releasedLock,
         });
@@ -1011,18 +1031,21 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
         try {
           return placeOwnWrites(segments, {
             artifact, functionName, label: `entry "${functionName}"`, laid: { ...laid, entries: written }, writes,
-            indexOf: context.indexOf, category, createdBase: context.createdBase, calls, callBases,
+            indexOf, category, createdBase: context.createdBase, calls, callBases,
             ...(truncated ? { truncated } : {}),
           });
         } catch (error) {
           throw asCallRefusal(error, functionName);
         }
       };
+      const relinked = new Set(laid?.relinked ?? []);
       return {
         entries: [...read.entries, ...written],
-        inputs: { ...read.inputs, ...laid?.inputs },
+        inputs: { ...read.inputs, ...underSharedIds(laid?.inputs) },
         trailingOutputs: laid?.trailingOutputs ?? [],
         learningCandidates: writes?.learningCandidates ?? [],
+        writeEntries: written,
+        relinkEntries: written.filter((_entry, at) => relinked.has(laid!.entries[at]!)),
         // A loop's records lead its writes' declarations; a node read apart, and any record past them, no turn mints.
         ...(mints === undefined ? {} : {
           entryMints: [
@@ -1495,19 +1518,27 @@ async function callInShape(
     }
     return before;
   })();
-  // A node the entry only reads that a frame of its own contract below a call also touches is one input of the call:
-  // the read is placed under the id those frames share for the node, so the transaction spends it once, and the walk
-  // chains the views every frame declares of it (`chainSharedNodeViews`).
-  const sharedReadIds = ((): ReadonlyMap<string, string> => {
+  // A node the entry reads or writes that a frame of its own contract below a call also touches is one input of the
+  // call: the entry's declaration is placed under the id those frames share for the node, so the transaction spends it
+  // once, and the walk chains the views every frame declares of it (`chainSharedNodeViews`). An INTERNAL helper a split
+  // cut out of the body is such a frame: a skipped write of its keeps the node that brackets the absent key, which may
+  // be the very node the entry rewrites. Placed under two ids, that node was spent twice and the broadcast refused it.
+  const sharedNodeIds = ((): ReadonlyMap<string, string> => {
     const touched = new Set((calleePlan?.callees ?? []).filter((callee) => callee.categoryId === categoryId)
       .flatMap((callee) => [
         ...(callee.readNodes ?? []).map((node) => node.id),
         ...(callee.entryWrites?.reachWrites ?? []).flatMap((write) => write.spentIds),
       ]));
-    return new Map((mappingRecords?.readNodes ?? []).flatMap((node) => {
-      const shared = sharedNodeId(categoryId, node.collection, node.slot);
-      return node.present && touched.has(shared) ? [[node.id, shared] as const] : [];
-    }));
+    return new Map([
+      ...(mappingRecords?.readNodes ?? []).flatMap((node) => {
+        const shared = sharedNodeId(categoryId, node.collection, node.slot);
+        return node.present && touched.has(shared) ? [[node.id, shared] as const] : [];
+      }),
+      ...[...(mappingRecords?.writtenNodes ?? [])].flatMap(([id, node]) => {
+        const shared = sharedNodeId(categoryId, node.collection, node.slot);
+        return touched.has(shared) ? [[id, shared] as const] : [];
+      }),
+    ]);
   })();
   // A callee run the shape cut to the sends its body made learns only those.
   for (const callee of calleePlan?.callees ?? []) {
@@ -1966,7 +1997,7 @@ async function callInShape(
     masters: [MASTER_ID, ...ownCalleeBlocks.flatMap((block) => block.masters)],
     validator: { id: VALIDATOR_ID, settles: [] },
     state: [...new Set([
-      ...recordIds, ...mappingIds.map((id) => sharedReadIds.get(id) ?? id),
+      ...recordIds, ...mappingIds.map((id) => sharedNodeIds.get(id) ?? id),
       ...ownCalleeBlocks.flatMap((block) => block.state),
     ])],
     recovery: {
@@ -2243,7 +2274,7 @@ async function callInShape(
     masterIndex,
     recordAmount: validator.satoshis,
     learnedViews: [],
-    ...(sharedReadIds.size === 0 ? {} : { sharedReadIds }),
+    ...(sharedNodeIds.size === 0 ? {} : { sharedNodeIds }),
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
@@ -2359,7 +2390,7 @@ async function callInShape(
       masterIndex,
       recordAmount: validator.satoshis,
       learnedViews,
-      ...(sharedReadIds.size === 0 ? {} : { sharedReadIds }),
+      ...(sharedNodeIds.size === 0 ? {} : { sharedNodeIds }),
       indexOf: indexOfParticipant,
     });
     // A record's first segment starts from the commitment it was spent with, and each later one from the view the
@@ -2807,10 +2838,25 @@ async function callInShape(
             || (write.segment === 'last' && segmentIndex === masterDraft.segments.length - 1)));
       }),
     );
+    // So is a mapping node the root writes that a frame of its contract below a call also touches: the root's write
+    // continues from the view the frames before it in the walk left, a relink of its keeping that view's value and a
+    // rewrite of the value keeping its successor, which a helper's insert may have relinked.
+    const rootNodeWrites = callees?.chain === undefined ? [] : (laid?.writeEntries ?? [])
+      .filter((declaration) => declaration.in !== INDEX_NONE && callees.chain!.nodes.has(declaration.in));
+    const rootNodeRelinks = (laid?.relinkEntries ?? [])
+      .filter((declaration) => rootNodeWrites.includes(declaration));
+    // A value the body computes is declared first as its structural candidate, which the derivation matches by its
+    // bytes to hand the body's value back, so only a stated or learned end takes the successor the walk carries.
+    const nodeCandidates = laid?.learningCandidates ?? [];
+    const rootValueWrites = rootNodeWrites.filter((declaration) => {
+      const end = declaration.viewOut;
+      return !rootNodeRelinks.includes(declaration) && end instanceof Uint8Array
+        && !nodeCandidates.some((candidate) => bytesEqual(candidate, end));
+    });
     const chain = callees?.chain === undefined ? undefined : chainSharedNodeViews(
       [masterDraft, ...callees.masters, ...payeeDrafts], MASTER_ID, callees.chain.nodes,
-      new Set([...callees.chain.writes, ...ownCreated, ...rootWriteTransitions]),
-      new Map(), false, callees.chain.relinks,
+      new Set([...callees.chain.writes, ...ownCreated, ...rootWriteTransitions, ...rootNodeWrites]),
+      new Map(), false, new Set([...callees.chain.relinks, ...rootNodeRelinks]), new Set(rootValueWrites),
     );
     if (chain !== undefined) withChainEnds(layout.participants, chain.ends, inputs);
     const calleeCreated = chain === undefined
@@ -3780,7 +3826,7 @@ async function callInShape(
     [MASTER_ID, master],
     [VALIDATOR_ID, validator],
     ...declared.map((record) => [record.id, record.utxo] as const),
-    ...[...(mappingRecords?.spentUtxos ?? [])].map(([id, utxo]) => [sharedReadIds.get(id) ?? id, utxo] as const),
+    ...[...(mappingRecords?.spentUtxos ?? [])].map(([id, utxo]) => [sharedNodeIds.get(id) ?? id, utxo] as const),
     ...Object.entries(sideCars.utxos),
     ...(blockOracle === undefined ? [] : [[BLOCK_ORACLE_INPUT, blockOracle.utxo] as const]),
     ...(calleePlan?.utxos ?? []),
@@ -4102,6 +4148,20 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     const token = derivedToken === undefined ? {} : { token: derivedToken };
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
     participantInputs.push({ index: placed.index, utxo, lockingBytecode: source.lockingBytecode });
+  }
+  // One coin is one input. Two participants the plan names apart but that resolve to one live UTXO are one node or
+  // record placed twice, which the derivation evaluated as two inputs; the broadcast refuses it by naming both.
+  const spentBy = new Map<string, string>();
+  for (const { index, utxo } of participantInputs) {
+    const id = draft.layout.participants.find((placed) => placed.index === index)?.id ?? `input ${index}`;
+    const outpoint = `${utxo.txid}:${utxo.vout}`;
+    const earlier = spentBy.get(outpoint);
+    if (earlier !== undefined) {
+      throw new FramedCallError(
+        `the call places one UTXO (${outpoint}) as both "${earlier}" and "${id}", so its transaction would spend it twice`,
+      );
+    }
+    spentBy.set(outpoint, id);
   }
   const addContainer = (builder: Builder, { index, utxo }: { readonly index: number; readonly utxo: Utxo }): void => {
     const source = program.sourceOutputs[index];

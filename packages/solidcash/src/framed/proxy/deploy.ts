@@ -3711,8 +3711,10 @@ function calleeDeclaredRecordsOfCategory(
  * makes it and the next. The walk restates the declarations in that order: a kept one keeps the view the last write
  * before it left, and a write continues from that view to the one its own frame computed, which the hop learns from
  * that frame. A relink (`relinks`) keeps the slot and the value of the view it continues from and takes the
- * successor its plan states, since a value an earlier frame wrote is that frame's to compute. `ends` is the view
- * each written node's chain ends at, which its output carries.
+ * successor its plan states, since a value an earlier frame wrote is that frame's to compute. A node write whose plan
+ * states its end and keeps the successor it planned from (`valueWrites`) takes the successor the view it continues
+ * from carries, since a link an earlier frame's insert made is that frame's. `ends` is the view each written node's
+ * chain ends at, which its output carries.
  */
 export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
   masters: readonly T[],
@@ -3722,6 +3724,7 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
   learned: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
   held = false,
   relinks: ReadonlySet<DraftRecordEntry> = new Set(),
+  valueWrites: ReadonlySet<DraftRecordEntry> = new Set(),
 ): {
     readonly masters: readonly T[];
     readonly ends: ReadonlyMap<number, Uint8Array>;
@@ -3809,6 +3812,12 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
           continued.set(entry.in, relinked);
           return { ...entry, viewIn: view, viewOut: relinked };
         }
+        if (valueWrites.has(entry) && entry.viewOut !== undefined && keepsSuccessor(entry.viewIn, entry.viewOut)) {
+          const written = rewrittenView(view, entry.viewOut);
+          views.set(entry.in, written);
+          continued.set(entry.in, written);
+          return { ...entry, viewIn: view, viewOut: written };
+        }
         if (entry.viewOut !== undefined) views.set(entry.in, entry.viewOut);
         continued.set(entry.in, end);
         return { ...entry, viewIn: view };
@@ -3832,6 +3841,18 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
 function relinkedView(view: Uint8Array, planned: Uint8Array): Uint8Array {
   const reached = decodeEntryCommitment(view);
   return encodeEntryCommitment(reached.slot, decodeEntryCommitment(planned).nextKey, reached.value);
+}
+
+/** True when a planned write of a node leaves its successor as it planned from: it rewrites only the value. */
+function keepsSuccessor(viewIn: DraftRecordEntry['viewIn'], viewOut: Uint8Array): boolean {
+  if (!(viewIn instanceof Uint8Array)) return false;
+  return bytesEqual(decodeEntryCommitment(viewIn).nextKey, decodeEntryCommitment(viewOut).nextKey);
+}
+
+/** A value write's end view: the slot and the value its plan states, and the successor of the view it continues from. */
+function rewrittenView(view: Uint8Array, planned: Uint8Array): Uint8Array {
+  const written = decodeEntryCommitment(planned);
+  return encodeEntryCommitment(written.slot, decodeEntryCommitment(view).nextKey, written.value);
 }
 
 /** The created outputs, each carrying the view the chain of declarations of the node it holds ends at. */

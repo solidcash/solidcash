@@ -61,11 +61,24 @@ export function withRestatedCensus<T extends BuiltBroadcast>(
   assemble: (restated: ReadonlyMap<number, Uint8Array>) => T,
 ): T {
   const restated = new Map<number, Uint8Array>();
+  const placeholder = Uint8Array.of(0x04, 0x63, 0x6b, 0x70, 0x74);
   for (let round = 0; round < RESTATE_ROUNDS; round += 1) {
     const built = assemble(restated);
     const program = { inputIndex: 0, sourceOutputs: built.sourceOutputs, transaction: built.transaction };
     const filled = fillCensusCheckpoints(program as ShippedVmProgram, participants);
-    if (filled === program) return built;
+    if (filled === program) {
+      // A census facet leading with the placeholder never ran its head to the close that states its checkpoint, so
+      // the census cannot read it. Refuse the composition by name rather than broadcast a transaction that can only
+      // fail at that split.
+      const stuck = participants.filter((placed) => placed.kind === 'facet'
+        && built.transaction.inputs[placed.index]?.unlockingBytecode.slice(0, placeholder.length)
+          .every((byte, at) => byte === placeholder[at]));
+      if (stuck.length > 0) {
+        throw new Error(`the broadcast's census facet "${stuck[0]!.id}" leads with the checkpoint placeholder, so its `
+          + 'head never settled the census');
+      }
+      return built;
+    }
     filled.transaction!.inputs.forEach((input, index) => {
       if (input !== built.transaction.inputs[index]) restated.set(index, input.unlockingBytecode);
     });

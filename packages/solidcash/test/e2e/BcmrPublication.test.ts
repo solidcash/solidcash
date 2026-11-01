@@ -181,6 +181,34 @@ describe('the publication output and the registry (5.1, 5.2)', () => {
     expect(Object.keys(registry.registry.identities!)).toEqual([result.categoryId]);
   });
 
+  it('publishes the URIs a function names once it holds the registry bytes, before the genesis is built', async () => {
+    const provider = new MockNetworkProvider();
+    const alice = await signerWithCoins(provider);
+    // An issuer that uploads the bytes to a pinning service, which names their address only once it holds them.
+    const uploads: Uint8Array[] = [];
+    const result = await StatefulContract.deploy(counter, [], {
+      provider, fundingUtxo: await genesisCoin(alice), funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      initialState: {},
+      bcmr: {
+        name: 'Counter', timestamp: T0,
+        publicationUris: async (encoded) => {
+          uploads.push(encoded.bytes);
+          return [URI];
+        },
+      },
+    });
+    const registry = result.registry!;
+    expect(uploads).toHaveLength(1);
+    expect(binToHex(uploads[0]!)).toBe(binToHex(registry.bytes));
+    expect(registry.uris).toEqual([URI]);
+    expect(binToHex(result.tx.outputs[1]!.lockingBytecode)).toBe(publicationHex(registry.bytes, PUSHED_URI));
+    // A function that names nothing is refused before anything is built.
+    await expect(StatefulContract.deploy(counter, [], {
+      provider, fundingUtxo: await genesisCoin(alice), funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      initialState: {}, bcmr: { name: 'Counter', timestamp: T0, publicationUris: async () => [] },
+    })).rejects.toThrow(/named no URI/);
+  });
+
   it('refuses a registry libauth\'s importMetadataRegistry rejects, before the genesis is built', async () => {
     const provider = new MockNetworkProvider();
     const alice = await signerWithCoins(provider);

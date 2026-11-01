@@ -20,7 +20,7 @@ import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
 import type { DeployOptions } from '../stateful/stateful-lifecycle-types.js';
 import type { GenesisIdentity } from './identity.js';
 import {
-  BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
+  BcmrError, dataCarrierBytes, publicationOutput, resolvePublicationUris, type PublicationUris,
 } from './publication.js';
 import {
   assertTokenSymbol, encodeRegistry, publishedRegistry, registryTimestamp,
@@ -52,8 +52,11 @@ export interface BcmrPublication {
     readonly nfts?: NftCategory | 'generated';
   };
   readonly extensions?: Extensions;
-  /** The URIs the publication offers; `ipfs://<CIDv1 of the registry>` when omitted. */
-  readonly publicationUris?: readonly string[];
+  /**
+   * The URIs the publication offers, or a function of the encoded registry that names them once it has placed the
+   * bytes (an upload); `ipfs://<CIDv1 of the registry>` when omitted.
+   */
+  readonly publicationUris?: PublicationUris;
   /** When the snapshot takes effect, as `YYYY-MM-DDTHH:mm:ss.sssZ`; the deployment time when omitted. */
   readonly timestamp?: string;
 }
@@ -454,7 +457,7 @@ export async function prepareMetadata(options: {
   const encoded = await encodeRegistry(publishedRegistry(
     options.category, identities, publication.timestamp ?? registryTimestamp(),
   ));
-  const uris = publication.publicationUris ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`];
+  const uris = await resolvePublicationUris(publication.publicationUris, encoded);
   return { ...prepared, registry: { ...encoded, uris } };
 }
 

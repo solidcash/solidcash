@@ -14,6 +14,8 @@ export {
   isPublicationBytecode,
   publicationBytecode,
   publicationOutput,
+  resolvePublicationUris,
+  type PublicationUris,
 } from './publication.js';
 export {
   BCMR_SCHEMA,

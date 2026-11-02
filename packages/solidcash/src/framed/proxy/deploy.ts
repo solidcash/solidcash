@@ -80,7 +80,7 @@ import {
 import { bumpFramedCounter } from '../composer/counters.js';
 import { padForBudget } from '../composer/budget.js';
 import { fillCensusCheckpoints, withRestatedCensus } from '../composer/census.js';
-import { eventFundedAtLeastDust } from '../composer/dust.js';
+import { eventFundedAtLeastDust, firstNativePaymentBelowDust } from '../composer/dust.js';
 import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import {
   adjacentRecordOrder, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs,
@@ -99,9 +99,10 @@ import { masterForEntry, requireFunctionSplitShard } from '../deploy/entry-pool.
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import { ownCoinRefusal } from '../deploy/own-coin.js';
 import {
-  classifyFramedDeployment, readFramedDeployment, entryRecordReadUnlock, stateRecordLockingBytecode,
-  stateRecordUnlockingBytecode,
+  classifyFramedDeployment, readFramedDeployment, entryRecordReadUnlock, satoshiContainerLockingBytecode,
+  stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
+import { sendBelowDustRefusal } from '../call/send-dust.js';
 import { decodeReturnValues } from '../read/index.js';
 import { FramedProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
@@ -5891,6 +5892,23 @@ export async function callFramedProxyEntry(
       : settleOptionsFor(stated, seed)),
     settleCallees: (stated, only, seed) => settleHopCallees(settleOptionsFor(stated, seed), only),
   });
+
+  // A settled hop that pays native value below its output's dust threshold is refused for it, by the frame that pays
+  // it, on a network that enforces dust, as a direct call is (`../call/send-dust.ts`).
+  if (settled.accepted && (provider.policy?.enforceDust ?? true)) {
+    const outputs = settled.program.transaction?.outputs ?? [];
+    const short = firstNativePaymentBelowDust(outputs, settled.draft.layout.participantCount);
+    if (short !== undefined) {
+      throw sendBelowDustRefusal({
+        draft: settled.draft, outputs, short, network: provider.network,
+        rootFrame: `${implementationArtifact.contractName}.${options.functionName}()`,
+        containerOwners: new Map([
+          [options.proxyCategoryId, implementationArtifact.contractName],
+          ...externalPlan.callees.map((callee) => [callee.categoryId, callee.artifact.contractName] as const),
+        ].map(([owned, contract]) => [binToHex(satoshiContainerLockingBytecode(owned)), contract])),
+      });
+    }
+  }
 
   // A hop a participant refused has no transaction to broadcast, the validator's refusal as much as a frame's: the
   // verdicts name the refusal, as a direct call's do, and nothing reaches the network.

@@ -6,4 +6,5 @@
 export * from './call.js';
 export * from './handle.js';
 export * from './loop-turns.js';
+export * from './send-dust.js';
 export * from './side-cars.js';

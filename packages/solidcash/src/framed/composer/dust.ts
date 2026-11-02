@@ -33,6 +33,34 @@ export function outputDustThreshold(output: DraftSourceOutput): bigint {
   return dustThresholdForSize(encodeTransactionOutput(output as Parameters<typeof encodeTransactionOutput>[0]).length);
 }
 
+/** A trailing output that pays native value below its own dust threshold, and that threshold. */
+export interface NativePaymentBelowDust {
+  readonly index: number;
+  readonly amount: bigint;
+  readonly threshold: bigint;
+}
+
+/**
+ * The first output, from index `from` on, that pays native value below its own dust threshold: one that carries no
+ * token, is not an OP_RETURN, and holds more than nothing but less than its floor.
+ *
+ * Every output the SDK funds itself carries at least its floor (a record, an event, a container a contract keeps), so
+ * such an output holds an amount a contract's body computed: a send to a user's lock, or the value a call carries into
+ * a contract's container. A node relays no transaction that holds one. An output of no value is left to whoever
+ * planned it.
+ */
+export function firstNativePaymentBelowDust(
+  outputs: readonly DraftSourceOutput[], from: number,
+): NativePaymentBelowDust | undefined {
+  for (let index = from; index < outputs.length; index += 1) {
+    const output = outputs[index]!;
+    if (output.token !== undefined || output.valueSatoshis === 0n || output.lockingBytecode[0] === 0x6a) continue;
+    const threshold = outputDustThreshold(output);
+    if (output.valueSatoshis < threshold) return { index, amount: output.valueSatoshis, threshold };
+  }
+  return undefined;
+}
+
 /** The amount an SDK output is funded with: `amount`, or the output's own dust threshold where that is larger. */
 export function satoshisAtLeastDust(amount: bigint, output: Omit<Output, 'amount'>): bigint {
   const floor = dustThresholdForSize(getOutputSize({ ...output, amount } as Output));

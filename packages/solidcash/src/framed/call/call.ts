@@ -92,7 +92,7 @@ import {
 import { padForBudget } from '../composer/budget.js';
 import { fillCensusCheckpoints, withRestatedCensus } from '../composer/census.js';
 import { keccakJobsToShare } from '../composer/side-car-sharing.js';
-import { eventFundedAtLeastDust } from '../composer/dust.js';
+import { eventFundedAtLeastDust, firstNativePaymentBelowDust } from '../composer/dust.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import {
@@ -155,6 +155,7 @@ import {
 } from './value-entry.js';
 import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
+import { FramedSendBelowDustError, sendBelowDustRefusal } from './send-dust.js';
 import {
   framedCalleeTokenAccesses, framedTokenAccesses, framedTokenContainerLockingBytecode,
   framedTokenContainerUnlockingBytecode, framedTokenSendSentinels, learnEmptyNftCommitment, learnTokenSend,
@@ -3681,8 +3682,10 @@ async function callInShape(
       try {
         const sharing = await callInShape(options, shape, { ...prior, keccakJobs: jobs });
         if (sharing.accepted) return sharing;
-      } catch {
-        // A call the shared side-cars cannot be planned for keeps the side-car each call planned.
+      } catch (error) {
+        // A call the shared side-cars cannot be planned for keeps the side-car each call planned. One that sends below
+        // dust sends the same with its own side-cars.
+        if (error instanceof FramedSendBelowDustError) throw error;
       }
     }
   }
@@ -3744,6 +3747,23 @@ async function callInShape(
       };
   });
   const accepted = rawVerdicts.every((verdict) => verdict.accepted);
+  // An accepted plan is the execution's own, so a payment it makes below its output's dust threshold is an amount the
+  // body computed, which no plan can change: on a network that enforces dust the call is refused for it here, by the
+  // frame that pays it, before the broadcast's builder refuses the output with no frame to name.
+  if (accepted && (provider.policy?.enforceDust ?? true)) {
+    const short = firstNativePaymentBelowDust(transaction.outputs, draft.layout.participantCount);
+    if (short !== undefined) {
+      throw sendBelowDustRefusal({
+        draft, outputs: transaction.outputs, short, network: provider.network,
+        rootFrame: `${artifact.contractName}.${entry.name}()`,
+        containerOwners: new Map([
+          [categoryId, artifact.contractName],
+          ...(calleePlan?.callees ?? []).map((callee) => [callee.categoryId, callee.artifact.contractName] as const),
+          ...payees.map((payee) => [payee.categoryId, payee.artifact.contractName] as const),
+        ].map(([owned, contract]) => [binToHex(satoshiContainerLockingBytecode(owned)), contract])),
+      });
+    }
+  }
 
   // A refused frame is attributed to the reason its own artifact publishes for the entry it ran, so the objection
   // names the entry's own message rather than the opcode the machine stopped on. A frame with nothing published
@@ -3921,7 +3941,10 @@ async function callAssumingCalls(options: FramedCallOptions, shape: SendShape): 
         },
       }, shape);
     } catch (error) {
-      if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment) throw error;
+      // A plan the machine accepted that sends below dust is the call's: another assumption would plan calls the
+      // execution does not make, and its refusal would stand in for this one.
+      if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment
+        || error instanceof FramedSendBelowDustError) throw error;
       if (assumed.size === 0 && met.size === 0) throw error;
       if (assumed.size === 0) failure = error;
     }
@@ -3980,7 +4003,8 @@ async function callAssumingActivations(options: FramedCallOptions, shape: SendSh
         ...options, assumedActivations, ...(byMaster.size === 0 ? {} : { calleeAssumedActivations: byMaster }),
       }, shape);
     } catch (error) {
-      if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment) throw error;
+      if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment
+        || error instanceof FramedSendBelowDustError) throw error;
       continue;
     }
     if (result.accepted) return result;

@@ -3912,6 +3912,53 @@ function buildFunctionAbiMetadata(
     }
     return keyParams.length > 0 ? { collection: returned[0].name, keyParams } : undefined;
   })();
+  const directStateReturn = (() => {
+    if (!func.sourceReadOnly && !func.modifiers.includes(FunctionModifier.VIEW)
+      && !func.modifiers.includes(FunctionModifier.PURE)) return undefined;
+    if ((func.externalCalls?.length ?? 0) !== 0) return undefined;
+    const statements = func.body?.statements;
+    if (!statements || statements.length === 0) return undefined;
+    // `return a;` and `return (a, b, ...);`: the expressions are the state variables, in output order.
+    if (statements.length === 1 && statements[0] instanceof ReturnNode) {
+      const returned = statements[0].expressions;
+      if (returned.length === 0) return undefined;
+      const variables: string[] = [];
+      for (const expression of returned) {
+        // Exactly a state variable: an indexed array element, a mapping value or an expression is not one.
+        if (!(expression instanceof StateAccessNode) || expression.stateVariable === undefined) return undefined;
+        variables.push(expression.stateVariable.name);
+      }
+      return variables.length === func.returnTypes.length ? { variables } : undefined;
+    }
+    // Named returns assigned once each, from a state variable: `r0 = reserve0; r1 = reserve1;`. The assignments may
+    // come in any order; the declared return order is the output order.
+    const returnNames = func.returnNames ?? [];
+    if (returnNames.length !== func.returnTypes.length || returnNames.some((name) => name.length === 0)) {
+      return undefined;
+    }
+    const assigned = new Map<string, string>();
+    for (const statement of statements) {
+      // Named returns are lowered to a zero-initialized declaration per name, the source's own assignments, and an
+      // implicit `return (name, ...);`. Only the assignments carry a value to publish.
+      if (statement instanceof VariableDefinitionNode && statement.expression === undefined
+        && returnNames.includes(statement.name)) continue;
+      if (statement instanceof ReturnNode
+        && statement.expressions.every((expression) =>
+          expression instanceof IdentifierNode && returnNames.includes(expression.name))) continue;
+      // A later assignment to the name (`_r0 = reserve0;`) is an `AssignNode`; both forms carry the state variable
+      // on the right.
+      const name = statement instanceof VariableDefinitionNode ? statement.name
+        : statement instanceof AssignNode ? statement.identifier.name : undefined;
+      const expression = statement instanceof VariableDefinitionNode || statement instanceof AssignNode
+        ? statement.expression : undefined;
+      if (name === undefined || !(expression instanceof StateAccessNode)
+        || expression.stateVariable === undefined) return undefined;
+      if (!returnNames.includes(name) || assigned.has(name)) return undefined;
+      assigned.set(name, expression.stateVariable.name);
+    }
+    if (assigned.size !== returnNames.length) return undefined;
+    return { variables: returnNames.map((name) => assigned.get(name)!) };
+  })();
   const directCollectionLengthReturn = (() => {
     if (!func.sourceReadOnly && !func.modifiers.includes(FunctionModifier.VIEW)
       && !func.modifiers.includes(FunctionModifier.PURE)) return undefined;
@@ -4092,6 +4139,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
     ...(directMappingReturn && { directMappingReturn }),
+    ...(directStateReturn && { directStateReturn }),
     ...(directCollectionLengthReturn && { directCollectionLengthReturn }),
     ...(directExternalReturn && { directExternalReturn }),
     ...(func.framedStateWrites !== undefined && func.framedStateWrites.length > 0 && {

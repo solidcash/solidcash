@@ -727,6 +727,12 @@ export interface AbiFunction {
     collection: string;
     keyParams: readonly string[];
   };
+  /** Compiler proof that the complete function body is exactly `return <state>;` (or `return (a, b, ...);` over
+   * state variables), in the declared output order. SDKs may answer the read from the data-NFT records and the
+   * dynamic chunks without executing a derivation transaction. */
+  directStateReturn?: {
+    variables: readonly string[];
+  };
   /** Exact read-only `return mapping[keys...].length` over an authenticated mapping-array entry. */
   directCollectionLengthReturn?: {
     collection: string;

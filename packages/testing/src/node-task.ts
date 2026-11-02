@@ -331,9 +331,6 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
   } else {
     const lines: string[] = [];
     lines.push(`mem-cash devnet · ${info.consensus.vmVersion} (${consensusName}) · chain "${handle.chainId}"`);
-    if (production && netCfg?.consensus !== undefined) {
-      lines.push(`  BCH mainnet's limits: networks.${netName}.consensus is not applied to a production devnet`);
-    }
     lines.push('');
     lines.push(`  HTTP        ${handle.httpUrl}`);
     lines.push(`  WebSocket   ${handle.wsUrl}`);

@@ -173,7 +173,8 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
   const mnemonic = args['random-mnemonic'] === true
     ? generateBip39Mnemonic()
     : stringArg(args, 'mnemonic') ?? netCfg?.mnemonic ?? hre.config.mnemonic ?? DEFAULT_MNEMONIC;
-  const consensusName = enumArg(args, 'consensus', ['relaxed', 'production'] as const) ?? 'relaxed';
+  // Mainnet rules by default: a devnet must refuse what mainnet refuses unless someone explicitly asks for relaxed.
+  const consensusName = enumArg(args, 'consensus', ['relaxed', 'production'] as const) ?? 'production';
   const vm = enumArg(args, 'vm', ['BCH_2023_05', 'BCH_2025_05', 'BCH_2026_05', 'BCH_SPEC'] as const);
   const logLevel = enumArg(args, 'log-level', ['error', 'warn', 'info', 'debug'] as const);
   const oracleEnabled = args['no-block-oracle'] !== true && devnetCfg.blockOracle !== false;

@@ -670,7 +670,7 @@ task('node', 'Start a persistent mem-cash devnet (the `npx hardhat node` analogu
   .addParam('height', 'Bootstrap tip height (>= 11)')
   .addParam('timestamp', 'Genesis timestamp; block h is at timestamp + h')
   .addParam('vm', 'VM version: BCH_2023_05, BCH_2025_05, BCH_2026_05, or BCH_SPEC')
-  .addParam('consensus', 'Consensus profile: relaxed or production')
+  .addParam('consensus', 'Consensus profile: production (default) or relaxed')
   .addFlag('no-fund', 'Skip account funding (empty chain)')
   .addFlag('no-keys', 'Omit WIFs from the startup table')
   .addParam('chain-id', 'Chain id committed in the genesis coinbase')

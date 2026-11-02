@@ -4,6 +4,10 @@
  * Starts one `@mem-cash/server` process on a shared chain, installs the block-info oracle during `prepare`, prints the
  * funded-account table (human or `--json`), and exits 0 on SIGINT/SIGTERM after releasing the port.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { generateBip39Mnemonic } from '@bitauth/libauth/build/lib/key/bip39.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
 import type { NetworkConfig } from './config.js';
@@ -17,6 +21,8 @@ const DEFAULT_ACCOUNTS_PATH = "m/44'/60'/0'/0";
 interface ServerHandleLike {
   readonly httpUrl: string;
   readonly wsUrl: string;
+  readonly httpsUrl?: string;
+  readonly wssUrl?: string;
   readonly host: string;
   readonly port: number;
   readonly chainId: string;
@@ -93,6 +99,34 @@ function formatBch(satoshis: string): string {
   return fraction.length === 0 ? `${whole}` : `${whole}.${fraction}`;
 }
 
+interface TlsMaterial {
+  readonly key: string;
+  readonly cert: string;
+}
+
+/** A self-signed certificate for the loopback TLS listener, generated with the host's openssl. */
+function selfSignedCertificate(): TlsMaterial {
+  const dir = mkdtempSync(join(tmpdir(), 'solidcash-tls-'));
+  const keyPath = join(dir, 'key.pem');
+  const certPath = join(dir, 'cert.pem');
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '30',
+      '-subj', '/CN=localhost',
+      '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
+      '-keyout', keyPath, '-out', certPath,
+    ], { stdio: 'ignore' });
+    return { key: readFileSync(keyPath, 'utf8'), cert: readFileSync(certPath, 'utf8') };
+  } catch (error) {
+    throw new Error(
+      '--tls needs a certificate: pass --tls-cert and --tls-key, or make openssl available '
+      + `(${error instanceof Error ? error.message : String(error)})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvironment): Promise<void> {
   const json = args.json === true;
   const quiet = args.quiet === true;
@@ -105,6 +139,23 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
 
   const host = stringArg(args, 'host') ?? devnetCfg.host ?? '127.0.0.1';
   const port = numberArg(args, 'port') ?? devnetCfg.port ?? 8545;
+  const tlsCertPath = stringArg(args, 'tls-cert');
+  const tlsKeyPath = stringArg(args, 'tls-key');
+  const tlsEnabled = args.tls === true;
+  if (!tlsEnabled && (tlsCertPath !== undefined || tlsKeyPath !== undefined)) {
+    throw new Error('--tls-cert and --tls-key require --tls');
+  }
+  if (tlsEnabled && (tlsCertPath === undefined) !== (tlsKeyPath === undefined)) {
+    throw new Error('--tls-cert and --tls-key must be given together');
+  }
+  const tls = tlsEnabled
+    ? {
+        ...(tlsCertPath !== undefined && tlsKeyPath !== undefined
+          ? { cert: readFileSync(tlsCertPath, 'utf8'), key: readFileSync(tlsKeyPath, 'utf8') }
+          : selfSignedCertificate()),
+        port: numberArg(args, 'tls-port') ?? (port === 0 ? 0 : port + 1),
+      }
+    : undefined;
   const mining = enumArg(args, 'mining', ['auto', 'manual', 'interval'] as const)
     ?? devnetCfg.mining ?? 'auto';
   const intervalMs = numberArg(args, 'interval') ?? devnetCfg.intervalMs ?? 1000;
@@ -185,6 +236,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     handle = await server.createServer({
       host,
       port,
+      ...(tls === undefined ? {} : { tls }),
       devnet: devnetOptions,
       extensions,
       limits: {
@@ -249,6 +301,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
       event: 'listening',
       httpUrl: handle.httpUrl,
       wsUrl: handle.wsUrl,
+      ...(handle.httpsUrl === undefined ? {} : { httpsUrl: handle.httpsUrl, wssUrl: handle.wssUrl }),
       port: handle.port,
       host: handle.host,
       genesisHash: handle.genesisHash,
@@ -283,6 +336,11 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     lines.push('');
     lines.push(`  HTTP        ${handle.httpUrl}`);
     lines.push(`  WebSocket   ${handle.wsUrl}`);
+    if (handle.httpsUrl !== undefined) {
+      lines.push(`  HTTPS       ${handle.httpsUrl}`);
+      lines.push(`  WSS         ${handle.wssUrl}`);
+      lines.push('              (open the HTTPS URL once and accept the certificate for a browser wallet)');
+    }
     lines.push(`  Genesis     ${handle.genesisHash.slice(0, 20)}…  (height 0)`);
     lines.push(`  Tip         ${info.height}  ${info.blockHash.slice(0, 20)}…`);
     lines.push(`  Mining      ${info.mining.mode}${info.mining.mode === 'auto'

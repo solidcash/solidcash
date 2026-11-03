@@ -40,7 +40,7 @@ import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { planNestedStreamedEvents, type NestedStreamedEventPlan } from './nested-streamed-events.js';
 import { deriveChunkableArrayValueChannels } from './resource-fold-route.js';
-import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { pickBlockOracleCoin, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
   getUtxos(address: string): Promise<Utxo[]>;
@@ -239,8 +239,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
               ctx.bBlockInputs.push(await makeFunder());
               break;
             }
-            const found = await bSc.inner.provider.getUtxosForLockingBytecode(lock);
-            const oracle = found.find((utxo: Utxo) => utxo.token?.nft?.capability === 'mutable');
+            const found: Utxo[] = await bSc.inner.provider.getUtxosForLockingBytecode(lock);
+            const oracle = pickBlockOracleCoin(found, lock);
             if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
             const category = hexToBin(oracle.token.category);
             ctx.bBlockInputs.push({ ...oracle, unlocker: {

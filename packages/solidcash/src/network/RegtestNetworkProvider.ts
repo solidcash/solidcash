@@ -810,23 +810,20 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     for (const categoryId of [...this.blockOracles]) await this.refreshOneBlockOracle(categoryId, deferred);
   }
 
+  /** Bring every coin of the oracle of `categoryId` (a direct deployment mints one per master) to the node's time. */
   private async refreshOneBlockOracle(categoryId: string, deferred: boolean): Promise<void> {
     const category = hexToBin(categoryId);
     const lock = blockOracleLockingBytecode(category);
-    const oracle = (await this.getUtxosForLockingBytecode(lock))
-      .find((utxo) => utxo.token?.nft?.capability === 'mutable');
-    if (oracle?.token?.nft === undefined) return;
-    const current = hexToBin(oracle.token.nft.commitment);
-    const currentTimestamp = current.length >= 30 ? blockOracleFieldValue(current, 'timestamp') : 0n;
     const desired = await this.oracleFields();
-    if (desired.timestamp <= currentTimestamp) return;
+    const storedTimestamp = (commitment: Uint8Array): bigint => (
+      commitment.length >= 30 ? blockOracleFieldValue(commitment, 'timestamp') : 0n);
+    const stale = (await this.getUtxosForLockingBytecode(lock)).filter((utxo) => (
+      utxo.token?.nft?.capability === 'mutable' && desired.timestamp > storedTimestamp(hexToBin(utxo.token.nft.commitment))
+    ));
+    if (stale.length === 0) return;
 
-    const fields = {
-      ...desired,
-      number: current.length >= 30 ? blockOracleFieldValue(current, 'number') : desired.number,
-    };
-    const commitment = encodeBlockOracleCommitment(hash160(this.blockOracleOwnerPublicKey), fields);
-    const funding = await this.pickOracleFeeCoin();
+    // Each update pays 1000 satoshis; the change of one funds the next.
+    let funding = await this.pickOracleFeeCoin(1000n * BigInt(stale.length + 1));
     this.blockOracleRefreshing = true;
     this.deferredOracleMine = deferred;
     try {
@@ -836,23 +833,33 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         import('../oracle/blockOracleUpdater.js'),
       ]);
       const SignatureTemplate = signatureModule.default;
-      await new TransactionBuilder({ provider: this })
-        .addInput(oracle, blockOracleUpdateUnlocker(
-          category, lock, this.blockOracleOwnerKey, commitment,
-        ))
-        .addInput(funding, new SignatureTemplate(this.blockOracleOwnerKey).unlockP2PKH())
-        .addOutput({
-          to: lock,
-          amount: oracle.satoshis,
-          token: {
-            category: oracle.token.category,
-            amount: 0n,
-            nft: { capability: 'mutable', commitment: binToHex(commitment) },
-          },
-        })
-        .addOutput({ to: this.blockOracleOwnerAddress, amount: funding.satoshis - 1000n })
-        .setLocktime(Number(desired.timestamp))
-        .send();
+      for (const oracle of stale) {
+        const current = hexToBin(oracle.token!.nft!.commitment);
+        const fields = {
+          ...desired,
+          number: current.length >= 30 ? blockOracleFieldValue(current, 'number') : desired.number,
+        };
+        const commitment = encodeBlockOracleCommitment(hash160(this.blockOracleOwnerPublicKey), fields);
+        const change = funding.satoshis - 1000n;
+        const { txid } = await new TransactionBuilder({ provider: this })
+          .addInput(oracle, blockOracleUpdateUnlocker(
+            category, lock, this.blockOracleOwnerKey, commitment,
+          ))
+          .addInput(funding, new SignatureTemplate(this.blockOracleOwnerKey).unlockP2PKH())
+          .addOutput({
+            to: lock,
+            amount: oracle.satoshis,
+            token: {
+              category: oracle.token!.category,
+              amount: 0n,
+              nft: { capability: 'mutable', commitment: binToHex(commitment) },
+            },
+          })
+          .addOutput({ to: this.blockOracleOwnerAddress, amount: change })
+          .setLocktime(Number(desired.timestamp))
+          .send();
+        funding = { txid, vout: 1, satoshis: change };
+      }
       if (deferred) this.pendingOracleUpdate = true;
     } finally {
       this.deferredOracleMine = false;
@@ -865,12 +872,12 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
   }
 
-  private async pickOracleFeeCoin(): Promise<Utxo> {
+  private async pickOracleFeeCoin(minimum = 2000n): Promise<Utxo> {
     const ownerPubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
     const coin = (await this.getUtxosForLockingBytecode(publicKeyToP2PKHLockingBytecode(ownerPubkey)))
       .filter((utxo) => utxo.token === undefined)
       .sort((left, right) => Number(right.satoshis - left.satoshis))[0];
-    if (coin === undefined || coin.satoshis < 2000n) {
+    if (coin === undefined || coin.satoshis < minimum) {
       throw new Error('the block oracle owner has no coin to pay an update fee');
     }
     return coin;

@@ -28,7 +28,7 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { addressToLockScript } from '../utils.js';
-import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { pickBlockOracleCoin, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   createDynamicChunkUnlocker,
@@ -300,7 +300,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
           childBlockInputs.push(takeFunder());
         } else {
           const found = await host.inner.provider.getUtxosForLockingBytecode(lock) as Utxo[];
-          const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+          const oracle = pickBlockOracleCoin(found, lock);
           if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
           const category = hexToBin(oracle.token.category);
           childBlockInputs.push({ ...oracle, unlocker: {

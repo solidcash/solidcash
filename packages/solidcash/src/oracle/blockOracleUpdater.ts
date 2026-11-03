@@ -15,6 +15,7 @@ import { calculateDust, createSighashPreimage, toSigningSerializationType } from
 import { readFramedState, type FramedState } from '../framed/deploy/records.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { blockOracleCoins } from './block-oracle-lock.js';
 
 /**
  * Off-chain keeper for a contract's block.* oracles (docs/block-and-transaction-properties.md). It subscribes to Fulcrum
@@ -192,37 +193,56 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Push a signed update of the oracle commitment. The owner hash already in it must match `keeperKey`.
-   * `locktime` defaults to the new block number: a height-type locktime CLTVs the number and keeps the
-   * stored timestamp, a time-type one CLTVs the timestamp and keeps the stored number (audit CRYPTO-5/6).
-   * The oracle keeps its value: a coin at the keeper's P2PKH pays the fee and takes the change.
+   * Push a signed update to every coin of the oracle, one transaction each, and return the last txid. The owner hash
+   * already in a coin must match `keeperKey`. `locktime` defaults to the new block number: a height-type locktime
+   * CLTVs the number and keeps the stored timestamp, a time-type one CLTVs the timestamp and keeps the stored number
+   * (audit CRYPTO-5/6). The oracle keeps its value: a coin at the keeper's P2PKH pays the fees and takes the change.
    */
   async pushUpdate(fields: BlockOracleFields, locktime = Number(fields.number)): Promise<string> {
+    const listed = await this.oracleCoins();
+    if (listed.length === 0) throw new Error('block oracle UTXO is not available');
+    let txid: string | undefined;
+    let funding: Utxo | undefined;
+    for (const { txid: at, vout } of listed) {
+      const coin = await this.liveCoin(at, vout);
+      if (coin === undefined) continue;
+      funding = await this.chainedFeeCoin(funding);
+      ({ txid, funding } = await this.updateCoin(coin, fields, locktime, funding));
+    }
+    if (txid === undefined) throw new Error('block oracle UTXO is not available');
+    return txid;
+  }
+
+  /** One signed update of `coin`: output 0 recreates it with `fields`, output 1 is the fee coin's change. */
+  private async updateCoin(
+    coin: Utxo, fields: BlockOracleFields, locktime: number, funding: Utxo,
+  ): Promise<{ txid: string; oracle: Utxo; funding: Utxo }> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
-    const provider = this.cfg.contract.provider;
     const { lock, category } = this.oracleCovenant();
-    const utxos = await provider.getUtxosForLockingBytecode(lock);
-    const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
-    if (oracle === undefined) throw new Error('block oracle UTXO is not available');
     const pubkey = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey) as Uint8Array;
     const newCommitment = encodeBlockOracleCommitment(hash160(pubkey), fields);
-    const funding = await this.feeCoin(UPDATE_FEE);
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(oracle, blockOracleUpdateUnlocker(category, lock, this.cfg.keeperKey, newCommitment))
+    const token = {
+      category: coin.token!.category,
+      amount: coin.token!.amount,
+      nft: { capability: 'mutable' as const, commitment: binToHex(newCommitment) },
+    };
+    const change = funding.satoshis - UPDATE_FEE;
+    const { txid } = await new TransactionBuilder({ provider: this.cfg.contract.provider })
+      .addInput(coin, blockOracleUpdateUnlocker(category, lock, this.cfg.keeperKey, newCommitment))
       .addInput(funding, new SignatureTemplate(this.cfg.keeperKey).unlockP2PKH())
-      .addOutput({
-        to: lock,
-        amount: oracle.satoshis,
-        token: {
-          category: oracle.token!.category,
-          amount: oracle.token!.amount,
-          nft: { capability: 'mutable', commitment: binToHex(newCommitment) },
-        },
-      })
-      .addOutput({ to: this.keeperP2pkh(), amount: funding.satoshis - UPDATE_FEE })
+      .addOutput({ to: lock, amount: coin.satoshis, token })
+      .addOutput({ to: this.keeperP2pkh(), amount: change })
       .setLocktime(locktime)
       .send();
-    return tx.txid;
+    return { txid, oracle: { txid, vout: 0, satoshis: coin.satoshis, token }, funding: { txid, vout: 1, satoshis: change } };
+  }
+
+  // The previous update's change when it pays another fee above dust, else a coin `feeCoin` picks.
+  private async chainedFeeCoin(change: Utxo | undefined): Promise<Utxo> {
+    const to = this.keeperP2pkh();
+    if (change !== undefined
+      && change.satoshis - UPDATE_FEE >= BigInt(calculateDust({ to, amount: change.satoshis }))) return change;
+    return this.feeCoin(UPDATE_FEE);
   }
 
   // The largest token-free coin at the keeper's P2PKH, when it pays `fee` and leaves change above dust.
@@ -237,17 +257,25 @@ export class BlockOracleUpdater {
     return coin;
   }
 
-  /** The contract's own block-info oracle: a mutable NFT of its category at the lock that category gives. */
+  /** The contract's own block-info oracle: mutable NFTs of its category at the lock that category gives. */
   private oracleCovenant(): { lock: Uint8Array; category: Uint8Array } {
     const category = hexToBin(this.cfg.categoryId);
     return { lock: blockOracleLockingBytecode(category), category };
   }
 
-  private async currentCommitment(): Promise<Uint8Array> {
-    const provider = this.cfg.contract.provider;
+  /** The oracle's coins, one per master of a direct deployment. */
+  private async oracleCoins(): Promise<Utxo[]> {
     const { lock } = this.oracleCovenant();
-    const utxos = await provider.getUtxosForLockingBytecode(lock);
-    const commitment = utxos.find((utxo) => utxo.token?.nft)?.token?.nft?.commitment;
+    return blockOracleCoins(await this.cfg.contract.provider.getUtxosForLockingBytecode(lock), lock);
+  }
+
+  /** The coin still at `txid:vout`, read again: an update signs the record it spends, which can change in place. */
+  private async liveCoin(txid: string, vout: number): Promise<Utxo | undefined> {
+    return (await this.oracleCoins()).find((utxo) => utxo.txid === txid && utxo.vout === vout);
+  }
+
+  private async currentCommitment(): Promise<Uint8Array> {
+    const commitment = (await this.oracleCoins())[0]?.token?.nft?.commitment;
     return commitment === undefined ? new Uint8Array() : hexToBin(commitment);
   }
 
@@ -364,20 +392,32 @@ export class BlockOracleUpdater {
 
     let blockInfoTxid: string | null = null;
     if (BlockOracleUpdater.usesBlockInfo(artifact)) {
-      const commitment = await this.currentCommitment();
-      const storedTimestamp = blockOracleFieldValue(commitment, 'timestamp');
-      let number = blockOracleFieldValue(commitment, 'number');
       const hash: string = await this.cfg.rpc.request('getblockhash', tip);
       const fields = await fetchBlockOracleFields(this.cfg.rpc, hash);
-      // nLockTime is a height or a time, so the number and the timestamp move in separate updates.
-      if (fields.number > number) {
-        blockInfoTxid = await this.pushUpdate({ ...fields, timestamp: storedTimestamp }, Number(fields.number));
-        number = fields.number;
-      }
       // A timestamp is final only below the median time past, so it needs the rpc to report one.
       const timestamp = finalTimestamp(fields);
-      if (fields.medianTime !== undefined && timestamp > storedTimestamp) {
-        blockInfoTxid = await this.pushUpdate({ ...fields, number, timestamp }, Number(timestamp));
+      let funding: Utxo | undefined;
+      // Each coin moves from its own record.
+      for (const { txid: at, vout } of await this.oracleCoins()) {
+        let coin = await this.liveCoin(at, vout);
+        if (coin === undefined) continue;
+        const commitment = hexToBin(coin.token!.nft!.commitment);
+        const storedTimestamp = blockOracleFieldValue(commitment, 'timestamp');
+        let number = blockOracleFieldValue(commitment, 'number');
+        // nLockTime is a height or a time, so the number and the timestamp move in separate updates.
+        if (fields.number > number) {
+          funding = await this.chainedFeeCoin(funding);
+          ({ txid: blockInfoTxid, oracle: coin, funding } = await this.updateCoin(
+            coin, { ...fields, timestamp: storedTimestamp }, Number(fields.number), funding,
+          ));
+          number = fields.number;
+        }
+        if (fields.medianTime !== undefined && timestamp > storedTimestamp) {
+          funding = await this.chainedFeeCoin(funding);
+          ({ txid: blockInfoTxid, funding } = await this.updateCoin(
+            coin, { ...fields, number, timestamp }, Number(timestamp), funding,
+          ));
+        }
       }
     }
     if (BlockOracleUpdater.usesBlockhash(artifact)) {

@@ -1,8 +1,25 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  applyBlockOracleLock, BLOCK_ORACLE_LOCK_SENTINEL, blockOracleFieldValue, findBlockOracleLockSlots,
+  applyBlockOracleLock, BLOCK_ORACLE_LOCK_SENTINEL, blockOracleFieldValue, blockOracleLockingBytecode, bytesEqual,
+  findBlockOracleLockSlots,
 } from '@solidcash/utils';
+import type { Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+
+/** The coins at `lock` its covenant can spend: mutable NFTs of the category the lock is built for. */
+export function blockOracleCoins<T extends Utxo>(utxos: readonly T[], lock: Uint8Array): T[] {
+  return utxos.filter((utxo) => utxo.token?.nft?.capability === 'mutable'
+    && bytesEqual(blockOracleLockingBytecode(hexToBin(utxo.token.category)), lock));
+}
+
+/**
+ * One coin of the block oracle at `lock`, uniformly at random. A direct deployment mints one per master, so callers
+ * spread over them; the covenant refuses a second coin of the lock in one transaction.
+ */
+export function pickBlockOracleCoin<T extends Utxo>(utxos: readonly T[], lock: Uint8Array): T | undefined {
+  const coins = blockOracleCoins(utxos, lock);
+  return coins.length === 0 ? undefined : coins[Math.floor(Math.random() * coins.length)];
+}
 
 /**
  * Whether a published body is the one the VM ran. A reader's body carries the oracle lock sentinel, which each
@@ -24,6 +41,6 @@ export async function readBlockOracleTimestamp(
   provider: NetworkProvider, lock: Uint8Array,
 ): Promise<bigint | undefined> {
   const utxos = await provider.getUtxosForLockingBytecode(lock);
-  const commitment = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable')?.token?.nft?.commitment;
+  const commitment = blockOracleCoins(utxos, lock)[0]?.token?.nft?.commitment;
   return commitment === undefined ? undefined : blockOracleFieldValue(hexToBin(commitment), 'timestamp');
 }

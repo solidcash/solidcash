@@ -254,8 +254,12 @@ export async function deployStatefulContract<T extends Artifact>(
   const blockOracle = blockOracleGenesisOutput(
     artifact, categoryId, options.provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? dataNftAmount,
   );
+  // One oracle coin per master, all with the same commitment, so callers need not contend for one coin. A
+  // message-bus composition keeps its one.
+  const blockOracleCount = blockOracle === undefined ? 0 : artifact.messageBus === undefined ? threadCount : 1;
   const totalReserve = (prepared.reserveOutput?.amount ?? 0n) + (prepared.bearerOutput?.amount ?? 0n);
-  const totalRequired = (keeperBaton?.amount ?? 0n) + (blockOracle?.amount ?? 0n) + totalMaster + totalDataNft
+  const totalRequired = (keeperBaton?.amount ?? 0n) + (blockOracle?.amount ?? 0n) * BigInt(blockOracleCount)
+    + totalMaster + totalDataNft
     + totalEntryNft + totalEventNft + totalDynamicNft
     + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
   const changeAmount = inputTotal - totalRequired;
@@ -548,7 +552,7 @@ export async function deployStatefulContract<T extends Artifact>(
   // the genesis input and whose constructor transaction is consequently larger than the contract itself.
   const totalTransferAmount = transferOutputs.reduce((sum, t) => sum + t.amount, 0n);
   if (keeperBaton !== undefined) addFunded(keeperBaton);
-  if (blockOracle !== undefined) addFunded(blockOracle);
+  for (let copy = 0; blockOracle !== undefined && copy < blockOracleCount; copy++) addFunded(blockOracle);
   builder.addOutput({ to: options.changeAddress, amount: 1000n });
   // The unsigned template contains a shorter placeholder for the funding signature. Leave enough headroom for
   // the final P2PKH unlocking bytecode (and minor serialization-length changes after the change amount is set).

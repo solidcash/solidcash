@@ -1,7 +1,8 @@
 /**
- * The block-info oracle is a raw covenant, not a stateful contract. Every contract that reads block.* owns one: a
- * mutable NFT of the contract's own category at the lock this covenant gives that category. The contract's genesis
- * mints it, and its masters refuse any other output at that lock.
+ * The block-info oracle is a raw covenant, not a stateful contract. Every contract that reads block.* owns its
+ * coins: mutable NFTs of the contract's own category at the lock this covenant gives that category. The contract's
+ * genesis mints them, one per master under the direct convention, and its masters refuse any other output at that
+ * lock.
  *
  * Its NFT commitment is the whole record. The first 20 bytes are the owner's public-key hash. The fields
  * after that are the block data. A reader never calls the oracle: it co-spends the UTXO and slices the
@@ -9,7 +10,8 @@
  * The owner is not baked into the script, so one bytecode serves every operator; the category is baked so
  * the locking bytecode identifies this oracle token.
  *
- * Readers pin only the lock, so the bounds below hold for exactly one record per category.
+ * Readers pin only the lock. A transaction spends at most one coin of the lock, so all its readers slice one record,
+ * as the EVM gives one block per transaction, and the bounds below hold for that record.
  */
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { encodeInt } from './data.js';
@@ -141,6 +143,23 @@ function splitNumberAndTimestamp(): Script {
   ];
 }
 
+/**
+ * `[] -> []`: no other input sits at this input's lock. Every input's lock is compared with its own, which only it
+ * matches, so exactly one match passes.
+ */
+function soleCoinOfLock(): Script {
+  return [
+    Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, encodeInt(0n), Op.OP_TXINPUTCOUNT,
+    // [lock, matches, i]
+    Op.OP_BEGIN,
+    Op.OP_1SUB, Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL,
+    Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP,
+    Op.OP_DUP, Op.OP_NOT,
+    Op.OP_UNTIL,
+    Op.OP_DROP, encodeInt(1n), Op.OP_NUMEQUALVERIFY, Op.OP_DROP,
+  ];
+}
+
 /** A nLockTime at or above this is a time, below it a height. */
 const LOCKTIME_THRESHOLD = 500_000_000n;
 
@@ -153,7 +172,8 @@ const LOCKTIME_THRESHOLD = 500_000_000n;
  *    `timestamp` is unchanged;
  *  - time-type nLockTime: `timestamp` does not rewind and `tx.time >= timestamp`, which is final only below
  *    the median time past; `number` is unchanged.
- * Both paths recreate the oracle at the same index with at least its value, so no spend drains it.
+ * Both paths recreate the oracle at the same index with at least its value, so no spend drains it, and both
+ * refuse a second input at this lock, so a transaction reads or moves one coin of it.
  */
 export function buildBlockOracleCovenantScript(categoryId: Uint8Array): Script {
   if (categoryId.length !== 32) throw new Error('block oracle category is 32 bytes');
@@ -197,6 +217,7 @@ export function buildBlockOracleCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_DROP, Op.OP_2DROP,
     ...preserveOutput(true),
     Op.OP_ENDIF,
+    ...soleCoinOfLock(),
     Op.OP_INPUTINDEX, Op.OP_OUTPUTVALUE, Op.OP_INPUTINDEX, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL,
   ];
 }

@@ -243,6 +243,10 @@ type LiveUtxoEntry = ReturnType<Indexer['storage']['snapshot']>['utxos'] extends
 
 interface Outpoint { readonly txid: string; readonly vout: number }
 
+function sameOutpoint(left: Outpoint, right: Outpoint): boolean {
+  return left.txid === right.txid && left.vout === right.vout;
+}
+
 /** The coin a fresh mock chain gives the oracle owner's P2PKH, which pays its keeper's update fees. */
 const MOCK_BLOCK_ORACLE_FEE_COIN: Outpoint = { txid: `${'b0'.repeat(31)}b2`, vout: 0 };
 
@@ -409,10 +413,10 @@ export default class MockNetworkProvider implements NetworkProvider {
   readonly blockOracleOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11));
   readonly blockOracleOwnerPublicKey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
   /**
-   * The block-info oracles the mock keeps current, by category: each contract's own coin, naming the mock owner's
-   * key, and the outpoint the mock last wrote or first saw it at.
+   * The block-info oracles the mock keeps current, by category: each coin of a contract's own oracle that names the
+   * mock owner's key (a direct deployment mints one per master), at the outpoint the mock last wrote or first saw it.
    */
-  private readonly blockOracles = new Map<string, Outpoint>();
+  private readonly blockOracles = new Map<string, readonly Outpoint[]>();
 
   /** Fund the oracle owner's P2PKH, which pays its keeper's update fees. */
   private installBlockOracle(): void {
@@ -428,16 +432,22 @@ export default class MockNetworkProvider implements NetworkProvider {
     return this.tipBlockOracleFields();
   }
 
-  /** Track `output` at `outpoint` when it is a contract's block-info oracle that names the mock owner's key. */
-  private noteBlockOracle(
-    outpoint: Outpoint, lockingBytecode: Uint8Array,
+  /** The category of `output` when it is a contract's block-info oracle that names the mock owner's key. */
+  private mockOwnedOracleCategory(
+    lockingBytecode: Uint8Array,
     token: { category: string; nft?: { capability: string; commitment: string } } | undefined,
-  ): void {
-    if (token?.nft?.capability !== 'mutable' || this.blockOracles.has(token.category)) return;
-    if (binToHex(lockingBytecode) !== binToHex(blockOracleLockingBytecode(hexToBin(token.category)))) return;
+  ): string | undefined {
+    if (token?.nft?.capability !== 'mutable') return undefined;
+    if (binToHex(lockingBytecode) !== binToHex(blockOracleLockingBytecode(hexToBin(token.category)))) return undefined;
     const owner = hexToBin(token.nft.commitment).slice(0, 20);
-    if (binToHex(owner) !== binToHex(hash160(this.blockOracleOwnerPublicKey))) return;
-    this.blockOracles.set(token.category, outpoint);
+    return binToHex(owner) === binToHex(hash160(this.blockOracleOwnerPublicKey)) ? token.category : undefined;
+  }
+
+  /** Keep `outpoint`, a coin of the oracle of `category`, unless it is kept already. */
+  private keepBlockOracle(category: string, outpoint: Outpoint): void {
+    const kept = this.blockOracles.get(category) ?? [];
+    if (kept.some((at) => sameOutpoint(at, outpoint))) return;
+    this.blockOracles.set(category, [...kept, outpoint]);
   }
 
   private tipBlockOracleFields(): BlockOracleCommitmentFields {
@@ -452,57 +462,70 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   /**
-   * Write the provider's current height and time into every oracle it keeps. An oracle an owner's signed update
+   * Write the provider's current height and time into every oracle coin it keeps. A coin an owner's signed update
    * recreated keeps the owner's fields, as on chain; one only readers recreated is still the mock's.
    */
   refreshBlockOracle(): void {
-    for (const category of this.blockOracles.keys()) {
-      const live = this.liveBlockOracle(category);
-      if (live === undefined || !this.onlyReadSince(category, live)) continue;
-      this.writeBlockOracle(category, live, this.tipBlockOracleFields());
+    for (const category of [...this.blockOracles.keys()]) {
+      for (const live of this.liveBlockOracles(category)) {
+        const written = this.writtenBeforeReads(category, live);
+        if (written !== undefined) this.writeBlockOracle(category, live, this.tipBlockOracleFields(), written);
+      }
     }
   }
 
   /**
-   * Replace the block fields of the oracle of `categoryId` in place, or of every oracle the mock keeps. The
-   * commitment names the mock owner's key.
+   * Replace the block fields of every coin of the oracle of `categoryId` in place, or of every oracle the mock keeps.
+   * The commitment names the mock owner's key.
    */
   setBlockOracleFields(fields: BlockOracleCommitmentFields, categoryId?: string): void {
     const categories = categoryId === undefined ? [...this.blockOracles.keys()] : [categoryId.toLowerCase()];
     for (const category of categories) {
-      const at = this.liveBlockOracle(category) ?? this.blockOracles.get(category);
-      if (at !== undefined) this.writeBlockOracle(category, at, fields);
+      const live = this.liveBlockOracles(category);
+      for (const at of live.length > 0 ? live : this.blockOracles.get(category) ?? []) {
+        this.writeBlockOracle(category, at, fields);
+      }
     }
   }
 
-  /** The oracle of `category` a reader co-spends: the first mutable NFT at that category's oracle lock. */
-  private liveBlockOracle(category: string): Outpoint | undefined {
+  /** The coins of the oracle of `category` a reader may co-spend: its mutable NFTs at that category's oracle lock. */
+  private liveBlockOracles(category: string): Outpoint[] {
     const lock = blockOracleLockingBytecode(hexToBin(category));
-    const entry = this.indexer.getUtxos(binToHex(sha256(lock)))
-      .find((utxo) => utxo.tokenData?.nft?.capability === 'mutable');
-    return entry === undefined ? undefined : { txid: entry.outpoint.txid, vout: entry.outpoint.vout };
+    return this.indexer.getUtxos(binToHex(sha256(lock)))
+      .filter((utxo) => utxo.tokenData?.nft?.capability === 'mutable'
+        && utxo.tokenData.category.toLowerCase() === category.toLowerCase())
+      .map((entry) => ({ txid: entry.outpoint.txid, vout: entry.outpoint.vout }));
   }
 
-  /** Whether only read-path spends, which recreate it unchanged, moved the oracle since the mock wrote it. */
-  private onlyReadSince(category: string, outpoint: Outpoint): boolean {
-    const written = this.blockOracles.get(category);
-    if (written === undefined) return false;
+  /**
+   * The kept outpoint `outpoint` descends from through read-path spends alone, which recreate a coin unchanged, or
+   * undefined when another spend moved it since the mock wrote it.
+   */
+  private writtenBeforeReads(category: string, outpoint: Outpoint): Outpoint | undefined {
+    const kept = this.blockOracles.get(category) ?? [];
+    const keptAt = (point: Outpoint): Outpoint | undefined => kept.find((candidate) => sameOutpoint(candidate, point));
     let read: string | undefined;
     let at = outpoint;
-    while (at.txid !== written.txid || at.vout !== written.vout) {
+    for (;;) {
+      const written = keptAt(at);
+      if (written !== undefined) return written;
       read ??= binToHex(blockOracleReadUnlocking(hexToBin(category)));
       const raw = this.indexer.getRawTx(at.txid);
       const decoded = raw === undefined ? undefined : decodeTransaction(hexToBin(raw));
       // The read path recreates the oracle at its own input index.
       const input = typeof decoded === 'object' ? decoded.inputs[at.vout] : undefined;
-      if (input === undefined || binToHex(input.unlockingBytecode) !== read) return false;
+      if (input === undefined || binToHex(input.unlockingBytecode) !== read) return undefined;
       at = { txid: binToHex(input.outpointTransactionHash), vout: input.outpointIndex };
     }
-    return true;
   }
 
-  /** Rewrite the oracle NFT of `category` at `outpoint` in place, keeping its value and height. */
-  private writeBlockOracle(category: string, outpoint: Outpoint, fields: BlockOracleCommitmentFields): void {
+  /**
+   * Rewrite the oracle coin of `category` at `outpoint` in place, keeping its value and height. It is kept at
+   * `outpoint` in place of `replaces`, the outpoint it was kept at before.
+   */
+  private writeBlockOracle(
+    category: string, outpoint: Outpoint, fields: BlockOracleCommitmentFields, replaces: Outpoint = outpoint,
+  ): void {
     const lock = blockOracleLockingBytecode(hexToBin(category));
     const commitment = encodeBlockOracleCommitment(hash160(this.blockOracleOwnerPublicKey), fields);
     const { txid, vout } = outpoint;
@@ -519,7 +542,9 @@ export default class MockNetworkProvider implements NetworkProvider {
         nft: { capability: 'mutable', commitment: binToHex(commitment) },
       },
     });
-    this.blockOracles.set(category, { txid, vout });
+    const kept = (this.blockOracles.get(category) ?? [])
+      .filter((at) => !sameOutpoint(at, replaces) && !sameOutpoint(at, outpoint));
+    this.blockOracles.set(category, [...kept, { txid, vout }]);
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {
@@ -684,7 +709,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
       this.blockOracles.clear();
-      for (const [category, outpoint] of oracles) this.blockOracles.set(category, outpoint);
+      for (const [category, coins] of oracles) this.blockOracles.set(category, coins);
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -835,14 +860,20 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.acceptedTransactions.add(result.txid);
     const accepted = decodeTransaction(hexToBin(txHex));
     if (typeof accepted === 'object') {
+      // The transaction that first creates a category's oracle coins (its genesis, one per master) is kept whole; a
+      // later one only recreates them.
+      const minted = new Map<string, Outpoint[]>();
       for (const [vout, output] of accepted.outputs.entries()) {
         const token = output.token === undefined ? undefined : {
           category: binToHex(output.token.category),
           nft: output.token.nft === undefined ? undefined
             : { capability: output.token.nft.capability, commitment: binToHex(output.token.nft.commitment) },
         };
-        this.noteBlockOracle({ txid: result.txid, vout }, output.lockingBytecode, token);
+        const category = this.mockOwnedOracleCategory(output.lockingBytecode, token);
+        if (category === undefined || this.blockOracles.has(category)) continue;
+        minted.set(category, [...minted.get(category) ?? [], { txid: result.txid, vout }]);
       }
+      for (const [category, coins] of minted) this.blockOracles.set(category, coins);
     }
 
     // Mine a block to confirm the transaction immediately. This moves outputs
@@ -905,7 +936,10 @@ export default class MockNetworkProvider implements NetworkProvider {
         nft: utxo.token.nft,
       } : undefined,
     });
-    this.noteBlockOracle({ txid: utxo.txid.toLowerCase(), vout: utxo.vout }, lockingBytecodeBin, utxo.token);
+    const oracleCategory = this.mockOwnedOracleCategory(lockingBytecodeBin, utxo.token);
+    if (oracleCategory !== undefined) {
+      this.keepBlockOracle(oracleCategory, { txid: utxo.txid.toLowerCase(), vout: utxo.vout });
+    }
 
     return utxo;
   }

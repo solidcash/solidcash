@@ -23,7 +23,7 @@ export interface DeployOptions {
    * on a simulator or devnet; a live deployment of a reader names one.
    */
   blockOracleOwnerPublicKey?: Uint8Array;
-  /** Satoshis the reader's oracle coin holds; defaults to the data NFT amount. */
+  /** Satoshis each oracle coin holds (a direct genesis mints one per master); defaults to the data NFT amount. */
   blockOracleAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;

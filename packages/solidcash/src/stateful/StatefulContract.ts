@@ -137,7 +137,7 @@ import {
 } from './kernel-route-planning.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { pickBlockOracleCoin, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -12835,8 +12835,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (nestedOracle !== undefined) {
         blockInfoCoSpendUtxos = [nestedOracle];
       } else {
-        const found = await this.inner.provider.getUtxosForLockingBytecode(lock);
-        const oracle = found.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+        const oracle = pickBlockOracleCoin(await this.inner.provider.getUtxosForLockingBytecode(lock), lock);
         if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
         const category = hexToBin(oracle.token.category);
         blockInfoCoSpendUtxos = [{

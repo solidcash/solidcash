@@ -1,11 +1,12 @@
 /**
  * Server-side block-info oracle lifecycle for a running devnet.
  *
- * Every contract that reads block.* owns its oracle, a coin of its own category its genesis mints. `solidhat node`
- * keeps current every oracle that names the devnet's fixed owner key (`DEVNET_BLOCK_ORACLE_OWNER_KEY`): it notes them
- * in each mined block and rewrites their commitments on every tip change, so compiled `block.timestamp` and
- * `block.number` reads see the live chain. Each oracle holds the block the next transaction is mined into, as Hardhat
- * executes a transaction in its own block: a swap's `block.timestamp` is its receipt block's.
+ * Every contract that reads block.* owns its oracle, coins of its own category its genesis mints (one per master
+ * under the direct convention). `solidhat node` keeps current every oracle that names the devnet's fixed owner key
+ * (`DEVNET_BLOCK_ORACLE_OWNER_KEY`): it notes them in each mined block and rewrites the commitment of each of their
+ * coins on every tip change, so compiled `block.timestamp` and `block.number` reads see the live chain. Each oracle
+ * holds the block the next transaction is mined into, as Hardhat executes a transaction in its own block: a swap's
+ * `block.timestamp` is its receipt block's.
  * `server.features.devnet.block_oracle` advertises that the feature is on. Per-snapshot outpoints travel with the
  * chain, so a reader spend that moved an oracle does not strand a later refresh.
  */
@@ -127,10 +128,13 @@ export function createBlockOracleRuntime(params: {
     }
   }
 
-  function liveOutpoint(category: string): Outpoint | undefined {
+  /** The oracle's coins: a direct deployment mints one per master. */
+  function liveOutpoints(category: string): Outpoint[] {
     const lockScriptHash = binToHex(sha256.hash(blockOracleLockingBytecode(hexToBin(category))));
-    const entry = indexer.getUtxos(lockScriptHash).find((utxo) => utxo.tokenData?.nft?.capability === 'mutable');
-    return entry === undefined ? undefined : { txid: entry.outpoint.txid, vout: entry.outpoint.vout };
+    return indexer.getUtxos(lockScriptHash)
+      .filter((utxo) => utxo.tokenData?.nft?.capability === 'mutable'
+        && utxo.tokenData.category.toLowerCase() === category.toLowerCase())
+      .map((entry) => ({ txid: entry.outpoint.txid, vout: entry.outpoint.vout }));
   }
 
   function write(category: string, outpoint: Outpoint, block: PendingBlock): void {
@@ -159,8 +163,7 @@ export function createBlockOracleRuntime(params: {
   function refresh(block: PendingBlock): void {
     if (!params.enabled) return;
     for (const category of [...oracles.keys()]) {
-      const target = liveOutpoint(category);
-      if (target !== undefined) write(category, target, block);
+      for (const target of liveOutpoints(category)) write(category, target, block);
     }
     announce();
   }

@@ -14,6 +14,7 @@ import {
 import { isContractUnlocker, type Output, type Unlocker, type Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { pickBlockOracleCoin } from '../oracle/block-oracle-lock.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
@@ -55,8 +56,7 @@ async function placeBlockInfoOracle(
     builder.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
   }
   if (builder.inputs.length !== at) return;
-  const utxos = await host.inner.provider.getUtxosForLockingBytecode(lock);
-  const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+  const oracle = pickBlockOracleCoin(await host.inner.provider.getUtxosForLockingBytecode(lock), lock);
   if (oracle?.token?.category === undefined) return;
   const category = hexToBin(oracle.token.category);
   builder.addInput(oracle, {

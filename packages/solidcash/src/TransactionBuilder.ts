@@ -68,6 +68,7 @@ import { applyExternalSignatures } from './external-signing.js';
 import semver from 'semver';
 import type { WcTransactionObject } from './walletconnect-utils.js';
 import { attachWait } from './wait.js';
+import { pickBlockOracleCoin } from './oracle/block-oracle-lock.js';
 
 export interface TransactionBuilderOptions {
   provider: NetworkProvider;
@@ -1032,8 +1033,7 @@ export class TransactionBuilder {
       }
       if (this.inputs.some((spent) => isUnlockableUtxo(spent)
         && bytesEqual(spent.unlocker.generateLockingBytecode(), lock))) continue;
-      const utxos = await this.provider.getUtxosForLockingBytecode(lock);
-      const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
+      const oracle = pickBlockOracleCoin(await this.provider.getUtxosForLockingBytecode(lock), lock);
       if (oracle?.token?.category === undefined) {
         throw new Error('block oracle UTXO is not available');
       }

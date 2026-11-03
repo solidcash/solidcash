@@ -12,7 +12,6 @@ import {
   childCollectionHashes, childGenesisOutputCount,
 } from "@solidcash/solidcash/dist/framed/deploy/genesis-outputs.js";
 import { deployStatefulContract } from "@solidcash/solidcash/dist/stateful/sc-deploy.js";
-import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/block-oracle.js";
 
 /**
  * The SushiSwap pair created with CREATE2 in its creator's own transaction (docs/framed/CREATE2_IDENTITY.md).
@@ -48,10 +47,6 @@ describe("the pair created with create2", () => {
     const pair = { artifact: artifactOf("UniswapV2Pair"), bundle: bundleOf("UniswapV2Pair") };
     const creator = { artifact: artifactOf("AtomicPairCreator"), bundle: bundleOf("AtomicPairCreator") };
     const pool = { masters: 2, validators: 1 };
-    bindProviderBlockOracle(provider, pair.artifact);
-    for (const shard of [...pair.bundle.shards, ...pair.bundle.internalCuts]) {
-      bindProviderBlockOracle(provider, shard.artifact);
-    }
     const childLocks = MasterPoolDeployment.createFunctionSplit({
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR, size: pool,
     }).getEntryLocks();

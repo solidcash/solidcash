@@ -14,7 +14,6 @@ import {
 } from "@solidcash/solidcash/dist/framed/deploy/genesis-outputs.js";
 import { resolveMasterPoolSize } from "@solidcash/solidcash/dist/framed/deploy/pool.js";
 import { deployStatefulContract } from "@solidcash/solidcash/dist/stateful/sc-deploy.js";
-import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/block-oracle.js";
 import { PAIR_POOL, pairCreation } from "./pair-creation.js";
 
 /**
@@ -51,10 +50,6 @@ describe("UniswapV2Factory.createPair", () => {
     expect((factory.artifact.composition as any)?.creates?.[0]?.foldedCall?.functionName).toBe("initialize");
     expect(factory.artifact.abi.find((entry) => entry.name === "createPair")?.externalCalls?.length ?? 0).toBe(0);
 
-    bindProviderBlockOracle(provider, pair.artifact);
-    for (const shard of [...pair.bundle.shards, ...pair.bundle.internalCuts]) {
-      bindProviderBlockOracle(provider, shard.artifact);
-    }
     const childLocks = MasterPoolDeployment.createFunctionSplit({
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR,
       size: PAIR_POOL,

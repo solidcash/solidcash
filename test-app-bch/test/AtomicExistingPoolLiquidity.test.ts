@@ -12,7 +12,6 @@ import { MasterPoolDeployment, resolveMasterPoolSize } from "@solidcash/solidcas
 import {
   childCollectionHashes, childGenesisOutputCount,
 } from "@solidcash/solidcash/dist/framed/deploy/genesis-outputs.js";
-import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/block-oracle.js";
 import { addressToLockScript } from "@solidcash/solidcash/dist/utils.js";
 import { Contract } from "@solidcash/solidcash";
 import { registerDeployment, StatefulContract } from "@solidcash/solidcash/stateful";
@@ -45,10 +44,6 @@ describe("addLiquidityETH to an existing native pool", () => {
     const weth = await ethers.deployContract("WETH9", []);
     await weth.waitForDeployment();
 
-    bindProviderBlockOracle(provider, pair.artifact);
-    for (const shard of [...pair.bundle.shards, ...pair.bundle.internalCuts]) {
-      bindProviderBlockOracle(provider, shard.artifact);
-    }
     const childLocks = MasterPoolDeployment.createFunctionSplit({
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR,
       size: resolveMasterPoolSize(PAIR_POOL),

@@ -1,10 +1,12 @@
 /**
  * Filling a creator's child-lock sentinels with the child's real master locks.
  *
- * A master's lock depends on the block oracle the deployment binds, so it exists only at deployment. The compiler
- * reserves one placeholder push per slot (`childLockSentinel`); this replaces each with the child's entry lock at that
- * slot, padding the rest with a lock no output carries. A child with more entry locks than the artifact reserved is
- * refused by name: the check could not name them, and a silent truncation would let an output pass unseen.
+ * A child's master locks are the P2SH32s of its own compiled shards, which a creator's compile unit does not hold, so
+ * the creator's deployment fills them. They are the same for every category the child is created as: a child that
+ * reads block.* derives its oracle's lock on chain. The compiler reserves one placeholder push per slot
+ * (`childLockSentinel`); this replaces each with the child's entry lock at that slot, padding the rest with a lock no
+ * output carries. A child with more entry locks than the artifact reserved is refused by name: the check could not
+ * name them, and a silent truncation would let an output pass unseen.
  */
 
 import {

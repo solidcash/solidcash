@@ -109,7 +109,10 @@ stateful contract and not part of any reader's state:
 
 `block.number` (etc.) lowers to: pick `input[__internal__blockOracleInputIndex]`, `OP_UTXOBYTECODE` equal to
 the pinned oracle lock (the 35-byte sentinel the deployment overwrites), `OP_UTXOTOKENCOMMITMENT`, split out
-the field, `OP_BIN2NUM` (`coinbase` is a length-prefixed slice instead). The SDK co-spends the oracle in
+the field, `OP_BIN2NUM` (`coinbase` is a length-prefixed slice instead). A constant-lock framed master (a contract
+another contract creates, whose one program serves every category) carries no sentinel: it derives the lock from its
+own token, `P2SH32(prefix ++ category ++ suffix)` over the covenant's static parts
+(`blockOracleLockDerivationScript`), for its reads and its output pin, and publishes no `blockOracleLockSlots`. The SDK co-spends the oracle in
 `TransactionBuilder.addRequiredBlockOracleCoSpends` (stateless readers), at the `blockInfoOracle` block-layout
 slot (`StatefulContract`) and as a recovery input of the master (framed `callFramedEntry`).
 

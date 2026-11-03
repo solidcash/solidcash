@@ -1,8 +1,9 @@
 /**
  * The master locks a creator's category check names for the child it mints (docs/framed/CREATE2_IDENTITY.md).
  *
- * A master's lock depends on the block oracle the deployment binds, so it exists only at deployment: the compiler
- * reserves a fixed number of placeholder pushes and the deployment replaces each with the child's entry lock.
+ * A child's master locks are the P2SH32s of its own compiled shards, which the creator's compile unit does not hold:
+ * the compiler reserves a fixed number of placeholder pushes and the creator's deployment replaces each with the
+ * child's entry lock. The locks are the same for every category the child is created as.
  */
 
 /**

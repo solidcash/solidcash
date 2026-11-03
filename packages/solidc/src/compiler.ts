@@ -16,7 +16,7 @@ import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
-  findBlockOracleLockSlots, BytesType,
+  findBlockOracleLockDerivations, findBlockOracleLockSlots, BytesType,
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
@@ -18854,16 +18854,33 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
-  const blockOracleLockSlots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
+  const finishedProgram = asmToBytecode(artifact.bytecode);
+  const blockOracleLockSlots = findBlockOracleLockSlots(finishedProgram);
+  // A constant-lock master (a contract another contract creates) has one program for every category, so it derives
+  // its own oracle's lock from its own token and carries no slot a deployment fills.
+  const derivesOracleLock = framedConstantLockMaster(mergedCompilerOptions as InternalCompilerOptions);
+  const oracleLockDerivations = derivesOracleLock ? findBlockOracleLockDerivations(finishedProgram).length : 0;
   // A framed entry the master refuses runs none of its body, so a contract whose only clock read is in such a body
   // reads no oracle.
   const refusedOnly = (artifact.composition?.refusedEntries?.length ?? 0) > 0;
-  if (ast.contract.usesBlockOracle && !(refusedOnly && blockOracleLockSlots.length === 0)) {
-    if (blockOracleLockSlots.length === 0) {
-      throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
+  if (ast.contract.usesBlockOracle
+    && !(refusedOnly && blockOracleLockSlots.length === 0 && oracleLockDerivations === 0)) {
+    if (derivesOracleLock) {
+      if (blockOracleLockSlots.length > 0) {
+        throw new Error(`'${artifact.contractName}' derives its block oracle's lock, and still carries the lock pin a `
+          + 'deployment fills, which would give its masters a lock per category');
+      }
+      if (oracleLockDerivations === 0) {
+        throw new Error(`'${artifact.contractName}' reads the block oracle but does not derive its lock`);
+      }
+      artifact.usesBlockOracle = true;
+    } else {
+      if (blockOracleLockSlots.length === 0) {
+        throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
+      }
+      artifact.usesBlockOracle = true;
+      artifact.blockOracleLockSlots = blockOracleLockSlots;
     }
-    artifact.usesBlockOracle = true;
-    artifact.blockOracleLockSlots = blockOracleLockSlots;
   } else if (blockOracleLockSlots.length > 0) {
     // An embedded child creation template can carry the child's oracle lock sentinel even when this contract
     // never reads the oracle itself. Publish those slots so the deployment utility binds the same lock the SDK

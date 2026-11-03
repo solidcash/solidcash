@@ -226,6 +226,39 @@ export function blockOracleRedeemScriptParts(): { prefix: Uint8Array; suffix: Ui
   return parts;
 }
 
+/**
+ * `[category] -> [lock]`: P2SH32 of the oracle covenant with `category` baked in, the category in the order the
+ * machine reports a token's. A master whose program every category shares (a contract another contract creates)
+ * cannot carry a deployment-filled oracle lock, so it derives its own oracle's lock from its own token with this.
+ */
+export function blockOracleLockDerivationScript(): Script {
+  const { prefix, suffix } = blockOracleRedeemScriptParts();
+  return [
+    prefix, Op.OP_SWAP, Op.OP_CAT, suffix, Op.OP_CAT, Op.OP_HASH256,
+    Uint8Array.of(Op.OP_HASH256, 32), Op.OP_SWAP, Op.OP_CAT, Uint8Array.of(Op.OP_EQUAL), Op.OP_CAT,
+  ];
+}
+
+/**
+ * Offsets of the push of the oracle covenant's bytes after its category, which only a derivation of an oracle lock
+ * carries: where `program` derives one rather than pinning the sentinel a deployment fills.
+ */
+export function findBlockOracleLockDerivations(program: Uint8Array): number[] {
+  const needle = scriptToBytecode([blockOracleRedeemScriptParts().suffix]);
+  const offsets: number[] = [];
+  for (let index = 0; index + needle.length <= program.length; index += 1) {
+    let same = true;
+    for (let byte = 0; byte < needle.length; byte += 1) {
+      if (program[index + byte] !== needle[byte]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) offsets.push(index);
+  }
+  return offsets;
+}
+
 /** Read-path unlocking: three empty pushes and flag 0, under the redeem script. */
 export function blockOracleReadUnlocking(categoryId: Uint8Array): Uint8Array {
   const redeem = blockOracleRedeemScript(categoryId);

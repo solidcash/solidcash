@@ -237,8 +237,8 @@ export function verifyMasterDeployment(
     );
   }
   // A constant-lock master carries no deployment constant: it is the compiled program, and its lock is that program's,
-  // whatever the category. One that reads block.* pins its own category's oracle, as `deployMaster` writes it, so its
-  // lock then depends on the category and no creator can know it before the creation.
+  // whatever the category. One that reads block.* derives its own category's oracle lock from its token, so it
+  // publishes no oracle slot either; an artifact that still publishes one is checked with that slot filled.
   if (placeholders.constantLock === true) {
     const oracleLock = framedOracleLock(artifact, category);
     const expected = oracleLock !== undefined && artifact.blockOracleLockSlots !== undefined

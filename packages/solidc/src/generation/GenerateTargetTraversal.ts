@@ -17,6 +17,7 @@ import {
   BLOCK_ORACLE_FIELD_WIDTH,
   BLOCK_ORACLE_COINBASE_OFFSET,
   blockOracleFieldOffset,
+  blockOracleLockDerivationScript,
   type BlockOracleField,
   Op,
   type OpOrData,
@@ -18777,9 +18778,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit([Op.OP_SWAP, encodeInt(1000n), Op.OP_MUL, Op.OP_SWAP, Op.OP_DIV], loc); // [gasprice]
   }
 
-  /** Slice one field out of the co-spent block-oracle commitment. The lock pin is a sentinel deployment fills. */
+  /**
+   * Whether this program derives its own block oracle's lock rather than pinning the sentinel a deployment fills: a
+   * constant-lock master, whose one program every category it is created as shares (a contract another contract
+   * creates), cannot carry a per-category lock.
+   */
+  private derivesOwnBlockOracleLock(): boolean {
+    return this.framedMaster
+      && framedConstantLockMaster(this.compilerOptions as Parameters<typeof framedConstantLockMaster>[0]);
+  }
+
+  /**
+   * `[]` -> `[lock]`: the lock of the block-info oracle this master reads and pins, `blockOracleLockingBytecode` of
+   * the category of the coin the master spends. A deployment writes that lock over the sentinel; a constant-lock
+   * master derives it from its own token, so its program, and with it its lock, stays the same for every category.
+   */
+  private emitOwnBlockOracleLock(locationData: SingleLocationData): void {
+    if (!this.derivesOwnBlockOracleLock()) {
+      this.emit(BLOCK_ORACLE_LOCK_SENTINEL, locationData);
+      return;
+    }
+    this.emit([
+      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
+      ...blockOracleLockDerivationScript(),
+    ], locationData);
+  }
+
+  /**
+   * Slice one field out of the co-spent block-oracle commitment. The lock pin is the sentinel a deployment fills, or
+   * the lock a constant-lock master derives from its own token.
+   */
   private emitBlockOracleField(field: BlockOracleField | 'coinbase', locationData: SingleLocationData): void {
-    if (this.framedMaster) {
+    if (this.derivesOwnBlockOracleLock()) {
+      // The same walk with the lock derived once beneath the index, rather than pushed in each turn.
+      this.emitOwnBlockOracleLock(locationData);
+      this.emit([
+        Op.OP_1NEGATE,
+        Op.OP_BEGIN, Op.OP_1ADD, Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL, Op.OP_UNTIL,
+        Op.OP_NIP, Op.OP_UTXOTOKENCOMMITMENT,
+      ], locationData);
+    } else if (this.framedMaster) {
       // A framed body takes no index, so it finds the first input at the oracle lock; past the last input the
       // introspection fails. The covenant admits only the category's one mutable NFT, so that input is the oracle.
       this.emit([
@@ -52694,14 +52732,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitBlockhashOracleLockOf(loc);
       this.pushToStack('(pair_lock)');
     }
+    // A constant-lock master derives its block-info oracle's lock once, beneath the walk, rather than in each turn.
+    const derivedInfo = info && this.derivesOwnBlockOracleLock();
+    if (derivedInfo) {
+      this.emitOwnBlockOracleLock(loc);
+      this.pushToStack('(info_lock)');
+    }
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.pushToStack('(oracle_j)');
-    // [pairLock?, n] -> [pairLock?, 0], visiting every j below n from the top.
+    // [pairLock?, infoLock?, n] -> [pairLock?, infoLock?, 0], visiting every j below n from the top.
     this.emit([Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE], loc);
-    if (pairs && info) {
+    if (pairs && derivedInfo) {
+      // [pairLock, infoLock, j, lock]
+      this.emit([Op.OP_DUP, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_SWAP, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL, Op.OP_BOOLOR], loc);
+    } else if (pairs && info) {
       this.emit([Op.OP_DUP, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL,
         Op.OP_SWAP, BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL, Op.OP_BOOLOR], loc);
-    } else if (pairs) {
+    } else if (pairs || derivedInfo) {
       this.emit([encodeInt(2n), Op.OP_PICK, Op.OP_EQUAL], loc);
     } else {
       this.emit([BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL], loc);
@@ -52711,6 +52759,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
     ], loc);
     this.popFromStack();
+    if (derivedInfo) {
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+    }
     if (pairs) {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();

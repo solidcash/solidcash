@@ -292,6 +292,8 @@ export interface MasterHeadOptions {
    * (V8).
    */
   readonly settlesOwnRecords?: boolean;
+  /** True when the contract reads block.*, so the self-settlement census admits its own block-info oracle. */
+  readonly admitsBlockOracle?: boolean;
   /**
    * True when every spend of the master names a validator, as a per-entry shard's does: the head then carries no
    * standalone arm, and a frame whose `validatorRef` is `INDEX_NONE` is refused where the validator is recognised.
@@ -385,6 +387,7 @@ class HeadEmitter {
   private readonly soleEntrySelector: Uint8Array | undefined;
   private readonly settlesOwnRecords: boolean;
   private readonly requiresValidator: boolean;
+  private readonly admitsBlockOracle: boolean;
   private readonly keepsRecordIndices: boolean;
   private readonly returnsValue: boolean;
   private readonly acceptsValue: boolean;
@@ -408,6 +411,7 @@ class HeadEmitter {
     if (this.constantLock !== undefined && !this.requiresValidator) {
       throw new Error('master head: a constant-lock master has no standalone arm, so every spend has to name a validator');
     }
+    this.admitsBlockOracle = options.admitsBlockOracle === true;
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
     this.acceptsValue = options.acceptsValue === true;
@@ -1113,7 +1117,9 @@ class HeadEmitter {
   private assertSelfSettlement(): void {
     if (!this.settlesOwnRecords) return;
     const addressPayload = this.addressSlot + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
-    this.emitBytes(selfSettlementScript({ addressPayloadOffset: addressPayload }));
+    this.emitBytes(selfSettlementScript({
+      addressPayloadOffset: addressPayload, admitsBlockOracle: this.admitsBlockOracle,
+    }));
   }
 
   /**

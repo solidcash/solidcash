@@ -4,7 +4,8 @@ import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
   type Artifact, blockhashCommitmentNumber, blockhashOracleLockingBytecode,
   buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  blockOracleRedeemScript, blockOracleUpdateUnlocking, encodeBlockOracleCommitment, blockOracleFieldValue,
+  blockOracleLockingBytecode, blockOracleRedeemScript, blockOracleUpdateUnlocking, encodeBlockOracleCommitment,
+  blockOracleFieldValue,
   buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, hash256, type StateVariableInfo,
   blockhashKeeperBatonLockingBytecode, buildBlockhashKeeperBatonScript,
 } from '@solidcash/utils';
@@ -20,7 +21,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
  * block-header notifications and, on each new tip, maintains only the oracle(s) the contract actually uses:
  *
  *  - block-info oracle (block.number/timestamp/...): present iff the artifact stamps usesBlockOracle. Reads
- *    the block from a BCHN JSON-RPC and spends the shared oracle covenant (utils/block-oracle.ts) with a
+ *    the block from a BCHN JSON-RPC and spends the contract's own oracle covenant (utils/block-oracle.ts) with a
  *    signed update: a height update when the chain is ahead of its number, then a timestamp update when the
  *    last final second (median time past - 1) is ahead of its timestamp.
  *  - n->hash oracle (blockhash(n)): present iff the artifact stamps usesBlockhash. Mints the per-block
@@ -199,11 +200,7 @@ export class BlockOracleUpdater {
   async pushUpdate(fields: BlockOracleFields, locktime = Number(fields.number)): Promise<string> {
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
     const provider = this.cfg.contract.provider;
-    const lock = provider.blockOracleLock;
-    const category = provider.blockOracleCategory;
-    if (lock === undefined || category === undefined) {
-      throw new Error('the provider has no block oracle covenant');
-    }
+    const { lock, category } = this.oracleCovenant();
     const utxos = await provider.getUtxosForLockingBytecode(lock);
     const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
     if (oracle === undefined) throw new Error('block oracle UTXO is not available');
@@ -240,10 +237,15 @@ export class BlockOracleUpdater {
     return coin;
   }
 
+  /** The contract's own block-info oracle: a mutable NFT of its category at the lock that category gives. */
+  private oracleCovenant(): { lock: Uint8Array; category: Uint8Array } {
+    const category = hexToBin(this.cfg.categoryId);
+    return { lock: blockOracleLockingBytecode(category), category };
+  }
+
   private async currentCommitment(): Promise<Uint8Array> {
     const provider = this.cfg.contract.provider;
-    const lock = provider.blockOracleLock;
-    if (lock === undefined) return new Uint8Array();
+    const { lock } = this.oracleCovenant();
     const utxos = await provider.getUtxosForLockingBytecode(lock);
     const commitment = utxos.find((utxo) => utxo.token?.nft)?.token?.nft?.commitment;
     return commitment === undefined ? new Uint8Array() : hexToBin(commitment);

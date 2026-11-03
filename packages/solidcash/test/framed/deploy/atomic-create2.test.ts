@@ -13,7 +13,6 @@ import { stateRecordLockingBytecode } from '../../../src/framed/deploy/records.j
 import { deployMaster } from '../../../src/framed/deploy/material.js';
 import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
 import { childGenesisOutputCount } from '../../../src/framed/deploy/genesis-outputs.js';
-import { bindProviderBlockOracle } from '../../../src/framed/call/block-oracle.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
@@ -72,9 +71,7 @@ describe('a child created with create2 in one transaction', () => {
 
   /** The entry locks the child's masters deploy at, for a category of no consequence (constant shard locks). */
   const childLocksOf = (provider: MockNetworkProvider): readonly Uint8Array[] => {
-    // The locks depend on the provider's block oracle, exactly as the deployment's and the composer's do.
-    bindProviderBlockOracle(provider, child.logical);
-    for (const shard of [...child.shards, ...child.internalCuts]) bindProviderBlockOracle(provider, shard.artifact);
+    // A child that reads block.* pins its own category's oracle, so its locks follow the category it is given.
     return MasterPoolDeployment.createFunctionSplit({
       bundle: child, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR, size: pool,
     }).getEntryLocks();

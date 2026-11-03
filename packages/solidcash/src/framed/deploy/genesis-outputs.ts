@@ -20,7 +20,6 @@ import {
 import { framedValidator } from '@solidcash/solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust } from '../composer/dust.js';
-import { bindProviderBlockOracle } from '../call/block-oracle.js';
 import { authheadLockingBytecode } from '../../bcmr/index.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { FunctionArgument } from '../../Argument.js';
@@ -89,12 +88,8 @@ export function childGenesisOutputCount(options: ChildGenesisOutputsOptions): nu
 export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildGenesisOutputs {
   const { artifact, category, validatorProgram, provider } = options;
   const categoryId = binToHex(category);
-  // A master of a contract that reads `block.timestamp` is bound to the provider's block oracle, exactly as the
-  // deployment binds it; a lock computed without that binding would not be the one the genesis mints.
-  bindProviderBlockOracle(provider, artifact);
-  for (const program of [...options.split?.shards ?? [], ...options.split?.internalCuts ?? []]) {
-    bindProviderBlockOracle(provider, program.artifact);
-  }
+  // A master of a contract that reads `block.*` pins its own category's oracle, which `deployMaster` writes over
+  // the artifact's sentinel per category, so every lock below is the one the genesis mints.
   if (artifact.stateLayout === undefined) {
     throw new FramedChildGenesisError(`Contract ${artifact.contractName} is not a stateful contract`);
   }

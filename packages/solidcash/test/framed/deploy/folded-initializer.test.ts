@@ -9,7 +9,6 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry } from '../../../src/framed/call/index.js';
-import { bindProviderBlockOracle } from '../../../src/framed/call/block-oracle.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
 import { childGenesisOutputCount } from '../../../src/framed/deploy/genesis-outputs.js';
@@ -58,8 +57,6 @@ describe('a creator that initializes the child it makes', () => {
     const funding = nextCoin(1_500_000n);
     await provider.addUtxo(binToHex(callerLock), funding);
     const childLocks = (() => {
-      bindProviderBlockOracle(provider, child.logical);
-      for (const shard of [...child.shards, ...child.internalCuts]) bindProviderBlockOracle(provider, shard.artifact);
       return MasterPoolDeployment.createFunctionSplit({
         bundle: child, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR, size: pool,
       }).getEntryLocks();

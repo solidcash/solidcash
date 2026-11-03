@@ -81,7 +81,6 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName, listDeployments,
 } from '../../stateful/deployment-registry.js';
-import { bindBlockOracleLock, blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
 import { externalReturnsForCallsites } from '../../stateful/external-returns-for-callsites.js';
 import { mappingKeySlotCandidates } from '../../stateful/mapping-key-lookup.js';
 import type { DraftCall } from '../composer/draft.js';
@@ -108,7 +107,7 @@ import {
 import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  bindProviderBlockOracle, framedBlockOracle, withBlockOracleSideCar, type FramedBlockOracle,
+  framedBlockOracle, framedOracleLock, withBlockOracleSideCar, type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
@@ -1713,9 +1712,7 @@ function helperArtifactWithStub(
       { ...stated, name: functionName, selector: selector.replace(/^0x/i, '').toLowerCase() },
     ],
   };
-  // The stub is the helper's own program, so its masters pin the block oracle the helper's deployment bound.
-  const oracleLock = blockOracleLockFor(artifact);
-  if (oracleLock !== undefined) bindBlockOracleLock(stub, oracleLock);
+  // The stub keeps the helper's oracle sentinel, which `deployMaster` fills with the contract's own oracle lock.
   return stub;
 }
 
@@ -1912,8 +1909,6 @@ async function planEntryCalls(
         throw new FramedProxyDeployError(`${where} has no filled helper lock`);
       }
       const stub = helperArtifactWithStub(helper, call.functionName, call.selector, row, cut.entry);
-      // A deployment binds the provider's oracle into the helper it mints, so the stub its masters are found by does too.
-      bindProviderBlockOracle(ctx.provider, stub);
       external = { artifact: stub, categoryId: own.categoryId };
       forcedKind = FrameKind.INTERNAL;
       // The cut is another master of the contract this hop already places, not a second deployment of it.
@@ -2594,6 +2589,7 @@ async function calleeSideCars(
   ctx: PlanContext,
   master: string,
   artifact: Artifact,
+  categoryId: string,
   entryName: string,
   argumentPushes: readonly Uint8Array[],
 ): Promise<void> {
@@ -2608,18 +2604,19 @@ async function calleeSideCars(
     provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
     taken: new Set([...ctx.utxos.values()].map((utxo) => `${utxo.txid}:${utxo.vout}`)),
   }) : undefined;
-  const oracle = abiFunction.usesBlockOracle === true ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
+  const oracle = abiFunction.usesBlockOracle === true
+    ? await unplacedBlockOracle(ctx, artifact, categoryId, entryName) : undefined;
   const sideCars = oracle === undefined ? computed : withBlockOracleSideCar(master, computed, oracle);
   if (sideCars === undefined || sideCars.ids.length === 0) return;
   ctx.sideCars.set(master, sideCars);
   for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
 }
 
-/** The live block oracle, or undefined when a frame this plan already placed co-spends it. */
+/** The frame's own live block oracle, or undefined when a frame this plan already placed co-spends it. */
 async function unplacedBlockOracle(
-  ctx: PlanContext, artifact: Artifact, entryName: string,
+  ctx: PlanContext, artifact: Artifact, categoryId: string, entryName: string,
 ): Promise<FramedBlockOracle | undefined> {
-  const lock = bindProviderBlockOracle(ctx.provider, artifact);
+  const lock = framedOracleLock(artifact, hexToBin(categoryId));
   const oracle = await framedBlockOracle(ctx.provider, lock, entryName, (reason) => new FramedProxyDeployError(reason));
   const placed = [...ctx.utxos.values()].some((utxo) => utxo.txid === oracle.utxo.txid && utxo.vout === oracle.utxo.vout);
   return placed ? undefined : oracle;
@@ -3028,7 +3025,7 @@ async function placeCalleeMasters(
     recordWrittenNodes(ctx, categoryId, writes, ctx.calleeWriteViews?.get(master), statedMappingWrites(
       external.artifact, entry.name, call.argumentValues, caller.selfAddress, stateValues, undefined,
       readMappingValue));
-    await calleeSideCars(ctx, master, external.artifact, entry.name, call.argumentPushes);
+    await calleeSideCars(ctx, master, external.artifact, categoryId, entry.name, call.argumentPushes);
     const frame: HopCallee = {
       master,
       contract,
@@ -3249,7 +3246,10 @@ async function placeProxiedCallee(
     recordWrittenNodes(ctx, external.categoryId, implementationWrites, ctx.calleeWriteViews?.get(implementationMaster),
       statedMappingWrites(external.artifact, entry.name, call.argumentValues, caller.selfAddress, stateValues,
         undefined, readMappingValue));
-    await calleeSideCars(ctx, implementationMaster, external.artifact, entry.name, call.argumentPushes);
+    await calleeSideCars(
+      ctx, implementationMaster, external.artifact, external.implementationCategoryId ?? external.categoryId, entry.name,
+      call.argumentPushes,
+    );
     const implementationBaseFrame: HopCallee = {
       master: implementationMaster,
       contract: implementationContract,

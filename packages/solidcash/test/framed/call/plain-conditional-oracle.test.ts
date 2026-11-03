@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { blockOracleFieldBytes } from '@solidcash/utils';
+import { blockOracleFieldBytes, blockOracleLockingBytecode } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts } from '../ahead/composition-world.js';
@@ -29,14 +29,16 @@ contract Desk {
 }
 `);
 
-describe('a plain frame whose guarded calls and writes read the shared oracle', () => {
+describe('a plain frame whose guarded calls and writes read their own oracles', () => {
   it.each([false, true])('settles with the deadline passed: %s', async (expired) => {
     const world = await newWorld(expired ? 0x75 : 0x74);
     const book = await deployPlain(world, artifacts.Book!);
     const desk = await deployPlain(world, artifacts.Desk!, [book.address]);
     const externals = { Book: { artifact: book.artifact, categoryId: book.categoryId } };
-    const lock = world.network.blockOracleLock;
-    const [oracle] = await world.network.getUtxosForLockingBytecode(lock);
+    // Each reader co-spends its own oracle: the desk's guards read the desk's, the book's stamp reads the book's.
+    const deskLock = blockOracleLockingBytecode(hexToBin(desk.categoryId));
+    const bookLock = blockOracleLockingBytecode(hexToBin(book.categoryId));
+    const [oracle] = await world.network.getUtxosForLockingBytecode(deskLock);
     const timestampBytes = blockOracleFieldBytes(hexToBin(oracle!.token!.nft!.commitment), 'timestamp');
     let timestamp = 0n;
     for (let at = timestampBytes.length - 1; at >= 0; at -= 1) timestamp = (timestamp << 8n) | BigInt(timestampBytes[at]!);
@@ -52,8 +54,12 @@ describe('a plain frame whose guarded calls and writes read the shared oracle', 
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(
       expired ? ['Book.take()', 'Book.stamp()', 'Desk.close()'] : ['Book.stamp()', 'Desk.close()'],
     );
-    const clockInputs = result.sourceOutputs.filter((output) => binToHex(output.lockingBytecode) === binToHex(lock));
-    expect(clockInputs).toHaveLength(1);
+    const inputsAt = (lock: Uint8Array): number[] => result.sourceOutputs.flatMap((output, index) =>
+      (binToHex(output.lockingBytecode) === binToHex(lock) ? [index] : []));
+    const deskOracles = inputsAt(deskLock);
+    const bookOracles = inputsAt(bookLock);
+    expect(deskOracles).toHaveLength(1);
+    expect(bookOracles).toHaveLength(1);
     const read = async (deployment: typeof book, functionName: string, args: bigint[]): Promise<unknown> => {
       const value = await readFramedEntry({
         provider: world.network, artifact: deployment.artifact, categoryId: deployment.categoryId,
@@ -64,11 +70,12 @@ describe('a plain frame whose guarded calls and writes read the shared oracle', 
     };
     expect(await read(book, 'received', [])).toBe(expired ? 100n : 0n);
     expect(await read(desk, 'owed', [1n])).toBe(expired ? 0n : 100n);
-    const actual = blockOracleFieldBytes(clockInputs[0]!.token!.nft!.commitment, 'timestamp');
+    const actual = blockOracleFieldBytes(result.sourceOutputs[bookOracles[0]!]!.token!.nft!.commitment, 'timestamp');
     let actualTimestamp = 0n;
     for (let at = actual.length - 1; at >= 0; at -= 1) actualTimestamp = (actualTimestamp << 8n) | BigInt(actual[at]!);
     expect(await read(book, 'stamped', [])).toBe(actualTimestamp);
-    const oracleIndex = result.sourceOutputs.findIndex((output) => binToHex(output.lockingBytecode) === binToHex(lock));
+    // The desk's master pins its own oracle's lock: a mutable NFT at another lock cannot stand in for it.
+    const oracleIndex = deskOracles[0]!;
     const forged = [...result.sourceOutputs];
     forged[oracleIndex] = { ...forged[oracleIndex]!, lockingBytecode: hexToBin(`aa20${'76'.repeat(32)}87`) };
     const rootIndex = result.draft.layout.participants.find((input) => input.id === 'master')!.index;

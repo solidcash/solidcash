@@ -1,8 +1,9 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { blockOracleFieldBytes, blockOracleReadUnlocking, type Artifact } from '@solidcash/utils';
+import {
+  blockOracleFieldBytes, blockOracleLockingBytecode, blockOracleReadUnlocking, type Artifact,
+} from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
-import { bindBlockOracleLock } from '../../oracle/block-oracle-lock.js';
 import type { DraftInput, RecoverySideCars } from '../composer/index.js';
 
 /** The block oracle a framed entry co-spends: its live UTXO and the read-path input that recreates it in place. */
@@ -11,11 +12,9 @@ export interface FramedBlockOracle {
   readonly input: DraftInput;
 }
 
-/** The provider's oracle lock, bound into `artifact` when the artifact reads the oracle, so its masters pin it. */
-export function bindProviderBlockOracle(provider: NetworkProvider, artifact: Artifact): Uint8Array | undefined {
-  const lock = provider.blockOracleLock;
-  if (lock !== undefined && artifact.usesBlockOracle === true) bindBlockOracleLock(artifact, lock);
-  return lock;
+/** The oracle lock a master of `category` pins when `artifact` reads the oracle: a coin of its own category. */
+export function framedOracleLock(artifact: Artifact, category: Uint8Array): Uint8Array | undefined {
+  return artifact.usesBlockOracle === true ? blockOracleLockingBytecode(category) : undefined;
 }
 
 /** Whether the entry `functionName` slices the block oracle. */

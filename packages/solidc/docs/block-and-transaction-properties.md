@@ -2,9 +2,10 @@
 
 Solidity's "Block and Transaction Properties" - the `block.*` and `tx.*` globals - mapped onto the BCH UTXO
 substrate. The transaction-local ones (`tx.gasprice`, `block.prevrandao`) and the gas/blob shims are pure
-introspection or constants; the block-level values that have no VM source are served by **one shared
-block-info oracle covenant** (sections 3-8), and `blockhash(n)` by **one covenant per master category**
-(section 11).
+introspection or constants; the block-level values that have no VM source are served by **each reader's own
+block-info oracle**, an NFT of its category (sections 3-8), and `blockhash(n)` by **one covenant per master
+category** (section 11). Any `block.*` or `blockhash` read makes the contract stateful (2026-11-03, the user's rule:
+every block oracle is of the master contract's category).
 
 Status: **IMPLEMENTED (compiler + SDK e2e).**
 - `block.chainid` - baked single-byte network constant.
@@ -29,9 +30,10 @@ Implementation notes: `SynthesizeBlockOracle` injects no state. A `block.*` read
 lowers to `Floor(1000 * totalFees / size)`) and marks its function `usesBlockOracle`, which gets a hidden
 `__internal__blockOracleInputIndex` (a stateful function also gets a `blockInfoOracle` block-layout slot).
 Codegen picks that input, checks its locking bytecode against a 35-byte lock sentinel and slices the field out
-of its commitment, so a reader stays stateless unless something else makes it stateful. The artifact publishes
-`usesBlockOracle` + `blockOracleLockSlots`; the deployment writes the real oracle lock over the sentinel (the
-`blockOracleLock` contract option, else the provider's). `block.timestamp` reads the oracle in every mode,
+of its commitment. The artifact publishes `usesBlockOracle` + `blockOracleLockSlots`; the SDK writes the contract's
+own oracle lock, `blockOracleLockingBytecode(category)`, over the sentinel once the category is known. Every
+function of a reader admits an output at that lock only as an unchanged recreation of the input at its index
+(`emitOracleOutputPin`; ledger ORACLE-4). `block.timestamp` reads the oracle in every mode,
 `evmCompat` included. Tests: `packages/solidcash/test/e2e/BlockOracle.test.ts` (chainid, reads, owner update,
 keeper), `AuditCrypto4KeeperAuthority.test.ts` / `AuditCrypto5OracleRewind.test.ts` (update bounds),
 `packages/solidc/test/BlockOracleCommitment.test.ts` (commitment, covenant paths, lock pin).
@@ -86,21 +88,22 @@ v1 picks **category-trust**: the oracle data lives on-chain in an NFT commitment
 trust is "it came from the oracle", not "someone signed it". The cost is bounded concurrency, accepted
 for v1 and lifted later by split/merge.
 
-## 3. The model: one raw oracle covenant
+## 3. The model: each reader's own oracle coin
 
-The block-info oracle is raw P2SH32 bytecode (`buildBlockOracleCovenantScript` in `utils/block-oracle.ts`),
-not a stateful contract and not part of any reader's state:
+The block-info oracle is raw P2SH32 bytecode (`buildBlockOracleCovenantScript` in `utils/block-oracle.ts`), not a
+stateful contract and not part of any reader's state:
 
-- **One mutable NFT is the whole record.** Its commitment holds the owner's public-key hash and the block
-  fields (section 7). The category is baked into the covenant, so the lock identifies the oracle token; the
-  owner is not, so one bytecode serves every operator. The genesis must mint exactly one mutable NFT of that
-  category and no minting NFT, because readers pin only the lock.
-- **Reads co-spend it.** A reader spends the oracle on the read path (flag 0), which recreates bytecode,
-  category and commitment unchanged, with at least its value, at the same output index, and slices what it
-  needs. No master, no register, no operands: the SDK places the input and fills
-  `__internal__blockOracleInputIndex`.
-- **Every reader of a deployment shares it.** Reads serialize on the one UTXO (section 9), the price of a
-  value that is on-chain and unique rather than signed and replicable (section 2.1).
+- **One mutable NFT is the whole record.** Its commitment holds the owner's public-key hash and the block fields
+  (section 7). The category is baked into the covenant, so the lock identifies the oracle token; the owner is not.
+- **Each reader owns one.** A reader is stateful, and its genesis mints its oracle: one mutable NFT of its own
+  category at `blockOracleLockingBytecode(category)`, naming the owner the deployment chose
+  (`blockOracleOwnerPublicKey`, else the provider's own key on a mock or devnet). The reader's masters hold the
+  category's minting NFT, so every function refuses any other output at that lock.
+- **Reads co-spend it.** A reader spends its oracle on the read path (flag 0), which recreates bytecode, category
+  and commitment unchanged, with at least its value, at the same output index, and slices what it needs. The SDK
+  places the input and fills `__internal__blockOracleInputIndex`.
+- **Only the reader's own transactions contend for it.** Reads of one contract serialize on its one UTXO (section
+  9); unrelated contracts never touch it.
 
 ### 3.1 Read lowering (0-param)
 
@@ -228,9 +231,9 @@ coinbase the commitment is 71 bytes; the 80-byte coinbase cap keeps it within th
   codegen emits the read of section 3.1. The artifact carries `usesBlockOracle` on the function and the
   artifact, and `blockOracleLockSlots`, the offsets of the lock sentinel pushes.
 - `block.chainid` lowers to a pushed constant (per `--network`); no oracle, no co-spend.
-- Deployment: `Contract` writes the oracle lock (the `blockOracleLock` option, else the provider's) over every
-  sentinel slot (`applyBlockOracleLock`); the framed deploy material does the same. Spending a reader that has
-  no lock throws ("no oracle lock was provided").
+- Deployment: `Contract` writes the contract's own oracle lock (from its category) over every sentinel slot
+  (`applyBlockOracleLock`); the framed deploy material does the same. Spending a reader that has no category
+  throws ("no oracle lock was provided"). The genesis mints the oracle (`blockOracleGenesisOutput`).
 - SDK co-spend: section 3.1. The input is spent on the read path and recreated at its own output index; the
   index argument is the input's position, located by lock.
 
@@ -289,6 +292,12 @@ category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-b
   for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master. A
   covenant spend needs the keeper's signature, co-spends no token input, recreates the baton at output 0 and
   mints exactly one capability-none `(n->hash)` NFT at the category's blockhash lock (output 1, `tx.time >= n`).
+
+- **Forgery bound (2026-11-03).** Every master spend holds the category's minting NFT, and an expired pair's
+  wipe frees its output, so a master of a contract that reads `blockhash` admits an own-category output at the
+  pair lock only as an unchanged recreation of the input at its index (same lock, category, commitment and
+  amount), in every function including `split`, `merge` and `unsafe(1..)`; `unsafe(0)` stays the escape hatch
+  (`docs/security/security-audit-2026-10-16.md`, ORACLE-1 to ORACLE-3).
 
 The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
 `artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
@@ -538,9 +547,9 @@ is a single byte; and `difficulty` stays the real PoW difficulty rather than ali
 
 ### SDK oracle configuration and keeper genesis (2026-10-14)
 
-Live Electrum providers accept typed `blockOracleCategory` (32 display-order bytes) and derive the shared
-block-info covenant lock; `NetworkProvider` publishes the optional category and lock, and `ContractOptions`
-publishes an optional per-reader lock override. Reader and updater code need no structural casts.
+Superseded 2026-11-03: there is no shared oracle. `NetworkProvider` publishes an optional
+`blockOracleOwnerPublicKey` and `blockOracleFields()` for providers that own their readers' oracles (mock, regtest,
+devnet); a live deployment names the owner itself.
 
 Direct and framed `StatefulContract.deploy` accept opt-in `blockhashKeeperPublicKey` and
 `blockhashKeeperAmount` (default 10,000 satoshis). Genesis mints one extra empty minting NFT of the consumer's

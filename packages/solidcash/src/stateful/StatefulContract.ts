@@ -137,7 +137,7 @@ import {
 } from './kernel-route-planning.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -7213,6 +7213,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryArtifact,
       entryArgs,
       entryCompilerRoute,
+      entryBlockOracleLock,
     } = resolveCreateBuilderEntryAbiImpl(
       abiFunction,
       args,
@@ -7220,10 +7221,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       overrides?.calls ?? [],
     );
     // Stored-value recipes execute in the selected implementation's context. A proxy's physical forwarder
-    // need not read time itself, even when its selected delegate recipe does. Bind the same authenticated
-    // oracle lock as that implementation, rather than inferring time from the provider's wall clock.
+    // need not read time itself, even when its selected delegate recipe does. Read the oracle that implementation
+    // pins, its own category's, rather than inferring time from the provider's wall clock.
     const oracleLock = entryArtifact.usesBlockOracle === true
-      ? blockOracleLockFor(entryArtifact) ?? this.inner.blockOracleLock : undefined;
+      ? entryBlockOracleLock ?? this.inner.blockOracleLock : undefined;
     const oracleTimestamp = oracleLock === undefined
       ? undefined : await readBlockOracleTimestamp(this.inner.provider, oracleLock);
     const recipeState: Record<string, StateValue> = oracleTimestamp === undefined

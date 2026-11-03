@@ -101,8 +101,9 @@ describe('ordinary direct nested authenticated array pushes', () => {
       expect(transaction.outputs[publisherIdentityIndex].value).toBe(publisherIdentity.value);
       const publisherIndex = builder.inputs.findIndex((input) => input.token?.category === publisher.categoryId
         && input.token.nft?.capability === 'minting');
+      // The publisher, the only reader, co-spends its own oracle.
       const oracleIndex = sourceOutputs.findIndex((output) => binToHex(output.lockingBytecode)
-        === binToHex(provider.blockOracleLock));
+        === binToHex(publisher.inner.blockOracleLock!));
       expect(publisherIndex).toBeGreaterThanOrEqual(0);
       expect(oracleIndex).toBeGreaterThanOrEqual(0);
       const vm = createVirtualMachineBch2026ForProvider(provider);

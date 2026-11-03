@@ -70,9 +70,10 @@ export function markBlockOracleCallers(
 /**
  * Oracle-backed `block.*` reads.
  *
- * The block data lives in one raw covenant's NFT commitment, not in this contract. A read stays a
- * `block.*` nullary; codegen slices that commitment. The owner update is the oracle covenant's own
- * spend and is never added to this contract. `block.basefee` is Floor(1000 * totalFees / size) over
+ * The block data lives in the commitment of the contract's own oracle coin, a mutable NFT of its category at the
+ * lock the covenant gives that category, not in this contract's state. A read stays a `block.*` nullary; codegen
+ * slices that commitment. The owner update is the oracle covenant's own spend and is never added to this contract.
+ * Any block.* or blockhash read makes the contract stateful. `block.basefee` is Floor(1000 * totalFees / size) over
  * two of those slices. `block.chainid` is a separate baked constant.
  *
  * The owner's bounds live in that covenant (utils/block-oracle.ts): a height update keeps `number` below
@@ -93,6 +94,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // Per-function counter for computed-n blockhash reads (each is its own slot).
   private fnComputedBlockhashCount = 0;
   private fnUsesOracle = false;
+  // Any block.* global or blockhash(n) read in the contract, oracle-backed or not.
+  private readsBlockData = false;
   // Names declared in the contract (state vars) and current function (params + locals), so a bare `now` that is
   // actually a declared variable is NOT aliased to block.timestamp (Solidity <0.7 global; a plain var in >=0.7).
   private stateVarNames = new Set<string>();
@@ -128,6 +131,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     }
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
       this.usesBlockhash = true;
+      this.readsBlockData = true;
       this.fnUsesBlockhash = true;
       // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
       // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
@@ -222,14 +226,17 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
 
-    // blockhash(n) brands its (n->hash) oracle to the contract's own category, so the reader must be stateful.
+    // Every block oracle is of the contract's own category, so any block.* or blockhash read makes the contract
+    // stateful. The mark stays once set: a re-run on a split root sees forwarders, not the reads.
     const bodies = [node.functions, node.constructorDef, node.fallbackDef, node.receiveDef].flat();
     node.usesBlockhash = bodies.some((fn) => fn?.usesBlockhash);
     node.usesBlockOracle = bodies.some((fn) => fn?.usesBlockOracle);
+    node.readsBlockData = node.readsBlockData || this.readsBlockData;
     return node;
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
+    if (String(node.operator).startsWith('block.')) this.readsBlockData = true;
     if (ORACLE_FIELDS.has(node.operator)) {
       this.fnUsesOracle = true;
       if (node.operator === NullaryOperator.BLOCK_TIMESTAMP) {

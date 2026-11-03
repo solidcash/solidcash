@@ -8,7 +8,8 @@ import {
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import {
-  buildInitialStateCommitments, hash256, messageBusVerifierCommitment, type StateLayout,
+  blockOracleLockingBytecode, buildInitialStateCommitments, encodeBlockOracleCommitment, hash160, hash256,
+  messageBusVerifierCommitment, type StateLayout,
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
@@ -358,6 +359,25 @@ export interface StatefulUtxoSetup {
  * @param initialState - Initial state values (e.g., `{ counter: 0n }`)
  * @param opts - Optional overrides for satoshi amounts
  */
+/**
+ * A block.* reader's own oracle, as its genesis mints it: a mutable NFT of its category at that category's oracle
+ * lock, naming the provider's owner key and starting from the provider's clock.
+ */
+function blockOracleSeed(
+  provider: MockNetworkProvider | RegtestNetworkProvider, contract: Contract, categoryId: string,
+): { address: string; commitment: string } | undefined {
+  if (contract.artifact.usesBlockOracle !== true) return undefined;
+  const owner = (provider as { blockOracleOwnerPublicKey?: Uint8Array }).blockOracleOwnerPublicKey;
+  const fields = (provider as { blockOracleFields?: () => Parameters<typeof encodeBlockOracleCommitment>[1] })
+    .blockOracleFields?.();
+  if (owner === undefined || fields === undefined) throw new Error('this provider keeps no block oracles');
+  const lock = blockOracleLockingBytecode(hexToBin(categoryId));
+  const prefix = getNetworkPrefix(provider.network);
+  const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix, tokenSupport: true });
+  if (typeof address !== 'object' || !('address' in address)) throw new Error('block oracle lock has no address');
+  return { address: address.address, commitment: binToHex(encodeBlockOracleCommitment(hash160(owner), fields)) };
+}
+
 export async function setupStatefulUtxos(
   provider: MockNetworkProvider | RegtestNetworkProvider,
   contract: Contract,
@@ -419,6 +439,14 @@ export async function setupStatefulUtxos(
         },
       }));
     }
+    const oracle = blockOracleSeed(provider, contract, categoryId);
+    if (oracle !== undefined) {
+      await (provider as any).addUtxo(oracle.address, {
+        txid: categoryId, vout: commitments.length + sortedCollections.length + verifierCount + 1,
+        satoshis: dataNftSatoshis,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: oracle.commitment } },
+      });
+    }
     return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses, verifierUtxos };
   }
 
@@ -455,6 +483,13 @@ export async function setupStatefulUtxos(
         },
       })),
       ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),
+      ...((): Array<{ address: string; satoshis: bigint; token: any }> => {
+        const oracle = blockOracleSeed(provider, contract, categoryId);
+        return oracle === undefined ? [] : [{
+          address: oracle.address, satoshis: dataNftSatoshis,
+          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: oracle.commitment } },
+        }];
+      })(),
     ];
   });
 

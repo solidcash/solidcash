@@ -40,7 +40,9 @@
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import { KEPT_VIEW_LENGTH, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
+import {
+  BLOCK_ORACLE_LOCK_SENTINEL, KEPT_VIEW_LENGTH, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt,
+} from '@solidcash/utils';
 import { ADDRESS_SLOT_LENGTH } from './placeholders.js';
 import {
   FRAMEWORK_REGISTRAR_ID,
@@ -1014,6 +1016,8 @@ export function recogniseValidatorScriptAgainstReservedHash(definesFramework = f
 export interface SelfSettlementShape {
   /** Where the contract address's payload sits in the running script, for the census. */
   readonly addressPayloadOffset: number;
+  /** True when the contract reads block.*: the census then admits its own block-info oracle, recreated in place. */
+  readonly admitsBlockOracle?: boolean;
 }
 
 /**
@@ -1032,6 +1036,7 @@ const KEPT_VIEW_LENGTH_RAW = new Uint8Array([KEPT_VIEW_LENGTH & 0xff, KEPT_VIEW_
 
 export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
   const { addressPayloadOffset } = shape;
+  const admitsBlockOracle = shape.admitsBlockOracle === true;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
@@ -1241,7 +1246,7 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     emit(Opcodes.OP_OUTPUTTOKENCOMMITMENT, Opcodes.OP_EQUALVERIFY, Opcodes.OP_ENDIF);
     emit(Opcodes.OP_DROP);
     // [.., table, address, declared, seen, index, flags]: the census at the index, on either side.
-    emit(...indexCensusScript('input', 4), ...indexCensusScript('output', 4));
+    emit(...indexCensusScript('input', 4, admitsBlockOracle), ...indexCensusScript('output', 4, admitsBlockOracle));
     emit(Opcodes.OP_DROP);
     // [.., declared, seen, index]: a bare own-category output is counted, and the count never passes the events
     // listed.
@@ -1269,9 +1274,11 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
  * address the walk read once sits `addressDepth` items beneath `flags`. The index is visited whatever side it names,
  * and the side that has no item at that index is skipped rather than read. A validator of the contract's own category
  * is recreated in place at the contract address carrying the same mutable token a record does with an empty
- * commitment, and that index is not a record: the census admits exactly that token beside the ones the walk saw.
+ * commitment, and that index is not a record: the census admits exactly that token beside the ones the walk saw. A
+ * contract that reads block.* also holds its block-info oracle, the same mutable token at the oracle lock deployment
+ * writes over the sentinel; the census admits it recreated in place with its commitment unchanged.
  */
-function indexCensusScript(side: 'input' | 'output', addressDepth: number): number[] {
+function indexCensusScript(side: 'input' | 'output', addressDepth: number, admitsBlockOracle = false): number[] {
   const countOpcode = side === 'input' ? Opcodes.OP_TXINPUTCOUNT : Opcodes.OP_TXOUTPUTCOUNT;
   const otherCountOpcode = side === 'input' ? Opcodes.OP_TXOUTPUTCOUNT : Opcodes.OP_TXINPUTCOUNT;
   const tokenOpcode = side === 'input' ? Opcodes.OP_UTXOTOKENCATEGORY : Opcodes.OP_OUTPUTTOKENCATEGORY;
@@ -1310,6 +1317,22 @@ function indexCensusScript(side: 'input' | 'output', addressDepth: number): numb
       emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
       emit(Opcodes.OP_OVER, Opcodes.OP_UTXOTOKENCOMMITMENT, Opcodes.OP_0, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
       emit(Opcodes.OP_OVER, Opcodes.OP_OUTPUTTOKENCOMMITMENT, Opcodes.OP_0, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+      if (admitsBlockOracle) {
+        // `[index, validator]`: or the oracle, both locks the oracle's, both tokens a record's, one commitment.
+        const oracleLock = encodeDataPush(BLOCK_ORACLE_LOCK_SENTINEL);
+        emit(Opcodes.OP_OVER, Opcodes.OP_UTXOBYTECODE, oracleLock, Opcodes.OP_EQUAL);
+        pick(2);
+        emit(Opcodes.OP_OUTPUTBYTECODE, oracleLock, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+        pick(2);
+        emit(Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+        pick(2);
+        emit(Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+        pick(2);
+        emit(Opcodes.OP_UTXOTOKENCOMMITMENT);
+        pick(3);
+        emit(Opcodes.OP_OUTPUTTOKENCOMMITMENT, Opcodes.OP_EQUAL, Opcodes.OP_BOOLAND);
+        emit(Opcodes.OP_BOOLOR);
+      }
       emit(Opcodes.OP_NIP);
     }
     emit(Opcodes.OP_ELSE);

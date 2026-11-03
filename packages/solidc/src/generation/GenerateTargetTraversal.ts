@@ -745,6 +745,16 @@ function slotScanResidue(sat: boolean, foreign: boolean, mint: boolean): string[
     ...(foreign ? [SCAN_OWN_MUTABLE] : []), ...(sat ? [SCAN_IN_SUM] : []), ...(mint ? [SCAN_IN_MINTS] : []),
   ];
 }
+
+/** `[j]` -> `[j]`, failing unless output j recreates input j unchanged: lock, token category, commitment, amount. */
+function oracleRecreation(): Op[] {
+  return [
+    Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_OVER, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_OVER, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OVER, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_UTXOTOKENAMOUNT, Op.OP_OVER, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NUMEQUALVERIFY,
+  ];
+}
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
@@ -2683,6 +2693,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractIsBrandedLibrary: boolean = false;
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
+  // True when the contract reads block.number and the rest: its block-info oracle is a coin of its own category.
+  private currentContractUsesBlockOracle: boolean = false;
+  // True when anything reads a block.* global or blockhash(n), which makes the contract stateful.
+  private currentContractReadsBlock: boolean = false;
   private currentContractHasMessageBus: boolean = false;
   /** An entry of this contract returns values, so every direct run of it accounts for its call records. */
   private currentContractSettlesCallRecords: boolean = false;
@@ -4391,6 +4405,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(framedConstantLockMaster(this.compilerOptions as Parameters<typeof framedConstantLockMaster>[0])
         ? { constantLock: { validatorTemplateHash: constantLockValidatorTemplateHash() } }
         : {}),
+      ...(node.usesBlockOracle ? { admitsBlockOracle: true } : {}),
       callCount,
       ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
       ...(returnsValue ? { returnsValue: true } : {}),
@@ -5347,6 +5362,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
+    this.currentContractUsesBlockOracle = node.usesBlockOracle;
+    this.currentContractReadsBlock = node.readsBlock;
     this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
     this.currentContractSettlesCallRecords = node.functions.some((fn) => fn.isEntryPoint && fn.returnTypes.length > 0
       && !fn.graphEmissionHandler && !this.isCompilerMessageBusRoute(fn));
@@ -7250,6 +7267,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.eventDefinitions = this.eventDefinitions;
       probe.currentContractEmitsEvent = this.currentContractEmitsEvent;
       probe.currentContractHasEvents = this.currentContractHasEvents;
+      probe.currentContractUsesBlockhash = this.currentContractUsesBlockhash;
+      probe.currentContractUsesBlockOracle = this.currentContractUsesBlockOracle;
+      probe.currentContractReadsBlock = this.currentContractReadsBlock;
       probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       probe.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       probe.userFunctionDefs = this.userFunctionDefs;
@@ -7566,6 +7586,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.eventDefinitions = this.eventDefinitions;
     subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
     subTraversal.currentContractHasEvents = this.currentContractHasEvents;
+    subTraversal.currentContractUsesBlockhash = this.currentContractUsesBlockhash;
+    subTraversal.currentContractUsesBlockOracle = this.currentContractUsesBlockOracle;
+    subTraversal.currentContractReadsBlock = this.currentContractReadsBlock;
     // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
     // output-only offsets in that body disagree with the ones in the main script.
     subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -7915,6 +7938,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.eventDefinitions = this.eventDefinitions;
       subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
       subTraversal.currentContractHasEvents = this.currentContractHasEvents;
+      subTraversal.currentContractUsesBlockhash = this.currentContractUsesBlockhash;
+      subTraversal.currentContractUsesBlockOracle = this.currentContractUsesBlockOracle;
+      subTraversal.currentContractReadsBlock = this.currentContractReadsBlock;
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -10415,7 +10441,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // split/merge: dedicated covenant verification
     const isStatefulContract = this.stateVariables.length > 0
       || this.collectionCount > 0 || this.eventDefinitions.length > 0
-      || this.currentContractUsesBlockhash
+      || this.currentContractReadsBlock
       || this.currentContractEmitsEvent
       || (this.compilerOptions.forceStateful ?? false);
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
@@ -10796,7 +10822,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // logs at any other index. Scoped to contracts that declare an event or emit one declared in any scope (file
       // level, library, interface): the forged output is only readable as a log at getEventNftAddress(contract,
       // category, signature), which needs such a signature, and a hand-written covenant with no events may
-      // legitimately place own-category immutable NFTs of its own.
+      // legitimately place own-category immutable NFTs of its own. A blockhash reader without events still pins its
+      // (n -> hash) pair lock, and a block.* reader its block-info oracle lock (emitOracleOutputPin).
       // SEC-13: `selfdestruct` and `delegate` were excluded and admitted the SAME forgery. A selfdestruct spends
       // the master minting NFT, so it can mint own-category immutable NFTs at will and no later honest emit can
       // ever contradict them; a delegate function's own event NFT carries the PROXY's category, so an appended
@@ -10828,6 +10855,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
+        if (this.currentContractUsesBlockOracle) this.emitOracleOutputPin(node, false, true);
+      } else if (node.name !== '__construct' && isStatefulContract
+        && (this.currentContractUsesBlockhash || this.currentContractUsesBlockOracle)) {
+        this.emitOracleOutputPin(node, this.currentContractUsesBlockhash, this.currentContractUsesBlockOracle);
       }
       // Value preservation: satoshi and fungible token amounts
       // Selfdestruct functions skip - all NFTs and containers are being destroyed
@@ -10854,8 +10885,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Lifecycle topology and tiered unsafe state policies still protect this category's addressable event logs.
     // They do not authorize a source emit here, so an unrelated immutable event output must be refused just as
     // on an ordinary spend. unsafe(0) deliberately has no covenant policy and remains the explicit escape hatch.
-    if ((isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) && this.currentContractHasEvents) {
-      this.emitOwnCategoryImmutableNftOutputPin(node);
+    if (isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) {
+      const pairs = this.currentContractUsesBlockhash && !this.currentContractHasEvents;
+      if (this.currentContractHasEvents) this.emitOwnCategoryImmutableNftOutputPin(node);
+      if (pairs || this.currentContractUsesBlockOracle) {
+        this.emitOracleOutputPin(node, pairs, this.currentContractUsesBlockOracle);
+      }
     }
 
     // Function ending
@@ -52308,6 +52343,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);                   // [cat, base, j, ownImmutableOrFt]
     this.emit(Op.OP_IF, loc);
+    // A blockhash reader's (n -> hash) pairs are own-category immutable NFTs too: one at the category's pair lock is
+    // no event, and is admitted only as an unchanged recreation of input j.
+    const pinsBlockhashPairs = this.currentContractUsesBlockhash;
+    if (pinsBlockhashPairs) {
+      this.emit([Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(3n), Op.OP_PICK], loc); // [cat, base, j, lock_j, cat]
+      this.emitBlockhashOracleLockOf(loc);
+      this.emit([Op.OP_EQUAL, Op.OP_IF, ...oracleRecreation(), Op.OP_ELSE], loc);
+    }
     this.emit(Op.OP_DUP, loc);                     // [cat, base, j, j]
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);       // [cat, base, j, ftAmount]
     this.emit(encodeInt(0n), loc);
@@ -52512,6 +52555,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_VERIFY, loc);                  // [cat, base, j]
     this.emit(Op.OP_ENDIF, loc);
+    if (pinsBlockhashPairs) this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     if (skipsRuntimeEventSpan) this.emit(Op.OP_ENDIF, loc);
     if (skipsToOwnCategory) {
@@ -52531,6 +52575,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.framedMaster) {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack(); // (imm_not_alone)
+    }
+  }
+
+  /**
+   * Every block oracle a contract reads is of its own category, and every master spend holds the minting NFT that
+   * could mint a look-alike: a (n -> hash) pair with a forged hash, or a block-info oracle with forged fields. An
+   * expired pair's wipe path also frees its output. So an output at the category's pair lock (`pairs`) or at its
+   * block-info oracle lock (`info`, the sentinel deployment fills) is admitted only as an unchanged recreation of
+   * the input at its index: same lock, token category, commitment and fungible amount. The owner's oracle updates
+   * run in transactions of their own.
+   */
+  private emitOracleOutputPin(node: FunctionDefinitionNode, pairs: boolean, info: boolean): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // It reads only the transaction and the master's category, so a contract's entries share one helper.
+    const key = `oracleOutputPin:${pairs ? 'pairs' : ''}:${info ? 'info' : ''}`;
+    if (this.invokeSharedEntryCheck(key, (t, l) => t.emitOracleOutputPinBody(pairs, info, l), loc)) return;
+    this.emitOracleOutputPinBody(pairs, info, loc);
+  }
+
+  /** The body of `emitOracleOutputPin`: stack-neutral, leaving nothing it pushed. */
+  private emitOracleOutputPinBody(pairs: boolean, info: boolean, loc: SingleLocationData): void {
+    if (pairs) {
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32(loc);
+      this.emitBlockhashOracleLockOf(loc);
+      this.pushToStack('(pair_lock)');
+    }
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.pushToStack('(oracle_j)');
+    // [pairLock?, n] -> [pairLock?, 0], visiting every j below n from the top.
+    this.emit([Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE], loc);
+    if (pairs && info) {
+      this.emit([Op.OP_DUP, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL,
+        Op.OP_SWAP, BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL, Op.OP_BOOLOR], loc);
+    } else if (pairs) {
+      this.emit([encodeInt(2n), Op.OP_PICK, Op.OP_EQUAL], loc);
+    } else {
+      this.emit([BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL], loc);
+    }
+    this.emit([
+      Op.OP_IF, ...oracleRecreation(), Op.OP_ENDIF,
+      Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+    ], loc);
+    this.popFromStack();
+    if (pairs) {
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
     }
   }
 
@@ -55294,6 +55386,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A same-category coin at another lock is not a (n -> hash) record.
    */
   private emitBindBlockhashOracleLock(loc: SingleLocationData): void {
+    // [n, idx, category]. idx is the one untracked item above the tracked n.
+    this.emitMasterInputIndex(loc, 1);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emitTakeFirst32(loc);
+    this.emitBlockhashOracleLockOf(loc);
+    // [n, idx, lock, actual]
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+  }
+
+  /**
+   * `[category]` -> `[lock]`: the category's one (n -> hash) oracle lock, P2SH32 of
+   * `buildBlockhashOracleCovenantScript(category)`. A token category's first 32 bytes are already the covenant's
+   * internal order.
+   */
+  private emitBlockhashOracleLockOf(loc: SingleLocationData): void {
     const category = Uint8Array.from({ length: 32 }, (_byte, index) => index + 1);
     const raw = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
     const categoryPush = Uint8Array.from([0x20, ...category.slice().reverse()]);
@@ -55302,20 +55411,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (categoryAt < 0) {
       throw new Error('Internal error: the blockhash oracle covenant category push was not found.');
     }
-    const head = raw.slice(0, categoryAt);
-    const tail = raw.slice(categoryAt + categoryPush.length);
-    // [n, idx, 0x20 || category]. The token category's first 32 bytes are already the covenant's internal order.
-    // idx is the one untracked item above the tracked n.
-    this.emitMasterInputIndex(loc, 1);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
     this.emit(hexToBin('20'), loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_CAT, loc);
-    this.emit(head, loc);
+    this.emit(raw.slice(0, categoryAt), loc);
     this.emit(Op.OP_SWAP, loc);
     this.emit(Op.OP_CAT, loc);
-    this.emit(tail, loc);
+    this.emit(raw.slice(categoryAt + categoryPush.length), loc);
     this.emit(Op.OP_CAT, loc);
     this.emit(Op.OP_HASH256, loc);
     this.emit(P2SH32_LBC_PREFIX, loc);
@@ -55323,10 +55425,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, loc);
     this.emit(P2SH32_LBC_SUFFIX, loc);
     this.emit(Op.OP_CAT, loc);
-    // [n, idx, lock, actual]
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
   }
 
   /**

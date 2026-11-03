@@ -2546,11 +2546,11 @@ describe('kernel loop message-bus compose', () => {
 // The owner's update reads no rpc.
 const UNUSED_RPC: RpcLike = { request: async (): Promise<never> => { throw new Error('unused'); } };
 
-// The owner update is a signed spend of the shared oracle covenant, so the kernel synthesizes no updater row.
+// The owner update is a signed spend of the contract's own oracle covenant, so the kernel synthesizes no updater row.
 describe('kernel block-oracle rows', () => {
   it('has no updater row and reads an owner-signed oracle update through the row loop', async () => {
     const provider = createTestProvider();
-    // Only the mock provider mints the block oracle a reader pins.
+    // Only the mock provider sets a reader's oracle fields in place.
     if (!('setBlockOracleFields' in provider)) return;
     const artifact = compileString(`contract KernelBlockOracle() {
       mapping(int => int) values;
@@ -2592,8 +2592,8 @@ describe('kernel block-oracle rows', () => {
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    expect(sourceOutputs.some((output) => binToHex(output.lockingBytecode) === binToHex(provider.blockOracleLock)))
-      .toBe(true);
+    const oracleLock = binToHex(contract.inner.blockOracleLock!);
+    expect(sourceOutputs.some((output) => binToHex(output.lockingBytecode) === oracleLock)).toBe(true);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
         .toBe(true);

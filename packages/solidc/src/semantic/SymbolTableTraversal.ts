@@ -1629,7 +1629,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // contract has none, so the covenant that enforces the destruction actually exists.
       || node.functions.some((func) => func.impliedSelfdestruct)
       || (this.compilerOptions.forceStateful ?? false)
-      || node.usesBlockhash;
+      || node.readsBlock;
     if (directlyStateful) {
       this.isStatefulContract = true;
     } else if (this.contractStatefulnessHint && !this.contractStatefulnessHint.hasContractInstantiation) {
@@ -3946,7 +3946,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(idxParam);
     }
 
-    // block.* reads slice one shared oracle commitment. The index is the co-spend, filled by the SDK.
+    // block.* reads slice the contract's own oracle commitment. The index is the co-spend, filled by the SDK.
     if (node.usesBlockOracle) {
       const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__blockOracleInputIndex');
       idxParam.location = node.location;
@@ -6363,7 +6363,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || contract.emitsEvent
       || contract.functions.some((func) => func.impliedSelfdestruct)
       || contract.deploysWithValue
-      || contract.usesBlockhash
+      || contract.readsBlock
       || (this.compilerOptions.forceStateful ?? false);
     if (mods.includes(FunctionModifier.UNSAFE) && !isStatefulContract) {
       throw new InvalidModifierCombinationError(node, "'unsafe' is only valid in stateful contracts");

@@ -7,7 +7,7 @@ import { bigIntToVmNumber, decodeAuthenticationInstructions, encodeAuthenticatio
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { scriptToBytecode, type Artifact } from '@solidcash/utils';
-import { boundArtifactProgramHex } from '../oracle/block-oracle-lock.js';
+import { matchesExecutedBody } from '../oracle/block-oracle-lock.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { rememberPreparedCovenantValidation } from '../network/prepared-covenant-receipt.js';
@@ -2802,7 +2802,7 @@ export function mapMessageBusVmFailure(
         delegateArtifact?: unknown;
       };
       for (const [selector, body] of Object.entries(artifact.functionBodies ?? {})) {
-        if (boundArtifactProgramHex(artifact as Artifact, body) !== executedBody) continue;
+        if (!matchesExecutedBody(body, executedBody)) continue;
         const requireStatement = artifact.debug?.functionDebug?.[selector]?.requires
           ?.find((entry) => entry.ip === failure.ip! - 1)
           ?? artifact.debug?.functionDebug?.[selector]?.requires
@@ -2815,7 +2815,7 @@ export function mapMessageBusVmFailure(
       // selector body. Match the VM's exact decoded body against the compiler's invokeDebug table as well;
       // source-map proximity or the route selector cannot identify a nested guard safely.
       for (const [identifier, body] of Object.entries(artifact.debug?.invokeDebug ?? {})) {
-        if (boundArtifactProgramHex(artifact as Artifact, body.bytecode) !== executedBody) continue;
+        if (!matchesExecutedBody(body.bytecode, executedBody)) continue;
         const requireStatement = body.requires.find((entry) => entry.ip === failure.ip! - 1)
           ?? body.requires.find((entry) => entry.ip === failure.ip);
         if (requireStatement !== undefined) {

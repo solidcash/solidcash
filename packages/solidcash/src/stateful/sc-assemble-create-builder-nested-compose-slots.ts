@@ -28,7 +28,7 @@ import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { addressToLockScript } from '../utils.js';
-import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { permitsLegacyNamedValueChunkFallback } from './chunkable-value-write-selection.js';
 import {
   createDynamicChunkUnlocker,
@@ -189,8 +189,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
     FunctionArgument[] | undefined;
   const sharedLogicalArtifact = params.sharedLogicalArtifact as Artifact;
   const selectedOracleReader = proxyCallee?.implementation?.inner ?? callee.inner;
-  const selectedOracleLock = selectedOracleReader.blockOracleLock as Uint8Array | undefined
-    ?? blockOracleLockFor(sharedLogicalArtifact);
+  const selectedOracleLock = selectedOracleReader.blockOracleLock as Uint8Array | undefined;
   const recipeOracleLock = sharedLogicalArtifact.usesBlockOracle === true ? selectedOracleLock : undefined;
   const recipeTimestamp = recipeOracleLock === undefined
     ? undefined : await readBlockOracleTimestamp(host.inner.provider, recipeOracleLock);

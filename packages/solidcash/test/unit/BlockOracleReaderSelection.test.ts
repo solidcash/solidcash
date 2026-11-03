@@ -1,6 +1,7 @@
-import { encodeBlockOracleCommitment, type AbiFunction, type Artifact } from '@solidcash/utils';
-import { binToHex } from '@bitauth/libauth';
-import { bindBlockOracleLock } from '../../src/oracle/block-oracle-lock.js';
+import {
+  blockOracleLockingBytecode, encodeBlockOracleCommitment, type AbiFunction, type Artifact,
+} from '@solidcash/utils';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { assembleCreateBuilderNestedComposeSlots } from '../../src/stateful/sc-assemble-create-builder-nested-compose-slots.js';
 import { describe, expect, it } from 'vitest';
 import { hasMaterializedLowLevelCallBlock } from '../../src/stateful/external-call-utxo-group.js';
@@ -39,16 +40,16 @@ describe('root block oracle band selection', () => {
     expect(selected).toEqual({ reader: first, delegateIndex: 3 });
     expect(selectRootBlockOracleReader(root, inactiveRoot, [])).toBeUndefined();
   });
-  it('provisions the selected child pin before root selection without using an artifact fallback pin', async () => {
-    const rootPin = Uint8Array.of(0x51);
-    const childPin = Uint8Array.of(0x52);
+  it('provisions the selected child\'s own oracle pin before root selection, with no artifact fallback', async () => {
+    const childCategoryId = '12'.repeat(31) + 'ed';
+    // A reader's oracle is a coin of its own category, at the lock that category gives.
+    const childPin = blockOracleLockingBytecode(hexToBin(childCategoryId));
     const artifact = { usesBlockOracle: true, abi: [readingAbi] } as Artifact;
-    bindBlockOracleLock(artifact, rootPin);
     const commitment = binToHex(encodeBlockOracleCommitment(new Uint8Array(20), {
       number: 12n, timestamp: 1234n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array(),
     }));
     const oracle = { txid: 'ab'.repeat(32), vout: 0, satoshis: 1000n,
-      token: { category: 'cd'.repeat(31) + '32', amount: 0n,
+      token: { category: childCategoryId, amount: 0n,
         nft: { capability: 'mutable' as const, commitment } } };
     const requestedPins: string[] = [];
     const provider = { getUtxosForLockingBytecode: async (lock: Uint8Array) => {
@@ -58,10 +59,10 @@ describe('root block oracle band selection', () => {
     } };
     const master = { txid: 'ef'.repeat(32), vout: 0, satoshis: 1000n,
       unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51), generateUnlockingBytecode: () => new Uint8Array() } };
-    const child = { inner: { provider, artifact, blockOracleLock: childPin }, categoryId: '12'.repeat(31) + 'ed' };
+    const child = { inner: { provider, artifact, blockOracleLock: childPin }, categoryId: childCategoryId };
     const reserved = new Set<string>();
     type AssemblyResult = ReturnType<typeof assembleCreateBuilderNestedComposeSlots>;
-    const invoke = async (): AssemblyResult => assembleCreateBuilderNestedComposeSlots({
+    const invoke = async (implementation: unknown = child): AssemblyResult => assembleCreateBuilderNestedComposeSlots({
       inner: { provider }, sharedBlockOracleLocks: reserved,
       signer: undefined, logicalNonceSigner: undefined,
       encodeStoredElementSource: () => undefined, encodeStoredValueSource: () => undefined,
@@ -69,7 +70,7 @@ describe('root block oracle band selection', () => {
     }, {
       nested: { interfaceName: 'IClock', functionName: 'read' }, selectedFn: readingAbi,
       selectedLayout: readingAbi.blockLayout, sharedGroupIndex: -1, childWritesState: true,
-      preserveFirstConditionalWriter: false, proxyCallee: { implementation: child }, callee: { inner: { artifact } },
+      preserveFirstConditionalWriter: false, proxyCallee: { implementation }, callee: { inner: { artifact } },
       childState: { masterUtxo: master, state: {} }, childData: [], childRequired: [],
       childLayout: { variables: [], collections: [], dataNftCount: 0 }, childCompilerRoute: undefined,
       childFunctionName: 'read', childFunctionArgs: [], nestedArgs: [], routePlanningArgs: [],
@@ -91,6 +92,10 @@ describe('root block oracle band selection', () => {
     const last = await invoke();
     expect(last.bags.childBlockInputs?.[1]).toBe(master);
     expect(requestedPins).toEqual(Array(3).fill(binToHex(childPin)));
+    // No artifact-level pin stands in for a reader that has no category-derived lock of its own.
+    await expect(invoke({ inner: { provider, artifact }, categoryId: childCategoryId }))
+      .rejects.toThrow('has no bound oracle lock');
+    expect(requestedPins).toHaveLength(3);
   });
 
   it('promotes the exact final root pin and preserves aliased fixed slots and other pins', () => {

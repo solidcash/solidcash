@@ -153,7 +153,7 @@ import { entrySideCars } from './side-cars.js';
 import {
   FALLBACK_ENTRY, RECEIVE_ENTRY, valueEntryOrRefusal, valueSendCallData,
 } from './value-entry.js';
-import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
+import { blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOracleLock } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import { FramedSendBelowDustError, sendBelowDustRefusal } from './send-dust.js';
 import {
@@ -1292,7 +1292,7 @@ async function callInShape(
   // A shard that names a helper lock is replaced, once the validator program is known, by the clone whose
   // sentinel already holds that lock.
   let artifact = splitShard?.artifact ?? options.artifact;
-  const providerOracleLock = bindProviderBlockOracle(provider, artifact);
+  const oracleLock = framedOracleLock(artifact, hexToBin(categoryId));
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
@@ -1356,7 +1356,6 @@ async function callInShape(
       throw new FramedCallError(`function "${functionName}" is not in the prepared split`);
     }
     artifact = patched;
-    bindProviderBlockOracle(provider, artifact);
   }
   const published = publishedEntryOf(artifact, functionName);
   const deployed = deployMaster(artifact, category, validatorProgram);
@@ -1438,7 +1437,7 @@ async function callInShape(
   // writes, as the hop sizes a frame's own run (`planHopDynamicRun`).
   const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
   const fetchedBlockOracle = entryReadsBlockOracle(artifact, functionName)
-    ? await framedBlockOracle(provider, providerOracleLock, functionName, (reason) => new FramedCallError(reason))
+    ? await framedBlockOracle(provider, oracleLock, functionName, (reason) => new FramedCallError(reason))
     : undefined;
   const blockClock = fetchedBlockOracle === undefined ? undefined : blockOracleClock(fetchedBlockOracle);
   const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.self);

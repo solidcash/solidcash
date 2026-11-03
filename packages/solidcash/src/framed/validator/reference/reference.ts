@@ -33,6 +33,7 @@ import {
   WITNESS_BLOCK_VERSION,
   argsHash,
   assertFrameKind,
+  blockOracleLockingBytecode,
   assertRecordEntry,
   buildSatoshiContainerCovenantScript,
   bytesEqual,
@@ -445,11 +446,14 @@ class ReferenceRun {
       }
     }
 
+    // The contract's block oracle is a mutable NFT of its category too, and no state UTXO.
     const spent = new Set<number>();
+    const oracleLock = blockOracleLockingBytecode(category);
     for (const input of this.transaction.inputs) {
       if (!mutableToken(input.token)) continue;
       if (!eq(input.token.category, category)) continue;
       if (isValidator(this.transaction, input, this.context.validatorTemplate)) continue;
+      if (eq(input.lockingBytecode, oracleLock)) continue;
       spent.add(input.index);
     }
     const listed = new Set(listedStateInputs);
@@ -601,9 +605,16 @@ class ReferenceRun {
       }
     }
 
+    // An output at the contract's block oracle lock is admitted only as the input at its index, unchanged.
+    const oracleLock = blockOracleLockingBytecode(category);
     for (const output of this.transaction.outputs) {
       if (!eq(output.token.category, category)) continue;
-      if (mutableToken(output.token) && !allowedMutable.has(output.index)) {
+      const input = inputByIndex(this.transaction, output.index);
+      const oracle = eq(output.lockingBytecode, oracleLock);
+      const recreated = input !== undefined && eq(input.lockingBytecode, output.lockingBytecode)
+        && eq(input.token.category, output.token.category) && input.token.capability === output.token.capability
+        && eq(input.token.nftCommitment, output.token.nftCommitment);
+      if (mutableToken(output.token) && (oracle ? !recreated : !allowedMutable.has(output.index))) {
         this.reject('V7', 'A_MUTABLE_NFT_IS_NOT_AT_A_RECORD_OR_A_VALIDATOR', output.index);
       }
       if (immutableToken(output.token) && !listedEvents.has(output.index)) {

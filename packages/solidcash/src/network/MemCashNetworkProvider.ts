@@ -1,6 +1,7 @@
-import { sha256 as sha256Instance } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { secp256k1, sha256 as sha256Instance } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { ElectrumClient, type ElectrumClientEvents } from '@electrum-cash/network';
+import { DEVNET_BLOCK_ORACLE_OWNER_KEY } from '@solidcash/utils';
 import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import type Signer from '../Signer.js';
 import { Network, type TokenDetails, type Utxo } from '../interfaces.js';
@@ -34,7 +35,6 @@ export interface MemCashProviderOptions {
   readonly controlMining?: boolean;
   /** Forward `hardhat_reset` to the shared node. Default false (no-op). */
   readonly controlChain?: boolean;
-  readonly blockOracleCategory?: Uint8Array;
   /**
    * The limits the network is expected to enforce before the node's advertised profile arrives. A compile reads
    * `consensusLimits` without connecting, so a project whose contracts need a wider commitment than the pre-connect
@@ -113,8 +113,8 @@ export default class MemCashNetworkProvider implements NetworkProvider {
   readonly simulator = true;
   /** Informational mirror of `server.features.devnet.evm_rpc`; `send()` never branches on it. */
   evmRpc = false;
-  blockOracleCategory?: Uint8Array;
-  blockOracleLock?: Uint8Array;
+  /** The devnet's oracle owner, set when the node keeps block oracles current (`server.features.devnet`). */
+  blockOracleOwnerPublicKey?: Uint8Array;
 
   /** The mock's constant EVM-shaped surface, read directly by ported suites. */
   readonly _network: { readonly chainId: number; readonly name: string } = { chainId: 1, name: 'chipnet' };
@@ -135,7 +135,6 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     this.network = network ?? Network.MOCKNET;
     this.options = options;
     this.mnemonic = options.mnemonic ?? MEM_CASH_DEFAULT_MNEMONIC;
-    if (options.blockOracleCategory !== undefined) this.blockOracleCategory = options.blockOracleCategory;
     if (options.consensusLimits !== undefined) {
       this.consensusLimits = { ...this.consensusLimits, ...options.consensusLimits };
     }
@@ -285,10 +284,9 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     if (devnet.policy !== undefined) {
       this.policy = { enforceDust: devnet.policy.enforce_dust ?? this.policy.enforceDust };
     }
-    const oracle = devnet.block_oracle ?? null;
-    if (oracle !== null) {
-      this.blockOracleLock = hexToBin(oracle.lock);
-      this.blockOracleCategory = hexToBin(oracle.category);
+    // The node keeps every oracle naming its fixed owner key current, so a reader deployed here names that key.
+    if ((devnet.block_oracle ?? null) !== null) {
+      this.blockOracleOwnerPublicKey = secp256k1.derivePublicKeyCompressed(DEVNET_BLOCK_ORACLE_OWNER_KEY) as Uint8Array;
     }
   }
 
@@ -522,7 +520,7 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     return restorer;
   }
 
-  /** The shared block-info oracle is owned by the node; a client cannot rewrite it. */
+  /** The node owns the oracles it keeps current; a client cannot rewrite them. */
   refreshBlockOracle(): void {
     // Intentionally a no-op: the node refreshes the oracle on every tip change, and a second writer would race it.
   }

@@ -187,9 +187,17 @@ export class ContractNode extends Node implements Named {
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
   usesBlockhash: boolean = false;
-  // A function reads block.number/timestamp/.... The data is a separate covenant's commitment, not this
-  // contract's state, and this contract does not grow an update entry.
+  // A function reads block.number/timestamp/.... The data is the commitment of the contract's own oracle coin, a
+  // mutable NFT of its category, not this contract's state, and this contract does not grow an update entry.
   usesBlockOracle: boolean = false;
+  // Set by SynthesizeBlockOracle when anything reads a block.* global or blockhash(n). Any such read makes the
+  // contract stateful: its oracles are of its own category, which only a master gives it.
+  readsBlockData: boolean = false;
+
+  /** Whether a block.* or blockhash read makes this contract stateful. */
+  get readsBlock(): boolean {
+    return this.readsBlockData || this.usesBlockhash || this.usesBlockOracle;
+  }
   // Set by SymbolTableTraversal once block layouts are known: any entry reserves the satoshi container slot, so an
   // in-place upgrade must migrate (or drain) that container. Read by the upgrade codegen.
   keepsSatoshiContainer: boolean = false;

@@ -1,26 +1,22 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  applyBlockOracleLock, blockOracleFieldValue, findBlockOracleLockSlots, type Artifact,
+  applyBlockOracleLock, BLOCK_ORACLE_LOCK_SENTINEL, blockOracleFieldValue, findBlockOracleLockSlots,
 } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 
-/** The oracle lock a deployment bakes into one artifact. The script pins this lock; readers do not call the oracle. */
-const locks = new WeakMap<Artifact, Uint8Array>();
-
-export function bindBlockOracleLock(artifact: Artifact, lock: Uint8Array): void {
-  locks.set(artifact, lock);
-}
-
-export function blockOracleLockFor(artifact: Artifact): Uint8Array | undefined {
-  return locks.get(artifact);
-}
-
-/** Published debug bodies use the same authenticated oracle substitution as the deployed program. */
-export function boundArtifactProgramHex(artifact: Artifact, programHex: string): string {
-  const lock = blockOracleLockFor(artifact);
-  if (lock === undefined) return programHex.toLowerCase();
+/**
+ * Whether a published body is the one the VM ran. A reader's body carries the oracle lock sentinel, which each
+ * deployment replaces with its own contract's oracle lock, so the lock the run carried is written over it first.
+ */
+export function matchesExecutedBody(programHex: string, executedHex: string): boolean {
   const program = hexToBin(programHex);
-  return binToHex(applyBlockOracleLock(program, lock, findBlockOracleLockSlots(program)));
+  const executed = executedHex.toLowerCase();
+  if (program.length * 2 !== executed.length) return false;
+  const slots = findBlockOracleLockSlots(program);
+  if (slots.length === 0) return programHex.toLowerCase() === executed;
+  const at = slots[0] + 1;
+  const lock = hexToBin(executed.slice(at * 2, (at + BLOCK_ORACLE_LOCK_SENTINEL.length) * 2));
+  return binToHex(applyBlockOracleLock(program, lock, slots)) === executed;
 }
 
 /** Timestamp in the oracle commitment at `lock`, the value a reader's block.timestamp slices. */

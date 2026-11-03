@@ -40,7 +40,7 @@ import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { planNestedStreamedEvents, type NestedStreamedEventPlan } from './nested-streamed-events.js';
 import { deriveChunkableArrayValueChannels } from './resource-fold-route.js';
-import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
   getUtxos(address: string): Promise<Utxo[]>;
@@ -232,7 +232,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
           case 'blockInfoOracle': {
             // The selected callee pins its own oracle, even when the caller never reads the clock.
             // A prior reader keeps the single co-spend; this fixed slot then remains a balanced pad.
-            const lock = bSc.inner.blockOracleLock ?? blockOracleLockFor(bSc.inner.artifact);
+            const lock = bSc.inner.blockOracleLock;
             if (lock === undefined) throw new Error('Nested block oracle reader has no bound oracle lock');
             const lockHex = binToHex(lock);
             if (host.sharedBlockOracleLocks.has(lockHex)) {
@@ -544,8 +544,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                     && targetSlot instanceof Uint8Array && targetSlot.length === 32) {
                     const recipeState: Record<string, unknown> = { ...bState.state };
                     const selectedArtifact = bSc.inner.artifact as Artifact;
-                    const oracleLock = selectedArtifact.usesBlockOracle === true
-                      ? blockOracleLockFor(selectedArtifact) ?? bSc.inner.blockOracleLock : undefined;
+                    const oracleLock = selectedArtifact.usesBlockOracle === true ? bSc.inner.blockOracleLock : undefined;
                     const timestamp = oracleLock === undefined ? undefined
                       : await readBlockOracleTimestamp(bSc.inner.provider, oracleLock);
                     if (timestamp !== undefined) recipeState.__block_timestamp = timestamp;

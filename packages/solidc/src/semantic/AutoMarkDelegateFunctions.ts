@@ -215,7 +215,7 @@ function emitsEvent(contract: ContractNode): boolean {
 
 function isStateful(contract: ContractNode, forceStateful: boolean): boolean {
   return contract.stateVariables.length > 0 || contract.collections.length > 0
-    || contract.eventDefinitions.length > 0 || contract.usesBlockhash || forceStateful || emitsEvent(contract);
+    || contract.eventDefinitions.length > 0 || contract.readsBlock || forceStateful || emitsEvent(contract);
 }
 
 /**

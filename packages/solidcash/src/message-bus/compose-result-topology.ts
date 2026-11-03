@@ -5,7 +5,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
-import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import {
   connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
@@ -290,9 +290,8 @@ async function rebuildCallTopology(
       const args = projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, call.args);
       let state = { ...await stateOf(call.contract) };
       // Reachability must use the same authenticated time that the selected body reads. A proxy's
-      // forwarder can omit the oracle while its delegate has a time-gated external effect.
-      const oracleLock = artifact.usesBlockOracle === true
-        ? blockOracleLockFor(artifact) ?? call.contract.inner.blockOracleLock : undefined;
+      // forwarder can omit the oracle while its delegate has a time-gated external effect, which reads its own.
+      const oracleLock = artifact.usesBlockOracle === true ? logical.inner.blockOracleLock : undefined;
       const timestamp = oracleLock === undefined ? undefined
         : await readBlockOracleTimestamp(call.contract.inner.provider, oracleLock);
       if (timestamp !== undefined) state.__block_timestamp = timestamp;

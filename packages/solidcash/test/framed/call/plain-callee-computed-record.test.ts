@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  INDEX_NONE, VALUE_INLINE_LIMIT, blockOracleFieldBytes, concatBytes, encodeWitnessBlock, hash160, splitFirstPush,
+  INDEX_NONE, VALUE_INLINE_LIMIT, blockOracleFieldBytes, blockOracleLockingBytecode, concatBytes, encodeWitnessBlock,
+  hash160, splitFirstPush,
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
@@ -25,8 +26,9 @@ import {
  * plan whose book frame declares a chunk record of the value otherwise is refused by the validator, which settles
  * the book's contract beside the desk's (V8).
  *
- * A book that stamps with the clock reads the block oracle, which a framed body finds by its lock, so the planner
- * co-spends it beside the callee's master. The root and every later callee reuse that one authenticated input.
+ * A book that stamps with the clock reads its own block oracle, a coin of its own category that a framed body finds by
+ * its lock, so the planner co-spends it beside the callee's master. A root that also reads the clock co-spends its own
+ * oracle beside the book's.
  */
 
 /** The book and desk, the book's filing stamping each record with `stamp`. */
@@ -61,7 +63,7 @@ const source = (stamp: string): string => [
 
 const artifacts = compileFramed(source('uint64(id + 1)'));
 const clockArtifacts = compileFramed(source('uint64(block.timestamp)'));
-const sharedClockArtifacts = compileFramed(source('uint64(block.timestamp)').replace(
+const rootClockArtifacts = compileFramed(source('uint64(block.timestamp)').replace(
   '    last = book.open(id, note);', '    require(block.timestamp > 0); last = book.open(id, note);',
 ));
 
@@ -183,15 +185,19 @@ describe('a plain root whose callee writes a record its own body computes part o
     expect(refusedOn(settled, withBlock(settled, book!.master, block))).toStrictEqual(['validator', 'validator/2']);
   }, 600_000);
 
-  it.each([false, true])('co-spends the callee clock once when the root also reads it: %s', async (rootReads) => {
+  it.each([false, true])('co-spends each reader\'s own clock once, the root\'s when it reads: %s', async (rootReads) => {
     const world = await newWorld(rootReads ? 0x64 : 0x63);
-    const selected = rootReads ? sharedClockArtifacts : clockArtifacts;
+    const selected = rootReads ? rootClockArtifacts : clockArtifacts;
     const book = await deployPlain(world, selected.Book!);
     const desk = await deployPlain(world, selected.Desk!, [book.address]);
     const result = await enter({ world, book, desk }, 'file', [ID, NOTE], ['Book.open()', 'Desk.file()']);
-    const lock = world.network.blockOracleLock!;
-    const oracleIndices = result.sourceOutputs.flatMap((output, index) =>
-      (binToHex(output.lockingBytecode) === binToHex(lock) ? [index] : []));
+    // Each reader co-spends its own oracle, a coin of its own category: the book always, the desk when it reads.
+    const oracleInputs = (deployment: PlainDeployment): number[] => {
+      const lock = binToHex(blockOracleLockingBytecode(hexToBin(deployment.categoryId)));
+      return result.sourceOutputs.flatMap((output, index) => (binToHex(output.lockingBytecode) === lock ? [index] : []));
+    };
+    expect(oracleInputs(desk)).toHaveLength(rootReads ? 1 : 0);
+    const oracleIndices = oracleInputs(book);
     expect(oracleIndices).toHaveLength(1);
     const oracleIndex = oracleIndices[0]!;
     const oracle = result.sourceOutputs[oracleIndex]!;

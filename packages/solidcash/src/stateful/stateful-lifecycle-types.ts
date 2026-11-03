@@ -18,6 +18,13 @@ export interface DeployOptions {
   blockhashKeeperPublicKey?: Uint8Array;
   /** Initial keeper baton balance, spent on oracle mints and fees; default 10,000 satoshis. */
   blockhashKeeperAmount?: bigint;
+  /**
+   * The key that updates a block.* reader's own oracle, which its genesis mints. Defaults to the provider's own key
+   * on a simulator or devnet; a live deployment of a reader names one.
+   */
+  blockOracleOwnerPublicKey?: Uint8Array;
+  /** Satoshis the reader's oracle coin holds; defaults to the data NFT amount. */
+  blockOracleAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;

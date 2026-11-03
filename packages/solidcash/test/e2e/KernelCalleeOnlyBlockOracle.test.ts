@@ -1,5 +1,6 @@
 import { binToHex } from '@bitauth/libauth';
 import { compileStringMulti } from '@solidcash/solidc';
+import { blockOracleLockingBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
@@ -9,7 +10,7 @@ import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 
 describe('callee-only authenticated block oracle', () => {
-  it.each([false, true])('provisions only the nested reader pinned oracle with caller clock=%s', async (rootReadsClock) => {
+  it.each([false, true])('provisions only each reader its own oracle with caller clock=%s', async (rootReadsClock) => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface IClock { function stamp() external; }
       contract ClockWriter {
@@ -55,18 +56,27 @@ describe('callee-only authenticated block oracle', () => {
     expect(messageBusVmAccepts(builder)).toBe(true);
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const oracleIndices = sourceOutputs.flatMap((output, index) => binToHex(output.lockingBytecode)
-      === binToHex(provider.blockOracleLock) ? [index] : []);
-    expect(oracleIndices).toHaveLength(1);
-    const oracleIndex = oracleIndices[0];
-    expect(transaction.outputs[oracleIndex]).toEqual(sourceOutputs[oracleIndex]);
-    const writerIndex = builder.inputs.findIndex((input) => input.token?.category === writer.categoryId
-      && input.token.nft?.capability === 'minting');
-    const foreignOracle = sourceOutputs.map((output, index) => index === oracleIndex
-      ? { ...output, lockingBytecode: Uint8Array.of(0x51) } : output);
+    // Each reader co-spends its own oracle once; the caller owns one only when it reads the clock.
+    const readers = rootReadsClock ? [writer, sibling, caller] : [writer, sibling];
+    const lockOf = (reader: typeof writer): string => binToHex(reader.inner.blockOracleLock!);
+    const oracleIndices = sourceOutputs.flatMap((output, index) => output.token?.nft?.capability === 'mutable'
+      && binToHex(output.lockingBytecode) === binToHex(blockOracleLockingBytecode(output.token.category))
+      ? [index] : []);
+    expect(oracleIndices.map((index) => binToHex(sourceOutputs[index].lockingBytecode)).sort())
+      .toEqual(readers.map(lockOf).sort());
+    for (const index of oracleIndices) expect(transaction.outputs[index]).toEqual(sourceOutputs[index]);
     const vm = createVirtualMachineBch2026ForProvider(provider);
-    expect(vm.stateSuccess(vm.evaluate({ transaction, sourceOutputs: foreignOracle,
-      inputIndex: writerIndex }))).not.toBe(true);
+    for (const reader of [writer, sibling]) {
+      const oracleIndex = oracleIndices.find((index) => binToHex(sourceOutputs[index].lockingBytecode)
+        === lockOf(reader))!;
+      const readerIndex = builder.inputs.findIndex((input) => input.token?.category === reader.categoryId
+        && input.token.nft?.capability === 'minting');
+      expect(readerIndex).toBeGreaterThanOrEqual(0);
+      const foreignOracle = sourceOutputs.map((output, index) => index === oracleIndex
+        ? { ...output, lockingBytecode: Uint8Array.of(0x51) } : output);
+      expect(vm.stateSuccess(vm.evaluate({ transaction, sourceOutputs: foreignOracle,
+        inputIndex: readerIndex }))).not.toBe(true);
+    }
     await builder.send();
     expect((await writer.getState()).timestamp).toBe(timestamp);
     expect((await sibling.getState()).timestamp).toBe(timestamp);
@@ -116,7 +126,7 @@ describe('callee-only authenticated block oracle', () => {
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const indices = sourceOutputs.flatMap((output, index) => binToHex(output.lockingBytecode)
-      === binToHex(provider.blockOracleLock) ? [index] : []);
+      === binToHex(writer.implementation.inner.blockOracleLock!) ? [index] : []);
     expect(indices).toHaveLength(1);
     expect(transaction.outputs[indices[0]]).toEqual(sourceOutputs[indices[0]]);
     const readerIndex = builder.inputs.findIndex((input) => input.token?.category

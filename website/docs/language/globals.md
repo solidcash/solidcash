@@ -320,8 +320,9 @@ read of `msg.sender` and `tx.origin`.
 ## Block properties
 
 Bitcoin Cash Script has no opcode for block metadata, so the oracle-backed `block.*` reads slice the NFT commitment
-of **one shared block-oracle covenant**, which the reader co-spends and only its owner updates. The compiler adds no
-state and no update function to the reader.
+of **the contract's own block-info oracle**, an NFT of its own category that its deployment mints, which the reader
+co-spends and only its owner updates. Any `block.*` property or `blockhash(n)` makes the contract stateful. The
+compiler adds no state variable and no update function to the reader.
 
 | Global | Type | Source | Notes |
 | --- | --- | --- | --- |
@@ -347,8 +348,9 @@ so it fully controls the value. Use commit-reveal or a `checkDataSig` oracle ins
 running. Do not branch on their values.
 :::
 
-The oracle fields co-spend one shared block-info oracle UTXO read-only; the SDK adds that input. A live network
-provider needs its `blockOracleCategory` set, while `MockNetworkProvider` runs its own oracle.
+The oracle fields co-spend the contract's own block-info oracle read-only; the SDK adds that input. A live
+deployment names the key that updates it with `blockOracleOwnerPublicKey`, while `MockNetworkProvider` owns and
+updates its readers' oracles itself.
 
 #### Example
 ```solidity

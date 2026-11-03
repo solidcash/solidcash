@@ -26,8 +26,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  *
  * Reading `block.timestamp` once gave a contract a register beside its own fields and the oracle owner's key in a
  * data NFT of its own after every other record, and the hop's delegate frame declared that record where an append's
- * body looks for the array's chunk run. The clock is now a slice of one shared oracle covenant the entry co-spends,
- * so it adds no field and no record. The frame declares the records the entry names, as a callee frame does, and
+ * body looks for the array's chunk run. The clock is now a slice of the contract's own oracle, which the entry
+ * co-spends and which is no record, so it adds no field and no record. The frame declares the records the entry names, as a callee frame does, and
  * each shape below settles (the post's, with the fixture's clock stamp beside a store call; the append alone; an
  * isolated field of the source's own after the record the entry names; a record the entry does not name ahead of
  * one it does). The direct call path declares the entry's own records the same way.

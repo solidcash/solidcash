@@ -13,6 +13,7 @@ import {
   INDEX_NONE,
   TokenCapability,
   argsHash,
+  blockOracleLockingBytecode,
   buildSatoshiContainerCovenantScript,
   bytesEqual,
   entryLeavesCommitmentUnchanged,
@@ -39,6 +40,7 @@ import {
   outputAt,
   sameCategory,
   type InputView,
+  type OutputView,
 } from './model.js';
 import { CheckFailure, isValidatorInput, readCallData, readValidator, readWitnessBlock } from './reading.js';
 import { ValidatorReason, type ExecutionStep } from './reasons.js';
@@ -419,16 +421,28 @@ interface ChainEntry {
   readonly master: number;
 }
 
-/** The state UTXO inputs of a category: mutable NFTs of it that are not validators. */
+/** The state UTXO inputs of a category: mutable NFTs of it that are neither validators nor its block oracle. */
 function spentStateInputs(state: DerivationState, category: Uint8Array): Set<number> {
   const spent = new Set<number>();
+  const oracleLock = blockOracleLockingBytecode(category);
   for (const input of state.transaction.inputs) {
     if (!isMutableNft(input.token)) continue;
     if (!sameCategory(input.token.category, category)) continue;
     if (isValidatorInput(input, state.context.validatorTemplate)) continue;
+    if (bytesEqual(input.lockingBytecode, oracleLock)) continue;
     spent.add(input.index);
   }
   return spent;
+}
+
+/** Whether the input at an output's index has its lock, token and commitment. */
+function recreatedInPlace(state: DerivationState, output: OutputView): boolean {
+  const input = inputAt(state.transaction, output.index);
+  return input !== undefined
+    && bytesEqual(input.lockingBytecode, output.lockingBytecode)
+    && sameCategory(input.token.category, output.token.category)
+    && input.token.capability === output.token.capability
+    && bytesEqual(input.token.nftCommitment, output.token.nftCommitment);
 }
 
 /** The covered masters that run on a contract's records: its context frames. */
@@ -646,10 +660,13 @@ function checkCensus(state: DerivationState, category: Uint8Array, eventOutputs:
     }
   }
 
+  // An output at the contract's block oracle lock is admitted only as the input at its index, unchanged.
+  const oracleLock = blockOracleLockingBytecode(category);
   for (const output of state.transaction.outputs) {
     if (!sameCategory(output.token.category, category)) continue;
     if (output.token.amount > 0n) check('V7', 'V7_CENSUS_OWN_FUNGIBLE', output.index);
-    if (isMutableNft(output.token) && !allowedMutable.has(output.index)) {
+    if (isMutableNft(output.token) && (bytesEqual(output.lockingBytecode, oracleLock)
+      ? !recreatedInPlace(state, output) : !allowedMutable.has(output.index))) {
       check('V7', 'V7_CENSUS_UNEXPECTED_MUTABLE', output.index);
     }
     if (isImmutableNft(output.token) && !eventOutputs.has(output.index)) {

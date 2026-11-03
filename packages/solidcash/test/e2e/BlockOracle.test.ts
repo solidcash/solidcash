@@ -10,6 +10,7 @@ import {
   getContractFactory,
 } from '../../src/stateful/index.js';
 import { resolveBlockhashCoSpend } from '../../src/oracle/index.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
 import {
@@ -19,6 +20,7 @@ import { alicePriv, bobPriv, aliceAddress, bobAddress } from '../fixture/vars.js
 import {
   buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode,
   buildBlockhashCommitment, scriptToBytecode, encodeInt, keccakComputeLockingBytecode,
+  type BlockOracleCommitmentFields,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
@@ -168,8 +170,9 @@ describe('block.chainid compilation', () => {
   });
 });
 
-// Oracle-backed block.* reads slice one shared covenant commitment. The reader is stateless. Values are
-// real mainnet block 956830. basefee is Floor(1000 * totalFees / size) = Floor(1000*31792/9075) = 3503.
+// Oracle-backed block.* reads slice the commitment of the reader's own oracle, a mutable NFT of its category, so
+// the reader is stateful. Values are real mainnet block 956830. basefee is Floor(1000 * totalFees / size) =
+// Floor(1000*31792/9075) = 3503.
 const ORACLE_READER = `
 contract BlockReader() {
     function check(int eNumber, int eTimestamp, int eDiff, int eSize, int eFees, int eBasefee, bytes eCoinbase) {
@@ -193,32 +196,34 @@ const BLOCK = {
   coinbase: hexToBin('76a914f1c075a01882ae0972f95d3a4177c86c852b7d9188ac'), // p2pkh, 25 bytes
 };
 
-function seedBlock(provider: ReturnType<typeof createTestProvider>): void {
-  if (!('setBlockOracleFields' in provider)) return;
-  provider.setBlockOracleFields({
-    number: BLOCK.number,
-    timestamp: BLOCK.timestamp,
-    difficulty: BLOCK.difficulty,
-    size: BLOCK.size,
-    totalFees: BLOCK.totalFees,
-    coinbase: BLOCK.coinbase,
-  });
+const BLOCK_FIELDS: BlockOracleCommitmentFields = {
+  number: BLOCK.number,
+  timestamp: BLOCK.timestamp,
+  difficulty: BLOCK.difficulty,
+  size: BLOCK.size,
+  totalFees: BLOCK.totalFees,
+  coinbase: BLOCK.coinbase,
+};
+
+// A stateful reader of `source` on a fresh mock. setupStatefulUtxos seeds its own oracle at the mock's fields
+// (owner: the mock key); `fields`, when given, then replace them.
+async function blockReader(source: string, fields?: BlockOracleCommitmentFields): Promise<{
+  provider: MockNetworkProvider; categoryId: string; sc: StatefulContract;
+}> {
+  const provider = new MockNetworkProvider();
+  const artifact = compileString(source);
+  const contract = new Contract(artifact, [], { provider });
+  const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {});
+  if (fields !== undefined) provider.setBlockOracleFields(fields, categoryId);
+  return { provider, categoryId, sc: StatefulContract.withCategory(contract, categoryId) };
 }
 
 async function spendReader(
   number: bigint, timestamp: bigint, difficulty: bigint, size: bigint, fees: bigint, basefee: bigint,
   coinbase: Uint8Array,
 ): Promise<string> {
-  const provider = createTestProvider();
-  seedBlock(provider);
-  const contract = new Contract(compileString(ORACLE_READER), [], { provider });
-  const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-  const feeFunder = await createFeeFunder(provider, 20000n);
-  const tx = await new TransactionBuilder({ provider })
-    .addInput(utxo, contract.unlock.check(number, timestamp, difficulty, size, fees, basefee, coinbase))
-    .addInput(feeFunder.utxo, feeFunder.unlocker)
-    .addOutput({ to: contract.address, amount: 110000n })
-    .send();
+  const { sc } = await blockReader(ORACLE_READER, BLOCK_FIELDS);
+  const tx = await sc.check(number, timestamp, difficulty, size, fees, basefee, coinbase).send();
   return tx.txid;
 }
 
@@ -226,6 +231,7 @@ describe('block.* oracle reads e2e', () => {
   const artifact = compileString(ORACLE_READER);
 
   it('publishes a lock pin and no per-contract register', () => {
+    expect(artifact.stateLayout).toBeDefined();
     expect(artifact.usesBlockOracle).toBe(true);
     expect(artifact.blockOracleLockSlots?.length).toBeGreaterThan(0);
     expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
@@ -273,16 +279,8 @@ contract InternalReader() {
 
 describe('block.* read behind an internal call e2e', () => {
   const spend = async (expected: bigint): Promise<string> => {
-    const provider = createTestProvider();
-    seedBlock(provider);
-    const contract = new Contract(compileString(INTERNAL_READER), [], { provider });
-    const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-    const feeFunder = await createFeeFunder(provider, 20000n);
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(utxo, contract.unlock.check(expected))
-      .addInput(feeFunder.utxo, feeFunder.unlocker)
-      .addOutput({ to: contract.address, amount: 110000n })
-      .send();
+    const { sc } = await blockReader(INTERNAL_READER, BLOCK_FIELDS);
+    const tx = await sc.check(expected).send();
     return tx.txid;
   };
 
@@ -298,8 +296,8 @@ describe('block.* read behind an internal call e2e', () => {
   });
 });
 
-// The owner is the first 20 bytes of the oracle commitment. An update is a spend of that covenant, signed by
-// the key named there, with tx.time >= the new block number. It is not a function of the reader.
+// The owner is the first 20 bytes of the reader's oracle commitment. An update is a spend of that covenant,
+// signed by the key named there, with tx.time >= the new block number. It is not a function of the reader.
 const READ_BACK = `
 contract BlockOracleOwned() {
     function readBack(int eNumber, int eTimestamp) {
@@ -308,50 +306,44 @@ contract BlockOracleOwned() {
     }
 }`;
 
+// Stored before the update: one below the height it names, with the timestamp the update keeps.
+const BEFORE_UPDATE: BlockOracleCommitmentFields = {
+  number: 99_999n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
+};
+
 describe('block.* owner-update path e2e', () => {
   it('does not put an owner key or an update function on the reader', () => {
     const artifact = compileString(READ_BACK);
     expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
-    expect(artifact.stateLayout?.variables ?? []).toEqual([]);
+    // Stateful by rule, with no state of its own: the owner lives in the oracle commitment.
+    expect(artifact.stateLayout?.variables).toEqual([]);
   });
 
   // Mock chain tip is height 133700. The covenant's CLTV is tx.time >= number, and a locktime above the tip
   // is non-final, so an update cannot name a height the chain has not reached.
   it('owner replaces the commitment, and a reader slices the new fields', async () => {
-    const provider = createTestProvider();
-    if (!('blockOracleOwnerKey' in provider)) return;
-    const contract = new Contract(compileString(READ_BACK), [], { provider });
-    const updater = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
-    });
     // The oracle starts at the tip, and a rewind is refused (audit CRYPTO-5). A height update keeps the
     // timestamp (audit CRYPTO-6).
-    provider.setBlockOracleFields({
-      number: 99_999n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
+    const { provider, categoryId, sc } = await blockReader(READ_BACK, BEFORE_UPDATE);
+    const updater = new BlockOracleUpdater({
+      contract: sc.inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
     });
     const txid = await updater.pushUpdate({
       number: 100000n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
       coinbase: hexToBin('00'),
     });
     expect(txid).toMatch(/^[0-9a-f]{64}$/);
-    const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
-    const feeFunder = await createFeeFunder(provider, 20000n);
-    const tx = await new TransactionBuilder({ provider })
-      .addInput(utxo, contract.unlock.readBack(100000n, 1700000000n))
-      .addInput(feeFunder.utxo, feeFunder.unlocker)
-      .addOutput({ to: contract.address, amount: 110000n })
-      .send();
+    const tx = await sc.readBack(100000n, 1700000000n).send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects an update not signed by the owner', async () => {
-    const provider = createTestProvider();
-    if (!('blockOracleOwnerKey' in provider)) return;
-    const contract = new Contract(compileString(READ_BACK), [], { provider });
+    const { provider, categoryId, sc } = await blockReader(READ_BACK, BEFORE_UPDATE);
     const impostor = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: bobPriv, rpc: fakeRpc(100000),
+      contract: sc.inner, categoryId, keeperKey: bobPriv, rpc: fakeRpc(100000),
     });
-    // The impostor can pay the fee, so the refusal is the owner check.
+    // The update is otherwise valid (no rewind, kept timestamp, final locktime) and the impostor can pay the
+    // fee, so the refusal is the owner check.
     await provider.addUtxo(bobAddress, randomUtxo({ satoshis: 100000n }));
     await expect(impostor.pushUpdate({
       number: 100000n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
@@ -360,11 +352,10 @@ describe('block.* owner-update path e2e', () => {
   });
 
   it('rejects an over-reported height (nLocktime < number violates the freshness bound)', async () => {
-    const provider = createTestProvider();
-    if (!('blockOracleOwnerKey' in provider)) return;
-    const contract = new Contract(compileString(READ_BACK), [], { provider });
+    // The oracle keeps the fields its genesis seeded: the mock tip.
+    const { provider, categoryId, sc } = await blockReader(READ_BACK);
     const updater = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
+      contract: sc.inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
     });
     // One past the tip: not below the stored number (the rewind check runs first), but above nLocktime.
     const tip = await provider.getBlockHeight();
@@ -378,7 +369,7 @@ describe('block.* owner-update path e2e', () => {
 // Off-chain keeper: a fake BCHN JSON-RPC (one getblock verbosity-2 call inlines the coinbase tx). Height
 // is 100000 so the freshness tx.time >= number is final under the mock tip; subsidy(100000) = 50 BCH, so a
 // coinbase output of 50.00031792 BCH yields totalFees = 31792 sats. Drives the keeper through a real
-// signed update of the on-chain registers.
+// signed update of the reader's own oracle.
 const CB_HEX = '76a914f1c075a01882ae0972f95d3a4177c86c852b7d9188ac';
 const FAKE_BLOCK = {
   height: 100000, time: 1782384635, bits: '18026c88', size: 9075,
@@ -422,14 +413,11 @@ describe('block.* off-chain keeper (updater)', () => {
   });
 
   it('pushes a signed update when the chain is ahead, then is a no-op when caught up', async () => {
-    const provider = createTestProvider();
-    if (!('setBlockOracleFields' in provider)) return;
-    provider.setBlockOracleFields({
+    const { provider, categoryId, sc } = await blockReader(ORACLE_FULL, {
       number: 100n, timestamp: 1n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin(CB_HEX),
     });
-    const contract = new Contract(compileString(ORACLE_FULL), [], { provider });
     const updater = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(133700),
+      contract: sc.inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(133700),
     });
     expect(await updater.oracleHeight()).toBe(100n);
 
@@ -441,16 +429,13 @@ describe('block.* off-chain keeper (updater)', () => {
   });
 
   it('moves the timestamp in its own time-type update, to the last final second (audit CRYPTO-6)', async () => {
-    const provider = createTestProvider();
-    if (!('setBlockOracleFields' in provider)) return;
-    provider.setBlockOracleFields({
+    const { provider, categoryId, sc } = await blockReader(ORACLE_FULL, {
       number: 100n, timestamp: 1_699_000_000n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin(CB_HEX),
     });
-    const contract = new Contract(compileString(ORACLE_FULL), [], { provider });
     // The mock stamps its last 11 headers with the tip time, so that is its median time past.
     const medianTime = provider.getBlockTime();
     const updater = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey,
+      contract: sc.inner, categoryId, keeperKey: provider.blockOracleOwnerKey,
       rpc: fakeRpc(133700, 133700, medianTime),
     });
     expect(await updater.syncOnce()).toMatch(/^[0-9a-f]{64}$/);
@@ -460,14 +445,11 @@ describe('block.* off-chain keeper (updater)', () => {
   });
 
   it('rejects a keeper that is not the commitment owner', async () => {
-    const provider = createTestProvider();
-    if (!('setBlockOracleFields' in provider)) return;
-    provider.setBlockOracleFields({
+    const { provider, categoryId, sc } = await blockReader(ORACLE_FULL, {
       number: 100n, timestamp: 1n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin(CB_HEX),
     });
-    const contract = new Contract(compileString(ORACLE_FULL), [], { provider });
     const impostor = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: bobPriv, rpc: fakeRpc(133700),
+      contract: sc.inner, categoryId, keeperKey: bobPriv, rpc: fakeRpc(133700),
     });
     await provider.addUtxo(bobAddress, randomUtxo({ satoshis: 100000n }));
     await expect(impostor.syncOnce()).rejects.toThrow(/OP_VERIFY|EQUALVERIFY|NULLFAIL|signature/);
@@ -508,23 +490,27 @@ describe('blobhash / blockhash', () => {
   });
 
   // block.gaslimit + gasleft() are fixed shims (1000000): BCH has no gas metering. A constant (not 0/revert)
-  // keeps ported gas-budget checks running; the compiler warns. 1000000 = 0x40420f.
-  it('block.gaslimit and gasleft() lower to the fixed shim 1000000 (no oracle state)', () => {
+  // keeps ported gas-budget checks running; the compiler warns. 1000000 = 0x40420f. block.gaslimit is a block.*
+  // read, so it makes the contract stateful by rule; gasleft() is not one.
+  it('block.gaslimit and gasleft() lower to the fixed shim 1000000 (no oracle)', () => {
     const gl = compileString('contract A(){ function f(int e){ require(block.gaslimit == e); } }');
     const gf = compileString('contract B(){ function f(int e){ require(gasleft() == e); } }');
     expect(gl.bytecode).toContain('40420f'); // 1000000 little-endian
     expect(gf.bytecode).toContain('40420f');
-    expect(gl.stateLayout).toBeUndefined(); // pure constant - not oracle-backed, no state
+    expect(gl.usesBlockOracle).toBeUndefined(); // pure constant - not oracle-backed
+    expect(gl.stateLayout).toBeDefined(); // a block.* read - stateful by rule
     expect(gf.stateLayout).toBeUndefined();
   });
 
   // block.prevrandao: no randomness on BCH. A transaction-local shim - abs(int(sha256(input[0] prevout
-  // txid))), grindable by the tx-builder - with NO oracle co-spend or state. Compiler warns. It is uint256, as in
-  // Solidity, so it compares against a uint256: comparing it with an int256 is a type error.
+  // txid))), grindable by the tx-builder - with NO oracle co-spend. It is a block.* read, so the contract is
+  // stateful by rule. Compiler warns. It is uint256, as in Solidity, so it compares against a uint256: comparing
+  // it with an int256 is a type error.
   it('block.prevrandao lowers to abs(int(sha256(input[0] prevout txid))), no oracle', () => {
     const p = compileString('contract A(){ function f(uint256 e){ require(block.prevrandao % 6 == e); } }');
     expect(p.bytecode).toContain('OP_0 OP_OUTPOINTTXHASH OP_SHA256 OP_BIN2NUM OP_ABS');
-    expect(p.stateLayout).toBeUndefined(); // transaction-local - no oracle register
+    expect(p.usesBlockOracle).toBeUndefined(); // transaction-local - no oracle co-spend
+    expect(p.stateLayout).toBeDefined(); // a block.* read - stateful by rule
   });
 
   it('blobhash rejects a non-zero expectation', async () => {

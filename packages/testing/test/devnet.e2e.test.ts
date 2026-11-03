@@ -27,6 +27,12 @@ import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumWebSocket } from '@electrum-cash/web-socket';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+const ORACLE_USER = `contract OracleUser() {
+  uint seen;
+  function record() public { this.seen = block.number; require(true); }
+  function reset() public { this.seen = 0; require(true); }
+}`;
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
 const cli = path.join(repoRoot, 'packages/solidhat/dist/cli.js');
@@ -451,6 +457,75 @@ describe('solidhat node end to end', () => {
     expect(reset.height).toBe(200);
     expect((await call<{ ok: boolean }>(node, 'devnet.verifyHeaders')).ok).toBe(true);
   }, 60_000);
+
+  it('deploys a block.number reader against the spawned node, whose own oracle holds the next block', async () => {
+    const { createHardhatRuntimeEnvironment } = await import('../src/hre.js');
+    const { resolveConfig } = await import('../src/config.js');
+    const { compileString } = await import('@solidcash/solidc');
+    const { blockOracleLockingBytecode } = await import('@solidcash/utils');
+
+    const hre = createHardhatRuntimeEnvironment(resolveConfig({
+      defaultNetwork: 'localhost',
+      networks: { localhost: { type: 'mem-cash', memCash: { port: node.port } } },
+    }), 'localhost');
+    const provider = hre.network.provider as unknown as {
+      mine(count?: number): Promise<void>;
+      disconnect(): Promise<void>;
+    };
+
+    // The reader's own oracle, read at its lock.
+    const readOracle = async (categoryId: string): Promise<{ number: number; timestamp: number } | undefined> => {
+      const lock = blockOracleLockingBytecode(Uint8Array.from(Buffer.from(categoryId, 'hex')));
+      const utxos = await hre.network.provider.getUtxosForLockingBytecode(lock);
+      const commitment = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable')?.token?.nft?.commitment;
+      if (commitment === undefined) return undefined;
+      const bytes = Buffer.from(commitment, 'hex');
+      // owner pkh (20), then 5-byte fields: 4 LE bytes + a 0x00 terminator.
+      return { number: bytes.readUInt32LE(20), timestamp: bytes.readUInt32LE(25) };
+    };
+    const tip = async (): Promise<number> => (await call<{ height: number }>(node, 'devnet.info')).height;
+
+    try {
+      const [signer] = await hre.ethers.getSigners(1);
+      const artifact = compileString(ORACLE_USER, { composition: 'direct' });
+      const contract = await hre.ethers.getContractFactory(artifact, signer).deploy();
+      const oracle = (): ReturnType<typeof readOracle> => readOracle(contract.categoryId);
+
+      expect((await oracle())?.number).toBe((await tip()) + 1);
+      await contract.call.record().send();
+      expect((await oracle())?.number).toBe((await tip()) + 1);
+
+      // A block mined from another process advances the oracle; the reader still records.
+      await call(node, 'devnet.mine', [1]);
+      expect((await oracle())?.number).toBe((await tip()) + 1);
+      await contract.call.record().send();
+
+      // Time travel from another process moves the committed timestamp.
+      await call(node, 'devnet.increaseTime', [3600]);
+      const afterTime = await call<{ timestamp: number }>(node, 'devnet.info');
+      expect((await oracle())?.timestamp).toBe(afterTime.timestamp + 1);
+      await contract.call.record().send();
+
+      // Snapshot -> time travel -> record -> revert -> record keeps working.
+      const snapshot = await call<{ id: string }>(node, 'devnet.snapshot');
+      await call(node, 'devnet.increaseTime', [86_400]);
+      await contract.call.record().send();
+      expect(await call(node, 'devnet.revert', [snapshot.id])).toBe(true);
+      await provider.mine(1);
+      await contract.call.record().send();
+      expect((await oracle())?.number).toBe((await tip()) + 1);
+
+      // Reset restores the post-prepare baseline, which predates the reader and its oracle; a new reader mints its own.
+      await call(node, 'devnet.reset');
+      await provider.mine(1);
+      expect(await oracle()).toBeUndefined();
+      const redeployed = await hre.ethers.getContractFactory(artifact, signer).deploy();
+      await redeployed.call.record().send();
+      expect((await readOracle(redeployed.categoryId))?.number).toBe((await tip()) + 1);
+    } finally {
+      await provider.disconnect();
+    }
+  }, 300_000);
 
   it('gates the EVM namespace in both directions and keeps provider.send() off the wire', async () => {
     const neutral = 'EVM method not supported by this devnet. BCH-native methods and an optional chain-control ' +

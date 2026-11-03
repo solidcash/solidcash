@@ -38,7 +38,6 @@ import { leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js'
 import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
-import { bindProviderBlockOracle } from '../call/block-oracle.js';
 import { patchChildCollectionSentinels, patchChildLockSentinels, patchChildOutputCount } from './child-locks.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
@@ -49,6 +48,7 @@ import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
 import { registerFunctionSplit } from './split-registry.js';
 import { blockhashKeeperGenesisOutput } from '../../oracle/blockhash-keeper-deployment.js';
 import { labelNextBroadcast } from '../../tx-survey.js';
+import { blockOracleGenesisOutput } from '../../oracle/block-oracle-deployment.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
 export class FramedDeployError extends Error {
@@ -139,12 +139,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + `Got vout ${options.fundingUtxo.vout}.`,
     );
   }
-  // The masters pin the oracle lock the contract's calls co-spend, each entry shard's as the logical program's.
-  bindProviderBlockOracle(options.provider, shippedArtifact);
-  for (const program of [...split?.shards ?? [], ...split?.internalCuts ?? []]) {
-    bindProviderBlockOracle(options.provider, program.artifact);
-  }
-
   const funderLock = options.funder.generateLockingBytecode();
   // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the
   // deployer's lock, not the placeholder a frame with no stated caller uses: a constructor that writes
@@ -171,6 +165,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   const category = new Uint8Array(hexToBin(categoryId));
   const keeperBaton = blockhashKeeperGenesisOutput(
     artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
+  );
+  const blockOracle = blockOracleGenesisOutput(
+    artifact, categoryId, options.provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? 1200n,
   );
   const validatorProgram = framedValidator.buildValidatorProgram();
   // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
@@ -378,6 +375,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   }
 
   if (keeperBaton !== undefined) addFunded(keeperBaton);
+  if (blockOracle !== undefined) addFunded(blockOracle);
 
   // The premint: the token's fungible amount at the contract's token container for the token's own category; then the
   // bearer supply.

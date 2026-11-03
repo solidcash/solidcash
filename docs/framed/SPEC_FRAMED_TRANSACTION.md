@@ -350,7 +350,8 @@ row Dn of [`DECISIONS.md`](./DECISIONS.md), which is not the plan's Dn.
   - pool sizes.
 - **Catalogs.** Part II also lists every cross-contract edge the tests exercise, and every edge case, each with the
   rule that covers it. They come from code surveys of the contracts, the test file and today's record formats.
-- **D9:** `V_TEMPLATE` v1 is frozen (open point 13).
+- **D9:** `V_TEMPLATE` v1 is frozen (open point 13), from the first real-chain deployment; before it, v1 took each
+  contract's block oracle into V7 (2026-11-03).
 - **Independent review of revision 7:** all findings are covered by revision 8. Minimal pushes are confirmed as
   consensus in libauth.
 
@@ -733,17 +734,21 @@ validator:
 - Records and events such a frame creates are X's. Consensus lets them be minted, because the chain of callers
   starts at a master of X, which holds X's minting NFT.
 
-**Time.** `block.timestamp` and `block.number` are not the transaction's. Each compiles to a register of the
-contract's own state record, `__block_timestamp` and `__block_number` (`SynthesizeBlockOracle.ts`):
-- on a live chain a keeper refreshes them through the contract's owner-signed `__updateBlockOracle` entry
-  (`solidcash/src/oracle/blockOracleUpdater.ts`);
-- the mock provider writes its clock into the registers of every registered deployment whenever it mines a block,
-  which it does for every transaction it accepts and for `evm_mine`, and on `evm_increaseTime`.
+**Time.** `block.timestamp` and `block.number` are not the transaction's. They slice the commitment of the
+contract's own block-info oracle, a mutable NFT of its category at `blockOracleLockingBytecode(category)` that its
+genesis mints (`packages/solidc/docs/block-and-transaction-properties.md` section 3); any `block.*` read makes the
+contract stateful:
+- on a live chain the oracle's owner key updates it (`solidcash/src/oracle/blockOracleUpdater.ts`);
+- the mock provider writes its clock into every oracle that names its owner key whenever it mines a block, which it
+  does for every transaction it accepts and for `evm_mine`, and on `evm_increaseTime`.
 
-A frame reads the register of the contract whose records it runs on (the proxy's, for its implementation's
-`DELEGATE` frame). So two contracts in one transaction read the same time only as far as their registers agree: on
-the mock, which writes one clock into every registered deployment, they do; on a live chain, as far as their keepers
-keep them. `tx.time` is the transaction's locktime, the same for every frame, and the SDK sets it before it derives
+The validator derives each settled contract's oracle lock from its category and admits the oracle only as the
+unchanged recreation of the input at its index, never as a state UTXO (V7; amended in v1 on 2026-11-03, before any
+real-chain deployment, so every framed address changed with it).
+
+A master's program reads the oracle of its own category, the first input at that lock. So two contracts in one
+transaction read the same time only as far as their oracles agree: on the mock, which writes one clock into every
+oracle it keeps, they do; on a live chain, as far as their owners keep them. `tx.time` is the transaction's locktime, the same for every frame, and the SDK sets it before it derives
 anything.
 
 **Value sends.**
@@ -1224,7 +1229,8 @@ Conversely, every covered master that is not a root appears in exactly one calle
 **V7. Settlement**, for each contract X in `M.settles`:
 - every master of `catX` in the transaction is covered, so no other validator runs a frame on X's records;
 - **inputs:** the `catX` state UTXOs spent in the transaction are exactly `M.settles`' `stateInput` list, and that list
-  is exactly the set of X's records that the covered frames' views touch (T38);
+  is exactly the set of X's records that the covered frames' views touch (T38). A state UTXO is a mutable NFT of
+  `catX` other than a validator and X's block oracle, the input at `blockOracleLockingBytecode(catX)`;
 - **chains:** X's records' views chain in the V6 order, across every frame that runs on X's records, from the real
   input commitments to the real output commitments at the same indices. A record is left without an output only if
   the last view deletes it, and created records follow open point 4;
@@ -1232,11 +1238,11 @@ Conversely, every covered master that is not a root appears in exactly one calle
   The program first requires every own-category input's and output's fungible amount to be zero
   (`OP_UTXOTOKENAMOUNT` and `OP_OUTPUTTOKENAMOUNT`), and only then reads an own-category output's class from
   `OP_OUTPUTTOKENCATEGORY`: a capability byte of mutable means
-  the index must be one a segment's declaration writes (or a recreated `catX` validator's), a capability byte of
-  minting means recreated in place, at every index the transaction has (an output past the inputs stands over no
-  master, so a minting one there is refused unless the transcript lists it as minted), and a bare 32-byte value is an
-  immutable NFT under S2's exclusion of fungible amounts, so its index must be one a frame in X's context lists as an
-  event;
+  the index must be one a segment's declaration writes (or a recreated `catX` validator's), or, at X's block oracle
+  lock, that the input at the same index has the output's lock, token and commitment, a capability byte of minting
+  means recreated in place, at every index the transaction has (an output past the inputs stands over no master, so a
+  minting one there is refused unless the transcript lists it as minted), and a bare 32-byte value is an immutable NFT
+  under S2's exclusion of fungible amounts, so its index must be one a frame in X's context lists as an event;
 - **values** as in S4: every record keeps at least its value, no two frames in X's context list the same send, and
   `growth(X) >= in(X) - out(X)` (4b), where `in(X)` is the value of the frames in X's context that are not
   `DELEGATE` or `INTERNAL`, and `out(X)` is the value of their call records and their listed sends.

@@ -4613,7 +4613,7 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
   // master block and therefore cannot soundly advertise or execute message-bus batch. `forceStateful` remains the explicit
   // way to opt a zero-storage contract into the stateful/master-NFT model.
   return contract.stateVariables.length > 0 || contract.collections.length > 0
-    || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || !!compilerOptions.forceStateful || contract.readsBlock || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 }
@@ -6070,7 +6070,8 @@ function synthesizeMessageBusRoute(
   const masterOnlyLifecycleContract = contract.stateVariables.length === 0
     && contract.collections.length === 0
     && !bearsEvents
-    && !contract.usesBlockhash;
+    && !contract.usesBlockhash
+    && !contract.usesBlockOracle;
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
   const kernelDeploymentSiteDescriptorDigests = new Map<FunctionDefinitionNode, string[]>();
@@ -7800,7 +7801,8 @@ function synthesizeMessageBusRoute(
       || footprint.reads.some((resource) => !isFixedScalarStateRead(resource));
     const fixedStateOnlyContract = contract.collections.length === 0
       && !bearsEvents
-      && !contract.usesBlockhash;
+      && !contract.usesBlockhash
+      && !contract.usesBlockOracle;
     const hasSelfdestructStatement = fn.impliedSelfdestruct === true || (() => {
       if (kernelLifecycleKind !== 'selfdestruct') return false;
       let found = false;
@@ -12325,6 +12327,11 @@ function synthesizeMessageBusRoute(
         // A block.* reader co-spends the oracle in its slot, and only a sidecar row exempts that foreign NFT.
         return found || readsBlockOracle(candidate);
       })));
+  // A block.* reader's oracle is a mutable NFT of its own category, so its sidecar row also exempts it from the
+  // resource cardinality while it is recreated unchanged.
+  const ownOracleSidecarMode = sidecarVerificationMode && eligible.some((fn) =>
+    [...collectNamedFunctionClosure(fn, signatureClosureByName)].some((name) =>
+      (signatureClosureByName.get(name) ?? []).some(readsBlockOracle)));
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',
@@ -12936,8 +12943,10 @@ function synthesizeMessageBusRoute(
               }
               // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
               // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
-              // resource cardinality merely because the route returns a value.
-              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
+              // resource cardinality merely because the route returns a value. Nor is an unchanged own oracle.
+              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput${ownOracleSidecarMode
+    ? ` && (isSidecarSlot == 0
+                || tx.inputs[slot].nftCommitment != tx.outputs[outputSlot].nftCommitment)` : ''}) {
                 if (inCategory == activeMutableCategory) {
                   physicalResourceEndpoints = physicalResourceEndpoints + 1;
                 }
@@ -16234,7 +16243,7 @@ function compileResolvedAst(
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
     ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
-  // Oracle-backed block.* reads stay reads of the shared covenant commitment. No state is injected.
+  // Oracle-backed block.* reads stay reads of the contract's own oracle commitment. No state is injected.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
@@ -20256,8 +20265,8 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
-  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the shared
-  // covenant; the pass marks the function and injects no state. Running it on the complete function set
+  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the contract's own
+  // oracle coin; the pass marks the function and injects no state. Running it on the complete function set
   // keeps that mark on the same functions the unsplit pipeline marks.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(

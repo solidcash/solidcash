@@ -1,5 +1,7 @@
 /**
- * The block-info oracle is one raw covenant, not a stateful contract.
+ * The block-info oracle is a raw covenant, not a stateful contract. Every contract that reads block.* owns one: a
+ * mutable NFT of the contract's own category at the lock this covenant gives that category. The contract's genesis
+ * mints it, and its masters refuse any other output at that lock.
  *
  * Its NFT commitment is the whole record. The first 20 bytes are the owner's public-key hash. The fields
  * after that are the block data. A reader never calls the oracle: it co-spends the UTXO and slices the
@@ -7,13 +9,18 @@
  * The owner is not baked into the script, so one bytecode serves every operator; the category is baked so
  * the locking bytecode identifies this oracle token.
  *
- * Readers pin only the lock, so the bounds below hold for exactly one record: the genesis must mint one
- * mutable NFT of the category and no minting NFT.
+ * Readers pin only the lock, so the bounds below hold for exactly one record per category.
  */
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { encodeInt } from './data.js';
 import { hash160, sha256 } from './hash.js';
 import { Op, type Script, scriptToBytecode } from './script.js';
+
+/**
+ * The private key a devnet (`solidhat node`) owns the oracles it keeps current with. Its client names the public key
+ * as a new reader's oracle owner; it is a fixed test key and secures nothing.
+ */
+export const DEVNET_BLOCK_ORACLE_OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x22));
 
 /** Owner public-key hash at the front of the commitment. Sigcheck is hash160(pubkey) against these bytes. */
 export const BLOCK_ORACLE_OWNER_BYTES = 20;
@@ -202,6 +209,21 @@ export function blockOracleRedeemScript(categoryId: Uint8Array): Uint8Array {
 export function blockOracleLockingBytecode(categoryId: Uint8Array): Uint8Array {
   const scriptHash = sha256(sha256(blockOracleRedeemScript(categoryId)));
   return Uint8Array.from([0xaa, 0x20, ...scriptHash, 0x87]);
+}
+
+/**
+ * The redeem script as `prefix || category || suffix`, the category in the order the machine reports a spent
+ * token's, for a script that derives a contract's oracle lock from its category.
+ */
+export function blockOracleRedeemScriptParts(): { prefix: Uint8Array; suffix: Uint8Array } {
+  const script = buildBlockOracleCovenantScript(new Uint8Array(32));
+  const at = script.findIndex((part) => part instanceof Uint8Array && part.length === 32);
+  const head = scriptToBytecode(script.slice(0, at + 1));
+  const parts = { prefix: head.slice(0, head.length - 32), suffix: scriptToBytecode(script.slice(at + 1)) };
+  if (parts.prefix.length + 32 + parts.suffix.length !== blockOracleRedeemScript(new Uint8Array(32)).length) {
+    throw new Error('block oracle redeem script does not split around its category');
+  }
+  return parts;
 }
 
 /** Read-path unlocking: three empty pushes and flag 0, under the redeem script. */

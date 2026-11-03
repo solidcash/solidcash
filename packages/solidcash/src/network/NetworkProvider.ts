@@ -1,4 +1,5 @@
 import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-types.js';
+import type { BlockOracleCommitmentFields } from '@solidcash/utils';
 import { type TokenDetails, type Utxo, Network } from '../interfaces.js';
 
 /** Exact transaction forms already materialized by an SDK builder. */
@@ -60,10 +61,13 @@ export default interface NetworkProvider {
    */
   network: Network;
 
-  /** Shared block-info oracle covenant, pinned into reader contracts. */
-  blockOracleLock?: Uint8Array;
-  /** Category used by the oracle covenant (display byte order). */
-  blockOracleCategory?: Uint8Array;
+  /**
+   * The key a simulator or devnet owns the block oracles it keeps current with. A block.* reader's deployment names
+   * it as its oracle's owner unless the deployer names one.
+   */
+  blockOracleOwnerPublicKey?: Uint8Array;
+  /** The provider's current block fields, which a newly deployed oracle starts from. */
+  blockOracleFields?(): BlockOracleCommitmentFields;
 
   /** Optional provider-specific consensus limits. Omitted providers use BCH production limits. */
   consensusLimits?: ConsensusLimits;

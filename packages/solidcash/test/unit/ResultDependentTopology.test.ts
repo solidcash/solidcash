@@ -1,9 +1,9 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
-  encodeBlockOracleCommitment, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
+  blockOracleLockingBytecode, encodeBlockOracleCommitment, type Artifact, type ExternalCallAbi,
+  type ExternalCallExpression,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { bindBlockOracleLock } from '../../src/oracle/block-oracle-lock.js';
 import {
   AtomicMessageBusComposition, compose, composeDiscoveredGraph, type PreparedAtomicMessageBusCall,
 } from '../../src/message-bus/compose.js';
@@ -80,7 +80,7 @@ function fixture(): ResultPropagationContext & {
 }
 
 describe('result-dependent topology propagation', () => {
-  it('selects time-gated delegate calls from the bound oracle commitment', async () => {
+  it('selects time-gated delegate calls from the contract\'s own oracle commitment', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];
     const artifact = { ...root.artifact, usesBlockOracle: true, abi: [{ ...root.artifact.abi[0]!,
@@ -91,12 +91,12 @@ describe('result-dependent topology propagation', () => {
         right: { kind: 'literal', type: 'uint256', value: '100' },
       } }],
     }] } as Artifact;
-    const oracleLock = Uint8Array.of(0x51, 0x52);
-    const unrelatedLock = Uint8Array.of(0x53);
+    // The oracle is a coin of the contract's own category, at the lock that category gives.
+    const oracleLock = blockOracleLockingBytecode(hexToBin(root.contract.categoryId));
     let timestamp = 99n;
     const requested: string[] = [];
     Object.assign(root.contract.inner, {
-      blockOracleLock: unrelatedLock,
+      blockOracleLock: oracleLock,
       provider: { getUtxosForLockingBytecode: async (lock: Uint8Array) => {
         requested.push(binToHex(lock));
         return [{ token: { nft: { capability: 'mutable', commitment: binToHex(encodeBlockOracleCommitment(
@@ -105,7 +105,6 @@ describe('result-dependent topology propagation', () => {
         )) } } }];
       } },
     });
-    bindBlockOracleLock(artifact, oracleLock);
     const call = { ...root, executionArtifact: artifact };
     const discover = (): ReturnType<typeof discoverInitialCallTopology> => discoverInitialCallTopology(
       call, new Uint8Array(),
@@ -113,7 +112,7 @@ describe('result-dependent topology propagation', () => {
     expect((await discover()).calls.map((item) => item.callsiteId)).toEqual([undefined]);
     timestamp = 100n;
     expect((await discover()).calls.map((item) => item.callsiteId)).toEqual([undefined, 1]);
-    expect(requested).toEqual(['5152', '5152']);
+    expect(requested).toEqual(Array(2).fill(binToHex(oracleLock)));
   });
 
   it('does not prune a producer-result require from a provisional false seed', async () => {

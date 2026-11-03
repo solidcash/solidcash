@@ -5,7 +5,8 @@ Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery 
 
 Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
 KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
-fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22".
+fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1 (CRITICAL) to ORACLE-4
+are fixed on `fix/oracle-hardening`; see "Block oracle hardening (2026-11-03)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1006,3 +1007,53 @@ Design: `docs/wip/call-records/DESIGN.md`.
   bus), which binds each row. Two master threads of one callee in one transaction are refused by the count.
 - A loop iteration's result must fit 96 bytes inline: there is no per-iteration preimage witness, so a hashed record
   fails the read (fail closed).
+
+## Block oracle hardening (2026-11-03)
+
+The user's request "harden the block oracle security", with the rule that a block oracle is always of the master
+contract's category. Read from the code; each finding then ran once on the BCH 2026 VM before and after its fix, with
+master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPairForgery.test.ts`).
+
+- **ORACLE-1** (CRITICAL; direct builds with two or more functions, and message-bus builds). A function body compiled
+  in a sub-traversal did not inherit `currentContractUsesBlockhash`. In a contract whose only stateful feature is
+  `blockhash` (no state variable, collection or event), `isStatefulContract` was then false there and the body carried
+  no master covenant: a call of `read` moved the master's minting NFT to an anyone-can-spend lock. Accepted on a
+  message-bus build and on a two-function direct build; refused on a one-function direct build, whose body the main
+  traversal compiles. The three body sub-traversals now inherit the flag.
+- **ORACLE-2** (HIGH). A `blockhash(n)` reader accepts any capability-none NFT of its category at the category's pair
+  lock whose commitment starts with `n`. The own-category immutable output pin ran only in contracts that declare
+  events, so beside any call of a reader without events a caller minted a pair with a hash of its choosing (accepted
+  beside a read on direct and message-bus builds, and beside a permissionless `split`). On the message-bus build a
+  caller also replaced an expired pair, whose wipe path constrains no output, with a forged one. In every function of
+  a contract that reads `blockhash`, `split`, `merge` and `unsafe(1..)` included, an output at the pair lock is now
+  admitted only as an unchanged recreation of the input at its index (same lock, category, commitment and amount):
+  `emitBlockhashPairOutputPin`, or an arm of the event pin where that runs.
+- **ORACLE-3** (MEDIUM, liveness). In a contract that declares events, the event pin took the honest pair recreation
+  for a stray event and refused every `blockhash` read (`OP_VERIFY` at the master). The same arm admits it.
+- Not changed: `unsafe(0)` stays the escape hatch and pins nothing. Framed masters and compiler routes take the same
+  epilogue (read, not run on the VM). Not checked: a proxy whose implementation reads `blockhash`, as the proxy's own
+  functions do not know it.
+- **ORACLE-4** (the user's rule, 2026-11-03: "any access to block.* or blockhash should mark a contract mandatorily
+  stateful"). `block.*` read one shared block-info oracle of its own category (`2aeaee406`), where every oracle must be
+  of the master contract's category. Now any `block.*` or `blockhash` read makes a contract stateful, its genesis mints
+  its own oracle (a mutable NFT of its category at `blockOracleLockingBytecode(category)`, naming
+  `blockOracleOwnerPublicKey` or the mock's or devnet's own key), every SDK path co-spends the reading contract's own
+  oracle, and no provider carries a shared one. The reader's masters hold the minting NFT that could mint a look-alike
+  with forged fields, so every function admits an output at that lock only as an unchanged recreation of the input
+  at its index (`emitOracleOutputPin`). Tests: `packages/solidc/test/AuditBlockInfoOracleOwnCategory.test.ts` (VM:
+  honest reads in four build shapes, forged oracle refused beside a read, a non-reading function and a permissionless
+  `split`, master kept), `packages/solidcash/test/e2e/BlockOracleOwnCategory.test.ts` (mock: genesis mint, own reads,
+  two readers apart, owner-only keeper). Regtest and devnet keep their readers' oracles by the same rule (types only;
+  not run).
+- ORACLE-4 follow-ups. The message-bus verifier counted a reader's own oracle, a mutable NFT of its category, as two
+  state endpoints, so it refused a reader without resource rows (an all-staticcall composition). The oracle's sidecar
+  row now exempts it from that count while it is recreated unchanged; a kind-1 preservation row could already claim
+  any unchanged own-category NFT, so a composer gains nothing. The oracle pin is one shared helper per contract where
+  the compiler shares per-entry checks. The framed validator's census (V7) took an own-category oracle for an
+  undeclared record and refused a validator-settled transaction with a `block.*` reader. It now derives each settled
+  contract's oracle lock from its category, counts the oracle as no state UTXO, and admits an output at that lock
+  only as the unchanged recreation of the input at its index (program, derivation and reference model alike). The
+  validator template changed, and with it every framed contract address (the user, 2026-11-03).
+- Lead, not checked: the body sub-traversal for defined subroutines (created after the
+  `SIGNATURE_CHECK_IN_SUBROUTINE` check in `GenerateTargetTraversal.ts`) copies neither
+  `currentContractSettlesCallRecords` nor `currentContractCarriesCallBatch`, which the other two copy.

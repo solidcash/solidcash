@@ -1,6 +1,5 @@
 import type { Artifact, FunctionSplitBundle } from '@solidcash/utils';
 import type NetworkProvider from '../../network/NetworkProvider.js';
-import { bindBundleOracle } from './split-registry.js';
 
 /**
  * The artifacts a creator publishes for the children it creates (`composition.creates`).
@@ -22,8 +21,8 @@ export function registerFramedCreatedChild(
   provider: NetworkProvider, contractName: string, artifact: Artifact, split?: FunctionSplitBundle,
 ): void {
   const key = provider as unknown as object;
-  // The child's masters are minted at the locks its creator checks, which pin the network's block oracle.
-  if (split !== undefined) bindBundleOracle(provider, split);
+  // The child's masters are minted at the locks its creator checks. A child that reads block.* pins its own
+  // category's oracle, which its creator cannot know before the creation: such children are not composable yet.
   const byName = registry.get(key) ?? new Map<string, FramedCreatedChild>();
   byName.set(contractName, { artifact, ...(split === undefined ? {} : { split }) });
   registry.set(key, byName);

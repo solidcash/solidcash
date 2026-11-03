@@ -122,12 +122,12 @@ You can create a PR to add your custom `NetworkProvider` to the SolidCash codeba
 | Member | Purpose |
 | --- | --- |
 | `consensusLimits`, `policy` | Limits and relay policy the SDK preflights against (see below) |
-| `blockOracleCategory`, `blockOracleLock` | The shared block-info oracle that contracts reading `block.*` values co-spend |
+| `blockOracleOwnerPublicKey`, `blockOracleFields()` | The key a simulator or devnet owns its readers' block oracles with, and the fields a new oracle starts from |
 | `getUtxosByTokenCategory(categoryId)` | Every live UTXO of a CashToken category, used to find a CREATE identity NFT that moved |
 
-Contracts that read block data need an oracle on the provider. `MockNetworkProvider` and `RegtestNetworkProvider`
-mint their own; on a public network pass the oracle's category to `ElectrumNetworkProvider`. See
-[Block Data & Oracles](/docs/guides/block-oracles).
+A contract that reads block data owns its oracle, which its deployment mints. `MockNetworkProvider`,
+`RegtestNetworkProvider` and a devnet name their own key as its owner and keep it current; on a public network the
+deployment names the owner with `blockOracleOwnerPublicKey`. See [Block Data & Oracles](/docs/guides/block-oracles).
 
 ## Provider-Specific functionality
 

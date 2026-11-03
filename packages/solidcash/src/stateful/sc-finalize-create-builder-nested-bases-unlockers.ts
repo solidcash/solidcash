@@ -7,7 +7,6 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { blockOracleLockFor } from '../oracle/block-oracle-lock.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -106,8 +105,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     if (group.sharedGroupIndex !== undefined) continue;
     const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
     const input = offset === undefined ? undefined : group.blockInputs?.[offset];
-    const lock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined
-      ?? blockOracleLockFor(group.externalContract.inner.artifact);
+    const lock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined;
     if (offset !== undefined && input?.token?.nft?.capability === 'mutable' && lock !== undefined
       && binToHex(input.unlocker.generateLockingBytecode()) === binToHex(lock)) {
       if (!sharedOracleInputs.has(binToHex(lock))) {
@@ -262,8 +260,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         }
       } else if (paramName === '__internal__blockOracleInputIndex') {
         const ownOffset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
-        const readerLock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined
-          ?? blockOracleLockFor(group.externalContract.inner.artifact);
+        const readerLock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined;
         const lockHex = readerLock === undefined ? undefined : binToHex(readerLock);
         if (lockHex !== undefined && !sharedOracleInputs.has(lockHex)
           && ownOffset !== undefined && group.blockInputs?.[ownOffset] !== undefined

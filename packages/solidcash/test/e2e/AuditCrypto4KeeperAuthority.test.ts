@@ -6,15 +6,16 @@ import {
   scriptToBytecode,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import {
   BlockOracleUpdater, RpcLike, blockhashKeeperBatonUnlocker, type BlockOracleFields,
 } from '../../src/oracle/blockOracleUpdater.js';
 import type { Output, Unlocker, Utxo } from '../../src/interfaces.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
-import { alicePub, alicePriv } from '../fixture/vars.js';
+import { aliceAddress, alicePub, alicePriv } from '../fixture/vars.js';
 
 /**
  * Audit CRYPTO-4 / CRYPTO-5 (docs/security/2026-10/CRYPTO.md).
@@ -153,15 +154,19 @@ contract BlockOracleOwned() {
 }`;
 
 describe('CRYPTO-5: block.number cannot be reported as a time-type value', () => {
+  // A reader whose own oracle holds (0, T0), kept by the mock's owner key.
   async function owned(): Promise<{ provider: MockNetworkProvider; updater: BlockOracleUpdater } | undefined> {
     const provider = createTestProvider();
     if (!('setBlockOracleFields' in provider)) return undefined;
+    const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
+    const { contract, categoryId } = await StatefulContract.deploy(compileString(OWNED_ORACLE), [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
+    });
     provider.setBlockOracleFields({
       number: 0n, timestamp: T0, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
-    });
-    const contract = new Contract(compileString(OWNED_ORACLE), [], { provider });
+    }, categoryId);
     const updater = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(),
+      contract: contract.inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(),
     });
     return { provider, updater };
   }

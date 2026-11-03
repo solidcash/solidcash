@@ -18,7 +18,6 @@ import {
 } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import { deployMaster, type DeployedMaster } from './material.js';
-import { bindBlockOracleLock, blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
 
 /** Raised when a function's own master pool cannot serve the call. */
 export class FunctionSplitPoolError extends Error {
@@ -240,9 +239,7 @@ export function patchInternalHelperLocks(
   const clone = structuredClone(artifact);
   clone.bytecode = bytecodeToAsm(program);
   rewriteHelperLockHex(clone, replacements);
-  // The clone runs where its artifact does, so it pins the same block-oracle lock.
-  const oracleLock = blockOracleLockFor(artifact);
-  if (oracleLock !== undefined) bindBlockOracleLock(clone, oracleLock);
+  // The clone keeps its artifact's oracle sentinel, which `deployMaster` fills with the contract's own oracle lock.
   return clone;
 }
 

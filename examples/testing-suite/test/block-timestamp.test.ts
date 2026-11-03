@@ -1,10 +1,10 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
  * block.timestamp time-travel demo (the Solidity/Hardhat time surface - NOT tx.locktime). A TimeVault covenant
- * reads `block.timestamp`, which on SolidCash is a field of one shared block-oracle covenant's commitment that the
- * reader co-spends. The mock chain writes its clock into that commitment when it mines, so the harness
- * `time.increaseTo` moves `block.timestamp` and the withdraw covenant flips from reverting to succeeding - exactly
- * like Hardhat's `time.increaseTo` for a ported Solidity timelock. On a live chain the oracle owner's
+ * reads `block.timestamp`, which on SolidCash is a field of the commitment of the vault's own block oracle, a coin of
+ * its category that the reader co-spends. The mock chain writes its clock into that commitment when it mines, so the
+ * harness `time.increaseTo` moves `block.timestamp` and the withdraw covenant flips from reverting to succeeding -
+ * exactly like Hardhat's `time.increaseTo` for a ported Solidity timelock. On a live chain the oracle owner's
  * BlockOracleUpdater pushes those fields; `mockBlockOracleRpc` points it at the mock chain.
  */
 import { compileString } from '@solidcash/solidc';
@@ -21,14 +21,14 @@ const VAULT_SRC = `contract TimeVault(int unlockTime) {
 }`;
 
 async function deployVaultFixture() {
-  // A block.* reader keeps no oracle state, so the vault is zero-state; forceStateful deploys it via the factory.
-  const artifact = compileString(VAULT_SRC, { forceStateful: true });
+  // A block.* reader is stateful: its genesis mints its own oracle.
+  const artifact = compileString(VAULT_SRC);
   const [deployer] = await ethers.getSigners();
   const unlockTime = BigInt(await time.latest()) + BigInt(time.duration.days(7));
   const deployed = await getContractFactory(artifact, deployer).deploy(unlockTime);
   const contract = (deployed as any).inner;
   const categoryId = (deployed as any).categoryId;
-  // The mock chain owns its oracle; the keeper signs with that owner's key and reads the oracle commitment.
+  // The mock chain keeps every oracle naming its owner key; the keeper signs with that key and reads the vault's.
   const oracle = new BlockOracleUpdater({
     contract, categoryId, keeperKey: (provider as any).blockOracleOwnerKey, rpc: mockBlockOracleRpc(provider as any),
   });

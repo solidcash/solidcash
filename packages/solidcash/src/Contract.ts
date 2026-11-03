@@ -2,6 +2,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
   applyBlockOracleLock,
+  blockOracleLockingBytecode,
   type AbiFunction,
   type Artifact,
   asmToScript,
@@ -32,7 +33,6 @@ import {
   type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
-import { bindBlockOracleLock } from './oracle/block-oracle-lock.js';
 import semver from 'semver';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
@@ -341,7 +341,10 @@ export class Contract<
   usesExternalLibraries: boolean;
   salt?: Uint8Array;
   category?: Uint8Array;
-  /** The oracle p2sh32 lock baked over the reader's sentinel, when this contract slices that commitment. */
+  /**
+   * The contract's own block-info oracle lock, baked over the reader's sentinel: the oracle is a coin of this
+   * contract's category, so a reader has a lock only once its category is known.
+   */
   blockOracleLock?: Uint8Array;
 
   encodedConstructorArgs: Uint8Array[];
@@ -365,11 +368,8 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
-    const providerLock = this.provider.blockOracleLock;
-    this.blockOracleLock = this.options.blockOracleLock ?? providerLock;
-    if (this.blockOracleLock !== undefined && (artifact.blockOracleLockSlots?.length ?? 0) > 0) {
-      bindBlockOracleLock(artifact, this.blockOracleLock);
-    }
+    this.blockOracleLock = artifact.usesBlockOracle === true && this.category !== undefined && this.category.length > 0
+      ? blockOracleLockingBytecode(this.category) : undefined;
     this.rawConstructorArgs = constructorArgs;
 
     const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];

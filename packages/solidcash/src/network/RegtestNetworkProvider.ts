@@ -109,13 +109,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   public network: Network = Network.REGTEST;
   public consensusLimits?: ConsensusLimits;
   public policy?: NetworkPolicy;
-  public blockOracleLock?: Uint8Array;
-  public blockOracleCategory?: Uint8Array;
 
-  /** Deterministic owner key; its P2PKH pays the oracle update fee. */
+  /** Deterministic owner key of the oracles this provider keeps current; its P2PKH pays their update fees. */
   private readonly blockOracleOwnerKey = Uint8Array.from(
     { length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11),
   );
+  /** A reader deployed through this provider names this key as its oracle's owner. */
+  readonly blockOracleOwnerPublicKey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
+  /** Categories whose oracle this provider keeps current: each broadcast oracle that names its owner key. */
+  private readonly blockOracles = new Set<string>();
 
   private blockOracleOwnerAddress = '';
   private blockOracleInstalled = false;
@@ -381,6 +383,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       await this.ensureReady();
       const sent = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
       this.trackBroadcastOutputs(txHex, sent);
+      this.noteBlockOracles(txHex);
       // An oracle update is published for inclusion in the block the caller is about to mine; mining here would
       // confirm it alone and add a block beyond the caller's `mine(count)`.
       if (!this.deferredOracleMine) await this.mineBlocks(1, false);
@@ -750,16 +753,10 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Test helper: real block-info oracle
   // ---------------------------------------------------------------------------
 
-  /**
-   * Deploy a real block-info oracle at a genesis category. The mock provider installs an in-memory oracle; on a
-   * live chain the NFT must have a real CashTokens category, so this creates a vout-0 genesis and publishes its
-   * p2sh32 covenant as `blockOracleLock`.
-   */
+  /** Fund the oracle owner's P2PKH, which pays the update fees of every oracle this provider keeps current. */
   private async installBlockOracle(): Promise<void> {
-    const ownerPubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
-    const ownerPkh = hash160(ownerPubkey);
     const ownerAddressResult = lockingBytecodeToCashAddress({
-      bytecode: publicKeyToP2PKHLockingBytecode(ownerPubkey),
+      bytecode: publicKeyToP2PKHLockingBytecode(this.blockOracleOwnerPublicKey),
       prefix: getNetworkPrefix(this.network),
     });
     const ownerAddress = typeof ownerAddressResult === 'string'
@@ -767,27 +764,19 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       : ownerAddressResult.address;
     this.blockOracleOwnerAddress = ownerAddress;
     await this.addUtxo(ownerAddress, randomUtxo({ satoshis: 100_000_000n }));
+  }
 
-    const commitment = encodeBlockOracleCommitment(ownerPkh, await this.oracleFields());
-    const { categoryId } = await this.addTokenUtxosDynamic((category) => {
-      const lock = blockOracleLockingBytecode(hexToBin(category));
-      const addressResult = lockingBytecodeToCashAddress({
-        bytecode: lock,
-        prefix: getNetworkPrefix(this.network),
-        tokenSupport: true,
-      });
-      const address = typeof addressResult === 'string' ? addressResult : addressResult.address;
-      return [{
-        address,
-        satoshis: 10_000n,
-        token: {
-          amount: 0n,
-          nft: { capability: 'mutable' as const, commitment: binToHex(commitment) },
-        },
-      }];
-    });
-    this.blockOracleCategory = hexToBin(categoryId);
-    this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
+  /** Keep each oracle a broadcast transaction creates that names this provider's owner key. */
+  private noteBlockOracles(txHex: string): void {
+    const tx = decodeTransactionUnsafe(hexToBin(txHex));
+    const owner = binToHex(hash160(this.blockOracleOwnerPublicKey));
+    for (const output of tx.outputs) {
+      const nft = output.token?.nft;
+      if (nft?.capability !== 'mutable') continue;
+      const category = binToHex(output.token!.category);
+      if (binToHex(output.lockingBytecode) !== binToHex(blockOracleLockingBytecode(hexToBin(category)))) continue;
+      if (binToHex(nft.commitment.slice(0, 20)) === owner) this.blockOracles.add(category);
+    }
   }
 
   private async oracleFields(number?: bigint): Promise<BlockOracleCommitmentFields> {
@@ -817,9 +806,13 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   }
 
   private async refreshBlockOracleUpdate(deferred: boolean): Promise<void> {
-    const lock = this.blockOracleLock;
-    const category = this.blockOracleCategory;
-    if (lock === undefined || category === undefined || this.blockOracleRefreshing) return;
+    if (this.blockOracleRefreshing) return;
+    for (const categoryId of [...this.blockOracles]) await this.refreshOneBlockOracle(categoryId, deferred);
+  }
+
+  private async refreshOneBlockOracle(categoryId: string, deferred: boolean): Promise<void> {
+    const category = hexToBin(categoryId);
+    const lock = blockOracleLockingBytecode(category);
     const oracle = (await this.getUtxosForLockingBytecode(lock))
       .find((utxo) => utxo.token?.nft?.capability === 'mutable');
     if (oracle?.token?.nft === undefined) return;
@@ -832,9 +825,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       ...desired,
       number: current.length >= 30 ? blockOracleFieldValue(current, 'number') : desired.number,
     };
-    const commitment = encodeBlockOracleCommitment(
-      hash160(secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array), fields,
-    );
+    const commitment = encodeBlockOracleCommitment(hash160(this.blockOracleOwnerPublicKey), fields);
     const funding = await this.pickOracleFeeCoin();
     this.blockOracleRefreshing = true;
     this.deferredOracleMine = deferred;
@@ -927,7 +918,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
   /** Publish the next oracle update into the mempool when nothing prevents it. */
   private async publishOracleIfDue(): Promise<void> {
-    if (this.blockOracleCategory === undefined || this.holdMockTime !== 0
+    if (this.blockOracles.size === 0 || this.holdMockTime !== 0
       || this.blockOracleRefreshing || this.deferredOracleMine) return;
     await this.publishBlockOracleUpdate();
   }

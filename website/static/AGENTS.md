@@ -608,10 +608,11 @@ bytes32 blobhash(int i)        -- always zero
 - `block.number` and `block.timestamp` warn that they lag the oracle. `blobbasefee`, `prevrandao`, `gaslimit` and
   `gasleft()` are compiler-warned shims; none of these values is randomness. For deadlines prefer `tx.time` /
   `this.age`, which need no oracle. For randomness use commit-reveal or a `checkDataSig` oracle.
-- Oracle fields co-spend one shared block-info oracle UTXO read-only (only its owner updates it); the SDK adds the
-  input. A live provider needs `blockOracleCategory`; `MockNetworkProvider` has its own oracle. `blockhash(n)`
-  makes the contract stateful and is called through `StatefulContract`; a missing `(n, hash)` NFT is an error,
-  not zero. See https://solidcash.org/docs/guides/block-oracles
+- Any `block.*` property or `blockhash(n)` makes the contract stateful; call it through `StatefulContract`. Oracle
+  fields co-spend the contract's own block-info oracle, an NFT of its category its deployment mints, read-only
+  (only its owner updates it); the SDK adds the input. A live deployment names the owner with
+  `blockOracleOwnerPublicKey`; `MockNetworkProvider` owns and updates its readers' oracles. A missing
+  `(n, hash)` NFT is an error, not zero. See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 

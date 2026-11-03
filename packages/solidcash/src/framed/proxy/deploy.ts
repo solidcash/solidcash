@@ -87,7 +87,7 @@ import {
 } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, withBlockOracleSideCar,
+  blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOracleLock, withBlockOracleSideCar,
   type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import {
@@ -1153,8 +1153,8 @@ export async function deployFramedProxy(
   const validatorProgram = framedValidator.buildValidatorProgram();
   const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
   const proxyCategory = hexToBin(options.proxyDeploy.fundingUtxo.txid);
-  // The implementation's masters pin the oracle lock its later calls co-spend.
-  const oracleLock = bindProviderBlockOracle(options.provider, implementationArtifact);
+  // The implementation's masters pin its own oracle's lock, which its later calls co-spend.
+  const oracleLock = framedOracleLock(implementationArtifact, implementationCategory);
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
 
@@ -5669,8 +5669,8 @@ export async function callFramedProxyEntry(
   const proxyCategory = hexToBin(options.proxyCategoryId);
   const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
-  // The implementation was deployed pinning the oracle lock, so its master is found under the same lock.
-  const oracleLock = bindProviderBlockOracle(provider, implementationProgram);
+  // The implementation was deployed pinning its own oracle's lock, so its master is found under that lock.
+  const oracleLock = framedOracleLock(implementationProgram, implementationCategory);
   const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
   let implementationMasterUtxo = implementationPools.masters[0];
   if (splitShard !== undefined) {

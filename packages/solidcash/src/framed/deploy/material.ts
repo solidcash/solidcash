@@ -21,7 +21,7 @@ import {
   validatorAddress,
   validatorTemplateHash,
 } from '@solidcash/utils';
-import { blockOracleLockFor } from '../../oracle/block-oracle-lock.js';
+import { framedOracleLock } from '../call/block-oracle.js';
 import { compositionPlaceholders } from '@solidcash/solidc/runtime';
 
 const {
@@ -153,7 +153,7 @@ export function deployMaster(
   category: Uint8Array,
   validatorProgram: Uint8Array,
 ): DeployedMaster {
-  const oracleLock = blockOracleLockFor(artifact);
+  const oracleLock = framedOracleLock(artifact, category);
   const lockKey = oracleLock === undefined ? '' : binToHex(oracleLock);
   const filled = filledMasters.get(artifact);
   const cached = filled?.bytecode === artifact.bytecode
@@ -236,10 +236,11 @@ export function verifyMasterDeployment(
       `the deployed script is ${deployed.script.length} bytes, not the artifact's ${original.length}`,
     );
   }
-  // A constant-lock master carries no deployment constant: it is the compiled program (with its network's oracle
-  // lock where it reads one), and its lock is that program's, whatever the category.
+  // A constant-lock master carries no deployment constant: it is the compiled program, and its lock is that program's,
+  // whatever the category. One that reads block.* pins its own category's oracle, as `deployMaster` writes it, so its
+  // lock then depends on the category and no creator can know it before the creation.
   if (placeholders.constantLock === true) {
-    const oracleLock = blockOracleLockFor(artifact);
+    const oracleLock = framedOracleLock(artifact, category);
     const expected = oracleLock !== undefined && artifact.blockOracleLockSlots !== undefined
       ? applyBlockOracleLock(original, oracleLock, artifact.blockOracleLockSlots)
       : original;

@@ -626,7 +626,8 @@ ordered through a queue.
 
 Bitcoin Cash scripts cannot read the current block header or compute Keccak or public-key recovery directly.
 
-- The block-info oracle publishes block fields in a shared token.
+- Each contract that reads `block.*` owns its block-info oracle, a token of its own category that publishes block
+  fields; any `block.*` or `blockhash` read makes the contract stateful.
 - The blockhash oracle publishes one `(height, hash)` token per block.
 - Keccak and ecrecover helper contracts ("sidecars") compute results in their own inputs and commit them for the
   caller to verify.

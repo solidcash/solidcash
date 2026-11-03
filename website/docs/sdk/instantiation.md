@@ -31,12 +31,10 @@ interface ContractOptions {
   addressType?: 'p2sh20' | 'p2sh32' | 'p2s';
   salt?: Uint8Array;
   category?: Uint8Array;
-  blockOracleLock?: Uint8Array;
 }
 ```
 
-`provider` is required. `blockOracleLock` overrides the provider's block-oracle lock for a contract that reads block
-data; most applications leave it unset.
+`provider` is required. A contract that reads block data takes its own oracle's lock from its `category`.
 
 `p2sh32` is the default and the required address type for the stateful protocol. `p2sh20` remains available for
 compatible stateless scripts but has a smaller collision-security margin. `p2s` exposes the script itself as the

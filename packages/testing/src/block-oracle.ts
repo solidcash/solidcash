@@ -1,18 +1,22 @@
 /**
  * Server-side block-info oracle lifecycle for a running devnet.
  *
- * `solidhat node` installs one mutable NFT at the oracle lock during `prepare`, advertises it in
- * `server.features.devnet.block_oracle`, and rewrites its commitment on every tip change so compiled
- * `block.timestamp`/`block.number` reads see the live chain. It holds the block the next transaction is mined into,
- * as Hardhat executes a transaction in its own block: a swap's `block.timestamp` is its receipt block's. Per-snapshot outpoints travel with the chain, so a reader
- * spend that moved the oracle does not strand a later refresh.
+ * Every contract that reads block.* owns its oracle, a coin of its own category its genesis mints. `solidhat node`
+ * keeps current every oracle that names the devnet's fixed owner key (`DEVNET_BLOCK_ORACLE_OWNER_KEY`): it notes them
+ * in each mined block and rewrites their commitments on every tip change, so compiled `block.timestamp` and
+ * `block.number` reads see the live chain. Each oracle holds the block the next transaction is mined into, as Hardhat
+ * executes a transaction in its own block: a swap's `block.timestamp` is its receipt block's.
+ * `server.features.devnet.block_oracle` advertises that the feature is on. Per-snapshot outpoints travel with the
+ * chain, so a reader spend that moved an oracle does not strand a later refresh.
  */
 import { secp256k1, sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { decodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import type { Indexer } from '@mem-cash/electrum';
 import type { BlockHeader } from '@mem-cash/types';
 import {
   blockOracleLockingBytecode,
+  DEVNET_BLOCK_ORACLE_OWNER_KEY,
   encodeBlockOracleCommitment,
   hash160,
   type BlockOracleCommitmentFields,
@@ -45,22 +49,28 @@ interface PendingBlock {
 }
 
 export interface BlockOracleRuntime {
-  /** Install the oracle (prepare hook) and advertise it. */
+  /** Start keeping oracles (prepare hook) and advertise the feature. */
   install(): void;
   /** Current advertisement, or null when disabled. */
   advertisement(): BlockOracleAdvertisement | null;
   onSnapshot(id: string): void;
   onDropSnapshot(id: string): void;
   onTipChange(change: TipChangeLike): void;
-  /** Re-advertise the live outpoint after a refresh. */
+  /** Re-advertise after a refresh. */
   readonly subscribeAdvertisement: (listener: (advertisement: BlockOracleAdvertisement) => void) => void;
 }
 
-/** A fixed devnet oracle mint outpoint; every devnet starts empty, so this never collides with a real coin. */
-const INITIAL_OUTPOINT: Outpoint = { txid: `${'b0'.repeat(31)}c1`, vout: 0 };
-
-/** Fixed owner key for the devnet oracle commitment (never used to sign). */
-const OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x22));
+/**
+ * The feature flag the node advertises. The shape is the server's; no oracle is shared, so the owner's P2PKH lock
+ * stands in the lock field and the rest is empty.
+ */
+function featureAdvertisement(ownerPublicKey: Uint8Array): BlockOracleAdvertisement {
+  return {
+    lock: binToHex(Uint8Array.from([0x76, 0xa9, 0x14, ...hash160(ownerPublicKey), 0x88, 0xac])),
+    category: '',
+    outpoint: { txid: '00'.repeat(32), vout: 0 },
+  };
+}
 
 function fieldsFor(block: PendingBlock): BlockOracleCommitmentFields {
   return {
@@ -78,24 +88,19 @@ export function createBlockOracleRuntime(params: {
   readonly enabled: boolean;
 }): BlockOracleRuntime {
   const { indexer } = params;
-  const category = sha256.hash(new TextEncoder().encode('solidcash-block-info-oracle-v1'));
-  const lock = blockOracleLockingBytecode(category);
-  const lockScriptHash = binToHex(sha256.hash(lock));
-  const ownerPublicKey = secp256k1.derivePublicKeyCompressed(OWNER_KEY);
+  const ownerPublicKey = secp256k1.derivePublicKeyCompressed(DEVNET_BLOCK_ORACLE_OWNER_KEY);
   if (typeof ownerPublicKey === 'string') throw new Error(`block oracle owner key is invalid: ${ownerPublicKey}`);
-  const ownerPkh = hash160(ownerPublicKey);
+  const ownerPkh = binToHex(hash160(ownerPublicKey));
 
-  let liveOutpoint: Outpoint = INITIAL_OUTPOINT;
-  const perSnapshot = new Map<string, Outpoint>();
+  /** Each kept oracle's category and the outpoint it was last written or seen at. */
+  let oracles = new Map<string, Outpoint>();
+  /** The highest block scanned for new oracles. */
+  let scanned = 0;
+  const perSnapshot = new Map<string, Map<string, Outpoint>>();
   const advertisementListeners: ((advertisement: BlockOracleAdvertisement) => void)[] = [];
 
   function advertisement(): BlockOracleAdvertisement | null {
-    if (!params.enabled) return null;
-    return {
-      lock: binToHex(lock),
-      category: binToHex(category),
-      outpoint: { txid: liveOutpoint.txid, vout: liveOutpoint.vout },
-    };
+    return params.enabled ? featureAdvertisement(ownerPublicKey as Uint8Array) : null;
   }
 
   function announce(): void {
@@ -104,51 +109,74 @@ export function createBlockOracleRuntime(params: {
     for (const listener of advertisementListeners) listener(value);
   }
 
-  function liveOracleOutpoint(): Outpoint | undefined {
-    const utxos = indexer.getUtxos(lockScriptHash);
-    const entry = utxos.find((utxo) => utxo.tokenData?.nft?.capability === 'mutable');
+  /** Keep the oracles a block at `height` minted that name the owner key. */
+  function noteBlock(height: number): void {
+    for (const txid of indexer.storage.getTxidsAtHeight(height) ?? []) {
+      const raw = indexer.storage.getRawTx(txid);
+      const tx = raw === undefined ? undefined : decodeTransaction(hexToBin(raw));
+      if (typeof tx !== 'object') continue;
+      for (const [vout, output] of tx.outputs.entries()) {
+        const nft = output.token?.nft;
+        if (nft?.capability !== 'mutable') continue;
+        const category = binToHex(output.token!.category);
+        if (oracles.has(category)) continue;
+        if (binToHex(output.lockingBytecode) !== binToHex(blockOracleLockingBytecode(hexToBin(category)))) continue;
+        if (binToHex(nft.commitment.slice(0, 20)) !== ownerPkh) continue;
+        oracles.set(category, { txid, vout });
+      }
+    }
+  }
+
+  function liveOutpoint(category: string): Outpoint | undefined {
+    const lockScriptHash = binToHex(sha256.hash(blockOracleLockingBytecode(hexToBin(category))));
+    const entry = indexer.getUtxos(lockScriptHash).find((utxo) => utxo.tokenData?.nft?.capability === 'mutable');
     return entry === undefined ? undefined : { txid: entry.outpoint.txid, vout: entry.outpoint.vout };
   }
 
-  function write(outpoint: Outpoint, block: PendingBlock, tip: BlockHeader): void {
-    const commitment = encodeBlockOracleCommitment(ownerPkh, fieldsFor(block));
+  function write(category: string, outpoint: Outpoint, block: PendingBlock): void {
+    const lock = blockOracleLockingBytecode(hexToBin(category));
+    const live = indexer.storage.getUtxoByOutpoint(`${outpoint.txid}:${outpoint.vout}`);
+    if (live === undefined) return;
+    const commitment = encodeBlockOracleCommitment(hexToBin(ownerPkh), fieldsFor(block));
     indexer.storage._test.utxo.remove({ txid: outpoint.txid, vout: outpoint.vout });
     indexer.addUtxo({
       txid: outpoint.txid,
       vout: outpoint.vout,
-      satoshis: 10_000n,
-      scriptHash: lockScriptHash,
-      // The coin is confirmed at the tip; its commitment describes the block after it.
-      height: tip.height,
+      satoshis: live.satoshis,
+      scriptHash: binToHex(sha256.hash(lock)),
+      // The coin stays confirmed where it was; its commitment describes the block after the tip.
+      height: live.height,
       lockingBytecode: lock,
       tokenData: {
-        category: binToHex(category),
+        category,
         amount: 0n,
         nft: { capability: 'mutable', commitment: binToHex(commitment) },
       },
     });
-    liveOutpoint = outpoint;
+    oracles.set(category, outpoint);
   }
 
-  function refresh(change: TipChangeLike): void {
+  function refresh(block: PendingBlock): void {
     if (!params.enabled) return;
-    const target = liveOracleOutpoint() ?? liveOutpoint;
-    write(target, change.next, change.tip);
+    for (const category of [...oracles.keys()]) {
+      const target = liveOutpoint(category);
+      if (target !== undefined) write(category, target, block);
+    }
     announce();
   }
 
   return {
     install() {
       if (!params.enabled) return;
-      const header = indexer.getTip();
-      if (header === undefined) throw new Error('block oracle: the chain has no tip yet');
-      write(INITIAL_OUTPOINT, { height: header.height + 1, timestamp: indexer.nextBlockTimestamp() }, header);
+      const tip = indexer.getTip();
+      if (tip === undefined) throw new Error('block oracle: the chain has no tip yet');
+      scanned = tip.height;
       announce();
     },
     advertisement,
     onSnapshot(id) {
       if (!params.enabled) return;
-      perSnapshot.set(id, { ...liveOutpoint });
+      perSnapshot.set(id, new Map(oracles));
     },
     onDropSnapshot(id) {
       perSnapshot.delete(id);
@@ -156,21 +184,27 @@ export function createBlockOracleRuntime(params: {
     onTipChange(change) {
       if (!params.enabled) return;
       if (change.kind === 'reset') {
-        // The reset baseline restored the chain the oracle was installed on; adopt whatever it holds now.
+        // The reset baseline restored the chain the node started from, which holds no reader yet.
         perSnapshot.clear();
-        liveOutpoint = liveOracleOutpoint() ?? INITIAL_OUTPOINT;
-        refresh(change);
+        oracles = new Map();
+        scanned = change.tip.height;
+        refresh(change.next);
         return;
       }
       if (change.kind === 'revert' && change.snapshotId !== undefined) {
         const recorded = perSnapshot.get(change.snapshotId);
         if (recorded !== undefined) {
-          liveOutpoint = recorded;
-          refresh(change);
+          oracles = new Map(recorded);
+          scanned = Math.min(scanned, change.tip.height);
+          refresh(change.next);
           return;
         }
       }
-      refresh(change);
+      if (change.kind === 'mine') {
+        for (let height = scanned + 1; height <= change.tip.height; height += 1) noteBlock(height);
+        scanned = change.tip.height;
+      }
+      refresh(change.next);
     },
     subscribeAdvertisement(listener) {
       advertisementListeners.push(listener);

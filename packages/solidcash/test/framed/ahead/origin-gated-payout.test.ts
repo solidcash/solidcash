@@ -50,7 +50,7 @@ const STORE_PROXY_CATEGORY = idOf('store proxy');
 const ROOT_IMPL_CATEGORY = idOf('root implementation');
 const ROOT_PROXY_CATEGORY = idOf('root proxy');
 /** Two escrow deployments: the buyer's token balance sorts right after the escrow's in one, before it in the other. */
-const ESCROW_BELOW_BUYER = idOf('escrow 168');
+const ESCROW_BELOW_BUYER = idOf('escrow 47');
 const ESCROW_ABOVE_BUYER = idOf('escrow 3');
 
 const JOB_ID = 0n;

@@ -110,6 +110,30 @@ at their current height and time, and keep it current. `blockOracleAmount` sets 
 data NFT amount). The owner hash cannot change after genesis: replacing the owner key means a native upgrade or a
 new deployment.
 
+### A reader another contract creates
+
+A contract a factory creates with `create2` in its own transaction (a framed child, such as a Uniswap pair) gets its
+category from that transaction's caller coin, so no deployment fills its oracle lock. Its masters derive the lock
+from their own token instead, and keep one lock per entry for every category: the artifact's shards publish
+`usesBlockOracle` and no `blockOracleLockSlots`. The creating transaction mints the child's genesis, its oracle
+included, naming the provider's key on a mock or devnet, or the key the call states (`creates.blockOracleOwnerPublicKey`,
+or `registerFramedCreatedChild(provider, name, artifact, split, { blockOracleOwnerPublicKey })`) on a live network.
+The factory checks the outputs of the new category against constants it is deployed with; compute them from the
+compiled child, once:
+
+```ts
+import { framedDeploy } from '@solidcash/solidcash/framed';
+
+const constants = framedDeploy.framedChildConstants({
+  artifact: pairBundle.logical, split: pairBundle, provider, pool: { masters: 2, validators: 1 },
+});
+// childLocks, childCollections and childOutputCount (which counts the oracle) go to the factory's deployment;
+// childPool is the pool every creation must fund.
+const filledFactoryBundle = framedDeploy.fillFramedChildSlots(factoryBundle, constants);
+```
+
+A devnet keeps a child's oracle current like any reader's. On a live network its owner runs a keeper for it.
+
 ### Owner updates
 
 Only the owner updates the oracle, by spending the covenant with `<pubkey> <sig> <newCommitment> 1`. The covenant

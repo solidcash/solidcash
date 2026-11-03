@@ -4,10 +4,14 @@
  * The node task starts the oracle keeper in `prepare`; this file starts the same runtime on an in-process server. A
  * `block.number` reader's genesis mints its own oracle, and the node keeps that oracle's commitment on the block the
  * next transaction is mined into across mine, time travel, snapshot/revert and reset while the reader keeps
- * recording.
+ * recording. A reader a factory creates after the node started mints its oracle in the creating transaction, and the
+ * node finds and keeps that one too.
  */
-import { compileString } from '@solidcash/solidc';
-import { blockOracleLockingBytecode } from '@solidcash/utils';
+import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress, secp256k1 } from '@bitauth/libauth';
+import { compileString, compileStringSplit } from '@solidcash/solidc';
+import { SignatureTemplate } from '@solidcash/solidcash';
+import { framedCall, framedDeploy } from '@solidcash/solidcash/framed';
+import { blockOracleLockingBytecode, hash160, type FunctionSplitBundle } from '@solidcash/utils';
 import { createServer, type ServerHandle } from '@mem-cash/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createBlockOracleRuntime, type BlockOracleRuntime } from '../src/block-oracle.js';
@@ -19,6 +23,21 @@ const ORACLE_USER = `contract OracleUser() {
   uint seen;
   function record() public { this.seen = block.number; require(true); }
   function reset() public { this.seen = 0; require(true); }
+}`;
+
+/** A factory that creates a `block.timestamp` reader in its own transaction. */
+const CLOCK_FACTORY = `pragma solidity ^0.8.0;
+contract Clock {
+  uint256 public stamp;
+  function touch() external { stamp = block.timestamp; }
+}
+contract Factory {
+  uint256 public made;
+  function make(bytes32 salt) external returns (address clock) {
+    bytes memory code = type(Clock).creationCode;
+    assembly { clock := create2(0, add(code, 32), mload(code), salt) }
+    made = made + 1;
+  }
 }`;
 
 let handle: ServerHandle | undefined;
@@ -167,6 +186,76 @@ describe('block-info oracle across the devnet lifecycle', () => {
     const redeployed = await hre.ethers.getContractFactory(artifact, signer).deploy();
     await redeployed.call.record().send();
     expect(await oracleNumber(redeployed.categoryId)).toBe((await rpc<{ height: number }>('devnet.info')).height + 1);
+  }, 240_000);
+
+  it('finds and keeps the oracle of a reader a factory creates after the node started', async () => {
+    const hre = runtimeFor(handle!.port);
+    const provider = hre.network.provider as unknown as Parameters<typeof framedCall.callFramedEntry>[0]['provider'] & {
+      connect(): Promise<void>;
+      addUtxo(lockingBytecode: string, utxo: { txid?: string; vout: number; satoshis: bigint }): Promise<{
+        txid: string; vout: number; satoshis: bigint;
+      }>;
+    };
+    await provider.connect();
+    const framed = { composition: 'framed', evmCompat: true, suppressWarnings: true, split: 'func' } as const;
+    const clock = compileStringSplit(CLOCK_FACTORY, { ...framed, primaryContractName: 'Clock' }) as FunctionSplitBundle;
+    const factory = compileStringSplit(CLOCK_FACTORY, { ...framed, primaryContractName: 'Factory' }) as FunctionSplitBundle;
+
+    // A caller of our own, funded with genesis-eligible coins the node injects at its P2PKH.
+    const key = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x07 : 0x5e));
+    const publicKey = secp256k1.derivePublicKeyCompressed(key);
+    if (typeof publicKey === 'string') throw new Error(publicKey);
+    const lock = encodeLockingBytecodeP2pkh(hash160(publicKey));
+    const funder = new SignatureTemplate(key).unlockP2PKH();
+    const encoded = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchreg' });
+    if (typeof encoded === 'string') throw new Error(encoded);
+    let coins = 0;
+    const coin = (satoshis: bigint): Promise<{ txid: string; vout: number; satoshis: bigint }> => {
+      coins += 1;
+      return provider.addUtxo(Buffer.from(lock).toString('hex'), {
+        txid: `c1${(0x1000 + coins).toString(16)}`.padEnd(64, '7'), vout: 0, satoshis,
+      });
+    };
+
+    // The factory names the clock's constants, from the public SDK.
+    const constants = framedDeploy.framedChildConstants({
+      artifact: clock.logical, split: clock, provider, pool: { masters: 1, validators: 1 },
+    });
+    const { categoryId: factoryCategory } = await framedDeploy.deployFramedStatefulContract(factory.logical, [], {
+      provider, fundingUtxo: await coin(3_000_000n), funder, changeAddress: encoded.address,
+      threadCount: 1, validatorCount: 1, functionSplit: factory,
+      childLocks: constants.childLocks, childCollections: constants.childCollections,
+      childOutputCount: constants.childOutputCount,
+    });
+    const caller = await coin(5_000_000n);
+    const creation = await framedCall.callFramedEntry({
+      provider, artifact: factory.logical, categoryId: factoryCategory, functionName: 'make',
+      args: [new Uint8Array(32)], callerUtxo: caller, callerLockingBytecode: lock, funder,
+      split: framedDeploy.functionSplitFor(provider, factoryCategory) ?? factory,
+      creates: { artifact: clock.logical, split: clock, pool: constants.childPool },
+    });
+    const refused = creation.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
+    expect(creation.accepted, refused).toBe(true);
+
+    // The clock's category is the caller's coin. Its oracle was minted by the creating transaction, after the node
+    // started, and the node keeps it on the block the next transaction is mined into.
+    const clockCategory = caller.txid;
+    const created = await rpc<{ height: number; timestamp: number }>('devnet.info');
+    expect(await readCommitment(hre, clockCategory)).toEqual(pendingAfter(created));
+    await rpc('devnet.mine', [2]);
+    const mined = await rpc<{ height: number; timestamp: number }>('devnet.info');
+    const kept = await readCommitment(hre, clockCategory);
+    expect(kept).toEqual(pendingAfter(mined));
+
+    // A later call on the clock reads the time its own oracle holds.
+    const touched = await framedCall.callFramedEntry({
+      provider, artifact: clock.logical, categoryId: clockCategory, functionName: 'touch',
+      callerUtxo: await coin(1_000_000n), callerLockingBytecode: lock, funder, split: clock,
+    });
+    expect(touched.accepted, touched.verdicts.map((verdict) => verdict.objection ?? '').join('; ')).toBe(true);
+    const { byNft } = await framedDeploy.readFramedState(provider, clockCategory, clock.logical.stateLayout!);
+    expect((Object.assign({}, ...byNft) as Record<string, unknown>).stamp).toBe(BigInt(kept!.timestamp));
   }, 240_000);
 
   it('fails a block-reading contract fast when the oracle is disabled', async () => {

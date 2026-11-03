@@ -6,7 +6,8 @@ Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery 
 Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
 KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
 fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1 (CRITICAL) to ORACLE-4
-are fixed on `fix/oracle-hardening`; see "Block oracle hardening (2026-11-03)" at the end.
+are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, which also records an open
+item about a creation's genesis; see "Block oracle hardening (2026-11-03)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1057,3 +1058,35 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
 - Lead, not checked: the body sub-traversal for defined subroutines (created after the
   `SIGNATURE_CHECK_IN_SUBROUTINE` check in `GenerateTargetTraversal.ts`) copies neither
   `currentContractSettlesCallRecords` nor `currentContractCarriesCallBatch`, which the other two copy.
+- ORACLE-4 for created children (`fix/oracle-child`). A contract another contract creates in its own transaction
+  (a CREATE2 child, a Uniswap pair) has constant-lock masters: its creator names their locks as deployment
+  constants. Pinning each category's oracle lock gave those masters a lock per category, so no creator could name
+  them, and a child's genesis minted no oracle. Now:
+  - a constant-lock master derives its oracle's lock from its own token (`OP_INPUTINDEX OP_UTXOTOKENCATEGORY`,
+    `blockOracleLockDerivationScript`) for its reads and its output pin, carries no sentinel, and publishes no
+    `blockOracleLockSlots`; the compiler refuses one that still carries the sentinel;
+  - the child's genesis, which the creating transaction mints, mints its oracle (owner: the provider's key, or
+    `creates.blockOracleOwnerPublicKey` / `registerFramedCreatedChild`), and the child's output count includes it;
+  - the creator's check of the outputs of `K` admits the lock the oracle covenant gives `K`, derived in script from
+    the outpoint hash, which is the token category the child's masters derive from;
+  - the framed validator weighed every category's oracle-lock output as a recreation in place, while V7, the
+    derivation model (`checkCensus`) and the SDK reference model weigh only settled contracts' outputs: the program
+    refused the creating transaction of a child that reads block.*. It now weighs only settled contracts' oracle
+    outputs, as the models do. The validator template changed again, and with it every framed address (v1 is not
+    yet on a real chain, D9).
+  Tests: `packages/solidcash/test/framed/deploy/child-block-oracle.test.ts` (mock: constant locks, two creations of
+  a reader from one set of constants, each child reading its own oracle; a creation with a second oracle and a call
+  minting a look-alike beside a read are refused), `packages/testing/test/block-oracle.test.ts` (devnet: the keeper
+  finds and keeps a child's oracle minted after the node started, and the child reads it).
+- Open, found while landing the children fix (source-traced, not run on the VM; HIGH for a child any caller may
+  create, as `createPair` is). The creator's check bounds which locks the outputs of `K` sit at and how many there are
+  in all, not how many sit at each lock or what they commit to. Its digest loop compares the outputs' digest with the
+  `OP_RETURN` the same transaction carries, so it binds the two but not the commitments to anything the creator
+  computed (`child-category-check.ts`; CREATE2_IDENTITY.md, "Lock membership is not enough"), and no validator
+  weighs `K`, whose category no input carries. So whoever composes a creating transaction chooses the child's
+  genesis: its records' commitments, which outputs it omits or doubles in place of others (its validator, a
+  master), and now its oracle: the owner key, the starting fields, none, or two. A pair created that way can start
+  from forged state or read a clock its creator controls (its price accumulators). Fix direction: the genesis
+  replay the CREATE2 note names (the creator checks each record's commitment against the folded state it computes),
+  per-lock counts among the creator's deployment constants (one oracle for a child that reads block.*), and the
+  oracle's owner hash as one more constant, with unset starting fields.

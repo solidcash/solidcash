@@ -95,6 +95,17 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
 - `FramedCallOptions.creates` appends the child's genesis to the composition's trailing outputs at the caller
   coin's outpoint (`atomic-create2.test.ts`: the returned address, each shard's master, the validator and a
   record, all read off the derivation the machine accepted).
+- A child that reads block.* (2026-11-03, `fix/oracle-child`). Every reader owns a block-info oracle of its own
+  category, so a child's masters derive their oracle's lock from their own token instead of pinning a lock per
+  category, and keep one lock per entry; the child's genesis mints the oracle at the lock `K` gives, naming the
+  provider's owner key or `creates.blockOracleOwnerPublicKey`; the creator's check derives that lock from `K` and
+  admits it; and the framed validator weighs only settled contracts' oracle outputs (V7), so the creating
+  transaction's validator lets the child's new oracle stand. `framedDeploy.framedChildConstants` computes the
+  creator's constants (locks, heads, an output count that includes the oracle) and refuses a child whose locks
+  differ by category; `fillFramedChildSlots` fills a creator's bundle with them
+  (`child-block-oracle.test.ts`). The digest bullet above binds the outputs to the transaction's own `OP_RETURN`,
+  which the same composer writes, so a creation's records, oracle and per-lock multiplicity are still the
+  composer's: see the ledger's open item under "Block oracle hardening" (security-audit-2026-10-16.md).
 
 ### Landed: the category check
 

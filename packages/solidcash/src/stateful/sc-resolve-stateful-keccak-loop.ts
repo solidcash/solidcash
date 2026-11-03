@@ -96,7 +96,7 @@ export async function resolveStatefulKeccakLoop(
     // Probe one side-car past the known band: a read there names another side-car the code reaches.
     if (k > slots.length + 1) break;
     const probe = new CovenantTransactionBuilder({ provider: host.inner.provider });
-    if (locktime) probe.setLocktime(locktime);
+    if (locktime > 0) probe.setLocktime(locktime);
     probe.addInput(masterUtxo, stateInputUnlocker);
     dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
     frontRegionInputs.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker

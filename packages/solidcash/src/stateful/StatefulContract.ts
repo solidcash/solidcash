@@ -5480,7 +5480,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     while (preimages.some((p) => p === null)) {
       if (guard++ > n) throw new Error('keccak256 stateful preimage extraction did not converge.');
       const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
-      if (probeCtx.locktime) probe.setLocktime(probeCtx.locktime);
+      if ((probeCtx.locktime ?? 0) > 0) probe.setLocktime(probeCtx.locktime!);
       probe.addInput(masterUtxo, trailing.unlocker);
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
@@ -11959,7 +11959,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
     let delegateBlockInfoOracle = false;
     let blockhashCoSpendSlotOrdinals: number[] | undefined;
-    let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
+    // Largest blockhash n read (require(tx.time >= n)), -1 when none is: a read of n = 0 still needs a height locktime.
+    let maxBhLocktime = -1;
     // keccak256 compute side-cars co-spent at the keccakSideCar slots; parallel commitments (R_i) drive the
     // recreation. Resolved late (needs the master unlocker's args) alongside blockhash.
     let keccakComputeCoSpendUtxos: UnlockableUtxo[] = [];
@@ -12803,14 +12804,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       blockhashCoSpendSlotOrdinals = graphSelections.map((selection) => selection.slotOrdinal);
-      maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
+      maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), maxBhLocktime);
     } else if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
       const { base, count } = this.blockhashSlotBase(abiFunction);
       const resolved = await this._resolveBlockhashCoSpends(
         abiFunction, args, base, count, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
       );
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
-      maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
+      maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), maxBhLocktime);
     }
     // A forwarder slices no oracle itself, but the implementation it delegates to may. That reader pins the lock
     // its own contract was built with. Outside a compiler route its recreate rides the implementation band.

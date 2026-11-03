@@ -88,10 +88,10 @@ describe('blockhash ring', () => {
     await expect(keeper(provider, deployed).writeBlockhashSlot(n, HASH)).rejects.toThrow(/already holds/);
     await expect(deployed.contract.call.check(n, HASH).send()).resolves.toHaveProperty('txid');
     expect(await holding()).toBe(written);
-    // A slot below the depth that was never written reads the zero hash. n = 0 is left out: the SDK sets a
-    // height locktime only for a largest n above 0.
-    const unwritten = [1n, 2n, 3n].find((s) => s !== n % 4n)!;
-    await expect(deployed.contract.call.check(unwritten, ZERO).send()).resolves.toHaveProperty('txid');
+    // Slot 0 was never written (n is not a multiple of the depth): blockhash(0) reads the zero hash under a
+    // height locktime of 0. A wrong hash is refused.
+    expect(n % 4n).not.toBe(0n);
+    await expect(deployed.contract.call.check(0n, ZERO).send()).resolves.toHaveProperty('txid');
     await expect(deployed.contract.call.check(n, ZERO).send()).rejects.toThrow();
   }, 120_000);
 

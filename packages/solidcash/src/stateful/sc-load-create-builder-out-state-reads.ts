@@ -61,7 +61,7 @@ export async function loadCreateBuilderOutStateReads(
 ): Promise<{ finalArgs: FunctionArgument[]; outStateInputCount: number; maxBhLocktime: number }> {
   let finalArgs = params.finalArgs;
   let outStateInputCount = 0;
-  let maxBhLocktime = 0;
+  let maxBhLocktime = -1;
   const {
     abiFunction, externalCalls, outStateOverrideCalls, externalOutStateUtxoGroups,
     requiredNftIndices, externalReadUtxos,
@@ -132,7 +132,7 @@ export async function loadCreateBuilderOutStateReads(
       const bOsBlockhash = await host.resolveExternalBlockhashCoSpends(
         bOsAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract as unknown,
       );
-      maxBhLocktime = Math.max(maxBhLocktime, bOsBlockhash.locktime);
+      if (bOsBlockhash.inputs.length > 0) maxBhLocktime = Math.max(maxBhLocktime, bOsBlockhash.locktime);
 
       externalOutStateUtxoGroups.push({
         categoryId: externalCategoryId,

@@ -571,9 +571,10 @@ export function registerCreateBuilderBuilderState(
   }
 
   // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.
+  // Any read, n = 0 included, needs this height locktime: the provider's time locktime fails the CLTV.
   // Otherwise ported `block.timestamp` is nLocktime: stamp the provider tip so publish writes a real
   // job.timestamp and later require(tx.time >= posted + 24h) can pass after evm_increaseTime.
-  if (maxBhLocktime > 0) builder.setLocktime(maxBhLocktime);
+  if (maxBhLocktime >= 0) builder.setLocktime(maxBhLocktime);
   else {
     const unixLocktime = providerUnixLocktime(host.inner.provider as { getBlockTime?: () => number });
     if (unixLocktime !== undefined) builder.setLocktime(unixLocktime);

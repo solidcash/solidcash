@@ -7,7 +7,7 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { requireBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
@@ -391,8 +391,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           )
           : host.paramBlockhashN(bSc, selection.readKey, selection.rowArgs, selection.handler);
         if (n === null) throw new Error(`blockhash: could not resolve external message-bus batch read "${selection.readKey}"`);
-        const coSpend = await resolveBlockhashCoSpend(host.provider, group.categoryId, n);
-        if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
+        const coSpend = await requireBlockhashCoSpend(host.provider, group.categoryId, n);
         const physicalOffset = firstOracleOffset + selection.slotOrdinal;
         group.blockInputs[physicalOffset] = { ...coSpend.utxo, unlocker: coSpend.unlocker };
         prior.push({

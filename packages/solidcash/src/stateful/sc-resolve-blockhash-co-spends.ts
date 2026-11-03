@@ -15,7 +15,7 @@ import { isContractUnlocker, type Output, type Unlocker, type Utxo } from '../in
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { pickBlockOracleCoin } from '../oracle/block-oracle-lock.js';
-import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { requireBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import { extractBlockhashReadsFromTrace } from './trace-verified-value-helpers.js';
@@ -181,8 +181,7 @@ export async function resolveBlockhashCoSpends(
       n = paramBlockhashN(reads[k], args, abiFunction);
     }
     if (n === null) throw new Error(`blockhash: could not resolve n for read "${reads[k]}" (slot ${k})`);
-    const cs = await resolveBlockhashCoSpend(host.inner.provider, host.categoryId, n);
-    if (!cs) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
+    const cs = await requireBlockhashCoSpend(host.inner.provider, host.categoryId, n);
     ordered.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
   }
   return ordered;

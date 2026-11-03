@@ -136,7 +136,7 @@ import {
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { requireBlockhashCoSpend, type BlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { pickBlockOracleCoin, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
@@ -12790,7 +12790,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       graphBlockhashSelections?: GraphBlockhashSelection[];
     }) | undefined)?.graphBlockhashSelections;
     if (graphSelections?.length && this.categoryId) {
-      const resolved: Array<NonNullable<Awaited<ReturnType<typeof resolveBlockhashCoSpend>>>> = [];
+      const resolved: BlockhashCoSpend[] = [];
       const graphPrior: Array<{
         slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output;
       }> = [];
@@ -12804,8 +12804,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )
           : this.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
         if (n === null) throw new Error(`blockhash: could not resolve message-bus batch row read "${selection.readKey}"`);
-        const coSpend = await resolveBlockhashCoSpend(this.inner.provider, this.categoryId, n);
-        if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
+        const coSpend = await requireBlockhashCoSpend(this.inner.provider, this.categoryId, n);
         resolved.push(coSpend);
         graphPrior.push({
           slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,

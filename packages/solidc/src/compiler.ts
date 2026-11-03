@@ -12327,11 +12327,11 @@ function synthesizeMessageBusRoute(
         // A block.* reader co-spends the oracle in its slot, and only a sidecar row exempts that foreign NFT.
         return found || readsBlockOracle(candidate);
       })));
-  // A block.* reader's oracle is a mutable NFT of its own category, so its sidecar row also exempts it from the
-  // resource cardinality while it is recreated unchanged.
-  const ownOracleSidecarMode = sidecarVerificationMode && eligible.some((fn) =>
+  // A block.* reader's oracle and a blockhash reader's slots are mutable NFTs of its own category, so their sidecar
+  // rows also exempt them from the resource cardinality while they are recreated unchanged.
+  const ownOracleSidecarMode = sidecarVerificationMode && (graphBlockhashReads.size > 0 || eligible.some((fn) =>
     [...collectNamedFunctionClosure(fn, signatureClosureByName)].some((name) =>
-      (signatureClosureByName.get(name) ?? []).some(readsBlockOracle)));
+      (signatureClosureByName.get(name) ?? []).some(readsBlockOracle))));
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',

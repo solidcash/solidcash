@@ -1119,6 +1119,9 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   of the contract's category, no longer exists, and ORACLE-5's container exposure goes with the baton. Slots are
   mutable, so the reader's oracle output pin, not the immutable-NFT census, refuses a slot minted beside any reader
   call, in every function (ORACLE-2 holds). The SDK sets a height locktime for any blockhash read, `n = 0` included.
+  A message-bus route's verifier counted a mutable slot as two resource endpoints, as it once did a block-info oracle
+  (ORACLE-4 follow-ups); a slot's sidecar row now exempts it while it is recreated unchanged (unverified: the
+  atomic-compose blockhash case failed before this change and was not run after it).
   Tests: `packages/solidcash/test/e2e/BlockhashRing.test.ts` (mock: genesis ring, write and read, a non-owner,
   backward, off-residue or premature update refused, retire, a slot minted beside a master call refused),
   `AuditCrypto4KeeperAuthority.test.ts` (mock: no coin but the master holds the category's minting NFT),

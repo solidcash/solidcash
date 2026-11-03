@@ -10836,8 +10836,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // logs at any other index. Scoped to contracts that declare an event or emit one declared in any scope (file
       // level, library, interface): the forged output is only readable as a log at getEventNftAddress(contract,
       // category, signature), which needs such a signature, and a hand-written covenant with no events may
-      // legitimately place own-category immutable NFTs of its own. A blockhash reader without events still pins its
-      // (n -> hash) pair lock, and a block.* reader its block-info oracle lock (emitOracleOutputPin).
+      // legitimately place own-category immutable NFTs of its own. A blockhash reader pins its slot lock, and a
+      // block.* reader its block-info oracle lock (emitOracleOutputPin), with or without events.
       // SEC-13: `selfdestruct` and `delegate` were excluded and admitted the SAME forgery. A selfdestruct spends
       // the master minting NFT, so it can mint own-category immutable NFTs at will and no later honest emit can
       // ever contradict them; a delegate function's own event NFT carries the PROXY's category, so an appended
@@ -10869,7 +10869,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
-        if (this.currentContractUsesBlockOracle) this.emitOracleOutputPin(node, false, true);
+        if (this.currentContractUsesBlockhash || this.currentContractUsesBlockOracle) {
+          this.emitOracleOutputPin(node, this.currentContractUsesBlockhash, this.currentContractUsesBlockOracle);
+        }
       } else if (node.name !== '__construct' && isStatefulContract
         && (this.currentContractUsesBlockhash || this.currentContractUsesBlockOracle)) {
         this.emitOracleOutputPin(node, this.currentContractUsesBlockhash, this.currentContractUsesBlockOracle);
@@ -10900,7 +10902,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // They do not authorize a source emit here, so an unrelated immutable event output must be refused just as
     // on an ordinary spend. unsafe(0) deliberately has no covenant policy and remains the explicit escape hatch.
     if (isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) {
-      const pairs = this.currentContractUsesBlockhash && !this.currentContractHasEvents;
+      const pairs = this.currentContractUsesBlockhash;
       if (this.currentContractHasEvents) this.emitOwnCategoryImmutableNftOutputPin(node);
       // A direct genesis mints one block-info oracle coin per master, so a direct split mints one per new master.
       // Framed and message-bus builds keep one coin.
@@ -16211,8 +16213,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
-      // One covenant per master category. The co-spent NFT carries that same category (capability
-      // none) and commitment = n(4 LE)||hash. require(tx.time >= n) and commitment.n == the argument.
+      // One covenant per master category. The co-spent slot is a mutable NFT of that category whose commitment
+      // starts n(4 LE)||hash. require(tx.time >= n) and commitment.n == the argument.
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
       // reads that arg to resolve addr(n)). ANY computed n (block.number - K, arbitrary arithmetic) is recorded
@@ -16250,12 +16252,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit([Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY], loc);
       this.emitVerifyCatBaseEqMaster(loc, 2);
       // The category check accepts any own-category coin. Only the category's blockhash oracle lock runs the
-      // (n -> hash) record covenant, so the input's lock has to be that one.
+      // slot covenant, so the input's lock has to be that one.
       this.emitBindBlockhashOracleLock(loc);
       this.emit([
-        Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, hash32]
-        Op.OP_SWAP, Op.OP_BIN2NUM, // [n, hash32, commitment.n]
-        Op.OP_ROT, Op.OP_EQUALVERIFY, // commitment.n == n -> [hash32]
+        Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, rest]
+        Op.OP_SWAP, Op.OP_BIN2NUM, // [n, rest, commitment.n]
+        Op.OP_ROT, Op.OP_EQUALVERIFY, // commitment.n == n -> [rest]
+        encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, // the hash, before the owner and depth -> [hash32]
       ], loc);
       this.popFromStack();
       this.pushToStack('(value)');
@@ -52482,14 +52485,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUAL, loc);                   // [cat, base, j, ownImmutableOrFt]
     this.emit(Op.OP_IF, loc);
-    // A blockhash reader's (n -> hash) pairs are own-category immutable NFTs too: one at the category's pair lock is
-    // no event, and is admitted only as an unchanged recreation of input j.
-    const pinsBlockhashPairs = this.currentContractUsesBlockhash;
-    if (pinsBlockhashPairs) {
-      this.emit([Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(3n), Op.OP_PICK], loc); // [cat, base, j, lock_j, cat]
-      this.emitBlockhashOracleLockOf(loc);
-      this.emit([Op.OP_EQUAL, Op.OP_IF, ...oracleRecreation(), Op.OP_ELSE], loc);
-    }
     this.emit(Op.OP_DUP, loc);                     // [cat, base, j, j]
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);       // [cat, base, j, ftAmount]
     this.emit(encodeInt(0n), loc);
@@ -52694,7 +52689,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_VERIFY, loc);                  // [cat, base, j]
     this.emit(Op.OP_ENDIF, loc);
-    if (pinsBlockhashPairs) this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_ENDIF, loc);
     if (skipsRuntimeEventSpan) this.emit(Op.OP_ENDIF, loc);
     if (skipsToOwnCategory) {
@@ -52719,11 +52713,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Every block oracle a contract reads is of its own category, and every master spend holds the minting NFT that
-   * could mint a look-alike: a (n -> hash) pair with a forged hash, or a block-info oracle with forged fields. An
-   * expired pair's wipe path also frees its output. So an output at the category's pair lock (`pairs`) or at its
-   * block-info oracle lock (`info`, the sentinel deployment fills) is admitted only as an unchanged recreation of
-   * the input at its index: same lock, token category, commitment and fungible amount. The owner's oracle updates
-   * run in transactions of their own.
+   * could mint a look-alike: a blockhash slot with a forged hash or a second slot of an n, or a block-info oracle
+   * with forged fields. So an output at the category's slot lock (`pairs`) or at its block-info oracle lock (`info`,
+   * the sentinel deployment fills) is admitted only as an unchanged recreation of the input at its index: same lock,
+   * token category, commitment and fungible amount. The owner's oracle updates run in transactions of their own.
    */
   private emitOracleOutputPin(node: FunctionDefinitionNode, pairs: boolean, info: boolean): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
@@ -55569,7 +55562,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * `[n, idx]` stays. The input at idx must be locked by the blockhash oracle lock of this contract's category.
-   * A same-category coin at another lock is not a (n -> hash) record.
+   * A same-category coin at another lock is not a blockhash slot.
    */
   private emitBindBlockhashOracleLock(loc: SingleLocationData): void {
     // [n, idx, category]. idx is the one untracked item above the tracked n.
@@ -55584,7 +55577,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[category]` -> `[lock]`: the category's one (n -> hash) oracle lock, P2SH32 of
+   * `[category]` -> `[lock]`: the category's one blockhash slot lock, P2SH32 of
    * `buildBlockhashOracleCovenantScript(category)`. A token category's first 32 bytes are already the covenant's
    * internal order.
    */

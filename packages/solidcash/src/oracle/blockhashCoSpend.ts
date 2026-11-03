@@ -1,15 +1,14 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  blockhashCommitmentNumber, blockhashOracleLockingBytecode, buildBlockhashOracleCovenantScript,
-  scriptToBytecode,
+  blockhashCommitmentNumber, blockhashOracleLockingBytecode, blockhashSlotReadUnlocking,
 } from '@solidcash/utils';
 import type { NetworkProvider } from '../network/index.js';
 import type { Utxo, Unlocker, Output } from '../interfaces.js';
 
 /**
- * Consumer-side resolver for blockhash(n) (docs/block-and-transaction-properties.md s11). The read codegen co-spends the
- * project-global (n->hash) oracle UTXO as the LAST input and self-preservingly recreates it at the MATCHING
- * output index, under tx.time >= n. This packages the three pieces a consumer wires for that, so call sites
+ * Consumer-side resolver for blockhash(n) (docs/block-and-transaction-properties.md s11). The read codegen co-spends
+ * the master category's blockhash slot that holds n, and the slot covenant's read path recreates it unchanged at the
+ * MATCHING output index, under tx.time >= n. This packages the three pieces a consumer wires for that, so call sites
  * stop hand-rolling the covenant redeem + read flag.
  */
 export interface BlockhashCoSpend {
@@ -22,8 +21,8 @@ export interface BlockhashCoSpend {
 }
 
 /**
- * Resolve the master's (n->hash) UTXO. Every block of the category shares one lock; the commitment's
- * first 4 bytes select `n`. Returns null when that block has not been published.
+ * Resolve the master's slot that holds block n. Every slot of the category shares one lock; the commitment's
+ * first 4 bytes select `n`. Returns null when no slot holds that block.
  */
 export async function resolveBlockhashCoSpend(
   provider: NetworkProvider,
@@ -32,15 +31,13 @@ export async function resolveBlockhashCoSpend(
 ): Promise<BlockhashCoSpend | null> {
   const category = hexToBin(oracleCategory);
   const lock = blockhashOracleLockingBytecode(category);
+  const wanted = oracleCategory.toLowerCase();
   const utxos = await provider.getUtxosForLockingBytecode(lock);
-  const utxo = utxos.find((candidate) => {
-    const commitment = candidate.token?.nft?.commitment;
-    return commitment !== undefined && blockhashCommitmentNumber(hexToBin(commitment)) === n;
-  });
+  const utxo = utxos.find(({ token }) => token?.category.toLowerCase() === wanted
+    && token.nft?.capability === 'mutable' && blockhashCommitmentNumber(hexToBin(token.nft.commitment)) === n);
   if (utxo === undefined) return null;
 
-  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
-  const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]);
+  const readUnlock = blockhashSlotReadUnlocking(category);
   return {
     utxo,
     unlocker: { generateLockingBytecode: (): Uint8Array => lock, generateUnlockingBytecode: (): Uint8Array => readUnlock },

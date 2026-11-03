@@ -24,7 +24,8 @@ import { aliceAddress, alicePriv } from '../fixture/vars.js';
  * height-type nLockTime, below 500,000,000.
  */
 
-const CONSUMER = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
+// Its reads reach four blocks back, so its ring holds four slots.
+const CONSUMER = 'contract B(){ function f(bytes32 h){ require(blockhash(block.number - 4) == h); } }';
 
 const fakeRpc = (): RpcLike => ({ request: async (): Promise<never> => { throw new Error('unused'); } });
 

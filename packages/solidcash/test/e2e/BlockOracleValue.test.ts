@@ -161,7 +161,7 @@ function chainRpc(provider: MockNetworkProvider): RpcLike {
 }
 
 describe('the blockhash ring keeps its value', () => {
-  // A reader whose ring holds two slots, kept by the mock's owner key.
+  // A reader of any n, whose ring holds 256 slots, kept by the mock's owner key.
   async function ring(): Promise<{ provider: MockNetworkProvider; lock: Uint8Array; keeper: BlockOracleUpdater }
   | undefined> {
     const provider = createTestProvider();
@@ -169,7 +169,6 @@ describe('the blockhash ring keeps its value', () => {
     const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
     const { contract, categoryId } = await StatefulContract.deploy(compileString(CONSUMER), [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
-      blockhashDepth: 2,
     });
     const keeper = new BlockOracleUpdater({
       contract: contract.inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: chainRpc(provider),
@@ -207,16 +206,20 @@ describe('the blockhash ring keeps its value', () => {
       .sort(([a], [b]) => Number(a - b));
     const keeperLock = new SignatureTemplate(r.provider.blockOracleOwnerKey).unlockP2PKH().generateLockingBytecode();
     const funds = await balance(r.provider, keeperLock);
+    // The slots no write reached still hold their genesis n, their residue.
+    const unwritten = (written: readonly bigint[]): Array<[bigint, bigint]> => Array
+      .from({ length: 256 }, (_s, s) => BigInt(s))
+      .filter((s) => written.every((n) => n % 256n !== s)).map((s): [bigint, bigint] => [s, 1_200n]);
 
     const first = BigInt(await r.provider.getBlockHeight());
     expect(await r.keeper.syncOnce()).toBeNull();
     await r.provider.mine(1);
     expect(await r.keeper.syncOnce()).toBeNull();
-    expect(await held()).toEqual([[first, 1_200n], [first + 1n, 1_200n]]);
-    // Two blocks on, the tip's slot is the one holding first + 1, and it moves up by the depth.
-    await r.provider.mine(2);
+    expect(await held()).toEqual([...unwritten([first, first + 1n]), [first, 1_200n], [first + 1n, 1_200n]]);
+    // 256 blocks on, the tip's slot is the one holding first + 1, and it moves up by the depth.
+    await r.provider.mine(256);
     expect(await r.keeper.syncOnce()).toBeNull();
-    expect(await held()).toEqual([[first, 1_200n], [first + 3n, 1_200n]]);
+    expect(await held()).toEqual([...unwritten([first, first + 257n]), [first, 1_200n], [first + 257n, 1_200n]]);
     expect(await balance(r.provider, keeperLock)).toBe(funds - 6_000n);
   });
 });

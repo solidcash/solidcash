@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   blockhashOracleLockingBytecode, decodeBlockhashSlotCommitment, hash160, type BlockhashSlotFields,
 } from '@solidcash/utils';
@@ -29,12 +29,14 @@ describe('SDK genesis blockhash ring owner', () => {
   it('names blockhashKeeperPublicKey as the slot owner, and that keeper writes the ring', async () => {
     const provider = new MockNetworkProvider();
     const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
+    // A reader of any n gets the whole 256-slot ring, every slot naming the key.
     const deployed = await StatefulContract.deploy(compileString(SOURCE), [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
-      blockhashKeeperPublicKey: alicePub, blockhashDepth: 2,
+      blockhashKeeperPublicKey: alicePub,
     });
-    expect((await ring(provider, deployed.categoryId)).map((utxo) => fieldsOf(utxo)!.ownerPkh))
-      .toEqual([hash160(alicePub), hash160(alicePub)]);
+    const owners = (await ring(provider, deployed.categoryId)).map((utxo) => binToHex(fieldsOf(utxo)!.ownerPkh));
+    expect(owners).toHaveLength(256);
+    expect(new Set(owners)).toEqual(new Set([binToHex(hash160(alicePub))]));
     const updater = (keeperKey: Uint8Array): BlockOracleUpdater => new BlockOracleUpdater({
       contract: deployed.contract.inner, categoryId: deployed.categoryId, keeperKey,
       rpc: { request: async (): Promise<never> => { throw new Error('unused'); } },
@@ -53,7 +55,7 @@ describe('SDK genesis blockhash ring owner', () => {
     const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 5_000_000n }));
     const artifact = compileString(`pragma solidity ^0.8.20;
       contract FramedReader {
-        function check(uint256 n, bytes32 expected) external view { require(blockhash(n) == expected); }
+        function check(bytes32 expected) external view { require(blockhash(block.number - 3) == expected); }
       }`, { evmCompat: true, composition: 'framed' });
     const deployed = await StatefulContract.deploy(artifact, [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,

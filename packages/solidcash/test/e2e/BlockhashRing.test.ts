@@ -18,6 +18,8 @@ import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
 import { aliceAddress, alicePkh, alicePriv } from '../fixture/vars.js';
 
 const SOURCE = 'contract Reader(){ function check(int n, bytes32 expected) { require(blockhash(n) == expected); } }';
+// A reader of the block below block.number, whose ring needs one slot: any depth from 1 deploys it.
+const RECENT = 'contract Recent(){ function check(bytes32 expected) { require(blockhash(block.number - 1) == expected); } }';
 const ZERO = new Uint8Array(32);
 const HASH = new Uint8Array(32).fill(0xb7);
 const FORGED = new Uint8Array(32).fill(0xee);
@@ -25,12 +27,15 @@ const ALICE_LOCK = Uint8Array.from([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]);
 
 describe('blockhash ring', () => {
   const artifact = compileString(SOURCE);
+  const recent = compileString(RECENT);
 
   type Deployed = Awaited<ReturnType<typeof StatefulContract.deploy>>;
 
-  async function deploy(provider: MockNetworkProvider, blockhashDepth?: number | 'now'): Promise<Deployed> {
+  async function deploy(
+    provider: MockNetworkProvider, blockhashDepth?: number | 'now', reader = artifact,
+  ): Promise<Deployed> {
     const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
-    return StatefulContract.deploy(artifact, [], {
+    return StatefulContract.deploy(reader, [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
       ...(blockhashDepth === undefined ? {} : { blockhashDepth }),
     });
@@ -60,10 +65,23 @@ describe('blockhash ring', () => {
     }));
   }
 
+  it('mints the depth its reads need by default, and refuses a smaller one', async () => {
+    const provider = new MockNetworkProvider();
+    expect(recent.blockhashDepth).toBe(1);
+    expect(artifact.blockhashDepth).toBe(256);
+    expect((await slots(provider, (await deploy(provider, undefined, recent)).categoryId)).map(({ fields }) => fields))
+      .toEqual([{ n: 0n, hash: ZERO, ownerPkh: hash160(provider.blockOracleOwnerPublicKey), depth: 1 }]);
+    const any = await slots(provider, (await deploy(provider)).categoryId);
+    expect(any).toHaveLength(256);
+    expect(any.every(({ fields }) => fields.depth === 256)).toBe(true);
+    await expect(deploy(provider, 4)).rejects.toThrow(/blockhashDepth 4 is below the 256 slots/);
+    await expect(deploy(provider, 'now')).rejects.toThrow(/blockhashDepth 1 is below the 256 slots/);
+  }, 120_000);
+
   it('mints blockhashDepth slots at genesis, one for now', async () => {
     const provider = new MockNetworkProvider();
     const owner = hash160(provider.blockOracleOwnerPublicKey);
-    const four = await deploy(provider, 4);
+    const four = await deploy(provider, 4, recent);
     const ring = await slots(provider, four.categoryId);
     expect(ring.map(({ fields }) => fields.n).sort()).toEqual([0n, 1n, 2n, 3n]);
     for (const { utxo, fields } of ring) {
@@ -71,26 +89,26 @@ describe('blockhash ring', () => {
       expect(utxo.token).toMatchObject({ category: four.categoryId, amount: 0n, nft: { capability: 'mutable' } });
       expect(fields).toEqual({ n: fields.n, hash: ZERO, ownerPkh: owner, depth: 4 });
     }
-    const now = await deploy(provider, 'now');
+    const now = await deploy(provider, 'now', recent);
     expect((await slots(provider, now.categoryId)).map(({ fields }) => [fields.n, fields.depth])).toEqual([[0n, 1]]);
-    await expect(deploy(provider, 0)).rejects.toThrow(/blockhashDepth/);
+    await expect(deploy(provider, 0, recent)).rejects.toThrow(/blockhashDepth/);
   }, 120_000);
 
   it('passes the ring options through a contract factory', async () => {
     const provider = new MockNetworkProvider();
     const signer = HDSigner.fromPhrase('test test test test test test test test test test test junk', provider);
     await provider.addUtxo(signer.getAddress(), { txid: '5a'.repeat(32), vout: 0, satoshis: 10_000_000n });
-    const contract = await new ContractFactory(artifact, signer).deploy({ blockhashDepth: 2 });
+    const contract = await new ContractFactory(recent, signer).deploy({ blockhashDepth: 2 });
     expect((await slots(provider, contract.categoryId)).map(({ fields }) => fields.n).sort()).toEqual([0n, 1n]);
   });
 
   it('writes block n into its slot, and blockhash(n) reads it', async () => {
     const provider = new MockNetworkProvider();
-    const deployed = await deploy(provider, 4);
+    const deployed = await deploy(provider);
     const owner = hash160(provider.blockOracleOwnerPublicKey);
     const n = BigInt(await provider.getBlockHeight()) - 1n;
     await keeper(provider, deployed).writeBlockhashSlot(n, HASH);
-    const written = binToHex(buildBlockhashSlotCommitment(n, HASH, owner, 4));
+    const written = binToHex(buildBlockhashSlotCommitment(n, HASH, owner, 256));
     const holding = async (): Promise<string | undefined> => (await slots(provider, deployed.categoryId))
       .find(({ fields }) => fields.n === n)?.utxo.token?.nft?.commitment;
     expect(await holding()).toBe(written);
@@ -99,14 +117,14 @@ describe('blockhash ring', () => {
     expect(await holding()).toBe(written);
     // Slot 0 was never written (n is not a multiple of the depth): blockhash(0) reads the zero hash under a
     // height locktime of 0. A wrong hash is refused.
-    expect(n % 4n).not.toBe(0n);
+    expect(n % 256n).not.toBe(0n);
     await expect(deployed.contract.call.check(0n, ZERO).send()).resolves.toHaveProperty('txid');
     await expect(deployed.contract.call.check(n, ZERO).send()).rejects.toThrow();
   }, 120_000);
 
   it('refuses an update by a non-owner, back in time, off its residue or ahead of nLockTime', async () => {
     const provider = new MockNetworkProvider();
-    const deployed = await deploy(provider, 4);
+    const deployed = await deploy(provider, 4, recent);
     const owner = hash160(provider.blockOracleOwnerPublicKey);
     const n = BigInt(await provider.getBlockHeight()) - 1n;
     await keeper(provider, deployed).writeBlockhashSlot(n, HASH);
@@ -141,7 +159,7 @@ describe('blockhash ring', () => {
 
   it('refuses a slot minted beside a master call', async () => {
     const provider = new MockNetworkProvider();
-    const deployed = await deploy(provider, 4);
+    const deployed = await deploy(provider);
     const owner = hash160(provider.blockOracleOwnerPublicKey);
     const n = BigInt(await provider.getBlockHeight()) - 1n;
     await keeper(provider, deployed).writeBlockhashSlot(n, HASH);

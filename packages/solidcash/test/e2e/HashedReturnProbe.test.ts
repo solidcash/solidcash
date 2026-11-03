@@ -1,5 +1,4 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { sha256 } from '@solidcash/utils';
 import { compileString } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract } from '../../src/index.js';
@@ -9,6 +8,7 @@ import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js'
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { setupStatefulUtxos } from '../test-util.js';
+import { callRecordCommitment, callRecordDigest } from '../../src/stateful/call-record.js';
 
 describe('authenticated hashed return probes', () => {
   it.each([true, false])('derives a five-word EVM fixed-array result (fast compilation: %s)', async (fast) => {
@@ -37,17 +37,27 @@ describe('authenticated hashed return probes', () => {
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const expected = encodeEvmInvocationResult([[2n, 3n, 4n, 5n, 6n]], ['uint16[5]']);
-    const digest = sha256(expected);
+    // Since call records (D50, docs/wip/call-records/DESIGN.md) a return carrier commits to the call it answers: the
+    // call's 31-byte digest, a form byte, and the result. The five-word EVM result (160 bytes) is wider than the
+    // inline form takes, so the record carries form 0x02 and the result's SHA256; probes still recover the raw bytes
+    // from the preimage they recorded.
+    const projectAbi = artifact.abi.find((entry) => entry.name === 'project')!;
+    const callDigest = callRecordDigest(projectAbi, [[1n, 2n, 3n, 4n, 5n]], { structs: artifact.structs });
+    expect(callDigest).toBeDefined();
+    const record = callRecordCommitment(expected, callDigest!);
+    expect(record).toHaveLength(31 + 1 + 32);
+    expect(record[31]).toBe(0x02);
     const output = transaction.outputs.find((candidate) => candidate.token?.nft
-      && binToHex(candidate.token.nft.commitment) === binToHex(digest));
+      && binToHex(candidate.token.nft.commitment) === binToHex(record));
     expect(output).toBeDefined();
-    // Direct dependency probes retain raw bytes for decoding. The physical return NFT carries the digest
-    // because the five-word EVM result exceeds the 128-byte commitment limit. Verify the published digest
-    // and a tampered commitment against the same covenant in the VM.
-    expect(output!.token!.nft!.commitment).toHaveLength(32);
+    // The published record verifies, and the covenant refuses a record whose call digest or result hash is altered.
     const vm = createVirtualMachineBch2026ForProvider(provider);
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction }))).toBe(true);
-    output!.token!.nft!.commitment[0] ^= 1;
-    expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction }))).not.toBe(true);
+    const commitment = output!.token!.nft!.commitment;
+    for (const byte of [0, 32]) {
+      commitment[byte] ^= 1;
+      expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction })), `byte ${byte}`).not.toBe(true);
+      commitment[byte] ^= 1;
+    }
   });
 });

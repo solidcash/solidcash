@@ -30,6 +30,7 @@ import {
   scriptToBytecode,
   buildDataNftCovenantScript,
   buildBlockhashOracleCovenantScript,
+  BLOCKHASH_MAX_DEPTH,
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
   buildTokenContainerCovenantScript,
@@ -16216,7 +16217,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
       // One covenant per master category. The co-spent slot is a mutable NFT of that category whose commitment
-      // starts n(4 LE)||hash. require(tx.time >= n) and commitment.n == the argument.
+      // is n(4 LE)||hash||owner(20)||depth(2 LE). require(tx.time >= n). A slot holding n gives its hash. A slot
+      // of a 256-deep ring holding n + 256k (k > 0) gives zero, as on the EVM: its owner wrote that block under
+      // a nLockTime at or above it, so n is older than the last 256 blocks.
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
       // reads that arg to resolve addr(n)). ANY computed n (block.number - K, arbitrary arithmetic) is recorded
@@ -16256,11 +16259,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The category check accepts any own-category coin. Only the category's blockhash oracle lock runs the
       // slot covenant, so the input's lock has to be that one.
       this.emitBindBlockhashOracleLock(loc);
+      const fullDepth = encodeInt(BigInt(BLOCKHASH_MAX_DEPTH));
       this.emit([
         Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, rest]
         Op.OP_SWAP, Op.OP_BIN2NUM, // [n, rest, commitment.n]
-        Op.OP_ROT, Op.OP_EQUALVERIFY, // commitment.n == n -> [rest]
+        Op.OP_ROT, Op.OP_SUB, // [rest, d = commitment.n - n]
+        Op.OP_DUP, Op.OP_0, Op.OP_GREATERTHAN, Op.OP_IF, // a newer block reads zero
+        fullDepth, Op.OP_MOD, Op.OP_NOT, Op.OP_VERIFY, // d is a multiple of 256 -> [rest]
+        encodeInt(52n), Op.OP_SPLIT, Op.OP_NIP, fullDepth, Op.OP_EQUALVERIFY, // the depth field is 256 -> []
+      ], loc);
+      this.emitFixedWidthConstant(new Uint8Array(32), loc); // [zero32]
+      this.emit([
+        Op.OP_ELSE,
+        Op.OP_NOT, Op.OP_VERIFY, // d == 0: commitment.n == n -> [rest]
         encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, // the hash, before the owner and depth -> [hash32]
+        Op.OP_ENDIF,
       ], loc);
       this.popFromStack();
       this.pushToStack('(value)');

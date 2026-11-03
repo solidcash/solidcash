@@ -2391,7 +2391,8 @@ const BLOCKHASH_HEIGHT_LIMIT = 500_000_000n;
 /**
  * One blockhash covenant per master category. Its coins are a ring of `depth` slots, mutable NFTs of that category at
  * this one lock, which only the genesis mints. A slot's commitment is n (4 LE) | hash (32) | owner hash160 (20) |
- * depth (2 LE), so a reader co-spends the slot whose commitment starts with the n it asks for. Unlocking is
+ * depth (2 LE), so a reader co-spends the slot whose commitment starts with the n it asks for, or the slot of its
+ * residue in a 256-deep ring that holds a newer block, which reads zero. Unlocking is
  * `<pubkey> <sig> <newCommitment> <flag>`:
  *  - flag 0 reads: the other pushes are dropped and the commitment stays;
  *  - flag 1 updates under the stored owner's signature: the new commitment keeps owner and depth, and its n is a

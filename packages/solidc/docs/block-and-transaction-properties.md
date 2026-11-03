@@ -290,8 +290,11 @@ returning the 32 bytes after `n`. Consequences:
   `this.categoryId`; the derivation probe co-spends it and the SDK auto-sets the CLTV locktime, a height
   locktime for any read, `n = 0` included. The base `Contract`/`TransactionBuilder` path fails loudly ("build
   the call via StatefulContract").
-- **The ring (ORACLE-6).** Direct and framed genesis mint `blockhashDepth` slots (1 to 256, `'now'` for 1,
-  default 256; `packages/solidcash/src/oracle/blockhash-ring-deployment.ts`), 1,200 satoshis each. Slot `s` holds
+- **The ring (ORACLE-6).** Direct and framed genesis mint `blockhashDepth` slots (1 to 256, `'now'` for 1;
+  `packages/solidcash/src/oracle/blockhash-ring-deployment.ts`), 1,200 satoshis each. The default is the depth
+  `SynthesizeBlockOracle` infers and the artifact publishes as `blockhashDepth`: the most over the reads of K for
+  `blockhash(block.number - K)` with K a compile-time constant (1 for K = 0), 256 for any other argument; K > 256 is
+  refused (`BlockhashDepthError`), and so is a deployment depth below the artifact's. Slot `s` holds
   `n = s`, a zero hash, the owner (`blockhashKeeperPublicKey`, else the provider's `blockOracleOwnerPublicKey`;
   with neither the deployment is refused) and the depth. Flag 0 reads; flag 1 is the owner's signed update, which
   keeps owner and depth and moves `n` up by a positive multiple of the depth to a height not ahead of nLockTime,

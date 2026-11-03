@@ -8,10 +8,14 @@ import {
   IdentifierNode,
   IntLiteralNode,
   BinaryOpNode,
+  CastNode,
+  ExpressionNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { DeprecatedNowError } from '../Errors.js';
-import { encodeComputedBlockhashKey } from '@solidcash/utils';
+import { BlockhashDepthError, DeprecatedNowError } from '../Errors.js';
+import {
+  BLOCKHASH_MAX_DEPTH, IntType, PrimitiveType, encodeComputedBlockhashKey, type Type,
+} from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -27,6 +31,15 @@ const ORACLE_FIELDS = new Set<NullaryOperator>([
   NullaryOperator.BLOCK_TOTAL_FEES,
   NullaryOperator.BLOCK_COINBASE,
 ]);
+
+const isIntegerType = (type: Type): boolean =>
+  type instanceof IntType || type === PrimitiveType.INT || type === PrimitiveType.BIGINT;
+
+/** `block.number`, under any integer casts. */
+function isBlockNumber(node: Node | undefined): boolean {
+  if (node instanceof CastNode) return isIntegerType(node.type) && isBlockNumber(node.expression);
+  return node instanceof NullaryOpNode && node.operator === NullaryOperator.BLOCK_NUMBER;
+}
 
 /** Whether a body slices the oracle itself, before or after basefee lowering. */
 export function readsBlockOracle(fn: FunctionDefinitionNode): boolean {
@@ -87,6 +100,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
   // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
   usesBlockhash = false;
+  // The ring depth the reads need, the most over them: K for blockhash(block.number - K) with K a compile-time
+  // constant (1 for K = 0), 256 for any other argument.
+  blockhashDepth = 0;
+  private constants = new Map<string, ExpressionNode>();
   private fnUsesBlockhash = false;
   // Distinct blockhash read keys in the current function - each rides its own oracle slot (param name for a
   // direct-identifier n; a framed-site placeholder for a computed n).
@@ -133,6 +150,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.usesBlockhash = true;
       this.readsBlockData = true;
       this.fnUsesBlockhash = true;
+      this.blockhashDepth = Math.max(this.blockhashDepth, this.blockhashReadDepth(node));
       // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
       // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
       // gets its own framed-site slot; the SDK resolves it from the auto-derivation probe trace (the covenant
@@ -148,6 +166,40 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       }
     }
     return super.visitFunctionCall(node);
+  }
+
+  /** The ring depth one read needs. A read further back than a ring holds is refused. */
+  private blockhashReadDepth(node: FunctionCallNode): number {
+    const blocksBack = this.blocksBelowBlockNumber(node.parameters[0]);
+    if (blocksBack === undefined || blocksBack < 0n) return BLOCKHASH_MAX_DEPTH;
+    if (blocksBack > BigInt(BLOCKHASH_MAX_DEPTH)) throw new BlockhashDepthError(node, blocksBack, BLOCKHASH_MAX_DEPTH);
+    return Math.max(1, Number(blocksBack));
+  }
+
+  /** K when `argument` is `block.number - K` with K a compile-time constant, 0 for `block.number` itself. */
+  private blocksBelowBlockNumber(argument: Node | undefined): bigint | undefined {
+    if (isBlockNumber(argument)) return 0n;
+    if (!(argument instanceof BinaryOpNode) || argument.operator !== BinaryOperator.MINUS) return undefined;
+    return isBlockNumber(argument.left) ? this.constantInteger(argument.right, new Set()) : undefined;
+  }
+
+  /** A compile-time integer: a literal, a constant no local shadows, an integer cast, or a sum, difference or product. */
+  private constantInteger(node: Node | undefined, seen: ReadonlySet<string>): bigint | undefined {
+    if (node instanceof IntLiteralNode) return node.value;
+    if (node instanceof CastNode) return isIntegerType(node.type) ? this.constantInteger(node.expression, seen) : undefined;
+    if (node instanceof IdentifierNode) {
+      const expression = this.constants.get(node.name);
+      if (expression === undefined || seen.has(node.name) || this.fnDeclaredNames.has(node.name)) return undefined;
+      return this.constantInteger(expression, new Set([...seen, node.name]));
+    }
+    if (!(node instanceof BinaryOpNode)) return undefined;
+    const left = this.constantInteger(node.left, seen);
+    const right = this.constantInteger(node.right, seen);
+    if (left === undefined || right === undefined) return undefined;
+    if (node.operator === BinaryOperator.PLUS) return left + right;
+    if (node.operator === BinaryOperator.MINUS) return left - right;
+    if (node.operator === BinaryOperator.MUL) return left * right;
+    return undefined;
   }
 
   // Flag a function reading blockhash(n); SymbolTable injects the hidden co-spend input-index param after
@@ -212,12 +264,14 @@ export default class SynthesizeBlockOracle extends AstTraversal {
 
   visitSourceFile(node: SourceFileNode): Node {
     this.legacyNow = node.solidityLegacyNow;
+    for (const constant of node.constantDefinitions) this.constants.set(constant.name, constant.expression);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
+    for (const constant of node.constantDefinitions) this.constants.set(constant.name, constant.expression);
     // Solidity permits a contract function to shadow the gasleft builtin (with a compiler warning). Preserve
     // that ordinary call for semantic overload resolution rather than replacing it with the BCH gas shim.
     this.userGasleft = node.functions.some((fn) => fn.name === 'gasleft' && fn.parameters.length === 0);

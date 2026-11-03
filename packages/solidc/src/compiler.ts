@@ -18808,7 +18808,10 @@ function compileResolvedAst(
     }
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
-  if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  if (blockOracle.usesBlockhash) {
+    artifact.usesBlockhash = true;
+    artifact.blockhashDepth = blockOracle.blockhashDepth;
+  }
   const finishedProgram = asmToBytecode(artifact.bytecode);
   const blockOracleLockSlots = findBlockOracleLockSlots(finishedProgram);
   // A constant-lock master (a contract another contract creates) has one program for every category, so it derives

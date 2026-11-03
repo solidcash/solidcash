@@ -2304,6 +2304,11 @@ export interface Artifact {
    */
   delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
+  /**
+   * How many recent blocks a blockhash reader's ring must hold: the most over its reads, K for
+   * `blockhash(block.number - K)` with K a compile-time constant (1 for K = 0), 256 for any other argument.
+   */
+  blockhashDepth?: number;
   /** A function reads the block-info oracle commitment. The update is not an entry of this contract. */
   usesBlockOracle?: boolean;
   /** Offsets of the 35-byte oracle-lock sentinel in the published bytecode. The offset is the push opcode. */

@@ -1946,6 +1946,13 @@ export class DeprecatedNowError extends SolidCashError {
   }
 }
 
+export class BlockhashDepthError extends SolidCashError {
+  constructor(node: Node, blocksBack: bigint, maximum: number) {
+    super(node, `blockhash(block.number - ${blocksBack}) reads ${blocksBack} blocks back, and a blockhash ring holds `
+      + `at most ${maximum}`);
+  }
+}
+
 export class GlobalUsingForNonUDVTError extends SolidCashError {
   constructor(node: Node, typeName: string) {
     super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);

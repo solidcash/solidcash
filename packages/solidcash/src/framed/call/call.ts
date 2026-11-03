@@ -3583,7 +3583,15 @@ async function callInShape(
     // are on branches it did not take, and the plan drops them.
     const made = learnedSends.findIndex((send) => send.lock === undefined || send.amount === undefined);
     const callAmounts = learnedCallAmounts;
-    const unpaid = payees.filter((_payee, index) => callAmounts[index] === undefined);
+    // A paid contract whose own body refused on its own reason was reached, not passed by: the send is a low-level
+    // call that fails there (the EVM's returns `false`, and the payer's own check over it names the reason), so it
+    // stays in the plan for that refusal to be named, as an unconditional send's does.
+    const refusedPayees = payees.some((_payee, index) => callAmounts[index] === undefined)
+      ? new Set(reportCompositionRefusal({ draft: candidate, artifacts: frameArtifacts, vm: machine }).refusals
+        .filter((frame) => frame.reason?.message !== undefined).map((frame) => frame.master))
+      : new Set<string>();
+    const unpaid = payees.filter((_payee, index) => callAmounts[index] === undefined
+      && !refusedPayees.has(receiveMasterId(index)));
     const listedShort = made >= unconditionalSends
       && learnedSends.slice(made).every((send) => send.lock === undefined && send.amount === undefined);
     const payeesShort = unpaid.length > 0 && unpaid.every((payee) => payee.onBranch)

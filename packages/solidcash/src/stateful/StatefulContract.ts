@@ -9328,13 +9328,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && (batchSourceRows.length === 1
             || (batchSourceRows.length > 1 && overrides?.omitLocalFeeTail !== true))
           && uniqueBatchTargets.size === 1;
-        // The ascending target chain. Linear batches publish it as an explicit row vector; every batch uses it
-        // to decide which of several inserts sharing one predecessor rewrites that predecessor.
+        // The ascending chain of the nodes the active lanes settle at. Linear batches publish it as an explicit row
+        // vector, which the covenant binds to each lane's (Slot, Next) witness; it also decides which of several
+        // inserts sharing one predecessor rewrites that predecessor. A write settles at its target. A read-only
+        // lane settles at its proof node, and for an absent key the plan carries that node (the predecessor), not
+        // the queried key, so the row is the settlement node, exactly as the lane's witness names it.
         const chainRows = batch.slotIndices
           .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !noOpSlots.has(slotIndex)
             && !lentSlots.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
           .map((slotIndex) => {
-            const slot = batchTargetSlots.get(slotIndex)!;
+            const slot = settlementSlots.get(slotIndex)!;
             const out = plan.outputs.find((candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(slot));
             if (!out) throw new Error(`vmap batch '${batch.collection}' has no chain row for slot ${slotIndex}`);
             return { slotIndex, slot, next: decodeEntryCommitment(out.commitment).nextKey };

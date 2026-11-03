@@ -12,7 +12,7 @@ export default defineConfig(solidcashHardhatPreset({
   root: "/Code/sushi-port",
   test: {
     include: ["test/**/*.test.ts"],
-    setupFiles: ["./test/setup.bch.ts"],
+    setupFiles: ["./test-bch/setup.ts"],
     testTimeout: 1_800_000,
     hookTimeout: 1_800_000,
     fileParallelism: false,

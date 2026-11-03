@@ -8,7 +8,7 @@ import type { Contract } from '../Contract.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type { AbiToFunctionMap } from '../types/type-inference.js';
 import { findDeploymentByAddressValue } from './deployment-registry.js';
-import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+import { selectMappingEntryByKeys, type MappingKey } from './mapping-key-lookup.js';
 import { addressMappingKeyCandidates } from './sc-address-mapping-key-candidates.js';
 import {
   canonicalAbiFunctionSignature,
@@ -104,14 +104,14 @@ export function buildNamespaces<TArtifact extends Artifact>(
   for (const coll of contract.stateLayout!.collections ?? []) {
     if (coll.kind !== 'mapping') continue;
     // @ts-ignore - dynamic property assignment (mapping getter takes key args, unlike the scalar getters)
-    host.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
+    host.state[coll.name] = async (...keys: Array<MappingKey>): Promise<any> => {
       const entries = await host.getEntries(coll.name);
       const keyTypes = coll.keyTypes ?? [coll.keyType];
       const mappingKeys = keys.slice(0, keyTypes.length);
       // A stored address key is the peer's value identity (a plain contract's physical locking bytecode, or a
       // kernel participant's public CREATE identity). A caller may name the same contract by its logical address,
       // so expand each address key into its authenticated deployment aliases before comparing slots.
-      const candidateRows = keyTypes.reduce<Array<Array<bigint | boolean | Uint8Array | string>>>(
+      const candidateRows = keyTypes.reduce<Array<Array<MappingKey>>>(
         (rows, keyType, index) => rows.flatMap((row) => {
           const key = mappingKeys[index]!;
           const candidates = keyType === 'address' || keyType?.startsWith('address ') === true

@@ -313,6 +313,11 @@ export interface FramedCallCreation {
    * cannot run in the transaction that mints its masters.
    */
   readonly initializer?: { readonly functionName: string; readonly args: readonly FunctionArgument[] };
+  /**
+   * The key that updates the child's own block oracle, which its genesis mints when the child reads block.*. Defaults
+   * to the provider's own key on a simulator or devnet; a live network names one.
+   */
+  readonly blockOracleOwnerPublicKey?: Uint8Array;
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -1273,6 +1278,8 @@ function inferredCreates(
     ...(child.split === undefined ? {} : { split: child.split }),
     pool: resolveMasterPoolSize(),
     ...(initializer === undefined ? {} : { initializer }),
+    ...(child.blockOracleOwnerPublicKey === undefined
+      ? {} : { blockOracleOwnerPublicKey: child.blockOracleOwnerPublicKey }),
   };
 }
 
@@ -2906,6 +2913,8 @@ async function callInShape(
         ...(creates.split === undefined ? {} : { split: creates.split }),
         ...(creates.pool === undefined ? {} : { pool: creates.pool }),
         ...(creates.initializer === undefined ? {} : { initializer: creates.initializer }),
+        ...(creates.blockOracleOwnerPublicKey === undefined
+          ? {} : { blockOracleOwnerPublicKey: creates.blockOracleOwnerPublicKey }),
         ownerLock: options.callerLockingBytecode,
       }).outputs.map((output) => ({
         lockingBytecode: output.to as Uint8Array,

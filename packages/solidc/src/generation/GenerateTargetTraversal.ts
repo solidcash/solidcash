@@ -19029,12 +19029,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Each sorted collection's empty head is minted at genesis at its entry covenant's lock, which takes the
     // category `K`; the check accepts each one, in both byte orders of it and against the slot's
     // deployment-filled collection hash.
-    const extraLocks = 2 + 2 * CHILD_COLLECTION_CAPACITY;
+    const heads = 2 * CHILD_COLLECTION_CAPACITY;
     for (let slot = 0; slot < CHILD_COLLECTION_CAPACITY; slot += 1) {
       for (let variant = 0; variant < 2; variant += 1) {
         this.emitEntryHeadLock(6 + slot * 2 + variant, slot, variant === 1, locationData);
       }
     }
+    // A child that reads block.* owns a block-info oracle of `K`, which its genesis mints at the lock the oracle
+    // covenant gives `K`, so the check accepts that lock too. It is derived as the child's masters derive it from
+    // their own token: a genesis category is the outpoint hash, in the order both introspections answer, so one byte
+    // order is the lock the child reads. A child that reads none mints no oracle: a coin of `K` there would be one no
+    // master reads, and the count still bounds what the creation mints.
+    this.emit(encodeInt(BigInt(6 + heads - 1)), locationData);
+    this.emit(Op.OP_PICK, locationData); // K, under the heads, the authhead', the record', the authhead, the record and the address
+    this.emit(blockOracleLockDerivationScript(), locationData); // [oracle, heads…, authhead', …]
+    const extraLocks = 2 + heads + 1;
     for (let slot = 0; slot < CHILD_LOCK_CAPACITY; slot += 1) {
       this.emit(childLockSentinel(slot), locationData);
     }

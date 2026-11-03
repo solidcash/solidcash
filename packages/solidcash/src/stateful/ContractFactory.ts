@@ -75,6 +75,12 @@ export interface DeployContractOptions {
   bcmr?: DeployOptions['bcmr'];
   /** The ledger token's bearer category and premint; see `DeployOptions.nativeToken`. */
   nativeToken?: DeployOptions['nativeToken'];
+  /** The key that updates a `block.*` reader's oracle coins; see `DeployOptions.blockOracleOwnerPublicKey`. */
+  blockOracleOwnerPublicKey?: DeployOptions['blockOracleOwnerPublicKey'];
+  /** The key that writes a `blockhash` reader's ring; see `DeployOptions.blockhashKeeperPublicKey`. */
+  blockhashKeeperPublicKey?: DeployOptions['blockhashKeeperPublicKey'];
+  /** How many recent blocks a `blockhash` reader's ring holds; see `DeployOptions.blockhashDepth`. */
+  blockhashDepth?: DeployOptions['blockhashDepth'];
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -410,6 +416,15 @@ export class ContractFactory<T extends Artifact = Artifact> {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
           poolSatoshis = poolGenesisSatoshis(pool, 1200n, overrides.functionSplit?.shards.length ?? 1);
         }
+        // A reader's genesis also mints its oracle coins: one block-info oracle per master outside a message-bus
+        // build, and its blockhash ring.
+        if (deployArtifact.usesBlockOracle === true) {
+          poolSatoshis += 1200n * (deployArtifact.messageBus === undefined ? BigInt(overrides.threadCount ?? 1) : 1n);
+        }
+        if (deployArtifact.usesBlockhash === true) {
+          const { BLOCKHASH_SLOT_AMOUNT, blockhashRingDepth } = await import('../oracle/blockhash-ring-deployment.js');
+          poolSatoshis += BLOCKHASH_SLOT_AMOUNT * BigInt(blockhashRingDepth(overrides.blockhashDepth));
+        }
         // A coin the deployment names for the token's category is not its genesis coin.
         const { genesisOutpointKey } = await import('./genesis-reservations.js');
         const named = [overrides.nativeToken?.funding]
@@ -475,6 +490,11 @@ export class ContractFactory<T extends Artifact = Artifact> {
         ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
         ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),
         ...(overrides.splitFacets === undefined ? {} : { splitFacets: overrides.splitFacets }),
+        ...(overrides.blockOracleOwnerPublicKey === undefined
+          ? {} : { blockOracleOwnerPublicKey: overrides.blockOracleOwnerPublicKey }),
+        ...(overrides.blockhashKeeperPublicKey === undefined
+          ? {} : { blockhashKeeperPublicKey: overrides.blockhashKeeperPublicKey }),
+        ...(overrides.blockhashDepth === undefined ? {} : { blockhashDepth: overrides.blockhashDepth }),
       });
       nonceReservation?.commit();
     } catch (error) {

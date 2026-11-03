@@ -924,6 +924,13 @@ export interface DeployOptions {
   blockhashKeeperPublicKey?: Uint8Array;
   /** How many recent blocks a blockhash reader's ring holds: 1 to 256, or 'now' for the latest; default 256. */
   blockhashDepth?: number | 'now';
+  /**
+   * The key that updates a block.* reader's own oracle, which its genesis mints. Defaults to the provider's own key
+   * on a simulator or devnet; a live deployment of a reader names one.
+   */
+  blockOracleOwnerPublicKey?: Uint8Array;
+  /** Satoshis each oracle coin holds (a direct genesis mints one per master); defaults to the data NFT amount. */
+  blockOracleAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;

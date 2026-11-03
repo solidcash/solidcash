@@ -5,7 +5,8 @@ import {
   type BlockhashSlotFields,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { StatefulContract } from '../../src/stateful/index.js';
+import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
+import { HDSigner } from '../../src/HDSigner.js';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { SignatureTemplate, TransactionBuilder } from '../../src/index.js';
 import type { Output, Utxo } from '../../src/interfaces.js';
@@ -74,6 +75,14 @@ describe('blockhash ring', () => {
     expect((await slots(provider, now.categoryId)).map(({ fields }) => [fields.n, fields.depth])).toEqual([[0n, 1]]);
     await expect(deploy(provider, 0)).rejects.toThrow(/blockhashDepth/);
   }, 120_000);
+
+  it('passes the ring options through a contract factory', async () => {
+    const provider = new MockNetworkProvider();
+    const signer = HDSigner.fromPhrase('test test test test test test test test test test test junk', provider);
+    await provider.addUtxo(signer.getAddress(), { txid: '5a'.repeat(32), vout: 0, satoshis: 10_000_000n });
+    const contract = await new ContractFactory(artifact, signer).deploy({ blockhashDepth: 2 });
+    expect((await slots(provider, contract.categoryId)).map(({ fields }) => fields.n).sort()).toEqual([0n, 1n]);
+  });
 
   it('writes block n into its slot, and blockhash(n) reads it', async () => {
     const provider = new MockNetworkProvider();

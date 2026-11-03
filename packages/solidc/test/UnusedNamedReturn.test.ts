@@ -31,6 +31,9 @@ const SOURCE = 'pragma solidity ^0.8.0;\n'
   + '  }\n'
   + '  function nothing() public view returns (uint32 zero) {\n'
   + '  }\n'
+  + '  function quote(uint112 amountA) public pure returns (uint112 amountB) {\n'
+  + '    return amountA;\n'
+  + '  }\n'
   + '  function set(uint112 a, uint112 b) public { reserve0 = a; reserve1 = b; owner = msg.sender; }\n'
   + '}\n';
 
@@ -49,9 +52,13 @@ describe('a named return the body never assigns', () => {
       + 'Nothing assigns it, so the function returns its zero value.');
     expect(unused.some((message) => message.includes("'_owner' of 'withOwner'"))).toBe(true);
     expect(unused.some((message) => message.includes("'zero' of 'nothing'"))).toBe(true);
-    // A tuple assignment names its targets, and a read names the variable it reads.
+    // A tuple assignment names its targets, a read names the variable it reads, and, as Solidity counts it, a
+    // `return <values>;` uses every named return.
     expect(unused.some((message) => message.includes("of 'bothAssigned'"))).toBe(false);
     expect(unused.some((message) => message.includes("of 'readOnly'"))).toBe(false);
+    expect(unused.some((message) => message.includes("of 'quote'"))).toBe(false);
+    // A compiler-generated copy of an entry (a message-bus handler) repeats nothing.
+    expect(unused.every((message) => !message.includes("of '__"))).toBe(true);
   });
 
   it('keeps the getter a direct state read, publishing the unassigned integer output as its zero', () => {

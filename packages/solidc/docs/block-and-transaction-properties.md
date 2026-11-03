@@ -314,8 +314,9 @@ returning the 32 bytes after `n`. Consequences:
 
 The slot covenant (self-pin + self-preserving read + owner update and retire), the `artifact.usesBlockhash`
 marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and e2e-green
-(`packages/solidcash/test/e2e/BlockhashRing.test.ts`). Absent reads error by design (s11.2), not EVM's
-`bytes32(0)`. **`blockhash(n)` is feature-complete** for stateful readers, including:
+(`packages/solidcash/test/e2e/BlockhashRing.test.ts`). A full ring reads EVM's `bytes32(0)` for a block older than
+the last 256; any other absent read errors (s11.2). **`blockhash(n)` is feature-complete** for stateful readers,
+including:
 
 - **Multiple distinct reads per tx** - each distinct `n` rides its OWN consecutive `blockhashOracle`
   block-layout slot (the k-th read reads `input[base + k]`; `blockhashSlotCount` on the fn drives the slot
@@ -359,25 +360,29 @@ single source of truth (s11, "Computed `n` - ANY expression"); the oracle serves
 
 **The slot.** `depth` of them per master category (at most 256, EVM parity), all at that category's one lock:
 - **One lock per category** (`blockhashOracleLockingBytecode(category)`); `n` is not baked in, so the SDK
-  lists the lock and picks the mutable slot whose commitment starts with `n` (`blockhashCommitmentNumber`).
+  lists the lock and picks the mutable slot whose commitment starts with `n`, else the newer slot of `n`'s residue
+  in a 256-deep ring (a zero read).
 - **Commitment `n (4 LE) | hash (32) | owner hash160 (20) | depth (2 LE)`** (58 bytes,
-  `buildBlockhashSlotCommitment`) - `n` is the contract's on-chain pin: the consumer checks `commitment.n == n`.
+  `buildBlockhashSlotCommitment`) - `n` is the contract's on-chain pin: the consumer checks `commitment.n == n`,
+  or for a zero read that `commitment.n` is `n` plus a positive multiple of 256 in a 256-deep ring.
 - **Covenant: three paths**, unlocking `<pubkey> <sig> <newCommitment> <flag>` - (0) **read = self-preserving
   recreate**; (1) the owner's **update** writes a newer block, `n` up by a multiple of the depth, under
   `tx.time >= n`; (2) the owner's **retire** burns the slot. Only genesis mints a slot, so a ring of depth `d`
   holds the last `d` blocks its owner wrote, and its size is fixed whether or not the keeper runs.
 
 **The consumer (`blockhash(n)`)** co-spends the slot read-only (flag 0), checks that its category base is the
-master's, that its lock is the category's slot lock and `commitment.n == n`, returns the hash, and emits
-`require(tx.time >= n)` (no-future bound). No merkle proof.
+master's and that its lock is the category's slot lock, and emits `require(tx.time >= n)` (no-future bound). With
+`d = commitment.n - n`: `d == 0` returns the hash; `d > 0` requires `d mod 256 == 0` and depth 256 and returns
+`bytes32(0)` (EVM parity, audit ORACLE-7); `d < 0` fails. No merkle proof.
 
-**Absent reads error, not `bytes32(0)`.** If no slot holds `n` (overwritten, never written, or retired), the
-SDK errors rather than yielding EVM's `bytes32(0)`. On BCH the tx-builder controls the
-inputs, so a "return `0` when the oracle is not co-spent" rule would let a malicious builder force
-`blockhash(n) == 0` for an **in-window** block by simply omitting the co-spend - a forgeable read EVM does
-not have (there the node supplies the hash). Erroring keeps a contract from ever seeing a forged `0`. A
-contract that wants the EVM "too old -> 0" branch checks the window itself (`block.number - n` against the
-ring's depth) instead of trusting a `0`.
+**Too old reads `bytes32(0)` only from proof.** A slot of `n`'s residue in a 256-deep ring holding `n' > n` was
+written under nLockTime `>= n'`, so the reading tx sits at height `>= n' + 1 >= n + 257`, outside EVM's window:
+zero is EVM's answer. Every other absent read errors: no slot of the residue, an older slot (`n` not yet
+written), or a newer slot of a ring under 256 deep (older than the ring keeps). On BCH the tx-builder controls
+the inputs, so a "return `0` when the oracle is not co-spent" rule would let a malicious builder force
+`blockhash(n) == 0` for an **in-window** block by simply omitting the co-spend; the reader still requires the
+slot. The SDK picks the residue's slot (`resolveBlockhashCoSpend`) and throws one error naming the category,
+depth and held blocks (`requireBlockhashCoSpend`).
 
 **Why category + commitment:** `commitment.n` is both the on-chain *contract* pin and the off-chain
 *index* (the SDK filters the lock's UTXOs by it); the master's category (self-pin, genesis-minted,
@@ -525,7 +530,7 @@ extensions are added on top.
 
 | Solidity property | SolidCash | Mechanism | Notes / divergence |
 |---|---|---|---|
-| `blockhash(uint) -> bytes32` | **yes** | per-block `(n->hash)` co-spend oracle, 256-block window (s11) | window matches EVM; an absent read **errors** (not `0`) - on BCH the builder controls inputs, so a forced `0` is unsafe (s11.2) |
+| `blockhash(uint) -> bytes32` | **yes** | per-block `(n->hash)` co-spend oracle, 256-block window (s11) | window matches EVM; a full ring reads `0` for a block older than 256 from a slot that proves it; any other absent read **errors** - on BCH the builder controls inputs, so an unproven `0` is unsafe (s11.2) |
 | `blobhash(uint) -> bytes32` | **yes** | `bytes32(0)` | no EIP-4844 blobs on BCH; EVM also returns `0` for an absent index |
 | `block.basefee` (uint) | **yes** | oracle: `Floor(1000 * totalFees / size)` sat/KB (s6) | reinterpreted as the block's realized fee rate (BCH has no consensus base fee) |
 | `block.blobbasefee` (uint) | **yes** | aliases `block.basefee` (warned) | no blobs; aliased (not `0`) to avoid zero-out / divide-by-zero in ported code |

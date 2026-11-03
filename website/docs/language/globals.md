@@ -382,8 +382,9 @@ bytes32 blobhash(int index)
 ```
 
 `blockhash(n)` reads the slot holding block `n` in the contract's blockhash ring, NFTs of its own category that its
-genesis mints. It makes the contract stateful, so call it through `StatefulContract`; a block the ring does not hold
-is an error, not a zero hash.
+genesis mints. It makes the contract stateful, so call it through `StatefulContract`. A full ring (depth 256) gives
+zero for a block older than the last 256, as the EVM does, so `blockhash(n) == 0` detects an expired commitment. A
+shallower ring refuses a block it no longer holds, and any ring refuses a block its keeper has not written yet.
 `blobhash(i)` always returns zero: Bitcoin Cash has no EIP-4844 blobs, so it is a porting shim.
 
 ## ABI encoding and decoding

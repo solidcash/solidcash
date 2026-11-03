@@ -601,7 +601,7 @@ block.basefee                  -- uint32: 1000 * totalFees / size in sat/kB; blo
 block.chainid                  -- uint256: chainId option & 0xff (mainnet 0, chipnet 1, testnet4 2, regtest 255)
 block.prevrandao               -- uint256: abs(int(sha256(input 0 outpoint txid))), set by the tx builder
 block.gaslimit, gasleft()      -- always 1000000
-bytes32 blockhash(int n)       -- from the slot holding n in the contract's blockhash ring
+bytes32 blockhash(int n)       -- block n's hash from the contract's blockhash ring; zero past the last 256
 bytes32 blobhash(int i)        -- always zero
 ```
 
@@ -620,8 +620,10 @@ bytes32 blobhash(int i)        -- always zero
   block (a parameter, a stored value) leaves the depth to the deployer, 256 by default. A read more than 256 blocks
   back is a compile error.
   The owner, `blockhashKeeperPublicKey` (required live; the mock and devnet name their own key), writes slots with
-  `BlockOracleUpdater.writeBlockhashSlot`; the mock does not keep the ring current. A block the ring does not hold
-  is an error, where the EVM gives zero. See https://solidcash.org/docs/guides/block-oracles
+  `BlockOracleUpdater.writeBlockhashSlot`; the mock does not keep the ring current. A full ring (depth 256) gives
+  zero for a block older than the last 256, as the EVM does, so `blockhash(n) == 0` detects an expired commitment.
+  A shallower ring refuses a block it no longer holds, and any ring refuses one its owner has not written yet; the
+  SDK's error names the ring's depth and blocks. See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 

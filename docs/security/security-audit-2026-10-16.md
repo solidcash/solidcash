@@ -1145,3 +1145,16 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   owner-only retire), `BlockOracleValue.test.ts` (mock: a slot keeps its value on a read and through a sync past the
   depth) and `packages/solidc/test/AuditBlockhashPairForgery.test.ts` (VM: a forged or second slot beside a read and a
   forged recreation of the read slot refused). Not run: regtest or a node.
+- **ORACLE-7** (EVM parity; `fix/blockhash-expired`, 2026-11-03). `blockhash(n)` of a block older than the last 256
+  threw in the SDK, where the EVM gives zero and ported contracts test `blockhash(n) == 0` for an expired commitment.
+  The reader now reads the slot's `n'` and depth: `n' == n` gives the hash; otherwise it requires depth 256, `n' > n`
+  and `(n' - n) mod 256 == 0`, and gives 32 zero bytes. Such a slot proves the EVM's answer: its owner wrote `n'`
+  under a nLockTime of at least `n'`, so the reading transaction is at a height of at least `n' + 1 >= n + 257`. A
+  slot of another residue, an older slot, or a newer slot of a ring under 256 deep is refused, so no builder gets
+  zero for a block inside the window, and an omitted slot still fails. The SDK takes the slot of `n`'s residue
+  (`resolveBlockhashCoSpend`); when none answers, `requireBlockhashCoSpend` throws one error, at all three call sites,
+  naming the category, the depth and the blocks held, and whether `n` is older than the ring keeps or not yet
+  written. Tests: `packages/solidcash/test/e2e/BlockhashRing.test.ts` (mock: a 256-slot ring reads zero once its
+  keeper writes `n + 256`, and `blockhash(n) == 0` holds; a depth-4 ring gives the precise errors; VM: the honest zero
+  read handed a slot of another residue, an older slot or a depth-4 commitment is refused at the master) and
+  `BlockOracle.test.ts` (the new error text). Not run: regtest or a node.

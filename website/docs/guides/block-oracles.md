@@ -247,14 +247,23 @@ n (4 bytes, little-endian) | block hash (32) | owner public-key hash (20) | dept
 
 The slots carry the reading contract's own category, so `blockhash` makes the contract stateful and the artifact sets
 `usesBlockhash`. The reader checks that the co-spent slot is of its master's category and at the category's slot
-lock, that `commitment.n == n`, and `tx.time >= n`, then returns the hash. Each distinct `n` in a function rides its
-own input slot, and a computed `n` such as `block.number - 1` is resolved from the SDK's probe of the covenant itself.
-
-Calls go through `StatefulContract`, which finds the slot holding `n`, co-spends it read-only and sets a height
-locktime of at least `n`; the base `Contract`/`TransactionBuilder` path throws. A block the ring does not hold is an
-error, where the EVM returns `bytes32(0)`: returning zero when a builder omits the slot would make absence
-forgeable. A contract that wants the EVM's "too old means zero" branch checks `block.number - n` against the window
+lock, and that `tx.time >= n`. A slot whose `commitment.n == n` gives its hash. Each distinct `n` in a function rides
+its own input slot, and a computed `n` such as `block.number - 1` is resolved from the SDK's probe of the covenant
 itself.
+
+Calls go through `StatefulContract`, which finds the slot that answers `n`, co-spends it read-only and sets a height
+locktime of at least `n`; the base `Contract`/`TransactionBuilder` path throws. When no slot answers, the call throws
+an error that names the ring's category, depth and blocks, and says whether block `n` is older than the ring keeps or
+not yet written by its keeper.
+
+### Blocks older than the last 256
+
+The EVM gives `bytes32(0)` for a block outside its 256 most recent, and contracts test `blockhash(n) == 0` to detect
+an expired commitment. A ring of depth 256 gives the same answer. When the slot of `n`'s residue holds a newer block
+`n + 256k`, the reader returns zero: the keeper wrote that block under a nLockTime at or above it, so the reading
+transaction is at least 257 blocks past `n`. The reader refuses every other slot: one of another residue, one holding
+an older block, and a newer one in a ring under 256 deep, which cannot show that `n` has left the EVM's window. A
+missing slot is never read as zero, so a builder cannot force zero for a recent block by leaving the slot out.
 
 ### The ring
 
@@ -286,7 +295,8 @@ A slot changes three ways:
 - The owner's signed retire burns the slot. Nothing mints it again.
 
 So a ring of depth `d` holds the last `d` blocks the keeper wrote: block `n` sits in the slot congruent to `n` modulo
-`d` until the keeper writes `n + d` over it, and `'now'` keeps the latest block only.
+`d` until the keeper writes `n + d` over it, and `'now'` keeps the latest block only. After that, a ring of depth 256
+reads zero for `n`, and a shallower ring refuses it.
 
 `blockhashKeeperPublicKey` names the owner, the key whose signed updates write the ring. `MockNetworkProvider` and a
 `solidhat node` devnet name their own block oracle key when it is omitted; a live deployment of a reader names one.

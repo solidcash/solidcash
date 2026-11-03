@@ -225,10 +225,14 @@ export async function readFramedStorage(options: FramedStorageOptions): Promise<
         return readMapping(artifact, layout, deployment.nodesByCollection, entry, args);
       }
       if (readsNativeBalance(artifact, functionName)) return [await nativeBalance()];
-      // The compiler proves the whole body returns these state variables, in the declared output order.
+      // The compiler proves the whole body returns these state variables, in the declared output order. A `null`
+      // is a named return the body never assigns, so that output is its type's zero.
       const direct = entry.directStateReturn;
-      if (direct === undefined || direct.variables.length !== (entry.outputs?.length ?? 0)) return undefined;
-      const values = direct.variables.map((variable) => state[variable]);
+      const outputs = entry.outputs ?? [];
+      if (direct === undefined || direct.variables.length !== outputs.length) return undefined;
+      const values = direct.variables.map((variable, index) => (variable === null
+        ? zeroValue(outputs[index]?.type)
+        : state[variable]));
       if (values.some((value) => value === undefined)) return undefined;
       return values as StateValue[];
     },

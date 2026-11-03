@@ -24,7 +24,8 @@ import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/Sor
  * The contract keeps a dynamic string, two records and a mapping. `directStateReturn` names the record a getter
  * returns, `directMappingReturn` names a mapping getter, and `balanceReaders` names the native-balance getter.
  * `readFramedStorage` answers all of them from one snapshot; a body that computes (`return total * 2;`) publishes no
- * proof and stays with the framed read.
+ * proof and stays with the framed read. A getter of named returns that leaves one unassigned (Uniswap V2's
+ * `getReserves` on a pair that keeps no time) publishes that output as `null` and reads its zero.
  */
 
 const SOURCE = 'pragma solidity ^0.8.0;'
@@ -36,6 +37,8 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '   mapping(address => uint256) public balances;'
   + '   function readTotal() public view returns (uint256) { return total; }'
   + '   function reserves() public view returns (uint256, uint256) { return (a, b); }'
+  + '   function getReserves() public view returns (uint256 x, uint256 y, uint32 last) { x = a; y = b; }'
+  + '   function withAddress() public view returns (uint256 x, address who) { x = a; }'
   + '   function double() public view returns (uint256) { return total * 2; }'
   + '   function contractBalance() public view returns (uint256) { return address(this).balance; }'
   + ' }';
@@ -110,6 +113,9 @@ describe('reading framed storage without a transaction', () => {
     expect(await storage.read('total')).toEqual([42n]);
     expect(await storage.read('readTotal')).toEqual([42n]);
     expect(await storage.read('reserves')).toEqual([1n, 2n]);
+    // The named return nothing assigns is its type's zero; an unassigned address has none, so it stays framed.
+    expect(await storage.read('getReserves')).toEqual([1n, 2n, 0n]);
+    expect(await storage.read('withAddress')).toBeUndefined();
     expect(await storage.read('balances', [ACCOUNT])).toEqual([BALANCE]);
     expect(await storage.read('balances', [OTHER])).toEqual([0n]);
     expect(await storage.read('contractBalance')).toEqual([CONTAINER]);
@@ -125,6 +131,7 @@ describe('reading framed storage without a transaction', () => {
       ['name', [], NAME],
       ['total', [], 42n],
       ['reserves', [], [1n, 2n]],
+      ['getReserves', [], [1n, 2n, 0n]],
       ['balances', [ACCOUNT], BALANCE],
     ] as const) {
       const framed = await readFramedEntry({

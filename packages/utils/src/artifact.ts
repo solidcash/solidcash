@@ -728,10 +728,11 @@ export interface AbiFunction {
     keyParams: readonly string[];
   };
   /** Compiler proof that the complete function body is exactly `return <state>;` (or `return (a, b, ...);` over
-   * state variables), in the declared output order. SDKs may answer the read from the data-NFT records and the
-   * dynamic chunks without executing a derivation transaction. */
+   * state variables, or named returns each assigned one), in the declared output order. SDKs may answer the read
+   * from the data-NFT records and the dynamic chunks without executing a derivation transaction. A `null` names a
+   * named return the body never assigns: that output is its type's zero (an integer or bool output). */
   directStateReturn?: {
-    variables: readonly string[];
+    variables: readonly (string | null)[];
   };
   /** Exact read-only `return mapping[keys...].length` over an authenticated mapping-array entry. */
   directCollectionLengthReturn?: {

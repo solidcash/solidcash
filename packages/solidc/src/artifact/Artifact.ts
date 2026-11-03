@@ -3956,8 +3956,13 @@ function buildFunctionAbiMetadata(
       if (!returnNames.includes(name) || assigned.has(name)) return undefined;
       assigned.set(name, expression.stateVariable.name);
     }
-    if (assigned.size !== returnNames.length) return undefined;
-    return { variables: returnNames.map((name) => assigned.get(name)!) };
+    // A named return nothing assigns keeps its zero-initialized value: its output is published as `null`, the
+    // output type's zero, for an integer or bool output. Any other unassigned output leaves the getter unproved, and
+    // so does one that reads no state at all, which is a constant the caller keeps.
+    const variables = returnNames.map((name, index) => assigned.get(name)
+      ?? (/^(?:u?int(?:\d+)?|bigint|bool)$/.test(func.returnTypes[index].toString()) ? null : undefined));
+    if (variables.some((variable) => variable === undefined) || assigned.size === 0) return undefined;
+    return { variables: variables as (string | null)[] };
   })();
   const directCollectionLengthReturn = (() => {
     if (!func.sourceReadOnly && !func.modifiers.includes(FunctionModifier.VIEW)

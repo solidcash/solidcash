@@ -121,9 +121,9 @@ export interface StateRecord { [key: string]: StateValue; }
 /**
  * `[authorityIndex]` stays. The authority is a 35-byte P2SH32 whose final redeem push is longer than 128
  * bytes. The redeem is the push that reaches the end of the unlocking; every push in front, of any size, is an
- * argument and is skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem, and the keeper baton is a
- * one-byte redeem. The walk parses a 512-byte head at a time, so a contract-sized redeem is not copied on every
- * argument.
+ * argument and is skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem. The blockhash keeper baton
+ * (162 B) passes this test, so its covenant co-spends only a P2PKH input and authorizes no container. The walk
+ * parses a 512-byte head at a time, so a contract-sized redeem is not copied on every argument.
  */
 function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
   if (masterLock !== undefined) {
@@ -2401,7 +2401,8 @@ export function blockhashOracleLockingBytecode(categoryId: Uint8Array): Uint8Arr
  * The blockhash keeper's minting baton of the consumer's own category (audit CRYPTO-4). A bare baton could stand
  * in for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master.
  * Under this covenant it can only mint (n -> hash) oracles. A spend needs the keeper's signature and this shape:
- *  - input 0 is the baton; at most one other input, carrying no token, so no record or master co-spends;
+ *  - input 0 is the baton; at most one other input, a P2PKH coin carrying no token, so no record, master or BCH
+ *    container co-spends (a container that takes any minting holder as its master would follow the baton);
  *  - output 0 recreates the baton (same lock and token category);
  *  - output 1 is a capability-none NFT of the category with a 36-byte n(4 LE)||hash commitment, at the
  *    category's one blockhash oracle lock, with tx.time >= n;
@@ -2412,7 +2413,11 @@ export function buildBlockhashKeeperBatonScript(categoryId: Uint8Array, keeperPu
     keeperPublicKey, Op.OP_CHECKSIGVERIFY,
     Op.OP_INPUTINDEX, Op.OP_NOT, Op.OP_VERIFY,
     Op.OP_TXINPUTCOUNT, Op.OP_DUP, Op.OP_3, Op.OP_LESSTHAN, Op.OP_VERIFY,
-    Op.OP_2, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_1, Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
+    Op.OP_2, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_1, Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY,
+    Op.OP_1, Op.OP_UTXOBYTECODE, Op.OP_SIZE, encodeInt(25n), Op.OP_NUMEQUALVERIFY,
+    Op.OP_3, Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(0x76, 0xa9, 0x14), Op.OP_EQUALVERIFY,
+    encodeInt(20n), Op.OP_SPLIT, Op.OP_NIP, Uint8Array.of(0x88, 0xac), Op.OP_EQUALVERIFY,
+    Op.OP_ENDIF,
     Op.OP_TXOUTPUTCOUNT, Op.OP_DUP, Op.OP_2, Op.OP_4, Op.OP_WITHIN, Op.OP_VERIFY,
     Op.OP_3, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_2, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
     Op.OP_0, Op.OP_OUTPUTBYTECODE, Op.OP_0, Op.OP_UTXOBYTECODE, Op.OP_EQUALVERIFY,

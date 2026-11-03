@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import {
   blockhashKeeperBatonLockingBytecode, blockhashOracleLockingBytecode, buildBlockhashCommitment,
-  buildDataNftCovenantScript, buildEntryNftCovenantScript, computeCollectionHash, encodeInt, hash256,
-  scriptToBytecode,
+  buildDataNftCovenantScript, buildEntryNftCovenantScript, buildSatoshiContainerCovenantScript, computeCollectionHash,
+  encodeInt, hash256, scriptToBytecode,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
@@ -142,6 +142,25 @@ describe('CRYPTO-4: the blockhash keeper baton cannot stand in for the master', 
     const moved = { ...batonBack(d), to: p2sh32(Uint8Array.of(0x75, 0x51)) };
     expectScriptRejection(await spend(d, undefined, [moved, oracle(d)]), 0);
     expect(await spend(d, undefined, [batonBack(d), oracle(d)])).toBe('ACCEPTED');
+  });
+
+  it('refuses a BCH container riding along the baton, and keeps the P2PKH fee input', async () => {
+    const d = await deploy();
+    // The category-only container takes any minting holder whose redeem passes 128 bytes as its master, the baton too.
+    const redeem = scriptToBytecode(buildSatoshiContainerCovenantScript(hexToBin(d.cat)));
+    const lock = p2sh32(redeem);
+    const treasury: Utxo = { txid: 'e5'.repeat(32), vout: 0, satoshis: 50_000n };
+    await (d.provider as any).addUtxo(binToHex(lock), treasury);
+    const unlock = scriptToBytecode([encodeInt(0n), encodeInt(1n), redeem]);
+    const container = {
+      utxo: treasury,
+      unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => unlock },
+    };
+    const drain: Output = { to: aliceAddress, amount: 48_000n };
+    expectScriptRejection(await spend(d, container, [batonBack(d), oracle(d), drain]), 0);
+    const fee = await d.provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 10_000n }));
+    const funder = { utxo: fee, unlocker: new SignatureTemplate(alicePriv).unlockP2PKH() };
+    expect(await spend(d, funder, [batonBack(d), oracle(d), { to: aliceAddress, amount: 9_000n }])).toBe('ACCEPTED');
   });
 });
 

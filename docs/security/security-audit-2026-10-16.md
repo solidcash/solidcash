@@ -1090,3 +1090,13 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   replay the CREATE2 note names (the creator checks each record's commitment against the folded state it computes),
   per-lock counts among the creator's deployment constants (one oracle for a child that reads block.*), and the
   oracle's owner hash as one more constant, with unset starting fields.
+- **ORACLE-5** (HIGH; framed contracts that read `blockhash` and were deployed with a keeper key; found by reading,
+  2026-11-03). The CRYPTO-4 keeper baton holds a minting NFT of the contract's category at a P2SH32 lock with a 162-byte
+  redeem, so it passes the category-only container covenant's authority test (`bindMintingAuthorityLock()`: a P2SH32
+  input whose redeem passes 128 bytes and that holds the category's minting NFT), which framed's BCH containers use.
+  The baton admitted one token-less co-input and a free token-less output, so the keeper key could spend one framed
+  BCH container per baton transaction to any output. The baton now admits as its one co-input only a P2PKH coin
+  carrying no token, the fee top-up it exists for (`buildBlockhashKeeperBatonScript`). Its lock changed, so a baton
+  minted before the fix stays exposed until it is replaced; none is on a real chain. Test:
+  `packages/solidcash/test/e2e/AuditCrypto4KeeperAuthority.test.ts` (mock: a container riding along the baton is
+  refused at the baton; the P2PKH fee input is accepted). Not run: the pre-fix acceptance.

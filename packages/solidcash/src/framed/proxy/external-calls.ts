@@ -731,6 +731,19 @@ export function occurrenceCountOf(
     if (holds === undefined && conditionReadsProducerResult(row.condition)) return 0;
     return 1;
   }
+  // A loop whose call sits behind a branch the caller's own facts rule out makes no call, whatever its bound. The
+  // guard a loop site publishes joins the branches around the loop to the loop's own per-turn test with `&&`; a
+  // conjunct that reads no turn's counter, element or result has one value on every turn, so when the caller's facts
+  // make one false the arm the run does not take places nothing, as a conditional site's does, and its width needs
+  // no domain. A router's `_swap` kept inline states its one- and two-hop arms and loops only past them, so a two-hop
+  // path never reaches that loop.
+  if (row.condition !== undefined && row.condition !== null
+    && !conditionReadsWrittenState(row.condition, artifact, writtenState, siteIndex)) {
+    const returns = conditionExternalReturns(row.condition, routing, producerResults);
+    const ruledOut = conjunctsOf(row.condition).some((conjunct) => guardFixedAcrossTurns(conjunct)
+      && resolver.evaluate(conjunct, 0, undefined, returns) === false);
+    if (ruledOut) return 0;
+  }
   const domain = row.iterationDomain;
   if (domain === undefined) return derivedOccurrenceCountOf(row, args, where);
   // A domain read from an earlier call's result is evaluated against the result a settle learned for that call.
@@ -763,6 +776,39 @@ export function occurrenceCountOf(
     counter += step;
   }
   return count;
+}
+
+/** The operands of a guard's top-level `&&`s, which the guard holds only when every one does. */
+function conjunctsOf(guard: ExternalCallExpression): readonly ExternalCallExpression[] {
+  if (guard.kind === 'binary' && guard.operator === '&&' && guard.left !== undefined && guard.right !== undefined) {
+    return [...conjunctsOf(guard.left), ...conjunctsOf(guard.right)];
+  }
+  return [guard];
+}
+
+/**
+ * Whether a loop site's guard has the same value on every turn: it reads no local binding (the loop's counter is
+ * one), no array element its index advances through, no loop counter, and no call's result, which a turn may learn
+ * afresh. Anything else it reads (the caller's arguments and their lengths, constants, state) is fixed for the run.
+ */
+function guardFixedAcrossTurns(guard: ExternalCallExpression): boolean {
+  let fixed = true;
+  const visit = (value: unknown): void => {
+    if (!fixed || value === null || typeof value !== 'object') return;
+    const node = value as { readonly kind?: string; readonly indexStepValue?: number; readonly indexParamIndex?: number };
+    if (node.kind === 'identifier' || node.kind === 'loopIndex' || node.kind === 'producerResult'
+      || node.kind === 'externalCall'
+      || (node.kind === 'arrayElement' && ((node.indexStepValue ?? 0) !== 0 || node.indexParamIndex !== undefined))) {
+      fixed = false;
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  visit(guard);
+  return fixed;
 }
 
 /**

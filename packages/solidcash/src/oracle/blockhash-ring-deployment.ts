@@ -23,9 +23,26 @@ export function blockhashRingDepth(depth: BlockhashDepth | undefined): number {
 }
 
 /**
- * A blockhash reader's ring, minted at its genesis: `depth` mutable NFTs of its category at the category's slot lock.
- * Slot s holds n = s, a zero hash, the owner whose signed updates alone write it, and the depth. The owner is the
- * deployer's choice, else the provider's own block oracle key on a simulator or devnet.
+ * The slot count a deployment of a blockhash reader mints: `depth`, else the depth its compiler inferred from its reads
+ * (`artifact.blockhashDepth`), else 256. A depth below the inferred one is refused, as those reads would fail.
+ */
+export function blockhashRingSlotCount(
+  artifact: Pick<Artifact, 'contractName' | 'blockhashDepth'>, depth: BlockhashDepth | undefined,
+): number {
+  const needed = artifact.blockhashDepth;
+  if (depth === undefined) return blockhashRingDepth(needed);
+  const slots = blockhashRingDepth(depth);
+  if (needed !== undefined && slots < needed) {
+    throw new Error(`blockhashDepth ${slots} is below the ${needed} slots the blockhash reads of `
+      + `${artifact.contractName} need, so those reads would fail`);
+  }
+  return slots;
+}
+
+/**
+ * A blockhash reader's ring, minted at its genesis: `blockhashRingSlotCount` mutable NFTs of its category at the
+ * category's slot lock. Slot s holds n = s, a zero hash, the owner whose signed updates alone write it, and the depth.
+ * The owner is the deployer's choice, else the provider's own block oracle key on a simulator or devnet.
  */
 export function blockhashRingGenesisOutputs(
   artifact: Artifact, categoryId: string, provider: NetworkProvider,
@@ -37,7 +54,7 @@ export function blockhashRingGenesisOutputs(
     }
     return [];
   }
-  const slots = blockhashRingDepth(depth);
+  const slots = blockhashRingSlotCount(artifact, depth);
   const owner = ownerPublicKey ?? provider.blockOracleOwnerPublicKey;
   if (owner === undefined) {
     throw new Error('a contract that reads blockhash needs blockhashKeeperPublicKey, the key that writes its '

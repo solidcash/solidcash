@@ -423,8 +423,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
           poolSatoshis += 1200n * (deployArtifact.messageBus === undefined ? BigInt(overrides.threadCount ?? 1) : 1n);
         }
         if (deployArtifact.usesBlockhash === true) {
-          const { BLOCKHASH_SLOT_AMOUNT, blockhashRingDepth } = await import('../oracle/blockhash-ring-deployment.js');
-          poolSatoshis += BLOCKHASH_SLOT_AMOUNT * BigInt(blockhashRingDepth(overrides.blockhashDepth));
+          const { BLOCKHASH_SLOT_AMOUNT, blockhashRingSlotCount } = await import('../oracle/blockhash-ring-deployment.js');
+          poolSatoshis += BLOCKHASH_SLOT_AMOUNT * BigInt(blockhashRingSlotCount(deployArtifact, overrides.blockhashDepth));
         }
         // A coin the deployment names for the token's category is not its genesis coin.
         const { genesisOutpointKey } = await import('./genesis-reservations.js');

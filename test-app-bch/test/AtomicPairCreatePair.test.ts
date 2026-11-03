@@ -15,6 +15,7 @@ import {
 import { resolveMasterPoolSize } from "@solidcash/solidcash/dist/framed/deploy/pool.js";
 import { deployStatefulContract } from "@solidcash/solidcash/dist/stateful/sc-deploy.js";
 import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/block-oracle.js";
+import { PAIR_POOL, pairCreation } from "./pair-creation.js";
 
 /**
  * `UniswapV2Factory.createPair` run atomically on BCH, from the shipped factory and pair source
@@ -30,7 +31,6 @@ const artifactOf = (name: string): Artifact =>
 const bundleOf = (name: string): FunctionSplitBundle =>
   JSON.parse(readFileSync(path.join(ARTIFACTS, `${name}.func.json`), "utf8")) as FunctionSplitBundle;
 const VALIDATOR = framedValidator.buildValidatorProgram();
-
 describe("UniswapV2Factory.createPair", () => {
   it("creates and initializes the pair in one caller-funded transaction", async () => {
     const connection = await hre.network.create();
@@ -57,11 +57,11 @@ describe("UniswapV2Factory.createPair", () => {
     }
     const childLocks = MasterPoolDeployment.createFunctionSplit({
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR,
-      size: { masters: 1, validators: 1 },
+      size: PAIR_POOL,
     }).getEntryLocks();
-    expect(childLocks.length).toBe(23);
+    expect(childLocks.length).toBe(26);
 
-    const childPool = resolveMasterPoolSize();
+    const childPool = resolveMasterPoolSize(PAIR_POOL);
     const { categoryId } = await deployStatefulContract(factory.artifact, [callerLock], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: factory.bundle, childLocks,
@@ -89,6 +89,7 @@ describe("UniswapV2Factory.createPair", () => {
       args: [tokenA, tokenB],
       callerUtxo: caller, callerLockingBytecode: callerLock, funder, split,
       validatorProgram: VALIDATOR, publish: false,
+      creates: pairCreation(factory.artifact, pair, tokenA, tokenB),
     } as never);
     const refused = result.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.id}: ${verdict.objection ?? "refused"}`).join("; ");
@@ -99,10 +100,14 @@ describe("UniswapV2Factory.createPair", () => {
     expect(binToHex(result.values[0] as Uint8Array)).toBe(binToHex(hash160(address)));
     const ofCategory = result.transaction.outputs.filter((output) => output.token !== undefined
       && binToHex(output.token.category) === binToHex(category));
-    for (const shard of pair.bundle.shards) {
-      const lock = deployMaster(shard.artifact, category, VALIDATOR).lockingBytecode;
+    // The shard artifacts are deployment-prepared (each presents its entry's lock), so the genesis locks come from
+    // the same function split the child is deployed with rather than from the unprepared shard artifacts.
+    const childDeployment = MasterPoolDeployment.createFunctionSplit({
+      bundle: pair.bundle, category, validatorProgram: VALIDATOR, size: resolveMasterPoolSize(PAIR_POOL),
+    });
+    for (const lock of childDeployment.getEntryLocks()) {
       expect(ofCategory.some((output) => bytesEqual(output.lockingBytecode, lock)
-        && output.token!.nft?.capability === "minting"), `master of ${shard.function}`).toBe(true);
+        && output.token!.nft?.capability === "minting"), `master at ${binToHex(lock)}`).toBe(true);
     }
     const recordLock = stateRecordLockingBytecode(binToHex(category));
     const records = ofCategory.filter((output) => bytesEqual(output.lockingBytecode, recordLock));
@@ -130,6 +135,9 @@ describe("UniswapV2Factory.createPair", () => {
         Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87])],
       callerUtxo: tamperedCaller, callerLockingBytecode: callerLock, funder, split,
       validatorProgram: VALIDATOR, publish: false,
+      creates: pairCreation(factory.artifact, pair,
+        Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x41), 0x87]),
+        Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87])),
       extraOutputs: [{
         to: stateRecordLockingBytecode(binToHex(hexToBin(tamperedCaller.txid))), amount: 1200n,
         token: { category: tamperedCaller.txid, amount: 0n, nft: { capability: "mutable", commitment: "ff" } },

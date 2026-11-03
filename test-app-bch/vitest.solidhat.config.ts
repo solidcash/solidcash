@@ -10,5 +10,8 @@ export default defineConfig(solidcashHardhatPreset({
     testTimeout: 600_000,
     hookTimeout: 600_000,
     silent: false,
+    // Every file spends the same devnet accounts; parallel files race on those UTXOs and fail with
+    // `bad-txns-inputs-missingorspent`.
+    fileParallelism: false,
   },
 }));

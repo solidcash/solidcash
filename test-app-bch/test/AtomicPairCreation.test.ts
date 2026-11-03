@@ -7,7 +7,6 @@ import { framedValidator } from "@solidcash/solidc/runtime";
 import { bytesEqual, validatorAddress, type Artifact, type FunctionSplitBundle } from "@solidcash/utils";
 import { framedCall, framedDeploy } from "@solidcash/solidcash/framed";
 import { stateRecordLockingBytecode } from "@solidcash/solidcash/dist/framed/deploy/records.js";
-import { deployMaster } from "@solidcash/solidcash/dist/framed/deploy/material.js";
 import { MasterPoolDeployment } from "@solidcash/solidcash/dist/framed/deploy/pool.js";
 import {
   childCollectionHashes, childGenesisOutputCount,
@@ -48,7 +47,7 @@ describe("the pair created with create2", () => {
 
     const pair = { artifact: artifactOf("UniswapV2Pair"), bundle: bundleOf("UniswapV2Pair") };
     const creator = { artifact: artifactOf("AtomicPairCreator"), bundle: bundleOf("AtomicPairCreator") };
-    const pool = { masters: 1, validators: 1 };
+    const pool = { masters: 2, validators: 1 };
     bindProviderBlockOracle(provider, pair.artifact);
     for (const shard of [...pair.bundle.shards, ...pair.bundle.internalCuts]) {
       bindProviderBlockOracle(provider, shard.artifact);
@@ -56,7 +55,7 @@ describe("the pair created with create2", () => {
     const childLocks = MasterPoolDeployment.createFunctionSplit({
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR, size: pool,
     }).getEntryLocks();
-    expect(childLocks.length).toBe(23);
+    expect(childLocks.length).toBe(26);
 
     const { categoryId } = await deployStatefulContract(creator.artifact, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
@@ -90,10 +89,12 @@ describe("the pair created with create2", () => {
     // (b) The genesis carries a master at each of the pair's 26 entry locks, the validator and the records.
     const ofCategory = result.transaction.outputs.filter((output) => output.token !== undefined
       && binToHex(output.token.category) === binToHex(category));
-    for (const shard of pair.bundle.shards) {
-      const lock = deployMaster(shard.artifact, category, VALIDATOR).lockingBytecode;
+    const childDeployment = MasterPoolDeployment.createFunctionSplit({
+      bundle: pair.bundle, category, validatorProgram: VALIDATOR, size: pool,
+    });
+    for (const lock of childDeployment.getEntryLocks()) {
       expect(ofCategory.some((output) => bytesEqual(output.lockingBytecode, lock)
-        && output.token!.nft?.capability === "minting"), `master of ${shard.function}`).toBe(true);
+        && output.token!.nft?.capability === "minting"), `master at ${binToHex(lock)}`).toBe(true);
     }
     expect(ofCategory.some((output) => bytesEqual(output.lockingBytecode, address)
       && output.token!.nft?.capability === "mutable"), "validator at addrV(K)").toBe(true);

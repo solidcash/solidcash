@@ -16,6 +16,7 @@ import { bindProviderBlockOracle } from "@solidcash/solidcash/dist/framed/call/b
 import { addressToLockScript } from "@solidcash/solidcash/dist/utils.js";
 import { Contract } from "@solidcash/solidcash";
 import { registerDeployment, StatefulContract } from "@solidcash/solidcash/stateful";
+import { PAIR_POOL, pairCreation } from "./pair-creation.js";
 
 const ARTIFACTS = path.resolve(__dirname, "../artifacts/solidcash");
 const artifactOf = (name: string): Artifact =>
@@ -50,7 +51,7 @@ describe("addLiquidityETH to an existing native pool", () => {
     }
     const childLocks = MasterPoolDeployment.createFunctionSplit({
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR,
-      size: resolveMasterPoolSize(),
+      size: resolveMasterPoolSize(PAIR_POOL),
     }).getEntryLocks();
     const standIns = [
       Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac]),
@@ -65,7 +66,7 @@ describe("addLiquidityETH to an existing native pool", () => {
       childCollections: childCollectionHashes(pair.artifact),
       childOutputCount: childGenesisOutputCount({
         artifact: pair.artifact, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
-        provider, split: pair.bundle, pool: resolveMasterPoolSize(), ownerLock: holderLock,
+        provider, split: pair.bundle, pool: resolveMasterPoolSize(PAIR_POOL), ownerLock: holderLock,
         initializer: { functionName: "initialize", args: standIns },
       }),
     } as never);
@@ -94,6 +95,7 @@ describe("addLiquidityETH to an existing native pool", () => {
       provider, artifact: factory.artifact, categoryId: factoryDeployed.categoryId, functionName: "createPair",
       args: [addressToLockScript(tokenAddress), wethLock], callerUtxo: caller, callerLockingBytecode: holderLock,
       funder: holder.unlockP2PKH(), split, validatorProgram: VALIDATOR, publish: true,
+      creates: pairCreation(factory.artifact, pair, addressToLockScript(tokenAddress), wethLock),
     } as never);
     expect(created.accepted, "createPair refused").toBe(true);
     const pairCategory = caller.txid;

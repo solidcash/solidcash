@@ -30,13 +30,27 @@ export default defineConfig({
     split: 'func',
   },
   composition: 'framed',
-  mnemonic: 'rebuild always symbol rabbit sunset napkin laundry diary doll chalk valid train',
-  accounts: { path: "m/44'/60'/0'/0", count: 20, initialIndex: 0, satoshis: 1_000_000_000n },
+  mnemonic: 'custom true energy limb excuse attend mail pudding since sugar device ten',
+  accounts: { path: "m/44'/145'/0'/0", count: 20, initialIndex: 0, satoshis: 1_000_000_000n },
   networks: {
-    // `npx solidcash node` from the app repository, which serves this port.
-    localhost: { type: 'mem-cash', memCash: { url: process.env.SOLIDCASH_NODE_URL ?? 'http://127.0.0.1:8496' } },
+    // The app's `solidcash node`, which serves this port. Its production profile is the mainnet one.
+    localhost: {
+      type: 'mem-cash',
+      memCash: { url: process.env.SOLIDCASH_NODE_URL ?? 'http://127.0.0.1:8496' },
+      consensus: {
+        maximumInputBytes: 10_000,
+        maximumStackItemBytes: 10_000,
+        maximumTransactionBytes: 1_000_000,
+        maximumNftCommitmentBytes: 128,
+        operationCostBudgetPerByte: 800,
+        hashDigestIterationsPerByte: 0.5,
+        maximumMoney: 2_100_000_000_000_000n,
+      },
+      policy: { enforceDust: true },
+    },
     mock: {
       type: 'mock',
+      // Test-only: contracts that deliberately exceed mainnet's limits use this network explicitly.
       consensus: {
         operationCostBudgetPerByte: 1_000_000,
         maximumInputBytes: 10_000_000,
@@ -47,5 +61,5 @@ export default defineConfig({
       policy: { enforceDust: false },
     },
   },
-  defaultNetwork: 'mock',
+  defaultNetwork: 'localhost',
 });

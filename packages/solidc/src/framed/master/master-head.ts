@@ -790,7 +790,9 @@ class HeadEmitter {
     this.computeOrigin();
     if (!this.requiresValidator) this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
-    if (!this.handlesValue) this.assertZeroValue();
+    // An internal cut runs in the frame that entered it and keeps that frame's value (V5), a payable entry's among
+    // them: it receives none of its own and checks none, as Solidity checks no value on an internal function.
+    if (!this.handlesValue && !this.admittedKinds.every((kind) => kind === FRAME_KIND_INTERNAL)) this.assertZeroValue();
     this.branchOnValidatorNeed();
     // Whether the frame settles alone, and whose containers it pays from, are parked while the frame values are
     // reordered, then left above them.

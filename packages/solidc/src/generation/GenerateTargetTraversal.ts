@@ -756,6 +756,15 @@ function oracleRecreation(): Op[] {
     Op.OP_DUP, Op.OP_UTXOTOKENAMOUNT, Op.OP_OVER, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NUMEQUALVERIFY,
   ];
 }
+
+/** `[k, n, j]` -> `[k, n, j]`, failing unless output j copies input k: category and capability, commitment, amount. */
+function oracleCopy(): Script {
+  return [
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, encodeInt(3n), Op.OP_PICK, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, encodeInt(3n), Op.OP_PICK, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, encodeInt(3n), Op.OP_PICK, Op.OP_UTXOTOKENAMOUNT, Op.OP_NUMEQUALVERIFY,
+  ];
+}
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
@@ -10893,7 +10902,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) {
       const pairs = this.currentContractUsesBlockhash && !this.currentContractHasEvents;
       if (this.currentContractHasEvents) this.emitOwnCategoryImmutableNftOutputPin(node);
-      if (pairs || this.currentContractUsesBlockOracle) {
+      // A direct genesis mints one block-info oracle coin per master, so a direct split mints one per new master.
+      // Framed and message-bus builds keep one coin.
+      if (isSplit && this.currentContractUsesBlockOracle && this.directConvention
+        && this.compilerOptions.messageBus !== true) {
+        if (pairs) this.emitOracleOutputPin(node, true, false);
+        this.emitSplitOracleCopyPin(node);
+      } else if (pairs || this.currentContractUsesBlockOracle) {
         this.emitOracleOutputPin(node, pairs, this.currentContractUsesBlockOracle);
       }
     }
@@ -52762,6 +52777,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack();
     }
+  }
+
+  /**
+   * A direct split's block-info oracle pin, in place of `emitOracleOutputPin`. The split co-spends one coin of its
+   * oracle and copies it once per new master: the output at the coin's index recreates it unchanged, and exactly n
+   * other outputs sit at the lock, each copying the spent coin (category and capability, commitment, amount). A
+   * split that spends no coin of the lock fails at the search, past the last input.
+   */
+  private emitSplitOracleCopyPin(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    this.emit(BLOCK_ORACLE_LOCK_SENTINEL, loc);
+    this.pushToStack('(info_lock)');
+    // [lock] -> [lock, k]. The covenant refuses a second input at its lock, so the first is the one.
+    this.emit([Op.OP_1NEGATE, Op.OP_BEGIN, Op.OP_1ADD, Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(2n), Op.OP_PICK,
+      Op.OP_EQUAL, Op.OP_UNTIL], loc);
+    this.pushToStack('(oracle_k)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(node.splitCountParam!))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(oracle_copies)');
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+    this.pushToStack('(oracle_j)');
+    // [lock, k, n, j] -> [lock, k, n - copies, 0], visiting every j below the output count from the top.
+    this.emit([
+      Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_IF,
+      Op.OP_DUP, encodeInt(3n), Op.OP_PICK, Op.OP_NUMEQUAL,
+      Op.OP_IF, ...oracleRecreation(), Op.OP_ELSE, ...oracleCopy(), Op.OP_SWAP, Op.OP_1SUB, Op.OP_SWAP, Op.OP_ENDIF,
+      Op.OP_ENDIF,
+      Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
+    ], loc);
+    this.popFromStack();
+    this.emit([Op.OP_NOT, Op.OP_VERIFY, Op.OP_2DROP], loc);
+    this.popFromStack(3);
   }
 
   /**

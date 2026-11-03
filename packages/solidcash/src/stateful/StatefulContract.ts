@@ -14186,6 +14186,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   /**
    * Split a minting NFT into N new minting NFTs.
    * Transaction: [master, funding...] -> [master_preserved, new_minting_1..N, change]
+   * A direct block.* reader co-spends an oracle coin ahead of the master and copies it once per new master.
    */
   static async split(options: SplitOptions): Promise<SplitResult> {
     if (isFramedArtifact(options.contract.inner.artifact)) await loadFramedCallHandle();
@@ -15417,6 +15418,7 @@ export class StatefulFunctionCall {
   /**
    * Build a raw TransactionBuilder for a split function.
    * Transaction: [master, funding...] -> [master_preserved, new_minting_1..N, change]
+   * A direct block.* reader co-spends an oracle coin ahead of the master and copies it once per new master.
    */
   private async _buildSplitTransactionBuilder(
     abiFunction: { inputs: readonly { name: string }[]; splitCountParam?: string },

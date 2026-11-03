@@ -2,9 +2,10 @@ import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex
 import { decodeTransaction, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
-  encodeBlockOracleCommitment, blockOracleLockingBytecode, blockOracleReadUnlocking, hash160, hash256, sha256,
-  type BlockOracleCommitmentFields,
+  encodeBlockOracleCommitment, blockOracleLockingBytecode, blockOracleReadUnlocking, blockOracleRedeemScript, hash160,
+  hash256, sha256, type BlockOracleCommitmentFields,
 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
@@ -245,6 +246,12 @@ interface Outpoint { readonly txid: string; readonly vout: number }
 
 function sameOutpoint(left: Outpoint, right: Outpoint): boolean {
   return left.txid === right.txid && left.vout === right.vout;
+}
+
+/** Whether `unlocking` spends a coin of the oracle of `category`: read and update both end with its redeem push. */
+function spendsBlockOracle(unlocking: Uint8Array | undefined, category: string): boolean {
+  if (unlocking === undefined) return false;
+  return binToHex(unlocking).endsWith(binToHex(encodeDataPush(blockOracleRedeemScript(hexToBin(category)))));
 }
 
 /** The coin a fresh mock chain gives the oracle owner's P2PKH, which pays its keeper's update fees. */
@@ -860,8 +867,9 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.acceptedTransactions.add(result.txid);
     const accepted = decodeTransaction(hexToBin(txHex));
     if (typeof accepted === 'object') {
-      // The transaction that first creates a category's oracle coins (its genesis, one per master) is kept whole; a
-      // later one only recreates them.
+      // The transaction that first creates a category's oracle coins (its genesis, one per master) is kept whole. A
+      // later one recreates a coin at the index of the input that spends it, and keeps any other coin it mints (a
+      // split's copies, one per new master).
       const minted = new Map<string, Outpoint[]>();
       for (const [vout, output] of accepted.outputs.entries()) {
         const token = output.token === undefined ? undefined : {
@@ -870,8 +878,12 @@ export default class MockNetworkProvider implements NetworkProvider {
             : { capability: output.token.nft.capability, commitment: binToHex(output.token.nft.commitment) },
         };
         const category = this.mockOwnedOracleCategory(output.lockingBytecode, token);
-        if (category === undefined || this.blockOracles.has(category)) continue;
-        minted.set(category, [...minted.get(category) ?? [], { txid: result.txid, vout }]);
+        if (category === undefined) continue;
+        if (!this.blockOracles.has(category)) {
+          minted.set(category, [...minted.get(category) ?? [], { txid: result.txid, vout }]);
+        } else if (!spendsBlockOracle(accepted.inputs[vout]?.unlockingBytecode, category)) {
+          this.keepBlockOracle(category, { txid: result.txid, vout });
+        }
       }
       for (const [category, coins] of minted) this.blockOracles.set(category, coins);
     }

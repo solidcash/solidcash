@@ -4,7 +4,8 @@
  * Any block.* or blockhash read makes a contract stateful, and its block-info oracle is a mutable NFT of its own
  * category at the lock the oracle covenant gives that category. Every master spend holds the minting NFT that could
  * mint a look-alike with forged block fields, so every function of a reader admits an output at that lock only as an
- * unchanged recreation of the input at its index. Each case runs the whole transaction on the BCH 2026 VM.
+ * unchanged recreation of the input at its index; a direct split also admits one exact copy of the co-spent coin per
+ * new master. Each case runs the whole transaction on the BCH 2026 VM.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -206,13 +207,22 @@ describe('a function that reads no oracle, in a contract that does', () => {
 describe('a permissionless split of a block.* reader', () => {
   const artifact = compileString(SPLIT_READER, { allowUnsafeOperations: true });
 
+  /** The new master takes a copy of the oracle coin the split co-spends at input 2 and recreates at output 2. */
   function splitSpend(): Spend {
     return {
-      sourceOutputs: [master(artifact), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 100_000n }],
+      sourceOutputs: [
+        master(artifact), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 100_000n }, oracle(OWNER_PKH, TIME),
+      ],
       transaction: {
         version: 2, locktime: 0,
-        inputs: [input(0, masterUnlock(artifact, 'fork', { k: num(1n) })), input(1, EMPTY)],
-        outputs: [master(artifact), master(artifact, 1_000n), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 90_000n }],
+        inputs: [
+          input(0, masterUnlock(artifact, 'fork', { k: num(1n) })), input(1, EMPTY),
+          input(2, blockOracleReadUnlocking(CATEGORY)),
+        ],
+        outputs: [
+          master(artifact), master(artifact, 1_000n), oracle(OWNER_PKH, TIME), oracle(OWNER_PKH, TIME),
+          { lockingBytecode: FUNDER_LOCK, valueSatoshis: 90_000n },
+        ],
       },
     };
   }
@@ -223,5 +233,15 @@ describe('a permissionless split of a block.* reader', () => {
 
   it('refuses a forged oracle minted beside the split', () => {
     expect(verdict(withOutput(splitSpend(), oracle(FORGER_PKH, TIME + 86_400n)))).not.toBe(true);
+  });
+
+  it('refuses a split that co-spends no oracle coin', () => {
+    const spend = splitSpend();
+    const transaction = {
+      ...spend.transaction,
+      inputs: spend.transaction.inputs.slice(0, 2),
+      outputs: [...spend.transaction.outputs.slice(0, 2), ...spend.transaction.outputs.slice(4)],
+    };
+    expect(verdict({ sourceOutputs: spend.sourceOutputs.slice(0, 2), transaction })).not.toBe(true);
   });
 });

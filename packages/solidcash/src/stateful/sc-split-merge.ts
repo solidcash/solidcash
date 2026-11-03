@@ -11,6 +11,7 @@ import {
 import type {
   MergeOptions, MergeResult, SplitOptions, SplitResult,
 } from './stateful-lifecycle-types.js';
+import { splitBlockOracle } from './sc-split-merge-builders.js';
 
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
@@ -74,6 +75,9 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
     throw new Error(`Master UTXO not found for contract '${contract.name}' (category ${categoryId}).`);
   }
 
+  const oracle = await splitBlockOracle(provider, contract.inner.artifact, categoryId);
+  const oracleCopies = oracle === undefined ? 0n : oracle.utxo.satoshis * BigInt(splitCount);
+
   // Build transaction
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
   const builder = new TransactionBuilder({
@@ -81,16 +85,21 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
     ...(options.maxFee != null ? { maximumFeeSatoshis: options.maxFee } : {}),
   });
 
-  // Input 0: master UTXO (unlocked with split function)
+  // A block.* reader's oracle coin leads, recreated at its index.
+  if (oracle !== undefined) builder.addInput(oracle.utxo, oracle.unlocker);
+
+  // The master UTXO (unlocked with split function)
   const unlockingArgs = [...splitFunctionArgs];
   builder.addInput(masterUtxo, contract.inner.unlock[splitFunctionName]!(...unlockingArgs));
 
-  // Input 1+: funding UTXOs
+  // Then the funding UTXOs
   for (const fundingUtxo of fundingUtxos) {
     builder.addInput(fundingUtxo, funder);
   }
 
-  // Output 0: master preserved (same LBC, same token, same commitment)
+  if (oracle !== undefined) builder.addOutput(oracle.output());
+
+  // The master preserved (same LBC, same token, same commitment)
   builder.addOutput({
     to: contract.inner.tokenAddress,
     amount: masterUtxo.satoshis,
@@ -101,7 +110,7 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
     },
   });
 
-  // Outputs 1..N: new minting NFTs
+  // N new minting NFTs
   for (let i = 0; i < splitCount; i++) {
     builder.addOutput({
       to: contract.inner.tokenAddress,
@@ -114,17 +123,21 @@ export async function splitStatefulContract(options: SplitOptions): Promise<Spli
     });
   }
 
+  // One copy of the oracle coin per new master, which the funding pays for.
+  for (let i = 0; oracle !== undefined && i < splitCount; i++) builder.addOutput(oracle.output());
+
   // Compute fee from actual transaction size (1 sat/byte minimum relay fee).
   // Add a placeholder change output before estimating so the fee accounts for it.
   builder.addOutput({ to: changeAddress, amount: 1000n }); // placeholder
   const actualFee = options.fee ?? await computeFeeFromBuilder(builder);
   const totalFunding = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
-  const changeAmount = totalFunding - (newMintingAmount * BigInt(splitCount)) - actualFee;
+  const changeAmount = totalFunding - (newMintingAmount * BigInt(splitCount)) - oracleCopies - actualFee;
   if (changeAmount < 0n) {
     builder.outputs.pop(); // remove placeholder
+    const copies = oracle === undefined ? '' : ` + ${oracleCopies} oracle copies`;
     throw new Error(
-      `Insufficient funding for split: need ${newMintingAmount * BigInt(splitCount) + actualFee} sats `
-      + `(${splitCount} x ${newMintingAmount} + ${actualFee} fee), but only ${totalFunding} sats available.`,
+      `Insufficient funding for split: need ${newMintingAmount * BigInt(splitCount) + oracleCopies + actualFee} sats `
+      + `(${splitCount} x ${newMintingAmount}${copies} + ${actualFee} fee), but only ${totalFunding} sats available.`,
     );
   }
   if (changeAmount > 0n) {

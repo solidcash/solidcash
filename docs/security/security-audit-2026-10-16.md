@@ -1100,3 +1100,10 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   minted before the fix stays exposed until it is replaced; none is on a real chain. Test:
   `packages/solidcash/test/e2e/AuditCrypto4KeeperAuthority.test.ts` (mock: a container riding along the baton is
   refused at the baton; the P2PKH fee input is accepted). Not run: the pre-fix acceptance.
+- ORACLE-4, one coin per master on `split` (`fix/oracle-split-copies`, 2026-11-03). A direct genesis mints one oracle
+  coin per master (`dbdf804d7`); a direct `split(n)` of a reader now co-spends one coin on its read path, recreates it
+  at its index and mints n copies the caller funds, and its pin (`emitSplitOracleCopyPin`) admits at the lock exactly
+  n outputs besides that recreation, each with the spent coin's category and capability, commitment and amount; a
+  split that spends no coin is refused. Every other function, `merge` included, keeps `emitOracleOutputPin`, and framed
+  and message-bus compiles keep one coin. Tests: `packages/solidcash/test/e2e/BlockOracleSplitCopies.test.ts` (mock),
+  `packages/solidc/test/AuditBlockInfoOracleOwnCategory.test.ts` (VM).

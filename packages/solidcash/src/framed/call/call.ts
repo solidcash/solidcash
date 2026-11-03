@@ -3359,13 +3359,24 @@ async function callInShape(
           );
         }
         candidate.learnUnstatedViews();
-        const hashed = hashedCallArguments(provider, candidate.programFor(MASTER_ID), selector, arity)
+        // The run is of the frame that makes the call: the entry's own, or the callee frame the stop is inside, whose
+        // body (not a proxy's fallback, which only forwards) computes the arguments.
+        const caller = stop.path === '' ? MASTER_ID
+          : calleePlan.callees.find((callee) => callee.path === stop.path && callee.retvalFrom === undefined)?.master;
+        const runs = caller === undefined
+          ? [] : hashedCallArguments(provider, candidate.programFor(caller), selector, arity);
+        const hashed = runs
           .filter((values) => resolved.every((known, at) => known === undefined || bytesEqual(known, values[at]!)));
         const learned = hashed[hashed.length - 1];
         if (learned !== undefined) {
           return callInShape(options, shape, {
             ...prior, hashedArguments: new Map([...prior.hashedArguments ?? [], [key, learned]]),
           });
+        }
+        // A callee frame whose run hashes nothing for the call meets the refusal its site states, as a refused site is.
+        if (stop.path !== '' && stop.refusal !== undefined) {
+          settled = true;
+          break;
         }
         // A run that stops before it reaches the call hashes nothing for it. What it stopped on is learned below as any
         // run's close is (the value a typed call carries, a view it writes), and a body that refuses there, on an
@@ -3813,7 +3824,9 @@ async function callInShape(
       ? new FramedCallError(`entry "${functionName}": ${refusedPlanning.message}`) : refusedPlanning;
   }
   // So does one stopped inside a callee frame, before a site of that frame's own the planner refused.
-  const calleeSiteRefusal = calleePlan?.blocked?.reads === 'refusal' ? calleePlan.blocked.refusal : undefined;
+  const calleeSiteRefusal = calleePlan?.blocked?.reads === 'refusal'
+    || (calleePlan?.blocked?.reads === 'computed' && calleePlan.blocked.path !== '')
+    ? calleePlan.blocked.refusal : undefined;
   if (calleeSiteRefusal !== undefined && !accepted && !reverted) {
     throw new FramedPlanningRefusal(`entry "${functionName}": ${calleeSiteRefusal.message}`);
   }

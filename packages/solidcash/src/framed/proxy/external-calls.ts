@@ -364,7 +364,10 @@ export interface HopPlanBlock {
     readonly arity: number;
     readonly resolved: readonly (Uint8Array | undefined)[];
   };
-  /** On a `refusal` stop, the failure met at the site: the planner's refusal of its frames, or a stop's failure. */
+  /**
+   * On a `refusal` stop, the failure met at the site: the planner's refusal of its frames, or a stop's failure. On a
+   * callee frame's `computed` stop, the refusal the site meets when no run of the frame hashes the call's arguments.
+   */
   readonly refusal?: Error;
 }
 
@@ -1966,16 +1969,31 @@ async function planEntryCalls(
     // A turn whose arguments the body computes in a way no published expression states is planned from what a run of
     // the body hashed for it. The turns before the first one no run has read are placed, and the pass stops there:
     // a run of the body up to that turn hashes its arguments, and the next pass plans it from them.
+    //
+    // The body is the frame's that makes the call: the hop's own, or a callee frame's, such as an internal cut whose
+    // call passes an amount it computed from an earlier call's result (Router02's `_swap` cut out of its swap
+    // entries, which picks each pair's `amount0Out`/`amount1Out` by token order). A callee frame's stop keeps the
+    // refusal its site meets, which a run that hashes nothing for the call falls back to.
     const resolved: ResolvedCall[] = [];
     for (const turn of turns) {
       const hashed = row.callsiteId === undefined
         ? undefined : ctx.hashedArguments?.get(hashedArgumentsKey(path, row.callsiteId, turn));
-      if (hashed === undefined && row.callsiteId !== undefined && path === ''
+      if (hashed === undefined && row.callsiteId !== undefined && (path === '' || ctx.calleeSiteRefusals === true)
         && unresolvedCallArguments(effective, siteResolver, turn).length > 0) {
+        let refusal: Error | undefined;
+        if (path !== '') {
+          try {
+            resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf);
+          } catch (error) {
+            if (!(error instanceof FramedProxyDeployError)) throw error;
+            refusal = error;
+          }
+        }
         ownStop = {
           path, where, reads: 'computed', producers: [],
           computed: computedStop(row, entryRowOf(external.artifact, row.functionName), siteResolver, turn,
             hashedArgumentsKey(path, row.callsiteId, turn)),
+          ...(refusal === undefined ? {} : { refusal }),
         };
         break;
       }

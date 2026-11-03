@@ -41,7 +41,7 @@ import { callFramedProxyEntry } from '../proxy/deploy.js';
 import { lockOfIdentity } from '../proxy/address-identity.js';
 import { registeredFramedAddresses } from '../proxy/external-calls.js';
 import { readFramedEntry, FramedReadError, type FramedReadResult } from '../read/index.js';
-import { FramedCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
+import { FramedComposerError, FramedCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
 import { framedSendQueue, framedSendResources, proxyHopSendsAreQueued } from '../queue/index.js';
 import { coinsAvailableForCallerFee } from '../../stateful/genesis-reservations.js';
 import { ownCoinRefusal } from '../deploy/own-coin.js';
@@ -324,7 +324,11 @@ export class FramedFunctionCall {
       try {
         return await this.readValue();
       } catch (error) {
-        if (!(error instanceof FramedReadError) || this.contract.signer === undefined) throw error;
+        // So is one whose derivation stalls where the call path's does not: a view that calls a contract an earlier
+        // call's result names, such as a library's `getReserves` asking the factory for a pair it created and then
+        // the pair, which the call path plans from the live deployments and the read path cannot yet bind.
+        const stalled = error instanceof FramedComposerError && error.code === 'FRAMED_DERIVATION_STALLED';
+        if (!(error instanceof FramedReadError || stalled) || this.contract.signer === undefined) throw error;
       }
     }
     const result = await this.compose();

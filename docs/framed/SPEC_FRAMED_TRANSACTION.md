@@ -351,7 +351,8 @@ row Dn of [`DECISIONS.md`](./DECISIONS.md), which is not the plan's Dn.
 - **Catalogs.** Part II also lists every cross-contract edge the tests exercise, and every edge case, each with the
   rule that covers it. They come from code surveys of the contracts, the test file and today's record formats.
 - **D9:** `V_TEMPLATE` v1 is frozen (open point 13), from the first real-chain deployment; before it, v1 took each
-  contract's block oracle into V7 (2026-11-03).
+  contract's block oracle into V7 (2026-11-03), and then weighed only settled contracts' oracle outputs, as V7 states
+  it, so a creating transaction mints its child's oracle (2026-11-03, `fix/oracle-child`).
 - **Independent review of revision 7:** all findings are covered by revision 8. Minimal pushes are confirmed as
   consensus in libauth.
 
@@ -1239,7 +1240,9 @@ Conversely, every covered master that is not a root appears in exactly one calle
   (`OP_UTXOTOKENAMOUNT` and `OP_OUTPUTTOKENAMOUNT`), and only then reads an own-category output's class from
   `OP_OUTPUTTOKENCATEGORY`: a capability byte of mutable means
   the index must be one a segment's declaration writes (or a recreated `catX` validator's), or, at X's block oracle
-  lock, that the input at the same index has the output's lock, token and commitment, a capability byte of minting
+  lock, that the input at the same index has the output's lock, token and commitment (only X's: an output at the oracle
+  lock of a category no covered frame runs on, such as the oracle a creating transaction mints for its child, is not
+  this validator's to weigh), a capability byte of minting
   means recreated in place, at every index the transaction has (an output past the inputs stands over no master, so a
   minting one there is refused unless the transcript lists it as minted), and a bare 32-byte value is an immutable NFT
   under S2's exclusion of fungible amounts, so its index must be one a frame in X's context lists as an event;

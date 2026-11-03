@@ -2171,11 +2171,16 @@ function emitRequireOutputClasses(s: NamedStack): void {
     s.roll('pin').emit(1, ['pin', 'mutable'], (em) => emitHasCapability(em, TokenCapability.MUTABLE));
     s.pick('immutable', 'i').pick('mutable', 'm').op(2, ['classed'], O.OP_BOOLOR).branch(() => s.call((fs) => {
       fs.pick('pin', 'p').count(32, 'width').op(2, ['category'], O.OP_SPLIT, O.OP_DROP);
-      // A mutable NFT at the lock its category derives is that contract's block oracle: admitted only as the input at
-      // its index, recreated with the same lock, token and commitment, and never as a record.
+      // A mutable NFT at the lock its category derives is that contract's block oracle: a settled contract's is
+      // admitted only as the input at its index, recreated with the same lock, token and commitment, and never as a
+      // record. An unsettled category's is not this validator's to class (V7 weighs the settled contracts' outputs):
+      // a child created in this transaction mints its own oracle where no input stands, and its creator's check
+      // weighs it.
       fs.pick('mutable', 'm').branch(() => {
         fs.pick('category', 'c').emit(1, ['oracleLock'], emitOracleLockInvoke).pick('o', 'oo')
           .op(1, ['lock'], O.OP_OUTPUTBYTECODE).op(2, ['isOracle'], O.OP_EQUAL);
+        fs.pick('declared', 'd').pick('category', 'c').emit(2, ['k'], emitIndexOf32).count(0, 'zero')
+          .op(2, ['settled'], O.OP_GREATERTHANOREQUAL).op(2, ['isOracle'], O.OP_BOOLAND);
       }, () => {
         fs.count(0, 'isOracle');
       });

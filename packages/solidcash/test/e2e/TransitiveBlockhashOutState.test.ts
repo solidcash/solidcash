@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
-import { blockhashOracleLockingBytecode, buildBlockhashCommitment } from '@solidcash/utils';
+import { createTestProvider, seedBlockhashSlot, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 const CALLEE = `
@@ -49,12 +48,7 @@ describe('transitive callee blockhash outState read', () => {
     const { categoryId: calleeCategory } = await setupStatefulUtxos(
       provider, calleeContract, calleeArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
     );
-    const lock = blockhashOracleLockingBytecode(hexToBin(calleeCategory));
-    await provider.addUtxo(binToHex(lock), {
-      txid: 'ab'.repeat(32), vout: 0, satoshis: 1000n,
-      token: { category: calleeCategory, amount: 0n,
-        nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(n), hash)) } },
-    });
+    await seedBlockhashSlot(provider, calleeCategory, BigInt(n), hash);
     const calleeAddr = calleeContract.withCategory(hexToBin(calleeCategory)).lockingBytecode;
     const callerContract = new Contract(callerArtifact, [calleeAddr], { provider });
     const { categoryId: callerCategory } = await setupStatefulUtxos(

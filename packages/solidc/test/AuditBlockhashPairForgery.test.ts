@@ -1,11 +1,11 @@
 /**
- * Forged blockhash pairs (block oracle hardening, 2026-11-03).
+ * Forged blockhash slots (block oracle hardening, 2026-11-03).
  *
- * A `blockhash(n)` reader accepts any capability-none NFT of its category at the category's blockhash oracle lock
- * whose commitment starts with `n`. Every master spend holds the category's minting NFT, so the spend can mint such an
- * NFT, and an expired pair's wipe path leaves its output free. A master of a contract that reads blockhash therefore
- * admits an own-category output at that lock only as an unchanged recreation of the input at the same index. Honest
- * reads settle, with and without declared events.
+ * A `blockhash(n)` reader accepts any NFT of its category at the category's blockhash slot lock whose commitment
+ * starts with `n`. Every master spend holds the category's minting NFT, so the spend can mint such an NFT: a slot with
+ * a forged hash, or a second slot of an n. A master of a contract that reads blockhash therefore admits an
+ * own-category output at that lock only as an unchanged recreation of the input at the same index. Honest reads
+ * settle, with and without declared events.
  *
  * A contract whose only stateful feature is blockhash had no master covenant at all in a function body compiled on
  * its own (a message-bus build, or two or more functions): the body did not know the contract reads blockhash, so a
@@ -16,7 +16,7 @@ import {
   createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
-  asmToScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  asmToScript, blockhashOracleLockingBytecode, blockhashSlotReadUnlocking, buildBlockhashSlotCommitment,
   encodeIntegerValue, scriptToBytecode, type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
@@ -41,15 +41,16 @@ const SPLIT_READER = `${P} contract S { ${READ} function fork(int k) split(k) { 
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x41 + i * 13) & 0xff);
 const EMPTY = new Uint8Array(0);
 const MASTER_VALUE = 20_000n;
-const PAIR_VALUE = 1_000n;
+const SLOT_VALUE = 1_200n;
 const FUNDER_LOCK = Uint8Array.from([0x51]);
 const HEIGHT = 1_000;
 const N = 990n;
-const EXPIRED_N = 700n;
 const HASH = Uint8Array.from({ length: 32 }, (_, i) => (0x10 + i) & 0xff);
 const FORGED = new Uint8Array(32).fill(0xee);
-const PAIR_REDEEM = scriptToBytecode(buildBlockhashOracleCovenantScript(CATEGORY));
-const PAIR_LOCK = blockhashOracleLockingBytecode(CATEGORY);
+const OWNER = new Uint8Array(20).fill(0x22);
+const DEPTH = 256;
+const SLOT_READ = blockhashSlotReadUnlocking(CATEGORY);
+const SLOT_LOCK = blockhashOracleLockingBytecode(CATEGORY);
 const vm = createVirtualMachineBch2026();
 
 const num = (value: bigint): Uint8Array => encodeIntegerValue(value);
@@ -107,10 +108,13 @@ function master(artifact: Artifact, valueSatoshis = MASTER_VALUE): VmOutput {
   };
 }
 
-function pair(n: bigint, hash: Uint8Array): VmOutput {
+function slot(n: bigint, hash: Uint8Array): VmOutput {
   return {
-    lockingBytecode: PAIR_LOCK, valueSatoshis: PAIR_VALUE,
-    token: { category: CATEGORY, amount: 0n, nft: { capability: 'none', commitment: buildBlockhashCommitment(n, hash) } },
+    lockingBytecode: SLOT_LOCK, valueSatoshis: SLOT_VALUE,
+    token: {
+      category: CATEGORY, amount: 0n,
+      nft: { capability: 'mutable', commitment: buildBlockhashSlotCommitment(n, hash, OWNER, DEPTH) },
+    },
   };
 }
 
@@ -118,17 +122,17 @@ function verdict(spend: Spend): true | string {
   return vm.verify(spend);
 }
 
-/** The master reads `n` from the pair at input 1, holding `pairHash`; a funder pays at input 2. */
-function readSpend(artifact: Artifact, n: bigint, hash: Uint8Array, pairHash: Uint8Array = hash): Spend {
+/** The master reads `n` from the slot at input 1, holding `slotHash`; a funder pays at input 2. */
+function readSpend(artifact: Artifact, n: bigint, hash: Uint8Array, slotHash: Uint8Array = hash): Spend {
   const unlock = masterUnlock(artifact, 'read', {
     bn: num(n), h: hash, __internal__blockhashInputIndex: num(1n), __internal__returnOutputIdx: num(-1n),
   });
   return {
-    sourceOutputs: [master(artifact), pair(n, pairHash), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 100_000n }],
+    sourceOutputs: [master(artifact), slot(n, slotHash), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 100_000n }],
     transaction: {
       version: 2, locktime: HEIGHT,
-      inputs: [input(0, unlock), input(1, pushesOf([num(0n), PAIR_REDEEM])), input(2, EMPTY)],
-      outputs: [master(artifact), pair(n, pairHash), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 90_000n }],
+      inputs: [input(0, unlock), input(1, SLOT_READ), input(2, EMPTY)],
+      outputs: [master(artifact), slot(n, slotHash), { lockingBytecode: FUNDER_LOCK, valueSatoshis: 90_000n }],
     },
   };
 }
@@ -137,18 +141,10 @@ function withOutput(spend: Spend, output: VmOutput): Spend {
   return { ...spend, transaction: { ...spend.transaction, outputs: [...spend.transaction.outputs, output] } };
 }
 
-/** An expired pair wiped at the next input index, with `replacement` at the same output index. */
-function withWipedPair(spend: Spend, replacement: VmOutput): Spend {
-  const at = spend.transaction.inputs.length;
-  if (spend.transaction.outputs.length !== at) throw new Error('the replacement must sit at the wiped index');
-  return {
-    sourceOutputs: [...spend.sourceOutputs, pair(EXPIRED_N, HASH)],
-    transaction: {
-      ...spend.transaction,
-      inputs: [...spend.transaction.inputs, input(at, pushesOf([num(1n), PAIR_REDEEM]))],
-      outputs: [...spend.transaction.outputs, replacement],
-    },
-  };
+/** The read slot's recreation at output 1 replaced by `replacement`. */
+function withReadSlotOutput(spend: Spend, replacement: VmOutput): Spend {
+  const outputs = spend.transaction.outputs.map((output, index) => (index === 1 ? replacement : output));
+  return { ...spend, transaction: { ...spend.transaction, outputs } };
 }
 
 describe.each([
@@ -168,20 +164,20 @@ describe.each([
     expect(verdict({ ...spend, transaction: { ...spend.transaction, outputs } })).not.toBe(true);
   });
 
-  it('refuses a forged pair minted beside a read', () => {
-    expect(verdict(withOutput(readSpend(artifact, N, HASH), pair(N - 1n, FORGED)))).not.toBe(true);
+  it('refuses a forged slot minted beside a read', () => {
+    expect(verdict(withOutput(readSpend(artifact, N, HASH), slot(N - 1n, FORGED)))).not.toBe(true);
   });
 
-  it('refuses a forged pair in place of a wiped one', () => {
-    expect(verdict(withWipedPair(readSpend(artifact, N, HASH), pair(N - 2n, FORGED)))).not.toBe(true);
+  it('refuses a second slot of the read n minted beside it', () => {
+    expect(verdict(withOutput(readSpend(artifact, N, HASH), slot(N, FORGED)))).not.toBe(true);
   });
 
-  it('admits a wiped pair recreated unchanged', () => {
-    expect(verdict(withWipedPair(readSpend(artifact, N, HASH), pair(EXPIRED_N, HASH)))).toBe(true);
+  it('refuses the read slot recreated with a forged hash', () => {
+    expect(verdict(withReadSlotOutput(readSpend(artifact, N, HASH), slot(N, FORGED)))).not.toBe(true);
   });
 });
 
-it('reads a forged pair as genuine once one exists, so the mint is what must be refused', () => {
+it('reads a forged slot as genuine once one exists, so the mint is what must be refused', () => {
   expect(verdict(readSpend(compileString(READER), N - 1n, FORGED))).toBe(true);
 });
 
@@ -192,12 +188,12 @@ describe('a blockhash reader that declares events', () => {
     expect(verdict(readSpend(artifact, N, HASH))).toBe(true);
   });
 
-  it('refuses a forged pair minted beside a read', () => {
-    expect(verdict(withOutput(readSpend(artifact, N, HASH), pair(N - 1n, FORGED)))).not.toBe(true);
+  it('refuses a forged slot minted beside a read', () => {
+    expect(verdict(withOutput(readSpend(artifact, N, HASH), slot(N - 1n, FORGED)))).not.toBe(true);
   });
 
-  it('refuses a forged pair in place of a wiped one', () => {
-    expect(verdict(withWipedPair(readSpend(artifact, N, HASH), pair(N - 2n, FORGED)))).not.toBe(true);
+  it('refuses the read slot recreated with a forged hash', () => {
+    expect(verdict(withReadSlotOutput(readSpend(artifact, N, HASH), slot(N, FORGED)))).not.toBe(true);
   });
 });
 
@@ -219,7 +215,7 @@ describe('a permissionless split of a blockhash reader', () => {
     expect(verdict(splitSpend())).toBe(true);
   });
 
-  it('refuses a forged pair minted beside the split', () => {
-    expect(verdict(withOutput(splitSpend(), pair(N - 1n, FORGED)))).not.toBe(true);
+  it('refuses a forged slot minted beside the split', () => {
+    expect(verdict(withOutput(splitSpend(), slot(N - 1n, FORGED)))).not.toBe(true);
   });
 });

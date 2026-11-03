@@ -7,13 +7,10 @@ import {
   StatefulContract,
   getDataNftLockingBytecode,
 } from '../../src/stateful/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
-import {
-  blockhashOracleLockingBytecode, buildBlockhashCommitment,
-} from '@solidcash/utils';
+import { createTestProvider, seedBlockhashSlot, setupStatefulUtxos } from '../test-util.js';
 
 // One stateful function combining every front-region auxiliary co-spend family the unified band allocates:
-// a blockhash oracle, a keccak256 compute side-car, a read-only external state read, and an external call.
+// a blockhash slot, a keccak256 compute side-car, a read-only external state read, and an external call.
 // The block layout must order them in one band (master -> dataNft -> readOnlyDataNft -> blockhashOracle ->
 // keccakSideCar) and the SDK must co-spend them at exactly those slots, or the transaction cannot settle.
 
@@ -88,15 +85,8 @@ describe('unified auxiliary co-spend band (oracle + keccak + external read + ext
       provider, callerContract, callerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },
     );
 
-    // Seed the caller-branded (n -> hash) oracle the covenant reads.
-    const oracleLock = blockhashOracleLockingBytecode(hexToBin(callerCategory));
-    await provider.addUtxo(binToHex(oracleLock), {
-      txid: 'a7'.repeat(32), vout: 0, satoshis: 1000n,
-      token: {
-        category: callerCategory, amount: 0n,
-        nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(n), hash)) },
-      },
-    });
+    // Seed the caller's blockhash slot holding n, which the covenant reads.
+    await seedBlockhashSlot(provider, callerCategory, BigInt(n), hash);
 
     const readableSc = StatefulContract.withCategory(readableContract, readableCategory);
     const counterSc = StatefulContract.withCategory(counterContract, counterCategory);

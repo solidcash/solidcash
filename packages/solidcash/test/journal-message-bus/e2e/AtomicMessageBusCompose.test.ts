@@ -5,7 +5,7 @@ import {
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString, compileStringMulti } from '@solidcash/solidc';
 import {
-  blockhashOracleLockingBytecode, buildBlockhashCommitment,
+  buildBlockhashSlotCommitment, decodeBlockhashSlotCommitment,
   buildChunkCommitment, scriptToBytecode, sha256,
   MESSAGE_BUS_BINDING_DOMAIN,
   keccakComputeLockingBytecode,
@@ -38,7 +38,7 @@ import {
 import { encodeEntryCommitment, keyToSlot } from '../../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import {
-  createBareP2pkhFeeFunder, genesisFtContainer, setupStatefulUtxos,
+  createBareP2pkhFeeFunder, genesisFtContainer, seedBlockhashSlot, setupStatefulUtxos,
 } from '../../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
@@ -2049,13 +2049,7 @@ describe('messageBus.compose atomic transaction', () => {
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
     );
-    await provider.addUtxo(binToHex(blockhashOracleLockingBytecode(hexToBin(callerSetup.categoryId))), {
-      txid: 'b4'.repeat(32), vout: 0, satoshis: 1000n,
-      token: {
-        category: callerSetup.categoryId, amount: 0n,
-        nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(height), hash)) },
-      },
-    });
+    await seedBlockhashSlot(provider, callerSetup.categoryId, BigInt(height), hash);
     const caller = StatefulContract.withCategory(
       callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
     );
@@ -2076,6 +2070,11 @@ describe('messageBus.compose atomic transaction', () => {
     expect(verifierInputCosts(canonical).filter(({ cost, budget }) => cost > budget)).toEqual([]);
     expectBchInputLimits(canonical);
     expect(vmRejects(canonical)).toBe(false);
+    // The slot at input 1 holding another block, or another hash, under its owner and depth.
+    const slotHolding = (commitment: string, n: bigint, slotHash: Uint8Array): string => {
+      const { ownerPkh, depth } = decodeBlockhashSlotCommitment(hexToBin(commitment))!;
+      return binToHex(buildBlockhashSlotCommitment(n, slotHash, ownerPkh, depth));
+    };
     for (const mutation of ['stale', 'substituted', 'omitted', 'duplicate'] as const) {
       const hostile = await composition.build();
       if (mutation === 'stale') {
@@ -2083,8 +2082,8 @@ describe('messageBus.compose atomic transaction', () => {
           ...hostile.inputs[1],
           token: { ...hostile.inputs[1].token!, nft: { ...hostile.inputs[1].token!.nft! } },
         };
-        hostile.inputs[1].token!.nft!.commitment = binToHex(
-          buildBlockhashCommitment(BigInt(height - 1), hash),
+        hostile.inputs[1].token!.nft!.commitment = slotHolding(
+          hostile.inputs[1].token!.nft!.commitment, BigInt(height - 1), hash,
         );
       } else if (mutation === 'substituted') {
         hostile.inputs[1] = {
@@ -2093,8 +2092,8 @@ describe('messageBus.compose atomic transaction', () => {
         };
         const wrongHash = hash.slice();
         wrongHash[0] ^= 1;
-        hostile.inputs[1].token!.nft!.commitment = binToHex(
-          buildBlockhashCommitment(BigInt(height), wrongHash),
+        hostile.inputs[1].token!.nft!.commitment = slotHolding(
+          hostile.inputs[1].token!.nft!.commitment, BigInt(height), wrongHash,
         );
       } else if (mutation === 'omitted') {
         hostile.inputs[1] = { ...hostile.inputs[2] };

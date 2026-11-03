@@ -1,27 +1,26 @@
 import { describe, it, expect } from 'vitest';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import {
-  blockOracleLockingBytecode, blockOracleReadUnlocking, blockhashCommitmentNumber,
-  blockhashKeeperBatonLockingBytecode, blockhashOracleLockingBytecode,
+  blockOracleLockingBytecode, blockOracleReadUnlocking, blockhashCommitmentNumber, blockhashOracleLockingBytecode,
+  blockhashSlotReadUnlocking,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
+import { SignatureTemplate, TransactionBuilder } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import {
-  BLOCKHASH_WINDOW, BlockOracleUpdater, blockOracleUpdateUnlocker, type BlockOracleFields, type RpcLike,
+  BlockOracleUpdater, blockOracleUpdateUnlocker, type BlockOracleFields, type RpcLike,
 } from '../../src/oracle/blockOracleUpdater.js';
 import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
-import {
-  createBareP2pkhFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos,
-} from '../test-util.js';
-import { aliceAddress, alicePriv, alicePub, bobAddress } from '../fixture/vars.js';
+import { createBareP2pkhFeeFunder, createTestProvider, expectScriptRejection } from '../test-util.js';
+import { aliceAddress, alicePriv, bobAddress } from '../fixture/vars.js';
 
 /**
  * The block-info oracle covenant refuses any spend that recreates a reader's own oracle with fewer satoshis, read
  * or owner update, so no reader can drain it until updates go out fee-less. The keeper pays update fees from its
- * own P2PKH. Its blockhash sweep pays its fee out of the pairs it reclaims, so a sync past 256 blocks succeeds.
+ * own P2PKH. The blockhash slot covenant keeps a slot's value the same way, and the keeper's ring writes pay their
+ * fees from that P2PKH too, so a sync past the ring's depth succeeds.
  */
 
 const READ_BACK = `
@@ -75,10 +74,6 @@ async function liveOracle(o: Owned): Promise<Utxo> {
 async function balance(provider: MockNetworkProvider, lock: Uint8Array): Promise<bigint> {
   return (await provider.getUtxosForLockingBytecode(lock)).reduce((sum, utxo) => sum + utxo.satoshis, 0n);
 }
-
-const outpoints = async (provider: MockNetworkProvider, lock: Uint8Array): Promise<string[]> => (
-  (await provider.getUtxosForLockingBytecode(lock)).map((utxo) => `${utxo.txid}:${utxo.vout}`)
-);
 
 // Broadcast the built bytes, so the verdict is the mock node's.
 function broadcast(provider: MockNetworkProvider, builder: TransactionBuilder): Promise<string> {
@@ -165,47 +160,63 @@ function chainRpc(provider: MockNetworkProvider): RpcLike {
   };
 }
 
-describe('the blockhash keeper sweep', () => {
-  it('syncs past 256 blocks and sweeps the aged pairs to the keeper in one batch', async () => {
+describe('the blockhash ring keeps its value', () => {
+  // A reader whose ring holds two slots, kept by the mock's owner key.
+  async function ring(): Promise<{ provider: MockNetworkProvider; lock: Uint8Array; keeper: BlockOracleUpdater }
+  | undefined> {
     const provider = createTestProvider();
-    if (!('setBlockOracleFields' in provider)) return;
-    const artifact = compileString(CONSUMER);
-    const consumer = new Contract(artifact, [], { provider });
-    const { categoryId: cat } = await setupStatefulUtxos(provider, consumer, artifact.stateLayout!, {}, {
-      saltContract: true,
-      extraOutputs: (category) => [{
-        address: binToHex(blockhashKeeperBatonLockingBytecode(hexToBin(category), alicePub)),
-        satoshis: 100_000n,
-        token: { nft: { capability: 'minting', commitment: '' } },
-      }],
+    if (!('setBlockOracleFields' in provider)) return undefined;
+    const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
+    const { contract, categoryId } = await StatefulContract.deploy(compileString(CONSUMER), [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
+      blockhashDepth: 2,
     });
     const keeper = new BlockOracleUpdater({
-      contract: consumer, categoryId: cat, keeperKey: alicePriv, rpc: chainRpc(provider), blockhashOracleCategory: cat,
+      contract: contract.inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: chainRpc(provider),
     });
-    const pairLock = blockhashOracleLockingBytecode(hexToBin(cat));
-    const pairs = async (): Promise<bigint[]> => (await provider.getUtxosForLockingBytecode(pairLock))
-      .map((utxo) => blockhashCommitmentNumber(hexToBin(utxo.token?.nft?.commitment ?? '')))
-      .sort((a, b) => Number(a - b));
-    const keeperLock = new SignatureTemplate(alicePriv).unlockP2PKH().generateLockingBytecode();
+    return { provider, lock: blockhashOracleLockingBytecode(hexToBin(categoryId)), keeper };
+  }
 
-    const first = BigInt(await provider.getBlockHeight());
-    expect(await keeper.syncOnce()).toBeNull();
-    await provider.mine(1);
-    expect(await keeper.syncOnce()).toBeNull();
-    expect(await pairs()).toEqual([first, first + 1n]);
+  it('refuses a read that lowers a slot value, and admits one that keeps it', async () => {
+    const r = await ring();
+    if (r === undefined) return;
+    const [slot] = await r.provider.getUtxosForLockingBytecode(r.lock);
+    const read: Unlocker = {
+      generateLockingBytecode: (): Uint8Array => r.lock,
+      generateUnlockingBytecode: (): Uint8Array => blockhashSlotReadUnlocking(hexToBin(slot.token!.category)),
+    };
+    const spend = async (kept: bigint): Promise<string> => {
+      const funder = await createBareP2pkhFeeFunder(r.provider, 20_000n);
+      return broadcast(r.provider, new TransactionBuilder({ provider: r.provider })
+        .addInput(slot, read)
+        .addInput(funder.utxo, funder.unlocker)
+        .addOutput({ to: r.lock, amount: kept, token: slot.token })
+        .addOutput({ to: bobAddress, amount: 19_000n + slot.satoshis - kept }));
+    };
+    expectScriptRejection(await spend(slot.satoshis - 1n), 0);
+    expect(await spend(slot.satoshis)).toBe('ACCEPTED');
+  });
 
-    const held = new Set(await outpoints(provider, keeperLock));
-    await provider.mine(BLOCKHASH_WINDOW);
-    const tip = BigInt(await provider.getBlockHeight());
-    expect(tip).toBe(first + 1n + BigInt(BLOCKHASH_WINDOW));
-    // Both pairs are out of the window: the old sweep built a 0-satoshi output for one 1,000-satoshi pair.
-    expect(await keeper.syncOnce()).toBeNull();
-    expect(await pairs()).toEqual([tip]);
-    const swept = (await provider.getUtxosForLockingBytecode(keeperLock))
-      .filter((utxo) => !held.has(`${utxo.txid}:${utxo.vout}`));
-    expect(swept).toHaveLength(1);
-    // 2,000 reclaimed satoshis less a size-priced fee, above dust.
-    expect(swept[0].satoshis).toBeGreaterThan(546n);
-    expect(swept[0].satoshis).toBeLessThan(2_000n);
+  it('syncs past the depth with every slot at its value, and the keeper P2PKH pays the fees', async () => {
+    const r = await ring();
+    if (r === undefined) return;
+    const held = async (): Promise<Array<[bigint, bigint]>> => (await r.provider.getUtxosForLockingBytecode(r.lock))
+      .map((utxo): [bigint, bigint] => [
+        blockhashCommitmentNumber(hexToBin(utxo.token!.nft!.commitment)), utxo.satoshis,
+      ])
+      .sort(([a], [b]) => Number(a - b));
+    const keeperLock = new SignatureTemplate(r.provider.blockOracleOwnerKey).unlockP2PKH().generateLockingBytecode();
+    const funds = await balance(r.provider, keeperLock);
+
+    const first = BigInt(await r.provider.getBlockHeight());
+    expect(await r.keeper.syncOnce()).toBeNull();
+    await r.provider.mine(1);
+    expect(await r.keeper.syncOnce()).toBeNull();
+    expect(await held()).toEqual([[first, 1_200n], [first + 1n, 1_200n]]);
+    // Two blocks on, the tip's slot is the one holding first + 1, and it moves up by the depth.
+    await r.provider.mine(2);
+    expect(await r.keeper.syncOnce()).toBeNull();
+    expect(await held()).toEqual([[first, 1_200n], [first + 3n, 1_200n]]);
+    expect(await balance(r.provider, keeperLock)).toBe(funds - 6_000n);
   });
 });

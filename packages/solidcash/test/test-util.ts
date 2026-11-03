@@ -8,8 +8,9 @@ import {
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import {
-  blockOracleLockingBytecode, buildInitialStateCommitments, encodeBlockOracleCommitment, hash160, hash256,
-  messageBusVerifierCommitment, type StateLayout,
+  BLOCKHASH_MAX_DEPTH, blockOracleLockingBytecode, blockhashOracleLockingBytecode, buildBlockhashSlotCommitment,
+  buildInitialStateCommitments, encodeBlockOracleCommitment, hash160, hash256, messageBusVerifierCommitment,
+  type StateLayout,
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
@@ -35,7 +36,7 @@ import {
 } from './fixture/vars.js';
 import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import {
-  addressToLockScript, generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput,
+  addressToLockScript, generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput, randomUtxo,
 } from '../src/utils.js';
 import type NetworkProvider from '../src/network/NetworkProvider.js';
 import { utxoComparator } from '../src/utils.js';
@@ -386,8 +387,8 @@ export async function setupStatefulUtxos(
   opts?: {
     masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
     messageBusVerificationInputCount?: number;
-    // Extra token UTXOs to genesis under the SAME category (e.g. a blockhash (n->hash) oracle NFT branded to
-    // the contract). Receives the resolved categoryId; the seeded UTXOs are returned as `extraUtxos`.
+    // Extra token UTXOs to genesis under the SAME category. Receives the resolved categoryId; the seeded UTXOs are
+    // returned as `extraUtxos`. A blockhash reader's ring is not seeded: see seedBlockhashSlot.
     extraOutputs?: (categoryId: string) => Array<{ address: string; satoshis: bigint; token: any }>;
   },
 ): Promise<StatefulUtxoSetup> {
@@ -511,6 +512,23 @@ export async function setupStatefulUtxos(
     ),
     extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length + verifierCount),
   };
+}
+
+/**
+ * A blockhash slot of `categoryId` holding block n's hash, as the reader's ring keeps it once the keeper has written
+ * n: a mutable NFT of the category at its slot lock, owned by the provider's block oracle key, in a ring of `depth`.
+ */
+export async function seedBlockhashSlot(
+  provider: TestProvider, categoryId: string, n: bigint, hash: Uint8Array,
+  opts: { satoshis?: bigint; depth?: number } = {},
+): Promise<Utxo> {
+  const owner = (provider as { blockOracleOwnerPublicKey?: Uint8Array }).blockOracleOwnerPublicKey;
+  if (owner === undefined) throw new Error('this provider keeps no block oracle key');
+  const commitment = buildBlockhashSlotCommitment(n, hash, hash160(owner), opts.depth ?? BLOCKHASH_MAX_DEPTH);
+  return (provider as any).addUtxo(binToHex(blockhashOracleLockingBytecode(hexToBin(categoryId))), {
+    ...randomUtxo({ satoshis: opts.satoshis ?? 1_200n }),
+    token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
+  });
 }
 
 /**

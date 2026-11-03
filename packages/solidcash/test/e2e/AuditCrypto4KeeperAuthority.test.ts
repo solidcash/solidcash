@@ -1,29 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import {
-  blockhashKeeperBatonLockingBytecode, blockhashOracleLockingBytecode, buildBlockhashCommitment,
-  buildDataNftCovenantScript, buildEntryNftCovenantScript, buildSatoshiContainerCovenantScript, computeCollectionHash,
-  encodeInt, hash256, scriptToBytecode,
-} from '@solidcash/utils';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { blockhashOracleLockingBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
+import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import {
-  BlockOracleUpdater, RpcLike, blockhashKeeperBatonUnlocker, type BlockOracleFields,
-} from '../../src/oracle/blockOracleUpdater.js';
-import type { Output, Unlocker, Utxo } from '../../src/interfaces.js';
-import type { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { BlockOracleUpdater, RpcLike, type BlockOracleFields } from '../../src/oracle/blockOracleUpdater.js';
+import type { Utxo } from '../../src/interfaces.js';
+import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
-import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
-import { aliceAddress, alicePub, alicePriv } from '../fixture/vars.js';
+import { createTestProvider } from '../test-util.js';
+import { aliceAddress, alicePriv } from '../fixture/vars.js';
 
 /**
- * Audit CRYPTO-4 / CRYPTO-5 (docs/security/2026-10/CRYPTO.md).
+ * Audit CRYPTO-4 / CRYPTO-5 (docs/security/2026-10/CRYPTO.md, closed in the ledger's ORACLE-6).
  *
- * CRYPTO-4: a blockhash() consumer's keeper holds a minting NFT of the consumer's own category, and the data and
- * entry covenants accept any minting NFT of that category as the master's authority. A bare baton (an OP_1
- * P2SH32 here) rewrote a data record before the fix. The baton now sits at the keeper baton covenant, which only
- * mints (n -> hash) oracles: it cannot co-spend a record, mint any other NFT of the category, or move.
+ * CRYPTO-4: a blockhash() consumer's keeper held a minting NFT of the consumer's own category, and the data and
+ * entry covenants accept any minting NFT of that category as the master's authority. The keeper holds no token now:
+ * the genesis mints the reader's ring of mutable slots, so no coin but a master holds the category's minting NFT. A
+ * slot's owner alone updates it, and no master spend mints a slot (BlockhashRing.test.ts).
  *
  * CRYPTO-5: the owner must not report block.number as a time-type value (>= 500,000,000), which a time-type
  * nLockTime would satisfy under OP_CHECKLOCKTIMEVERIFY. The block oracle covenant moves the number only under a
@@ -31,137 +25,26 @@ import { aliceAddress, alicePub, alicePriv } from '../fixture/vars.js';
  */
 
 const CONSUMER = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
-const H = hexToBin('cd'.repeat(32));
 
 const fakeRpc = (): RpcLike => ({ request: async (): Promise<never> => { throw new Error('unused'); } });
-const p2sh32 = (redeem: Uint8Array): Uint8Array => Uint8Array.from([0xaa, 0x20, ...hash256(redeem), 0x87]);
 
-type Provider = ReturnType<typeof createTestProvider>;
-
-interface Deployed {
-  provider: Provider; consumer: Contract; cat: string; baton: Utxo; keeper: Unlocker; n: bigint;
-}
-
-async function deploy(): Promise<Deployed> {
-  const provider = createTestProvider();
-  const artifact = compileString(CONSUMER);
-  const consumer = new Contract(artifact, [], { provider });
-  const { categoryId, extraUtxos } = await setupStatefulUtxos(provider, consumer, artifact.stateLayout!, {}, {
-    saltContract: true,
-    extraOutputs: (cat) => [{
-      address: binToHex(blockhashKeeperBatonLockingBytecode(hexToBin(cat), alicePub)),
-      satoshis: 10000n,
-      token: { nft: { capability: 'minting', commitment: '' } },
-    }],
-  });
-  const before = await provider.getBlockHeight();
-  await provider.mine(1);
-  return {
-    provider, consumer, cat: categoryId, baton: extraUtxos![0],
-    keeper: blockhashKeeperBatonUnlocker(categoryId, alicePriv), n: BigInt(before + 1),
-  };
-}
-
-const batonBack = (d: Deployed): Output => ({
-  to: d.keeper.generateLockingBytecode(), amount: d.baton.satoshis - 2000n, token: d.baton.token,
-});
-
-const oracle = (d: Deployed): Output => ({
-  to: blockhashOracleLockingBytecode(hexToBin(d.cat)), amount: 1000n,
-  token: {
-    category: d.cat, amount: 0n, nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(d.n, H)) },
-  },
-});
-
-const forgedRecord = (d: Deployed, lock: Uint8Array): Output => ({
-  to: lock, amount: 1000n, token: { category: d.cat, amount: 0n, nft: { capability: 'mutable', commitment: '01ff' } },
-});
-
-let recordCount = 0;
-
-// A genuine own-category record at the covenant of `redeem`, unlocked as `<master index 0> <flag>`.
-async function record(
-  d: Deployed, redeem: Uint8Array, flag: bigint,
-): Promise<{ utxo: Utxo; unlocker: Unlocker; lock: Uint8Array }> {
-  const lock = p2sh32(redeem);
-  recordCount += 1;
-  const utxo: Utxo = {
-    txid: (0xe400 + recordCount).toString(16).padStart(64, '0'), vout: 0, satoshis: 1000n,
-    token: { category: d.cat, amount: 0n, nft: { capability: 'mutable', commitment: '0101' } },
-  };
-  await (d.provider as any).addUtxo(binToHex(lock), utxo);
-  const unlock = scriptToBytecode([encodeInt(0n), encodeInt(flag), redeem]);
-  return { utxo, lock, unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => unlock } };
-}
-
-// Broadcast the keeper-signed baton spend raw, so the verdict is the mock node's.
-async function spend(
-  d: Deployed, extra: { utxo: Utxo; unlocker: Unlocker } | undefined, outputs: Output[],
-): Promise<string> {
-  const builder = new TransactionBuilder({ provider: d.provider }).addInput(d.baton, d.keeper);
-  if (extra) builder.addInput(extra.utxo, extra.unlocker);
-  builder.addOutputs(outputs).setLocktime(Number(d.n));
-  const hex = binToHex(encodeTransaction(builder.buildLibauthTransaction(true)));
-  return d.provider.sendRawTransaction(hex).then(() => 'ACCEPTED').catch((error: Error) => error.message);
-}
-
-describe('CRYPTO-4: the blockhash keeper baton cannot stand in for the master', () => {
-  it('mints an oracle through the baton covenant, and the consumer reads it', async () => {
-    const d = await deploy();
-    const updater = new BlockOracleUpdater({
-      contract: d.consumer, categoryId: d.cat, keeperKey: alicePriv, rpc: fakeRpc(), blockhashOracleCategory: d.cat,
+describe('CRYPTO-4: no coin but a master holds a blockhash reader\'s minting NFT', () => {
+  it('mints the ring as mutable slots, and only the master holds the minting NFT', async () => {
+    const provider = new MockNetworkProvider();
+    const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
+    const { contract, categoryId } = await StatefulContract.deploy(compileString(CONSUMER), [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
+      blockhashDepth: 4,
     });
-    expect(await updater.mintBlockhashPair(d.n, H)).toMatch(/^[0-9a-f]{64}$/);
-    const tx = await (StatefulContract.withCategory(d.consumer, d.cat) as any).f(d.n, H).send();
-    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it('refuses a data-NFT write, a data-NFT destroy and an entry write authorised by the baton', async () => {
-    const d = await deploy();
-    const data = scriptToBytecode(buildDataNftCovenantScript(hexToBin(d.cat)));
-    const entry = scriptToBytecode(
-      buildEntryNftCovenantScript(hexToBin(d.cat), computeCollectionHash('m:mapping(int => int)')),
-    );
-    const cases: Array<[string, Uint8Array, bigint]> = [
-      ['data write', data, 1n], ['data destroy', data, 2n], ['entry write', entry, 1n],
-    ];
-    for (const [name, redeem, flag] of cases) {
-      const r = await record(d, redeem, flag);
-      const second = flag === 2n ? oracle(d) : forgedRecord(d, r.lock);
-      const outcome = await spend(d, r, [batonBack(d), second]);
-      expect(outcome, name).not.toBe('ACCEPTED');
-      expectScriptRejection(outcome, 0);
-    }
-  });
-
-  it('refuses a forged record mint and a baton move, and accepts the oracle mint shape', async () => {
-    const d = await deploy();
-    const dataLock = p2sh32(scriptToBytecode(buildDataNftCovenantScript(hexToBin(d.cat))));
-    expectScriptRejection(await spend(d, undefined, [batonBack(d), forgedRecord(d, dataLock)]), 0);
-    // A P2SH32 lock with a long unlocking, which a lock-shape check on the master input would admit.
-    const moved = { ...batonBack(d), to: p2sh32(Uint8Array.of(0x75, 0x51)) };
-    expectScriptRejection(await spend(d, undefined, [moved, oracle(d)]), 0);
-    expect(await spend(d, undefined, [batonBack(d), oracle(d)])).toBe('ACCEPTED');
-  });
-
-  it('refuses a BCH container riding along the baton, and keeps the P2PKH fee input', async () => {
-    const d = await deploy();
-    // The category-only container takes any minting holder whose redeem passes 128 bytes as its master, the baton too.
-    const redeem = scriptToBytecode(buildSatoshiContainerCovenantScript(hexToBin(d.cat)));
-    const lock = p2sh32(redeem);
-    const treasury: Utxo = { txid: 'e5'.repeat(32), vout: 0, satoshis: 50_000n };
-    await (d.provider as any).addUtxo(binToHex(lock), treasury);
-    const unlock = scriptToBytecode([encodeInt(0n), encodeInt(1n), redeem]);
-    const container = {
-      utxo: treasury,
-      unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => unlock },
-    };
-    const drain: Output = { to: aliceAddress, amount: 48_000n };
-    expectScriptRejection(await spend(d, container, [batonBack(d), oracle(d), drain]), 0);
-    const fee = await d.provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 10_000n }));
-    const funder = { utxo: fee, unlocker: new SignatureTemplate(alicePriv).unlockP2PKH() };
-    expect(await spend(d, funder, [batonBack(d), oracle(d), { to: aliceAddress, amount: 9_000n }])).toBe('ACCEPTED');
-  });
+    const coins = await provider.getUtxosByTokenCategory(categoryId);
+    const lockOf = (utxo: Utxo): string => binToHex(utxo.lockingBytecode!);
+    const minting = coins.filter(({ token }) => token?.nft?.capability === 'minting');
+    expect(minting.length).toBeGreaterThan(0);
+    expect(new Set(minting.map(lockOf))).toEqual(new Set([contract.inner.lockingBytecode]));
+    const slotLock = binToHex(blockhashOracleLockingBytecode(hexToBin(categoryId)));
+    expect(coins.filter((utxo) => lockOf(utxo) === slotLock).map(({ token }) => token?.nft?.capability))
+      .toEqual(['mutable', 'mutable', 'mutable', 'mutable']);
+  }, 120_000);
 });
 
 // Below the mock's median time past, so a time-type nLockTime alone would not stop the update.

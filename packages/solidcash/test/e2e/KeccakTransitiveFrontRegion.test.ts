@@ -4,11 +4,9 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, seedBlockhashSlot, setupStatefulUtxos } from '../test-util.js';
 import { randomUtxo } from '../../src/utils.js';
-import {
-  blockhashOracleLockingBytecode, buildBlockhashCommitment, keccakComputeLockingBytecode,
-} from '@solidcash/utils';
+import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 const KECCAK_SIDECAR_CATEGORY = 'ee'.repeat(31) + '11';
@@ -53,8 +51,8 @@ describe('transitive callee complex keccak + blockhash front-region (fail-closed
     const { categoryId: calleeCategory } = await setupStatefulUtxos(
       provider, calleeContract, calleeArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
     );
-    // Callee's blockhash oracle (branded to the callee category) + shared compute side-car.
-    await seedOracleNft(provider, BigInt(n), hash, { category: calleeCategory });
+    // Callee's blockhash slot (of the callee category) + shared compute side-car.
+    await seedBlockhashSlot(provider, calleeCategory, BigInt(n), hash);
     const calleeSidecarLock = binToHex(keccakComputeLockingBytecode(new Uint8Array(32), true));
     await provider.addUtxo(calleeSidecarLock, {
       ...randomUtxo({ satoshis: 100_000n }),
@@ -81,21 +79,9 @@ describe('transitive callee complex keccak + blockhash front-region (fail-closed
   }, 300_000);
 });
 
-// Local copies of the BlockOracle e2e helpers (they are not exported).
+// A local copy of the BlockOracle e2e helper (it is not exported).
 async function allocHeight(provider: ReturnType<typeof createTestProvider>): Promise<{ n: number; hash: Uint8Array }> {
   const before = await provider.getBlockHeight();
   await provider.mine(1);
   return { n: before + 1, hash: hexToBin(await provider.getBlockHash(before + 1)) };
-}
-let nonce = 0;
-async function seedOracleNft(
-  provider: ReturnType<typeof createTestProvider>, n: bigint, hash: Uint8Array, opts: { category?: string } = {},
-): Promise<void> {
-  nonce += 1;
-  const lock = blockhashOracleLockingBytecode(hexToBin(opts.category ?? 'cc'.repeat(31) + '33'));
-  await provider.addUtxo(binToHex(lock), {
-    txid: nonce.toString(16).padStart(64, '0'), vout: 0, satoshis: 1000n,
-    token: { category: opts.category ?? 'cc'.repeat(31) + '33', amount: 0n,
-      nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n, hash)) } },
-  });
 }

@@ -7,7 +7,7 @@ import {
   createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
-  asmToScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  asmToScript, blockhashOracleLockingBytecode, blockhashSlotReadUnlocking, buildBlockhashSlotCommitment,
   buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode,
   type AbiFunction,
 } from '@solidcash/utils';
@@ -118,10 +118,12 @@ describe('October 2026 class A holes', () => {
     const n = 1n;
     const hash = Uint8Array.from({ length: 32 }, (_, index) => index + 3);
     const forged = Uint8Array.from({ length: 32 }, () => 0x44);
-    const oracleRedeem = scriptToBytecode(buildBlockhashOracleCovenantScript(CATEGORY));
     const oracleLock = blockhashOracleLockingBytecode(CATEGORY);
-    const oracleUnlock = pushesOf([num(0n), oracleRedeem]);
-    const commitment = buildBlockhashCommitment(n, hash);
+    const oracleUnlock = blockhashSlotReadUnlocking(CATEGORY);
+    const slotCommitment = (slotHash: Uint8Array): Uint8Array => buildBlockhashSlotCommitment(
+      n, slotHash, new Uint8Array(20).fill(0x22), 256,
+    );
+    const commitment = slotCommitment(hash);
     const values: Record<string, Uint8Array> = {};
     for (const entry of fn.inputs) {
       if (entry.name === 'n') values[entry.name] = num(n);
@@ -131,7 +133,7 @@ describe('October 2026 class A holes', () => {
     }
     const masterUnlock = redeemUnlock(fn, redeem, values, artifact.messageBus?.routeInBytecode === true);
     const spend = (sideLock: Uint8Array, sideHash: Uint8Array): true | string => {
-      const sideCommitment = buildBlockhashCommitment(n, sideHash);
+      const sideCommitment = slotCommitment(sideHash);
       const transaction: VmTransaction = {
         version: 2, locktime: 2,
         inputs: [
@@ -140,17 +142,18 @@ describe('October 2026 class A holes', () => {
         ],
         outputs: [
           { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-          { lockingBytecode: sideLock, valueSatoshis: VALUE, token: tokenOf('none', sideCommitment) },
+          { lockingBytecode: sideLock, valueSatoshis: VALUE, token: tokenOf('mutable', sideCommitment) },
         ],
       };
       const sourceOutputs: SourceOutputs = [
         { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-        { lockingBytecode: sideLock, valueSatoshis: VALUE, token: tokenOf('none', commitment) },
+        { lockingBytecode: sideLock, valueSatoshis: VALUE, token: tokenOf('mutable', commitment) },
       ];
       return verdict(sourceOutputs, transaction);
     };
     expect(spend(oracleLock, hash), 'CRYPTO-3 authorized').toBe(true);
-    expect(spend(Uint8Array.of(0x6d, 0x51), forged), 'CRYPTO-3 bare-lock oracle').not.toBe(true);
+    // A bare lock that drops the slot read's five pushes and succeeds.
+    expect(spend(Uint8Array.of(0x6d, 0x6d, 0x75, 0x51), forged), 'CRYPTO-3 bare-lock oracle').not.toBe(true);
   });
 
   it('DS-7 a stray coin at a skipped read slot cannot make room to rewrite another node, and the write can', () => {

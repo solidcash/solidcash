@@ -614,7 +614,10 @@ bytes32 blobhash(int i)        -- always zero
   `blockOracleOwnerPublicKey`; `MockNetworkProvider` owns and updates its readers' oracles.
 - `blockhash(n)` co-spends, read-only, the slot holding n in the contract's blockhash ring: mutable NFTs of its
   category, one block each, which only its genesis mints. The deploy option `blockhashDepth` sets the slot count (1
-  to 256, `'now'` for 1, default 256, 1,200 sats each); a ring of depth d holds the last d blocks its owner wrote.
+  to 256, `'now'` for 1, 1,200 sats each); a ring of depth d holds the last d blocks its owner wrote. The default is
+  the depth the compiler infers, published as `artifact.blockhashDepth`: K for `blockhash(block.number - K)` with K
+  a constant (1 for K = 0), 256 for any other argument, the most over the reads. A smaller depth is refused; a read
+  more than 256 blocks back is a compile error.
   The owner, `blockhashKeeperPublicKey` (required live; the mock and devnet name their own key), writes slots with
   `BlockOracleUpdater.writeBlockhashSlot`; the mock does not keep the ring current. A block the ring does not hold
   is an error, where the EVM gives zero. See https://solidcash.org/docs/guides/block-oracles

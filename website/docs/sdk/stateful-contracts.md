@@ -89,7 +89,7 @@ following fields belong to its third `options` argument.
 | `validatorCount` | `number` | `4` for a framed artifact | Validator UTXOs a framed genesis mints (experimental) |
 | `salt` | `Uint8Array` | none | CREATE/address salt and optional operation-density reserve |
 | `initArgs` | `FunctionArgument[]` | inferred/none | Arguments for an explicit `constructor(...)` block |
-| `blockhashDepth` | `number \| 'now'` | `256` | Slots in a `blockhash` reader's ring, from 1 to 256; `'now'` holds the latest block only |
+| `blockhashDepth` | `number \| 'now'` | the artifact's `blockhashDepth`, else `256` | Slots in a `blockhash` reader's ring, from 1 to 256; `'now'` holds the latest block only; below the artifact's depth is refused |
 | `blockhashKeeperPublicKey` | `Uint8Array` | the provider's block oracle key | Owner of a `blockhash` reader's ring, whose signed updates write its slots; name one on a live network |
 | `identity`, `bcmr`, `nativeToken` | object | deployer owns the identity | BCMR identity owner, registry publication, and the ledger token's own category |
 

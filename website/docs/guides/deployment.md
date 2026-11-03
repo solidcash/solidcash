@@ -224,7 +224,7 @@ that deployment gets no logical CREATE address, so `target` is the physical addr
 | `masterAmount` | `1200n` | Satoshis on each master NFT |
 | `dataNftAmount` | `1200n` | Satoshis on each other covenant NFT, raised to the output's dust threshold when higher |
 | `maxFee` | none | Refuse a genesis whose fee is higher |
-| `blockhashDepth` | `256` | Slots in a [`blockhash(n)` reader's ring](/docs/guides/block-oracles#the-ring): 1 to 256, or `'now'` for one |
+| `blockhashDepth` | the artifact's `blockhashDepth`, else `256` | Slots in a [`blockhash(n)` reader's ring](/docs/guides/block-oracles#the-ring): 1 to 256, or `'now'` for one; below the artifact's depth is refused |
 | `blockhashKeeperPublicKey` | the provider's block oracle key | Owner of the ring, whose signed updates write it; a live network has none, so name one |
 
 Treat custom NFT amounts as an advanced policy choice: every later transaction must still satisfy relay and covenant

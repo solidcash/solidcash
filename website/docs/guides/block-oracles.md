@@ -258,10 +258,25 @@ itself.
 
 ### The ring
 
-The reader's genesis mints the ring: `blockhashDepth` slots, from 1 to 256 or `'now'` for one, 256 by default, at
-1,200 satoshis each (307,200 satoshis at the default depth). Slot `s` starts at `n = s` with a zero hash. Only the
-genesis mints slots, and a spend of the contract recreates a slot only unchanged, so no transaction of the contract
-can mint a slot with a forged hash or a second slot of a block. A slot changes three ways:
+The reader's genesis mints the ring: `blockhashDepth` slots, from 1 to 256 or `'now'` for one, at 1,200 satoshis
+each. Slot `s` starts at `n = s` with a zero hash. Only the genesis mints slots, and a spend of the contract recreates
+a slot only unchanged, so no transaction of the contract can mint a slot with a forged hash or a second slot of a
+block.
+
+The compiler infers the depth the reads need and the artifact publishes it as `blockhashDepth`, the most over the
+contract's reads:
+
+| Read | Depth |
+| --- | --- |
+| `blockhash(block.number - K)`, `K` a compile-time constant | `K` (1 for `K = 0`) |
+| any other argument: a parameter, a stored value, other arithmetic | 256 |
+
+A deployment that passes no `blockhashDepth` mints that many slots, so a contract that only reads
+`blockhash(block.number - 1)` holds one slot (1,200 satoshis) and a reader of `blockhash(n)` 256 (307,200
+satoshis). A larger depth may be passed; a smaller one is refused, as the reads would fail. A read more than 256
+blocks back, `blockhash(block.number - 300)`, is a compile error.
+
+A slot changes three ways:
 
 - A read recreates it unchanged, with at least its value.
 - The owner's signed update writes a newer block. Its `n` moves up by a multiple of the depth, so a slot keeps its

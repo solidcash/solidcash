@@ -20,6 +20,8 @@ import { aliceAddress, alicePkh, alicePriv } from '../fixture/vars.js';
 const SOURCE = 'contract Reader(){ function check(int n, bytes32 expected) { require(blockhash(n) == expected); } }';
 // A reader of the block below block.number, whose ring needs one slot: any depth from 1 deploys it.
 const RECENT = 'contract Recent(){ function check(bytes32 expected) { require(blockhash(block.number - 1) == expected); } }';
+// A reader of the block five below block.number, whose ring needs five slots.
+const BACK5 = 'contract Back(){ function check(bytes32 expected) { require(blockhash(block.number - 5) == expected); } }';
 const ZERO = new Uint8Array(32);
 const HASH = new Uint8Array(32).fill(0xb7);
 const FORGED = new Uint8Array(32).fill(0xee);
@@ -28,6 +30,7 @@ const ALICE_LOCK = Uint8Array.from([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]);
 describe('blockhash ring', () => {
   const artifact = compileString(SOURCE);
   const recent = compileString(RECENT);
+  const back5 = compileString(BACK5);
 
   type Deployed = Awaited<ReturnType<typeof StatefulContract.deploy>>;
 
@@ -65,17 +68,20 @@ describe('blockhash ring', () => {
     }));
   }
 
-  it('mints the depth its reads need by default, and refuses a smaller one', async () => {
+  it('mints the depth bounded reads need by default, refuses a smaller one, and leaves unbounded reads to the deployer',
+    async () => {
     const provider = new MockNetworkProvider();
     expect(recent.blockhashDepth).toBe(1);
-    expect(artifact.blockhashDepth).toBe(256);
+    expect(back5.blockhashDepth).toBe(5);
+    expect(artifact.blockhashDepth).toBeUndefined();
     expect((await slots(provider, (await deploy(provider, undefined, recent)).categoryId)).map(({ fields }) => fields))
       .toEqual([{ n: 0n, hash: ZERO, ownerPkh: hash160(provider.blockOracleOwnerPublicKey), depth: 1 }]);
     const any = await slots(provider, (await deploy(provider)).categoryId);
     expect(any).toHaveLength(256);
     expect(any.every(({ fields }) => fields.depth === 256)).toBe(true);
-    await expect(deploy(provider, 4)).rejects.toThrow(/blockhashDepth 4 is below the 256 slots/);
-    await expect(deploy(provider, 'now')).rejects.toThrow(/blockhashDepth 1 is below the 256 slots/);
+    expect(await slots(provider, (await deploy(provider, 4)).categoryId)).toHaveLength(4);
+    expect(await slots(provider, (await deploy(provider, 'now')).categoryId)).toHaveLength(1);
+    await expect(deploy(provider, 4, back5)).rejects.toThrow(/blockhashDepth 4 is below the 5 slots/);
   }, 120_000);
 
   it('mints blockhashDepth slots at genesis, one for now', async () => {

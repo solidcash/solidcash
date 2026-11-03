@@ -2305,8 +2305,8 @@ export interface Artifact {
   delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   /**
-   * How many recent blocks a blockhash reader's ring must hold: the most over its reads, K for
-   * `blockhash(block.number - K)` with K a compile-time constant (1 for K = 0), 256 for any other argument.
+   * How many recent blocks a blockhash reader's ring must hold, when every read is `blockhash(block.number - K)` with K
+   * a compile-time constant: the most K, 1 for K = 0. Absent when a read is unbounded; the deployer then picks.
    */
   blockhashDepth?: number;
   /** A function reads the block-info oracle commitment. The update is not an entry of this contract. */

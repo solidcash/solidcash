@@ -263,18 +263,19 @@ each. Slot `s` starts at `n = s` with a zero hash. Only the genesis mints slots,
 a slot only unchanged, so no transaction of the contract can mint a slot with a forged hash or a second slot of a
 block.
 
-The compiler infers the depth the reads need and the artifact publishes it as `blockhashDepth`, the most over the
-contract's reads:
+The compiler infers the depth the reads need, the most over the contract's reads, and the artifact publishes it as
+`blockhashDepth` when every read is bounded:
 
 | Read | Depth |
 | --- | --- |
 | `blockhash(block.number - K)`, `K` a compile-time constant | `K` (1 for `K = 0`) |
-| any other argument: a parameter, a stored value, other arithmetic | 256 |
+| any other argument: a parameter, a stored value, other arithmetic | unbounded: the deployer picks |
 
-A deployment that passes no `blockhashDepth` mints that many slots, so a contract that only reads
-`blockhash(block.number - 1)` holds one slot (1,200 satoshis) and a reader of `blockhash(n)` 256 (307,200
-satoshis). A larger depth may be passed; a smaller one is refused, as the reads would fail. A read more than 256
-blocks back, `blockhash(block.number - 300)`, is a compile error.
+A deployment that passes no `blockhashDepth` mints the inferred depth, else 256 slots: a contract that only reads
+`blockhash(block.number - 1)` holds one slot (1,200 satoshis), and a reader of `blockhash(n)` 256 (307,200
+satoshis). A contract with an inferred depth refuses a smaller one, as its reads would fail; a contract with an
+unbounded read takes any depth its deployer names, 1 to 256 or `'now'`. A read more than 256 blocks back,
+`blockhash(block.number - 300)`, is a compile error.
 
 A slot changes three ways:
 

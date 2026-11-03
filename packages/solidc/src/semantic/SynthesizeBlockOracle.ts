@@ -101,8 +101,9 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
   usesBlockhash = false;
   // The ring depth the reads need, the most over them: K for blockhash(block.number - K) with K a compile-time
-  // constant (1 for K = 0), 256 for any other argument.
+  // constant (1 for K = 0). Any other argument leaves the reads unbounded, and the deployer picks the depth.
   blockhashDepth = 0;
+  blockhashDepthBounded = true;
   private constants = new Map<string, ExpressionNode>();
   private fnUsesBlockhash = false;
   // Distinct blockhash read keys in the current function - each rides its own oracle slot (param name for a
@@ -150,7 +151,9 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.usesBlockhash = true;
       this.readsBlockData = true;
       this.fnUsesBlockhash = true;
-      this.blockhashDepth = Math.max(this.blockhashDepth, this.blockhashReadDepth(node));
+      const depth = this.blockhashReadDepth(node);
+      if (depth === undefined) this.blockhashDepthBounded = false;
+      else this.blockhashDepth = Math.max(this.blockhashDepth, depth);
       // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
       // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
       // gets its own framed-site slot; the SDK resolves it from the auto-derivation probe trace (the covenant
@@ -168,10 +171,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     return super.visitFunctionCall(node);
   }
 
-  /** The ring depth one read needs. A read further back than a ring holds is refused. */
-  private blockhashReadDepth(node: FunctionCallNode): number {
+  /** The ring depth one read needs, undefined when it is unbounded. A read further back than a ring holds is refused. */
+  private blockhashReadDepth(node: FunctionCallNode): number | undefined {
     const blocksBack = this.blocksBelowBlockNumber(node.parameters[0]);
-    if (blocksBack === undefined || blocksBack < 0n) return BLOCKHASH_MAX_DEPTH;
+    if (blocksBack === undefined || blocksBack < 0n) return undefined;
     if (blocksBack > BigInt(BLOCKHASH_MAX_DEPTH)) throw new BlockhashDepthError(node, blocksBack, BLOCKHASH_MAX_DEPTH);
     return Math.max(1, Number(blocksBack));
   }

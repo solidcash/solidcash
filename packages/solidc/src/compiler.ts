@@ -18810,7 +18810,7 @@ function compileResolvedAst(
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) {
     artifact.usesBlockhash = true;
-    artifact.blockhashDepth = blockOracle.blockhashDepth;
+    if (blockOracle.blockhashDepthBounded) artifact.blockhashDepth = blockOracle.blockhashDepth;
   }
   const finishedProgram = asmToBytecode(artifact.bytecode);
   const blockOracleLockSlots = findBlockOracleLockSlots(finishedProgram);

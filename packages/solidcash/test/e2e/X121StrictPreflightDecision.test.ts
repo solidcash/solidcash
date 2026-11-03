@@ -20,8 +20,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 /**
  * X121 - `_strictRecursiveVmPreflight` MUST read the provider's limits, and `debugging.ts` should too.
  *
- * EVERY BEHAVIOURAL CLAIM HERE IS PINNED TO `@mem-cash/validation` 0.0.10, and row 0 asserts that version
- * before anything else runs. The rows were re-measured at 0.0.10 on 2026-10-11, all green.
+ * EVERY BEHAVIOURAL CLAIM HERE IS PINNED TO `@mem-cash/validation` 0.0.11, and row 0 asserts that version
+ * before anything else runs. The rows were re-measured at 0.0.10 on 2026-10-11 and at 0.0.11 on 2026-11-03,
+ * all green.
  * That is not ceremony: the answer inverts across a patch release of a test-only dependency.
  *
  * - 0.0.10 `dist/types.d.ts:35` declares `consensus?: ConsensusOverrides` ("Private/test-network consensus
@@ -30,13 +31,14 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * - 0.0.7 has neither the field nor any read of it. The overrides are silently dropped, the decider runs
  *   libauth's stock `ConsensusBch2026`, and every verdict below inverts.
  *
- * `packages/solidcash/package.json` declares `^0.0.10`, which for a `0.0.x` range means EXACTLY 0.0.10, and
- * `yarn.lock` resolves 0.0.10. So 0.0.10 is the only sanctioned version - yet installed trees in this repo have
+ * `packages/solidcash/package.json` declares `^0.0.11`, which for a `0.0.x` range means EXACTLY 0.0.11, and
+ * `yarn.lock` resolves 0.0.11. So 0.0.11 is the only sanctioned version - yet installed trees in this repo have
  * been observed at BOTH, with 0.0.7 not even satisfying the declared range. A gate whose correctness flips on
  * a patch version the manifest already pins is fragile whichever answer is right; row 0 exists so a stale tree
  * fails naming that, instead of scattering opaque assertion failures.
  *
- * MEASURED AT 0.0.8, re-measured at 0.0.10 on 2026-10-11. `createVirtualMachineBch2026ForProvider(provider)`
+ * MEASURED AT 0.0.8, re-measured at 0.0.10 on 2026-10-11 and at 0.0.11 on 2026-11-03.
+ * `createVirtualMachineBch2026ForProvider(provider)`
  * agrees with the decider on every shape tried: P2PKH at `operationCostBudgetPerByte` 150 and 800,
  * `decrement(3)` at 30 and 800,
  * `maximumStackItemBytes: 8`, `decrement(46)` on the relaxed default, in both dust regimes. A bare
@@ -215,18 +217,18 @@ async function p2pkhSpend(provider: MockNetworkProvider): Promise<TransactionBui
   return builder;
 }
 
-describe('X121 - the strict recursive preflight must read the provider limits (@mem-cash/validation 0.0.10)', () => {
-  it('0. VERSION GATE: the installed decider is 0.0.10, which every row below is pinned to', () => {
+describe('X121 - the strict recursive preflight must read the provider limits (@mem-cash/validation 0.0.11)', () => {
+  it('0. VERSION GATE: the installed decider is 0.0.11, which every row below is pinned to', () => {
     // If this fails, nothing else in this file means what it says. 0.0.7 drops the overrides entirely and
-    // inverts every verdict here, and it does not satisfy the `^0.0.10` this package declares.
+    // inverts every verdict here, and it does not satisfy the `^0.0.11` this package declares.
     expect(
       MEM_CASH_VALIDATION_VERSION,
-      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.10 - the version `
-      + 'packages/solidcash/package.json declares (^0.0.10 means exactly 0.0.10 for a 0.0.x range) and yarn.lock '
+      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.11 - the version `
+      + 'packages/solidcash/package.json declares (^0.0.11 means exactly 0.0.11 for a 0.0.x range) and yarn.lock '
       + 'resolves. At 0.0.7 TxVerifierConfig has no `consensus` field, MockNetworkProvider consensusLimits are '
       + 'silently dropped, and the preflight decision this file makes is inverted. Reinstall the workspace '
       + 'rather than relaxing a row.',
-    ).toBe('0.0.10');
+    ).toBe('0.0.11');
   });
 
   it('1. FAIL-OPEN on P2PKH: the bare VM accepts what the decider refuses at 150 x density', async () => {

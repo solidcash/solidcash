@@ -182,7 +182,7 @@ The genesis transaction is assembled from the compiler's artifact metadata. Ever
 7. A plain **satoshi-container output** when `initialBalance` is non-zero.
 8. The token premint and bearer supply that `nativeToken` asks for.
 9. Immutable **logical identity anchors** for signer/factory deployments.
-10. A `blockhash(n)` **keeper baton** when `blockhashKeeperPublicKey` is set.
+10. A `blockhash(n)` reader's **blockhash ring**: `blockhashDepth` mutable slot NFTs.
 11. Change to the selected change address.
 
 The SDK calculates these outputs; application code should not manually serialize state commitments. Chunking,
@@ -224,8 +224,8 @@ that deployment gets no logical CREATE address, so `target` is the physical addr
 | `masterAmount` | `1200n` | Satoshis on each master NFT |
 | `dataNftAmount` | `1200n` | Satoshis on each other covenant NFT, raised to the output's dust threshold when higher |
 | `maxFee` | none | Refuse a genesis whose fee is higher |
-| `blockhashKeeperPublicKey` | none | Mint a [`blockhash(n)` keeper baton](/docs/guides/block-oracles#keeper-baton) at genesis |
-| `blockhashKeeperAmount` | `10_000n` | Initial satoshis on the keeper baton |
+| `blockhashDepth` | `256` | Slots in a [`blockhash(n)` reader's ring](/docs/guides/block-oracles#the-ring): 1 to 256, or `'now'` for one |
+| `blockhashKeeperPublicKey` | the provider's block oracle key | Owner of the ring, whose signed updates write it; a live network has none, so name one |
 
 Treat custom NFT amounts as an advanced policy choice: every later transaction must still satisfy relay and covenant
 requirements.

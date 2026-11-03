@@ -1,5 +1,7 @@
 # VERIFY_CRYPTO: adversarial verification of CRYPTO-2, CRYPTO-3, CRYPTO-4
 
+> History. CRYPTO-4 is closed by ORACLE-6 in `docs/security/security-audit-2026-10-16.md` (the keeper baton is gone).
+
 Tree: /Code/cashscript/.worktrees/per-call (feat/per-call), HEAD abbb7e0ec. This is a read-only check. No tests,
 compiles or probes were run. GTT = packages/solidc/src/generation/GenerateTargetTraversal.ts.
 

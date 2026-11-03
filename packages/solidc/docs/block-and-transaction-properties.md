@@ -22,9 +22,9 @@ Status: **IMPLEMENTED (compiler + SDK e2e).**
   `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
   `sum(coinbase outputs) - subsidy(height)`). On a new tip it pushes a height update, then a timestamp update
   at `min(header time, MTP - 1)`.
-- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: one `(n->hash)` covenant per master category
-  with `n` in the commitment, keeper mint/sweep, co-spent automatically from the call args or the probe trace
-  (section 11).
+- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: a ring of owner-keyed slot coins per master
+  category, minted at genesis and written by the keeper; the slot holding `n` is co-spent automatically from the
+  call args or the probe trace (section 11).
 
 Implementation notes: `SynthesizeBlockOracle` injects no state. A `block.*` read stays a nullary (`basefee`
 lowers to `Floor(1000 * totalFees / size)`) and marks its function `usesBlockOracle`, which gets a hidden
@@ -272,40 +272,46 @@ Still open:
 
 ## 11. blockhash(n) and blobhash(i)
 
-Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (branded oracle + hardened covenant + keeper
-mint/sweep).** `blobhash(i) == bytes32(0)`. `blockhash(n)` reads **one `(n->hash)` covenant per master
-category** (`buildBlockhashOracleCovenantScript` in `utils/state.ts`): every block of that contract is a
-capability-none NFT of the master's category at the same lock, with `n(4 LE) || hash` in the commitment, so
-every function of the contract co-spends that one lock. Using `blockhash` **forces the contract stateful**
-(`ContractNode.usesBlockhash` -> `isStateful` + a `stateLayout`; the oracle needs a master/category to
-anchor). The reader verifies the co-spent `(n->hash)`
-NFT's category BASE `== the master's` (`emitVerifyCatBaseEqMaster`, via `OP_INPUTINDEX`), NOT a baked
-category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. Consequences:
+Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (a ring of owner-keyed slots, 2026-11-03).**
+`blobhash(i) == bytes32(0)`. `blockhash(n)` reads **one slot covenant per master category**
+(`buildBlockhashOracleCovenantScript` in `utils/state.ts`): the contract's genesis mints a ring of `depth` mutable
+NFTs of the master's category at that one lock, each holding one block in its commitment
+`n (4 LE) | hash (32) | owner hash160 (20) | depth (2 LE)`, so every function of the contract co-spends that one
+lock. Using `blockhash` **forces the contract stateful** (`ContractNode.usesBlockhash` -> `isStateful` + a
+`stateLayout`; the ring needs a master/category to anchor). The reader verifies the co-spent slot's category
+BASE `== the master's` (`emitVerifyCatBaseEqMaster`, via `OP_INPUTINDEX`), NOT a baked category, that its lock
+is the category's slot lock (`emitBindBlockhashOracleLock`), plus `commitment.n == n` + `require(tx.time >= n)`,
+returning the 32 bytes after `n`. Consequences:
 
 - **`blockhashOracleCategory` is REMOVED as a compiler option** (and dropped from artifact serialization).
   No deploy-time oracle-category config: the reader knows its oracle's category because it IS its own.
 - The read path is supported **only through `StatefulContract`**: the co-spend rides a `blockhashOracle`
   block-layout slot (index = master input index + slot offset), resolved by `StatefulContract` from
-  `this.categoryId`; the derivation probe co-spends it and the SDK auto-sets the CLTV locktime. The base
-  `Contract`/`TransactionBuilder` path fails loudly ("build the call via StatefulContract").
-- The keeper mints/sweeps `(n->hash)` NFTs **under the contract's own category**
-  (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), from a
-  minting baton of that category. Genesis must place that baton at the keeper baton covenant
-  (`blockhashKeeperBatonLockingBytecode(category, keeperPubkey)`, audit CRYPTO-4): a bare baton could stand in
-  for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master. A
-  covenant spend needs the keeper's signature, co-spends no token input, recreates the baton at output 0 and
-  mints exactly one capability-none `(n->hash)` NFT at the category's blockhash lock (output 1, `tx.time >= n`).
+  `this.categoryId`; the derivation probe co-spends it and the SDK auto-sets the CLTV locktime, a height
+  locktime for any read, `n = 0` included. The base `Contract`/`TransactionBuilder` path fails loudly ("build
+  the call via StatefulContract").
+- **The ring (ORACLE-6).** Direct and framed genesis mint `blockhashDepth` slots (1 to 256, `'now'` for 1,
+  default 256; `packages/solidcash/src/oracle/blockhash-ring-deployment.ts`), 1,200 satoshis each. Slot `s` holds
+  `n = s`, a zero hash, the owner (`blockhashKeeperPublicKey`, else the provider's `blockOracleOwnerPublicKey`;
+  with neither the deployment is refused) and the depth. Flag 0 reads; flag 1 is the owner's signed update, which
+  keeps owner and depth and moves `n` up by a positive multiple of the depth to a height not ahead of nLockTime,
+  so a slot keeps its residue and no two slots hold the same `n`; flag 2 is the owner's signed retire, with no
+  output carrying a token. A read or update recreates the slot at its input index with at least its value. The
+  keeper writes with `BlockOracleUpdater.writeBlockhashSlot(n, hash)` (on each tip through
+  `maintainBlockhashWindow`) and retires with `retireBlockhashSlot(n)`. The keeper baton, its pair mint and sweep
+  are removed, so no coin but a master holds the category's minting NFT (audit CRYPTO-4).
 
-- **Forgery bound (2026-11-03).** Every master spend holds the category's minting NFT, and an expired pair's
-  wipe frees its output, so a master of a contract that reads `blockhash` admits an own-category output at the
-  pair lock only as an unchanged recreation of the input at its index (same lock, category, commitment and
-  amount), in every function including `split`, `merge` and `unsafe(1..)`; `unsafe(0)` stays the escape hatch
-  (`docs/security/security-audit-2026-10-16.md`, ORACLE-1 to ORACLE-3).
+- **Forgery bound (2026-11-03).** Every master spend holds the category's minting NFT, so a master of a contract
+  that reads `blockhash` admits an own-category output at the slot lock only as an unchanged recreation of the
+  input at its index (same lock, category, commitment and amount), in every function including `split`, `merge`
+  and `unsafe(1..)`; `unsafe(0)` stays the escape hatch (`docs/security/security-audit-2026-10-16.md`, ORACLE-1
+  to ORACLE-3 and ORACLE-6). Slots are mutable, so the immutable-NFT census does not see them: the pin covers the
+  slot lock in every reader function, events or not.
 
-The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
-`artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
-e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is
-feature-complete** for stateful readers, including:
+The slot covenant (self-pin + self-preserving read + owner update and retire), the `artifact.usesBlockhash`
+marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and e2e-green
+(`packages/solidcash/test/e2e/BlockhashRing.test.ts`). Absent reads error by design (s11.2), not EVM's
+`bytes32(0)`. **`blockhash(n)` is feature-complete** for stateful readers, including:
 
 - **Multiple distinct reads per tx** - each distinct `n` rides its OWN consecutive `blockhashOracle`
   block-layout slot (the k-th read reads `input[base + k]`; `blockhashSlotCount` on the fn drives the slot
@@ -321,8 +327,8 @@ feature-complete** for stateful readers, including:
   read in turn (`extractBlockhashReadsFromTrace` + `_resolveBlockhashCoSpends` in the SDK). `block.number - K`
   is just one such expression - `block.number` comes from the block-info oracle, which the stateful builder
   places beside the blockhash slots, so both oracles ride the same tx. `blockhash(block.number)` (K=0, the
-  current block) stays unavailable (no oracle
-  pair; EVM returns 0). (Limitation: a function that co-spends other inputs - entries, external-call targets -
+  current block) stays unavailable (no slot
+  holds it; EVM returns 0). (Limitation: a function that co-spends other inputs - entries, external-call targets -
   *before* the blockhash read would abort the extraction probe early; blockhash composed with those is future
   work.)
 
@@ -338,45 +344,45 @@ shim so Solidity that references it compiles and runs. Codegen: drop the arg, pu
 (Optional compile warning that blobs do not exist on BCH.) An `OP_RETURN`-data reinterpretation is
 rejected - it silently changes Solidity semantics.
 
-### 11.2 blockhash(uint n) -> bytes32: the per-pair (n -> hash) oracle
+### 11.2 blockhash(uint n) -> bytes32: the ring of (n -> hash) slots
 
 The current block's own hash is unavailable on-chain (the block is not yet mined; EVM's
 `blockhash(block.number)` is 0), so there is no current-block value - every real use is historical.
 The hard part is historical `n`, which no single record can hold. Design (category-trust, no datasig):
-the `(n->hash)` oracle below. A computed `n` (`block.number - K`, arbitrary arithmetic) is resolved at build
+the slot ring below. A computed `n` (`block.number - K`, arbitrary arithmetic) is resolved at build
 time by the SDK extracting it from the auto-derivation probe trace - the covenant's own on-stack computation,
 single source of truth (s11, "Computed `n` - ANY expression"); the oracle serves the resulting `n`.
 
-**The `(n -> hash)` UTXO.** One per block, under the master's category, all at that category's one lock:
+**The slot.** `depth` of them per master category (at most 256, EVM parity), all at that category's one lock:
 - **One lock per category** (`blockhashOracleLockingBytecode(category)`); `n` is not baked in, so the SDK
-  lists the lock and picks the UTXO whose commitment starts with `n` (`blockhashCommitmentNumber`).
-- **Commitment `(n, hash)`** - this is the contract's on-chain pin: the consumer checks `commitment.n == n`.
-- **Covenant: three paths** - (1) the keeper mints through its baton covenant; (2) **read = self-preserving
-  recreate** (self-pins the category, capability none); (3) **wipe** = anyone may consume once
-  `tx.time >= n + 256`, `n` read from the commitment. Bounded 256-deep window (EVM parity), dust recycled on
-  wipe, cleanup permissionless so the set stays bounded even if the keeper stalls.
+  lists the lock and picks the mutable slot whose commitment starts with `n` (`blockhashCommitmentNumber`).
+- **Commitment `n (4 LE) | hash (32) | owner hash160 (20) | depth (2 LE)`** (58 bytes,
+  `buildBlockhashSlotCommitment`) - `n` is the contract's on-chain pin: the consumer checks `commitment.n == n`.
+- **Covenant: three paths**, unlocking `<pubkey> <sig> <newCommitment> <flag>` - (0) **read = self-preserving
+  recreate**; (1) the owner's **update** writes a newer block, `n` up by a multiple of the depth, under
+  `tx.time >= n`; (2) the owner's **retire** burns the slot. Only genesis mints a slot, so a ring of depth `d`
+  holds the last `d` blocks its owner wrote, and its size is fixed whether or not the keeper runs.
 
-**The consumer (`blockhash(n)`)** co-spends the `(n->hash)` UTXO read-only, checks that its category base is
-the master's (only the keeper baton of that category mints) and `commitment.n == n`, returns `hash`, and
-emits `require(tx.time >= n)` (no-future bound). No merkle proof.
+**The consumer (`blockhash(n)`)** co-spends the slot read-only (flag 0), checks that its category base is the
+master's, that its lock is the category's slot lock and `commitment.n == n`, returns the hash, and emits
+`require(tx.time >= n)` (no-future bound). No merkle proof.
 
-**Absent reads error, not `bytes32(0)`.** If the SDK finds no live UTXO for `n` at the lock (outside the window
-or unpublished), it errors rather than yielding EVM's `bytes32(0)`. On BCH the tx-builder controls the
+**Absent reads error, not `bytes32(0)`.** If no slot holds `n` (overwritten, never written, or retired), the
+SDK errors rather than yielding EVM's `bytes32(0)`. On BCH the tx-builder controls the
 inputs, so a "return `0` when the oracle is not co-spent" rule would let a malicious builder force
 `blockhash(n) == 0` for an **in-window** block by simply omitting the co-spend - a forgeable read EVM does
 not have (there the node supplies the hash). Erroring keeps a contract from ever seeing a forged `0`. A
 contract that wants the EVM "too old -> 0" branch checks the window itself (`block.number - n` against the
-256 bound) instead of trusting a `0`.
+ring's depth) instead of trusting a `0`.
 
 **Why category + commitment:** `commitment.n` is both the on-chain *contract* pin and the off-chain
-*index* (the SDK filters the lock's UTXOs by it); the master's category (self-pin, baton-minted) is the
-*trust*.
+*index* (the SDK filters the lock's UTXOs by it); the master's category (self-pin, genesis-minted,
+owner-written) is the *trust*.
 
-**Keeper (the updater).** On each new tip `n`: mint `(n, hash)` at the category's lock, and sweep the record
-of `n - 256`. This is `BlockOracleUpdater.maintainBlockhashWindow` (mint via `mintBlockhashPair`,
-best-effort wipe via `sweepBlockhashPair`), gated on `usesBlockhash(artifact)` and signed by the keeper key.
-Sweeping is a dust-reclaim convenience: the covenant's `tx.time >= n+256` path lets anyone wipe, so the
-window stays bounded even if the keeper stalls.
+**Keeper (the updater).** On each new tip `n`: write `(n, hash)` into the slot congruent to `n` modulo the
+depth, unless it holds `n` already. This is `BlockOracleUpdater.maintainBlockhashWindow` (via
+`writeBlockhashSlot`), gated on `usesBlockhash(artifact)`, signed by the owner key, with the fee paid from the
+owner's P2PKH. Nothing is swept: the ring has a fixed size, and a stalled keeper leaves older blocks in place.
 
 **Grinding caveat (unchanged):** the tx-builder picks `n`, so `uint(blockhash(n)) % k` randomness is
 grindable - worse than EVM. Legitimate commit-reveal must **pin `n`** (committed in a prior tx). A compiler
@@ -554,19 +560,18 @@ Superseded 2026-11-03: there is no shared oracle. `NetworkProvider` publishes an
 `blockOracleOwnerPublicKey` and `blockOracleFields()` for providers that own their readers' oracles (mock, regtest,
 devnet); a live deployment names the owner itself.
 
-Direct and framed `StatefulContract.deploy` accept opt-in `blockhashKeeperPublicKey` and
-`blockhashKeeperAmount` (default 10,000 satoshis). Genesis mints one extra empty minting NFT of the consumer's
-category at the keeper baton covenant, after the participant records so existing record coordinates stay fixed.
-The key must be a valid compressed public key and the artifact must publish `usesBlockhash`. The confined
-baton signs every mint and can produce only its one blockhash record, as required by CRYPTO-4.
+Superseded 2026-11-03 for blockhash: the keeper baton is gone (s11, ORACLE-6). Direct and framed
+`StatefulContract.deploy` take `blockhashDepth` and `blockhashKeeperPublicKey`, and a reader's genesis mints its
+ring after the participant records, so existing record coordinates stay fixed. The key must be a valid compressed
+public key, and either option needs an artifact that publishes `usesBlockhash`.
 
 Local follow-up evidence uses `KernelBlockOracleCallPaths.test.ts`: nested non-bus readers receive the
 root's authenticated shared-oracle input index, a named direct forwarder delegates to an oracle-reading
 implementation, and an all-staticcall composition shares one oracle plus exact neutral pads. Every input
 passes the ordinary VM. Forged oracle records and unequal-value pads fail. Static snapshots exempt only
 canonical token-free neutral pads from lock preservation and still require their complete input value.
-`BlockhashKeeperDeployment.test.ts` proves direct and framed baton genesis; its direct test also mints
-through the keeper, settles the consumer read, and refuses a mutable record in place of the immutable
-blockhash record under the ordinary VM. Framed genesis runs with the existing local composition profile.
+`BlockhashKeeperDeployment.test.ts` proves direct and framed ring genesis under a named owner; its direct test
+also writes through that keeper and settles the consumer read. Framed genesis runs with the existing local
+composition profile.
 `LiveBlockOracleConfiguration.test.ts` checks typed category configuration and its derived covenant lock.
 These tests provide local evidence only; no BCHN or live-network checks were run for this follow-up.

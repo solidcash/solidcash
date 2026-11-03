@@ -7,7 +7,8 @@ Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixe
 KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
 fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1 (CRITICAL) to ORACLE-4
 are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, which also records an open
-item about a creation's genesis; see "Block oracle hardening (2026-11-03)" at the end.
+item about a creation's genesis; ORACLE-6 on `fix/blockhash-ring` removes the keeper baton (CRYPTO-4, ORACLE-5); see
+"Block oracle hardening (2026-11-03)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1107,3 +1108,21 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   split that spends no coin is refused. Every other function, `merge` included, keeps `emitOracleOutputPin`, and framed
   and message-bus compiles keep one coin. Tests: `packages/solidcash/test/e2e/BlockOracleSplitCopies.test.ts` (mock),
   `packages/solidc/test/AuditBlockInfoOracleOwnCategory.test.ts` (VM).
+- **ORACLE-6** (the keeper baton goes; `fix/blockhash-ring`, 2026-11-03). `blockhash(n)` reads a ring of owner-keyed
+  slots in place of `(n -> hash)` pairs. A reader's genesis, direct or framed, mints `blockhashDepth` mutable NFTs of
+  its category (1 to 256, `'now'` for 1, default 256) at `blockhashOracleLockingBytecode(category)`, each committing
+  `n (4 LE) | hash | owner hash160 | depth (2 LE)`. The slot covenant reads (flag 0), takes the stored owner's signed
+  update (flag 1: owner and depth kept, `n` up by a positive multiple of the depth to a height not ahead of
+  nLockTime) and the owner's signed retire (flag 2: no output carries a token); a read or an update keeps the slot's
+  value. The owner is `blockhashKeeperPublicKey`, else the provider's block oracle key. The baton covenant, its pair
+  mint, sweep and wipe, and `blockhashKeeperAmount` are removed, so CRYPTO-4's root cause, a second minting authority
+  of the contract's category, no longer exists, and ORACLE-5's container exposure goes with the baton. Slots are
+  mutable, so the reader's oracle output pin, not the immutable-NFT census, refuses a slot minted beside any reader
+  call, in every function (ORACLE-2 holds). The SDK sets a height locktime for any blockhash read, `n = 0` included.
+  Tests: `packages/solidcash/test/e2e/BlockhashRing.test.ts` (mock: genesis ring, write and read, a non-owner,
+  backward, off-residue or premature update refused, retire, a slot minted beside a master call refused),
+  `AuditCrypto4KeeperAuthority.test.ts` (mock: no coin but the master holds the category's minting NFT),
+  `BlockhashKeeperDeployment.test.ts` (mock: a named owner's ring, direct and framed), `BlockOracle.test.ts` (mock: an
+  owner-only retire), `BlockOracleValue.test.ts` (mock: a slot keeps its value on a read and through a sync past the
+  depth) and `packages/solidc/test/AuditBlockhashPairForgery.test.ts` (VM: a forged or second slot beside a read and a
+  forged recreation of the read slot refused). Not run: regtest or a node.

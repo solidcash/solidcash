@@ -1,6 +1,8 @@
 <!-- cspell:ignore hashlock -->
 # CRYPTO audit: cryptographic builtins and chain-data oracles
 
+> History. CRYPTO-4 is closed by ORACLE-6 in `docs/security/security-audit-2026-10-16.md` (the keeper baton is gone).
+
 Tree: /Code/cashscript/.worktrees/per-call, branch feat/per-call, HEAD abbb7e0ec (2026-10-11).
 Read-only. No tests, compiles or probes were run. GTT = packages/solidc/src/generation/GenerateTargetTraversal.ts.
 

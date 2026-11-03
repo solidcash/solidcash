@@ -601,7 +601,7 @@ block.basefee                  -- uint32: 1000 * totalFees / size in sat/kB; blo
 block.chainid                  -- uint256: chainId option & 0xff (mainnet 0, chipnet 1, testnet4 2, regtest 255)
 block.prevrandao               -- uint256: abs(int(sha256(input 0 outpoint txid))), set by the tx builder
 block.gaslimit, gasleft()      -- always 1000000
-bytes32 blockhash(int n)       -- from a per-height oracle NFT of the contract's own category
+bytes32 blockhash(int n)       -- from the slot holding n in the contract's blockhash ring
 bytes32 blobhash(int i)        -- always zero
 ```
 
@@ -611,8 +611,13 @@ bytes32 blobhash(int i)        -- always zero
 - Any `block.*` property or `blockhash(n)` makes the contract stateful; call it through `StatefulContract`. Oracle
   fields co-spend the contract's own block-info oracle, an NFT of its category its deployment mints, read-only
   (only its owner updates it); the SDK adds the input. A live deployment names the owner with
-  `blockOracleOwnerPublicKey`; `MockNetworkProvider` owns and updates its readers' oracles. A missing
-  `(n, hash)` NFT is an error, not zero. See https://solidcash.org/docs/guides/block-oracles
+  `blockOracleOwnerPublicKey`; `MockNetworkProvider` owns and updates its readers' oracles.
+- `blockhash(n)` co-spends, read-only, the slot holding n in the contract's blockhash ring: mutable NFTs of its
+  category, one block each, which only its genesis mints. The deploy option `blockhashDepth` sets the slot count (1
+  to 256, `'now'` for 1, default 256, 1,200 sats each); a ring of depth d holds the last d blocks its owner wrote.
+  The owner, `blockhashKeeperPublicKey` (required live; the mock and devnet name their own key), writes slots with
+  `BlockOracleUpdater.writeBlockhashSlot`; the mock does not keep the ring current. A block the ring does not hold
+  is an error, where the EVM gives zero. See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 

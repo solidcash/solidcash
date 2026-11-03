@@ -234,8 +234,8 @@ use `checkDataSig` instead: it is a single opcode. See [Cryptography](/docs/lang
 bytes32 blockhash(int blockNumber)
 ```
 
-Returns the hash of the given block, read from a per-height oracle NFT of the contract's own category. It makes
-the contract stateful; a missing oracle NFT is an error, not a zero hash. See
+Returns the hash of the given block, read from the contract's blockhash ring, slot NFTs of its own category. It
+makes the contract stateful; a block the ring does not hold is an error, not a zero hash. See
 [Global Variables](/docs/language/globals#blockhash-and-blobhash).
 
 ### blobhash()

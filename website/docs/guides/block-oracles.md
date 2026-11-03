@@ -9,7 +9,7 @@ SolidCash therefore separates block-related values into three groups:
 | --- | --- | --- |
 | Native facts and shims | `tx.time`, `this.age`, `tx.gasprice`, `block.chainid` | Introspection, locktime checks, constants |
 | Block-info oracle | `block.number`, `block.timestamp`, `block.difficulty`, `block.coinbase` | The reader's own oracle NFT, of its category |
-| Blockhash oracle | `blockhash(n)` | One `(n, hash)` NFT per block, of the reader's own category |
+| Blockhash ring | `blockhash(n)` | A ring of `(n, hash)` slot NFTs of the reader's own category |
 
 Choose native time locks when all you need is a deadline. Use the block-info oracle when contract logic needs the
 value, and `blockhash(n)` only when the actual header hash is required. Shims such as `block.prevrandao`,
@@ -237,34 +237,44 @@ await updater.syncOnce(); // a height update to the mock tip, then a timestamp u
 
 ## `blockhash(n)`
 
-Each queried height needs its own authenticated value, so `blockhash(n)` reads a separate oracle: one
-capability-none NFT per block, all at one lock per category (`blockhashOracleLockingBytecode(category)`), with the
-commitment
+Each queried height needs its own authenticated value, so `blockhash(n)` reads a separate oracle: a ring of slots,
+mutable NFTs of the reader's own category at one lock per category (`blockhashOracleLockingBytecode(category)` in
+`@solidcash/utils`). Each slot holds one block:
 
 ```text
-n (4 bytes, little-endian) || 32-byte block hash
+n (4 bytes, little-endian) | block hash (32) | owner public-key hash (20) | depth (2 bytes, little-endian)
 ```
 
-The NFTs carry the reading contract's own category, so `blockhash` makes the contract stateful and the artifact sets
-`usesBlockhash`. The reader checks that the co-spent NFT's category is its master's, that `commitment.n == n`, and
-`tx.time >= n`, then returns the hash. Each distinct `n` in a function rides its own input slot, and a computed `n`
-such as `block.number - 1` is resolved from the SDK's probe of the covenant itself.
+The slots carry the reading contract's own category, so `blockhash` makes the contract stateful and the artifact sets
+`usesBlockhash`. The reader checks that the co-spent slot is of its master's category and at the category's slot
+lock, that `commitment.n == n`, and `tx.time >= n`, then returns the hash. Each distinct `n` in a function rides its
+own input slot, and a computed `n` such as `block.number - 1` is resolved from the SDK's probe of the covenant itself.
 
-Calls go through `StatefulContract`, which finds the pair, co-spends it read-only and sets the locktime; the base
-`Contract`/`TransactionBuilder` path throws. A missing pair is an error, not `bytes32(0)`: returning zero when a
-builder omits the NFT would make absence forgeable. A contract that wants the EVM's "too old means zero" branch checks
-`block.number - n` against the window itself. Once `tx.time >= n + 256`, anyone may wipe a pair, which keeps the set
-bounded even if the keeper stalls.
+Calls go through `StatefulContract`, which finds the slot holding `n`, co-spends it read-only and sets a height
+locktime of at least `n`; the base `Contract`/`TransactionBuilder` path throws. A block the ring does not hold is an
+error, where the EVM returns `bytes32(0)`: returning zero when a builder omits the slot would make absence
+forgeable. A contract that wants the EVM's "too old means zero" branch checks `block.number - n` against the window
+itself.
 
-### Keeper baton
+### The ring
 
-The keeper mints pairs from a minting NFT of the contract's category held at the keeper baton covenant,
-`blockhashKeeperBatonLockingBytecode(category, keeperPublicKey)`. A baton spend needs the keeper's signature,
-recreates the baton at output 0 and mints exactly one pair at the category's blockhash lock under `tx.time >= n`, so
-the baton cannot stand in for the contract's master. The genesis that creates the contract's category must also
-mint this baton. Pass `blockhashKeeperPublicKey` to `StatefulContract.deploy` to mint it at the confined covenant;
-`blockhashKeeperAmount` sets its initial balance (default 10,000 satoshis). Both direct and framed genesis support
-this option. It requires an artifact that reads `blockhash`; omitting it preserves existing deployment behavior.
+The reader's genesis mints the ring: `blockhashDepth` slots, from 1 to 256 or `'now'` for one, 256 by default, at
+1,200 satoshis each (307,200 satoshis at the default depth). Slot `s` starts at `n = s` with a zero hash. Only the
+genesis mints slots, and a spend of the contract recreates a slot only unchanged, so no transaction of the contract
+can mint a slot with a forged hash or a second slot of a block. A slot changes three ways:
+
+- A read recreates it unchanged, with at least its value.
+- The owner's signed update writes a newer block. Its `n` moves up by a multiple of the depth, so a slot keeps its
+  residue modulo the depth and no two slots hold the same block, and it is a height not ahead of the transaction's
+  nLockTime. The owner and the depth stay.
+- The owner's signed retire burns the slot. Nothing mints it again.
+
+So a ring of depth `d` holds the last `d` blocks the keeper wrote: block `n` sits in the slot congruent to `n` modulo
+`d` until the keeper writes `n + d` over it, and `'now'` keeps the latest block only.
+
+`blockhashKeeperPublicKey` names the owner, the key whose signed updates write the ring. `MockNetworkProvider` and a
+`solidhat node` devnet name their own block oracle key when it is omitted; a live deployment of a reader names one.
+The owner cannot change after genesis.
 
 ```ts
 import { StatefulContract } from '@solidcash/solidcash/stateful';
@@ -272,12 +282,13 @@ import { StatefulContract } from '@solidcash/solidcash/stateful';
 const { contract: consumer } = await StatefulContract.deploy(consumerArtifact, [], {
   provider, fundingUtxo, funder, changeAddress,
   blockhashKeeperPublicKey: keeperPublicKey,
-  blockhashKeeperAmount: 1_000_000n,
+  blockhashDepth: 16,
 });
 ```
 
-Each pair currently spends 1,000 satoshis plus a 1,000-satoshi fee from that balance. Replenish the baton before
-its balance runs out; the keeper key is supplied only to the updater, never to deployment.
+### Run the blockhash keeper
+
+The same `BlockOracleUpdater` keeps the ring, signing with the owner key:
 
 ```ts
 const keeper = new BlockOracleUpdater({
@@ -285,26 +296,25 @@ const keeper = new BlockOracleUpdater({
   categoryId: consumer.categoryId,
   keeperKey: keeperPrivateKey,
   rpc,
-  blockhashOracleCategory: consumer.categoryId,
 });
 
-await keeper.mintBlockhashPair(height, hash);
-await keeper.sweepBlockhashPair(height - 256n);
+await keeper.writeBlockhashSlot(height, hash); // into the slot congruent to height, under nLockTime height
+await keeper.retireBlockhashSlot(oldHeight); // burns the slot holding oldHeight
 ```
 
-`syncOnce()` mints the tip's pair and sweeps the pairs that left the 256-block window when the artifact uses
-`blockhash`. A sweep reclaims every aged pair (up to 100) to the keeper's P2PKH in one transaction, paying 1 sat/byte
-out of the reclaimed satoshis; a batch that cannot leave an output above dust waits for a later sweep. The keeper
-finds the baton at its covenant on every mint; `blockhashOracleMaster` overrides the baton UTXO and unlocker, and
-then the caller tracks the recreated baton itself. Each mint spends 2,000 satoshis of the baton's value (1,000 on
-the pair and a 1,000 fee), so fund it accordingly.
+When the artifact uses `blockhash`, `syncOnce()` writes the tip's hash into its slot unless that slot holds the tip
+already. A write pays a 2,000-satoshi fee from the largest token-free coin at the keeper key's P2PKH address and
+sends the change back there; the slot keeps its value. `blockhashOracleCategory` names another category's ring.
+
+On `MockNetworkProvider` the ring is not kept current: write the blocks a test reads with `writeBlockhashSlot`,
+signing with `provider.blockOracleOwnerKey`, whose P2PKH the mock funds.
 
 ## Operational checklist
 
 1. Prefer `tx.time`/`this.age` when an exact block field is unnecessary.
 2. Record each reader's oracle owner, RPC trust source, update cadence, and monitoring policy with the deployment.
 3. Keep the owner key safe for the oracle's life: rotating it takes a native upgrade or a new deployment.
-4. Alert when the oracle height lags the node tip, when the keeper's P2PKH runs low, or when a blockhash pair is
-   missing.
+4. Alert when the oracle height lags the node tip, when the keeper's P2PKH runs low, or when the blockhash ring
+   lags the tip.
 5. Treat `block.difficulty` and `block.prevrandao` as non-random; the builder picks `n` for `blockhash(n)`.
-6. Exercise stale, rewound, over-reported, wrong-owner, missing-pair and 256-block cleanup cases in tests.
+6. Exercise stale, rewound, over-reported, wrong-owner and missing-block cases in tests.

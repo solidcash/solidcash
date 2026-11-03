@@ -381,8 +381,9 @@ bytes32 blockhash(int blockNumber)
 bytes32 blobhash(int index)
 ```
 
-`blockhash(n)` reads a per-height `(n, hash)` oracle NFT of the contract's own category. It makes the contract
-stateful, so call it through `StatefulContract`; a missing `(n, hash)` NFT is an error, not a zero hash.
+`blockhash(n)` reads the slot holding block `n` in the contract's blockhash ring, NFTs of its own category that its
+genesis mints. It makes the contract stateful, so call it through `StatefulContract`; a block the ring does not hold
+is an error, not a zero hash.
 `blobhash(i)` always returns zero: Bitcoin Cash has no EIP-4844 blobs, so it is a porting shim.
 
 ## ABI encoding and decoding

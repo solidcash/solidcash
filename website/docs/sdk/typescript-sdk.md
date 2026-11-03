@@ -142,7 +142,7 @@ The stateful exports also include:
   experimental;
 - lifecycle helpers for child deployment, upgrades and proxies, split/merge, and destruction (custom proxies and
   `upgrades.upgradeProxy` are experimental);
-- block-register and blockhash-oracle co-spend helpers.
+- block-register and blockhash-ring co-spend helpers.
 
 Prefer the high-level contract method which owns the invariant. Low-level commitment builders and covenant-address
 helpers are useful for indexers, verification, and custom wallet integrations, but manually reproducing SDK output
@@ -194,7 +194,7 @@ area has its own entry point:
 | `@solidcash/solidcash/message-bus` | Message-bus composition (`compose`) and its preflight helpers (experimental) |
 | `@solidcash/solidcash/kernel` | The message-bus kernel route planners, for tooling (experimental) |
 | `@solidcash/solidcash/framed` | The framed convention: `framedDeploy`, `framedCall`, `framedRead`, `framedReceipt`, `framedQueue`, `framedComposer` and `framedReference` (experimental, see [Framed Composition](/docs/guides/framed-composition)) |
-| `@solidcash/solidcash/oracle` | Block oracle and blockhash co-spend helpers, such as `BlockOracleUpdater` and `resolveBlockhashCoSpend` |
+| `@solidcash/solidcash/oracle` | Block oracle and blockhash ring helpers, such as `BlockOracleUpdater`, `resolveBlockhashCoSpend` and the slot unlockers `blockhashSlotUpdateUnlocker` and `blockhashSlotRetireUnlocker` |
 | `@solidcash/solidcash/bcmr` | BCMR token metadata: registry encoding, publication outputs and authchain helpers |
 | `@solidcash/solidcash/loop-call` | Builders for contracts that call a list of targets in a loop (`buildOpaqueLoopCallTransaction`, `buildTypedLoopCallTransaction`) |
 | `@solidcash/solidcash/walletconnect` | `placeholderSignature`, `placeholderPublicKey`, `placeholderP2PKHUnlocker` and the `Wc*` types |

@@ -101,9 +101,9 @@ The two builders emit the contract's outputs in different orders:
 - Direct (`packages/solidcash/src/stateful/sc-deploy.ts`): masters, one per thread; records; the mapping nodes the
   constructor writes, then the head of each sorted collection it does not write; the constructor's transfers;
   events; the recreated head of each sorted collection the constructor writes; chunks; message-bus verifiers; the
-  satoshi container; the reserve and the bearer supply (6.2); identity anchors; the keeper baton.
+  satoshi container; the reserve and the bearer supply (6.2); identity anchors; the blockhash ring.
 - Framed (`packages/solidcash/src/framed/deploy/stateful.ts`): masters, a pool per entry lock; validators; facets;
-  events; records; mapping nodes; chunks; an initialize hop's outputs; identity anchors; the keeper baton; the
+  events; records; mapping nodes; chunks; an initialize hop's outputs; identity anchors; the blockhash ring; the
   reserve and the bearer supply (6.2). A supplied state (a proxy's `mintedState`) takes the place of the events,
   records, mapping nodes and chunks, and that genesis mints no identity anchors.
 
@@ -325,8 +325,8 @@ in   1     token coin (vout 0)                  X = its txid
 out  0     the authhead of C, the identity output C and X share
 out  1     BCMR publication
 out  next  the contract's outputs in its builder's order (4.1), ending
-             direct: ..., satoshi container, reserve, bearer, identity anchors, keeper baton
-             framed: ..., identity anchors, keeper baton, reserve, bearer
+             direct: ..., satoshi container, reserve, bearer, identity anchors, blockhash ring
+             framed: ..., identity anchors, blockhash ring, reserve, bearer
            change
 
 reserve    token-only output of X at getTokenContainerAddress(contract, C, X), amount = premint
@@ -466,8 +466,8 @@ Not affected:
 
 ## 8. Describing the contract's own NFTs
 
-Every UTXO of a contract carries its category: masters (minting), framed validators, data records, mapping nodes and
-chunks (mutable), events and identity anchors (immutable), and the blockhash keeper baton (minting). Explorers list
+Every UTXO of a contract carries its category: masters (minting), framed validators, data records, mapping nodes,
+chunks and a blockhash reader's ring slots (mutable), and events and identity anchors (immutable). Explorers list
 them all as NFTs of the token. BCMR's parsable NFTs label them: a publication with `token.nfts: 'generated'` carries a
 collection generated per deployment, because the locks depend on the category (`nftCategory` in
 `packages/solidcash/src/bcmr/nft-parse.ts`, the roles in `nft-roles.ts`).
@@ -476,7 +476,8 @@ collection generated per deployment, because the locks depend on the category (`
   locks derived at deploy: the master lock, `addrV(C)` (framed), the record lock, one entry lock per collection, one
   chunk lock per dynamic variable and one lock per named event. Anonymous events share one lock, so they are one
   type. Type keys are minimal VM numbers (1, 2, ...), so NFT tickers read `SYMBOL-1`, `SYMBOL-2` and so on. A lock the
-  category cannot enumerate, such as a long mapping value's chunks, stays unclassified, and clients show it unparsed.
+  category cannot enumerate, such as a long mapping value's chunks, stays unclassified, and clients show it unparsed;
+  so do the blockhash ring's slots, which the generator does not classify.
 - **Fields**: data records and native-notation events are runs of minimal pushes (`docs/framed/SPEC_FRAMED_TRANSACTION.md`,
   "Encodings"), so a push decoder moves each value to the altstack: about a dozen operations per field, covering
   direct pushes, `OP_PUSHDATA1`, `OP_0`, `OP_1NEGATE` and `OP_1`..`OP_16`. A layout with several records reads the

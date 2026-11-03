@@ -8,7 +8,8 @@ KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-
 fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1 (CRITICAL) to ORACLE-4
 are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, and GENESIS-1, the item
 that branch recorded about a creation's genesis, on `fix/genesis-replay`; ORACLE-6 on `fix/blockhash-ring` removes the
-keeper baton (CRYPTO-4, ORACLE-5); see "Block oracle hardening (2026-11-03)" at the end.
+keeper baton (CRYPTO-4, ORACLE-5), ORACLE-7 gives an expired block the EVM's zero, and ORACLE-8 infers a reader's
+ring depth; see "Block oracle hardening (2026-11-03)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1158,3 +1159,14 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   keeper writes `n + 256`, and `blockhash(n) == 0` holds; a depth-4 ring gives the precise errors; VM: the honest zero
   read handed a slot of another residue, an older slot or a depth-4 commitment is refused at the master) and
   `BlockOracle.test.ts` (the new error text). Not run: regtest or a node.
+- **ORACLE-8** (the ring's inferred depth; `fix/blockhash-depth`, 2026-11-03). The compiler infers the depth a
+  reader's reads need: K for `blockhash(block.number - K)` with K a compile-time constant (1 for K = 0), the most over
+  the reads, published as `artifact.blockhashDepth` only when every read is such an offset; K > 256 is refused
+  (`BlockhashDepthError`). A deployment that names no depth mints the inferred depth, else 256; one that names fewer
+  than an inferred depth is refused, and a reader of an unbounded block takes any depth its deployer names. Created
+  children still get no ring: a framed master refuses every body that reads blockhash, and a direct `new C()`
+  creation mints its child no block oracle of either kind, its child pinning its oracle lock at deployment, so a
+  created child reads neither `blockhash` nor `block.*` yet (ORACLE-4 for direct children, open). Tests:
+  `packages/solidc/test/BlockhashDepthInference.test.ts` (inference, the unbounded case, the K > 256 refusal) and
+  `BlockhashRing`, `BlockhashKeeperDeployment`, `BlockOracleValue`, `AuditCrypto4KeeperAuthority` (mock). Not run:
+  regtest or a node.

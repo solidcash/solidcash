@@ -48,6 +48,8 @@ export function directVmapBatchTrailingCount(
 export interface PushCreateBuilderDirectExternalCallGroupHost {
   deriveReturnValue(...args: any[]): Promise<unknown>;
   resolveLoopArgs(occurrenceIndex: number): FunctionArgument[] | undefined;
+  /** How many times the caller's frame reaches a loop callsite, when its published domain resolves. */
+  planLoopOccurrenceCount?(call: ExternalCallAbi): Promise<number | undefined>;
   readonly callerCategoryId: string;
   readonly callerContract: unknown;
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -195,6 +197,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   let directPrecomputedReturn: Uint8Array | undefined;
   let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
   let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
+  let loopReturnCommitments: Uint8Array[] | undefined;
   // The probe is the only frame that reads the callee's return without executing its covenant, so its result must
   // be precomputed whether the return event lives inside the callee's block (a state-writing callee) or in the
   // caller's dedicated return-output band (a view callee such as `pair.getReserves()`).
@@ -276,6 +279,18 @@ export async function pushCreateBuilderDirectExternalCallGroup(
             ? directPrecomputedReturn
             : encode(await resolveLoopReturnValue!(occurrenceIndex))
         );
+        // The caller reads iteration k's record k past its return index, and each record digests its own
+        // iteration's arguments. Lay every reached iteration's record before the probe runs: a probe holding only
+        // the first stops at the second iteration's read, before it yields the result array this group fills.
+        const reached = ec.resultArrayOutput === undefined ? undefined
+          : await host.planLoopOccurrenceCount?.(ec);
+        if (reached !== undefined && reached > 1
+          && (ec.maximumOccurrences === undefined || reached <= ec.maximumOccurrences)) {
+          loopReturnCommitments = [];
+          for (let occurrence = 0; occurrence < reached; occurrence += 1) {
+            loopReturnCommitments.push(await resolveLoopReturnCommitment(occurrence));
+          }
+        }
       }
     }
   }
@@ -346,6 +361,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(bReturnEventInBlock && { returnEventInBlock: true }),
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
+    ...(loopReturnCommitments && { loopReturnCommitments }),
     ...(resolveLoopReturnCommitment && {
       loopResultArrayOutput: ec.resultArrayOutput,
       ...(ec.maximumOccurrences !== undefined && { loopMaximumOccurrences: ec.maximumOccurrences }),

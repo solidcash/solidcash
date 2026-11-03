@@ -2283,6 +2283,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // reads the stale input. Only an invariant-key write would be sound (last-write-wins), which is pointless in
   // a loop, so any mapping write here is rejected (fail closed). Collection iteration is a distinct node.
   private plainLoopDepth = 0;
+  // The loops `plainLoopDepth` counts, innermost last.
+  private plainLoops: Array<WhileNode | DoWhileNode> = [];
+  /** Per-body map from a `while` to the `for` counter declared just before it; the AST is stable within one emission. */
+  private readonly loopCountersByBody = new WeakMap<Node, WeakMap<WhileNode, VariableDefinitionNode>>();
   // The loop counter a framed paging read advances with, set only while its entry coordinate is emitted.
   private framedPagingTurnAddend: string | undefined;
 
@@ -9184,6 +9188,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.preAllocatedEntryWrites = new Set();
     this.preAllocatedEntryDeletes = new Set();
     this.plainLoopDepth = 0;
+    this.plainLoops = [];
     this.transferPreallocDepth = 0;
     this.transfersPreallocatedAtFunctionStart = false;
     this.condDeleteSlots = new Set();
@@ -13762,7 +13767,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const stackDepth = this.stack.length;
     this.plainLoopDepth += 1;
+    this.plainLoops.push(node);
     node.block = this.visit(node.block);
+    this.plainLoops.pop();
     this.plainLoopDepth -= 1;
     this.removeScopedVariables(stackDepth, node.block);
 
@@ -13943,7 +13950,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const stackBeforeBody = [...this.stack];
     const stackDepth = this.stack.length;
     this.plainLoopDepth += 1;
+    this.plainLoops.push(node);
     node.block = this.visit(node.block);
+    this.plainLoops.pop();
     this.plainLoopDepth -= 1;
     this.removeScopedVariables(stackDepth, node.block);
     this.emit(encodeBool(false), { location: node.location, positionHint: PositionHint.END });
@@ -25839,6 +25848,84 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * `[.., coordinate]` -> `[.., coordinate + k]`, with `untracked` items above the tracked stack, when the one loop
+   * being emitted is a canonical `for`: a counter declared just before it with a literal start and a nonzero literal
+   * step, which only the loop's trailing update assigns. Iteration k then runs with `start + step * k`, which is how
+   * the SDK resolves occurrence k of a loop call and why it lays that occurrence's record k past the return index.
+   * Leaves the coordinate as it is otherwise, and says whether it added.
+   */
+  private emitAddLoopIteration(untracked: number, loc: SingleLocationData): boolean {
+    if (this.plainLoops.length !== 1 || !this.currentFunction?.body) return false;
+    const [loop] = this.plainLoops;
+    if (!(loop instanceof WhileNode) || loop.forLoopUpdateCount !== 1) return false;
+    const counter = this.loopCountersWithin(this.currentFunction.body).get(loop);
+    const start = counter?.loopInitialValue;
+    const step = counter?.loopStepValue;
+    if (counter === undefined || start === undefined || step === undefined || step === 0n) return false;
+    const update = loop.block.statements?.at(-1);
+    if (!(update instanceof AssignNode) || update.identifier.name !== counter.name) return false;
+    let assignments = 0;
+    const seen = new Set<Node>();
+    const countAssignments = (value: unknown): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof AssignNode && value.identifier.name === counter.name) assignments += 1;
+      if (value instanceof TupleAssignmentNode) {
+        assignments += value.elements.filter((element) => !element.skip && element.name === counter.name).length;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS.has(key)) continue;
+        if (child instanceof Node) countAssignments(child);
+        else if (Array.isArray(child)) child.forEach(countAssignments);
+      }
+    };
+    countAssignments(loop.block);
+    if (assignments !== 1) return false;
+    const depth = this.getStackIndex(counter.name, true);
+    if (depth < 0) return false;
+    this.emit(encodeInt(BigInt(depth + untracked)), loc);
+    this.emit(Op.OP_PICK, loc);
+    if (start !== 0n) {
+      this.emit(encodeInt(start), loc);
+      this.emit(Op.OP_SUB, loc);
+    }
+    if (step !== 1n) {
+      this.emit(encodeInt(step), loc);
+      this.emit(Op.OP_DIV, loc);
+    }
+    this.emit(Op.OP_ADD, loc);
+    return true;
+  }
+
+  /** `while` -> the `for` counter declared just before it in the same block, over one body. */
+  private loopCountersWithin(body: Node): WeakMap<WhileNode, VariableDefinitionNode> {
+    const cached = this.loopCountersByBody.get(body);
+    if (cached !== undefined) return cached;
+    const counters = new WeakMap<WhileNode, VariableDefinitionNode>();
+    const seen = new Set<Node>();
+    const walk = (value: unknown): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof BlockNode) {
+        (value.statements ?? []).forEach((statement, index, statements) => {
+          const previous = statements[index - 1];
+          if (statement instanceof WhileNode && previous instanceof VariableDefinitionNode && previous.isLoopVariable) {
+            counters.set(statement, previous);
+          }
+        });
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (EXTERNAL_CALL_LOOP_WALK_EXCLUDED_KEYS.has(key)) continue;
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) child.forEach(walk);
+      }
+    };
+    walk(body);
+    this.loopCountersByBody.set(body, counters);
+    return counters;
+  }
+
+  /**
    * Lowers the calls an argument expression makes into their own sites, before the call they feed.
    *
    * The execution reaches a call inside an argument before the call it feeds, so it is closed and bound first; the
@@ -26233,6 +26320,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(BigInt(loopIndexDepth + 1)), locationData);
           this.emit(Op.OP_PICK, locationData);
           this.emit(Op.OP_ADD, locationData);
+        } else {
+          // Any other call in a rolled loop reads its own iteration's record too: each record digests that
+          // iteration's arguments, so a loop reading one record for every iteration accepts at most one.
+          this.emitAddLoopIteration(1, locationData);
         }
       }
       // A callee that declares no return value pins no record for this call, and the SDK states that as a negative

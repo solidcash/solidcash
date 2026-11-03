@@ -11,6 +11,7 @@ import {
   encodePushdataValue,
   parseChunkCommitment,
   type AbiFunction,
+  type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
@@ -661,6 +662,32 @@ export async function orchestrateCreateBuilderExternalCalls(
               ec.argSources, args, host.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
               undefined, occurrenceIndex, false, publicSelfAddress,
             ),
+            // The loop's published domain, with the results it reads from earlier calls (`size() - offset`).
+            // An unresolved domain leaves the count unknown: the group then keeps its one-record plan.
+            planLoopOccurrenceCount: async (call: ExternalCallAbi): Promise<number | undefined> => {
+              const domain = call.iterationDomain;
+              if (!domain) return undefined;
+              try {
+                const state = callerStateSnapshot ?? (await host.getFullState()).state;
+                const externalReturns = await host.callerContract._resolveExternalExpressionReturns(
+                  [domain.initialValue, domain.stepValue, domain.continueCondition]
+                    .map((expression) => ({ kind: 'expression', expression })),
+                  args, host.callerContract, state, abiFunction?.inputs, publicSelfAddress,
+                  abiFunction?.externalCalls ?? [], false,
+                );
+                const occurrences = await host.callerContract._planExternalCallOccurrences(call, {
+                  functionArgs: args,
+                  artifact: host.inner.artifact,
+                  state,
+                  callerInputs: abiFunction?.inputs,
+                  executionSelfAddress: publicSelfAddress,
+                  externalReturns,
+                });
+                return occurrences.length;
+              } catch {
+                return undefined;
+              }
+            },
             callerCategoryId: host.categoryId,
             callerContract: host.callerContract,
             valueChunkWriteStagingSession,

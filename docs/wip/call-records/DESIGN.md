@@ -73,7 +73,10 @@ A direct return carrier becomes a call record (as built):
   through a witness index, and requires the record's category to be that input's.
 - Loops (as built): a loop over computed or array targets co-spends one callee per iteration; iteration i digests its
   own arguments and reads that callee's record. The SDK resolves each iteration's arguments (it used to give every
-  callee iteration 0's). An opaque loop read takes the record's inline result without a digest check.
+  callee iteration 0's). An opaque loop read takes the record's inline result without a digest check. A loop over
+  one fixed callee with no counted ordinal (a message-bus compile) reads iteration k's record k past its return
+  index, k being `(counter - start) / step` of the one canonical `for` around the call; a return probe of a
+  `resultArrayOutput` loop lays every reached iteration's record from the loop's published domain before it runs.
 - Conditional calls: an untaken call reads nothing. A taken one is bound like any other.
 - Identical readonly reads share the one run and its one record; the SDK lays one carrier for both.
 - Arguments are digested from copies of the call's argument expressions, so no final use is consumed.

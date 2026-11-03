@@ -3874,8 +3874,28 @@ describe('required kernel admission', () => {
       });
   });
 
+  it('admits a constructor that records the creator as owner', () => {
+    const artifact = compileString(`contract Unit() { address owner;
+        constructor() { this.owner = msg.sender; }
+      }
+      contract Coordinator() {
+        function materialize() public { Unit child = new Unit(); require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
+      .toMatchObject({
+        eligible: true,
+        childDeployments: [{
+          genesisState: {
+            fields: [{
+              name: 'owner',
+              value: { kind: 'logicalCaller', resultType: 'address' },
+            }],
+          },
+        }],
+      });
+  });
+
   it.each([
-    'constructor() { this.owner = msg.sender; }',
     'constructor(int seed) { require(this.marker == seed); this.marker = seed; }',
     'constructor(int seed) { require(tx.locktime > seed); this.marker = seed; }',
     'constructor(int seed) payable { require(msg.value == seed); this.marker = seed; }',
@@ -3883,11 +3903,9 @@ describe('required kernel admission', () => {
       + 'function helper(int x) internal returns (int) { this.marker = x; return x; }',
     'constructor(int seed) { if (seed > 0) { require(seed < 65); } this.marker = seed; }',
   ])('keeps resource-dependent or non-straight-line constructor logic fenced: %s', (constructor) => {
-    const state = constructor.includes('owner') ? 'address owner;' : 'int marker;';
-    const args = constructor.includes('constructor()') ? '' : 'seed';
-    const artifact = compileString(`contract Unit() { ${state} ${constructor} }
+    const artifact = compileString(`contract Unit() { int marker; ${constructor} }
       contract Coordinator() {
-        function materialize(int seed) public { Unit child = new Unit(${args}); require(true); }
+        function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
       }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });

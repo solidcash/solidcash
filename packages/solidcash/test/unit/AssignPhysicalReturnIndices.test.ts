@@ -5375,7 +5375,7 @@ describe('assignPhysicalReturnIndices', () => {
     inputs[master + 5] = { token: { nft: { commitment: `${proofSlot}${tailSlot}03` } } };
     const repair = {
       collection: 'ledger', predecessorOffset: 3, candidateInsertedOffsets: [7],
-      proofInputOffset: 5, insertedSlot: '',
+      proofInputOffset: 5, insertedSlot: successorSlot,
     };
     const ambiguousOutputs = outputs.map((output) => ({
       ...output,

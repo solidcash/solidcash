@@ -275,7 +275,9 @@ describe('affine void recursive event settlement', () => {
       .filter((output) => output.token?.nft?.capability === 'none')
       .map((output) => binToHex(output.token!.nft!.commitment))).toEqual(['00']);
     await expect(contract.call.descend(126n, 2n).build()).resolves.toBeDefined();
-    await expect(contract.call.descend(2n, 0n).build()).rejects.toThrow(/step must be non-zero|Division by zero/);
+    await expect(contract.call.descend(2n, 0n).build()).rejects.toThrow(
+      /step must be non-zero|Division by zero|Runtime-loop event continuation condition/,
+    );
     await expect(contract.call.descend(128n, 2n).build())
       .rejects.toThrow(/exceeds its compiler-published maximum/);
     // descend(5, stride 2) never lands on 0, so the affine frame guard refuses it during derivation.

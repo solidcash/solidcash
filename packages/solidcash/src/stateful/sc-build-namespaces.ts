@@ -80,8 +80,9 @@ export function buildNamespaces<TArtifact extends Artifact>(
   // A stored `address` is the 20-byte Solidity identity under `addressForm: 'hash'`. Public getters present the
   // deployed contract's own address when one is registered, so a source comparison against `getAddress()` names
   // the same value. Raw state/entry APIs keep the identity.
-  const resolveDeployedAddress = (identity: Uint8Array): string | undefined => {
-    const deployment = findDeploymentByAddressValue(contract.provider, identity);
+  const provider = (contract as { provider?: import('../network/NetworkProvider.js').default }).provider;
+  const resolveDeployedAddress = provider === undefined ? undefined : (identity: Uint8Array): string | undefined => {
+    const deployment = findDeploymentByAddressValue(provider, identity);
     return deployment?.address !== undefined && deployment.address.includes(':')
       ? deployment.address : undefined;
   };

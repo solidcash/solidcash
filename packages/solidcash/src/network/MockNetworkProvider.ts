@@ -350,6 +350,15 @@ export default class MockNetworkProvider implements NetworkProvider {
     };
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
     this.consensusLimits = this.options.consensusLimits;
+    for (const field of [
+      'hashDigestIterationsPerByte', 'hashDigestIterationsPerByteStandard',
+      'hashDigestIterationsPerByteNonstandard',
+    ] as const) {
+      const value = this.consensusLimits[field];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`${field} must be a positive safe integer, got ${value}`);
+      }
+    }
     this.policy = this.options.policy;
     this.statefulSimulation = this.options.statefulSimulation;
 

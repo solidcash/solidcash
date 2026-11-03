@@ -8,7 +8,7 @@
  * the same route with one row, which keeps the callee's direct entry out of the path.
  */
 
-import { binToHex } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { AbiFunction, AbiInput, ArgSource, Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';

@@ -67,12 +67,12 @@ export const compile = async (): Promise<void> => {
   const result = fs.readdirSync(directory)
     .filter((fn) => fn.endsWith('.scash'));
 
-  fs.mkdirSync(new URL('../artifacts', import.meta.url), { recursive: true });
+  fs.mkdirSync(new URL('../artifacts/solidcash', import.meta.url), { recursive: true });
 
   const pending = result.filter((fn) => {
     const contractFile = new URL(fn, `${directory}/`);
-    const jsonOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.json')}`, import.meta.url);
-    const tsOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
+    const jsonOutputFile = new URL(`../artifacts/solidcash/${fn.replace('.scash', '.json')}`, import.meta.url);
+    const tsOutputFile = new URL(`../artifacts/solidcash/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
     const sourcePath = fileURLToPath(contractFile);
     const jsonPath = fileURLToPath(jsonOutputFile);
     const tsPath = fileURLToPath(tsOutputFile);
@@ -95,8 +95,8 @@ export const compile = async (): Promise<void> => {
 
   pending.forEach((fn) => {
     const contractFile = new URL(fn, `${directory}/`);
-    const jsonOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.json')}`, import.meta.url);
-    const tsOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
+    const jsonOutputFile = new URL(`../artifacts/solidcash/${fn.replace('.scash', '.json')}`, import.meta.url);
+    const tsOutputFile = new URL(`../artifacts/solidcash/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
 
     try {
       const contents = fs.readFileSync(contractFile, { encoding: 'utf-8' });

@@ -2,12 +2,11 @@ import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-inst
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { BchnRpcClient } from '@mr-zwets/bchn-api-wrapper';
 import {
-  type Artifact, blockhashCommitmentNumber, blockhashOracleLockingBytecode,
-  buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
+  type Artifact, blockhashOracleLockingBytecode, blockhashOracleRedeemScript, blockhashSlotRetireUnlocking,
+  blockhashSlotUpdateUnlocking, buildBlockhashSlotCommitment, decodeBlockhashSlotCommitment,
   blockOracleLockingBytecode, blockOracleRedeemScript, blockOracleUpdateUnlocking, encodeBlockOracleCommitment,
-  blockOracleFieldValue,
-  buildPushdataCommitment, scriptToBytecode, encodeInt, hash160, hash256, type StateVariableInfo,
-  blockhashKeeperBatonLockingBytecode, buildBlockhashKeeperBatonScript,
+  blockOracleFieldValue, type BlockhashSlotFields,
+  buildPushdataCommitment, bytesEqual, hash160, hash256, type StateVariableInfo,
 } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
 import type { Utxo, Unlocker, GenerateUnlockingBytecodeOptions } from '../interfaces.js';
@@ -25,12 +24,12 @@ import { blockOracleCoins } from './block-oracle-lock.js';
  *    the block from a BCHN JSON-RPC and spends the contract's own oracle covenant (utils/block-oracle.ts) with a
  *    signed update: a height update when the chain is ahead of its number, then a timestamp update when the
  *    last final second (median time past - 1) is ahead of its timestamp.
- *  - n->hash oracle (blockhash(n)): present iff the artifact stamps usesBlockhash. Mints the per-block
- *    (n->hash) NFT at the master category's one oracle lock through the keeper baton covenant (audit
- *    CRYPTO-4), and sweeps the pairs that aged out of the 256-block window.
+ *  - blockhash ring (blockhash(n)): present iff the artifact stamps usesBlockhash. The genesis mints `depth` slots
+ *    of the master category at one lock, and the keeper writes the tip's (n, hash) into the slot whose n is
+ *    congruent to it modulo the depth, through the slot covenant's owner-signed update.
  *
- * The keeper/operator private key signs both (the owner hash in the oracle commitment for block-info, and
- * the n->hash mint). Its P2PKH pays the block-info update fees and takes the swept dust.
+ * The keeper/operator private key signs both: its hash is the owner in the block-info commitment and in every slot.
+ * Its P2PKH pays the update fees.
  */
 
 // Any JSON-RPC client exposing `request(method, ...params)` (BchnRpcClient satisfies this).
@@ -53,9 +52,6 @@ export const BLOCKHASH_WINDOW = 256;
 
 // Relay fee of one block-info update, paid by a coin at the keeper's P2PKH. The oracle keeps its value.
 const UPDATE_FEE = 2_000n;
-
-// Most aged-out pairs one sweep spends, so a backlog still sweeps as a standard-size transaction.
-const MAX_SWEEP_PAIRS = 100;
 
 // User-land defaults: mainnet -> public BCHN, regtest -> the docker stack (see docker-compose.regtest.yml).
 export const DEFAULT_RPC_URL: Record<string, string> = {
@@ -117,16 +113,13 @@ function finalTimestamp(fields: BlockOracleFields): bigint {
 export interface BlockOracleUpdaterConfig {
   contract: Contract;
   categoryId: string;
-  // Operator/keeper private key. Signs the block-info oracle update (its hash is the commitment's owner) and
-  // the n->hash oracle mints.
+  // Operator/keeper private key. Signs the block-info oracle update and the blockhash slot updates: its hash is
+  // the owner in both commitments.
   keeperKey: Uint8Array;
   rpc: RpcLike;
   electrumHost?: string; // Fulcrum host for blockchain.headers.subscribe
-  // Project-global blockhash (n->hash) oracle token category. Required only for blockhash() consumers.
+  // The category whose blockhash ring the keeper writes; `categoryId` when unset.
   blockhashOracleCategory?: string;
-  // Override for the keeper's minting baton. By default it is the UTXO at the keeper baton covenant
-  // (blockhashKeeperBatonLockingBytecode(category, keeper public key)), spent with blockhashKeeperBatonUnlocker.
-  blockhashOracleMaster?: { utxo: Utxo; unlocker: Unlocker };
 }
 
 /** Unlocks the block-info oracle update path: the keeper signs, and `newCommitment` replaces the record. */
@@ -150,20 +143,38 @@ export function blockOracleUpdateUnlocker(
   };
 }
 
-/** Unlocks the keeper baton covenant (audit CRYPTO-4) with `<keeper signature> <redeem>`. */
-export function blockhashKeeperBatonUnlocker(categoryId: string, keeperKey: Uint8Array): Unlocker {
+/** A slot unlocker that signs the slot covenant with `keeperKey` and pushes what `unlocking` builds. */
+function blockhashSlotOwnerUnlocker(
+  categoryId: Uint8Array, keeperKey: Uint8Array,
+  unlocking: (pubkey: Uint8Array, signature: Uint8Array) => Uint8Array,
+): Unlocker {
   const keeper = new SignatureTemplate(keeperKey);
-  const category = hexToBin(categoryId);
-  const redeem = scriptToBytecode(buildBlockhashKeeperBatonScript(category, keeper.publicKey));
-  const lock = blockhashKeeperBatonLockingBytecode(category, keeper.publicKey);
+  const redeem = blockhashOracleRedeemScript(categoryId);
+  const lock = blockhashOracleLockingBytecode(categoryId);
   return {
     generateLockingBytecode: (): Uint8Array => lock,
     generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions)
     : Uint8Array => {
       const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, redeem, keeper.sighashType);
-      return scriptToBytecode([keeper.generateSignature(hash256(preimage)), redeem]);
+      return unlocking(keeper.publicKey, keeper.generateSignature(hash256(preimage)));
     },
   };
+}
+
+/** Unlocks a blockhash slot's update path: the owner signs, and `newCommitment` replaces the slot's. */
+export function blockhashSlotUpdateUnlocker(
+  categoryId: Uint8Array, keeperKey: Uint8Array, newCommitment: Uint8Array,
+): Unlocker {
+  return blockhashSlotOwnerUnlocker(categoryId, keeperKey, (pubkey, signature) => blockhashSlotUpdateUnlocking(
+    categoryId, pubkey, signature, newCommitment,
+  ));
+}
+
+/** Unlocks a blockhash slot's retire path: the owner signs, and the slot's NFT burns. */
+export function blockhashSlotRetireUnlocker(categoryId: Uint8Array, keeperKey: Uint8Array): Unlocker {
+  return blockhashSlotOwnerUnlocker(categoryId, keeperKey, (pubkey, signature) => blockhashSlotRetireUnlocking(
+    categoryId, pubkey, signature,
+  ));
 }
 
 export class BlockOracleUpdater {
@@ -175,8 +186,8 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * The contract reads blockhash(n), so it needs the project-global (n->hash) oracle. The compiler stamps
-   * this marker on the artifact when blockhash() is referenced (see docs/block-and-transaction-properties.md).
+   * The contract reads blockhash(n), so its genesis minted a ring of blockhash slots. The compiler stamps this
+   * marker on the artifact when blockhash() is referenced (see docs/block-and-transaction-properties.md).
    */
   static usesBlockhash(artifact: Artifact): boolean {
     return artifact.usesBlockhash === true;
@@ -280,106 +291,88 @@ export class BlockOracleUpdater {
   }
 
   /**
-   * Mint the (n -> hash) oracle NFT at the category's one blockhash oracle lock, spending and recreating the
-   * keeper's minting baton (the keeper baton covenant unless overridden). Returns the mint txid.
+   * Write block n's hash into the ring: the slot whose n is congruent to `n` modulo its depth, and lower, takes
+   * (n, hash) through its owner-signed update under nLockTime n. A coin at the keeper's P2PKH pays the fee and takes
+   * the change. Returns the txid.
    */
-  async mintBlockhashPair(n: bigint, hash: Uint8Array): Promise<string> {
-    const catHex = this.cfg.blockhashOracleCategory;
-    if (!catHex) throw new Error('blockhashOracleCategory is required to mint (n->hash) pairs');
-    const category = catHex.toLowerCase();
-    const master = this.cfg.blockhashOracleMaster ?? await this.keeperBaton(catHex);
-    if (master.utxo.token?.category?.toLowerCase() !== category) {
-      throw new Error('blockhash oracle minting master must carry the master contract category');
-    }
-    const lock = blockhashOracleLockingBytecode(hexToBin(category));
-    const commitment = binToHex(buildBlockhashCommitment(n, hash));
-    const mintSats = 1000n;
-    const fee = 1000n;
+  async writeBlockhashSlot(n: bigint, hash: Uint8Array): Promise<string> {
+    const { category, lock } = this.blockhashRing();
+    const slot = await this.blockhashSlotFor(n);
+    if (slot === undefined) throw new Error(`no blockhash slot at ${binToHex(lock)} takes block ${n}`);
+    if (slot.fields.n >= n) throw new Error(`the blockhash slot for block ${n} already holds block ${slot.fields.n}`);
+    const commitment = buildBlockhashSlotCommitment(n, hash, slot.fields.ownerPkh, slot.fields.depth);
+    const token = {
+      category: slot.utxo.token!.category,
+      amount: slot.utxo.token!.amount,
+      nft: { capability: 'mutable' as const, commitment: binToHex(commitment) },
+    };
+    const funding = await this.feeCoin(UPDATE_FEE);
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
-    const tx = await new TransactionBuilder({ provider: this.cfg.contract.provider })
-      .addInput(master.utxo, master.unlocker)
-      .addOutput({
-        to: master.unlocker.generateLockingBytecode(),
-        amount: master.utxo.satoshis - mintSats - fee,
-        token: master.utxo.token,
-      })
-      .addOutput({
-        to: lock,
-        amount: mintSats,
-        token: { category: catHex, amount: 0n, nft: { capability: 'none', commitment } },
-      })
-      .setLocktime(Number(n)) // the baton covenant requires tx.time >= n
+    const { txid } = await new TransactionBuilder({ provider: this.cfg.contract.provider })
+      .addInput(slot.utxo, blockhashSlotUpdateUnlocker(category, this.cfg.keeperKey, commitment))
+      .addInput(funding, new SignatureTemplate(this.cfg.keeperKey).unlockP2PKH())
+      .addOutput({ to: lock, amount: slot.utxo.satoshis, token })
+      .addOutput({ to: this.keeperP2pkh(), amount: funding.satoshis - UPDATE_FEE })
+      .setLocktime(Number(n))
       .send();
-    return tx.txid;
-  }
-
-  // The keeper's minting baton of the category at the keeper baton covenant.
-  private async keeperBaton(catHex: string): Promise<{ utxo: Utxo; unlocker: Unlocker }> {
-    const unlocker = blockhashKeeperBatonUnlocker(catHex, this.cfg.keeperKey);
-    const utxos = await this.cfg.contract.provider.getUtxosForLockingBytecode(unlocker.generateLockingBytecode());
-    const utxo = utxos.find((u) => u.token?.category === catHex && u.token.nft?.capability === 'minting');
-    if (!utxo) throw new Error(`no keeper baton of category ${catHex} at the blockhash keeper covenant`);
-    return { utxo, unlocker };
+    return txid;
   }
 
   /**
-   * Sweep (burn) the (n->hash) oracle UTXOs of block n and older, which aged out of the 256-block window, and
-   * reclaim their dust to the keeper's P2PKH in one batch that pays its fee at 1 sat/byte. Best-effort: returns
-   * null if no such pair is live, or if the batch cannot leave an output above dust (a later batch takes them).
-   * Spends the covenant wipe path (flag 1) under tx.time >= n+256 - mineable once the chain reaches n+256. The
-   * covenant also lets anyone wipe, so this is a keeper convenience (reclaim dust), not a liveness dependency.
+   * Retire the slot that holds block n: the owner-signed retire burns its NFT, and its satoshis go with a fee coin's
+   * to the keeper's P2PKH. Nothing mints a slot again. Returns the txid.
    */
-  async sweepBlockhashPair(n: bigint): Promise<string | null> {
-    const catHex = this.cfg.blockhashOracleCategory;
-    if (!catHex) throw new Error('blockhashOracleCategory is required to sweep (n->hash) pairs');
-    const category = hexToBin(catHex);
-    const lock = blockhashOracleLockingBytecode(category);
-    // The wipe path spends only a capability-none NFT of the category, so anything else at the lock stays.
-    const wanted = catHex.toLowerCase();
-    const pairs = (await this.cfg.contract.provider.getUtxosForLockingBytecode(lock))
-      .filter(({ token }) => token !== undefined && token.category.toLowerCase() === wanted
-        && token.nft?.capability === 'none' && blockhashCommitmentNumber(hexToBin(token.nft.commitment)) <= n)
-      .slice(0, MAX_SWEEP_PAIRS);
-    if (pairs.length === 0) return null;
-
-    const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
-    const wipeUnlock = scriptToBytecode([encodeInt(1n), redeem]);
-    const unlocker = {
-      generateLockingBytecode: (): Uint8Array => lock,
-      generateUnlockingBytecode: (): Uint8Array => wipeUnlock,
-    };
-
+  async retireBlockhashSlot(n: bigint): Promise<string> {
+    const { category } = this.blockhashRing();
+    const slot = (await this.blockhashSlots()).find(({ fields }) => fields.n === n);
+    if (slot === undefined) throw new Error(`no blockhash slot holds block ${n}`);
+    const funding = await this.feeCoin(UPDATE_FEE);
     const { TransactionBuilder } = await import('../TransactionBuilder.js');
-    const builder = new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true });
-    for (const utxo of pairs) builder.addInput(utxo, unlocker);
-    const to = this.keeperP2pkh();
-    const reclaimed = pairs.reduce((sum, utxo) => sum + utxo.satoshis, 0n);
-    const dust = BigInt(calculateDust({ to, amount: reclaimed }));
-    if (reclaimed < dust) return null;
-    builder.addOutput({ to, amount: reclaimed }).setLocktime(Number(n + BigInt(BLOCKHASH_WINDOW)));
-    // The wipe unlocking carries no signature, so this size is final.
-    const amount = reclaimed - builder.getTransactionSize();
-    if (amount < dust) return null;
-    builder.outputs[0] = { to, amount };
-    const tx = await builder.send();
-    return tx.txid;
+    const { txid } = await new TransactionBuilder({ provider: this.cfg.contract.provider, allowImplicitNftBurn: true })
+      .addInput(slot.utxo, blockhashSlotRetireUnlocker(category, this.cfg.keeperKey))
+      .addInput(funding, new SignatureTemplate(this.cfg.keeperKey).unlockP2PKH())
+      .addOutput({ to: this.keeperP2pkh(), amount: slot.utxo.satoshis + funding.satoshis - UPDATE_FEE })
+      .send();
+    return txid;
   }
 
-  // The keeper's own P2PKH locking bytecode: it pays block-info update fees and takes swept dust.
+  /** The ring's category and its one slot lock. */
+  private blockhashRing(): { category: Uint8Array; lock: Uint8Array } {
+    const category = hexToBin(this.cfg.blockhashOracleCategory ?? this.cfg.categoryId);
+    return { category, lock: blockhashOracleLockingBytecode(category) };
+  }
+
+  /** The ring's slots this keeper owns: mutable NFTs of its category at the slot lock. */
+  private async blockhashSlots(): Promise<Array<{ utxo: Utxo; fields: BlockhashSlotFields }>> {
+    const { category, lock } = this.blockhashRing();
+    const wanted = binToHex(category);
+    const owner = hash160(secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey) as Uint8Array);
+    return (await this.cfg.contract.provider.getUtxosForLockingBytecode(lock)).flatMap((utxo) => {
+      const nft = utxo.token?.nft;
+      if (utxo.token?.category.toLowerCase() !== wanted || nft?.capability !== 'mutable') return [];
+      const fields = decodeBlockhashSlotCommitment(hexToBin(nft.commitment));
+      return fields !== undefined && bytesEqual(fields.ownerPkh, owner) ? [{ utxo, fields }] : [];
+    });
+  }
+
+  /** The slot whose n is congruent to `n` modulo its depth. */
+  private async blockhashSlotFor(n: bigint): Promise<{ utxo: Utxo; fields: BlockhashSlotFields } | undefined> {
+    return (await this.blockhashSlots()).find(({ fields }) => (n - fields.n) % BigInt(fields.depth) === 0n);
+  }
+
+  // The keeper's own P2PKH locking bytecode: it pays the update fees and takes their change.
   private keeperP2pkh(): Uint8Array {
     const pub = secp256k1.derivePublicKeyCompressed(this.cfg.keeperKey);
     if (typeof pub === 'string') throw new Error(`invalid keeper key: ${pub}`);
     return Uint8Array.from([0x76, 0xa9, 0x14, ...hash160(pub), 0x88, 0xac]);
   }
 
-  /**
-   * Maintain the project-global (n->hash) oracle on a new tip: mint the tip's (n, hash) pair and sweep the
-   * pairs that aged out of the 256-block window (best-effort dust reclaim).
-   */
+  /** Write the tip's hash into the ring on a new tip, unless its slot holds the tip already. */
   private async maintainBlockhashWindow(tip: number): Promise<void> {
+    const slot = await this.blockhashSlotFor(BigInt(tip));
+    if (slot !== undefined && slot.fields.n >= BigInt(tip)) return;
     const hashHex: string = await this.cfg.rpc.request('getblockhash', tip);
-    await this.mintBlockhashPair(BigInt(tip), hexToBin(hashHex));
-    if (tip > BLOCKHASH_WINDOW) await this.sweepBlockhashPair(BigInt(tip - BLOCKHASH_WINDOW));
+    await this.writeBlockhashSlot(BigInt(tip), hexToBin(hashHex));
   }
 
   /**

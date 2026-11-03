@@ -14,10 +14,13 @@ import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
 
 export interface DeployOptions {
-  /** Mint a confined blockhash keeper baton at genesis; requires a blockhash-reading artifact. */
+  /**
+   * The key whose signed updates write a blockhash reader's slots, which its genesis mints. Defaults to the provider's
+   * own block oracle key on a simulator or devnet; a live deployment of a reader names one.
+   */
   blockhashKeeperPublicKey?: Uint8Array;
-  /** Initial keeper baton balance, spent on oracle mints and fees; default 10,000 satoshis. */
-  blockhashKeeperAmount?: bigint;
+  /** How many recent blocks a blockhash reader's ring holds: 1 to 256, or 'now' for the latest; default 256. */
+  blockhashDepth?: number | 'now';
   /**
    * The key that updates a block.* reader's own oracle, which its genesis mints. Defaults to the provider's own key
    * on a simulator or devnet; a live deployment of a reader names one.

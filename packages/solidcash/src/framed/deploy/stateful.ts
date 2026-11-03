@@ -46,7 +46,7 @@ import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './record
 import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
 import { registerFunctionSplit } from './split-registry.js';
-import { blockhashKeeperGenesisOutput } from '../../oracle/blockhash-keeper-deployment.js';
+import { blockhashRingGenesisOutputs } from '../../oracle/blockhash-ring-deployment.js';
 import { labelNextBroadcast } from '../../tx-survey.js';
 import { blockOracleGenesisOutput } from '../../oracle/block-oracle-deployment.js';
 
@@ -163,8 +163,8 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   const categoryId = options.fundingUtxo.txid;
   const category = new Uint8Array(hexToBin(categoryId));
-  const keeperBaton = blockhashKeeperGenesisOutput(
-    artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
+  const blockhashRing = blockhashRingGenesisOutputs(
+    artifact, categoryId, options.provider, options.blockhashKeeperPublicKey, options.blockhashDepth,
   );
   const blockOracle = blockOracleGenesisOutput(
     artifact, categoryId, options.provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? 1200n,
@@ -374,7 +374,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     });
   }
 
-  if (keeperBaton !== undefined) addFunded(keeperBaton);
+  for (const slot of blockhashRing) addFunded(slot);
   if (blockOracle !== undefined) addFunded(blockOracle);
 
   // The premint: the token's fungible amount at the contract's token container for the token's own category; then the

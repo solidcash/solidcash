@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   blockhashOracleLockingBytecode, buildBlockhashSlotCommitment, decodeBlockhashSlotCommitment, hash160,
-  type BlockhashSlotFields,
+  type Artifact, type BlockhashSlotFields,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
@@ -22,8 +22,11 @@ const SOURCE = 'contract Reader(){ function check(int n, bytes32 expected) { req
 const RECENT = 'contract Recent(){ function check(bytes32 expected) { require(blockhash(block.number - 1) == expected); } }';
 // A reader of the block five below block.number, whose ring needs five slots.
 const BACK5 = 'contract Back(){ function check(bytes32 expected) { require(blockhash(block.number - 5) == expected); } }';
+// The EVM idiom for an expired commitment: a block older than the last 256 hashes to zero.
+const EXPIRY_SOURCE = 'contract Expiry(){ function expired(int n) { require(blockhash(n) == 0); } }';
 const ZERO = new Uint8Array(32);
 const HASH = new Uint8Array(32).fill(0xb7);
+const NEWER = new Uint8Array(32).fill(0xc5);
 const FORGED = new Uint8Array(32).fill(0xee);
 const ALICE_LOCK = Uint8Array.from([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]);
 
@@ -35,9 +38,10 @@ describe('blockhash ring', () => {
   type Deployed = Awaited<ReturnType<typeof StatefulContract.deploy>>;
 
   async function deploy(
-    provider: MockNetworkProvider, blockhashDepth?: number | 'now', reader = artifact,
+    provider: MockNetworkProvider, blockhashDepth?: number | 'now', reader: Artifact = artifact,
   ): Promise<Deployed> {
-    const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
+    // A full ring of 256 slots holds 307,200 satoshis.
+    const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 1_000_000n }));
     return StatefulContract.deploy(reader, [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: aliceAddress,
       ...(blockhashDepth === undefined ? {} : { blockhashDepth }),
@@ -190,5 +194,85 @@ describe('blockhash ring', () => {
       },
     };
     expect(settles([...transaction.outputs, forged])).not.toBe(true);
+  }, 120_000);
+
+  it('reads zero for a block older than a full ring keeps, as the EVM does', async () => {
+    const provider = new MockNetworkProvider();
+    const deployed = await deploy(provider);
+    const n = BigInt(await provider.getBlockHeight()) - 300n;
+    const holding = async (block: bigint): Promise<string | undefined> => (await slots(provider, deployed.categoryId))
+      .find(({ fields }) => fields.n === block)?.utxo.token?.nft?.commitment;
+    await keeper(provider, deployed).writeBlockhashSlot(n, HASH);
+    await expect(deployed.contract.call.check(n, HASH).send()).resolves.toHaveProperty('txid');
+    // The slot of block n takes block n + 256, so n is older than the last 256 blocks. The read keeps the slot.
+    await keeper(provider, deployed).writeBlockhashSlot(n + 256n, NEWER);
+    const newer = await holding(n + 256n);
+    await expect(deployed.contract.call.check(n, ZERO).send()).resolves.toHaveProperty('txid');
+    expect(await holding(n + 256n)).toBe(newer);
+    await expect(deployed.contract.call.check(n + 256n, NEWER).send()).resolves.toHaveProperty('txid');
+
+    const expiry = await deploy(provider, undefined, compileString(EXPIRY_SOURCE, { evmCompat: true }));
+    await keeper(provider, expiry).writeBlockhashSlot(n + 256n, NEWER);
+    await expect(expiry.contract.call.expired(n).send()).resolves.toHaveProperty('txid');
+    await expect(expiry.contract.call.expired(n + 256n).send()).rejects.toThrow();
+    await expect(deployed.contract.call.check(n, HASH).send()).rejects.toThrow();
+  }, 120_000);
+
+  it('refuses a block a shallower ring no longer holds, or one its keeper has not written', async () => {
+    const provider = new MockNetworkProvider();
+    const deployed = await deploy(provider, 4);
+    const n = BigInt(await provider.getBlockHeight()) - 10n;
+    await keeper(provider, deployed).writeBlockhashSlot(n, HASH);
+    await keeper(provider, deployed).writeBlockhashSlot(n + 4n, NEWER);
+    const held = (await slots(provider, deployed.categoryId)).map(({ fields }) => fields.n).sort((a, b) => Number(a - b));
+    const ring = `the blockhash ring of category ${deployed.categoryId} \\(depth 4\\) holds blocks ${held.join(', ')}`;
+    await expect(deployed.contract.call.check(n, ZERO).send()).rejects
+      .toThrow(new RegExp(`blockhash\\(${n}\\): ${ring}; block ${n} is older than the ring keeps`));
+    await expect(deployed.contract.call.check(n + 5n, ZERO).send()).rejects
+      .toThrow(new RegExp(`blockhash\\(${n + 5n}\\): ${ring}; block ${n + 5n} is not yet written by its keeper`));
+  }, 120_000);
+
+  it('refuses on chain a zero read from a slot of another residue, an older slot or a shallower ring', async () => {
+    const provider = new MockNetworkProvider();
+    const deployed = await deploy(provider);
+    const owner = hash160(provider.blockOracleOwnerPublicKey);
+    const n = BigInt(await provider.getBlockHeight()) - 600n;
+    const commitmentOf = async (block: bigint): Promise<Uint8Array> => hexToBin(
+      (await slots(provider, deployed.categoryId)).find(({ fields }) => fields.n === block)!.utxo.token!.nft!.commitment,
+    );
+    await keeper(provider, deployed).writeBlockhashSlot(n - 256n, HASH);
+    const older = await commitmentOf(n - 256n);
+    await keeper(provider, deployed).writeBlockhashSlot(n + 256n, HASH);
+    await keeper(provider, deployed).writeBlockhashSlot(n + 257n, HASH);
+    const otherResidue = await commitmentOf(n + 257n);
+
+    // The honest zero read of block n, its slot holding n + 256. Each case hands the reader another commitment
+    // in that slot and in its recreation, so only the reader's own check can refuse it.
+    const builder = await deployed.contract.call.check(n, ZERO).build();
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const master = builder.inputs.findIndex((input) => input.token?.nft?.capability === 'minting');
+    const lock = binToHex(blockhashOracleLockingBytecode(hexToBin(deployed.categoryId)));
+    const at = sourceOutputs.findIndex((output) => binToHex(output.lockingBytecode) === lock);
+    type VmOutput = (typeof sourceOutputs)[number];
+    const carrying = (output: VmOutput, commitment: Uint8Array): VmOutput => ({
+      ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment } },
+    });
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const reads = (commitment: Uint8Array): true | string => vm.stateSuccess(vm.evaluate({
+      inputIndex: master,
+      sourceOutputs: sourceOutputs.map((output, index) => (index === at ? carrying(output, commitment) : output)),
+      transaction: {
+        ...transaction,
+        outputs: transaction.outputs.map((output, index) => (index === at ? carrying(output, commitment) : output)),
+      },
+    }));
+    expect(master).toBeGreaterThanOrEqual(0);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(reads(sourceOutputs[at].token!.nft!.commitment)).toBe(true);
+    expect(reads(otherResidue)).not.toBe(true);
+    expect(reads(older)).not.toBe(true);
+    // A newer block in a ring under 256 deep proves nothing about the EVM's window.
+    expect(reads(buildBlockhashSlotCommitment(n + 256n, HASH, owner, 4))).not.toBe(true);
   }, 120_000);
 });

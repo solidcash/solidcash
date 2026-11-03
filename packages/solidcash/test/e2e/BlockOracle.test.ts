@@ -539,8 +539,10 @@ describe('blockhash(n) e2e (blockhash slot covenant)', () => {
   it('rejects a slot whose commitment.n != the requested n', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    await expect(spendBlockhash(provider, n, n - 1, hash, hash))
-      .rejects.toThrow(/blockhash\((\d+)\): no \(n->hash\) oracle UTXO for block \1/);
+    await expect(spendBlockhash(provider, n, n - 1, hash, hash)).rejects.toThrow(new RegExp(
+      `blockhash\\(${n}\\): the blockhash ring of category [0-9a-f]{64} \\(depth 256\\) holds block ${n - 1}; `
+      + `block ${n} is not yet written by its keeper`,
+    ));
   });
 
   it('lets only the slot owner retire it', async () => {
@@ -602,7 +604,10 @@ describe('blockhash(n) auto-injection (StatefulContract)', () => {
       provider, contract, artifact.stateLayout!, {}, { saltContract: true },
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
-    await expect((sc as any).f(BigInt(n), H).send()).rejects.toThrow(/no \(n->hash\) oracle UTXO/i);
+    await expect((sc as any).f(BigInt(n), H).send()).rejects.toThrow(new RegExp(
+      `blockhash\\(${n}\\): the blockhash ring of category ${categoryId} holds no block; `
+      + `block ${n} is not yet written by its keeper`,
+    ));
   });
 
   // Two reads in one reader, each to its own n: each DISTINCT identifier-arg read rides its OWN consecutive

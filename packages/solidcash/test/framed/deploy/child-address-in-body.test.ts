@@ -9,8 +9,8 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { framedChildConstants } from '../../../src/framed/deploy/child-constants.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
-import { sha256 } from '@solidcash/utils';
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 /**
@@ -25,7 +25,8 @@ import { alicePkh, alicePriv } from '../../fixture/vars.js';
  * The test drives the compiled creating master through the shipped call path, with the coin the test itself funded:
  * the derivation states that coin's real outpoint, so the address the entry returns must be `addrV` of it, and it must
  * move when the coin does. A value baked in at compile time, or read from the derivation's stand-in outpoint, would
- * satisfy neither.
+ * satisfy neither. Each call mints the child: the creating body requires the child's exact genesis, so a call that
+ * mints none is refused (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
  */
 
 const FRAMED = {
@@ -69,19 +70,22 @@ function shardsOf(primaryContractName: string): FunctionSplitBundle {
 
 describe('the address a creating body computes', () => {
   const creator = shardsOf('Creator');
+  const child = shardsOf('Child');
+  const pool = { masters: 1, validators: 1 };
 
   it('is addrV of the caller coin the transaction carries, and it moves with the coin', async () => {
-    /** A creator deployed on its own chain, and the genesis-eligible coin its `make` call will carry. */
+    /** A creator deployed on its own chain with its child's constants, and the coin its `make` call will carry. */
     const deployCreator = async () => {
       const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const funding = nextCoin(900_000n);
       await provider.addUtxo(binToHex(callerLock), funding);
+      const constants = framedChildConstants({ artifact: child.logical, split: child, provider, pool });
       const { categoryId } = await deployStatefulContract(creator.logical, [], {
         provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
         threadCount: 1, validatorCount: 1, functionSplit: creator,
-        childOutputCount: 0,
+        childLocks: constants.childLocks, childPool: constants.childPool, childCollections: constants.childCollections,
       });
-      const caller = nextCoin(300_000n);
+      const caller = nextCoin(900_000n);
       await provider.addUtxo(binToHex(callerLock), caller);
       return { provider, categoryId, caller };
     };
@@ -92,13 +96,10 @@ describe('the address a creating body computes', () => {
         provider: deployment.provider, artifact: creator.logical, categoryId: deployment.categoryId,
         functionName: 'make', args: [new Uint8Array(32)],
         callerUtxo: deployment.caller, callerLockingBytecode: callerLock, funder,
-        // The deployment patched the shard for the folded-output count, so the call runs the registered split.
+        // The deployment filled the shard's replay constants, so the call runs the registered split.
         split: functionSplitFor(deployment.provider, deployment.categoryId) ?? creator,
         vm: compositionMachine(), validatorProgram: VALIDATOR, publish: false,
-        // The test derives the address the body computes; it mints no child. Its creator states a zero-output
-        // category, so the folded-state digest is over nothing and the check still wants the OP_RETURN it commits to.
-        creates: null,
-        extraOutputs: [{ to: Uint8Array.from([0x6a, 0x20, ...sha256(new Uint8Array())]), amount: 0n }],
+        creates: { artifact: child.logical, split: child, pool },
       });
       const refused = result.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
@@ -110,13 +111,10 @@ describe('the address a creating body computes', () => {
     };
 
     /**
-     * A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13).
-     *
-     * This call mints no child (`creates: null`), so its plan keeps the composer's internal outpoint order; a
-     * creating call states the display order the node's wire carries (`AtomicPairCreatePair` covers that path).
+     * A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13). A creating call states
+     * the display order the node's wire carries, so `K` is the txid's bytes as written (`AtomicPairCreatePair` too).
      */
-    const identityOf = (txid: string) =>
-      hash160(validatorAddress(Uint8Array.from(hexToBin(txid)).reverse(), VALIDATOR));
+    const identityOf = (txid: string) => hash160(validatorAddress(hexToBin(txid), VALIDATOR));
 
     const first = await make(await deployCreator());
     expect(binToHex(first.computed)).toBe(binToHex(identityOf(first.caller.txid)));
@@ -129,8 +127,6 @@ describe('the address a creating body computes', () => {
     // One byte of the coin's txid changed: the body's value names no address that category derives.
     const other = hexToBin(first.caller.txid);
     other[0] = other[0]! ^ 0xff;
-    expect(binToHex(first.computed)).not.toBe(
-      binToHex(validatorAddress(Uint8Array.from(other).reverse(), VALIDATOR)),
-    );
+    expect(binToHex(first.computed)).not.toBe(binToHex(hash160(validatorAddress(other, VALIDATOR))));
   }, 240_000);
 });

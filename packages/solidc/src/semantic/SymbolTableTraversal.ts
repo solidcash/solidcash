@@ -3725,6 +3725,20 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * Folds a framed creator's initializer call on the child it just created into the child's genesis state (docs/
+   * framed/CREATE2_IDENTITY.md, "The genesis replay"), after `tryFoldChildConstructor` folded the constructor. The
+   * call's arguments are the creator's expressions; its body's own guards are not replayed, as for every folded call.
+   * False when the constructor or the call does not fold, or the call returns a value.
+   */
+  public tryFoldFramedChildInitializer(
+    deployNode: InstantiationNode, callee: FunctionDefinitionNode, parentArgs: ExpressionNode[],
+  ): boolean {
+    if (deployNode.constructorStateFoldComplete !== true || deployNode.ctorFoldFailed === true) return false;
+    const folded = this.tryFoldDeployCall(deployNode, callee, parentArgs);
+    return folded !== false && folded.returnValue === undefined;
+  }
+
+  /**
    * Apply the canonical constructor + same-transaction call folder to a deployment proof clone.
    *
    * This intentionally contains no source-shape discovery: callers decide which finite, straight-line call

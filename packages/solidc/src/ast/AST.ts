@@ -2214,6 +2214,19 @@ export class NullaryOpNode extends ExpressionNode {
   // source-level block.chainid read is rejected by the compatibility checker.
   fromInlineAssembly: boolean = false;
 
+  /**
+   * On a framed `create2` (`NullaryOperator.CHILD_ADDRESS`): the contract it creates, by name, or the state variable
+   * holding the code it creates from, as `LowerFramedCreate2Address` found them.
+   */
+  framedCreation?: { readonly contractName?: string; readonly codeStateVariable?: string };
+
+  /**
+   * On a framed `create2` whose child this compile unit holds: the child's genesis as the creating body replays it,
+   * filled after semantic analysis (`FoldFramedCreate2Initializer`). Code generation requires the transaction's
+   * outputs of the child's category to be exactly that genesis.
+   */
+  framedGenesis?: import('../framed/child-genesis-replay.js').FramedChildGenesisReplay;
+
   constructor(
     public operator: NullaryOperator,
   ) {

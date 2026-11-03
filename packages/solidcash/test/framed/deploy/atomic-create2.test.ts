@@ -85,7 +85,7 @@ describe('a child created with create2 in one transaction', () => {
     const { categoryId } = await deployStatefulContract(creator.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: creator,
-      childLocks: childLocksOf(provider),
+      childLocks: childLocksOf(provider), childPool: pool,
       childOutputCount: childGenesisOutputCount({
         artifact: child.logical, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
         provider, split: child, pool, ownerLock: callerLock,

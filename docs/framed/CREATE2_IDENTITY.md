@@ -1,10 +1,11 @@
 # Framed CREATE2 children at their own address (design, 2026-10-30)
 
-Status: in progress. The child-address computation, the creator's genesis check, the in-transaction composition of a
-child's genesis, the deploy-then-call fold of its initializer and the creator's count of the child's category outputs
-are implemented and tested, including the creator's check of the folded state's record commitments. Found while building the SushiSwap BCH web
-layer, whose pairs are CREATE2 children of the factory. A SolidCash-level change for any creator and child: what the
-compiler emits, what the validator checks and what the SDK composes. No contract source changes for it.
+Status: in progress. The child-address computation, the in-transaction composition of a child's genesis, the
+deploy-then-call fold of its initializer and the creator's genesis replay are implemented and tested: the creating
+body requires the outputs of the child's category to be exactly the genesis its folded construction produces (see "The
+genesis replay" below). Found while building the SushiSwap BCH web layer, whose pairs are CREATE2 children of the
+factory. A SolidCash-level change for any creator and child: what the compiler emits, what the validator checks and
+what the SDK composes. No contract source changes for it.
 
 ## The gap
 
@@ -37,6 +38,9 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   that predicted a pair by hashing (`UniswapV2Library.pairFor`) look it up in the factory instead.
 
 ## Landed
+
+The bullets up to the oracle child describe the category check the genesis replay replaced; they are kept as the
+history of how it was measured. What a creating body checks now is the next section's.
 
 - The creating body's category check (`framed/master/child-category-check.ts`, `child-category-check.test.ts`): every
   output of `K` must carry an NFT, mint no fungible amount, sit at a 35-byte P2SH32 lock, and be one of the locks the
@@ -104,8 +108,69 @@ A CREATE2 child is an ordinary framed contract at its own address, as SolidCash'
   creator's constants (locks, heads, an output count that includes the oracle) and refuses a child whose locks
   differ by category; `fillFramedChildSlots` fills a creator's bundle with them
   (`child-block-oracle.test.ts`). The digest bullet above binds the outputs to the transaction's own `OP_RETURN`,
-  which the same composer writes, so a creation's records, oracle and per-lock multiplicity are still the
-  composer's: see the ledger's open item under "Block oracle hardening" (security-audit-2026-10-16.md).
+  which the same composer writes, so a creation's records, oracle and per-lock multiplicity were still the
+  composer's (the ledger's item under "Block oracle hardening", security-audit-2026-10-16.md). The genesis replay
+  closes it.
+
+## The genesis replay (2026-11-03, `fix/genesis-replay`)
+
+Whoever composes a creating transaction lays the child's genesis down, and a creation such as `createPair` is open to
+anyone. So the creating body no longer checks that the outputs of `K` sit at allowed locks: it requires them to be
+exactly the genesis its folded construction produces, output for output.
+
+- **The fold.** At compile time the creator folds the child's construction with the compiler's own deploy folder
+  (`tryFoldChildConstructor`, then `tryFoldFramedChildInitializer` for the call it folds): the constructor with its
+  state-variable initializers, the creator's own address as `msg.sender`, then the initializer over the creator's
+  argument expressions (`framed/child-genesis-replay.ts`, run by `FoldFramedCreate2Initializer`, attached to the
+  `create2` value). Each data record becomes bytes the compile fixes (its tag, constants, defaults) and values the
+  body computes (its own address, an initializer argument), encoded as the child's record stores them. For the
+  pair: `token0`/`token1` the sorted call arguments, `factory` the factory's own address, `unlocked = 1`, zeros
+  elsewhere. A construction the folder cannot reduce to that (a constructor guard, a collection write, an event, a
+  non-scalar field, a value the child computes from an argument) is refused at compile time by name; a creation from
+  a code value (`create2` over a state variable, as `TestFactory`) names no child the unit holds and is refused on
+  chain (the body emits `OP_0 OP_VERIFY`), with a compile warning.
+- **A fresh category.** The coin `K` is the outpoint of must be output 0 of its transaction (`OP_OUTPOINTINDEX`
+  of the origin input is 0), so the creating transaction spends `K:0` and is `K`'s genesis: no token of `K` exists
+  before it, and every token of `K` is an output the replay fixes. A coin at another output would name a txid whose
+  category an earlier genesis may have minted to the composer, who could keep a minting NFT of it beside the replay.
+- **Two chains.** The body folds every output of `K`, last first, into `SHA256(digest ++ capability ++ lock ++
+  commitment)` (`childGenesisChainsScript`; `childGenesisChain` in `@solidcash/utils` is the reference): the minting
+  NFTs into one chain, the rest into another. Each output of `K` must be a mutable or minting NFT (one capability
+  byte) with no fungible amount at a 35-byte lock, and both chains start from 32 zero bytes, so every link's preimage
+  reads one way: a chain started from nothing would let a composer who grinds `K` write the first link's digest and
+  the second item as one output in place of two (`child-category-check.test.ts` shows the merge). The masters' chain names no category
+  (a child's masters are constant-lock), so the deployment fills it as one 32-byte constant from the child's entry
+  locks and the masters a creation funds per lock (`childMastersDigest`). The other chain the body computes itself,
+  in the order a creation lays the outputs down: the oracle (a child that reads block.*: at `K`'s oracle lock, the
+  deployment-filled owner hash, fields unset), one empty head per sorted collection (at `K`'s entry lock of the
+  deployment-filled collection hash, 128 zero bytes), each record (at `K`'s record lock, the folded commitment), the
+  validators (as many as the deployment says, at `addrV(K)`, empty) and the authhead (at `K`'s authhead lock, naming
+  the lock of the coin `K` is the outpoint of). So an output of `K` that is added, dropped, doubled, moved, recommitted
+  or recapped changes a chain and is refused, and so does a creation that mints no child.
+- **Deployment constants.** `framedDeploy.framedChildConstants` gives `childLocks`, `childPool`, `childCollections`
+  and, for a child that reads block.*, `childBlockOracleOwner` (the 20-byte hash of the key its oracle names); a
+  deployment takes them as `DeployOptions` and `fillFramedChildSlots` fills a published bundle. A deployment refuses
+  a creator whose reserved collections or oracle slot do not match the child's, and one that replays a child with no
+  constants. The master-lock allow-list and its 26-slot capacity are gone: one digest names any number of locks.
+  Every creation must fund the pool the deployment states (`creates.pool`), as before.
+- **What the SDK lays down.** `childGenesisOutputs` already laid the genesis in this order; the one change is the
+  child's oracle, which is minted with its fields unset (a creator cannot know its creation's block), and which the
+  keeper fills from the next block. The folded-state `OP_RETURN` is still appended, and the body no longer reads it.
+- **Size.** The replay is far smaller than the allow-list it replaced (26 lock pushes, both byte orders of the record
+  and authhead covenants, eight head derivations): it uses the framework library's record and entry lock routines and
+  one 32-byte constant for the masters. The shipped `createPair` shard measured 8,837 B whole spend before and 6,823 B
+  after (`test-app-bch` compile of `/Code/sushi-port/contracts` at 898cdba).
+- **Not fixed by the replay.** The outputs' satoshi amounts are the composer's (a sub-dust output needs a miner to
+  include it). The folded initializer's own `require`s are not re-evaluated, as for every folded call: the replay
+  requires the state they would leave, and the SDK's derivation, which runs the initializer, refuses a creation they
+  refuse.
+- **Tests.** `child-category-check.test.ts` (solidc: the fold over a synthetic transaction, each mutation refused,
+  two outputs merged into one refused), `child-genesis-replay.test.ts` (mock: a pair-shaped creator refuses a forged
+  `token0`, `token1`, `totalSupply`, `factory`, `unlocked = 0`, `kLast`, an LP node in place of a master, a missing or
+  extra validator, a doubled or missing master, a foreign authhead owner and an origin coin that is not output 0; a
+  block.* child refuses two oracles, none, chosen fields and a foreign owner; a deployment refuses constants of
+  another child or none), and `test-app-bch` `AtomicPairCreateHostile.test.ts` (the shipped factory on a production
+  devnet, the same rewrites of the shipped pair's genesis).
 
 ### Landed: the category check
 
@@ -243,7 +308,7 @@ uses for `internalHelperLocks`. The sentinel route needs no compile ordering and
 **Lock membership is not enough.** A record at the right lock can still hold the wrong commitment, so the factory
 would mint a pair initialized with arbitrary tokens. The creator has to compute the folded `initialize` values and
 check the records' commitments (the `foldedStateInit` path), which is the part that makes this a genesis replay rather
-than a lock allow-list.
+than a lock allow-list. Done: see "The genesis replay".
 
 ## Seams measured for the in-transaction composition (2026-10-30)
 

@@ -76,20 +76,32 @@ export interface DeployOptions {
    */
   functionSplit?: FunctionSplitBundle;
   /**
-   * The entry locks of the child a creating contract mints, in the order its category check reserves them
-   * (docs/framed/CREATE2_IDENTITY.md). Only a creator's deployment needs them.
+   * The entry locks of the child a creating contract mints, in the order a creation mints their masters
+   * (docs/framed/CREATE2_IDENTITY.md, "The genesis replay"). Only a creator's deployment needs them; with `childPool`
+   * they give the chain over the child's masters the creator's replay requires. `framedDeploy.framedChildConstants`
+   * computes every child constant.
    */
   childLocks?: readonly Uint8Array[];
   /**
-   * How many outputs of the child's category a creation mints, when the child's entry locks are given: the creator's
-   * check counts them and refuses a transaction that mints any other number.
+   * The pool each creation of the child funds: masters per entry lock and validators. The creator's replay requires
+   * exactly that many, so every creation must state the same pool (`creates.pool`).
+   */
+  childPool?: { readonly masters: number; readonly validators: number };
+  /**
+   * How many outputs of the child's category a creation mints. A creator compiled with the genesis replay reserves no
+   * slot for it (the replay fixes every output); one compiled before it is filled with this.
    */
   childOutputCount?: number;
   /**
-   * The 20-byte hashes of the child's sorted collections, whose empty heads its genesis mints: the creator's check
-   * derives each entry covenant's lock from `K` and that hash.
+   * The 20-byte hashes of the child's sorted collections, whose empty heads its genesis mints: the creator's replay
+   * derives each head's lock from `K` and that hash.
    */
   childCollections?: readonly Uint8Array[];
+  /**
+   * The 20-byte hash of the key that updates the block oracle each creation of a child that reads block.* mints: the
+   * creator's replay requires the oracle to name it.
+   */
+  childBlockOracleOwner?: Uint8Array;
   /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for

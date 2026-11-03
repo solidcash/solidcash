@@ -225,7 +225,8 @@ describe('block-info oracle across the devnet lifecycle', () => {
       provider, fundingUtxo: await coin(3_000_000n), funder, changeAddress: encoded.address,
       threadCount: 1, validatorCount: 1, functionSplit: factory,
       childLocks: constants.childLocks, childCollections: constants.childCollections,
-      childOutputCount: constants.childOutputCount,
+      childOutputCount: constants.childOutputCount, childPool: constants.childPool,
+      ...(constants.childBlockOracleOwner === undefined ? {} : { childBlockOracleOwner: constants.childBlockOracleOwner }),
     });
     const caller = await coin(5_000_000n);
     const creation = await framedCall.callFramedEntry({
@@ -239,7 +240,9 @@ describe('block-info oracle across the devnet lifecycle', () => {
     expect(creation.accepted, refused).toBe(true);
 
     // The clock's category is the caller's coin. Its oracle was minted by the creating transaction, after the node
-    // started, and the node keeps it on the block the next transaction is mined into.
+    // started, with its fields unset (the factory's replay of the clock's genesis fixes the oracle's whole commitment,
+    // docs/framed/CREATE2_IDENTITY.md, "The genesis replay"), and the node keeps it on the block the next transaction
+    // is mined into.
     const clockCategory = caller.txid;
     const created = await rpc<{ height: number; timestamp: number }>('devnet.info');
     expect(await readCommitment(hre, clockCategory)).toEqual(pendingAfter(created));

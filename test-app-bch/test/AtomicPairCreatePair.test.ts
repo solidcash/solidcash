@@ -54,12 +54,14 @@ describe("UniswapV2Factory.createPair", () => {
       bundle: pair.bundle, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR,
       size: PAIR_POOL,
     }).getEntryLocks();
-    expect(childLocks.length).toBe(26);
+    // One lock per entry and per internal cut: since sushi-port 516e224/898cdba (no block clock) the pair has 21
+    // entries and 2 cuts.
+    expect(childLocks.length).toBe(pair.bundle.shards.length + pair.bundle.internalCuts.length);
 
     const childPool = resolveMasterPoolSize(PAIR_POOL);
     const { categoryId } = await deployStatefulContract(factory.artifact, [callerLock], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
-      threadCount: 1, validatorCount: 1, functionSplit: factory.bundle, childLocks,
+      threadCount: 1, validatorCount: 1, functionSplit: factory.bundle, childLocks, childPool,
       childCollections: childCollectionHashes(pair.artifact),
       childOutputCount: childGenesisOutputCount({
         artifact: pair.artifact, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,

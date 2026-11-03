@@ -8,14 +8,15 @@
  * computed, the entries and chunks it wrote, the events it emitted, the authhead at output 0, and, for a child that
  * reads block.*, its own block-info oracle.
  *
- * The creator's own code checks the child's outputs against the locks it embeds; this list is what a composer
- * places, and both work from the same artifacts (docs/framed/CREATE2_IDENTITY.md).
+ * The creator's own code requires the outputs of the child's category to be exactly this genesis, in this order
+ * (docs/framed/CREATE2_IDENTITY.md, "The genesis replay"); this list is what a composer places, and both work from
+ * the same artifacts.
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  bytesEqual, computeCollectionHash, hash256, sha256, validatorAddress,
+  UNSET_BLOCK_ORACLE_FIELDS, bytesEqual, computeCollectionHash, hash256, sha256, validatorAddress,
   type Artifact, type FunctionSplitBundle,
 } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
@@ -231,12 +232,15 @@ export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildG
       + '(`registerFramedCreatedChild`), or use a network that provides one',
     );
   }
+  // Its fields are unset, whatever the network's current block: the creator's replay fixes the oracle's whole
+  // commitment, and the oracle's keeper fills them from the next block on.
   const oracle = blockOracleGenesisOutput(
     artifact, categoryId, provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? dataNftAmount,
+    UNSET_BLOCK_ORACLE_FIELDS,
   );
   if (oracle !== undefined) outputs.push({ ...oracle, amount: satoshisAtLeastDust(oracle.amount, oracle) });
-  // The folded state's commitment: a tokenless OP_RETURN over the category outputs' locks and commitments, in the
-  // order the transaction lays them out.
+  // The folded state's digest: a tokenless OP_RETURN over the category outputs' locks and commitments, in the order
+  // the transaction lays them out. The creator's replay no longer reads it: it computes the genesis it requires.
   if (genesis !== undefined) {
     const carried = outputs.filter((output) => output.token !== undefined && output.token.category === categoryId);
     const parts = carried.map((output) => sha256(Uint8Array.from([...(output.to as Uint8Array),

@@ -1,151 +1,76 @@
 /**
- * A creating body's check of the outputs of the child's category `K` (docs/framed/CREATE2_IDENTITY.md).
+ * A creating body's replay of the child's genesis: the outputs of the child's category `K` (docs/framed/
+ * CREATE2_IDENTITY.md, "The genesis replay").
  *
- * The child's genesis is minted by the creator's own transaction, so what that transaction mints is the creator's to
- * refuse: an output carrying `K` must carry an NFT and no fungible amount at a 35-byte P2SH32 lock, and that lock must
- * be one the child's genesis names — the validator at `addrV(K)`, the data record's covenant, the authhead contract, or
- * a master at a lock the deployment filled in.
+ * The child's genesis is minted by the creator's own transaction, so what that transaction mints of `K` is the
+ * creator's to fix. Every output of `K` must be a mutable or minting NFT with no fungible amount at a 35-byte lock,
+ * and the outputs fold, last first, into two chains of `SHA256(digest ++ capability ++ lock ++ commitment)` (the
+ * reference is `childGenesisChain` in `@solidcash/utils`): the minting NFTs, which are the child's masters, and the
+ * rest. The creating body compares the first with the masters' chain its deployment filled in and the second with
+ * the chain it computes from `K`, its own address and the folded state, so an output of `K` that is added, dropped,
+ * doubled, moved to another lock or given another commitment changes a chain and is refused.
  *
- * Entry (bottom to top): `[K, addrV, recordLock, authheadLock, S0, S1, … S7]`, `K` in the chain order
- * `OP_OUTPOINTTXHASH` answers after `OP_REVERSEBYTES`. Exit: the same stack, unchanged.
+ * The capability byte and the lock have fixed widths and every link hashes a 32-byte digest before its item (the
+ * chains start from 32 zero bytes), so a link's preimage reads one way only: no sequence of outputs chains to the
+ * digest of another.
  */
 
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import { CHILD_LOCK_CAPACITY, childOutputCountSentinel } from '@solidcash/utils';
 
-const P2SH32_PREFIX = Uint8Array.of(0xaa, 0x20);
-const P2SH32_SUFFIX = Uint8Array.of(0x87);
 const push = (value: number): number[] => [...encodeDataPush(bigIntToVmNumber(BigInt(value)))];
 
 /**
- * The check's script, over the creator's fixed lock slots and any entry-covenant locks it derives from `K` at run
- * time (`extraLocks`), which a child's sorted collections' empty heads sit at.
+ * The fold of the transaction's outputs of `K` into the two chains.
+ *
+ * Entry: `K` at depth `kDepth` (0 is the top), in the order the token introspection answers. Exit: the entry stack
+ * with `[others, masters]` pushed, the masters' chain on top. The loop runs over every output, last first, and keeps
+ * both chains on the alternate stack while it runs; it leaves the alternate stack as it found it.
  */
-export function childCategoryCheckScript(extraLocks = 0): number[] {
-  // K's depth at every category comparison: the split copy and the original category, the loop's index, the lock
-  // slots and the three derived locks. The membership, count and digest loops keep the same shape, so one constant
-  // serves all three.
-  const kDepth = 3 + CHILD_LOCK_CAPACITY + extraLocks + 3;
-  // Each allowed lock's depth once a comparison has duplicated the output's lock. Top-first under the loop index:
-  // the fixed slots and the derived entry locks, then the authhead, the record lock and the validator's address;
-  // `K` sits past them and is the category, not a lock.
-  const allowedDepths: readonly number[] = [
-    ...Array.from({ length: CHILD_LOCK_CAPACITY + extraLocks }, (_unused, slot) => 3 + slot),
-    3 + CHILD_LOCK_CAPACITY + extraLocks,
-    4 + CHILD_LOCK_CAPACITY + extraLocks,
-    5 + CHILD_LOCK_CAPACITY + extraLocks,
-  ];
-  const script: number[] = [
+export function childGenesisChainsScript(kDepth: number): number[] {
+  if (!Number.isInteger(kDepth) || kDepth < 0) throw new Error(`K's depth is a stack depth: got ${kDepth}`);
+  return [
+    // Both chains start from 32 zero bytes (`childGenesisChainStart`): the minting chain under the rest.
+    Opcodes.OP_0, ...push(32), Opcodes.OP_NUM2BIN, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK,
     Opcodes.OP_TXOUTPUTCOUNT,
     Opcodes.OP_BEGIN,
     Opcodes.OP_1SUB,
-    Opcodes.OP_DUP,
-    Opcodes.OP_OUTPUTTOKENCATEGORY,
-    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(kDepth), Opcodes.OP_PICK,
-    Opcodes.OP_EQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_DROP,
-    // No fungible amount: a minted amount of `K` at creation is unbacked liquidity.
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENAMOUNT, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY,
-    // An NFT: the capability byte follows the category.
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY, Opcodes.OP_SIZE, Opcodes.OP_NIP,
-    ...push(32), Opcodes.OP_GREATERTHAN, Opcodes.OP_VERIFY,
-    // A 35-byte P2SH32 lock.
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE, Opcodes.OP_SIZE, Opcodes.OP_NIP,
-    ...push(35), Opcodes.OP_NUMEQUALVERIFY,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE, ...push(2), Opcodes.OP_SPLIT, Opcodes.OP_SWAP,
-    ...encodeDataPush(P2SH32_PREFIX), Opcodes.OP_EQUALVERIFY, Opcodes.OP_DROP,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE, ...push(34), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
-    ...encodeDataPush(P2SH32_SUFFIX), Opcodes.OP_EQUALVERIFY,
-    // The lock is one the child's genesis names.
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE,
-    Opcodes.OP_0, Opcodes.OP_TOALTSTACK,
-  ];
-  for (const depth of allowedDepths) {
-    script.push(
-      Opcodes.OP_DUP, ...push(depth), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
-      Opcodes.OP_FROMALTSTACK, Opcodes.OP_BOOLOR, Opcodes.OP_TOALTSTACK,
-    );
-  }
-  script.push(
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_VERIFY,
-    Opcodes.OP_DROP, // the output's lock, read by the comparisons
-    Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_ENDIF,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_ENDIF,
-    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL,
-    Opcodes.OP_DROP,
-  );
-  // The transaction mints exactly the outputs of `K` the deployment states: a per-category count in the second loop,
-  // kept on the altstack (the membership loop's flag is gone). The count's push is the deployment's placeholder.
-  script.push(
-    Opcodes.OP_0, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
-    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
+    // A tokenless output has no category to split; a token's is 32 bytes and its capability byte if any.
+    Opcodes.OP_SIZE, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_IF,
-    // The category is compared through a copy, as the membership loop does, so `K` sits at `K_DEPTH` in every loop;
-    // the original stays for the true branch to drop before it reads the loop index.
-    Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(kDepth), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_SWAP,
+    // `[i, capability, category]`: K sits three items deeper than at the loop's entry.
+    ...push(kDepth + 3), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
     Opcodes.OP_IF,
-    Opcodes.OP_DROP,
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP,
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP, Opcodes.OP_ENDIF,
-    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
-    Opcodes.OP_FROMALTSTACK, ...childOutputCountSentinel(), Opcodes.OP_BIN2NUM,
-    Opcodes.OP_NUMEQUALVERIFY,
-  );
-  // The folded state's digest, folded in the order the outputs sit in the transaction.
-  script.push(
-    Opcodes.OP_0, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
-    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
+    // A mutable or minting NFT: one capability byte. An immutable NFT or a fungible-only output of `K` carries none.
+    Opcodes.OP_SIZE, Opcodes.OP_1, Opcodes.OP_NUMEQUALVERIFY,
+    // No fungible amount: a minted amount of `K` at creation is unbacked supply.
+    Opcodes.OP_OVER, Opcodes.OP_OUTPUTTOKENAMOUNT, Opcodes.OP_NOT, Opcodes.OP_VERIFY,
+    // A 35-byte lock, so `capability ++ lock ++ commitment` parses one way.
+    Opcodes.OP_OVER, Opcodes.OP_OUTPUTBYTECODE, Opcodes.OP_SIZE, ...push(35), Opcodes.OP_NUMEQUALVERIFY,
+    // `[i, capability, lock]` -> `[i, item, minting]`.
+    Opcodes.OP_OVER, Opcodes.OP_2, Opcodes.OP_EQUAL,
+    Opcodes.OP_ROT, Opcodes.OP_ROT, Opcodes.OP_CAT,
+    Opcodes.OP_2, Opcodes.OP_PICK, Opcodes.OP_OUTPUTTOKENCOMMITMENT, Opcodes.OP_CAT,
+    Opcodes.OP_SWAP,
     Opcodes.OP_IF,
-    // The same category copy and drop as the count loop: `K` is read at `K_DEPTH`.
-    Opcodes.OP_DUP, ...push(32), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...push(kDepth), Opcodes.OP_PICK, Opcodes.OP_EQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_DROP,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCOMMITMENT,
-    Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_OUTPUTBYTECODE,
-    Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256,
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_CAT, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP,
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP,
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_SHA256,
-  );
-  // The tokenless `OP_RETURN <digest>` output the SDK appends carries the digest.
-  // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
-  script.push(
-    Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
-    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(32), Opcodes.OP_GREATERTHANOREQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_DROP,
+    // The masters' chain, under the other on the alternate stack.
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_ROT, Opcodes.OP_CAT, Opcodes.OP_SHA256,
+    Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK,
     Opcodes.OP_ELSE,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_DROP, // another category's capability byte
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_DROP, // a tokenless output's empty category
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_DUP, Opcodes.OP_NOT,
+    Opcodes.OP_UNTIL,
     Opcodes.OP_DROP,
-    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE,
-    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, ...push(34), Opcodes.OP_NUMEQUAL,
-    Opcodes.OP_IF,
-    Opcodes.OP_DUP, ...push(2), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
-    ...encodeDataPush(Uint8Array.of(0x6a, 0x20)), Opcodes.OP_EQUALVERIFY,
-    ...push(2), Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_TOALTSTACK,
-    Opcodes.OP_ELSE, Opcodes.OP_DROP,
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_ENDIF,
-    Opcodes.OP_DUP, Opcodes.OP_NOT, Opcodes.OP_UNTIL, Opcodes.OP_DROP,
-    Opcodes.OP_FROMALTSTACK, Opcodes.OP_EQUALVERIFY,
-  );
-  return script;
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK,
+  ];
 }

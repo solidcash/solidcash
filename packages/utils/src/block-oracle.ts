@@ -66,6 +66,14 @@ export interface BlockOracleCommitmentFields {
   coinbase: Uint8Array;
 }
 
+/**
+ * The fields of an oracle no keeper has updated yet: what a created child's genesis mints, so the creating body can
+ * fix the oracle's whole commitment (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
+ */
+export const UNSET_BLOCK_ORACLE_FIELDS: Readonly<BlockOracleCommitmentFields> = Object.freeze({
+  number: 0n, timestamp: 0n, difficulty: 0n, size: 0n, totalFees: 0n, coinbase: new Uint8Array(),
+});
+
 function encodeField(value: bigint): Uint8Array {
   if (value < 0n || value >= 2n ** 32n) {
     throw new Error(`block oracle field ${value} does not fit in a uint32`);

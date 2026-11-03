@@ -6,9 +6,9 @@ Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery 
 Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
 KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
 fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1 (CRITICAL) to ORACLE-4
-are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, which also records an open
-item about a creation's genesis; ORACLE-6 on `fix/blockhash-ring` removes the keeper baton (CRYPTO-4, ORACLE-5); see
-"Block oracle hardening (2026-11-03)" at the end.
+are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, and GENESIS-1, the item
+that branch recorded about a creation's genesis, on `fix/genesis-replay`; ORACLE-6 on `fix/blockhash-ring` removes the
+keeper baton (CRYPTO-4, ORACLE-5); see "Block oracle hardening (2026-11-03)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1079,18 +1079,34 @@ master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPair
   a reader from one set of constants, each child reading its own oracle; a creation with a second oracle and a call
   minting a look-alike beside a read are refused), `packages/testing/test/block-oracle.test.ts` (devnet: the keeper
   finds and keeps a child's oracle minted after the node started, and the child reads it).
-- Open, found while landing the children fix (source-traced, not run on the VM; HIGH for a child any caller may
-  create, as `createPair` is). The creator's check bounds which locks the outputs of `K` sit at and how many there are
-  in all, not how many sit at each lock or what they commit to. Its digest loop compares the outputs' digest with the
-  `OP_RETURN` the same transaction carries, so it binds the two but not the commitments to anything the creator
-  computed (`child-category-check.ts`; CREATE2_IDENTITY.md, "Lock membership is not enough"), and no validator
-  weighs `K`, whose category no input carries. So whoever composes a creating transaction chooses the child's
-  genesis: its records' commitments, which outputs it omits or doubles in place of others (its validator, a
-  master), and now its oracle: the owner key, the starting fields, none, or two. A pair created that way can start
-  from forged state or read a clock its creator controls (its price accumulators). Fix direction: the genesis
-  replay the CREATE2 note names (the creator checks each record's commitment against the folded state it computes),
-  per-lock counts among the creator's deployment constants (one oracle for a child that reads block.*), and the
-  oracle's owner hash as one more constant, with unset starting fields.
+- **GENESIS-1** (HIGH for a child any caller may create, as `createPair` is; found while landing the children fix,
+  fixed on `fix/genesis-replay`). The creator's check bounded which locks the outputs of `K` sat at and how many
+  there were in all, not how many sat at each lock or what they committed to. Its digest loop compared the outputs'
+  digest with the `OP_RETURN` the same transaction carried, so it bound the two but not the commitments to anything
+  the creator computed (CREATE2_IDENTITY.md, "Lock membership is not enough"), and no validator weighs `K`, whose
+  category no input carries. So whoever composed a creating transaction chose the child's genesis: its records'
+  commitments (a wrong token, unbacked `totalSupply`, `unlocked = 0`, which bricks a pair), which outputs it omitted
+  or doubled in place of others (its validator, a master, an LP node at a collection's lock in place of a spare
+  master), and its oracle: the owner key, the starting fields, none, or two. Fixed by the genesis replay
+  (CREATE2_IDENTITY.md, "The genesis replay"): the creating body folds every output of `K` into two chains and
+  requires the minting NFTs' to equal the child's masters as its deployment filled them (entry locks and pool), and
+  the rest's to equal the genesis it computes from `K`, its own address and its folded construction (constructor,
+  state-variable initializers, the folded initializer over its own arguments): the oracle when the child reads
+  block.* (owner hash a deployment constant, fields unset), each empty head, each record's exact commitment, the
+  validators the deployment counts, and the authhead naming the creation's own coin. Both chains start from 32 zero
+  bytes, so no composer can write two outputs as one; and the creation's coin must be output 0 of its transaction, so
+  `K` is minted by the creating transaction alone (a coin at another output may name a category an earlier genesis
+  minted to the composer, which the earlier check did not refuse either). Tests:
+  `packages/solidc/test/framed/master/child-category-check.test.ts` (VM: the fold over a synthetic transaction),
+  `packages/solidcash/test/framed/deploy/child-genesis-replay.test.ts` (mock: a pair-shaped creator refuses a forged
+  `token0`, `token1`, `totalSupply`, `factory`, `unlocked = 0` and `kLast`, an LP node in place of a master, a missing
+  or doubled validator, a doubled or missing master, a foreign authhead owner and an origin coin that is not output 0;
+  a block.* child refuses two oracles, none, chosen fields and a foreign owner; the honest creations are accepted),
+  `test-app-bch`
+  `AtomicPairCreateHostile.test.ts` (the shipped `UniswapV2Factory.createPair` on a production-consensus devnet: the
+  same rewrites of the shipped pair's genesis refused, the honest one accepted). Not covered: the outputs' satoshi
+  amounts (a sub-dust output needs a miner to include it), and the folded initializer's own `require`s, which the
+  replay does not re-evaluate (it requires the state they would leave; the SDK refuses a creation they refuse).
 - **ORACLE-5** (HIGH; framed contracts that read `blockhash` and were deployed with a keeper key; found by reading,
   2026-11-03). The CRYPTO-4 keeper baton holds a minting NFT of the contract's category at a P2SH32 lock with a 162-byte
   redeem, so it passes the category-only container covenant's authority test (`bindMintingAuthorityLock()`: a P2SH32

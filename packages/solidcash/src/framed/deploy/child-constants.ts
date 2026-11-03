@@ -1,21 +1,25 @@
 /**
- * The constants a creator's deployment fills for the child it creates (docs/framed/CREATE2_IDENTITY.md).
+ * The constants a creator's deployment fills for the child it creates (docs/framed/CREATE2_IDENTITY.md, "The genesis
+ * replay").
  *
- * A creating entry checks every output of the new child's category `K` against the child's entry locks, the empty
- * heads of its sorted collections and the number of outputs of `K` its genesis mints. Those are facts of the child's
- * compiled artifact and of the pool each creation funds, the same for every category the child is created as: a
- * child's masters are constant-lock, and one that reads block.* derives its own oracle's lock from its token, so its
- * genesis mints that oracle at the lock `K` gives and the count includes it. They are computed once, here, and filled
- * into the creator at its deployment (`DeployOptions.childLocks`, `childCollections`, `childOutputCount`), or into
- * its published bundle with `fillFramedChildSlots`.
+ * A creating entry requires the outputs of the new child's category `K` to be exactly the child's genesis. It computes
+ * most of it from `K`, its own address and the folded state; what its compile cannot know are facts of the child's
+ * compiled artifact and of the pool each creation funds, the same for every category the child is created as: the
+ * child's entry locks (its masters are constant-lock) with how many masters and validators a creation funds, the
+ * hashes of its sorted collections, and, for a child that reads block.*, the key its own oracle names. They are
+ * computed once, here, and filled into the creator at its deployment (`DeployOptions.childLocks`, `childPool`,
+ * `childCollections`, `childBlockOracleOwner`), or into its published bundle with `fillFramedChildSlots`.
  */
 
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { bytesEqual, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
+import { bytesEqual, hash160, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { FunctionArgument } from '../../Argument.js';
-import { patchChildCollectionSentinels, patchChildLockSentinels, patchChildOutputCount } from './child-locks.js';
+import {
+  childGenesisReservation, patchChildCollectionSentinels, patchChildGenesisSlots, patchChildLockSentinels,
+  patchChildOutputCount,
+} from './child-locks.js';
 import { childCollectionHashes, childGenesisOutputCount } from './genesis-outputs.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize, type MasterPoolSize } from './pool.js';
@@ -53,6 +57,11 @@ export interface FramedChildConstantsOptions {
   readonly ownerLock?: Uint8Array;
   /** The validator program the child is deployed with; the toolchain's own by default. */
   readonly validatorProgram?: Uint8Array;
+  /**
+   * The key that updates the block oracle each creation of a child that reads block.* mints. Unset, the provider's own
+   * key on a simulator or devnet; a live network names one. Every creation must name the same key.
+   */
+  readonly blockOracleOwnerPublicKey?: Uint8Array;
 }
 
 /** The constants a creator's deployment fills, in the shape `DeployOptions` takes them, and the pool they assume. */
@@ -63,8 +72,10 @@ export interface FramedChildConstants {
   readonly childCollections: readonly Uint8Array[];
   /** How many outputs of the child's category a creation mints, its own block oracle included when it reads one. */
   readonly childOutputCount: number;
-  /** The pool each creation funds: what `childOutputCount` counts, and what `creates.pool` must name. */
+  /** The pool each creation funds: what the creator's replay requires, and what `creates.pool` must name. */
   readonly childPool: MasterPoolSize;
+  /** For a child that reads block.*, the 20-byte hash of the key its oracle names, which every creation must mint. */
+  readonly childBlockOracleOwner?: Uint8Array;
 }
 
 /** Two categories no creation mints, at which the child's locks must agree. */
@@ -104,11 +115,33 @@ export function framedChildConstants(options: FramedChildConstantsOptions): Fram
     ...(options.constructorArgs === undefined ? {} : { constructorArgs: options.constructorArgs }),
     ...(options.initializer === undefined ? {} : { initializer: options.initializer }),
   });
-  return { childLocks, childCollections: childCollectionHashes(artifact), childOutputCount, childPool };
+  let childBlockOracleOwner: Uint8Array | undefined;
+  if (artifact.usesBlockOracle === true) {
+    const owner = options.blockOracleOwnerPublicKey ?? provider.blockOracleOwnerPublicKey;
+    if (owner === undefined) {
+      throw new FramedChildConstantsError(
+        `"${artifact.contractName}" reads block.*, so each creation mints its own block oracle, which names the key `
+        + 'that updates it: name one (`blockOracleOwnerPublicKey`), or use a network that provides one',
+      );
+    }
+    childBlockOracleOwner = hash160(owner);
+  }
+  return {
+    childLocks, childCollections: childCollectionHashes(artifact), childOutputCount, childPool,
+    ...(childBlockOracleOwner === undefined ? {} : { childBlockOracleOwner }),
+  };
 }
 
 /** The slots of one creator program, filled as its deployment fills them. */
 function fillProgram(artifact: Artifact, constants: FramedChildConstants): Artifact {
+  if (childGenesisReservation(artifact).replays) {
+    return patchChildGenesisSlots(artifact, {
+      locks: constants.childLocks,
+      pool: constants.childPool,
+      collections: constants.childCollections,
+      ...(constants.childBlockOracleOwner === undefined ? {} : { blockOracleOwner: constants.childBlockOracleOwner }),
+    });
+  }
   return patchChildCollectionSentinels(
     patchChildOutputCount(patchChildLockSentinels(artifact, constants.childLocks), constants.childOutputCount),
     constants.childCollections,

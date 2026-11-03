@@ -74,7 +74,7 @@ describe("removeLiquidity on atomically created pairs", () => {
     const factoryDeployed = await deployStatefulContract(factory.artifact, [holderLock], {
       provider, fundingUtxo: funding, funder: holder.unlockP2PKH(), changeAddress: holderAddress,
       threadCount: resolveMasterPoolSize().masters, validatorCount: resolveMasterPoolSize().validators,
-      functionSplit: factory.bundle, childLocks,
+      functionSplit: factory.bundle, childLocks, childPool: resolveMasterPoolSize(PAIR_POOL),
       childCollections: childCollectionHashes(pair.artifact),
       childOutputCount: childGenesisOutputCount({
         artifact: pair.artifact, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,

@@ -348,9 +348,11 @@ import {
   dropFirstPushScript, dropLastPushScript, dropPrefix, readFrameHeaderScript, splitFirstPushScript,
 } from '../framed/master/witness-reader.js';
 import { childAddressFromProgramScript, validatorProgramScript } from '../framed/master/child-address.js';
-import { childCategoryCheckScript } from '../framed/master/child-category-check.js';
+import { childGenesisChainsScript } from '../framed/master/child-category-check.js';
+import type { FramedChildGenesisReplay, FramedGenesisRecordPart } from '../framed/child-genesis-replay.js';
 import {
-  AUTHHEAD_BODY, CHILD_COLLECTION_CAPACITY, CHILD_LOCK_CAPACITY, childCollectionSentinel, childLockSentinel,
+  AUTHHEAD_BODY, childCollectionSentinel, childMastersDigestSentinel, childOracleOwnerSentinel,
+  childValidatorCountSentinel, encodeBlockOracleCommitment, UNSET_BLOCK_ORACLE_FIELDS,
 } from '@solidcash/utils';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
@@ -18861,9 +18863,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
-  /** The static parts of an entry covenant around its category and collection hash, built once per compile. */
-  private entryCovenantTemplate?: { readonly a: Uint8Array; readonly b: Uint8Array; readonly c: Uint8Array };
-
   /**
    * The running frame's child address, `addrV(K)` of the genesis-eligible coin its transaction carries.
    *
@@ -18875,7 +18874,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the frame kind and the three references. The validator program then comes from that input's redeem script, and
    * hashing `push(pin(K)) ++ program` leaves the address the child's validator settles at.
    */
-  private emitChildAddress(locationData: SingleLocationData): void {
+  private emitChildAddress(node: NullaryOpNode, locationData: SingleLocationData): void {
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_INPUTBYTECODE, locationData);
     this.emit(bytecodeToScript(splitFirstPushScript()), locationData);
@@ -18893,90 +18892,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, locationData); // [kind, program, origin]
     this.emit(Op.OP_BIN2NUM, locationData);
     this.emit(bytecodeToScript(Uint8Array.from(childAddressFromProgramScript('stack'))), locationData);
-    // The child's genesis is minted by this transaction, so what it mints is this frame's to refuse: every output of
-    // category `K` must carry an NFT and no fungible amount, at a 35-byte P2SH32 lock. A fungible amount minted at
-    // creation is unbacked liquidity, and a lock that is not a covenant holds no code the child's validator names.
-    this.emitChildGenesisCheck(locationData);
+    // The child's genesis is minted by this transaction, so what it mints of the child's category is this frame's to
+    // fix: exactly the genesis the folded construction lays down.
+    this.emitChildGenesisCheck(node.framedGenesis, locationData);
     this.pushToStack('(value)');
   }
 
   /**
-   * One collection's empty-head lock, derived from `K` on the stack: `P2SH32(entryCovenant(K, collection))`.
-   *
-   * The covenant's bytes are static around two values: the chain-order category and the 20-byte collection hash.
-   * A template built with placeholders splits into those three parts once, and each slot's hash sentinel is patched
-   * at deployment, so the check derives the child's entry-head locks from `K` without knowing the child at compile
-   * time. Entry `[..., authhead, record, K, address, kind]`, exit with the lock pushed on top.
-   */
-  private entryCovenantParts(): { readonly a: Uint8Array; readonly b: Uint8Array; readonly c: Uint8Array } {
-    if (this.entryCovenantTemplate !== undefined) return this.entryCovenantTemplate;
-    const category = new Uint8Array(32).fill(0x5a);
-    const hash = new Uint8Array(20).fill(0x3c);
-    const templated = scriptToBytecode(buildEntryNftCovenantScript(category, hash));
-    const find = (needle: Uint8Array): number => {
-      for (let index = 0; index + needle.length <= templated.length; index += 1) {
-        if (needle.every((byte, offset) => templated[index + offset] === byte)) return index;
-      }
-      return -1;
-    };
-    const categoryAt = find(Uint8Array.from([0x20, ...category]));
-    const hashAt = find(Uint8Array.from([0x14, ...hash]));
-    if (categoryAt < 0 || hashAt < 0 || hashAt < categoryAt) {
-      throw new SolidcDiagnosticError(
-        'FRAMED_CODEGEN_UNAVAILABLE',
-        'an entry covenant does not carry its category and collection hash where the creator\'s check reads them',
-        { requested: 'framed', reason: 'entry-covenant-template' },
-      );
-    }
-    this.entryCovenantTemplate = {
-      // Each part keeps the push prefix of the value the runtime joins in after it.
-      a: templated.slice(0, categoryAt + 1),
-      b: templated.slice(categoryAt + 33, hashAt + 1),
-      c: templated.slice(hashAt + 21),
-    };
-    return this.entryCovenantTemplate;
-  }
-
-  /**
-   * Pushes the empty-head lock of the collection-hash slot `slot`, derived from the category at `pickDepth`.
-   *
-   * Both byte orders of the category are derived: the transaction's outpoint and its token categories carry the
-   * category in the same order on any VM, but a deployment's own locks are built from the display-order txid, so
-   * which of the two the covenant stores depends on the VM's order. Deriving both makes the check accept the head
-   * either way, and both candidates are the same collection's covenant.
-   */
-  private emitEntryHeadLock(
-    pickDepth: number, slot: number, reversed: boolean, locationData: SingleLocationData,
-  ): void {
-    const { a, b, c } = this.entryCovenantParts();
-    this.emit(childCollectionSentinel(slot), locationData); // [hash, earlier locks, authhead, record, address, K, kind]
-    this.emit(encodeInt(BigInt(pickDepth)), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    if (reversed) this.emit(Op.OP_REVERSEBYTES, locationData);
-    this.emit(a, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData); // a ++ category
-    this.emit(b, locationData);
-    this.emit(Op.OP_CAT, locationData); // a ++ category ++ b
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData); // ... ++ hash
-    this.emit(c, locationData);
-    this.emit(Op.OP_CAT, locationData); // the entry covenant
-    this.emit(Op.OP_HASH256, locationData);
-    this.emit(Uint8Array.of(0xaa, 0x20), locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(Op.OP_CAT, locationData);
-    this.emit(Uint8Array.of(0x87), locationData);
-    this.emit(Op.OP_CAT, locationData);
-  }
-
-  /**
-   * `[K, ...]` -> `[authhead, K, ...]`: the authhead lock from the category copy on top.
-   *
-   * The pin is `push(K ++ MUTABLE)` before the authhead body; the helper consumes nothing below its category copy.
+   * `[K]` -> `[lock]`: the authhead lock of the category on top, P2SH32 of `push(K ++ MUTABLE) ++ AUTHHEAD_BODY`.
    */
   private emitAuthheadLock(locationData: SingleLocationData): void {
-    this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_1, locationData);
     this.emit(Op.OP_CAT, locationData); // pin
     this.emit(Uint8Array.of(0x21), locationData);
@@ -18984,7 +18909,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData); // push(pin)
     this.emit(AUTHHEAD_BODY, locationData);
     this.emit(Op.OP_CAT, locationData); // the redeem script
-    this.emit(Op.OP_NIP, locationData); // K is no part of the lock
     this.emit(Op.OP_HASH256, locationData);
     this.emit(Uint8Array.of(0xaa, 0x20), locationData);
     this.emit(Op.OP_SWAP, locationData);
@@ -18993,79 +18917,194 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
   }
 
+  /** Copies the tracked `slot` to the top. */
+  private emitPickOf(slot: string, locationData: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(value)');
+  }
+
+  /** `[a, b]` -> `[a ++ b]`, tracked. */
+  private emitCatTracked(locationData: SingleLocationData): void {
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+  }
+
   /**
-   * The creating body's check of the outputs of category `K` (docs/framed/CREATE2_IDENTITY.md).
+   * The creating body's replay of the child's genesis (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
    *
-   * Entry `[..., address]`, exit `[..., address]`. `K` is recomputed from the frame's own block and laid beneath the
-   * address, then the record's covenant lock and the authhead's lock are derived from it and the child's master-lock
-   * sentinels are pushed. `childCategoryCheckScript()` inspects every output of the transaction against that set and
-   * leaves the stack as it found it.
+   * Entry and exit `[..., kind, address]`, two items the model has not counted yet. The transaction's outputs of the
+   * child's category `K` fold into two chains (`childGenesisChainsScript`): the minting NFTs must chain to the
+   * child's masters as the deployment filled them in, and the rest must chain to the genesis this body computes, in
+   * the order a creation lays them down, last output first:
+   *
+   * - the child's block-info oracle when it reads block.*, at the lock the oracle covenant gives `K`, naming the owner
+   *   the deployment filled in, its fields unset;
+   * - one empty head per sorted collection, at the entry covenant of `K` and the collection's deployment-filled hash;
+   * - each data record at `K`'s record covenant, its commitment the folded state: bytes the compile fixed and the
+   *   values this body computes (its own address as the constructor's `msg.sender`, the initializer's arguments);
+   * - as many validators as the deployment says a creation funds, at `addrV(K)`, empty;
+   * - the authhead at `K`'s authhead contract, naming the lock of the coin `K` is the outpoint of.
+   *
+   * A creation from a code value names no child this unit holds, so no genesis the body can replay: it is refused.
    */
-  private emitChildGenesisCheck(locationData: SingleLocationData): void {
+  private emitChildGenesisCheck(
+    genesis: FramedChildGenesisReplay | undefined, locationData: SingleLocationData,
+  ): void {
+    if (genesis === undefined) {
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_VERIFY, locationData);
+      return;
+    }
+    const entryDepth = this.stack.length;
+    const KIND = '(child frame kind)';
+    const ADDRESS = '(child address)';
+    const OWNER = '(child authhead owner)';
+    const CATEGORY = '(child category)';
+    const RECORD_PREFIX = '(child record prefix)';
+    const OTHERS = '(child genesis chain)';
+    const EXPECTED = '(child expected chain)';
+    this.pushToStack(KIND);
+    this.pushToStack(ADDRESS);
+    // `K` and the lock of the coin `K` is the outpoint of: the frame's origin input.
     this.emit(Op.OP_INPUTINDEX, locationData);
     this.emit(Op.OP_INPUTBYTECODE, locationData);
     this.emit(bytecodeToScript(splitFirstPushScript()), locationData);
     this.emit(Op.OP_DROP, locationData);
     this.emit(bytecodeToScript(readFrameHeaderScript()), locationData); // [kind, caller, origin, validatorRef, rest]
-    this.emit(Op.OP_DROP, locationData); // rest
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_ROLL, locationData); // origin on top
-    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(Op.OP_2DROP, locationData); // rest and validatorRef
     this.emit(Op.OP_NIP, locationData); // caller
-    this.emit(Op.OP_DROP, locationData); // validator reference, unused here
-    this.emit(Op.OP_DROP, locationData); // frame kind
-    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_NIP, locationData); // kind, leaving [origin]
     this.emit(Op.OP_BIN2NUM, locationData);
-    this.emit(Op.OP_OUTPOINTTXHASH, locationData); // [K, address, kind], in the provider's display order
-    // Laid beneath the address, which is the check's first pair: `[K, addrV, …]`.
-    this.emit(Op.OP_SWAP, locationData); // [address, K, kind]
-    // The record lock, from a copy of K (depth 1 under the address): the covenant takes the category in chain order.
-    this.emit(Op.OP_1, locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record, K, address, kind]
-    // The authhead lock: P2SH32 of `push(pin(K)) ++ AUTHHEAD_BODY`. K is two deep now, under the record and the
-    // address.
-    this.emit(Op.OP_2, locationData);
-    this.emit(Op.OP_PICK, locationData); // K
-    this.emitAuthheadLock(locationData); // [authhead, record, K, address, kind]
-    // The record's and the authhead's other byte order. A deployment's locks are built from the display-order txid,
-    // and which order the covenant stores is the VM's; these sit above the base authhead so the check's extra lock
-    // slots stay one contiguous block under its sentinels.
-    this.emit(Op.OP_3, locationData);
-    this.emit(Op.OP_PICK, locationData); // K, under the authhead and the record
-    this.emit(Op.OP_REVERSEBYTES, locationData);
-    this.emitP2sh32FromCovenant(buildDataNftCovenantScript, locationData); // [record', authhead, record, K, address, kind]
-    this.emit(Op.OP_4, locationData);
-    this.emit(Op.OP_PICK, locationData); // K, under the record', the authhead and the record
-    this.emit(Op.OP_REVERSEBYTES, locationData);
-    this.emitAuthheadLock(locationData); // [authhead', record', authhead, record, K, address, kind]
-    // Each sorted collection's empty head is minted at genesis at its entry covenant's lock, which takes the
-    // category `K`; the check accepts each one, in both byte orders of it and against the slot's
-    // deployment-filled collection hash.
-    const heads = 2 * CHILD_COLLECTION_CAPACITY;
-    for (let slot = 0; slot < CHILD_COLLECTION_CAPACITY; slot += 1) {
-      for (let variant = 0; variant < 2; variant += 1) {
-        this.emitEntryHeadLock(6 + slot * 2 + variant, slot, variant === 1, locationData);
+    // The coin is output 0 of its transaction, so this transaction spends `K:0`, which is what makes `K` a category
+    // it mints: no token of `K` exists before it, and every one it mints is an output the replay fixes. A coin at
+    // another output would name a txid whose category an earlier genesis may have minted to the composer.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPOINTINDEX, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_OUTPOINTTXHASH, locationData); // [owner, K]
+    this.pushToStack(OWNER);
+    this.pushToStack(CATEGORY);
+    // The values the records take from this body, each encoded as the child's record stores it. A folded value is a
+    // copy of the creator's expression, read without consuming what it names.
+    const valueSlots = new Map<FramedGenesisRecordPart, string>();
+    genesis.records.forEach((record, recordIndex) => record.forEach((part, partIndex) => {
+      if (part.kind !== 'value') return;
+      this.scopeDepth += 1;
+      this.visit(cloneNode(part.expression));
+      this.scopeDepth -= 1;
+      this.emitPushdataEncode(part.type, locationData);
+      const slot = `(child record ${recordIndex} value ${partIndex})`;
+      this.stack[0] = slot;
+      valueSlots.set(part, slot);
+    }));
+    if (genesis.records.length > 0) {
+      // `MUTABLE ++ recordLock(K)`, which every record's item starts with.
+      this.emit(Uint8Array.of(0x01), locationData);
+      this.pushToStack('(value)');
+      this.emitPickOf(CATEGORY, locationData);
+      this.emitDataNftLbc(locationData);
+      this.emitCatTracked(locationData);
+      this.stack[0] = RECORD_PREFIX;
+    }
+    // The transaction's outputs of `K`: [others, masters].
+    this.emit(bytecodeToScript(Uint8Array.from(childGenesisChainsScript(this.getStackIndex(CATEGORY)))), locationData);
+    this.pushToStack(OTHERS);
+    this.pushToStack('(value)');
+    this.emit(childMastersDigestSentinel(), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack();
+    // The rest, as this body expects them, from the chains' start (`childGenesisChainStart`).
+    this.emit([Op.OP_0, encodeInt(32n), Op.OP_NUM2BIN], locationData);
+    this.pushToStack(EXPECTED);
+    const link = (): void => {
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_SHA256, locationData);
+      this.popFromStack(2);
+      this.pushToStack(EXPECTED);
+    };
+    const mutableAt = (lockOfCategory: () => void): void => {
+      this.emit(Uint8Array.of(0x01), locationData);
+      this.pushToStack('(value)');
+      this.emitPickOf(CATEGORY, locationData);
+      lockOfCategory();
+      this.emitCatTracked(locationData);
+    };
+    if (genesis.blockOracle) {
+      mutableAt(() => this.emit(blockOracleLockDerivationScript(), locationData));
+      this.emit(childOracleOwnerSentinel(), locationData);
+      this.pushToStack('(value)');
+      this.emitCatTracked(locationData);
+      // The fields a creation leaves unset, which the oracle's keeper fills.
+      const unset = encodeBlockOracleCommitment(new Uint8Array(20), UNSET_BLOCK_ORACLE_FIELDS).slice(20);
+      if (unset.every((byte) => byte === 0)) {
+        this.emit([Op.OP_0, encodeInt(BigInt(unset.length)), Op.OP_NUM2BIN], locationData);
+      } else {
+        this.emit(unset, locationData);
       }
+      this.pushToStack('(value)');
+      this.emitCatTracked(locationData);
+      link();
     }
-    // A child that reads block.* owns a block-info oracle of `K`, which its genesis mints at the lock the oracle
-    // covenant gives `K`, so the check accepts that lock too. It is derived as the child's masters derive it from
-    // their own token: a genesis category is the outpoint hash, in the order both introspections answer, so one byte
-    // order is the lock the child reads. A child that reads none mints no oracle: a coin of `K` there would be one no
-    // master reads, and the count still bounds what the creation mints.
-    this.emit(encodeInt(BigInt(6 + heads - 1)), locationData);
-    this.emit(Op.OP_PICK, locationData); // K, under the heads, the authhead', the record', the authhead, the record and the address
-    this.emit(blockOracleLockDerivationScript(), locationData); // [oracle, heads…, authhead', …]
-    const extraLocks = 2 + heads + 1;
-    for (let slot = 0; slot < CHILD_LOCK_CAPACITY; slot += 1) {
-      this.emit(childLockSentinel(slot), locationData);
+    for (let slot = genesis.collections - 1; slot >= 0; slot -= 1) {
+      mutableAt(() => this.emitEntryP2sh32(childCollectionSentinel(slot), locationData));
+      // An empty head: slot 0, next 0 and the empty value's pad, 128 zero bytes.
+      this.emit([Op.OP_0, encodeInt(128n), Op.OP_NUM2BIN], locationData);
+      this.pushToStack('(value)');
+      this.emitCatTracked(locationData);
+      link();
     }
-    this.emit(bytecodeToScript(Uint8Array.from(childCategoryCheckScript(extraLocks))), locationData);
-    // The check leaves the stack as it found it; the sentinels and the derived locks are no part of the value.
-    for (let drop = 0; drop < CHILD_LOCK_CAPACITY + 2 + extraLocks; drop += 1) {
-      this.emit(Op.OP_DROP, locationData);
+    for (let index = genesis.records.length - 1; index >= 0; index -= 1) {
+      this.emitPickOf(RECORD_PREFIX, locationData);
+      for (const part of genesis.records[index]!) {
+        if (part.kind === 'constant') {
+          this.emit(part.bytes, locationData);
+          this.pushToStack('(value)');
+        } else {
+          this.emitPickOf(valueSlots.get(part)!, locationData);
+        }
+        this.emitCatTracked(locationData);
+      }
+      link();
     }
-    this.emit(Op.OP_NIP, locationData); // K, beneath the address
+    // The validators a creation funds, empty at `addrV(K)`: `[expected, n]`, one link a turn.
+    this.emit(bytecodeToScript(childValidatorCountSentinel()), locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.pushToStack('(child validators)');
+    const addressDepth = this.getStackIndex(ADDRESS) + 1; // under `[n, expected, MUTABLE]` in the loop
+    this.emit([
+      Op.OP_BEGIN,
+      Op.OP_SWAP, Uint8Array.of(0x01), encodeInt(BigInt(addressDepth)), Op.OP_PICK, Op.OP_CAT,
+      Op.OP_CAT, Op.OP_SHA256, Op.OP_SWAP,
+      Op.OP_1SUB, Op.OP_DUP, Op.OP_NOT,
+      Op.OP_UNTIL,
+      Op.OP_DROP,
+    ], locationData);
+    this.popFromStack();
+    // The authhead, naming the lock of the coin `K` is the outpoint of.
+    mutableAt(() => this.emitAuthheadLock(locationData));
+    this.emitPickOf(OWNER, locationData);
+    this.emitCatTracked(locationData);
+    link();
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+    // The rest of the replay's values are no part of the creation's value.
+    const temporaries = this.getStackIndex(ADDRESS);
+    for (let drop = 0; drop + 1 < temporaries; drop += 2) this.emit(Op.OP_2DROP, locationData);
+    if (temporaries % 2 === 1) this.emit(Op.OP_DROP, locationData);
+    this.popFromStack(temporaries + 2);
+    if (this.stack.length !== entryDepth) {
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        'the creating body\'s genesis replay does not leave the stack it found',
+        { requested: 'framed', reason: 'create2-genesis-replay' },
+      );
+    }
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
@@ -19094,7 +19133,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(this.compilerOptions.chainId ?? 0) & 0xffn), locationData);
         break;
       case NullaryOperator.CHILD_ADDRESS:
-        this.emitChildAddress(locationData);
+        this.emitChildAddress(node, locationData);
         break;
       case NullaryOperator.BLOCK_PREVRANDAO:
         // Transaction-local randomness shim: abs(int(sha256(input[0] prevout txid))). No secure source on

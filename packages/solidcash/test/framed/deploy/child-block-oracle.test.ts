@@ -92,11 +92,12 @@ describe('a child that reads block.timestamp, created in its creator\'s transact
     const constants = framedDeploy.framedChildConstants({
       artifact: clock.logical, split: clock, provider, pool: { masters: 1, validators: 1 },
     });
-    const { childLocks, childCollections, childOutputCount } = constants;
+    const { childLocks, childCollections, childOutputCount, childPool, childBlockOracleOwner } = constants;
     const funding = await freshCoin(provider, 1_500_000n);
     const { categoryId } = await deployStatefulContract(factory.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
       threadCount: 1, validatorCount: 1, functionSplit: factory, childLocks, childCollections, childOutputCount,
+      childPool, childBlockOracleOwner,
     });
     return { constants, categoryId, split: framedDeploy.functionSplitFor(provider, categoryId) ?? factory };
   };

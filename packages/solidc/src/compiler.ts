@@ -139,13 +139,11 @@ import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
-import SymbolTableTraversal, {
-  assignFunctionSourceEffectOrdinals,
-  getMaxPushdataEncodedSizeForType,
-} from './semantic/SymbolTableTraversal.js';
+import SymbolTableTraversal, { assignFunctionSourceEffectOrdinals } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { getEventChunkCount, getMaxStateFieldBytes, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
+import { getEventChunkCount } from './semantic/maxEncodedSize.js';
+import { packedStateLayoutVariables } from './semantic/packedStateLayout.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -239,7 +237,8 @@ import {
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/LowerFramedCreate2Address.js';
-import FoldFramedCreate2Initializer from './semantic/FoldFramedCreate2Initializer.js';
+import FoldFramedCreate2Initializer, { type FramedGenesisReplayer } from './semantic/FoldFramedCreate2Initializer.js';
+import { framedChildGenesisReplay } from './framed/child-genesis-replay.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
@@ -4175,53 +4174,6 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     + 'refuse MORE handlers than it adds. Either way, splitting the scalar-only handlers out gives them a '
     + 'route of their own',
 };
-
-/**
- * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
- * compiled child body are the authority; no contract, function, or application name participates.
- */
-function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): Array<{
-  state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
-}> {
-  const result: Array<{
-    state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
-  }> = [];
-  let nftIndex = 0;
-  let fieldIndex = 0;
-  let currentNftUsed = 0;
-  for (const state of contract.stateVariables) {
-    let maxSize = getMaxStateFieldBytes(state.type);
-    if (state.isDynamic || isDynamicStorageType(state.type)) {
-      maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
-    }
-    const unboundedPackedArray = state.isPacked
-      && state.type instanceof ArrayType
-      && !state.type.bound;
-    const isolated = state.isolatedNft
-      || state.visibility === StateVariableVisibility.EXTERNAL
-      || unboundedPackedArray;
-    const terminal = state.type instanceof StructType
-      || (state.isPacked && state.type instanceof ArrayType && Boolean(state.type.bound));
-    if (isolated) {
-      if (currentNftUsed > 0) { nftIndex += 1; fieldIndex = 0; currentNftUsed = 0; }
-      result.push({ state, nftIndex, fieldIndex: 0 });
-      nftIndex += 1;
-      fieldIndex = 0;
-    } else {
-      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex, tagSingletonDataNfts)
-        && currentNftUsed > 0) {
-        nftIndex += 1;
-        fieldIndex = 0;
-        currentNftUsed = 0;
-      }
-      result.push({ state, nftIndex, fieldIndex });
-      fieldIndex += 1;
-      currentNftUsed += maxSize;
-      if (terminal) { nftIndex += 1; fieldIndex = 0; currentNftUsed = 0; }
-    }
-  }
-  return result;
-}
 
 function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
   const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
@@ -16917,11 +16869,14 @@ function compileResolvedAst(
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
   // A creator's `initialize` on the child it just made runs in a later transaction, so its effects are folded into
-  // the child's genesis state: the call is published on the create site and dropped from the creating body.
+  // the child's genesis state: the call is published on the create site and dropped from the creating body. Each
+  // creation of a child this unit holds gets the genesis its creating body replays (docs/framed/CREATE2_IDENTITY.md,
+  // "The genesis replay").
   if (mergedCompilerOptions.composition === 'framed') {
     const creates = (mergedCompilerOptions as InternalCompilerOptions).__framedCreates as FramedCreateSite[] | undefined;
-    if (creates !== undefined && creates.some((site) => site.initializer !== undefined)) {
-      ast = ast.accept(new FoldFramedCreate2Initializer(creates)) as Ast;
+    if (creates !== undefined && creates.length > 0) {
+      const replayer = framedGenesisReplayer(ast, mergedCompilerOptions);
+      ast = ast.accept(new FoldFramedCreate2Initializer(creates, replayer)) as Ast;
     }
   }
   publishStoredValueSources(ast.contract, ast.structDefinitions);
@@ -20538,6 +20493,48 @@ function foldPublishedCreationCodeHashes(contract: ContractNode, compiledBytecod
   for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
     for (const slot of fn?.externalCalls ?? []) fold(slot);
   }
+}
+
+/**
+ * The genesis a framed creating body replays for a child of this unit, by name: its constructor folded with the
+ * creator as `msg.sender`, then the initializer the creator calls on it over the creator's arguments.
+ */
+function framedGenesisReplayer(ast: Ast, compilerOptions: CompilerOptions): FramedGenesisReplayer {
+  const contracts = new Map(ast.importedContracts.map((contract) => [contract.name, contract]));
+  const contractTypes = new Set([
+    ...ast.importedContracts.map((contract) => contract.name),
+    ...(ast.contract ? [ast.contract.name] : []),
+    ...ast.interfaceDefinitions.map((iface) => iface.name),
+  ]);
+  return (contractName, initializer) => {
+    const child = contracts.get(contractName);
+    if (child === undefined) {
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `a framed creator replays the genesis of the "${contractName}" it creates, which this compile unit does not `
+        + 'hold apart from the creator',
+        { requested: 'framed', reason: 'create2-genesis-replay', contract: contractName },
+      );
+    }
+    const visible = (fn: FunctionDefinitionNode): number => fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+    const callee = initializer === undefined ? undefined : child.functions.find((fn) =>
+      fn.name === initializer.functionName && visible(fn) === initializer.args.length);
+    if (initializer !== undefined && callee === undefined) {
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `a framed creator folds "${contractName}.${initializer.functionName}" into the child's genesis, and the child `
+        + `declares no "${initializer.functionName}" of ${initializer.args.length} parameters`,
+        { requested: 'framed', reason: 'create2-genesis-replay', contract: contractName },
+      );
+    }
+    return framedChildGenesisReplay({
+      child,
+      compilerOptions,
+      ...(callee === undefined ? {} : { initializer: { callee, args: initializer!.args } }),
+      isContractType: (name) => contractTypes.has(name),
+    });
+  };
 }
 
 /**

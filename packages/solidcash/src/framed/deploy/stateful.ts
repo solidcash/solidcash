@@ -38,7 +38,10 @@ import { leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js'
 import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
-import { patchChildCollectionSentinels, patchChildLockSentinels, patchChildOutputCount } from './child-locks.js';
+import {
+  childGenesisReservation, patchChildCollectionSentinels, patchChildGenesisSlots, patchChildLockSentinels,
+  patchChildOutputCount, type ChildGenesisSlots,
+} from './child-locks.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -99,23 +102,41 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   options: DeployOptions,
   prepared: PreparedMetadata = {},
 ): Promise<DeployResult<T>> {
-  // A creator's check names the child's master locks, which exist only now: fill its reserved slots from the entry
-  // locks the deployment was given, on the artifact and on every shard and cut of its bundle.
+  // A creator replays its child's genesis, and names the parts its compile could not know by placeholders: the chain
+  // over the child's masters, the validators a creation funds, the child's collection hashes and its block oracle's
+  // owner. They exist only now: fill them from the child's constants, on the artifact and on every shard and cut of
+  // its bundle (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
   const childLocks = options.childLocks;
   const childOutputCount = options.childOutputCount;
-  if (childLocks !== undefined && childLocks.length > 0 && childOutputCount === undefined) {
+  const childPool = options.childPool;
+  const replaySlots: ChildGenesisSlots | undefined = childLocks === undefined || childLocks.length === 0
+    || childPool === undefined
+    ? undefined
+    : {
+      locks: childLocks,
+      pool: childPool,
+      ...(options.childCollections === undefined ? {} : { collections: options.childCollections }),
+      ...(options.childBlockOracleOwner === undefined ? {} : { blockOracleOwner: options.childBlockOracleOwner }),
+    };
+  const programs = [artifact, ...(options.functionSplit?.shards.map((shard) => shard.artifact) ?? []),
+    ...(options.functionSplit?.internalCuts.map((cut) => cut.artifact) ?? [])];
+  if (replaySlots === undefined && programs.some((program) => childGenesisReservation(program).replays)) {
     throw new FramedDeployError(
-      'a creator deployed with its child\'s locks also states how many outputs of the child\'s category its genesis '
-      + 'mints (`childOutputCount`), which its check requires',
+      `"${artifact.contractName}" creates a child and replays its genesis: deploy it with the child's constants `
+      + '(`framedDeploy.framedChildConstants`): its entry locks (`childLocks`), the pool each creation funds '
+      + '(`childPool`), its collection hashes (`childCollections`) and, for a child that reads block.*, its oracle\'s '
+      + 'owner (`childBlockOracleOwner`)',
     );
   }
-  const withLockSlots = (target: Artifact): Artifact => (childLocks === undefined || childLocks.length === 0
-    ? target : patchChildLockSentinels(target, childLocks));
-  const withCount = (target: Artifact): Artifact => (childOutputCount === undefined
-    ? target : patchChildOutputCount(target, childOutputCount));
-  const withCollections = (target: Artifact): Artifact => (options.childCollections === undefined
-    ? target : patchChildCollectionSentinels(target, options.childCollections));
-  const withChildSlots = (target: Artifact): Artifact => withCollections(withCount(withLockSlots(target)));
+  const withChildSlots = (target: Artifact): Artifact => {
+    if (childGenesisReservation(target).replays) return patchChildGenesisSlots(target, replaySlots!);
+    // A creator compiled before the replay reserves its child's master locks and output count instead.
+    const withLocks = childLocks === undefined || childLocks.length === 0
+      ? target : patchChildLockSentinels(target, childLocks);
+    const withCount = childOutputCount === undefined ? withLocks : patchChildOutputCount(withLocks, childOutputCount);
+    return options.childCollections === undefined
+      ? withCount : patchChildCollectionSentinels(withCount, options.childCollections);
+  };
   const patchesChild = (childLocks !== undefined && childLocks.length > 0)
     || childOutputCount !== undefined || options.childCollections !== undefined;
   const shippedArtifact = withChildSlots(artifact) as typeof artifact;

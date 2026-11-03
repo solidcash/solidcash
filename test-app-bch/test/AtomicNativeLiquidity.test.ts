@@ -60,7 +60,7 @@ describe("addLiquidityETH on an atomically created pair", () => {
     const factoryDeployed = await deployStatefulContract(factory.artifact, [callerLock], {
       provider, fundingUtxo: funding, funder: signer.unlockP2PKH(), changeAddress: callerAddress,
       threadCount: resolveMasterPoolSize().masters, validatorCount: resolveMasterPoolSize().validators,
-      functionSplit: factory.bundle, childLocks,
+      functionSplit: factory.bundle, childLocks, childPool: resolveMasterPoolSize(PAIR_POOL),
       childCollections: childCollectionHashes(pair.artifact),
       childOutputCount: childGenesisOutputCount({
         artifact: pair.artifact, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,

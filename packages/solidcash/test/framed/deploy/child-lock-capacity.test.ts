@@ -16,10 +16,11 @@ import { childGenesisOutputCount } from '../../../src/framed/deploy/genesis-outp
 import { alicePkh, alicePriv } from '../../fixture/vars.js';
 
 /**
- * The creator's allow-list at its shipped width (docs/framed/CREATE2_IDENTITY.md).
+ * A wide child created atomically (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
  *
- * The SushiSwap pair has 23 entries and 3 internal helpers, so the check names 26 master locks: the largest child the
- * release creates must fit, and the creator's own spend must stay under one input's production budget.
+ * The earlier allow-list named 26 master locks, the SushiSwap pair's entries and helpers at the time. The replay names
+ * a child's masters by one digest, whatever their number; this keeps the 26-entry child the allow-list was sized for,
+ * created in one transaction, with the creator's own spend under one input's production budget.
  */
 
 const FRAMED = { composition: 'framed' as const, evmCompat: true, suppressWarnings: true, split: 'func' as const };
@@ -75,7 +76,7 @@ describe('a child as wide as the allow-list', () => {
     expect(childLocks.length).toBe(ENTRY_COUNT);
     const { categoryId } = await deployStatefulContract(creator.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
-      threadCount: 1, validatorCount: 1, functionSplit: creator, childLocks,
+      threadCount: 1, validatorCount: 1, functionSplit: creator, childLocks, childPool: pool,
       childOutputCount: childGenesisOutputCount({
         artifact: child.logical, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
         provider, split: child, pool, ownerLock: callerLock,

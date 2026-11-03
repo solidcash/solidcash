@@ -63,7 +63,7 @@ describe('a creator that initializes the child it makes', () => {
     })();
     const { categoryId } = await deployStatefulContract(creator.logical, [], {
       provider, fundingUtxo: funding, funder, changeAddress: callerAddress,
-      threadCount: 1, validatorCount: 1, functionSplit: creator, childLocks,
+      threadCount: 1, validatorCount: 1, functionSplit: creator, childLocks, childPool: pool,
       childOutputCount: childGenesisOutputCount({
         artifact: child.logical, category: new Uint8Array(32).fill(9), validatorProgram: VALIDATOR,
         provider, split: child, pool, ownerLock: callerLock,

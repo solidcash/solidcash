@@ -141,7 +141,7 @@ export default class LowerFramedCreate2Address extends AstTraversal {
     if (!this.creates.some((site) => site.codeStateVariable === codeStateVariable)) {
       this.creates.push({ codeStateVariable });
     }
-    return childAddressValue(node);
+    return childAddressValue(node, { codeStateVariable });
   }
 
   /** The state variable a code value is read from: the variable itself, or a local initialized from it. */
@@ -173,7 +173,7 @@ export default class LowerFramedCreate2Address extends AstTraversal {
       );
     }
     if (!this.creates.some((site) => site.contractName === childName)) this.creates.push({ contractName: childName });
-    return childAddressValue(node);
+    return childAddressValue(node, { contractName: childName });
   }
 }
 
@@ -181,8 +181,12 @@ export default class LowerFramedCreate2Address extends AstTraversal {
  * The address the creation leaves: `addrV(K)`, which the creating body computes from the transaction's leading coin
  * (docs/framed/CREATE2_IDENTITY.md). The salt and the code no longer name the child; the coin's outpoint does.
  */
-function childAddressValue(source: Node): ExpressionNode {
-  return withLocation(new NullaryOpNode(NullaryOperator.CHILD_ADDRESS), source);
+function childAddressValue(
+  source: Node, creation: { readonly contractName?: string; readonly codeStateVariable?: string },
+): ExpressionNode {
+  const value = withLocation(new NullaryOpNode(NullaryOperator.CHILD_ADDRESS), source);
+  value.framedCreation = creation;
+  return value;
 }
 
 /** `created`, placed at `source`'s location. */

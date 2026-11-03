@@ -68,6 +68,7 @@ export function satoshiContainerLockingBytecode(categoryId: string): Uint8Array 
  */
 export function drainedRunMarkerLockingBytecode(categoryId: string): Uint8Array {
   const lock = satoshiContainerLockingBytecode(categoryId);
+  // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
   return Uint8Array.from([0x6a, lock.length, ...lock]);
 }
 

@@ -1136,6 +1136,7 @@ class HeadEmitter {
     const top = this.stack[0]!;
     this.stack[0] = this.stack[1]!;
     this.stack[1] = top;
+    // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
     this.emitBytes(encodeDataPush(Uint8Array.of(Opcodes.OP_RETURN, P2SH32_LOCK_BYTES)));
     this.push('markerHead');
     this.pick('lock');

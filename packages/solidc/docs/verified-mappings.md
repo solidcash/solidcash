@@ -480,6 +480,7 @@ optimization plan.
 
 For runtime-loop values above 60 bytes, the output layout ends in
 `[reverse-ordered value chunks][one terminal suffix]`. The terminal suffix is the external-library sidecar
-recreation when one is required, otherwise a zero-value OP_RETURN anchor. Fee change is inserted before this region.
+recreation when one is required, otherwise a filler anchor (`fillerLockingBytecode()`, swept after 144 blocks).
+Fee change is inserted before this region.
 This is a compiler/SDK invariant: covenant indexing uses `OP_TXOUTPUTCOUNT - 1 - priorChunks - valueChunks`, so SDK
 transaction builders must not append another output after the suffix.

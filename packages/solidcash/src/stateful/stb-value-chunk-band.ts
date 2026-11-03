@@ -56,6 +56,7 @@ import {
   type ValueChunkWriteDescriptor,
   type ValueChunkWriteStagingSession,
 } from './value-chunk-persist.js';
+import { isFillerLockingBytecode } from './filler.js';
 
 export interface ValueChunkBandHost extends ScaledPreserveEmitHost {
   readonly categoryId: string;
@@ -91,7 +92,7 @@ export interface ValueChunkBandHost extends ScaledPreserveEmitHost {
   reassertInBlockWriterReturns(builder: TransactionBuilder): void;
 }
 
-/** Pack a reverse-indexed mutable value-chunk run against the OP_RETURN trailer. */
+/** Pack a reverse-indexed mutable value-chunk run against the filler trailer. */
 export function packReverseIndexedValueChunkSuffix(
   host: ValueChunkBandHost,
   builder: TransactionBuilder,
@@ -295,10 +296,7 @@ export function materializeValueChunkBand(
     (groupCategoryId) => host.findMintingInputIndex(groupCategoryId),
   );
   const opReturnAt = builder.outputs.findIndex((output, index) => (
-    index >= liveBand.start
-    && output.to instanceof Uint8Array
-    && output.to.length === 1
-    && output.to[0] === 0x6a
+    index >= liveBand.start && isFillerLockingBytecode(output.to)
   ));
   const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const suffixStart = opReturnAt >= 0

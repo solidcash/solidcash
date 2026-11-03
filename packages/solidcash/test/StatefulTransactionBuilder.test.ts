@@ -9,7 +9,9 @@ import { valuesEqual as stateValuesEqual } from '../src/stateful/StateReader.js'
 // Exercise the shipped build helper (marketplace/solidhat also resolve dist).
 import { moveLateOutputsBeforeReverseSuffix } from '../dist/stateful/StatefulTransactionBuilder.js';
 import { UnlockableUtxo } from '../src/interfaces.js';
-import { StateLayout, EventDefinitionAbi, computeCollectionHash } from '@solidcash/utils';
+import {
+  StateLayout, EventDefinitionAbi, computeCollectionHash, FILLER_SATOSHIS, fillerLockingBytecode,
+} from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { createTestProvider } from './test-util.js';
 import {
@@ -516,11 +518,11 @@ describe('StatefulTransactionBuilder', () => {
     const suffix = (builder: StatefulTransactionBuilder): Array<string | Uint8Array> =>
       builder.build().outputs.slice(-3).map((o) => o.to);
 
-    it('always adds one OP_RETURN suffix when chunks have no sidecar', () => {
+    it('always adds one filler suffix when chunks have no sidecar', () => {
       const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
       addChunks(builder);
 
-      expect(suffix(builder)).toEqual([chunkA, chunkB, new Uint8Array([0x6a])]);
+      expect(suffix(builder)).toEqual([chunkA, chunkB, fillerLockingBytecode()]);
     });
 
     it('uses the required sidecar recreation as the one terminal suffix', () => {
@@ -556,7 +558,7 @@ describe('StatefulTransactionBuilder', () => {
         }).insertBeforeLateValueSuffix(tx, { to: change, amount: 1000n });
 
         expect(tx.outputs.slice(-4).map((o) => o.to)).toEqual([
-          change, chunkA, chunkB, withSidecar ? sidecarLock : new Uint8Array([0x6a]),
+          change, chunkA, chunkB, withSidecar ? sidecarLock : fillerLockingBytecode(),
         ]);
       }
     });
@@ -712,13 +714,13 @@ describe('StatefulTransactionBuilder', () => {
       const nNew = 2;
       const beforeFirst = tx.outputs.length - 1 - nNew;
       expect(tx.outputs[beforeFirst]?.to).toEqual(chunkLock);
-      expect(tx.outputs.at(-1)?.to).toEqual(new Uint8Array([0x6a]));
+      expect(tx.outputs.at(-1)?.to).toEqual(fillerLockingBytecode());
 
       builder.insertBeforeLateValueSuffix(tx, { to: change, amount: 1000n });
       const afterFirst = tx.outputs.length - 1 - nNew;
       expect(tx.outputs[afterFirst]?.to).toEqual(chunkLock);
       expect(tx.outputs.slice(-4).map((o) => o.to)).toEqual([
-        change, chunkLock, chunkLock, new Uint8Array([0x6a]),
+        change, chunkLock, chunkLock, fillerLockingBytecode(),
       ]);
     });
 
@@ -745,11 +747,11 @@ describe('StatefulTransactionBuilder', () => {
       // TXOUTPUTCOUNT-1-nNew (overwriting late occupants there). Final send() must lift the
       // early jobs run and strip duplicates without doing that reorder during derivation.
       const probeTx = builder.build();
-      expect(probeTx.outputs.at(-1)?.to).toEqual(new Uint8Array([0x6a]));
+      expect(probeTx.outputs.at(-1)?.to).toEqual(fillerLockingBytecode());
       expect(probeTx.outputs.at(-3)?.to).toEqual(jobsLock);
       expect(probeTx.outputs.at(-2)?.to).toEqual(jobsLock);
 
-      // Final-layout path: lift jobs against OP_RETURN, pin commitments, strip early copies.
+      // Final-layout path: lift jobs against the filler, pin commitments, strip early copies.
       const drifted = [
         {
           to: jobsLock,
@@ -787,7 +789,7 @@ describe('StatefulTransactionBuilder', () => {
             nft: { capability: 'mutable' as const, commitment: 'bb01' },
           },
         },
-        { to: new Uint8Array([0x6a]), amount: 0n },
+        { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
       ];
       expect(moveLateOutputsBeforeReverseSuffix(drifted, jobsLock, 2)).toBe(2);
       expect(drifted.map((output) => ({
@@ -798,7 +800,7 @@ describe('StatefulTransactionBuilder', () => {
         { lock: [0xaa, 0x20, 0x22], commit: 'bb01' },
         { lock: [0xaa, 0x20, 0x11], commit: 'aa01' },
         { lock: [0xaa, 0x20, 0x11], commit: 'aa02' },
-        { lock: [0x6a], commit: '' },
+        { lock: [...fillerLockingBytecode().slice(0, 3)], commit: '' },
       ]);
 
       // Extra early duplicate after a second append: stripSurplus demotes it.
@@ -823,7 +825,7 @@ describe('StatefulTransactionBuilder', () => {
       )).toBeGreaterThan(0);
       expect(drifted[0]?.to).toEqual(new Uint8Array([0x51]));
       expect(drifted.slice(-3).map((output) => output.to)).toEqual([
-        jobsLock, jobsLock, new Uint8Array([0x6a]),
+        jobsLock, jobsLock, fillerLockingBytecode(),
       ]);
       expect(drifted.at(-3)?.token?.nft?.commitment).toBe('aa01');
       expect(drifted.at(-2)?.token?.nft?.commitment).toBe('aa02');
@@ -875,7 +877,7 @@ describe('StatefulTransactionBuilder', () => {
       );
       expect([...internals.derivedChunkOutputs.keys()]).toEqual([originalBase + 1, originalBase + 2]);
       expect(tx.outputs.slice(-4).map((output) => output.to)).toEqual([
-        change, chunkLock, chunkLock, new Uint8Array([0x6a]),
+        change, chunkLock, chunkLock, fillerLockingBytecode(),
       ]);
     });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FILLER_SATOSHIS, fillerLockingBytecode } from '@solidcash/utils';
 import type { Output } from '../../src/interfaces.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import {
@@ -25,7 +26,7 @@ describe('reverse-suffix chunk layout', () => {
       { to: funderLock, amount: 100_000n },
       { to: Uint8Array.of(0x51), amount: 1000n },
       { to: Uint8Array.of(0x51), amount: 1000n },
-      { to: Uint8Array.of(0x6a), amount: 0n },
+      { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
     ];
     const builder = { outputs } as unknown as TransactionBuilder;
     const commitments = new Map([['jobs', ['aa01', 'aa02']]]);

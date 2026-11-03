@@ -2325,6 +2325,24 @@ export function buildAnonymousEventNftCovenantScript(categoryId: Uint8Array): Sc
 }
 
 /**
+ * The filler covenant: the output a coin leaves at its index when nothing succeeds it there (a drained container,
+ * a moved record band, a kept output index). Anyone may sweep it after 144 blocks, as an event NFT. No filler is
+ * an OP_RETURN.
+ */
+export function buildFillerCovenantScript(): Script {
+  return [encodeInt(144n), Op.OP_CHECKSEQUENCEVERIFY, Op.OP_DROP, Op.OP_1];
+}
+
+/** The one P2SH32 lock every filler sits at. */
+export function fillerLockingBytecode(): Uint8Array {
+  const scriptHash = sha256(sha256(scriptToBytecode(buildFillerCovenantScript())));
+  return Uint8Array.from([0xaa, 0x20, ...scriptHash, 0x87]);
+}
+
+/** A filler's value: the dust threshold of a token-less output at the filler lock. */
+export const FILLER_SATOSHIS = 576n;
+
+/**
  * Build the hex-encoded bytecode for the anonymous event-NFT covenant.
  */
 export function buildAnonymousEventNftCovenantBytecode(categoryIdHex: string): string {
@@ -2493,9 +2511,10 @@ function masterCategoryRead(retires: boolean): Script {
  * `[]` -> `[]`, or `[masterCategory, masterIndex]` -> `[]` for a master that can retire. Direct container master path
  * (the covenant built with the contract's 35-byte lock).
  *
- * The output at this input keeps the container lock, or it is a zero-value zero-token placeholder. A kept lock also
- * keeps the token category. The satoshi and fungible amounts are the master's to account: an authorized transfer
- * debits them, and a call that names no transfer leaves them on the lock. A master that can retire pins it only while
+ * The output at this input keeps the container lock, or it is a filler with no token (`fillerLockingBytecode`). A
+ * kept lock also keeps the token category. The satoshi and fungible amounts are the master's to account: an
+ * authorized transfer debits them, a call that names no transfer leaves them on the lock, and a filler's satoshis
+ * are no kept balance. A master that can retire pins it only while
  * an output carries its minting NFT: a transaction that recreates no master is the destroy path (selfdestruct), whose
  * covenant accounts for the freed value and whose one output leaves none at this index. The category-only covenant is
  * the framed container; its change is not at this input's index, so this pin is not part of that script.
@@ -2527,14 +2546,14 @@ function directMasterOutputPin(retires: boolean): Script {
     Op.OP_DROP,
     Op.OP_ENDIF,
     Op.OP_ELSE,
-    // Both checks read this input's output. OUTPUTVALUE consumes the index, so keep a copy for the amount.
+    // A drained container leaves a filler at its index. OUTPUTBYTECODE consumes the index, so keep a copy.
     Op.OP_DUP,
-    Op.OP_OUTPUTVALUE,
+    Op.OP_OUTPUTBYTECODE,
+    fillerLockingBytecode(),
+    Op.OP_EQUALVERIFY,
+    Op.OP_OUTPUTTOKENCATEGORY,
     encodeInt(0n),
-    Op.OP_NUMEQUALVERIFY,
-    Op.OP_OUTPUTTOKENAMOUNT,
-    encodeInt(0n),
-    Op.OP_NUMEQUALVERIFY,
+    Op.OP_EQUALVERIFY,
     Op.OP_ENDIF,
   ];
   if (!retires) return pin;

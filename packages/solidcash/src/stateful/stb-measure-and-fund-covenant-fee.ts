@@ -63,7 +63,7 @@ export async function measureAndFundCovenantFee(
   const changeLockingSize = host.funderChangeAddress?.length ?? 35; // P2SH32 default
   const changeOutputOverhead = 8 + (changeLockingSize < 253 ? 1 : 3) + changeLockingSize;
 
-  // With late chunks, build() already includes the terminal sidecar recreation (or OP_RETURN anchor). Without
+  // With late chunks, build() already includes the terminal sidecar recreation (or filler anchor). Without
   // late chunks, the sidecar recreation is still appended below and must be included in the estimate.
   const sidecarOutputOverhead = host.sidecarUtxo && host.lateValueChunkOutputs.length === 0 ? 50n : 0n;
   const totalEstimatedSize = covenantSize + BigInt(feeInputOverhead) + BigInt(changeOutputOverhead)

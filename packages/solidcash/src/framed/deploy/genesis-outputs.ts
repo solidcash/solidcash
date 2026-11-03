@@ -245,6 +245,7 @@ export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildG
     const joined = new Uint8Array(total);
     let offset = 0;
     for (const part of parts) { joined.set(part, offset); offset += part.length; }
+    // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
     outputs.push({ to: Uint8Array.from([0x6a, 0x20, ...sha256(joined)]), amount: 0n });
   }
   return { master, outputs };

@@ -3765,8 +3765,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
     this.emit(Op.OP_UTXOVALUE, locationData);
     this.pushToStack('(value)');
-    this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
-    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emitSatoshiContainerKeptValue(locationData);
     this.pushToStack('(value)');
     for (const transfer of this.pendingTransfers) {
       const isConditional = this.conditionalTransferIndices.has(transfer.transferIndex);
@@ -10699,7 +10698,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitExternalReturnEventVerification(node);
       }
       // A direct upgrade migrates the satoshi container to the replacement lock, so the same-lock slot scan (which
-      // would read the zero-value drain as the container's output) is replaced by the migration check.
+      // finds the container's lock on no output) is replaced by the migration check.
       const scansSatoshi = !this.framedMaster && !this.functionHasDelegatecall && isStatefulContract
         && unsafeTier === null && !isSelfdestruct && !this.graphTransferFlagActive
         && !this.directUpgradeMigratesSatoshiContainer(node);
@@ -13453,11 +13452,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Verify the satoshi container's identity: the co-spent input at the container slot is the real container
-   * (LBC == expected, rebuilt from the master's category), and its output either preserves that same LBC or is a
-   * full drain (0-sat OP_RETURN placeholder). The drain-guard - output value must be 0 on any LBC mismatch -
-   * stops a caller from redirecting the container's remaining balance (bounded from below by value conservation)
-   * to a foreign address. The direct container covenant requires the same shape at the container's own input.
+   * Verify the satoshi container's identity: the co-spent input at the container slot is the real container (LBC ==
+   * expected, rebuilt from the master's category). Its output either keeps that LBC or is the filler a full drain
+   * leaves, which the direct container covenant pins at the container's own input. The caller counts what the
+   * container keeps with emitSatoshiContainerKeptValue, so a filler's satoshis are no kept balance and a caller
+   * cannot redirect the remaining balance (bounded from below by value conservation) to a foreign address.
    * Shared by straight-line/conditional (emitValuePreservation) and loop (emitLoopValueContainerConservation)
    * `{value:}` deploys. Net stack/tracker effect: zero.
    */
@@ -13470,29 +13469,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.pushToStack('(__scCat)');
     this.emitSatoshiContainerLbc(loc); // pops '__scCat', pushes expectedLbc
-    // DUP: one copy checks the input identity, one the output identity.
-    this.emit(Op.OP_DUP, loc);
-    this.pushToStack('(__scLbc2)');
-    // Input: UTXOBYTECODE[satoshiContainer] == expectedLbc2.
+    // Input: UTXOBYTECODE[satoshiContainer] == expectedLbc.
     this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    this.popFromStack(); // remove tracked expectedLbc2
-    // Output: OUTPUTBYTECODE[satoshiContainer] == expectedLbc, else require a 0-value (drain) output.
-    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
-    this.emit(Op.OP_OUTPUTBYTECODE, loc);
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);            // match: preserved, drop expectedLbc
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);            // drop expectedLbc
-    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
-    this.emit(Op.OP_OUTPUTVALUE, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
-    this.emit(Op.OP_ENDIF, loc);
     this.popFromStack(); // remove tracked expectedLbc
+  }
+
+  /**
+   * Push the satoshis the container keeps: its output's value while that output stays at the container's lock, and 0
+   * for the filler a drained container leaves. Pushes 1 untracked value.
+   */
+  private emitSatoshiContainerKeptValue(loc: SingleLocationData, extraStackOffset = 0): void {
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc, extraStackOffset);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc, extraStackOffset + 1);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emitBlockSlotIndex('satoshiContainer', undefined, loc, extraStackOffset + 2);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_MUL, loc);
   }
 
   /**
@@ -13505,15 +13501,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitLoopValueContainerConservation(loc: SingleLocationData): void {
     if (!this.loopValueTransferNode) return;
     const counterName = this.inlineDeployCounterName;
-    // Container identity + drain-guard (input is the real container; output preserves it or is a 0-sat drain).
+    // Container identity (input is the real container); the output keeps its lock or is a drain's filler.
     this.emitSatoshiContainerIdentity(loc);
     // containerInput value
     this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
     this.emit(Op.OP_UTXOVALUE, loc);
     this.pushToStack('(sc_in)');
-    // containerOutput value
-    this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
-    this.emit(Op.OP_OUTPUTVALUE, loc);
+    // containerOutput value, 0 for a filler
+    this.emitSatoshiContainerKeptValue(loc);
     this.pushToStack('(sc_out)');
     // counter * V
     this.emit(encodeInt(BigInt(this.getStackIndex(counterName))), loc);
@@ -46816,8 +46811,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitSatoshiContainerIdentity(loc);
       this.emitBlockSlotIndex('satoshiContainer', undefined, loc);
       this.emit(Op.OP_UTXOVALUE, loc);
-      this.emitBlockSlotIndex('satoshiContainer', undefined, loc, 1);
-      this.emit(Op.OP_OUTPUTVALUE, loc);
+      this.emitSatoshiContainerKeptValue(loc, 1);
       this.emit(encodeInt(BigInt(this.getStackIndex(totalName) + 2)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
@@ -47085,8 +47079,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSatoshiContainerIdentity(locationData);
     this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
     this.emit(Op.OP_UTXOVALUE, locationData);
-    this.emitBlockSlotIndex('satoshiContainer', undefined, locationData, 1);
-    this.emit(Op.OP_OUTPUTVALUE, locationData);
+    this.emitSatoshiContainerKeptValue(locationData, 1);
     this.emit(encodeInt(BigInt(this.getStackIndex(totalName) + 2)), locationData);
     this.emit(Op.OP_PICK, locationData);
     this.emit(Op.OP_ADD, locationData);
@@ -51919,8 +51912,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The fixed output indices the satoshi container's migration inserts ahead of the added-data-NFT run: a zero-value
-   * drain pad at its input index and a re-mint. The token band adds two per coin at run time.
+   * The fixed output indices the satoshi container's migration inserts ahead of the added-data-NFT run: a drain's
+   * filler at its input index and a re-mint. The token band adds two per coin at run time.
    */
   private upgradeContainerOutputShift(node: FunctionDefinitionNode): number {
     return this.directUpgradeMigratesSatoshiContainer(node) ? 2 : 0;
@@ -52033,7 +52026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * CRYPTO-4 satoshi-container migration: the old container (bound to the old master lock) is spent with its
    * flag=1 master path, drained at its input index, and re-minted at the replacement-bound covenant carrying its
-   * value. The layout puts the container input at `1 + dataNftCount`, the zero-value drain at the same output
+   * value. The layout puts the container input at `1 + dataNftCount`, the drain's filler at the same output
    * index (right after the data-NFT pad band), and the re-mint at `2 + 2*dataNftCount` (before the added data-NFT
    * run, which therefore starts two outputs later than in a data-NFT-only upgrade).
    */
@@ -52045,7 +52038,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // re-mint by the band's coin count.
     const reMintIdx = 2 + 2 * this.dataNftCount;
 
-    // Phase 1: input[containerIdx] is the old container covenant; output[containerIdx] is the zero-value drain.
+    // Phase 1: input[containerIdx] is the old container covenant; output[containerIdx] is the filler its covenant
+    // pins. Phase 2 re-mints its whole value, so the filler's satoshis come from the fee payer.
     this.emitMasterInputIndex(loc);
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // C ++ 0x02
     this.emit(encodeInt(32n), loc);
@@ -52059,10 +52053,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(sc_old_covenant)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);          // [cov, inBytecode, cov]
     this.emit(Op.OP_EQUALVERIFY, loc);   // [cov]
-    this.emit(encodeInt(BigInt(containerIdx)), loc);
-    this.emit(Op.OP_OUTPUTVALUE, loc);   // [cov, drainValue]
-    this.emit(encodeInt(0n), loc);       // [cov, drainValue, 0]
-    this.emit(Op.OP_NUMEQUALVERIFY, loc); // [cov]
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (sc_old_covenant)
 
@@ -52151,10 +52141,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(tc_old_covenant)') + 1)), loc);
     this.emit(Op.OP_PICK, loc);          // [cov, inBytecode, cov]
     this.emit(Op.OP_EQUALVERIFY, loc);   // [cov]
-    pickCoin(0);
-    this.emit(Op.OP_OUTPUTVALUE, loc);   // [cov, drainValue]
-    this.emit(encodeInt(0n), loc);       // [cov, drainValue, 0]
-    this.emit(Op.OP_NUMEQUALVERIFY, loc); // [cov]
     pickCoin(0);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc); // [cov, drainAmount]
     this.emit(encodeInt(0n), loc);           // [cov, drainAmount, 0]
@@ -55759,9 +55745,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Satoshi container identity + value preservation (only when function has transfers).
     // When pendingTransfers is empty the container is not co-spent here, so nothing to preserve; the container's
     // own covenant still gates its master/merge spends. When it IS co-spent, emitSatoshiContainerIdentity pins
-    // the input to the real container and forces its output to preserve the container LBC or be a 0-sat drain.
-    // The direct container covenant pins that same output: the lock stays, or the output is a zero-value
-    // zero-token placeholder. This check is what limits the amount.
+    // the input to the real container, and the direct container covenant pins its output: the lock stays, or the
+    // output is a token-less filler, which keeps nothing. This check is what limits the amount.
     // A hidden graph route also has synthetic pending-transfer slots from its flattened parser arm. Those
     // locals remain empty when the selected handler runs through OP_INVOKE, so treating them as the transfer
     // authority would compare (for example) `5000 <= 4000 + 0` and reject the authenticated 1000-sat output.
@@ -55781,10 +55766,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_UTXOVALUE, locationData);
       this.pushToStack('(value)');
 
-      // Read satoshi container output value. When drained, the SDK inserts a
-      // 0-satoshi OP_RETURN placeholder, so OUTPUTVALUE naturally returns 0.
-      this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
-      this.emit(Op.OP_OUTPUTVALUE, locationData);
+      // Read what the satoshi container keeps: 0 for the filler a drain leaves.
+      this.emitSatoshiContainerKeptValue(locationData);
       this.pushToStack('(value)');
 
       // Add each transfer output's value to the container output value
@@ -55831,8 +55814,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitSatoshiContainerIdentity(locationData);
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
-      this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
-      this.emit(Op.OP_OUTPUTVALUE, locationData);
+      this.emitSatoshiContainerKeptValue(locationData);
       this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED) + 2)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_ADD, locationData);
@@ -58383,14 +58365,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_NIP, locationData);
         this.emit(encodeInt(0n), locationData);
         this.emit(Op.OP_GREATERTHAN, locationData);
-        // A full movement leaves the SDK's zero-value tokenless placeholder. The amount equation below only
-        // runs when the output still carries a category, so a placeholder has to show that the transfers
+        // A full movement leaves a token-less filler, which the container covenant pins. The amount equation
+        // below only runs when the output still carries a category, so a filler has to show that the transfers
         // cover the input and that it is not hiding an NFT.
         this.emit(Op.OP_NOTIF, locationData);
-        this.emitBlockSlotIndex('tokenContainer', i, locationData);
-        this.emit(Op.OP_OUTPUTVALUE, locationData);
-        this.emit(encodeInt(0n), locationData);
-        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
         this.emitTokenContainerInputIndex(i, locationData, 0);
         this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
         this.emit(Op.OP_SIZE, locationData);

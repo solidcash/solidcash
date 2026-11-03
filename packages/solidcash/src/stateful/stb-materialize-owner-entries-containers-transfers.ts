@@ -24,6 +24,7 @@ import type {
   TransferData,
 } from './external-call-utxo-group.js';
 import { assignBalancedOutputAtOffset } from './writer-event-delegate-layout.js';
+import { fillerOutput } from './filler.js';
 
 export interface MaterializeOwnerEntriesContainersTransfersHost {
   readonly blockLayout?: FunctionBlockLayout;
@@ -199,10 +200,9 @@ export function materializeOwnerEntriesContainersTransfers(
         amount: remainingAmount,
       });
     } else {
-      // Drained: insert a 0-satoshi OP_RETURN placeholder to maintain block layout
-      // output positions. The compiler's covenant verification detects the mismatched
-      // locking bytecode and treats this slot as drained.
-      builder.addOutput({ to: Uint8Array.from([0x6a]), amount: 0n });
+      // Drained: a filler keeps the block layout's output positions. The container covenant pins it, and the
+      // master counts it as no kept balance.
+      builder.addOutput(fillerOutput());
     }
   }
 
@@ -212,17 +212,16 @@ export function materializeOwnerEntriesContainersTransfers(
   for (const container of [...host.tokenContainers].sort((a, b) => a.tokenContainerSlotIndex - b.tokenContainerSlotIndex)) {
     if (!container.exists || !container.utxo) {
       // A first deposit's container is appended after the block (`addTokenContainerDeposit`); the slot keeps its
-      // position with a tokenless placeholder, as a drained container's does.
+      // position with a filler, as a drained container's does.
       if (host.pendingTokenContainerDeposits.has(container.tokenContainerCategoryId)) {
-        builder.addOutput({ to: Uint8Array.from([0x6a]), amount: 0n });
+        builder.addOutput(fillerOutput());
       }
       continue;
     }
     if (host.isTokenContainerDrained(container.tokenContainerCategoryId)) {
-      // Drained: insert a 0-satoshi OP_RETURN placeholder to maintain block layout
-      // output positions. The compiler's covenant verification detects the absence of
-      // tokens at this output and skips preservation checks.
-      builder.addOutput({ to: Uint8Array.from([0x6a]), amount: 0n });
+      // Drained: a filler keeps the block layout's output positions. The compiler's covenant verification
+      // detects the absence of tokens at this output and skips preservation checks.
+      builder.addOutput(fillerOutput());
       continue;
     }
 

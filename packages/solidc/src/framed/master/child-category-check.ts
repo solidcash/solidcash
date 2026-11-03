@@ -126,6 +126,7 @@ export function childCategoryCheckScript(extraLocks = 0): number[] {
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_SHA256,
   );
   // The tokenless `OP_RETURN <digest>` output the SDK appends carries the digest.
+  // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
   script.push(
     Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_BEGIN, Opcodes.OP_1SUB,
     Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,

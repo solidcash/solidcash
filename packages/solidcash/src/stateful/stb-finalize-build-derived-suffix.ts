@@ -7,6 +7,7 @@ import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
+import { fillerOutput } from './filler.js';
 
 export interface FinalizeBuildDerivedSuffixHost {
   readonly lateValueChunkOutputs: readonly Output[];
@@ -27,7 +28,7 @@ export interface FinalizeBuildDerivedSuffixHost {
 }
 
 /**
- * Emit late value chunks + sidecar/OP_RETURN trailer, then apply derived chunk/entry repairs and
+ * Emit late value chunks + sidecar/filler trailer, then apply derived chunk/entry repairs and
  * reverse-suffix dynamic-chunk reassert before conservation repairs.
  */
 export function finalizeBuildDerivedSuffix(
@@ -43,7 +44,7 @@ export function finalizeBuildDerivedSuffix(
 
   // Reverse-suffix chunk indexing requires exactly ONE output after the late chunk region in every build,
   // including covenant-only probes and direct build() calls. A sidecar must be last for its self-preservation
-  // covenant; otherwise use a zero-value OP_RETURN anchor. send() inserts any fee change BEFORE this suffix.
+  // covenant; otherwise use a filler anchor. send() inserts any fee change BEFORE this suffix.
   const hasAuthenticatedChunkSuffix = host.lateValueChunkOutputs.length > 0
     || (host.delegateDynamicChunksAtSuffix && host.dynamicChunkOutputCount() > 0);
   if (hasAuthenticatedChunkSuffix) {
@@ -53,7 +54,7 @@ export function finalizeBuildDerivedSuffix(
         amount: host.sidecarUtxo.satoshis,
       });
     } else {
-      builder.addOutput({ to: new Uint8Array([0x6a]), amount: 0n }); // OP_RETURN suffix anchor
+      builder.addOutput(fillerOutput()); // filler suffix anchor
     }
   }
   if (host.mintingOutputSwap) {

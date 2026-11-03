@@ -300,8 +300,8 @@ export {
 export {
   isPredOutReusableHole,
   reassertBatchPredecessorOutputsAtDeclaredSlots,
-  isOpReturnLockingBytecode,
-  redirectViewTailOffOpReturn,
+  isFillerLockingBytecode,
+  redirectViewTailOffFiller,
   moveTrailingOutputsBeforeValueChunkSuffix,
   moveLateOutputsBeforeReverseSuffix,
   hasEquivalentMutableNftOutput,
@@ -313,7 +313,7 @@ export {
   clearMutableCollectionOutputsOutsideAuthoritativeRun,
 } from './mutable-output-reassert.js';
 import {
-  isOpReturnLockingBytecode,
+  isFillerLockingBytecode,
   clearMutableCollectionOutputsOutsideAuthoritativeRun,
 } from './mutable-output-reassert.js';
 
@@ -960,7 +960,7 @@ export class StatefulTransactionBuilder {
   /**
    * Authenticated view-return commitments captured at place time. Pending return
    * events may be cleared before the final stamp, but unlock witnesses still
-   * need these values on non-OP_RETURN pads.
+   * need these values on non-filler pads.
    */
   private authenticatedViewReturnByGroup = new Map<number, { categoryId: string; commitment: string }>();
 
@@ -4756,7 +4756,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * Runtime-loop value chunks occupy the region immediately before one terminal suffix output. The builder
-   * guarantees that suffix is either the required external-library sidecar recreation or a zero-value OP_RETURN
+   * guarantees that suffix is either the required external-library sidecar recreation or a filler
    * anchor, and inserts fee change before this region.
    */
   addLateValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
@@ -5106,7 +5106,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Probe-local: if a ReturnOutputIdx on this builder's unlockers names OP_RETURN (or was
+   * Probe-local: if a ReturnOutputIdx on this builder's unlockers names the filler (or was
    * shifted by a late-suffix insert onto the separator), bump the param to the next pad and
    * re-encode via syncEncodedArgsFromParams. Does not mutate persistent carrier state.
    */
@@ -5124,7 +5124,7 @@ export class StatefulTransactionBuilder {
       while (host >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      while (isOpReturnLockingBytecode(lockAt(host))) {
+      while (isFillerLockingBytecode(lockAt(host))) {
         host += 1;
         while (host >= builder.outputs.length) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
@@ -5156,7 +5156,7 @@ export class StatefulTransactionBuilder {
         let index: number = original;
         if (/ReturnOutputIdx/i.test(name)) {
           if (original >= builder.outputs.length) continue;
-          if (isOpReturnLockingBytecode(lockAt(index))) {
+          if (isFillerLockingBytecode(lockAt(index))) {
             index = nextHost(index);
           } else if (
             options.insertAt !== undefined
@@ -7182,7 +7182,7 @@ export class StatefulTransactionBuilder {
    * The satoshi container output is placed after entries, before transfers.
    */
   getSatoshiContainerOutputIndex(): number {
-    // With OP_RETURN placeholders for drained containers, the output always
+    // With fillers for drained containers, the output always
     // exists at the block layout position (even when drained).
     const layoutOffset = this.getBlockSlotOffset('satoshiContainer');
     if (layoutOffset !== undefined) return layoutOffset;

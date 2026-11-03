@@ -3272,3 +3272,22 @@ to confirm no positive fixture breaks. Solidity-corpus strictness parity is defe
 run the solc corpus negatives and the `.sol` fixtures once.
 
 **Revisit if:** the corpus strictness work resumes, or a port relies on solc rejecting a missing visibility.
+
+## `OP_RETURN` outputs in framed and the message bus (2026-11-03)
+
+The user's rule (2026-11-03): no `OP_RETURN` output signals anything or fills a slot; a filler is an event-like
+output anyone may sweep after 144 blocks. Asked which shipped uses to remove: "bus is going to be retired so we leave
+it be. fillers should not use OP_RETURN, use the same 144 blocks maturing event-like outputs to stay consistent.
+framed will be retired after tre too, so leave op_returns for it in place. but mark my comments".
+
+- Done: the direct convention, the shared stateful SDK and upgrades leave a token-less filler at
+  `fillerLockingBytecode()` (576 sat, swept after 144 blocks) where they left a zero-value `OP_RETURN`: drained
+  containers, first-deposit and upgrade pads, the value-chunk suffix anchor. The container covenant pins it, and the
+  master counts it as no kept balance (`emitSatoshiContainerKeptValue`). A sub-dust change that later outputs follow
+  now asks for more funding; as the last output it is dropped. The message-bus verifier's drain rule takes the filler
+  too, as bus participants share the direct container covenant.
+- Deferred: framed keeps its `OP_RETURN` run-lead marker (spec 4b), its creation digest and its container
+  placeholder until it retires; each site carries a comment. User data (`createOpReturnOutput`, Solidity `nullData`)
+  and BCMR's publication output are not fillers.
+
+**Revisit if:** framed outlives TRE's release, or BCHN's single-`OP_RETURN` relay rule bites a framed transaction.

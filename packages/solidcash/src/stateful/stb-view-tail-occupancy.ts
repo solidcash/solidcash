@@ -11,8 +11,8 @@ import { isScidIdentityCommitment } from './logical-identity.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import {
-  isOpReturnLockingBytecode,
-  redirectViewTailOffOpReturn,
+  isFillerLockingBytecode,
+  redirectViewTailOffFiller,
 } from './mutable-output-reassert.js';
 import {
   findViewTailDestinations,
@@ -179,13 +179,13 @@ export function writeViewTailsAfterWriterOccupancy(
     const groupIdx = coordinate?.groupIndex ?? -1;
     const group = groupIdx >= 0 ? host.externalCallUtxoGroups[groupIdx] : undefined;
     const liveOpReturn = builder.outputs.findIndex((out) => (
-      isOpReturnLockingBytecode(
+      isFillerLockingBytecode(
         out?.to instanceof Uint8Array ? out.to
           : typeof out?.to === 'string' ? out.to : undefined,
       )
     ));
     const separator = liveOpReturn >= 0 ? liveOpReturn : suffixStart;
-    let redirected = redirectViewTailOffOpReturn({
+    let redirected = redirectViewTailOffFiller({
       placedIndex: outputIndex,
       plannedIndex: group?.plannedReturnOutputIndex,
       returnIndex: group?.returnOutputIndex,
@@ -215,7 +215,7 @@ export function writeViewTailsAfterWriterOccupancy(
         nft: { capability: 'none', commitment },
       },
     };
-    if (isOpReturnLockingBytecode(
+    if (isFillerLockingBytecode(
       builder.outputs[outputIndex]?.to instanceof Uint8Array
         ? builder.outputs[outputIndex]!.to as Uint8Array
         : typeof builder.outputs[outputIndex]?.to === 'string'

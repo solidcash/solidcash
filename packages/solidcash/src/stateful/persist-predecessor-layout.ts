@@ -1,5 +1,5 @@
 /**
- * phase-boundary extract: Persist-predecessor placement + writer-block occupancy / OP_RETURN packing.
+ * phase-boundary extract: Persist-predecessor placement + writer-block occupancy / separator packing.
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
@@ -9,6 +9,7 @@ import {
   groupOwnsInBlockReturnEvent,
   type PhysicalReturnGroup,
 } from './value-chunk-geometry.js';
+import { isFillerLockingBytecode } from './filler.js';
 
 /** uint16-le chunk index. Values >= 32 are entry/value blobs, not occupancy slots. */
 export function isPersistValueChunkCommitment(commitment: string): boolean {
@@ -161,7 +162,7 @@ export function writerBlockOccupancyEnd(
 
 /** Insert a relocated change output after the jobEvents band and reserved writer occupancy. */
 /**
- * Keep [mutable value chunks][OP_RETURN] contiguous. SCIDs and token-free pads that
+ * Keep [mutable value chunks][separator] contiguous. SCIDs and token-free pads that
  * landed inside that suffix are moved in front so TXOUTPUTCOUNT-1-nNew
  * still names the first value chunk.
  */
@@ -177,8 +178,7 @@ export function packMutableValueChunkRunAgainstSeparator<T extends {
   const wanted = binToHex(suffixLock);
   const opReturn = outputs.findIndex((output, index) => {
     if (index < tailStart) return false;
-    const lock = output.to instanceof Uint8Array ? output.to : undefined;
-    return !!lock && lock.length === 1 && lock[0] === 0x6a;
+    return isFillerLockingBytecode(output.to instanceof Uint8Array ? output.to : undefined);
   });
   if (opReturn < 0 || opReturn <= tailStart) return 0;
   const chunks: T[] = [];

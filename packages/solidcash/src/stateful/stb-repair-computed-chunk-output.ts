@@ -59,6 +59,7 @@ import {
   valueChunkWriteResourceIdentity,
 } from './value-chunk-persist.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
+import { isFillerLockingBytecode } from './filler.js';
 
 export type { ComputedChunkRepairResult };
 
@@ -374,7 +375,7 @@ export function repairComputedChunkOutput(
                     const last = builder.outputs[builder.outputs.length - 1];
                     const lastLock = last?.to instanceof Uint8Array
                       ? last.to : last ? addressToLockScript(last.to) : new Uint8Array();
-                    insertionBase = lastLock.length === 1 && lastLock[0] === 0x6a
+                    insertionBase = isFillerLockingBytecode(lastLock)
                       ? builder.outputs.length - 1 : builder.outputs.length;
                     builder.outputs.splice(insertionBase, 0, ...chunks.map(() => ({
                       to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS,

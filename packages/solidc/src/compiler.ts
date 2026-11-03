@@ -49,7 +49,7 @@ import {
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   type KernelJournalDispositionsAbi,
   MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
-  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature,
+  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature, fillerLockingBytecode,
 } from '@solidcash/utils';
 import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
@@ -13499,7 +13499,7 @@ function synthesizeMessageBusRoute(
               require(outputCategoryLength == 0 || outputCategoryLength == 32 || outputCategoryLength == 33);
               if (outputCategoryLength == 0) {
                 require(rowEffect.length == 1 && tx.outputs[targetSlot].tokenCategory.length == 0
-                  && tx.outputs[targetSlot].lockingBytecode == hex"6a" && tx.outputs[targetSlot].value == 0);
+                  && tx.outputs[targetSlot].lockingBytecode == hex"${binToHex(fillerLockingBytecode())}");
               } else {
                 require(rowEffect.length >= 1 + outputCategoryLength + 8
                   && tx.outputs[targetSlot].lockingBytecode == rowSubject

@@ -7,6 +7,7 @@ import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transactio
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { calculateDust } from '../utils.js';
+import { FILLER_SATOSHIS } from '@solidcash/utils';
 
 export interface FinalizeFeeBeforeValidationHost {
   readonly allInputs: readonly UnlockableUtxo[];
@@ -107,11 +108,15 @@ export function createFinalizeFeeBeforeValidation(
     const remaining = (current.amount ?? 0n) - reduction;
     if (remaining >= BigInt(calculateDust(current))) {
       finalBuilder.outputs[changeIndex] = { ...current, amount: remaining };
+    } else if (changeIndex === finalBuilder.outputs.length - 1) {
+      // A sub-dust remainder goes to the fee. The change is the last output, so dropping it moves no index.
+      finalBuilder.outputs.pop();
     } else {
-      // Consuming a sub-dust remainder as fee is preferable to retaining a non-standard change output. Preserve
-      // the output coordinate as a zero-value OP_RETURN so authenticated suffix indices do not shift during the
-      // final convergence pass; the shorter serialization only increases the resulting fee margin.
-      finalBuilder.outputs[changeIndex] = { to: Uint8Array.of(0x6a), amount: 0n };
+      // Authenticated suffix indices follow the change, so its index stays, and only a filler may hold it there.
+      throw new Error(
+        `The change left after the fee (${remaining} sats) is below dust, and later outputs keep its index. `
+        + `A filler there needs ${FILLER_SATOSHIS} sats: add at least ${FILLER_SATOSHIS - remaining} sats of funding.`,
+      );
     }
     return true;
   };

@@ -578,14 +578,14 @@ export type ViewTailPackOptions = {
   /** Input-bearing identities which the selected executable pins at the same output coordinate. */
   reservedIndices?: ReadonlySet<number>;
   band?: { start: number; end: number };
-  /** First reserved suffix index (OP_RETURN / value chunks). Tails must not land here. */
+  /** First reserved suffix index (filler / value chunks). Tails must not land here. */
   suffixStart?: number;
   tokenWriterPresent?: boolean;
 };
 
 /**
  * Keep planned view witnesses when a prior write grew the continuation band
- * and packing would land on it or the terminal OP_RETURN. A separate minting
+ * and packing would land on it or the terminal filler. A separate minting
  * writer still parks tails after its swapped block.
  */
 export function clampViewTailPlacement(parts: {

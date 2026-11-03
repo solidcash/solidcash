@@ -85,8 +85,8 @@ export function finalizeBuildStamp(
       delegateEntriesAfterLowLevel: host.delegateEntriesAfterLowLevel,
     });
   }
-  // Final stamp: never leave authenticated view returns on OP_RETURN or zero pads.
-  // Reconcile can rebind witnesses; re-ensure until stable so Idx cannot stick on 0x6a.
+  // Final stamp: never leave authenticated view returns on fillers or zero pads.
+  // Reconcile can rebind witnesses; re-ensure until stable so Idx cannot stick on the filler.
   for (let ensurePass = 0; ensurePass < 3; ensurePass += 1) {
     const stamped = host.ensureAuthenticatedViewReturns(builder);
     const reconciled = host.reconcileMaterializedReturnWitnesses(builder);

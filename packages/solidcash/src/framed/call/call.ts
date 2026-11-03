@@ -2766,6 +2766,7 @@ async function callInShape(
       return [
         ...run.containers.map((container, at): DraftSourceOutput => {
           const nft = container.token!.nft;
+          // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
           if (!keepsNft(container) && at !== holder) return { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n };
           return {
             lockingBytecode: run.lockingBytecode,

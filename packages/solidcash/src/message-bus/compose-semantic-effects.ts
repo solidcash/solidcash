@@ -4,7 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, fillerLockingBytecode,
 } from '@solidcash/utils';
 import type { TokenDetails } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -186,7 +186,7 @@ export function observeComposeSemanticEffects(
       const inputLockingBytecode = input.unlocker.generateLockingBytecode();
       const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
       if (!inputToken || (outputToken && inputToken.category !== outputToken.category)
-        || (!outputToken && binToHex(outputLockingBytecode) !== '6a')
+        || (!outputToken && binToHex(outputLockingBytecode) !== binToHex(fillerLockingBytecode()))
         || (outputToken && (input.satoshis !== output.amount
           || binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode)))) {
         throw new Error(`messageBus: token container ${slot.participant}:${slot.offset} is invalid`);

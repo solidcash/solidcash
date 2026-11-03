@@ -12,6 +12,7 @@ import {
   isDisposableAlignmentPad,
   isViewReturnTailOutput,
 } from './value-chunk-band-helpers.js';
+import { isFillerLockingBytecode } from './filler.js';
 
 /**
  * The covenant counts outputs at the value-chunk redeem lock and EQUALVERIFYs
@@ -58,7 +59,7 @@ export function stripSurplusValueChunkLocks(
  * token-free disposable output (not a view tail). Never skip: dropping the NFT
  * makes the next non-zero msg.sender call unsatisfiable. Do not overwrite
  * minting/mutable occupants, reserved occupancy (impl trailing / jobEvents /
- * writer returns), or append past an OP_RETURN value-chunk suffix. */
+ * writer returns), or append past a filler value-chunk suffix. */
 export function reassertScidIdentityOutputs(
   outputs: Array<{
     to?: Uint8Array | string;
@@ -149,7 +150,7 @@ export function reassertScidIdentityOutputs(
         if (isReserved(outputs[outputIndex], outputIndex)) continue;
         const lockBytes = outputs[outputIndex]?.to instanceof Uint8Array
           ? outputs[outputIndex]!.to as Uint8Array : undefined;
-        if (lockBytes?.length === 1 && lockBytes[0] === 0x6a) continue;
+        if (isFillerLockingBytecode(lockBytes)) continue;
         target = outputIndex;
         break;
       }
@@ -157,7 +158,7 @@ export function reassertScidIdentityOutputs(
     if (target < 0) {
       const suffix = outputs.findIndex((output) => {
         const lockBytes = output?.to instanceof Uint8Array ? output.to : undefined;
-        return !!lockBytes && lockBytes.length === 1 && lockBytes[0] === 0x6a;
+        return isFillerLockingBytecode(lockBytes);
       });
       target = suffix >= 0 ? suffix : outputs.length;
       outputs.splice(target, 0, { to: lock, amount: 1000n });
@@ -166,12 +167,11 @@ export function reassertScidIdentityOutputs(
     if (existing && !existing.token && (existing.amount ?? 0n) > 50_000n) {
       // The replacement may be inside a compiler-owned block. A local insertion would shift every
       // later entry, event and continuation coordinate; keep funder change after those fixed outputs.
-      // Keep only terminal OP_RETURN markers at the end; an interior marker is a fixed output too.
+      // Keep only terminal filler markers at the end; an interior marker is a fixed output too.
       let suffix = outputs.length;
       while (suffix > 0) {
         const output = outputs[suffix - 1];
-        const bytes = output.to instanceof Uint8Array ? output.to : undefined;
-        if (bytes?.length !== 1 || bytes[0] !== 0x6a) break;
+        if (!isFillerLockingBytecode(output.to instanceof Uint8Array ? output.to : undefined)) break;
         suffix -= 1;
       }
       outputs.splice(suffix, 0, {

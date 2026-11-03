@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FILLER_SATOSHIS, fillerLockingBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Signer } from '../../src/index.js';
 import {
@@ -80,10 +81,10 @@ describe('logical CREATE identity at getAddress()', () => {
     const funderLock = Uint8Array.of(0x76, 0xa9, 0x14);
     const category = 'ab'.repeat(31) + '54';
     const commitment = '5343494401dead';
-    const interior = { to: Uint8Array.of(0x6a), amount: 1000n };
+    const interior = { to: fillerLockingBytecode(), amount: 1000n };
     const entry = { to: Uint8Array.of(0x51), amount: 1200n,
       token: { category, nft: { capability: 'mutable', commitment: '01' } } };
-    const suffix = { to: Uint8Array.of(0x6a), amount: 1000n };
+    const suffix = { to: fillerLockingBytecode(), amount: 1000n };
     const outputs: Array<{ to?: Uint8Array; amount?: bigint; token?: object }> = [
       { to: funderLock, amount: 100_000n }, interior, entry, ...(withSuffix ? [suffix] : []),
     ];
@@ -224,7 +225,7 @@ describe('logical CREATE identity at getAddress()', () => {
         nft: { capability: 'none', commitment } } },
       { to: Uint8Array.of(0xaa, 0x20, 0x09), amount: 1200n,
         token: { category, amount: 0n, nft: { capability: 'mutable', commitment: '00' } } },
-      { to: Uint8Array.of(0x6a), amount: 0n },
+      { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
     ];
     expect(reassertScidIdentityOutputs(outputs, [{
       satoshis: 1200n,

@@ -10,7 +10,7 @@ import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   isInsertBandDustToken,
-  isOpReturnLockingBytecode,
+  isFillerLockingBytecode,
   moveTrailingOutputsBeforeValueChunkSuffix,
 } from './mutable-output-reassert.js';
 import {
@@ -140,10 +140,10 @@ export function ensureAuthenticatedViewReturns(
       moveTrailingOutputsBeforeValueChunkSuffix(builder.outputs, suffixVar?.lockingBytecode);
     }
     const suffixChunkCount = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
-    const liveOpReturn = builder.outputs.findIndex((output) => isOpReturnLockingBytecode(
+    const liveOpReturn = builder.outputs.findIndex((output) => isFillerLockingBytecode(
       output?.to instanceof Uint8Array || typeof output?.to === 'string' ? output.to : undefined,
     ));
-    // Reverse-index math is only safe once the unique OP_RETURN trailer exists. Before that,
+    // Reverse-index math is only safe once the unique filler trailer exists. Before that,
     // `length - suffixChunkCount - 1` lands inside the contract block (an earlier failure punched
     // output 6 into a token-free OP_TRUE and OUTPUTTOKENCATEGORY(6) failed closed).
     const chunkSuffixStart = liveOpReturn >= 0 && suffixChunkCount > 0
@@ -166,7 +166,7 @@ export function ensureAuthenticatedViewReturns(
       }
     }
     const onOrAfterChunkSuffix = returnHost >= chunkSuffixStart
-      || isOpReturnLockingBytecode(lockOf(returnHost));
+      || isFillerLockingBytecode(lockOf(returnHost));
     if (onOrAfterChunkSuffix && chunkSuffixStart >= blockOccupancyEnd
       && chunkSuffixStart <= builder.outputs.length) {
       const pad: Output = {
@@ -221,7 +221,7 @@ export function ensureAuthenticatedViewReturns(
     host.builtReturnEventOutputIndices.set(`${pending.identity}:0`, returnHost);
     if (group) group.returnOutputIndex = returnHost;
     // Force unlockers that name this group to read the stamped returnHost — reconcile
-    // alone can keep a stale returnOutputIdx from an earlier OP_RETURN slot.
+    // alone can keep a stale returnOutputIdx from an earlier filler slot.
     for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
       if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;
       const updates: Record<string, bigint> = {};

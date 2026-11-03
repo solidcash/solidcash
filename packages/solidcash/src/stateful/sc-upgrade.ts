@@ -4,6 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
+  FILLER_SATOSHIS,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   VALUE_INLINE_LIMIT,
   buildPushdataCommitment,
@@ -36,6 +37,7 @@ import {
 import { tokenContainerKeyValue } from './sc-load-create-builder-token-containers.js';
 import { decodeEntryCommitment } from './SortedList.js';
 import type { LeftBehindCoin, UpgradeOptions, UpgradeResult } from './stateful-lifecycle-types.js';
+import { fillerOutput } from './filler.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
@@ -485,29 +487,28 @@ export async function upgradeStatefulContract<T extends Artifact>(
     });
 
     // CRYPTO-4 data-NFT migration layout, matching the compiler's census and re-mint verification. When the
-    // satoshi container migrates too, its zero-value drain occupies out[N+1] and its re-mint out[2N+2]:
+    // satoshi container migrates too, its drain's filler occupies out[N+1] and its re-mint out[2N+2]:
     //   out[0]         = new master
-    //   out[1..N]      = a non-category pad band (the flag=2 destroy covenant requires output[INPUTINDEX] to hold a
+    //   out[1..N]      = a band of fillers (the flag=2 destroy covenant requires output[INPUTINDEX] to hold a
     //                    DIFFERENT category, so a re-mint cannot sit at the old input's index)
-    //   out[N+1]       = the satoshi container's zero-value drain (when present)
+    //   out[N+1]       = the satoshi container's drain filler (when present)
     //   out[N+2..2N+1] = re-minted data NFTs at the replacement-bound covenant, each carrying its old commitment
     //   out[2N+2]      = the satoshi container re-mint at the replacement-bound covenant (when present)
     //   out[2N+3..]    = added data NFTs for the extended layout
-    // A zero-value bare OP_RETURN pad needs no funding and is exempt from dust.
+    // Each filler carries FILLER_SATOSHIS, which the fee payer funds; anyone may sweep it after 144 blocks.
     const oldNftCount = filteredDataNftUtxos.length;
     for (let i = 0; i < oldNftCount; i++) {
-      builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+      builder.addOutput(fillerOutput());
     }
 
-    // The satoshi container's flag=1 master path requires output[INPUTINDEX] to be a zero-value drain; its re-mint
-    // carries the container's value at the replacement-bound covenant. The token container's master path requires
-    // the same zero-value/zero-token drain at its input index (one output later when the satoshi container is
-    // present).
+    // The satoshi container's flag=1 master path requires output[INPUTINDEX] to be a filler; its re-mint carries
+    // the container's value at the replacement-bound covenant. The token container's master path requires the same
+    // token-less filler at its input index (one output later when the satoshi container is present).
     if (satoshiContainerUtxo) {
-      builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+      builder.addOutput(fillerOutput());
     }
     for (let containerIndex = 0; containerIndex < tokenContainers.length; containerIndex++) {
-      builder.addOutput({ to: Uint8Array.of(0x6a), amount: 0n });
+      builder.addOutput(fillerOutput());
     }
 
     // Re-mint existing data NFTs with their old values carried into the new layout.
@@ -571,7 +572,9 @@ export async function upgradeStatefulContract<T extends Artifact>(
     // address: the funder may not control that covenant, and the surplus belongs to whoever funded it.
     const changeAddr = options.changeAddress ?? options.funder?.generateLockingBytecode() ?? newContract.address;
     builder.addOutput({ to: changeAddr, amount: 1000n }); // placeholder for fee estimation
-    const cost = totalNewNftCost + (options.fee ?? await computeFeeFromBuilder(builder));
+    const fillerCost = FILLER_SATOSHIS
+      * BigInt(oldNftCount + (satoshiContainerUtxo ? 1 : 0) + tokenContainers.length);
+    const cost = totalNewNftCost + fillerCost + (options.fee ?? await computeFeeFromBuilder(builder));
     const changeAmount = fundingSatoshis - cost;
     if (changeAmount > 0n) {
       builder.outputs[builder.outputs.length - 1] = {

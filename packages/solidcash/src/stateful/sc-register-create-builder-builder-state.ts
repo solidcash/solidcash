@@ -547,7 +547,7 @@ export function registerCreateBuilderBuilderState(
   // Runtime-loop groups normally land as reverse-suffix late outputs (covenant addresses group i as
   // outputCount - chunksAlreadyVerified - groupSize). Under a composed balanced trailing band the same
   // chunks must occupy in-band trailing slots like fixed-key valueChunkMints: appending past blockSize
-  // overflows the layout (`participant N built X/Y slots`) and the OP_RETURN late-suffix anchor adds another.
+  // overflows the layout (`participant N built X/Y slots`) and the filler late-suffix anchor adds another.
   const composedTrailingLoopChunks = (effectiveBlockLayout?.slots ?? [])
     .some((slot: any) => slot.kind === 'trailing')
     && builder.getComposedBlockBase() !== 0;

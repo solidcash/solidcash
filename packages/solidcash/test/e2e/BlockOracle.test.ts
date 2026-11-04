@@ -13,8 +13,9 @@ import { resolveBlockhashCoSpend } from '../../src/oracle/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { Utxo } from '../../src/interfaces.js';
 import {
-  createTestProvider, createFeeFunder, setupStatefulUtxos, fundedSigner,
+  createTestProvider, createFeeFunder, setupStatefulUtxos, fundedSigner, mintTestOraclePool, TEST_ORACLE_POOL_KEY,
 } from '../test-util.js';
+import { PoolKeeper } from '../../src/oracle/pool/index.js';
 import { alicePriv, bobPriv, aliceAddress, bobAddress } from '../fixture/vars.js';
 import {
   buildBlockhashOracleCovenantScript, blockhashOracleLockingBytecode,
@@ -168,7 +169,7 @@ describe('block.chainid compilation', () => {
   });
 });
 
-// Oracle-backed block.* reads slice one shared covenant commitment. The reader is stateless. Values are
+// block.* reads slice a block-info coin of the oracle pool the reader binds. The reader is stateless. Values are
 // real mainnet block 956830. basefee is Floor(1000 * totalFees / size) = Floor(1000*31792/9075) = 3503.
 const ORACLE_READER = `
 contract BlockReader() {
@@ -193,9 +194,9 @@ const BLOCK = {
   coinbase: hexToBin('76a914f1c075a01882ae0972f95d3a4177c86c852b7d9188ac'), // p2pkh, 25 bytes
 };
 
-function seedBlock(provider: ReturnType<typeof createTestProvider>): void {
-  if (!('setBlockOracleFields' in provider)) return;
-  provider.setBlockOracleFields({
+// A pool whose info coins hold BLOCK; the provider's own pool publishes the chain's tip instead.
+function blockPool(provider: ReturnType<typeof createTestProvider>): Promise<string> {
+  return mintTestOraclePool(provider, {
     number: BLOCK.number,
     timestamp: BLOCK.timestamp,
     difficulty: BLOCK.difficulty,
@@ -210,8 +211,8 @@ async function spendReader(
   coinbase: Uint8Array,
 ): Promise<string> {
   const provider = createTestProvider();
-  seedBlock(provider);
-  const contract = new Contract(compileString(ORACLE_READER), [], { provider });
+  const oraclePool = await blockPool(provider);
+  const contract = new Contract(compileString(ORACLE_READER), [], { provider, oraclePool });
   const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
   const feeFunder = await createFeeFunder(provider, 20000n);
   const tx = await new TransactionBuilder({ provider })
@@ -225,9 +226,10 @@ async function spendReader(
 describe('block.* oracle reads e2e', () => {
   const artifact = compileString(ORACLE_READER);
 
-  it('publishes a lock pin and no per-contract register', () => {
+  it('takes the pool binding and no per-contract register', () => {
     expect(artifact.usesBlockOracle).toBe(true);
-    expect(artifact.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    expect(artifact.blockOracleLockSlots).toBeUndefined();
+    expect(artifact.constructorInputs.map((input) => input.name)).toEqual(['__oraclePool']);
     expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
     expect(artifact.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_number');
   });
@@ -274,8 +276,8 @@ contract InternalReader() {
 describe('block.* read behind an internal call e2e', () => {
   const spend = async (expected: bigint): Promise<string> => {
     const provider = createTestProvider();
-    seedBlock(provider);
-    const contract = new Contract(compileString(INTERNAL_READER), [], { provider });
+    const oraclePool = await blockPool(provider);
+    const contract = new Contract(compileString(INTERNAL_READER), [], { provider, oraclePool });
     const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
     const feeFunder = await createFeeFunder(provider, 20000n);
     const tx = await new TransactionBuilder({ provider })
@@ -298,8 +300,9 @@ describe('block.* read behind an internal call e2e', () => {
   });
 });
 
-// The owner is the first 20 bytes of the oracle commitment. An update is a spend of that covenant, signed by
-// the key named there, with tx.time >= the new block number. It is not a function of the reader.
+// The owner is the key hash in the commitment. An update is a spend of that covenant, signed by the key named
+// there, with tx.time >= the new block number. It is not a function of the reader. The reader reads a pool coin;
+// the single oracle's own update rules stay pinned below while framed and message-bus readers still use it.
 const READ_BACK = `
 contract BlockOracleOwned() {
     function readBack(int eNumber, int eTimestamp) {
@@ -319,21 +322,17 @@ describe('block.* owner-update path e2e', () => {
   // is non-final, so an update cannot name a height the chain has not reached.
   it('owner replaces the commitment, and a reader slices the new fields', async () => {
     const provider = createTestProvider();
-    if (!('blockOracleOwnerKey' in provider)) return;
-    const contract = new Contract(compileString(READ_BACK), [], { provider });
-    const updater = new BlockOracleUpdater({
-      contract, categoryId: '00'.repeat(32), keeperKey: provider.blockOracleOwnerKey, rpc: fakeRpc(100000),
-    });
-    // The oracle starts at the tip, and a rewind is refused (audit CRYPTO-5). A height update keeps the
-    // timestamp (audit CRYPTO-6).
-    provider.setBlockOracleFields({
+    // The pool starts below the new height, and a height update keeps the timestamp (audit CRYPTO-6).
+    const oraclePool = await mintTestOraclePool(provider, {
       number: 99_999n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
     });
-    const txid = await updater.pushUpdate({
+    const keeper = new PoolKeeper({ provider, category: oraclePool, ownerKey: TEST_ORACLE_POOL_KEY });
+    const txids = await keeper.refreshInfo({
       number: 100000n, timestamp: 1700000000n, difficulty: 0n, size: 1n, totalFees: 0n,
       coinbase: hexToBin('00'),
     });
-    expect(txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(txids).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/)]);
+    const contract = new Contract(compileString(READ_BACK), [], { provider, oraclePool });
     const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
     const feeFunder = await createFeeFunder(provider, 20000n);
     const tx = await new TransactionBuilder({ provider })

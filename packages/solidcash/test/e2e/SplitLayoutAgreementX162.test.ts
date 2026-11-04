@@ -94,7 +94,10 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     const touchB = bundle.manifest.routes.find((route: { function: string }) => route.function === 'touchB');
     const touchBFacet = bundle.facets[touchB.target];
     expect(touchBFacet.abi.find((fn: { name: string }) => fn.name === 'touchB')?.usesBlockOracle).toBe(true);
-    expect(touchBFacet.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    // The facet reads a block-info coin of the pool it binds: its last input is the binding, after the brand.
+    expect(touchBFacet.blockOracleLockSlots).toBeUndefined();
+    expect(touchBFacet.constructorInputs.map((input: { name: string }) => input.name))
+      .toEqual(['__brand', '__oraclePool']);
     for (const info of bundle.manifest.facets) {
       expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(rootSlots);
     }
@@ -150,8 +153,8 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     expect(afterC.own).toBe(9n);
     expect(afterC.AStorage__a).toBe(5n);
 
-    // touchB is the function that slices the shared oracle. It lives on a facet, and the namespaces written
-    // by the other facets are still the ones this spend left behind.
+    // touchB is the function that slices a pool coin. It lives on a facet, and the namespaces written by the
+    // other facets are still the ones this spend left behind.
     const timedRoute = bundle.manifest.routes.find((route: { function: string }) => route.function === 'touchB');
     expect(timedRoute.target).not.toBe('root');
     expect(bundle.facets[timedRoute.target].usesBlockOracle).toBe(true);

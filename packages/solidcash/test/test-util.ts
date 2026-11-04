@@ -37,7 +37,9 @@ import {
   addressToLockScript, generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput,
 } from '../src/utils.js';
 import type NetworkProvider from '../src/network/NetworkProvider.js';
-import { utxoComparator } from '../src/utils.js';
+import { randomUtxo, utxoComparator } from '../src/utils.js';
+import { createOraclePool, type PoolBlockFields } from '../src/oracle/pool/index.js';
+import { p2pkhLockOf } from '../src/oracle/pool/coins.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
 
@@ -571,4 +573,23 @@ export async function seedNativeToken(
     holders.push(coin);
   }
   return { reserve, holders };
+}
+
+/** Owner key of the oracle pools tests mint. Its P2PKH pays their genesis and keeper fees. */
+export const TEST_ORACLE_POOL_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => index + 101);
+
+/**
+ * Mint an oracle pool whose info coins hold `tip`: the mock's own pool publishes the chain's tip, this one any
+ * fields. A reader binds it through the `oraclePool` option. `slots` adds one ring slot, holding block `tip.number`.
+ */
+export async function mintTestOraclePool(
+  provider: MockNetworkProvider | RegtestNetworkProvider, tip: PoolBlockFields,
+  options: { infoCoins?: number; slots?: boolean } = {},
+): Promise<string> {
+  await provider.addUtxo(binToHex(p2pkhLockOf(TEST_ORACLE_POOL_KEY)), randomUtxo({ vout: 0, satoshis: 10_000_000n }));
+  const pool = await createOraclePool(provider, {
+    ownerKey: TEST_ORACLE_POOL_KEY, funder: TEST_ORACLE_POOL_KEY, infoCoins: options.infoCoins ?? 1, ringDepth: 1,
+    slotReplicas: options.slots === true ? 1 : 0, tip,
+  });
+  return pool.category;
 }

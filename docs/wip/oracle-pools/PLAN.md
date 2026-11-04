@@ -29,8 +29,7 @@ rev. 39 decision 47 (branch `tre`, `analysis/tre/tre-rev39-addendum.md`, section
   - A `block.*` read checks the input's `OP_UTXOTOKENCATEGORY == P || 0x01` and `flags == 0x00`.
   - A `blockhash` read checks the same category and `flags == 0x80`.
   - A read checks no lock.
-- **Genesis:** a deployment mints a pool shaped by its contract tree, or binds to an existing pool. As built, a
-  deployment only binds (see "As built" below).
+- **Genesis:** a deployment mints a pool shaped by its contract tree, or binds to an existing pool.
 
 ## Formats (single source for this branch)
 
@@ -116,22 +115,28 @@ Phases 1-5 are done; the commits are listed under each.
 
 ## As built, where it differs from the plan
 
-- `oraclePool` takes a pool category only. No deployment mints a pool, whether shaped by its contract tree or not:
-  a pool is minted by `createOraclePool`, and a deployment binds it or the provider's.
-- `PoolKeeper` is a set of calls with no loop of its own: an operator calls `refreshInfo` and `writeNewestSlot` (or
-  `writeSlots`) per block. The mock and regtest providers drive it after each block. It exposes no baton depth
-  change, which the covenant admits.
+- A deployment mints its pool in two transactions of its own before its genesis (`createOraclePool`), not in its
+  genesis transaction: `oraclePool: 'new'` or `{ create }` on stateful and factory deployments; `new Contract`, being
+  synchronous, still takes a category only. The shape follows the artifact's reads and `createdPoolReads`, which the
+  compiler publishes for the bound contracts a creator embeds; nothing infers a ring depth, so it defaults to 256.
+- `PoolKeeper.start` polls the provider's height (no header subscription) and steps on a new block; `setDepth`
+  rewrites the baton's depth. `rotate` rotates the baton's owner with every coin's, so there is no separate
+  `rotateBaton`.
 - A function-pointer target reads the bound pool through a binding helper the contract defines from `__oraclePool`
   (`3b37569df`), and walks the inputs to its coin. A `blockhash` read there answers only a slot holding exactly `n`,
   with no zero case.
 
 ## Open items
 
-- `solidhat node` advertises no pool yet (`devnet.oracle_pool`): a devnet reader needs `oraclePool` and a keeper
-  its user runs.
-- The regtest pool code (`RegtestNetworkProvider`'s install and refresh) has not run.
+- `solidhat node` mints, keeps and advertises its pool (`f02a4812a`), but its owner key stays in the node: on the
+  devnet, `oraclePool: 'new'` needs `create.ownerKey`, and nothing keeps that pool but its user's `PoolKeeper`.
+- The regtest pool code (`RegtestNetworkProvider`'s install and refresh) has not run. Regtest exposes its owner key
+  but keeps no pool a deployment mints there, and needs `create.tip` (it is no simulator).
 - Multisig owners: every covenant checks a single owner key hash.
 - Phase 6, the port to `sushi-port-node`.
 - Found while writing the docs, by reading, untested: no SDK path adds the slot of a `blockhash` read in a
   function-pointer target; in an artifact where an entry reads `block.*` directly, an entry that reaches a reader
-  only through a pointer gets no coin from the SDK (both fail closed); the message-bus refusal has no test.
+  only through a pointer gets no coin from the SDK (both fail closed).
+- The message-bus refusal (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`) is tested on the verifier extraction alone
+  (`OraclePoolBusVerifierRefusal.test.ts`). By reading, no source shape reaches it: a kernel build's verifier is
+  compiled from its own host source, and a legacy build's closure takes compiler helpers and the verifier only.

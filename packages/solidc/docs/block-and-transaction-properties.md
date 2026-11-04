@@ -617,15 +617,37 @@ is a single byte; and `difficulty` stays the real PoW difficulty rather than ali
 
 - `NetworkProvider.oraclePoolCategory` (display order) names a provider's default pool. `ElectrumNetworkProvider`
   takes it as the `oraclePoolCategory` option (64 hex characters, lowercased); `MemCashNetworkProvider` takes it as
-  an option or from the node's advertised `devnet.oracle_pool`, which `solidhat node` does not advertise yet.
+  an option or from the node's advertised `devnet.oracle_pool`, which `solidhat node` mints, keeps current and
+  advertises (`f02a4812a`, `packages/testing/src/oracle-pool.ts`).
+- `NetworkProvider.oraclePoolOwnerKey` (mock, regtest) names the key a provider's own pools use; the devnet client
+  has none. `NetworkProvider.keepOraclePool(category)` (mock) keeps a further pool owned by that key current after
+  each block, as the provider keeps its own; `createOraclePool` calls it for every pool that key owns.
+- `oraclePool: 'new'` or `{ create: { infoCoins?, ringDepth?, slotReplicas?, ownerKey?, funder?, tip?, blockHash? } }`
+  on `DeployOptions` and `ContractFactory` deployments mints a pool by `createOraclePool` before the genesis
+  (`resolveDeploymentOraclePool`, `oracle/pool/deployment.ts`), then binds the deployment to it; `deployFrom` binds
+  every child to the creator's pool. The shape follows `oraclePoolTreeReads(artifact)`: the artifact's own
+  `usesBlockOracle` and `usesBlockhash`, and `createdPoolReads`, the reads of the bound contracts it creates or names,
+  theirs included, which the compiler publishes from each child's standalone compile. Block-info coins only for
+  `block.*`, `infoCoins` defaulting to the master count (`threadCount`, the framed pool size, 1 when stateless); ring
+  slots only for `blockhash`, at `ringDepth` (256, `'now'` = 1); the baton at that depth. The owner defaults to
+  `provider.oraclePoolOwnerKey`; without one the deployment is refused, naming `create.ownerKey`. A tree that reads
+  nothing mints no pool. `new Contract` keeps a category-only `oraclePool`, as its constructor is synchronous.
+- Every genesis moves the funding coin to the P2PKH of a one-time key, a hash of the funder's key and the funding
+  outpoint, so a keeper or wallet sharing the funder's address cannot spend it between the two transactions.
+- `PoolKeeper.start(intervalMs = 1000, { onError?, onStep? })` steps at once and on each tick that finds a new block:
+  `refreshInfo` with `fields(height)` (a simulator's height and block time less one second by default), then
+  `writeSlots` for every block since its last step. On a simulator a block the keeper's own send mined is not new.
+  It returns a stop function that awaits the running step. `setDepth(depth)` rewrites the baton's depth (1 to 256)
+  through its update path; `rotate` already rotates the baton's owner with every coin's.
 - `MockNetworkProvider` mints its pool on the first `oraclePoolCategory` read, by the two genesis transactions: two
   block-info coins, a depth-256 ring with one slot per block and the baton, owned by `oraclePoolOwnerKey` and paid
-  from a fixed coin the mock gives that key's P2PKH. After each send, `mine`, `mineUpTo`, `evm_mine`,
-  `hardhat_mine` and `evm_increaseTime`, a `PoolKeeper` moves every live block-info coin to the tip height and the
-  tip time less one second, and writes the slot of each block mined since, up to the depth. Its transactions wait
-  in the mempool for the next block. Block `n` hashes to the SHA-256 of `n` as 4 little-endian bytes. A snapshot
-  keeps whether the pool exists, and `reset` forgets it. A VM target older than BCH 2026 has no pool, and a failed
-  refresh is kept in `oraclePoolRefreshError`.
+  from a fixed coin the mock gives that key's P2PKH. A second fixed coin, which every fresh chain gives that P2PKH,
+  pays for the pools minted through the mock, which it keeps with its own. After each send, `mine`, `mineUpTo`,
+  `evm_mine`, `hardhat_mine` and `evm_increaseTime`, a `PoolKeeper` moves every live block-info coin to the tip
+  height and the tip time less one second, and writes the slot of each block mined since, up to the depth. Its
+  transactions wait in the mempool for the next block. Block `n` hashes to the SHA-256 of `n` as 4 little-endian
+  bytes. A snapshot keeps whether the pool exists and which pools are kept, and `reset` forgets them. A VM target
+  older than BCH 2026 has no pool, and a failed refresh is kept in `oraclePoolRefreshError`.
 - `RegtestNetworkProvider` mints a pool of the same shape on its first request (`createOraclePool`, owned by a fixed
   key) and refreshes it the same way after each mine and after `increaseTime`. A snapshot confirms the keeper's
   pending transactions first, and a restore rewinds the slot height. Not run.

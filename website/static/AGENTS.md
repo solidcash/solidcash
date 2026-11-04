@@ -620,9 +620,16 @@ bytes32 blobhash(int i)        -- always zero
 - A reader takes a hidden last constructor input, `__oraclePool`, that the SDK fills from the `oraclePool` option
   (a category in display order) or else `provider.oraclePoolCategory`. It is part of the address, so a deployed
   reader keeps its pool, and a contract passes its own to the contracts it creates.
-- `MockNetworkProvider` mints its pool on first use and refreshes it on every mined block. On a live network pass
+- `MockNetworkProvider` mints its pool on first use and refreshes it on every mined block. `solidhat node` mints a
+  pool, keeps it current and advertises it, so devnet readers bind it by default. On a live network pass
   `oraclePoolCategory` to `ElectrumNetworkProvider`, or mint a pool with `createOraclePool` and keep it current with
-  `PoolKeeper` (both from `@solidcash/solidcash/oracle`). `solidhat node` mints no pool yet.
+  `PoolKeeper` (both from `@solidcash/solidcash/oracle`); `keeper.start(intervalMs?)` runs the keeper loop and
+  returns a stop function, and `keeper.setDepth(depth)` retunes the baton.
+- A stateful or factory deployment with `oraclePool: 'new'`, or `{ create: { infoCoins?, ringDepth?, slotReplicas?,
+  ownerKey? } }`, mints a pool before its genesis, shaped by what the contract and the contracts it creates read:
+  block-info coins (one per master) only for `block.*`, ring slots (depth 256, or 1 for `'now'`) only for
+  `blockhash`. Its children bind the same pool. The owner defaults to `provider.oraclePoolOwnerKey` (mock, regtest);
+  elsewhere pass `ownerKey`.
 - A reader trusts its pool's genesis and owner key: the owner writes every field and hash and can stop or sweep
   coins, but cannot over-report the height or time or rewind them.
 - `blockhash(n)` makes the contract stateful. It returns the hash a slot holds for n, zero when the slot of n's

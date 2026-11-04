@@ -211,7 +211,8 @@ support them.
 Contracts read Solidity-style `block.number` and `block.timestamp` from a block-info coin of an oracle pool. The
 mock chain's keeper writes its height and time into its pool whenever it mines, so these helpers move `block.*` as
 Hardhat's do; see [Block Data & Oracles](/docs/guides/block-oracles#testing-on-the-mock-network). `solidhat node`
-mints no pool yet.
+mints a pool when it starts, keeps it current on every tip change, and advertises it, so readers on the devnet bind
+it without options.
 
 ## Chai matchers
 

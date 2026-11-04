@@ -152,20 +152,60 @@ const pool = await createOraclePool(provider, {
 `(4 + 256 + 1) * 1,200 = 313,200` satoshis, and `pool.category` is the category to name in `oraclePoolCategory` or
 `oraclePool`.
 
+### Mint a pool with the deployment
+
+A stateful or `ContractFactory` deployment can mint its own pool, in transactions sent before its genesis so that
+its constructor can read it. Pass `oraclePool: 'new'`, or `{ create: { ... } }` to set options:
+
+```ts
+const clock = await clockFactory.deploy({ initialState: { reads: 0n }, oraclePool: 'new' });
+const hashes = await hashesFactory.deploy({
+  initialState: { reads: 0n },
+  oraclePool: { create: { ringDepth: 16, slotReplicas: 2, ownerKey } },
+});
+```
+
+The pool's shape follows what the contract and the contracts it creates read. The compiler publishes the children's
+reads in the creator's artifact as `createdPoolReads`.
+
+- Block-info coins are minted only if something in the tree reads `block.*`: `infoCoins` of them, by default one
+  per master of the deployment, or one for a stateless contract.
+- Ring slots are minted only if something reads `blockhash`: `slotReplicas` per block (default 1) for the last
+  `ringDepth` blocks (default 256, or 1 for `'now'`).
+- The baton holds `ringDepth`.
+
+The deployment and every contract it creates bind the new pool. `ownerKey` signs the pool's owner paths, and its
+P2PKH pays for the pool unless `funder` is given. It defaults to `provider.oraclePoolOwnerKey`, which the mock and
+regtest providers have. On any other provider, `'new'` without `ownerKey` is refused, and a live network also needs
+`tip`, and `blockHash` where the provider has no `getBlockHash`, as `createOraclePool` does. A tree that reads no
+block data mints no pool.
+
 ## Run the keeper
 
-`PoolKeeper` signs the owner's transactions. It is not a daemon: call it from your own loop on each new block, with
-fields read from a node you operate or explicitly trust.
+`PoolKeeper` signs the owner's transactions. Run it with `start`, or call its steps from your own loop on each new
+block. Either way, read the fields from a node you operate or explicitly trust.
 
 ```ts
 import { PoolKeeper } from '@solidcash/solidcash/oracle';
 
-const keeper = new PoolKeeper({ provider, category: pool.category, ownerKey });
+const keeper = new PoolKeeper({
+  provider, category: pool.category, ownerKey,
+  fields: async (height) => readBlockFields(height), // a live network needs it; a simulator supplies its own
+});
+const stop = keeper.start(10_000); // looks for a new block every 10 seconds (default: every second)
+// ...
+await stop();
 
-// On each new block:
+// Or, from your own loop, on each new block:
 await keeper.refreshInfo({ number, timestamp, difficulty, size, totalFees, coinbase });
 await keeper.writeNewestSlot(number, hash);
 ```
+
+- `start(intervalMs?, { onError?, onStep? })` steps at once, then on each tick that finds a new block. A step calls
+  `refreshInfo` with the tip's fields and writes the slot of every block since the last step, up to the tip. A block
+  mined by the keeper's own transactions, as a simulator's sends are, does not trigger a step. A failed step goes to
+  `onError` (logged by default), and the next block tries again. The returned stop function resolves once the
+  running step ends. The block hashes come from the `blockHash` option, or else the provider's `getBlockHash`.
 
 - `refreshInfo(fields)` updates every live block-info coin the key owns. One height-locked transaction raises
   `number` and writes the block's other fields, then one time-locked transaction raises `timestamp`, so every coin
@@ -176,6 +216,8 @@ await keeper.writeNewestSlot(number, hash);
   of its residue among `blocks`.
 - `growInfo(k)` mints k copies of a live block-info coin through the baton, and `growSlots(blocks)` mints slots with
   the baton's owner and depth.
+- `setDepth(depth)` changes the baton's depth, 1 to 256, through its update path. Slots minted afterwards take the
+  new depth. To retune a ring, set the depth, grow slots at it, then sweep the old ones.
 - `stop`, `sweep` and `rotate` are described [below](#stop-and-sweep).
 
 Every keeper transaction pays 1 satoshi per byte from the largest token-free coin at the owner's P2PKH address and
@@ -243,6 +285,10 @@ keeper's would. A failed refresh leaves the pool behind and is kept in `provider
 drops the pool, and the next read mints a new one. A VM profile older than BCH 2026 has no pool, as the pool
 covenants loop.
 
+The mock keeps every pool owned by `provider.oraclePoolOwnerKey` current in the same way: a pool a deployment mints
+with `oraclePool: 'new'`, and any pool `createOraclePool` mints with that key. That key's P2PKH address holds a coin on
+every fresh chain, which pays for those pools.
+
 A test that needs chosen fields mints a pool of its own and binds a reader to it:
 
 ```ts
@@ -265,8 +311,10 @@ const keeper = new PoolKeeper({ provider, category: pool.category, ownerKey }); 
 ```
 
 `RegtestNetworkProvider` mints a pool of the mock's shape when it first connects and refreshes it as it mines.
-`solidhat node` mints no pool yet: on a devnet, create one with `createOraclePool`, keep it with a `PoolKeeper`, and
-bind readers with `oraclePool`.
+`solidhat node` mints a pool of the same shape when it starts and keeps it current on every tip change. It
+advertises the pool as `server.features.devnet.oracle_pool`, which `MemCashNetworkProvider` takes as its default, so
+readers on the devnet bind it without options. The devnet's owner key stays in the node, so `oraclePool: 'new'` there
+needs `ownerKey`, and that pool needs a keeper of your own, such as `PoolKeeper.start`.
 
 ## Trust: the owner key
 

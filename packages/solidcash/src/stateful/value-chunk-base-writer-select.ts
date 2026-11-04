@@ -307,6 +307,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   blockhashCoSpendUtxos?: UnlockableUtxo[];  // (n->hash) oracle co-spends for blockhash(n) readers
   blockInfoCoSpendUtxos?: UnlockableUtxo[];  // the block-info oracle commitment a reader slices
   delegateBlockInfoOracle?: boolean;  // that reader is the delegated implementation, so its recreate rides its band
+  /** Pool coins a function-pointer target finds itself, no block slot places: each is recreated at its own index. */
+  unslottedPoolCoSpends?: UnlockableUtxo[];
   /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph message-bus batch
    * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
   blockhashCoSpendSlotOrdinals?: number[];

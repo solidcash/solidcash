@@ -4,6 +4,8 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { selectPoolSlot } from '../../src/oracle/pool/index.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { randomUtxo } from '../../src/utils.js';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
@@ -43,15 +45,18 @@ contract CallerK(bytes calleeAddr) {
 
 describe('transitive callee complex keccak + blockhash front-region (fail-closed edge b)', () => {
   it('settles with the correct digest', async () => {
-    const provider = createTestProvider();
+    const provider = createTestProvider() as MockNetworkProvider;
     const { n, hash } = await allocHeight(provider);
     const calleeArtifact = compileString(CALLEE);
     const callerArtifact = compileString(CALLER);
     const calleeContract = new Contract(calleeArtifact, [], { provider });
+    // The callee reads blockhash(n) from a ring slot of the pool it binds, the provider's.
+    expect(calleeContract.oraclePool).toBe(provider.oraclePoolCategory);
+    expect((await selectPoolSlot(provider, calleeContract.oraclePool!, BigInt(n)))?.exact).toBe(true);
     const { categoryId: calleeCategory } = await setupStatefulUtxos(
       provider, calleeContract, calleeArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
     );
-    // The callee reads block n from the provider's oracle pool; the compute side-car is shared.
+    // The shared compute side-car the callee's keccak256 reads.
     const calleeSidecarLock = binToHex(keccakComputeLockingBytecode(new Uint8Array(32), true));
     await provider.addUtxo(calleeSidecarLock, {
       ...randomUtxo({ satoshis: 100_000n }),
@@ -78,8 +83,8 @@ describe('transitive callee complex keccak + blockhash front-region (fail-closed
   }, 300_000);
 });
 
-// Mine a block whose slot the provider's pool holds.
-async function allocHeight(provider: ReturnType<typeof createTestProvider>): Promise<{ n: number; hash: Uint8Array }> {
+/** Mine a block and return its height and the mock chain's hash of it. */
+async function allocHeight(provider: MockNetworkProvider): Promise<{ n: number; hash: Uint8Array }> {
   const before = await provider.getBlockHeight();
   await provider.mine(1);
   return { n: before + 1, hash: hexToBin(await provider.getBlockHash(before + 1)) };

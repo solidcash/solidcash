@@ -557,6 +557,7 @@ import {
   type RunBuildMidLateThroughTailHost,
 } from './stb-run-build-mid-late-through-tail.js';
 import { appendCallerEdges } from './stb-materialize-caller-edge-outputs.js';
+import { appendUnslottedPoolCoSpends } from './block-oracle-reader-selection.js';
 import {
   getChunkableValueWriteBand as getChunkableValueWriteBandImpl,
   type GetChunkableValueWriteBandHost,
@@ -856,6 +857,7 @@ export class StatefulTransactionBuilder {
   private blockhashCoSpendUtxos: UnlockableUtxo[];
   private blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
   private delegateBlockInfoOracle = false;
+  private unslottedPoolCoSpends: UnlockableUtxo[] = [];
   private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
@@ -1091,6 +1093,7 @@ export class StatefulTransactionBuilder {
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
     this.blockInfoCoSpendUtxos = options.blockInfoCoSpendUtxos ?? [];
     this.delegateBlockInfoOracle = options.delegateBlockInfoOracle ?? false;
+    this.unslottedPoolCoSpends = options.unslottedPoolCoSpends ?? [];
     this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
     this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
     this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
@@ -6681,6 +6684,7 @@ export class StatefulTransactionBuilder {
     if (result === 'rebuild') {
       return this.build();
     }
+    appendUnslottedPoolCoSpends(this.unslottedPoolCoSpends, result);
     // F1: append this caller's attested call-edge records past every block and fill their witness indices, once
     // the final output list is settled (fee/change are added later and never shift the appended tail).
     appendCallerEdges({

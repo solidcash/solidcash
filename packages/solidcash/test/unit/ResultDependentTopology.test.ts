@@ -3,7 +3,7 @@ import {
   encodePoolInfoCommitment, type Artifact, type ExternalCallAbi, type ExternalCallExpression,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { bindArtifactOraclePool } from '../../src/oracle/pool/reader.js';
+import { bindArtifactOraclePool } from '../../src/oracle/pool/index.js';
 import {
   AtomicMessageBusComposition, compose, composeDiscoveredGraph, type PreparedAtomicMessageBusCall,
 } from '../../src/message-bus/compose.js';
@@ -80,7 +80,7 @@ function fixture(): ResultPropagationContext & {
 }
 
 describe('result-dependent topology propagation', () => {
-  it('selects time-gated delegate calls from a coin of the pool the executed body binds', async () => {
+  it('selects time-gated delegate calls from the bound oracle commitment', async () => {
     const ctx = fixture();
     const root = ctx.descriptors[0];
     const artifact = { ...root.artifact, usesBlockOracle: true, abi: [{ ...root.artifact.abi[0]!,
@@ -91,23 +91,24 @@ describe('result-dependent topology propagation', () => {
         right: { kind: 'literal', type: 'uint256', value: '100' },
       } }],
     }] } as Artifact;
-    const oraclePool = '51'.repeat(32);
-    const unrelatedPool = '53'.repeat(32);
+    // The executed body's artifact binds `pool`; the forwarder's own contract binds another.
+    const pool = `${'51'.repeat(31)}52`;
+    const unrelatedPool = `${'53'.repeat(31)}54`;
     let timestamp = 99n;
     const requested: string[] = [];
     Object.assign(root.contract.inner, {
       oraclePool: unrelatedPool,
       provider: { getUtxosByTokenCategory: async (category: string) => {
         requested.push(category);
-        return [{ txid: 'ab'.repeat(32), vout: 0, satoshis: 1200n, token: {
-          category, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodePoolInfoCommitment({
+        return [{ txid: 'a1'.repeat(32), vout: 0, satoshis: 1_200n, token: { category, amount: 0n, nft: {
+          capability: 'mutable', commitment: binToHex(encodePoolInfoCommitment({
             flags: 0, owner: new Uint8Array(20), number: 1n, timestamp, difficulty: 0n, size: 0n, totalFees: 0n,
             coinbase: new Uint8Array(),
-          })) },
-        } }];
+          })),
+        } } }];
       } },
     });
-    bindArtifactOraclePool(artifact, oraclePool);
+    bindArtifactOraclePool(artifact, pool);
     const call = { ...root, executionArtifact: artifact };
     const discover = (): ReturnType<typeof discoverInitialCallTopology> => discoverInitialCallTopology(
       call, new Uint8Array(),
@@ -115,7 +116,7 @@ describe('result-dependent topology propagation', () => {
     expect((await discover()).calls.map((item) => item.callsiteId)).toEqual([undefined]);
     timestamp = 100n;
     expect((await discover()).calls.map((item) => item.callsiteId)).toEqual([undefined, 1]);
-    expect(requested).toEqual([oraclePool, oraclePool]);
+    expect(requested).toEqual([pool, pool]);
   });
 
   it('does not prune a producer-result require from a provisional false seed', async () => {

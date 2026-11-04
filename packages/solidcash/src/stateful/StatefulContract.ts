@@ -133,11 +133,13 @@ import {
   type GraphEcrecoverCall,
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
+import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
   artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
 } from '../oracle/pool/reader.js';
+import { groupPoolReader, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -591,6 +593,7 @@ import {
   extractBlockhashReads as extractBlockhashReadsImpl,
   extractGraphBlockhashRead as extractGraphBlockhashReadImpl,
   resolveBlockhashCoSpends as resolveBlockhashCoSpendsImpl,
+  resolveIndirectBlockhashCoSpends,
 } from './sc-resolve-blockhash-co-spends.js';
 import {
   refreshProjectedExternalReturns as refreshProjectedExternalReturnsImpl,
@@ -5522,12 +5525,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B's master at input 0, so materialize B's __internal__blockhashInputIndex = slot offset before building the
     // unlocker (the base Contract resolver refuses it), then co-spend the oracles + their locktime.
     const bhSlot = bAbiFunc.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
-    const probeArgs = (bAbiFunc.blockhashReads?.length ?? 0) > 0 && bhSlot !== undefined
-      && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
+    const probeArgs = completeInternalFunctionArguments((bAbiFunc.blockhashReads?.length ?? 0) > 0
+      && bhSlot !== undefined && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
       ? materializeInternalFunctionArgument(
         args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
       )
-      : [...(args ?? [])];
+      : [...(args ?? [])], bAbiFunc.inputs);
     const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
     if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const frontRegionInputs: UnlockableUtxo[] = [];
@@ -5571,12 +5574,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const bhSlot = bhSlots[0];
     // Materialize B's __internal__blockhashInputIndex (the base Contract resolver refuses it), then resolve
     // each oracle in slot order. Param reads use B's call args; computed reads probe B with its own state.
-    const probeArgs = bhSlot !== undefined
+    // Each trailing witness defaults: the probe places no output for a void entry's record.
+    const probeArgs = completeInternalFunctionArguments(bhSlot !== undefined
       && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
       ? materializeInternalFunctionArgument(
         args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
       )
-      : [...(args ?? [])];
+      : [...(args ?? [])], bAbiFunc.inputs);
     const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
     if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const resolved = await resolveBlockhashCoSpendsImpl(
@@ -12519,6 +12523,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       blockInfoCoSpendUtxos = [nestedOracle ?? await poolInfoCoSpend(this.inner.provider, pool)];
     }
+    // A function-pointer target finds its pool coins itself, so no block slot places them: they ride past the blocks.
+    const unslottedPoolCoSpends = await resolveUnslottedPoolInfoCoins(this.inner.provider, [
+      { abiFunction, pool: this.inner.oraclePool, name: this.inner.name },
+      ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).flatMap(groupPoolReader),
+      ...lowLevelCallUtxoGroups.flatMap(groupPoolReader),
+    ], [
+      ...blockInfoCoSpendUtxos,
+      ...[...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].flatMap((group) => group.blockInputs ?? []),
+    ]);
+    if (abiFunction?.indirectPoolReads?.blockhash === true && this.categoryId) {
+      const slots = await resolveIndirectBlockhashCoSpends(
+        { categoryId: this.categoryId, inner: this.inner }, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
+        blockhashCoSpendUtxos, unslottedPoolCoSpends, blockhashCoSpendUtxos,
+      );
+      unslottedPoolCoSpends.push(...slots.map(({ utxo, unlocker }) => ({ ...utxo, unlocker })));
+      maxBhLocktime = slots.reduce((max, slot) => Math.max(max, slot.locktime), maxBhLocktime);
+    }
 
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the
     // ordinary batched keccak side-cars. Computed recovery arguments remain deferred; the full routed trace later
@@ -12942,6 +12963,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         blockhashCoSpendUtxos,
         blockInfoCoSpendUtxos,
         delegateBlockInfoOracle,
+        unslottedPoolCoSpends,
         blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         keccakComputeCommitments,

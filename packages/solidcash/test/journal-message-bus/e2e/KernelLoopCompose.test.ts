@@ -13,7 +13,7 @@ import { StatefulContract } from '../../../src/stateful/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';
 import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { BlockOracleUpdater, type RpcLike } from '../../../src/oracle/blockOracleUpdater.js';
+import { PoolKeeper, isPoolInfoOutput } from '../../../src/oracle/pool/index.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { decodeKernelEntryJournalAccesses } from '../../../src/stateful/KernelEntryJournal.js';
@@ -21,7 +21,8 @@ import {
   getEntryNftAddress, getSatoshiContainerAddress, getValueChunkAddress,
 } from '../../../src/stateful/covenant-helpers.js';
 import {
-  createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, setupStatefulUtxos,
+  TEST_ORACLE_POOL_KEY, createBareP2pkhFeeFunder, createTestProvider, genesisFtContainer, mintTestOraclePool,
+  setupStatefulUtxos,
 } from '../../test-util.js';
 import { alicePkh, alicePriv, alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
@@ -2543,15 +2544,10 @@ describe('kernel loop message-bus compose', () => {
   }, 180_000);
 });
 
-// The owner's update reads no rpc.
-const UNUSED_RPC: RpcLike = { request: async (): Promise<never> => { throw new Error('unused'); } };
-
-// The owner update is a signed spend of the shared oracle covenant, so the kernel synthesizes no updater row.
+// The owner update is a signed spend of a pool coin, so the kernel synthesizes no updater row.
 describe('kernel block-oracle rows', () => {
   it('has no updater row and reads an owner-signed oracle update through the row loop', async () => {
     const provider = createTestProvider();
-    // Only the mock provider mints the block oracle a reader pins.
-    if (!('setBlockOracleFields' in provider)) return;
     const artifact = compileString(`contract KernelBlockOracle() {
       mapping(int => int) values;
       function seed(int key, int value) public {
@@ -2568,32 +2564,32 @@ describe('kernel block-oracle rows', () => {
     expect(artifact.usesBlockOracle).toBe(true);
     expect(artifact.stateLayout!.variables.map((variable) => variable.name)).not.toContain('__block_timestamp');
 
-    const inner = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupStatefulUtxos(
-      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
-    );
-    // A time-type update keeps the number, does not rewind the timestamp, and is final only below the mock's
-    // median time past (its tip time), so the oracle starts below the time it publishes (CRYPTO-5/6).
+    // A pool minted at fixed fields. The owner's time-type update raises only the timestamp, and is final only below
+    // the mock's median time past (its tip time), so the pool starts below the time it publishes.
     const fields = {
       number: BigInt(await provider.getBlockHeight()), timestamp: 1_699_990_000n,
       difficulty: 0n, size: 1n, totalFees: 0n, coinbase: hexToBin('00'),
     };
-    provider.setBlockOracleFields(fields);
+    const pool = await mintTestOraclePool(provider, fields);
     const published = 1_699_999_999n;
-    const owner = new BlockOracleUpdater({
-      contract: inner, categoryId, keeperKey: provider.blockOracleOwnerKey, rpc: UNUSED_RPC,
-    });
-    await owner.pushUpdate({ ...fields, timestamp: published }, Number(published));
-    expect(await owner.oracleTimestamp()).toBe(published);
+    const keeper = new PoolKeeper({ provider, category: pool, ownerKey: TEST_ORACLE_POOL_KEY });
+    expect(await keeper.refreshInfo({ ...fields, timestamp: published })).toHaveLength(1);
+    expect((await keeper.infoCoins()).map((coin) => coin.fields.timestamp)).toEqual([published]);
 
+    const inner = new Contract(artifact, [], { provider, oraclePool: pool });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
     const contract = StatefulContract.withCategory(inner, categoryId);
     const call = contract.batch([{ function: 'readTimestamp', args: [published] }]);
     const builder = await call.build();
     const vm = createVirtualMachineBch2026ForProvider(provider);
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    expect(sourceOutputs.some((output) => binToHex(output.lockingBytecode) === binToHex(provider.blockOracleLock)))
-      .toBe(true);
+    // The batch co-spends the pool's one info coin and recreates it at its own index.
+    const oracles = sourceOutputs.flatMap((output, index) => (isPoolInfoOutput(output, pool) ? [index] : []));
+    expect(oracles).toHaveLength(1);
+    expect(transaction.outputs[oracles[0]]).toEqual(sourceOutputs[oracles[0]]);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
         .toBe(true);

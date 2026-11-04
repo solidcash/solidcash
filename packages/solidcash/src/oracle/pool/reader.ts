@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   ORACLE_POOL_PARAMETER, POOL_FLAG_SLOT, decodePoolInfoCommitment, oraclePoolBinding, poolInfoReadUnlocking,
-  poolSlotReadUnlocking, type Artifact,
+  poolSlotReadUnlocking, type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import type { LibauthOutput, UnlockableUtxo, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
@@ -30,6 +30,25 @@ export function takesOraclePool(artifact: Pick<Artifact, 'constructorInputs'>): 
  */
 export function readsPoolOnlyIndirectly(artifact: Pick<Artifact, 'abi' | 'usesBlockOracle'>): boolean {
   return artifact.usesBlockOracle === true && !artifact.abi.some((fn) => fn.usesBlockOracle === true);
+}
+
+/** The pool coin kinds a call of `fn` co-spends for function-pointer targets, which find them without a slot. */
+export interface IndirectPoolReads {
+  readonly blockInfo: boolean;
+  readonly blockhash: boolean;
+}
+
+/**
+ * The kinds the entry `fn` publishes. An artifact that publishes none for any entry predates the field: there every
+ * call co-spends an info coin when the artifact reads block.* only indirectly.
+ */
+export function indirectPoolReads(
+  artifact: Pick<Artifact, 'abi' | 'usesBlockOracle'>, fn: Pick<AbiFunction, 'indirectPoolReads'> | undefined,
+): IndirectPoolReads {
+  if (artifact.abi.some((entry) => entry.indirectPoolReads !== undefined)) {
+    return { blockInfo: fn?.indirectPoolReads?.blockInfo === true, blockhash: fn?.indirectPoolReads?.blockhash === true };
+  }
+  return { blockInfo: readsPoolOnlyIndirectly(artifact), blockhash: false };
 }
 
 /**

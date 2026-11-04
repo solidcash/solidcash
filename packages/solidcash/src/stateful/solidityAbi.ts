@@ -1,5 +1,7 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { resolveAddressForm, type AddressForm, type Artifact, type ExternalResultEncoding } from '@solidcash/utils';
+import {
+  resolveAddressForm, type AddressForm, type Artifact, type ExternalResultEncoding, type StructDefinitionInfo,
+} from '@solidcash/utils';
 import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 
 /** True when this artifact's bytecode decodes external returns as EVM ABI words. */
@@ -18,6 +20,35 @@ export function artifactUsesSolidityAbi(artifact: Pick<Artifact, 'compiler'>): b
  */
 export function artifactAddressForm(artifact: Pick<Artifact, 'compiler'>): AddressForm {
   return resolveAddressForm(artifact.compiler?.options ?? {});
+}
+
+/** Whether an ABI type string holds an address: itself, an element, a tuple member or a declared struct's field. */
+function typeCarriesAddress(
+  type: string, structs: readonly StructDefinitionInfo[] | undefined, seen: ReadonlySet<string> = new Set(),
+): boolean {
+  const base = type.replace(/(\[\d*\])+$/u, '').trim();
+  if (base === 'address' || base === 'address payable') return true;
+  if (base.startsWith('(') || base.startsWith('tuple(')) return /\baddress\b/u.test(base);
+  const struct = structs?.find((entry) => entry.name === base);
+  if (struct === undefined || seen.has(base)) return false;
+  const inner = new Set([...seen, base]);
+  return struct.fields.some((field) => typeCarriesAddress(field.type, structs, inner));
+}
+
+/**
+ * Whether an external result of `types` travels as EVM ABI words: the rule the compiler publishes per function as
+ * `resultEncoding` (solidc's `externalResultEncoding`). Under `evmCompat` a result is ABI words, except one that
+ * carries an address when the artifact's `addressForm` is `'bytecode'`: a fixed-width word holds only the 20-byte
+ * identity, so that result travels as compact pushdata and carries each address as its whole locking bytecode.
+ * Where the function's own entry is at hand, its published encoding (`resolveExternalResultEncoding`) decides.
+ */
+export function externalResultUsesEvmWords(
+  artifact: Pick<Artifact, 'compiler' | 'structs' | 'stateLayout'>, types: readonly string[],
+): boolean {
+  if (!artifactUsesSolidityAbi(artifact)) return false;
+  if (artifactAddressForm(artifact) !== 'bytecode') return true;
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  return !types.some((type) => typeCarriesAddress(type, structs));
 }
 
 /**

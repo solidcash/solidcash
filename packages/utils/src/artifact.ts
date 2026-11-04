@@ -27,7 +27,9 @@ export interface AbiFunctionReference {
  *
  * A fixed-width EVM ABI *word* (`abi.encode(<address>)`) is the one surface that cannot follow `'bytecode'`: a
  * 32-byte word cannot carry a variable-length lock, so it keeps projecting the 20-byte identity and the compiler
- * warns. Omitted follows the compile mode: `'hash'` under `evmCompat`, `'bytecode'` otherwise.
+ * warns. A function's result is no such word under `'bytecode'`: one that carries an address travels as compact
+ * pushdata under `evmCompat` too, so a getter returns the whole lock (DECISIONS D56). Omitted follows the compile
+ * mode: `'hash'` under `evmCompat`, `'bytecode'` otherwise.
  */
 export type AddressForm = 'bytecode' | 'hash';
 

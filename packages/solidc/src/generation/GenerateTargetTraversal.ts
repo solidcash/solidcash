@@ -331,7 +331,7 @@ import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafe
 import {
   externalResultEncoding, externalResultMayNeedPreimage,
   CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES,
-  isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+  isEvmAbiWordType, usesEvmResultWords,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, emitsAnyEvent, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -4725,8 +4725,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // pushes of the returned values, so it decodes exactly as the direct path decodes a return event's commitment.
     // A Solidity-compatible boundary's is an ABI tuple, and reading that as pushdata takes its first offset or
     // zero-padding byte as OP_0, which turns a dynamic value into empty bytes and a returned `true` into false.
-    if ((this.compilerOptions.evmCompat)
-      && isEvmExternalResultSchemaDecodable(returnTypes)) {
+    if (usesEvmResultWords(returnTypes, this.compilerOptions)) {
       this.pushToStack('(callResult)');
       this.emitEvmExternalResultDecode(returnTypes, locationData);
       return;
@@ -5170,8 +5169,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
           const callsOnTop = this.pickFramedCalls(loc);
           this.emit(bytecodeToScript(readCallRecordResultScript(key.callResult.recordIndex, callsOnTop)), loc);
-          this.pushToStack('(callResult)');
-          this.emitEvmExternalResultDecode(key.callResult.returnTypes, loc);
+          // The record's result is in the wire its producer published (`externalResultEncoding`): EVM ABI words, or
+          // compact pushdata, which carries an address result whole under `addressForm: 'bytecode'`.
+          const returnTypes = key.callResult.returnTypes;
+          if (usesEvmResultWords(returnTypes, this.compilerOptions)) {
+            this.pushToStack('(callResult)');
+            this.emitEvmExternalResultDecode(returnTypes, loc);
+          } else {
+            for (let field = 0; field < returnTypes.length; field += 1) {
+              if (field === returnTypes.length - 1) this.emitPushdataDecodeLastField(returnTypes[field]!, loc);
+              else this.emitPushdataDecode(returnTypes[field]!, loc);
+            }
+            for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
+          }
           const name = framedBatchKeyName(slot, keyIndex);
           this.stack[0] = name;
           pushed.push(name);
@@ -17783,8 +17793,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // decoding, so mixing EVM words for some fields with compact pushdata for others is never sound.
     const evmEntrypointReturn = publishesEntrypointReturn
       && !this.currentFunctionIsMessageBusRoute
-      && (this.compilerOptions.evmCompat)
-      && isEvmExternalResultSchemaDecodable(returnTypes);
+      && usesEvmResultWords(returnTypes, this.compilerOptions);
 
     // Evaluate return expressions - they will be left on the stack
     if (preserveDeployDependency) this.scopeDepth += 1;
@@ -24178,7 +24187,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Visit data expression - puts encoded blob on stack
     node.data = this.visit(node.data);
 
-    if (this.compilerOptions.evmCompat) {
+    if (this.compilerOptions.evmCompat && node.resultWire !== 'compact-pushdata-v1') {
       const trustedBefore = this.evmDecodeTrusted;
       this.evmDecodeTrusted = node.trustedEncoding === true;
       try {
@@ -26514,8 +26523,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       } else {
         // Decode return values from blob
-        if ((this.compilerOptions.evmCompat)
-          && isEvmExternalResultSchemaDecodable(returnTypes)) {
+        if (usesEvmResultWords(returnTypes, this.compilerOptions)) {
           this.pushToStack('(__external_result_blob)');
           this.emitEvmExternalResultDecode(returnTypes, locationData);
         } else {
@@ -27382,8 +27390,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // source-level `(success, data)` tuple at the callsite.
       return 1;
     }
-    const evmGraphReturn = (this.compilerOptions.evmCompat)
-      && isEvmExternalResultSchemaDecodable(returnTypes);
+    const evmGraphReturn = usesEvmResultWords(returnTypes, this.compilerOptions);
     if (evmGraphReturn) {
       // The call manifest carries the producer's exact return-event bytes. Solidity-compatible producers publish
       // results as ABI tuples. Decoding that vector as SolidCash pushdata sees the first offset/zero-padding byte
@@ -49124,8 +49131,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // read the record + TYPED-decode its result by the return types (mirrors the non-loop returning read)
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., digest?, record]
         this.emitInlineCallRecordField(verifiesDigest, loc); // [..., blob]
-        if (this.compilerOptions.evmCompat
-          && isEvmExternalResultSchemaDecodable(slot.returnTypes)) {
+        if (usesEvmResultWords(slot.returnTypes, this.compilerOptions)) {
           // A Solidity-compatible callee's `result` is one ABI tuple (`getReserves` -> three words), exactly as
           // the straight-line call decodes it; reading it as native compact pushes collapses the whole tuple
           // into the first value (a uint112 range check then fails on a 95-byte number).

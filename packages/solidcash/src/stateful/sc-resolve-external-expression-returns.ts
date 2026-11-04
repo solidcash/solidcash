@@ -30,7 +30,7 @@ import {
   memoizeGraphPlanningProducerResult,
   type GraphPlanningProducerResultContext,
 } from './graph-planning-producer-result.js';
-import { artifactUsesSolidityAbi } from './solidityAbi.js';
+import { externalResultUsesEvmWords } from './solidityAbi.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
 import type {
   StatefulContract,
@@ -477,7 +477,7 @@ export async function resolveExternalExpressionReturns(
             components as StateValue[],
             returnTypes,
             rawExecutionTarget.inner.artifact.structs ?? rawExecutionTarget.inner.artifact.stateLayout?.structs,
-            artifactUsesSolidityAbi(rawExecutionTarget.inner.artifact),
+            externalResultUsesEvmWords(rawExecutionTarget.inner.artifact, returnTypes),
             rawExecutionTarget.inner.artifact.enums,
           );
         },

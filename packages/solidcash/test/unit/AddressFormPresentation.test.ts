@@ -3,6 +3,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { AbiFunction, Artifact, ExternalResultEncoding } from '@solidcash/utils';
 import { decorateFunctionResult, decorateStateAccessorResult } from '../../src/stateful/public-result.js';
 import { artifactAddressForm } from '../../src/stateful/index.js';
+import { externalResultUsesEvmWords } from '../../src/stateful/solidityAbi.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
 
 // The SDK half of `addressForm`: which form a decoded address is presented as. Two rules, in this order:
@@ -78,6 +79,40 @@ describe('addressForm presentation', () => {
     expect(decorateStateAccessorResult(
       P2SH32, 'owner', 0, artifact({}), () => deployed,
     )).toMatchObject({ length: 35 });
+  });
+
+  it('keeps a state address whole under evmCompat when the form is bytecode, as its getter returns it', () => {
+    // The getter's result travels as compact pushdata, not an ABI word, so the read answers the stored lock.
+    const compat = { evmCompat: true, addressForm: 'bytecode' } as const;
+    expect(presentedState(P2PKH, compat)).toBe(binToHex(P2PKH));
+    expect(presentedState(P2SH32, compat)).toBe(binToHex(P2SH32));
+    expect(presentedReturn(P2PKH, compat, 'compact-pushdata-v1')).toBe(binToHex(P2PKH));
+    // Under hash the same artifact answers the identity, as before.
+    expect(presentedState(P2PKH, { evmCompat: true })).toBe(PAYLOAD);
+  });
+
+  it('names a deployment by its whole lock under evmCompat and bytecode, and keeps an account\'s lock', () => {
+    const deployed = 'bchtest:qqysjzgfpyysjzgfpyysjzgfpyysjzgfpynsmzst5t';
+    const compat = artifact({ evmCompat: true, addressForm: 'bytecode' });
+    const resolver = (value: Uint8Array): string | undefined => (
+      binToHex(value) === binToHex(P2SH32) ? deployed : undefined);
+    expect(decorateStateAccessorResult(P2SH32, 'owner', 0, compat, resolver)).toBe(deployed);
+    const account = decorateStateAccessorResult(P2PKH, 'owner', 0, compat, resolver) as Uint8Array;
+    expect(binToHex(account)).toBe(binToHex(P2PKH));
+  });
+
+  it('decides an external result\'s wire as the compiler does: words, except an address under bytecode', () => {
+    const pair = { name: 'Pair', fields: [{ name: 'a', type: 'address' }, { name: 'n', type: 'uint256' }] };
+    const words = (options: Options, types: string[]): boolean => externalResultUsesEvmWords(
+      { ...artifact(options), structs: [pair] } as unknown as Artifact, types,
+    );
+    const bytecode = { evmCompat: true, addressForm: 'bytecode' } as const;
+    expect(words({ evmCompat: true }, ['address'])).toBe(true);
+    expect(words(bytecode, ['address'])).toBe(false);
+    expect(words(bytecode, ['uint256'])).toBe(true);
+    expect(words(bytecode, ['uint256', 'address[]'])).toBe(false);
+    expect(words(bytecode, ['Pair'])).toBe(false);
+    expect(words({}, ['uint256'])).toBe(false);
   });
 
   it('resolves the form a project did not state, and reports the one it did', () => {

@@ -19758,7 +19758,7 @@ function compileStringSplitUnchecked(
           });
         }
       });
-      prepareSplitRoot(trial.contract, trialRoutes, compilerOptions.evmCompat === true);
+      prepareSplitRoot(trial.contract, trialRoutes, compilerOptions.evmCompat === true, compilerOptions.addressForm);
       trial.contract.implements = [];
       trial.contract.parentInvocations = [];
       for (const fn of trial.contract.functions) {
@@ -19855,7 +19855,7 @@ function compileStringSplitUnchecked(
       ...(censusedCollectionSignatures.length > 0 && { censusedCollectionSignatures }),
     });
   }
-  prepareSplitRoot(rootAst.contract, routeByName, compilerOptions.evmCompat === true);
+  prepareSplitRoot(rootAst.contract, routeByName, compilerOptions.evmCompat === true, compilerOptions.addressForm);
   // `rootAst` is also the already-flattened logical contract. Its second compiler pass must not interpret
   // source-only override base lists against the now-empty concrete-base list.
   rootAst.contract.implements = [];
@@ -20360,7 +20360,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
 
 function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
   facet: string; link: string; delegateEventOffsets?: number[]; censusedCollectionSignatures?: string[];
-}>, evmCompat = false): void {
+}>, evmCompat = false, addressForm?: CompilerOptions['addressForm']): void {
   // Once moved entry bodies become forwarders, helpers reachable only from those entries belong exclusively to
   // facets. Leaving their OP_INVOKE bodies in the root defeats splitting and can keep an otherwise valid root over
   // the VM limit. Preserve helpers reachable from root-local entries and the constructor.
@@ -20423,6 +20423,10 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
       const bytes = new IdentifierNode(dataName); bytes.location = fn.location;
       const decode = new AbiDecodeNode(bytes, fn.returnTypes); decode.location = fn.location;
       decode.trustedEncoding = true;
+      // The facet returns in the wire its entry publishes, which carries an address result whole under 'bytecode'.
+      decode.resultWire = externalResultEncoding(
+        fn.returnTypes, { evmCompat, ...(addressForm === undefined ? {} : { addressForm }) },
+      );
       let returnStatement: ReturnNode;
       const statements: StatementNode[] = [capture, guard];
       if (fn.returnTypes.length === 1) {

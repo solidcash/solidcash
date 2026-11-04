@@ -2673,6 +2673,11 @@ export class StringConcatNode extends ExpressionNode {
 export class AbiDecodeNode extends ExpressionNode {
   /** The data comes from the compiler's own encoder, so its words are not re-validated (a split forwarder). */
   trustedEncoding?: boolean;
+  /**
+   * The data is a function's result in the wire it published rather than an `abi.encode` (a split forwarder): compact
+   * pushdata where `externalResultEncoding` says so, which this decodes as pushdata under `evmCompat` too.
+   */
+  resultWire?: 'evm-abi-v1' | 'compact-pushdata-v1';
 
   constructor(
     public data: ExpressionNode,

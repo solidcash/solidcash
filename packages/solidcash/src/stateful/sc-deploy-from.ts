@@ -63,7 +63,7 @@ import {
 } from './SortedList.js';
 import { loadCreateBuilderIterationInputs } from './sc-load-create-builder-iteration-inputs.js';
 import {
-  artifactAddressForm, artifactUsesSolidityAbi, sortAddressPair, sortedAddressPairPacked,
+  artifactAddressForm, artifactUsesSolidityAbi, externalResultUsesEvmWords, sortAddressPair, sortedAddressPairPacked,
 } from './solidityAbi.js';
 import { encodeExternalReturnValues } from './external-return-encoding.js';
 import { eventContinuationLockingBytecode } from './event-chunks.js';
@@ -595,7 +595,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const pairAddressValue = addressToLockScript(childContracts[0].address);
   const predictedAddressReturn = encodeExternalReturnValues(
     [pairAddressValue], ['address'], factoryLayout.structs,
-    artifactUsesSolidityAbi(factory.inner.artifact), factory.inner.artifact.enums,
+    externalResultUsesEvmWords(factory.inner.artifact, ['address']), factory.inner.artifact.enums,
   );
   // A returning direct entry carries its result inside a call record: digest(31) || form(1) || result. The
   // covenant computes the digest over the deploy call it runs, so the seeded carrier must commit to that same

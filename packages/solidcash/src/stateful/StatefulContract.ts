@@ -920,10 +920,6 @@ export function selectReturnAbiPlan<T>(
 }
 
 export interface DeployOptions {
-  /** @deprecated Ignored: a blockhash reader reads the ring slots of its oracle pool, and no genesis mints a baton. */
-  blockhashKeeperPublicKey?: Uint8Array;
-  /** @deprecated Ignored, as blockhashKeeperPublicKey is. */
-  blockhashKeeperAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
@@ -6946,7 +6942,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Only factory-registered mock deployments opt into the synthetic tip keeper; otherwise a plain read
       // silently rewrites authenticated state before the caller can inspect or spend it.
       if (!registered) return;
-      const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
+      const { syncMockBlockOracleDeployment } = await import('../oracle/legacy-block-registers.js');
       await syncMockBlockOracleDeployment(this.inner.provider, registered);
     };
     // The mock chain has no keeper. Refresh the state owner before reading it; nested participants are refreshed

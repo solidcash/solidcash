@@ -15,12 +15,6 @@ import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumWebSocket } from '@electrum-cash/web-socket';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const ORACLE_USER = `contract OracleUser() {
-  uint seen;
-  function record() public { this.seen = block.number; require(true); }
-  function reset() public { this.seen = 0; require(true); }
-}`;
-
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
 const cli = path.join(repoRoot, 'packages/solidhat/dist/cli.js');
@@ -34,7 +28,6 @@ interface NodeHandle {
   readonly httpUrl: string;
   readonly wsUrl: string;
   readonly evmRpc: boolean;
-  readonly blockOracle: { lock: string; category: string; outpoint: { txid: string; vout: number } } | null;
   readonly accounts: { index: number; address: string; path: string; wif?: string }[];
   readonly lines: string[];
   exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
@@ -132,7 +125,6 @@ async function startNode(extraArgs: string[] = [], cwd = fixture): Promise<NodeH
     httpUrl: String(info.httpUrl),
     wsUrl: String(info.wsUrl),
     evmRpc: info.evmRpc === true,
-    blockOracle: (info.blockOracle ?? null) as NodeHandle['blockOracle'],
     accounts,
     lines,
     exit,
@@ -226,9 +218,10 @@ describe('solidhat node end to end', () => {
     expect(node.chainId).toBe('mem-cash-devnet');
     expect(node.genesisHash).toMatch(/^[0-9a-f]{64}$/);
     expect(node.evmRpc).toBe(false);
-    expect(node.blockOracle).not.toBeNull();
     const listeningLine = node.lines.find((line) => line.includes('"event":"listening"'));
     expect(listeningLine).toBeDefined();
+    // The node installs no block oracle.
+    expect(listeningLine).not.toContain('blockOracle');
     expect(listeningLine).not.toContain('wif');
     expect(listeningLine).not.toContain('Mnemonic');
     expect(node.accounts).toHaveLength(20);
@@ -476,83 +469,6 @@ describe('solidhat node end to end', () => {
     expect(reset.height).toBe(200);
     expect((await call<{ ok: boolean }>(node, 'devnet.verifyHeaders')).ok).toBe(true);
   }, 60_000);
-
-  it('deploys and reads a block.number contract against the spawned node across mine, time, revert and reset', async () => {
-    const { createHardhatRuntimeEnvironment } = await import('../src/hre.js');
-    const { resolveConfig } = await import('../src/config.js');
-    const { compileString } = await import('@solidcash/solidc');
-
-    const hre = createHardhatRuntimeEnvironment(resolveConfig({
-      defaultNetwork: 'localhost',
-      networks: { localhost: { type: 'mem-cash', memCash: { port: node.port } } },
-    }), 'localhost');
-    const provider = hre.network.provider as unknown as {
-      mine(count?: number): Promise<void>;
-      disconnect(): Promise<void>;
-    };
-
-    const readOracle = async (): Promise<{ number: number; timestamp: number } | undefined> => {
-      const features = await call<{ devnet: { block_oracle: { outpoint: { txid: string; vout: number } } | null } }>(
-        node,
-        'server.features',
-      );
-      const advertised = features.devnet.block_oracle;
-      if (advertised === null) return undefined;
-      const utxo = await call<{ token?: { nft?: { commitment: string } } } | null>(
-        node,
-        'devnet.utxo',
-        [advertised.outpoint.txid, advertised.outpoint.vout],
-      );
-      const commitment = utxo?.token?.nft?.commitment;
-      if (commitment === undefined) return undefined;
-      const bytes = Buffer.from(commitment, 'hex');
-      // owner pkh (20), then 5-byte fields: 4 LE bytes + a 0x00 terminator.
-      return { number: bytes.readUInt32LE(20), timestamp: bytes.readUInt32LE(25) };
-    };
-
-    try {
-      const [signer] = await hre.ethers.getSigners(1);
-      const artifact = compileString(ORACLE_USER, { composition: 'direct' });
-      const contract = await hre.ethers.getContractFactory(artifact, signer).deploy();
-
-      const connected = await call<{ height: number }>(node, 'devnet.info');
-      expect((await readOracle())?.number).toBe(connected.height);
-      await contract.call.record().send();
-      expect((await readOracle())?.number).toBe((await call<{ height: number }>(node, 'devnet.info')).height);
-
-      // A block mined from another process advances the oracle; the reader still records.
-      await call(node, 'devnet.mine', [1]);
-      const afterMine = await call<{ height: number }>(node, 'devnet.info');
-      expect((await readOracle())?.number).toBe(afterMine.height);
-      await contract.call.record().send();
-
-      // Time travel from another process moves the committed timestamp.
-      await call(node, 'devnet.increaseTime', [3600]);
-      const afterTime = await call<{ timestamp: number }>(node, 'devnet.info');
-      expect((await readOracle())?.timestamp).toBe(afterTime.timestamp);
-      await contract.call.record().send();
-
-      // Snapshot -> time travel -> record -> revert -> record keeps working.
-      const snapshot = await call<{ id: string }>(node, 'devnet.snapshot');
-      await call(node, 'devnet.increaseTime', [86_400]);
-      await contract.call.record().send();
-      expect(await call(node, 'devnet.revert', [snapshot.id])).toBe(true);
-      await provider.mine(1);
-      await contract.call.record().send();
-      expect((await readOracle())?.number).toBe((await call<{ height: number }>(node, 'devnet.info')).height);
-
-      // Reset restores the post-prepare baseline (oracle included); the reader is deployed again and reads it.
-      await call(node, 'devnet.reset');
-      await provider.mine(1);
-      const baselineHeight = (await call<{ height: number }>(node, 'devnet.info')).height;
-      expect((await readOracle())?.number).toBe(baselineHeight);
-      const redeployed = await hre.ethers.getContractFactory(artifact, signer).deploy();
-      await redeployed.call.record().send();
-      expect((await readOracle())?.number).toBe((await call<{ height: number }>(node, 'devnet.info')).height);
-    } finally {
-      await provider.disconnect();
-    }
-  }, 300_000);
 
   it('gates the EVM namespace in both directions and keeps provider.send() off the wire', async () => {
     const neutral = 'EVM method not supported by this devnet. BCH-native methods and an optional chain-control ' +

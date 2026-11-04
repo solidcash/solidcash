@@ -38,8 +38,6 @@ export interface NetworkConfig {
     intervalMs?: number;
     /** BCH network for prefixes and the SDK's `Network`; separate from the global network selector. */
     network?: 'mocknet' | 'regtest';
-    /** Install the block-info oracle. Default true; `false` mirrors `--no-block-oracle`. */
-    blockOracle?: boolean;
     /** Install the optional EVM chain-control extension. */
     evm?: boolean;
     accounts?: { path?: string; count?: number; initialIndex?: number };

@@ -55,10 +55,6 @@ export default interface NetworkProvider {
    */
   network: Network;
 
-  /** Shared block-info oracle covenant, pinned into reader contracts. */
-  blockOracleLock?: Uint8Array;
-  /** Category used by the oracle covenant (display byte order). */
-  blockOracleCategory?: Uint8Array;
   /** Category of the provider's default oracle pool, hex in display byte order. */
   readonly oraclePoolCategory?: string;
 

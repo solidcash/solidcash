@@ -17,8 +17,7 @@ import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-inst
 import { hexToBin, binToHex, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransactionUnsafe, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import {
-  POOL_MAX_DEPTH, blockOracleFieldValue, blockOracleLockingBytecode, encodeBlockOracleCommitment, hash160,
-  type BlockOracleCommitmentFields,
+  POOL_MAX_DEPTH,
 } from '@solidcash/utils';
 import { type Utxo, Network, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
@@ -110,17 +109,6 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   public network: Network = Network.REGTEST;
   public consensusLimits?: ConsensusLimits;
   public policy?: NetworkPolicy;
-  public blockOracleLock?: Uint8Array;
-  public blockOracleCategory?: Uint8Array;
-
-  /** Deterministic owner key; its P2PKH pays the oracle update fee. */
-  private readonly blockOracleOwnerKey = Uint8Array.from(
-    { length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11),
-  );
-
-  private blockOracleOwnerAddress = '';
-  private blockOracleInstalled = false;
-  private blockOracleRefreshing = false;
 
   /** Category of the provider's oracle pool (display order), minted at startup. */
   public oraclePoolCategory?: string;
@@ -158,11 +146,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private pendingBlockTimestamp: number | undefined;
   /** Time of the newest mined block; a restore rewinds it with the chain, as the mock chain rewinds its clock. */
   private lastMinedTimestamp = 0;
-  /** Nonzero while `increaseTime` holds the clock across its median window and oracle update. */
+  /** Nonzero while `increaseTime` holds the clock across its median window and pool refresh. */
   private holdMockTime = 0;
-  /** True while an oracle update is broadcast for the caller's pending block, so that send does not mine. */
-  private deferredOracleMine = false;
-  /** True when an oracle update is in the mempool; the next mined block confirms it. */
+  /** True when a pool keeper transaction is in the mempool; the next mined block confirms it. */
   private pendingOracleUpdate = false;
 
   // X74. Category bookkeeping. A CashTokens category exists only where a transaction spent its own genesis
@@ -396,9 +382,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       await this.ensureReady();
       const sent = await this.rpc.request<SendRawTransaction>('sendrawtransaction', txHex);
       this.trackBroadcastOutputs(txHex, sent);
-      // An oracle update is published for inclusion in the block the caller is about to mine; mining here would
-      // confirm it alone and add a block beyond the caller's `mine(count)`.
-      if (!this.deferredOracleMine) await this.mineBlocks(1, false);
+      await this.mineBlocks(1, false);
       return sent;
     });
     await this.publishOracleIfDue();
@@ -761,143 +745,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Test helper: real block-info oracle
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Deploy a real block-info oracle at a genesis category. The mock provider installs an in-memory oracle; on a
-   * live chain the NFT must have a real CashTokens category, so this creates a vout-0 genesis and publishes its
-   * p2sh32 covenant as `blockOracleLock`.
-   */
-  private async installBlockOracle(): Promise<void> {
-    const ownerPubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
-    const ownerPkh = hash160(ownerPubkey);
-    const ownerAddressResult = lockingBytecodeToCashAddress({
-      bytecode: publicKeyToP2PKHLockingBytecode(ownerPubkey),
-      prefix: getNetworkPrefix(this.network),
-    });
-    const ownerAddress = typeof ownerAddressResult === 'string'
-      ? ownerAddressResult
-      : ownerAddressResult.address;
-    this.blockOracleOwnerAddress = ownerAddress;
-    await this.addUtxo(ownerAddress, randomUtxo({ satoshis: 100_000_000n }));
-
-    const commitment = encodeBlockOracleCommitment(ownerPkh, await this.oracleFields());
-    const { categoryId } = await this.addTokenUtxosDynamic((category) => {
-      const lock = blockOracleLockingBytecode(hexToBin(category));
-      const addressResult = lockingBytecodeToCashAddress({
-        bytecode: lock,
-        prefix: getNetworkPrefix(this.network),
-        tokenSupport: true,
-      });
-      const address = typeof addressResult === 'string' ? addressResult : addressResult.address;
-      return [{
-        address,
-        satoshis: 10_000n,
-        token: {
-          amount: 0n,
-          nft: { capability: 'mutable' as const, commitment: binToHex(commitment) },
-        },
-      }];
-    });
-    this.blockOracleCategory = hexToBin(categoryId);
-    this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
-  }
-
-  private async oracleFields(number?: bigint): Promise<BlockOracleCommitmentFields> {
-    return {
-      number: number ?? BigInt(await this.getBlockHeight()),
-      // A final update can publish at most the last second below median-time-past.
-      timestamp: BigInt(Math.max(0, this.getBlockTime() - 1)),
-      difficulty: 0n,
-      size: 1000n,
-      totalFees: 0n,
-      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
-    };
-  }
-
-  /**
-   * Push the node's current height and time into the oracle through its signed update path. The mock provider
-   * rewrites its in-memory NFT; a real node admits only a covenant spend, so this pays the keeper fee and
-   * CLTV-anchors the new timestamp.
-   */
-  async refreshBlockOracle(): Promise<void> {
-    await this.refreshBlockOracleUpdate(false);
-  }
-
-  /** Publish the next update without confirming it; the block the caller mines next includes it. */
-  private async publishBlockOracleUpdate(): Promise<void> {
-    await this.refreshBlockOracleUpdate(true);
-  }
-
-  private async refreshBlockOracleUpdate(deferred: boolean): Promise<void> {
-    const lock = this.blockOracleLock;
-    const category = this.blockOracleCategory;
-    if (lock === undefined || category === undefined || this.blockOracleRefreshing) return;
-    const oracle = (await this.getUtxosForLockingBytecode(lock))
-      .find((utxo) => utxo.token?.nft?.capability === 'mutable');
-    if (oracle?.token?.nft === undefined) return;
-    const current = hexToBin(oracle.token.nft.commitment);
-    const currentTimestamp = current.length >= 30 ? blockOracleFieldValue(current, 'timestamp') : 0n;
-    const desired = await this.oracleFields();
-    if (desired.timestamp <= currentTimestamp) return;
-
-    const fields = {
-      ...desired,
-      number: current.length >= 30 ? blockOracleFieldValue(current, 'number') : desired.number,
-    };
-    const commitment = encodeBlockOracleCommitment(
-      hash160(secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array), fields,
-    );
-    const funding = await this.pickOracleFeeCoin();
-    this.blockOracleRefreshing = true;
-    this.deferredOracleMine = deferred;
-    try {
-      const [{ TransactionBuilder }, signatureModule, { blockOracleUpdateUnlocker }] = await Promise.all([
-        import('../TransactionBuilder.js'),
-        import('../SignatureTemplate.js'),
-        import('../oracle/blockOracleUpdater.js'),
-      ]);
-      const SignatureTemplate = signatureModule.default;
-      await new TransactionBuilder({ provider: this })
-        .addInput(oracle, blockOracleUpdateUnlocker(
-          category, lock, this.blockOracleOwnerKey, commitment,
-        ))
-        .addInput(funding, new SignatureTemplate(this.blockOracleOwnerKey).unlockP2PKH())
-        .addOutput({
-          to: lock,
-          amount: oracle.satoshis,
-          token: {
-            category: oracle.token.category,
-            amount: 0n,
-            nft: { capability: 'mutable', commitment: binToHex(commitment) },
-          },
-        })
-        .addOutput({ to: this.blockOracleOwnerAddress, amount: funding.satoshis - 1000n })
-        .setLocktime(Number(desired.timestamp))
-        .send();
-      if (deferred) this.pendingOracleUpdate = true;
-    } finally {
-      this.deferredOracleMine = false;
-      this.blockOracleRefreshing = false;
-    }
-  }
-
   /** A failed read throws: reporting it as spent dropped live records from a caller's view of the chain. */
   private async isLiveOutpoint(txid: string, vout: number): Promise<boolean> {
     return await this.readRpc.request<GetTxOut>('gettxout', txid, vout, true) !== null;
-  }
-
-  private async pickOracleFeeCoin(): Promise<Utxo> {
-    const ownerPubkey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
-    const coin = (await this.getUtxosForLockingBytecode(publicKeyToP2PKHLockingBytecode(ownerPubkey)))
-      .filter((utxo) => utxo.token === undefined)
-      .sort((left, right) => Number(right.satoshis - left.satoshis))[0];
-    if (coin === undefined || coin.satoshis < 2000n) {
-      throw new Error('the block oracle owner has no coin to pay an update fee');
-    }
-    return coin;
   }
 
   // ---------------------------------------------------------------------------
@@ -934,7 +784,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   /**
    * The pool keeper's step: every live info coin takes the tip's height and `MTP - 1`, and the slot of each block
    * mined since the last step takes its hash. The keeper's transactions wait in the mempool for the caller's next
-   * block, as the deferred oracle update does. A failure is kept in `oraclePoolRefreshError`.
+   * block. A failure is kept in `oraclePoolRefreshError`.
    */
   private async refreshOraclePool(): Promise<void> {
     const category = this.oraclePoolCategory;
@@ -1015,25 +865,22 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       this.lastMinedTimestamp = timestamp;
     }
     await this.rpc.request<GenerateToAddress>('generatetoaddress', count, this.miningAddress);
-    // The generated block includes whichever oracle update was in the mempool.
+    // The generated block includes whichever pool keeper transaction was in the mempool.
     this.pendingOracleUpdate = false;
     // BCHN admits an nLocktime only below median-time-past, and the SDK stamps one second behind
     // `getBlockTime()`. Track the node's MTP rather than the newest header's wall-clock time.
     this.tipTime = await this.readTipTime();
     this.fundingCandidates = undefined;
-    // Every mined block moves the block oracle one second forward (the mock chain rewrites it in place when a
-    // block is mined). Publish the update now, unmined, so a `block.timestamp` reader built from this point
-    // co-spends the newer oracle UTXO and the caller's next block confirms both. Sends that run inside the
+    // Every mined block moves the clock. Publish the pool's refresh now, unmined, so a `block.*` reader built from
+    // this point co-spends the newer coins and the caller's next block confirms both. Sends that run inside the
     // broadcast queue skip this and publish after their queue entry settles, since publishing is a send itself.
     if (publishOracle) await this.publishOracleIfDue();
   }
 
-  /** Publish the next oracle and oracle pool updates into the mempool when nothing prevents it. */
+  /** Publish the next oracle pool updates into the mempool when nothing prevents it. */
   private async publishOracleIfDue(): Promise<void> {
-    if (this.holdMockTime !== 0 || this.blockOracleRefreshing || this.deferredOracleMine) return;
+    if (this.holdMockTime !== 0) return;
     await this.refreshOraclePool();
-    if (this.blockOracleCategory === undefined) return;
-    await this.publishBlockOracleUpdate();
   }
 
   /**
@@ -1069,17 +916,16 @@ export default class RegtestNetworkProvider implements NetworkProvider {
    */
   async increaseTime(seconds: number | bigint): Promise<number> {
     const base = Math.max(this.tipTime, this.lastMinedTimestamp);
-    // One extra second lets the oracle publish `MTP - 1` at the requested timestamp; the oracle covenant
-    // cannot publish the current MTP because its own nLocktime must stay below MTP.
+    // One extra second lets the pool publish `MTP - 1` at the requested timestamp; a pool covenant cannot publish
+    // the current MTP because its own nLocktime must stay below MTP.
     const timestamp = Math.max(0, base + Number(seconds) + 1);
     await this.setMockTime(timestamp);
     this.mockTime = timestamp;
     this.lastMinedTimestamp = timestamp;
-    // Ten blocks move the median window to `timestamp`; the signed oracle update is the eleventh block.
+    // Ten blocks move the median window to `timestamp`; the pool's refresh waits for the eleventh block.
     this.holdMockTime = timestamp;
     try {
       await this.mine(10);
-      await this.refreshBlockOracle();
       await this.refreshOraclePool();
     } finally {
       this.holdMockTime = 0;
@@ -1090,9 +936,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async takeSnapshot(): Promise<SnapshotRestorer> {
     await this.ensureReady();
     await this.quiesceSends();
-    // A snapshot must not leave the oracle update in the mempool: the rewind clears the mempool, and the
-    // restored chain would then have a confirmed oracle outpoint this provider no longer tracks (the wallet
-    // cannot rediscover a watch-only output it did not see mined). Confirm it first.
+    // A snapshot must not leave a pool keeper transaction in the mempool: the rewind clears the mempool, and the
+    // restored chain would then have confirmed pool coins this provider no longer tracks (the wallet cannot
+    // rediscover a watch-only output it did not see mined). Confirm it first.
     if (this.pendingOracleUpdate) await this.mineBlocks(1, false);
     const height = await this.readRpc.request<GetBlockCount>('getblockcount');
     const hash = await this.readRpc.request<GetBlockHash>('getblockhash', height);
@@ -1344,9 +1190,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     this.reservedFunding.delete(`${item.txid}:${item.vout}`);
   }
 
-  // Funding is test plumbing: on the mock chain it mines nothing and the block oracle stays put. Its blocks here
-  // publish no oracle update, so a composition that reads `block.timestamp` keeps one oracle while it funds its
-  // own slots; the next send or explicit mine catches the oracle up.
+  // Funding is test plumbing: on the mock chain it mines nothing and the oracle pool stays put. Its blocks here
+  // publish no pool refresh, so a composition that reads `block.timestamp` keeps one coin while it funds its own
+  // slots; the next send or explicit mine catches the pool up.
   private async fundSignSend(unsignedHex: string): Promise<string> {
     const txid = await this.serializeSend(async () => {
       const tx = decodeTransactionUnsafe(hexToBin(unsignedHex));
@@ -1538,17 +1384,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private async ensureReady(): Promise<void> {
     if (!this.ready) this.ready = this.initialize();
     await this.ready;
-    // Install after the base ready promise resolves: oracle setup itself uses addUtxo/addTokenUtxos, which call
-    // back into ensureReady.
-    if (!this.blockOracleInstalled) {
-      this.blockOracleInstalled = true;
-      try {
-        await this.installBlockOracle();
-      } catch (error) {
-        this.blockOracleInstalled = false;
-        throw error;
-      }
-    }
+    // Install after the base ready promise resolves: pool setup itself uses addUtxo, which calls back into
+    // ensureReady.
     if (!this.oraclePoolInstalled) {
       this.oraclePoolInstalled = true;
       try {

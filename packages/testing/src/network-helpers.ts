@@ -121,8 +121,7 @@ export const duration = {
 /**
  * hardhat-network-helpers `time` sub-API. These control the mock chain's `block.timestamp` and `block.number`
  * (the Solidity/Hardhat time surface). Like Hardhat, `increase`/`increaseTo` MINE a block (advancing both height
- * and timestamp), and the mock chain writes the new values into the block oracle a `block.*` reader co-spends
- * (see oracle-helpers).
+ * and timestamp), and the mock chain's oracle pool, whose coins a `block.*` reader co-spends, takes the new values.
  */
 export const time = {
   /** Latest block timestamp (unix seconds). */

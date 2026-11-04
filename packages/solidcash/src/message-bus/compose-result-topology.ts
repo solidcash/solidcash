@@ -5,7 +5,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
-import { blockOracleLockFor, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { artifactOraclePool, readPoolTimestamp } from '../oracle/pool/reader.js';
 import {
   connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex,
   findDeploymentByAddressValue, registeredAddressValueLockingBytecode,
@@ -289,12 +289,13 @@ async function rebuildCallTopology(
       const sources = fn.externalCalls;
       const args = projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, call.args);
       let state = { ...await stateOf(call.contract) };
-      // Reachability must use the same authenticated time that the selected body reads. A proxy's
-      // forwarder can omit the oracle while its delegate has a time-gated external effect.
-      const oracleLock = artifact.usesBlockOracle === true
-        ? blockOracleLockFor(artifact) ?? call.contract.inner.blockOracleLock : undefined;
-      const timestamp = oracleLock === undefined ? undefined
-        : await readBlockOracleTimestamp(call.contract.inner.provider, oracleLock);
+      // Reachability must use the same authenticated time that the selected body reads: a coin of the pool that
+      // body's contract binds. A proxy's forwarder can read none while its delegate has a time-gated external effect.
+      const oraclePool = artifact.usesBlockOracle !== true ? undefined
+        : artifact === call.contract.inner.artifact ? call.contract.inner.oraclePool
+          : artifactOraclePool(artifact) ?? call.contract.inner.oraclePool;
+      const timestamp = oraclePool === undefined ? undefined
+        : await readPoolTimestamp(call.contract.inner.provider, oraclePool);
       if (timestamp !== undefined) state.__block_timestamp = timestamp;
       const returnsFor = (argSources: readonly ArgSource[], condition?: ExternalCallAbi,
         producerOccurrenceIndex?: number):

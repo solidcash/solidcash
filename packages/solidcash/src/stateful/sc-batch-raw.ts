@@ -572,7 +572,7 @@ export function batchRaw(
       if (input.name === '__internal__participantBlockSize') return -1n;
       if (input.name === '__internal__graphSelfIdentityInput') return -1n;
       if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
-      // The route's own oracle slot. A composition that already spends the oracle repoints it to that input.
+      // The route's own pool coin slot. A composition that already spends a coin of its pool repoints it there.
       if (input.name === '__internal__blockOracleInputIndex') {
         const slot = capability.route.blockLayout?.slots.find((candidate) => candidate.kind === 'blockInfoOracle');
         return slot === undefined ? -1n : BigInt(blockBase + slot.offset);

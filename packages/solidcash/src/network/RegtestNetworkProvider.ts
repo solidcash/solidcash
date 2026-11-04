@@ -121,6 +121,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   readonly oraclePoolOwnerKey = Uint8Array.from(
     { length: 32 }, (_byte, index) => (index === 31 ? 0x55 : 0x22),
   );
+
   private oraclePoolInstalled = false;
   private oraclePoolRefreshing = false;
   /** The newest height whose slot the pool took, so a refresh writes only the blocks mined since. */
@@ -182,6 +183,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private static readonly VOUT0_FUNDING_SATOSHIS = 200_000_000n;
   // Below BCHN's default RPC work queue (16 queued beside 4 worker threads), so a burst never meets HTTP 503.
   private static readonly MAX_RPC_IN_FLIGHT = 8;
+  /** Ring slots one baton mint creates; its walk costs about 9,000 operations per new slot. */
+  private static readonly POOL_SLOTS_PER_GROWTH = 16;
 
   constructor(options: RegtestProviderOptions = {}) {
     const {
@@ -786,8 +789,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
   /**
    * The pool keeper's step: every live info coin takes the tip's height and `MTP - 1`, and the slot of each block
-   * mined since the last step takes its hash. The keeper's transactions wait in the mempool for the caller's next
-   * block. A failure is kept in `oraclePoolRefreshError`.
+   * mined since the last step takes its hash. A ring minted on a chain younger than its depth lacks the later
+   * residues, so the baton mints the slot of each such block. The keeper's transactions wait in the mempool for the
+   * caller's next block. A failure is kept in `oraclePoolRefreshError`.
    */
   private async refreshOraclePool(): Promise<void> {
     const category = this.oraclePoolCategory;
@@ -808,6 +812,12 @@ export default class RegtestNetworkProvider implements NetworkProvider {
         for (let n = first; n <= height; n += 1) {
           blocks.push({ n: BigInt(n), hash: hexToBin(await this.getBlockHash(n)) });
         }
+        const ring = BigInt(POOL_MAX_DEPTH);
+        const held = new Set((await keeper.slots()).map(({ fields }) => fields.n % ring));
+        const missing = blocks.filter(({ n }) => !held.has(n % ring));
+        // The baton's mint walks every output under its one input's operation budget, so new slots go in parts.
+        const part = RegtestNetworkProvider.POOL_SLOTS_PER_GROWTH;
+        for (let at = 0; at < missing.length; at += part) await keeper.growSlots(missing.slice(at, at + part));
         await keeper.writeSlots(blocks);
         this.oraclePoolSlotHeight = height;
       }

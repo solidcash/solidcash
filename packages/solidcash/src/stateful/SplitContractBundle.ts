@@ -15,6 +15,7 @@ import {
 import type { PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityRecord } from '../bcmr/identity.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
+import { takesOraclePool } from '../oracle/pool/reader.js';
 import type { StateValueType } from '../types/state-inference.js';
 import { genesisOutpointKey } from './genesis-reservations.js';
 import { stripTrailingEthersOverrides } from './sc-build-namespaces.js';
@@ -177,7 +178,9 @@ export class SplitContractBundle {
     }
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const facetCount = this.bundle.manifest.facets.length;
-    const rootConstructorCount = this.bundle.root.constructorInputs.length - facetCount;
+    // The SDK fills a pool binding.
+    const rootConstructorCount = this.bundle.root.constructorInputs.length - facetCount
+      - (takesOraclePool(this.bundle.root) ? 1 : 0);
     const rootConstructorArgs = constructorArgs.slice(0, rootConstructorCount);
     const rootInitArgs = constructorArgs.slice(rootConstructorCount);
     // A coin the deployment names for the token's category funds none of the bundle's geneses.
@@ -308,7 +311,8 @@ export class SplitContractBundle {
       facets[info.name] = this.runner instanceof Signer ? attached.connect(this.runner) : attached;
     }
     const links = this.bundle.manifest.facets.map((info) => addressToLockScript(facets[info.name].address));
-    const rootConstructorCount = this.bundle.root.constructorInputs.length - links.length;
+    const rootConstructorCount = this.bundle.root.constructorInputs.length - links.length
+      - (takesOraclePool(this.bundle.root) ? 1 : 0);
     const rootContract = new Contract(
       this.bundle.root, [...constructorArgs.slice(0, rootConstructorCount), ...links] as never[], { provider },
     );

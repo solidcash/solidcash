@@ -1,5 +1,6 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { UnlockableUtxo } from '../interfaces.js';
+import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { AbiFunction } from '@solidcash/utils';
 
@@ -21,11 +22,11 @@ export function selectRootBlockOracleReader<T>(
   return delegateIndex < 0 ? undefined : { reader: delegates[delegateIndex].reader, delegateIndex };
 }
 
-/** Move one already-selected nested authority to the root band without changing any participant width. */
+/** Move one already-selected nested pool coin to the root band without changing any participant width. */
 export function takeNestedBlockOracleInput(
   externalGroups: readonly ExternalCallUtxoGroup[],
   lowLevelGroups: readonly ExternalCallUtxoGroup[],
-  lock: Uint8Array,
+  pool: string,
   takeFunder: () => UnlockableUtxo,
 ): UnlockableUtxo | undefined {
   const embedded = new Set(externalGroups.flatMap((group) => group.delegateEmbeddedInBlock
@@ -34,13 +35,12 @@ export function takeNestedBlockOracleInput(
     ...externalGroups.filter((group) => group.sharedGroupIndex === undefined),
     ...lowLevelGroups.filter((_group, index) => !embedded.has(index)),
   ];
-  const lockHex = binToHex(lock);
-  const matches = physicalGroups.flatMap((group) => (group.blockInputs ?? []).filter((input) =>
-    input.token?.nft?.capability === 'mutable'
-      && binToHex(input.unlocker.generateLockingBytecode()) === lockHex));
+  const matches = physicalGroups.flatMap((group) => (group.blockInputs ?? [])
+    .filter((input) => isPoolInfoInput(input, pool)));
   if (matches.length === 0) return undefined;
   if (matches.length !== 1) throw new Error('Block oracle reader has multiple physical authority inputs');
   const [oracle] = matches;
+  const lockHex = binToHex(oracle.unlocker.generateLockingBytecode());
   const sameOutpoint = (input: UnlockableUtxo): boolean => input.txid.toLowerCase() === oracle.txid.toLowerCase()
     && input.vout === oracle.vout;
   const occurrences = [...externalGroups, ...lowLevelGroups].flatMap((group) =>

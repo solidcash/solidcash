@@ -216,6 +216,11 @@ export interface TransactionDetails extends Transaction {
 export interface ContractOptions {
   /** Override the provider's shared block-info oracle lock for this reader. */
   blockOracleLock?: Uint8Array;
+  /**
+   * The oracle pool a block.* reader binds, its category in display order. Defaults to the provider's pool. The SDK
+   * fills the reader's `__oraclePool` input from it.
+   */
+  oraclePool?: string;
   provider: NetworkProvider,
   addressType?: AddressType,
   // User CREATE2-style salt: a dead push baked into the script for deterministic / counterfactual address

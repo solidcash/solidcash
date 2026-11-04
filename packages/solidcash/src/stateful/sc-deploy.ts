@@ -39,6 +39,7 @@ import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { blockhashKeeperGenesisOutput } from '../oracle/blockhash-keeper-deployment.js';
+import { withOraclePoolArgument } from '../oracle/pool/reader.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
@@ -49,9 +50,13 @@ async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigin
 
 export async function deployStatefulContract<T extends Artifact>(
   artifact: T,
-  constructorArgs: ConstructorArgument[],
+  callerConstructorArgs: ConstructorArgument[],
   options: DeployOptions,
 ): Promise<DeployResult<T>> {
+  // A block.* reader's pool binding, filled once so every contract built below names the same pool.
+  const constructorArgs = withOraclePoolArgument(
+    artifact, callerConstructorArgs, () => options.oraclePool ?? options.provider.oraclePoolCategory,
+  ) as ConstructorArgument[];
   if (!artifact.stateLayout) {
     throw new Error(`Contract ${artifact.contractName} is not a stateful contract`);
   }

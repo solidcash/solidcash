@@ -7,4 +7,5 @@ export {
 } from './coins.js';
 export * from './genesis.js';
 export * from './keeper.js';
+export * from './reader.js';
 export * from './select.js';

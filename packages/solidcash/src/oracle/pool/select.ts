@@ -22,13 +22,18 @@ function pick<T>(items: readonly T[]): T | undefined {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-/** A random live info coin of the pool (flags 0x00), or undefined when it has none. */
+/**
+ * A random live info coin of the pool (flags 0x00), or undefined when it has none. A live coin at `prefer`, when
+ * there is one, is chosen instead.
+ */
 export async function selectPoolInfoCoin(
-  provider: NetworkProvider, category: string,
+  provider: NetworkProvider, category: string, prefer?: Pick<Utxo, 'txid' | 'vout'>,
 ): Promise<PoolCoin<PoolInfoFields> | undefined> {
-  return pick((await categoryCoins(provider, category))
+  const live = (await categoryCoins(provider, category))
     .map((utxo) => poolInfoCoin(utxo, category))
-    .filter((coin): coin is PoolCoin<PoolInfoFields> => coin !== undefined && coin.fields.flags === 0));
+    .filter((coin): coin is PoolCoin<PoolInfoFields> => coin !== undefined && coin.fields.flags === 0);
+  return live.find(({ utxo }) => prefer !== undefined && utxo.vout === prefer.vout
+    && utxo.txid.toLowerCase() === prefer.txid.toLowerCase()) ?? pick(live);
 }
 
 /**

@@ -18,6 +18,8 @@ import {
   encodeEventParameter,
   encodePushdataValue,
   EVENT_CHUNK_BYTES,
+  ORACLE_POOL_PARAMETER,
+  oraclePoolBinding,
   parsePushdataCommitment,
   splitEventPayload,
   scriptToAsm,
@@ -29,6 +31,7 @@ import {
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
+import { takesOraclePool } from '../oracle/pool/reader.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
@@ -124,11 +127,20 @@ export async function deployFromStatefulContract<T extends Artifact>(
     );
   }
   const bakedConstructorArgumentCount = childArtifact.constructorInputs.length;
+  // A bound child takes its creator's own pool binding last, as the creator's covenant builds the child's lock.
+  const creatorBinding = (): Uint8Array => {
+    const pool = factory.inner.oraclePool;
+    if (pool === undefined) {
+      throw new Error(`'${childArtifact.contractName}' takes the oracle pool binding, which '${factory.name}' lacks`);
+    }
+    return oraclePoolBinding(hexToBin(pool));
+  };
   let childConstructorArgs = options.childConstructorArgs;
   if (bakedConstructorArgumentCount === 0) {
     childConstructorArgs = [];
   } else if (!childConstructorArgs && deployTarget?.constructorArgs?.every((n) => n !== null)) {
     const derived = deployTarget.constructorArgs.map((name) => {
+      if (name === ORACLE_POOL_PARAMETER) return creatorBinding();
       const idx = deployAbi.inputs.findIndex((inp) => inp.name === name);
       return idx >= 0 ? deployFunctionArgs[idx] : undefined;
     });
@@ -139,6 +151,9 @@ export async function deployFromStatefulContract<T extends Artifact>(
       `Cannot derive constructor args for 'new ${deployTarget?.contractName ?? '?'}(...)' in `
       + `'${deployFunctionName}'. Pass childConstructorArgs (the new-C(...) args are not all plain parameters).`,
     );
+  }
+  if (takesOraclePool(childArtifact) && childConstructorArgs.length === bakedConstructorArgumentCount - 1) {
+    childConstructorArgs = [...childConstructorArgs, creatorBinding()];
   }
   const bakedChildConstructorArgs = childConstructorArgs.slice(0, bakedConstructorArgumentCount);
   // create2 salt: build the child with the salt the deploy covenant pins (composed with the self-pin).

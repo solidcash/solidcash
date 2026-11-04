@@ -14,6 +14,11 @@ import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
 
 export interface DeployOptions {
+  /**
+   * The oracle pool a block.* reader binds, its category in display order; the provider's pool by default. The SDK
+   * fills the reader's `__oraclePool` constructor input from it.
+   */
+  oraclePool?: string;
   /** Mint a confined blockhash keeper baton at genesis; requires a blockhash-reading artifact. */
   blockhashKeeperPublicKey?: Uint8Array;
   /** Initial keeper baton balance, spent on oracle mints and fees; default 10,000 satoshis. */

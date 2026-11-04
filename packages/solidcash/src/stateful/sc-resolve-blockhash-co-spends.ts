@@ -7,7 +7,6 @@ import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/li
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  blockOracleReadUnlocking,
   isComputedBlockhashKey,
   type AbiFunction,
 } from '@solidcash/utils';
@@ -15,6 +14,7 @@ import { isContractUnlocker, type Output, type Unlocker, type Utxo } from '../in
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { poolInfoCoSpend } from '../oracle/pool/reader.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import { extractBlockhashReadsFromTrace } from './trace-verified-value-helpers.js';
@@ -26,8 +26,8 @@ const inertUnlocker: Unlocker = {
   generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
 };
 
-/** A computed `block.number` is sliced before `blockhash` reads its own input. The probe has to spend the
- * info oracle at the slot the reader was given, or that slice aborts before n is on the stack. */
+/** A computed `block.number` is sliced before `blockhash` reads its own input. The probe has to spend a pool
+ * info coin at the slot the reader was given, or that slice aborts before n is on the stack. */
 async function placeBlockInfoOracle(
   host: BlockhashCoSpendHost,
   builder: {
@@ -43,8 +43,8 @@ async function placeBlockInfoOracle(
   const abi = stateInputUnlocker.abiFunction;
   const info = abi.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle');
   if (abi.usesBlockOracle !== true || info === undefined) return;
-  const lock = stateInputUnlocker.contract.blockOracleLock;
-  if (lock === undefined) return;
+  const pool = stateInputUnlocker.contract.oraclePool;
+  if (pool === undefined) return;
   const at = masterInputIndex + info.offset;
   while (builder.inputs.length < at) {
     const index = builder.inputs.length;
@@ -55,17 +55,12 @@ async function placeBlockInfoOracle(
     builder.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
   }
   if (builder.inputs.length !== at) return;
-  const utxos = await host.inner.provider.getUtxosForLockingBytecode(lock);
-  const oracle = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
-  if (oracle?.token?.category === undefined) return;
-  const category = hexToBin(oracle.token.category);
-  builder.addInput(oracle, {
-    generateLockingBytecode: () => lock,
-    generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
-  });
+  const oracle = await poolInfoCoSpend(host.inner.provider, pool).catch(() => undefined);
+  if (oracle === undefined) return;
+  builder.addInput(oracle, oracle.unlocker);
   // The probe executes the reader, which only inspects this input. The output still has to carry the NFT
   // or the builder refuses the transaction as an implicit burn before the trace runs.
-  builder.addOutput({ to: lock, amount: oracle.satoshis, token: oracle.token });
+  builder.addOutput({ to: oracle.unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
 }
 
 export interface BlockhashCoSpendHost {

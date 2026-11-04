@@ -61,6 +61,8 @@ export interface DeployContractOptions {
   bcmr?: DeployOptions['bcmr'];
   /** The ledger token's bearer category and premint; see `DeployOptions.nativeToken`. */
   nativeToken?: DeployOptions['nativeToken'];
+  /** The oracle pool a block.* reader binds, its category in display order; see `DeployOptions.oraclePool`. */
+  oraclePool?: string;
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -322,7 +324,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const { resolveMasterPoolSize, poolGenesisSatoshis } = await import('../framed/deploy/pool.js');
     const { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } = await import('./logical-identity.js');
     const { registerDeployment } = await import('./deployment-registry.js');
-    const ctorCount = this.artifact.constructorInputs.length;
+    const { takesOraclePool, withOraclePoolArgument } = await import('../oracle/pool/reader.js');
+    // The pool binding is no caller's argument: the SDK fills it.
+    const ctorCount = this.artifact.constructorInputs.length - (takesOraclePool(this.artifact) ? 1 : 0);
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).
     // Count only the inputs a CALLER supplies. `__internal__` params (the msg.sender category, vmap slot/proof
@@ -341,11 +345,11 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = overrides.provider
       ?? (signer ? signer.provider : (this.runner as NetworkProvider));
-    const constructorArgs = await normalizeRegisteredAddressArguments(
+    const constructorArgs = withOraclePoolArgument(this.artifact, await normalizeRegisteredAddressArguments(
       provider,
       this.artifact.constructorInputs,
       args.slice(0, ctorCount) as ConstructorArgument[],
-    );
+    ), () => overrides.oraclePool ?? provider.oraclePoolCategory) as ConstructorArgument[];
     const publicInitInputs = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
       .filter((input) => !input.name.startsWith('__internal__')) ?? [];
     const positionalInitArgs = await normalizeRegisteredAddressArguments(

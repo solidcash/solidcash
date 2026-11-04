@@ -20,6 +20,7 @@ import {
   MappingType,
   Op,
   asmToScript,
+  ORACLE_POOL_PARAMETER,
 } from '@solidcash/utils';
 import { isDynamicallyEncodedElementType } from '../generation/utils.js';
 import {
@@ -2256,9 +2257,11 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.parameters = this.visitList(node.parameters);
       // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)
       // contract-level parameters; use whichever has them. Synthetic __internal__ params (appended onto
-      // the shared ctor node by the child's own semantic pass) are never call-site arguments.
-      const ctorParams = (node.referencedContract.parameters.length > 0
-        ? node.referencedContract.parameters : (node.referencedContract.constructorDef?.parameters ?? []))
+      // the shared ctor node by the child's own semantic pass) are never call-site arguments, nor is the pool
+      // binding, which the creator passes itself.
+      const declaredParams = node.referencedContract.parameters.filter((p) => p.name !== ORACLE_POOL_PARAMETER);
+      const ctorParams = (declaredParams.length > 0
+        ? declaredParams : (node.referencedContract.constructorDef?.parameters ?? []))
         .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
       const expectedTypes = ctorParams.map((p) => p.type);
       // Constructor calls apply the same contextual literal conversions as ordinary calls.
@@ -2588,7 +2591,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   // A block.* reader slices the oracle at the index its caller forwards. A call that drops it would hand the
-  // reader a shifted frame, so refuse it here instead of compiling a call that only the lock pin stops.
+  // reader a shifted frame, so refuse it here instead of compiling a call that only the pool check stops.
   private requireBlockOracleIndexForwarded(node: FunctionCallNode, fn: FunctionDefinitionNode): void {
     const name = '__internal__blockOracleInputIndex';
     if (!fn.parameters.some((parameter) => parameter.name === name)) return;

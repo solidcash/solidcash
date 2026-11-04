@@ -1,6 +1,9 @@
 import {
   ContractNode,
+  ContractReferenceNode,
   FunctionDefinitionNode,
+  InstantiationNode,
+  ParameterNode,
   SourceFileNode,
   Node,
   NullaryOpNode,
@@ -8,14 +11,10 @@ import {
   IdentifierNode,
   IntLiteralNode,
   BinaryOpNode,
-  CastNode,
-  ExpressionNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { BlockhashDepthError, DeprecatedNowError } from '../Errors.js';
-import {
-  BLOCKHASH_MAX_DEPTH, IntType, PrimitiveType, encodeComputedBlockhashKey, type Type,
-} from '@solidcash/utils';
+import { DeprecatedNowError } from '../Errors.js';
+import { BytesType, encodeComputedBlockhashKey, ORACLE_POOL_PARAMETER } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -31,15 +30,6 @@ const ORACLE_FIELDS = new Set<NullaryOperator>([
   NullaryOperator.BLOCK_TOTAL_FEES,
   NullaryOperator.BLOCK_COINBASE,
 ]);
-
-const isIntegerType = (type: Type): boolean =>
-  type instanceof IntType || type === PrimitiveType.INT || type === PrimitiveType.BIGINT;
-
-/** `block.number`, under any integer casts. */
-function isBlockNumber(node: Node | undefined): boolean {
-  if (node instanceof CastNode) return isIntegerType(node.type) && isBlockNumber(node.expression);
-  return node instanceof NullaryOpNode && node.operator === NullaryOperator.BLOCK_NUMBER;
-}
 
 /** Whether a body slices the oracle itself, before or after basefee lowering. */
 export function readsBlockOracle(fn: FunctionDefinitionNode): boolean {
@@ -80,31 +70,107 @@ export function markBlockOracleCallers(
   contract.usesBlockOracle = true;
 }
 
+/** True when `contract` takes the oracle pool binding. */
+export function takesOraclePool(contract: ContractNode | undefined): boolean {
+  return contract?.parameters.some((parameter) => parameter.name === ORACLE_POOL_PARAMETER) === true;
+}
+
+/** Adds or removes the binding, so a creator encodes the arguments the embedded child takes. */
+export function setOraclePoolBinding(contract: ContractNode, bound: boolean): void {
+  if (bound === takesOraclePool(contract)) return;
+  if (!bound) {
+    contract.parameters = contract.parameters.filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER);
+    return;
+  }
+  const parameter = new ParameterNode(new BytesType(32), ORACLE_POOL_PARAMETER);
+  parameter.location = contract.location;
+  parameter.syntheticallyUsed = true;
+  contract.parameters.push(parameter);
+}
+
+/** Whether a body creates, or names the lock of, a contract bound to a pool. */
+function createsBoundContract(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if ((node instanceof InstantiationNode || node instanceof ContractReferenceNode)
+      && takesOraclePool(node.referencedContract)) found = true;
+  });
+  return found;
+}
+
+/**
+ * The pool coin kinds read by the bound contracts that `contract`'s bodies create or name, theirs included, or
+ * undefined when they read none.
+ */
+export function createdPoolReads(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+): { blockInfo?: true; blockhash?: true } | undefined {
+  let blockInfo = false;
+  let blockhash = false;
+  const bodies = [
+    contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  for (const fn of bodies) {
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof InstantiationNode || node instanceof ContractReferenceNode)) return;
+      const child = node.referencedContract;
+      if (child === undefined || !takesOraclePool(child)) return;
+      const reads = child.poolTreeReads ?? {
+        ...(child.usesBlockOracle && { blockInfo: true as const }),
+        ...(child.usesBlockhash && { blockhash: true as const }),
+      };
+      if (reads.blockInfo === true) blockInfo = true;
+      if (reads.blockhash === true) blockhash = true;
+    });
+  }
+  if (!blockInfo && !blockhash) return undefined;
+  return { ...(blockInfo ? { blockInfo: true as const } : {}), ...(blockhash ? { blockhash: true as const } : {}) };
+}
+
+/**
+ * Binds a direct contract to its oracle pool P. A contract that reads block info or blockhash, or that creates or
+ * names the lock of a bound contract, takes `__oraclePool` (bytes32, P as OP_UTXOTOKENCATEGORY pushes it) as its
+ * last parameter, and passes its own value to that child. Marks the named-call closure of each creating body, which
+ * an invoked frame must hand the value. A framed master has no contract parameters: each read carries P in a pool
+ * slot. Runs once the children are compiled, before code generation.
+ */
+export function bindOraclePool(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[], framed: boolean,
+): void {
+  const bodies = [
+    contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  const creators = new Set(framed ? [] : bodies.filter(createsBoundContract).map((fn) => fn.name));
+  if (creators.size > 0) {
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of bodies) byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
+    for (const fn of bodies) {
+      if ([...collectNamedFunctionClosure(fn, byName)].some((name) => creators.has(name))) fn.passesOraclePool = true;
+    }
+  }
+  setOraclePoolBinding(contract, !framed
+    && (contract.usesBlockOracle || contract.usesBlockhash || creators.size > 0));
+}
+
 /**
  * Oracle-backed `block.*` reads.
  *
- * The block data lives in the commitment of the contract's own oracle coin, a mutable NFT of its category at the
- * lock the covenant gives that category, not in this contract's state. A read stays a `block.*` nullary; codegen
- * slices that commitment. The owner update is the oracle covenant's own spend and is never added to this contract.
- * Any block.* or blockhash read makes the contract stateful. `block.basefee` is Floor(1000 * totalFees / size) over
- * two of those slices. `block.chainid` is a separate baked constant.
+ * The block data lives in the commitment of a block-info coin of the contract's oracle pool, not in this
+ * contract. A read stays a `block.*` nullary; codegen checks the coin's category and flags and slices that
+ * commitment. The owner update is the pool covenant's own spend and is never added to this contract.
+ * Any block.* or blockhash read makes the contract stateful. `block.basefee` is Floor(1000 * totalFees / size)
+ * over two of those slices. `block.chainid` is a separate baked constant.
  *
- * The owner's bounds live in that covenant (utils/block-oracle.ts): a height update keeps `number` below
- * 500000000, does not rewind it, CLTVs it, and keeps `timestamp`; a timestamp update runs under a
- * time-type locktime, does not rewind it, CLTVs it, and keeps `number`. `block.number` and
- * `block.timestamp` warn: each is the last value that owner wrote, not the chain's.
+ * The owner's bounds live in that covenant (utils/oracle-pool.ts): a height update raises `number`, CLTVs it and
+ * keeps `timestamp`; a timestamp update runs under a time-type locktime, raises it, CLTVs it and keeps the other
+ * fields. `block.number` and `block.timestamp` warn: each is the last value that owner wrote, not the chain's.
  */
 
 export default class SynthesizeBlockOracle extends AstTraversal {
   private legacyNow = false;
-  // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
-  // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
+  // Set when the contract references blockhash(n): surfaced to the artifact, as the reader co-spends ring slots of
+  // its oracle pool.
   usesBlockhash = false;
-  // The ring depth the reads need, the most over them: K for blockhash(block.number - K) with K a compile-time
-  // constant (1 for K = 0). Any other argument leaves the reads unbounded, and the deployer picks the depth.
-  blockhashDepth = 0;
-  blockhashDepthBounded = true;
-  private constants = new Map<string, ExpressionNode>();
   private fnUsesBlockhash = false;
   // Distinct blockhash read keys in the current function - each rides its own oracle slot (param name for a
   // direct-identifier n; a framed-site placeholder for a computed n).
@@ -151,9 +217,6 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       this.usesBlockhash = true;
       this.readsBlockData = true;
       this.fnUsesBlockhash = true;
-      const depth = this.blockhashReadDepth(node);
-      if (depth === undefined) this.blockhashDepthBounded = false;
-      else this.blockhashDepth = Math.max(this.blockhashDepth, depth);
       // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
       // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
       // gets its own framed-site slot; the SDK resolves it from the auto-derivation probe trace (the covenant
@@ -169,40 +232,6 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       }
     }
     return super.visitFunctionCall(node);
-  }
-
-  /** The ring depth one read needs, undefined when it is unbounded. A read further back than a ring holds is refused. */
-  private blockhashReadDepth(node: FunctionCallNode): number | undefined {
-    const blocksBack = this.blocksBelowBlockNumber(node.parameters[0]);
-    if (blocksBack === undefined || blocksBack < 0n) return undefined;
-    if (blocksBack > BigInt(BLOCKHASH_MAX_DEPTH)) throw new BlockhashDepthError(node, blocksBack, BLOCKHASH_MAX_DEPTH);
-    return Math.max(1, Number(blocksBack));
-  }
-
-  /** K when `argument` is `block.number - K` with K a compile-time constant, 0 for `block.number` itself. */
-  private blocksBelowBlockNumber(argument: Node | undefined): bigint | undefined {
-    if (isBlockNumber(argument)) return 0n;
-    if (!(argument instanceof BinaryOpNode) || argument.operator !== BinaryOperator.MINUS) return undefined;
-    return isBlockNumber(argument.left) ? this.constantInteger(argument.right, new Set()) : undefined;
-  }
-
-  /** A compile-time integer: a literal, a constant no local shadows, an integer cast, or a sum, difference or product. */
-  private constantInteger(node: Node | undefined, seen: ReadonlySet<string>): bigint | undefined {
-    if (node instanceof IntLiteralNode) return node.value;
-    if (node instanceof CastNode) return isIntegerType(node.type) ? this.constantInteger(node.expression, seen) : undefined;
-    if (node instanceof IdentifierNode) {
-      const expression = this.constants.get(node.name);
-      if (expression === undefined || seen.has(node.name) || this.fnDeclaredNames.has(node.name)) return undefined;
-      return this.constantInteger(expression, new Set([...seen, node.name]));
-    }
-    if (!(node instanceof BinaryOpNode)) return undefined;
-    const left = this.constantInteger(node.left, seen);
-    const right = this.constantInteger(node.right, seen);
-    if (left === undefined || right === undefined) return undefined;
-    if (node.operator === BinaryOperator.PLUS) return left + right;
-    if (node.operator === BinaryOperator.MINUS) return left - right;
-    if (node.operator === BinaryOperator.MUL) return left * right;
-    return undefined;
   }
 
   // Flag a function reading blockhash(n); SymbolTable injects the hidden co-spend input-index param after
@@ -226,7 +255,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       result.blockhashSlotCount = this.fnBlockhashArgs.size;
     }
     // Re-running this pass on a split root sees a forwarder, not the read. Clear a mark left by the
-    // earlier pass so a shard that no longer slices the commitment is not required to publish the lock pin.
+    // earlier pass so a shard that no longer slices the commitment is not bound to a pool for it.
     if (this.fnUsesOracle) result.usesBlockOracle = true;
     else result.usesBlockOracle = undefined;
     this.fnUsesBlockhash = prev;
@@ -267,14 +296,12 @@ export default class SynthesizeBlockOracle extends AstTraversal {
 
   visitSourceFile(node: SourceFileNode): Node {
     this.legacyNow = node.solidityLegacyNow;
-    for (const constant of node.constantDefinitions) this.constants.set(constant.name, constant.expression);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
 
   visitContract(node: ContractNode): Node {
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
-    for (const constant of node.constantDefinitions) this.constants.set(constant.name, constant.expression);
     // Solidity permits a contract function to shadow the gasleft builtin (with a compiler warning). Preserve
     // that ordinary call for semantic overload resolution rather than replacing it with the BCH gas shim.
     this.userGasleft = node.functions.some((fn) => fn.name === 'gasleft' && fn.parameters.length === 0);
@@ -283,8 +310,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
 
-    // Every block oracle is of the contract's own category, so any block.* or blockhash read makes the contract
-    // stateful. The mark stays once set: a re-run on a split root sees forwarders, not the reads.
+    // Any block.* or blockhash read makes the contract stateful. The mark stays once set: a re-run on a split root
+    // sees forwarders, not the reads.
     const bodies = [node.functions, node.constructorDef, node.fallbackDef, node.receiveDef].flat();
     node.usesBlockhash = bodies.some((fn) => fn?.usesBlockhash);
     node.usesBlockOracle = bodies.some((fn) => fn?.usesBlockOracle);

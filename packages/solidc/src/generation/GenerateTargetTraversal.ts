@@ -13,11 +13,12 @@ import {
   decodeInt,
   encodeInt,
   encodeString,
-  BLOCK_ORACLE_LOCK_SENTINEL,
-  BLOCK_ORACLE_FIELD_WIDTH,
-  BLOCK_ORACLE_COINBASE_OFFSET,
-  blockOracleFieldOffset,
-  blockOracleLockDerivationScript,
+  ORACLE_POOL_PARAMETER,
+  ORACLE_POOL_SENTINEL,
+  POOL_FIELD_WIDTH,
+  POOL_FLAG_SLOT,
+  POOL_INFO_OFFSETS,
+  POOL_SLOT_OFFSETS,
   type BlockOracleField,
   Op,
   type OpOrData,
@@ -29,8 +30,6 @@ import {
   normaliseScript,
   scriptToBytecode,
   buildDataNftCovenantScript,
-  buildBlockhashOracleCovenantScript,
-  BLOCKHASH_MAX_DEPTH,
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
   buildTokenContainerCovenantScript,
@@ -134,6 +133,7 @@ import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect, isDirectOwnerTransferNode } from '../semantic/branchOps.js';
 import { checksTransactionSignature, inlinesSignatureChecks } from '../semantic/transactionSignatureCheck.js';
 import { CALL_BATCH_CONTEXT, CALL_BATCH_ROW_SHIFT, CALL_BATCH_SELECTOR } from '../semantic/CallBatch.js';
+import { takesOraclePool } from '../semantic/SynthesizeBlockOracle.js';
 import {
   deriveKernelJournalDispositionHandlerScope, isKernelReadCarrierBindingToken,
   kernelJournalDispositionScopeKey, refreshKernelReadCarrierAuthorization,
@@ -697,6 +697,16 @@ const MESSAGE_BUS_DYNAMIC_WRITE_ACTIVE = '__message_bus_dynamic_write_active';
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** The value-chunk lock list the mutable-output check admits: the chunk-base witness, or a route-owned item. */
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
+/** The input index of the block-info coin a direct reader's caller forwards. */
+const BLOCK_ORACLE_INPUT_INDEX = '__internal__blockOracleInputIndex';
+/** The input index of the first ring slot a direct blockhash reader's caller forwards. */
+const BLOCKHASH_INPUT_INDEX = '__internal__blockhashInputIndex';
+/** Whether a parameter is the index of a pool coin a reader's caller forwards. */
+const isPoolCoinIndex = (name: string | undefined): boolean =>
+  name === BLOCK_ORACLE_INPUT_INDEX || name === BLOCKHASH_INPUT_INDEX;
+/** Whether a body reads its pool or hands the binding to a child it creates. */
+const needsOraclePool = (fn: FunctionDefinitionNode): boolean =>
+  fn.usesBlockOracle === true || fn.usesBlockhash === true || fn.passesOraclePool === true;
 /** The block size a shared outside-layout walk takes as its argument. */
 const OUTSIDE_LAYOUT_BLOCK_SIZE = '(__outside_layout_block_size)';
 /** The input index the parked outside-layout pin skips, -1 for none. */
@@ -1747,6 +1757,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private valueChunkAddressId: bigint | undefined;
   /** The data-record address helper, `[lock, category]` -> `[lbc]`, once defined. */
   private dataNftAddressId: bigint | undefined;
+  /** The pool block-info check, `[i, P]` -> `[commitment after its flags byte]`, once defined. */
+  private oraclePoolCheckId: bigint | undefined;
+  /**
+   * The pool binding helper, `[]` -> `[P]`, which the contract level defines from `__oraclePool`. Its body is built at
+   * run time, so a program extracted from literal definitions (the detached bus verifier) lacks it.
+   */
+  oraclePoolBindingId: bigint | undefined;
+  /** The bodies an indirect call may enter that need the pool binding (`indirectPoolBodyIds`). */
+  private oraclePoolIndirectIds: ReadonlySet<number> = new Set();
   /** The loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix helpers, once defined. */
   private loopIntSmallId: bigint | undefined;
   private loopIntWideId: bigint | undefined;
@@ -1915,6 +1934,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
   private static readonly WIDE_PUSHDATA_DECODE_SUBROUTINE_ID = WIDE_PUSHDATA_DECODE_ROUTINE_ID;
   private static readonly SORTED_INT_READ_SUBROUTINE_ID = -18n;
+  /** The pool binding helper's preferred id: free functions are defined before the helper pool is seeded. */
+  private static readonly ORACLE_POOL_BINDING_SUBROUTINE_ID = -127n;
   /**
    * Use-count keys for an address build that binds a lock other than the executing input's (a delegate's proxy, or
    * an explicit lock). Counted by the probe, never emitted: no helper identifier is this negative.
@@ -1928,6 +1949,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Sites of the loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix (`emitLoopIntPushdataEncode`). */
   private static readonly LOOP_INT_SMALL_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 3n;
   private static readonly LOOP_INT_WIDE_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 4n;
+  /** Sites of the pool block-info check (`emitOraclePoolCheck`). */
+  private static readonly ORACLE_POOL_CHECK_USE_KEY = GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - 5n;
   private static lockedEntryAddressUseKey(collectionHashHex: string): bigint {
     return GenerateTargetTraversalWithLocation.LOCKED_USE_KEY_BASE - (1n << 160n) - BigInt(`0x${collectionHashHex}`);
   }
@@ -2688,9 +2711,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // True while generating a branded delegate library: the delegate master-validation pins the co-spent proxy
   // master's category to the library's `__brand` ctor arg (docs/library-contracts.md 3b contention).
   private currentContractIsBrandedLibrary: boolean = false;
-  // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
+  // True when the contract reads blockhash(n), which keeps it stateful.
   private currentContractUsesBlockhash: boolean = false;
-  // True when the contract reads block.number and the rest: its block-info oracle is a coin of its own category.
+  // True when the contract reads block.number and the rest from a block-info coin of its pool.
   private currentContractUsesBlockOracle: boolean = false;
   // True when anything reads a block.* global or blockhash(n), which makes the contract stateful.
   private currentContractReadsBlock: boolean = false;
@@ -2898,8 +2921,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private constructorCaptures(func: FunctionDefinitionNode): ParameterNode[] {
-    if (!func.body || func.functionId === undefined
-      || !this.contractFunctionKeys.has(`${func.functionId}:${func.name}`)) return [];
+    if (!func.body || func.functionId === undefined) return [];
+    // A pool read and a bound child's argument take the pool binding by name, not by an identifier. A body an
+    // indirect call may enter takes it from the binding helper instead.
+    const pool = needsOraclePool(func) && !this.oraclePoolIndirectIds.has(func.functionId)
+      ? this.contractParameters.filter((param) => param.name === ORACLE_POOL_PARAMETER) : [];
+    // A free function names no constructor parameter, so the binding is all it captures.
+    if (!this.contractFunctionKeys.has(`${func.functionId}:${func.name}`)) return func.isFreeFunction ? pool : [];
     const collector = new IdentifierUsageCollector();
     collector.visit(func.body);
     // External-call lowering can replace a constructor-bound receiver in the executable body with a
@@ -2913,7 +2941,158 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         collector.names.add(slot.addressSource.paramName);
       }
     }
+    if (pool.length > 0) collector.names.add(ORACLE_POOL_PARAMETER);
     return this.contractParameters.filter((param) => collector.names.has(param.name));
+  }
+
+  /**
+   * The function-pointer targets that need the pool binding, in a contract that calls through a function value. An
+   * indirect call pushes a body's declared arguments only, so such a body would read a binding and a coin index from
+   * slots its caller chose: it takes neither, and finds a block-info coin or a slot of P from the binding helper.
+   */
+  private indirectPoolBodyIds(
+    contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+  ): Set<number> {
+    if (!this.contractParameters.some((parameter) => parameter.name === ORACLE_POOL_PARAMETER)) return new Set();
+    const bodies = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
+      ...freeFunctions].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    const needy = bodies.filter((fn) => fn.functionId !== undefined && needsOraclePool(fn));
+    if (needy.length === 0 || !bodies.some((fn) => fn.body !== undefined && this.containsIndirectCall(fn.body, true))) {
+      return new Set();
+    }
+    const referenced = new Set(this.functionReferenceIds(contract));
+    for (const fn of freeFunctions) for (const id of this.functionReferenceIds(fn)) referenced.add(id);
+    return new Set(needy.filter((fn) => referenced.has(fn.functionId!)).map((fn) => fn.functionId!));
+  }
+
+  /**
+   * Mark each entry that reaches an indirect call, directly or through a body it calls by name, with the pool reads
+   * the function-pointer targets make (`indirectPoolBodyIds`). They find their coins themselves, so the entry takes
+   * no slot for them and the SDK co-spends one of each kind.
+   */
+  private markIndirectPoolReaders(contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[]): void {
+    const bodies = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
+      ...freeFunctions].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    const targets = bodies.filter((fn) => fn.functionId !== undefined && this.oraclePoolIndirectIds.has(fn.functionId));
+    const blockInfo = targets.some((fn) => fn.usesBlockOracle === true);
+    const blockhash = targets.some((fn) => fn.usesBlockhash === true);
+    const reaches = new Map<FunctionDefinitionNode, boolean>();
+    const reachesIndirectCall = (fn: FunctionDefinitionNode): boolean => {
+      const known = reaches.get(fn);
+      if (known !== undefined) return known;
+      reaches.set(fn, false);
+      let found = fn.body !== undefined && this.containsIndirectCall(fn.body, true);
+      if (!found && fn.body !== undefined) {
+        walkInvocationAst(fn.body, (node) => {
+          if (!found && node instanceof FunctionCallNode && node.resolvedFunction !== undefined
+            && node.resolvedFunction !== fn) found = reachesIndirectCall(node.resolvedFunction);
+        });
+      }
+      reaches.set(fn, found);
+      return found;
+    };
+    for (const fn of bodies) {
+      fn.indirectPoolReads = (blockInfo || blockhash) && reachesIndirectCall(fn)
+        ? { ...(blockInfo && { blockInfo: true as const }), ...(blockhash && { blockhash: true as const }) }
+        : undefined;
+    }
+  }
+
+  /** Emit a push of P: the `__oraclePool` parameter where this body holds it, else the binding helper's copy. */
+  private emitOraclePoolBinding(locationData: SingleLocationData): void {
+    if (this.oraclePoolBindingId === undefined || this.getStackIndex(ORACLE_POOL_PARAMETER, true) >= 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(ORACLE_POOL_PARAMETER))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
+    this.emit(encodeInt(this.oraclePoolBindingId), locationData);
+    this.emit(Op.OP_INVOKE, locationData);
+  }
+
+  /**
+   * Define the pool binding helper, `[]` -> `[P]`, whose body is the push of P. The function table is the source no
+   * caller chooses: only this script can OP_DEFINE, an identifier once, and it does so here from the parameter at a
+   * slot this level knows. Inside OP_INVOKE, OP_ACTIVEBYTECODE is the invoked body, and the redeem's offset in the
+   * unlocking bytecode moves with the other arguments' lengths and the SDK's prologue.
+   */
+  private emitOraclePoolBindingDefine(id: bigint, locationData: SingleLocationData): void {
+    this.emit([
+      Uint8Array.of(0x20), encodeInt(BigInt(this.getStackIndex(ORACLE_POOL_PARAMETER) + 1)), Op.OP_PICK, Op.OP_CAT,
+      encodeInt(id), Op.OP_DEFINE,
+    ], locationData);
+  }
+
+  /** `[]` -> `[i]`: the first input that is a block-info coin of P. Past the last input the introspection fails. */
+  private emitOraclePoolCoinSearch(locationData: SingleLocationData): void {
+    this.emitOraclePoolBinding(locationData);
+    this.emit([
+      Op.OP_1, Op.OP_CAT, Op.OP_1NEGATE,
+      Op.OP_BEGIN, Op.OP_1ADD,
+      Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_IF,
+      Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_DROP, Uint8Array.of(0x00), Op.OP_EQUAL,
+      Op.OP_ELSE,
+      Op.OP_0,
+      Op.OP_ENDIF,
+      Op.OP_UNTIL,
+      Op.OP_NIP,
+    ], locationData);
+  }
+
+  /**
+   * `[n]` -> `[answer]`: the first input that is a live slot of P answering block n, one holding n or a block of n's
+   * residue at least 256 newer, gives the direct read's answer. Past the last input the introspection fails.
+   */
+  private emitOraclePoolSlotSearch(locationData: SingleLocationData): void {
+    const { n, hash, depth } = POOL_SLOT_OFFSETS;
+    this.emitOraclePoolBinding(locationData);
+    this.emit([
+      // [P || 0x01, n, i]: the category read sees [n, i, i], as at a direct read
+      Op.OP_1, Op.OP_CAT, Op.OP_SWAP,
+      Op.OP_1NEGATE,
+      Op.OP_BEGIN, Op.OP_1ADD,
+      Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_IF,
+      Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(POOL_FLAG_SLOT), Op.OP_EQUAL,
+      Op.OP_IF,
+      // [.., n4 || hash || owner || depth] -> [.., slot n - n, depth]
+      encodeInt(BigInt(hash - n)), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_BIN2NUM, Op.OP_3, Op.OP_PICK, Op.OP_SUB,
+      Op.OP_SWAP, encodeInt(BigInt(depth - hash)), Op.OP_SPLIT, Op.OP_NIP, Op.OP_BIN2NUM,
+      // It holds n, or a block of n's residue at least 256 newer.
+      Op.OP_OVER, Op.OP_SWAP, Op.OP_MOD, Op.OP_NOT, Op.OP_OVER, encodeInt(256n), Op.OP_GREATERTHANOREQUAL,
+      Op.OP_BOOLAND, Op.OP_SWAP, Op.OP_NOT, Op.OP_BOOLOR,
+      Op.OP_ELSE,
+      Op.OP_DROP, Op.OP_0,
+      Op.OP_ENDIF,
+      Op.OP_ELSE,
+      Op.OP_0,
+      Op.OP_ENDIF,
+      Op.OP_UNTIL,
+      // [P || 0x01, n, i] -> [n, slot after its flags byte]
+      Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP, Op.OP_ROT, Op.OP_DROP,
+    ], locationData);
+    this.emitPoolSlotAnswer(locationData);
+  }
+
+  /**
+   * `[n, slot]` -> `[answer]`, `slot` a live slot's commitment after its flags byte: the slot's hash when it holds
+   * n, zero when it holds a block of n's residue at least 256 newer, which the EVM no longer answers, else a refusal.
+   */
+  private emitPoolSlotAnswer(locationData: SingleLocationData): void {
+    const { n, hash, depth } = POOL_SLOT_OFFSETS;
+    this.emit([
+      encodeInt(BigInt(hash - n)), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_BIN2NUM, Op.OP_ROT,
+      // [hash || owner || depth, slot n, n]
+      Op.OP_2DUP, Op.OP_NUMEQUAL,
+      Op.OP_IF,
+      Op.OP_2DROP, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
+      Op.OP_ELSE,
+      Op.OP_SUB, Op.OP_DUP, encodeInt(256n), Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+      Op.OP_SWAP, encodeInt(BigInt(depth - hash)), Op.OP_SPLIT, Op.OP_NIP, Op.OP_BIN2NUM,
+      Op.OP_MOD, Op.OP_0, Op.OP_NUMEQUALVERIFY,
+      Op.OP_0, encodeInt(32n), Op.OP_NUM2BIN,
+      Op.OP_ENDIF,
+    ], locationData);
   }
 
   /**
@@ -4168,6 +4347,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A library load OP_DEFINEs these at run time, so the seeding reserves them too.
     this.libraryDefinedIds = [...new Set(allFunctions.flatMap((fn) => this.loadedLibraries(fn)
       .flatMap((lib) => (lib ? libraryDefinedIds(lib.blob) : []))))];
+    // A body an indirect call may enter, a free one included, invokes the binding helper by this id.
+    this.oraclePoolIndirectIds = this.indirectPoolBodyIds(node.contract, node.freeFunctions);
+    this.markIndirectPoolReaders(node.contract, node.freeFunctions);
+    if (this.oraclePoolIndirectIds.size > 0) {
+      let id = GenerateTargetTraversalWithLocation.ORACLE_POOL_BINDING_SUBROUTINE_ID;
+      while (this.libraryDefinedIds.includes(id)) id -= 1n;
+      this.oraclePoolBindingId = id;
+    }
 
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
@@ -5457,6 +5644,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const id of invokedFunctionIds) this.compactHelperIds.used.add(BigInt(id));
     for (const id of this.freeFunctionIds) this.compactHelperIds.used.add(id);
     for (const id of this.libraryDefinedIds) this.compactHelperIds.used.add(id);
+    if (this.oraclePoolBindingId !== undefined) this.compactHelperIds.used.add(this.oraclePoolBindingId);
     this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
       .filter((id) => !this.compactHelperIds.used.has(id));
     // vmap sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
@@ -5475,6 +5663,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.lockParameterisedHelperIds = new Set();
     this.valueChunkAddressId = undefined;
     this.dataNftAddressId = undefined;
+    this.oraclePoolCheckId = undefined;
     this.loopIntSmallId = undefined;
     this.loopIntWideId = undefined;
     this.sharedEntryChecks = new Map();
@@ -5752,6 +5941,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       GenerateTargetTraversalWithLocation.DATA_NFT_ADDRESS_USE_KEY,
       (t) => t.emitBoundDataNftAddress(loc),
     );
+    // A direct block-info read supplies the input and P; a framed one walks the inputs inline.
+    if (this.currentContractUsesBlockOracle && !this.framedMaster) {
+      this.oraclePoolCheckId = defineLockSuppliedHelper(
+        GenerateTargetTraversalWithLocation.ORACLE_POOL_CHECK_USE_KEY,
+        (t) => t.emitOraclePoolCheck(loc),
+      );
+    }
+    if (this.oraclePoolBindingId !== undefined) this.emitOraclePoolBindingDefine(this.oraclePoolBindingId, loc);
     // The loop int encoder's arms run inside a loop pass, so they are defined for one site too: inline, every pass
     // pays for each of their instructions even when it steps over them.
     const defineLoopIntArm = (
@@ -6189,17 +6386,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Cached result of `functionReferenceIds` per contract node. It is a whole-contract walk called twice on the
-   * same node during one emission (the indirect-dispatch prelude and `emitFunctionDefinesAndDispatch`), and a
-   * read-only call census measured it at ~70-80ms per compile. The walk reads only node classes and the
-   * `functionReference.functionId` marks that symbol resolution attaches before codegen.
+   * Cached result of `functionReferenceIds` per root, a contract or a free function. It is a whole-contract walk
+   * called twice on the same node during one emission (the indirect-dispatch prelude and
+   * `emitFunctionDefinesAndDispatch`), and a read-only call census measured it at ~70-80ms per compile. The walk
+   * reads only node classes and the `functionReference.functionId` marks that symbol resolution attaches before
+   * codegen.
    *
    * A module-level WeakMap cannot be used because codegen rewrites child pointers in place, so the cache is
    * per traversal instance; callers only call `.has` on the returned set, so it is never mutated.
    */
-  private functionReferenceIdsCache = new WeakMap<ContractNode, Set<number>>();
+  private functionReferenceIdsCache = new WeakMap<Node, Set<number>>();
 
-  private functionReferenceIds(node: ContractNode): Set<number> {
+  private functionReferenceIds(node: Node): Set<number> {
     const cached = this.functionReferenceIdsCache.get(node);
     if (cached !== undefined) return cached;
     const ids = new Set<number>();
@@ -7045,6 +7243,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
+    sub.oraclePoolCheckId = this.oraclePoolCheckId;
+    sub.oraclePoolBindingId = this.oraclePoolBindingId;
+    sub.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
     sub.loopIntSmallId = this.loopIntSmallId;
     sub.loopIntWideId = this.loopIntWideId;
     sub.sharedEntryChecks = this.sharedEntryChecks;
@@ -7140,6 +7341,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
+    sub.oraclePoolCheckId = this.oraclePoolCheckId;
+    sub.oraclePoolBindingId = this.oraclePoolBindingId;
+    sub.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
     sub.loopIntSmallId = this.loopIntSmallId;
     sub.loopIntWideId = this.loopIntWideId;
     sub.sharedEntryChecks = this.sharedEntryChecks;
@@ -7288,8 +7492,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.preambleComputedFor = node;
       probe.contractUsesMsgValue = this.contractUsesMsgValue;
       probe.constructorParameterCount = this.constructorParameterCount;
+      // The probe captures the pool binding as the emitting pass does; without it a pool read in an invoked body
+      // throws the probe into the define-all fallback. Other constructor parameters stay uncaptured, as before.
+      probe.contractParameters = this.contractParameters.filter((param) => param.name === ORACLE_POOL_PARAMETER);
+      probe.contractFunctionKeys = this.contractFunctionKeys;
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.sourcePrimaryContract = this.sourcePrimaryContract;
+      probe.oraclePoolBindingId = this.oraclePoolBindingId;
+      probe.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
       probe.compactHelperIds = this.compactHelperIds;
       probe.sharedEntryChecks = this.sharedEntryChecks;
       // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
@@ -7619,6 +7829,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
     subTraversal.valueChunkAddressId = this.valueChunkAddressId;
     subTraversal.dataNftAddressId = this.dataNftAddressId;
+    subTraversal.oraclePoolCheckId = this.oraclePoolCheckId;
+    subTraversal.oraclePoolBindingId = this.oraclePoolBindingId;
+    subTraversal.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
     subTraversal.loopIntSmallId = this.loopIntSmallId;
     subTraversal.loopIntWideId = this.loopIntWideId;
     subTraversal.sharedEntryChecks = this.sharedEntryChecks;
@@ -7973,6 +8186,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.lockParameterisedHelperIds = this.lockParameterisedHelperIds;
       subTraversal.valueChunkAddressId = this.valueChunkAddressId;
       subTraversal.dataNftAddressId = this.dataNftAddressId;
+      subTraversal.oraclePoolCheckId = this.oraclePoolCheckId;
+      subTraversal.oraclePoolBindingId = this.oraclePoolBindingId;
+      subTraversal.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
       subTraversal.loopIntSmallId = this.loopIntSmallId;
       subTraversal.loopIntWideId = this.loopIntWideId;
       subTraversal.sharedEntryChecks = this.sharedEntryChecks;
@@ -9441,6 +9657,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Do NOT mutate node.parameters: the entry-point define shares this node and needs the full list.
       for (const p of node.parameters) {
         if (p.name === '__internal__returnOutputIdx' || p.name === CALL_BATCH_ROW_SHIFT) continue;
+        // A body an indirect call may enter takes no coin index; its reads find the coin.
+        if (isPoolCoinIndex(p.name) && this.oraclePoolIndirectIds.has(node.functionId!)) continue;
         this.visit(p);
       }
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
@@ -16188,10 +16406,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
-      // One covenant per master category. The co-spent slot is a mutable NFT of that category whose commitment
-      // is n(4 LE)||hash||owner(20)||depth(2 LE). require(tx.time >= n). A slot holding n gives its hash. A slot
-      // of a 256-deep ring holding n + 256k (k > 0) gives zero, as on the EVM: its owner wrote that block under
-      // a nLockTime at or above it, so n is older than the last 256 blocks.
+      // A ring slot of the bound pool P answers: a mutable NFT of P whose flags byte is 0x80, with commitment
+      // `flags || n (4 LE) || hash || owner || depth (2 LE)`. require(tx.time >= n); no lock is checked.
       const loc = { location: node.location, positionHint: PositionHint.START };
       // SDK auto-injection keys on blockhashReads: a direct-identifier n is recorded by param name (the SDK
       // reads that arg to resolve addr(n)). ANY computed n (block.number - K, arbitrary arithmetic) is recorded
@@ -16208,16 +16424,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!reads.includes(readKey)) reads.push(readKey);
       const readOrdinal = reads.indexOf(readKey);
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
+      this.emit([Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP], loc); // require(tx.time >= n), [n]
+      if (!this.stack.includes(BLOCKHASH_INPUT_INDEX)) {
+        // A body an indirect call may enter takes no index, so it reads the first slot of P that answers n.
+        this.emitOraclePoolSlotSearch(loc);
+        this.popFromStack();
+        this.pushToStack('(value)');
+        return node;
+      }
       // The co-spend input index comes from the synthesized __internal__blockhashInputIndex param (the SDK
-      // locates the oracle co-spend and fills it with the FIRST slot's index), NOT OP_TXINPUTCOUNT OP_1SUB -
+      // locates the slot co-spend and fills it with the FIRST slot's index), NOT OP_TXINPUTCOUNT OP_1SUB -
       // the last input belongs to whoever the builder appended last, which breaks under cross-contract
-      // composition. Depth is computed with [n] on top; the DUP/CLTV/DROP + optional ADD below are net-zero so
-      // the stack is still [n] under the picked index at the OP_UTXOTOKENCATEGORY.
-      const idxDepth = this.getStackIndex('__internal__blockhashInputIndex');
-      this.emit([
-        Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n), [n]
-        encodeInt(BigInt(idxDepth)), Op.OP_PICK, // base co-spend input index (composition-safe), [n, base]
-      ], loc);
+      // composition. Depth is computed with [n] on top; the optional ADDs below are net-zero so the stack is
+      // [n, idx, idx] at the OP_UTXOTOKENCATEGORY, the shape the SDK's probe reads n and idx from.
+      const idxDepth = this.getStackIndex(BLOCKHASH_INPUT_INDEX);
+      this.emit([encodeInt(BigInt(idxDepth)), Op.OP_PICK], loc); // base co-spend input index, [n, base]
       if (this.currentFunction.parameters.some((parameter) =>
         parameter.name === '__internal__blockhashRowOffset')) {
         // The message-bus batch route reserves `maximumRows * readWidth` slots. Its clone receives the row-local offset,
@@ -16226,27 +16447,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit([encodeInt(BigInt(offsetDepth)), Op.OP_PICK, Op.OP_ADD], loc);
       }
       if (readOrdinal > 0) this.emit([encodeInt(BigInt(readOrdinal)), Op.OP_ADD], loc); // base + ordinal -> [n, idx]
+      this.pushToStack('(blockhash slot index)');
       this.emit([Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY], loc);
-      this.emitVerifyCatBaseEqMaster(loc, 2);
-      // The category check accepts any own-category coin. Only the category's blockhash oracle lock runs the
-      // slot covenant, so the input's lock has to be that one.
-      this.emitBindBlockhashOracleLock(loc);
-      const fullDepth = encodeInt(BigInt(BLOCKHASH_MAX_DEPTH));
+      this.pushToStack('(blockhash slot category)');
+      this.emitOraclePoolBinding(loc);
+      this.emit([Op.OP_1, Op.OP_CAT, Op.OP_EQUALVERIFY], loc); // a mutable NFT of P, [n, idx]
+      this.popFromStack(2);
       this.emit([
-        Op.OP_UTXOTOKENCOMMITMENT, encodeInt(4n), Op.OP_SPLIT, // [n, n4, rest]
-        Op.OP_SWAP, Op.OP_BIN2NUM, // [n, rest, commitment.n]
-        Op.OP_ROT, Op.OP_SUB, // [rest, d = commitment.n - n]
-        Op.OP_DUP, Op.OP_0, Op.OP_GREATERTHAN, Op.OP_IF, // a newer block reads zero
-        fullDepth, Op.OP_MOD, Op.OP_NOT, Op.OP_VERIFY, // d is a multiple of 256 -> [rest]
-        encodeInt(52n), Op.OP_SPLIT, Op.OP_NIP, fullDepth, Op.OP_EQUALVERIFY, // the depth field is 256 -> []
+        Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_SWAP,
+        Uint8Array.of(POOL_FLAG_SLOT), Op.OP_EQUALVERIFY, // a live slot, [n, n4 || hash || owner || depth]
       ], loc);
-      this.emitFixedWidthConstant(new Uint8Array(32), loc); // [zero32]
-      this.emit([
-        Op.OP_ELSE,
-        Op.OP_NOT, Op.OP_VERIFY, // d == 0: commitment.n == n -> [rest]
-        encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, // the hash, before the owner and depth -> [hash32]
-        Op.OP_ENDIF,
-      ], loc);
+      this.emitPoolSlotAnswer(loc);
       this.popFromStack();
       this.pushToStack('(value)');
       return node;
@@ -17351,8 +17562,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // don't push the returnOutputIdx arg (TypeCheck forwarded it only to satisfy the arity check), so the
     // subroutine's declared params line up on the stack. Other synthetic params (msgSenderCategory, ...) ARE
     // consumed by the subroutine, so they are still pushed.
+    // A target an indirect call may enter takes no coin index either way it is called.
     const skipArg = (i: number): boolean => targetFunc.parameters[i]?.name === '__internal__returnOutputIdx'
-      || targetFunc.parameters[i]?.name === CALL_BATCH_ROW_SHIFT;
+      || targetFunc.parameters[i]?.name === CALL_BATCH_ROW_SHIFT
+      || (isPoolCoinIndex(targetFunc.parameters[i]?.name)
+        && this.oraclePoolIndirectIds.has(targetFunc.functionId!));
 
     // Capture immutable constructor values before evaluating declared
     // arguments: an argument expression may itself move one of these values.
@@ -17362,8 +17576,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (constructorCaptures.length > 0) {
       for (let i = constructorCaptures.length - 1; i >= 0; i--) {
         const name = constructorCaptures[i].name;
-        this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
-        this.emit(Op.OP_PICK, locationData);
+        if (name === ORACLE_POOL_PARAMETER) {
+          this.emitOraclePoolBinding(locationData);
+        } else {
+          this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        }
         this.pushToStack(`(__constructor_arg_${targetFunc.functionId}_${i})`);
         hiddenContextCount += 1;
       }
@@ -17401,6 +17619,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(contextIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
+      } else if (argument instanceof IdentifierNode && argument.name === BLOCK_ORACLE_INPUT_INDEX
+        && !this.stack.includes(argument.name)) {
+        // A caller an indirect call may enter holds no index: it hands its callee the first coin of P.
+        this.emitOraclePoolCoinSearch(locationData);
+        this.pushToStack(`(__oracle_index_arg_${targetFunc.functionId})`);
       } else {
         node.parameters[i] = this.visit(argument);
         // Internal-helper bodies are OP_DEFINE subroutines whose parameters skip enforceFunctionParameterTypes
@@ -18778,69 +19001,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Whether this program derives its own block oracle's lock rather than pinning the sentinel a deployment fills: a
-   * constant-lock master, whose one program every category it is created as shares (a contract another contract
-   * creates), cannot carry a per-category lock.
-   */
-  private derivesOwnBlockOracleLock(): boolean {
-    return this.framedMaster
-      && framedConstantLockMaster(this.compilerOptions as Parameters<typeof framedConstantLockMaster>[0]);
-  }
-
-  /**
-   * `[]` -> `[lock]`: the lock of the block-info oracle this master reads and pins, `blockOracleLockingBytecode` of
-   * the category of the coin the master spends. A deployment writes that lock over the sentinel; a constant-lock
-   * master derives it from its own token, so its program, and with it its lock, stays the same for every category.
-   */
-  private emitOwnBlockOracleLock(locationData: SingleLocationData): void {
-    if (!this.derivesOwnBlockOracleLock()) {
-      this.emit(BLOCK_ORACLE_LOCK_SENTINEL, locationData);
-      return;
-    }
-    this.emit([
-      Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
-      ...blockOracleLockDerivationScript(),
-    ], locationData);
-  }
-
-  /**
-   * Slice one field out of the co-spent block-oracle commitment. The lock pin is the sentinel a deployment fills, or
-   * the lock a constant-lock master derives from its own token.
+   * Slice one field out of a co-spent block-info coin of the bound pool P: a mutable NFT of P whose flags byte is
+   * 0x00. No lock is checked: every mutable NFT of P is a pool coin its covenant admitted.
    */
   private emitBlockOracleField(field: BlockOracleField | 'coinbase', locationData: SingleLocationData): void {
-    if (this.derivesOwnBlockOracleLock()) {
-      // The same walk with the lock derived once beneath the index, rather than pushed in each turn.
-      this.emitOwnBlockOracleLock(locationData);
+    if (this.framedMaster) {
+      // A framed body takes no index, so it finds the first such input, with P in a pool slot deployment fills.
+      // Past the last input the introspection fails.
       this.emit([
         Op.OP_1NEGATE,
-        Op.OP_BEGIN, Op.OP_1ADD, Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL, Op.OP_UNTIL,
-        Op.OP_NIP, Op.OP_UTXOTOKENCOMMITMENT,
+        Op.OP_BEGIN, Op.OP_1ADD,
+        Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Uint8Array.from([...ORACLE_POOL_SENTINEL, 0x01]), Op.OP_EQUAL,
+        Op.OP_IF,
+        Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_DROP, Uint8Array.of(0x00), Op.OP_EQUAL,
+        Op.OP_ELSE,
+        Op.OP_0,
+        Op.OP_ENDIF,
+        Op.OP_UNTIL,
+        Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP,
       ], locationData);
-    } else if (this.framedMaster) {
-      // A framed body takes no index, so it finds the first input at the oracle lock; past the last input the
-      // introspection fails. The covenant admits only the category's one mutable NFT, so that input is the oracle.
-      this.emit([
-        Op.OP_1NEGATE,
-        Op.OP_BEGIN, Op.OP_1ADD, Op.OP_DUP, Op.OP_UTXOBYTECODE, BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL, Op.OP_UNTIL,
-        Op.OP_UTXOTOKENCOMMITMENT,
-      ], locationData);
+    } else if (!this.stack.includes(BLOCK_ORACLE_INPUT_INDEX)) {
+      // A body an indirect call may enter takes no index, so it finds the first such input of P.
+      this.emitOraclePoolCoinSearch(locationData);
+      this.emit([Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP], locationData);
     } else {
       this.emit([
         encodeInt(BigInt(this.getStackIndex('__internal__blockOracleInputIndex'))), Op.OP_PICK,
-        Op.OP_DUP, Op.OP_UTXOBYTECODE,
-        BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUALVERIFY,
-        Op.OP_UTXOTOKENCOMMITMENT,
+        encodeInt(BigInt(this.getStackIndex(ORACLE_POOL_PARAMETER) + 1)), Op.OP_PICK,
       ], locationData);
+      const id = this.oraclePoolCheckId;
+      if (id !== undefined && this.subroutineDefined.get(id)) {
+        this.invokeSubroutineIfDefined(id, locationData);
+      } else {
+        this.bumpSubroutineUse(GenerateTargetTraversalWithLocation.ORACLE_POOL_CHECK_USE_KEY);
+        this.emitOraclePoolCheck(locationData);
+      }
     }
+    // The commitment after its flags byte.
     if (field === 'coinbase') {
       this.emit([
-        encodeInt(BigInt(BLOCK_ORACLE_COINBASE_OFFSET)), Op.OP_SPLIT, Op.OP_NIP,
+        encodeInt(BigInt(POOL_INFO_OFFSETS.coinbase - 1)), Op.OP_SPLIT, Op.OP_NIP,
         encodeInt(1n), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_BIN2NUM, Op.OP_SPLIT, Op.OP_DROP,
       ], locationData);
     } else {
       this.emit([
-        encodeInt(BigInt(blockOracleFieldOffset(field))), Op.OP_SPLIT, Op.OP_NIP,
-        encodeInt(BigInt(BLOCK_ORACLE_FIELD_WIDTH)), Op.OP_SPLIT, Op.OP_DROP,
+        encodeInt(BigInt(POOL_INFO_OFFSETS[field] - 1)), Op.OP_SPLIT, Op.OP_NIP,
+        encodeInt(BigInt(POOL_FIELD_WIDTH)), Op.OP_SPLIT, Op.OP_DROP,
         Op.OP_BIN2NUM,
       ], locationData);
     }
@@ -19071,6 +19277,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         { requested: 'framed', reason: 'create2-genesis-replay' },
       );
     }
+  }
+
+  /** `[i, P]` -> `[commitment after its flags byte]`: input i is a mutable NFT of P with flags 0x00. */
+  private emitOraclePoolCheck(locationData: SingleLocationData): void {
+    this.emit([
+      Op.OP_1, Op.OP_CAT, Op.OP_OVER, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+      Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(0x00), Op.OP_EQUALVERIFY,
+    ], locationData);
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
@@ -22096,7 +22310,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       throw new Error(`Compiled bytecode for contract '${node.contractName}' not available`);
     }
 
-    if (node.constructorArgs.length === 0) {
+    // A bound contract also takes this contract's own pool binding, last.
+    const passesPool = takesOraclePool(node.referencedContract);
+    const argumentCount = node.constructorArgs.length + (passesPool ? 1 : 0);
+    if (argumentCount === 0) {
       // No constructor args: embed the bytecode as a constant
       this.emit(bodyBytecode, locationData);
       this.pushToStack('__contractRef');
@@ -22107,18 +22324,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const arg of node.constructorArgs) {
       this.visit(arg);
     }
+    if (passesPool) this.emitOraclePoolArgument(locationData);
 
     // Arguments are visited in source order, so the last argument is on top. Encode each stack value with the
     // corresponding parameter type while folding the pushes back into source order.
     this.emitPushdataEncode(
-      node.referencedContract.parameters[node.constructorArgs.length - 1].type, locationData,
+      node.referencedContract.parameters[argumentCount - 1].type, locationData,
     );
 
     // For each subsequent arg: swap to top, encode, CAT
-    for (let i = 1; i < node.constructorArgs.length; i++) {
+    for (let i = 1; i < argumentCount; i++) {
       this.emit(Op.OP_SWAP, locationData);
       this.emitPushdataEncode(
-        node.referencedContract.parameters[node.constructorArgs.length - 1 - i].type, locationData,
+        node.referencedContract.parameters[argumentCount - 1 - i].type, locationData,
       );
       this.emit(Op.OP_CAT, locationData);
     }
@@ -22128,9 +22346,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
 
     // Stack management
-    for (let i = 0; i < node.constructorArgs.length; i++) this.popFromStack();
+    for (let i = 0; i < argumentCount; i++) this.popFromStack();
     this.pushToStack('__contractRef');
     return node;
+  }
+
+  /** Push this contract's own pool binding, the argument a bound child takes for its `__oraclePool`. */
+  private emitOraclePoolArgument(locationData: SingleLocationData): void {
+    this.emitOraclePoolBinding(locationData);
+    this.pushToStack('(value)');
   }
 
   /** Whether the body being emitted is one of the primary contract's own members (its creation code's source). */
@@ -22197,34 +22421,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Only CONTRACT-LEVEL parameters (solidcash-style) are redeem-script data pushes. A Solidity-style
     // child's constructor(args) do not enter the address - the SDK instantiates it with no constructor
     // inputs, and the ctor's effect reaches the genesis via the constructor fold (foldedStateInit).
-    const bakesCtorArgs = contract.parameters.length > 0;
+    // A bound child also takes this contract's own pool binding, last.
+    const passesPool = takesOraclePool(contract);
+    const bakesCtorArgs = contract.parameters.some((parameter) => parameter.name !== ORACLE_POOL_PARAMETER);
+    const bakedArguments = (bakesCtorArgs ? node.parameters.length : 0) + (passesPool ? 1 : 0);
     if (selfDeploy) {
       // The child is this contract class, so its locking bytecode is the one the active input already carries;
       // no redeem script is built and nothing is hashed.
       this.emitSelfLockingBytecode(locationData);
       this.pushToStack('(value)');
-    } else if (node.parameters.length === 0 || !bakesCtorArgs) {
+    } else if (bakedArguments === 0) {
       this.emit(bodyBytecode!, locationData);
       this.pushToStack('(redeemScript)');
     } else {
       // Evaluate constructor args
-      for (const arg of node.parameters) {
-        this.visit(arg);
+      if (bakesCtorArgs) {
+        for (const arg of node.parameters) {
+          this.visit(arg);
+        }
       }
+      if (passesPool) this.emitOraclePoolArgument(locationData);
       // The last evaluated argument is on top. Pair stack values with parameter types in reverse while CAT
       // restores the original source-order push sequence.
-      this.emitPushdataEncode(contract.parameters[node.parameters.length - 1].type, locationData);
+      this.emitPushdataEncode(contract.parameters[bakedArguments - 1].type, locationData);
       // Encode and CAT subsequent args
-      for (let i = 1; i < node.parameters.length; i++) {
+      for (let i = 1; i < bakedArguments; i++) {
         this.emit(Op.OP_SWAP, locationData);
-        this.emitPushdataEncode(contract.parameters[node.parameters.length - 1 - i].type, locationData);
+        this.emitPushdataEncode(contract.parameters[bakedArguments - 1 - i].type, locationData);
         this.emit(Op.OP_CAT, locationData);
       }
       // CAT with body bytecode
       this.emit(bodyBytecode!, locationData);
       this.emit(Op.OP_CAT, locationData);
       // Stack management
-      for (let i = 0; i < node.parameters.length; i++) this.popFromStack();
+      for (let i = 0; i < bakedArguments; i++) this.popFromStack();
       this.pushToStack('(redeemScript)');
     }
 
@@ -22347,9 +22577,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const deployFnParamIndices = new Map(visibleDeployParams.map((parameter, index) => [parameter.name, index]));
       const deployFnParamTypes = new Map(visibleDeployParams
         .map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
-      const constructorArgs = node.parameters.map((p) => (
+      const siteArguments = node.parameters.map((p) => (
         p instanceof IdentifierNode && deployFnParamNames.has(p.name) ? p.name : null
       ));
+      // A bound child's last input forwards this contract's own `__oraclePool`.
+      const constructorArgs = passesPool
+        ? [...(bakesCtorArgs ? siteArguments : []), ORACLE_POOL_PARAMETER] : siteArguments;
       // create2 salt: record so the SDK builds the child Contract with the matching salt (the deploy covenant
       // verifies the salt-composed address). A `new C{salt: param}()` records the forwarded param name; a hex
       // literal records its value; a non-trivial expression is `{ computed: true }` (SDK needs an explicit
@@ -55466,52 +55699,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_VERIFY, loc);
-  }
-
-  /**
-   * `[n, idx]` stays. The input at idx must be locked by the blockhash oracle lock of this contract's category.
-   * A same-category coin at another lock is not a blockhash slot.
-   */
-  private emitBindBlockhashOracleLock(loc: SingleLocationData): void {
-    // [n, idx, category]. idx is the one untracked item above the tracked n.
-    this.emitMasterInputIndex(loc, 1);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
-    this.emitBlockhashOracleLockOf(loc);
-    // [n, idx, lock, actual]
-    this.emit(Op.OP_OVER, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-  }
-
-  /**
-   * `[category]` -> `[lock]`: the category's one blockhash slot lock, P2SH32 of
-   * `buildBlockhashOracleCovenantScript(category)`. A token category's first 32 bytes are already the covenant's
-   * internal order.
-   */
-  private emitBlockhashOracleLockOf(loc: SingleLocationData): void {
-    const category = Uint8Array.from({ length: 32 }, (_byte, index) => index + 1);
-    const raw = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
-    const categoryPush = Uint8Array.from([0x20, ...category.slice().reverse()]);
-    const categoryAt = raw.findIndex((_byte, index) =>
-      categoryPush.every((byte, offset) => raw[index + offset] === byte));
-    if (categoryAt < 0) {
-      throw new Error('Internal error: the blockhash oracle covenant category push was not found.');
-    }
-    this.emit(hexToBin('20'), loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(raw.slice(0, categoryAt), loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(raw.slice(categoryAt + categoryPush.length), loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_HASH256, loc);
-    this.emit(P2SH32_LBC_PREFIX, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_CAT, loc);
-    this.emit(P2SH32_LBC_SUFFIX, loc);
-    this.emit(Op.OP_CAT, loc);
   }
 
   /**

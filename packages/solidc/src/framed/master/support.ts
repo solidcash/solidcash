@@ -184,7 +184,7 @@ const MESSAGE_CONTEXT_PARAMETERS = new Set(['__internal__msgSig', '__internal__m
 
 /**
  * The direct convention's co-spent block oracle input index. A framed master does not take it: a callee's call
- * data cannot carry it, so the body finds the one input at the oracle's pinned lock itself.
+ * data cannot carry it, so the body finds the first block-info coin of its pool itself.
  */
 const BLOCK_ORACLE_PARAMETER = '__internal__blockOracleInputIndex';
 

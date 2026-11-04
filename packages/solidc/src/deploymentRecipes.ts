@@ -2,7 +2,8 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   abiTypeString, ArrayType, type ChildDeploymentGenesisEntryAbi, type ChildDeploymentGenesisStateAbi,
   type ChildDeploymentValueRecipe, type CollectionInfo,
-  computeCollectionSignature, EnumType, MappingType, PrimitiveType, type StructDefinitionInfo, StructType, type Type,
+  computeCollectionSignature, EnumType, MappingType, ORACLE_POOL_PARAMETER, PrimitiveType, type StructDefinitionInfo,
+  StructType, type Type,
 } from '@solidcash/utils';
 import {
   AbiEncodePackedNode, ArrayAccessNode, ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode,
@@ -1621,8 +1622,11 @@ export function analyzeChildDeploymentRecipes(
       if (value instanceof InstantiationNode) {
         const siteAliases = new Map(aliases);
         const siteAliasDefinitions = new Map(aliasDefinitions);
-        const constructorParameters = value.referencedContract?.parameters.length
-          ? value.referencedContract.parameters : value.referencedContract?.constructorDef?.parameters ?? [];
+        // The pool binding is no site argument: the creator passes its own.
+        const declaredParameters = value.referencedContract?.parameters
+          .filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER) ?? [];
+        const constructorParameters = declaredParameters.length
+          ? declaredParameters : value.referencedContract?.constructorDef?.parameters ?? [];
         const constructorArgs = value.parameters.map((parameter, index) => (unsafe ? undefined
           : childDeploymentValueRecipe(
             parameter, handlerInputs, false, handlerInputTypes, siteAliases, siteAliasDefinitions,

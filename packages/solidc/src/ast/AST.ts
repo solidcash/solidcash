@@ -183,15 +183,15 @@ export class ContractNode extends Node implements Named {
   suppressSynthesizedGetters: boolean = false;
   // The one public state getter a per-entry getter shard serves: synthesized although the rest are suppressed.
   synthesizedGetterOnly?: string;
-  // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
-  // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
-  // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
+  // Set by SynthesizeBlockOracle when any function reads blockhash(n), from a ring slot of the bound oracle pool.
   usesBlockhash: boolean = false;
-  // A function reads block.number/timestamp/.... The data is the commitment of the contract's own oracle coin, a
-  // mutable NFT of its category, not this contract's state, and this contract does not grow an update entry.
+  // A function reads block.number/timestamp/.... The data is the commitment of a block-info coin of the bound oracle
+  // pool, not this contract's state, and this contract does not grow an update entry.
   usesBlockOracle: boolean = false;
+  // Set on a contract another one embeds: the pool coin kinds it and the bound contracts it creates read.
+  poolTreeReads?: { readonly blockInfo?: true; readonly blockhash?: true };
   // Set by SynthesizeBlockOracle when anything reads a block.* global or blockhash(n). Any such read makes the
-  // contract stateful: its oracles are of its own category, which only a master gives it.
+  // contract stateful.
   readsBlockData: boolean = false;
 
   /** Whether a block.* or blockhash read makes this contract stateful. */
@@ -599,7 +599,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (a direct `new C(param)`
     // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
-    // deploy-function args instead of requiring them again.
+    // deploy-function args instead of requiring them again. `__oraclePool` forwards the creator's own binding.
     constructorArgs?: (string | null)[];
     // create2 salt (`new C{salt}()`): the forwarded param name, a hex literal, or computed (non-trivial -
     // SDK needs an explicit childSalt). Lets the SDK build the child Contract with the salt the covenant pins.
@@ -835,6 +835,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   usesBlockhash?: boolean;
   // Set when the body reads the block-info oracle commitment. SymbolTable injects the co-spend index.
   usesBlockOracle?: boolean;
+  // Set when the body, or a function it calls, creates a contract bound to an oracle pool, which takes the
+  // creator's own `__oraclePool` as its argument.
+  passesOraclePool?: boolean;
+  // Set on an entry that reaches an indirect call while a function-pointer target reads the pool. The target finds
+  // its coin itself, so the entry takes no slot: the SDK co-spends one of each kind for it.
+  indirectPoolReads?: { blockInfo?: true; blockhash?: true };
   // Set by LowerInlineAssembly when this function's body contained an inline `assembly {}` block (before the
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).

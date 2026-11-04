@@ -80,6 +80,8 @@ export type SolidcDiagnosticCode =
   | 'RETURN_RESULT_UNBOUND'
   // A source function whose selector is the multi-call entry's reserved selector.
   | 'CALL_BATCH_RESERVED_SELECTOR_COLLISION'
+  // A message-bus verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
+  | 'MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'
@@ -1943,13 +1945,6 @@ export class UsingForPrivateFunctionError extends SolidCashError {
 export class DeprecatedNowError extends SolidCashError {
   constructor(node: Node) {
     super(node, '"now" has been deprecated. Use "block.timestamp" instead');
-  }
-}
-
-export class BlockhashDepthError extends SolidCashError {
-  constructor(node: Node, blocksBack: bigint, maximum: number) {
-    super(node, `blockhash(block.number - ${blocksBack}) reads ${blocksBack} blocks back, and a blockhash ring holds `
-      + `at most ${maximum}`);
   }
 }
 

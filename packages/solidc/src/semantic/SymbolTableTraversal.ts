@@ -3961,7 +3961,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(idxParam);
     }
 
-    // block.* reads slice the contract's own oracle commitment. The index is the co-spend, filled by the SDK.
+    // block.* reads slice a block-info coin of the bound pool. The index is the co-spend, filled by the SDK.
     if (node.usesBlockOracle) {
       const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__blockOracleInputIndex');
       idxParam.location = node.location;

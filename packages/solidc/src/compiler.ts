@@ -16204,7 +16204,7 @@ function compileResolvedAst(
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
     ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
-  // Oracle-backed block.* reads stay reads of the contract's own oracle commitment. No state is injected.
+  // Oracle-backed block.* reads stay reads of a pool coin's commitment. No state is injected.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
@@ -20248,8 +20248,8 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
-  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the contract's own
-  // oracle coin; the pass marks the function and injects no state. Running it on the complete function set
+  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of a pool coin; the pass
+  // marks the function and injects no state. Running it on the complete function set
   // keeps that mark on the same functions the unsplit pipeline marks.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(

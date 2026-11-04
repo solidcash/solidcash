@@ -8,10 +8,9 @@ import {
 } from '@bitauth/libauth';
 
 import {
-  asmToScript, blockOracleRedeemScript, blockOracleUpdateUnlocking, buildDataNftCovenantScript,
-  buildEntryNftCovenantScript, buildEventNftCovenantScript, buildPushdataCommitment, computeCollectionHash,
-  computeEventNameHash, encodeBlockOracleCommitment, encodeIntegerValue, hash160, scriptToBytecode,
-  type AbiFunction,
+  asmToScript, buildDataNftCovenantScript, buildEntryNftCovenantScript, buildEventNftCovenantScript,
+  buildPushdataCommitment, computeCollectionHash, computeEventNameHash, encodeIntegerValue, encodePoolInfoCommitment,
+  hash160, poolInfoRedeemScript, poolInfoUpdateUnlocking, scriptToBytecode, type AbiFunction,
 } from '@solidcash/utils';
 import { SighashType } from '../../solidcash/src/interfaces.js';
 import SignatureTemplate from '../../solidcash/src/SignatureTemplate.js';
@@ -1409,14 +1408,15 @@ describe('October 2026 class C holes', () => {
     expect(() => compileString(src, { messageBus: false }), 'SEM-2 undefined modifier').toThrow(/onlyOwnr/);
   });
 
-  // The shared block oracle covenant holds height 100 and timestamp T0, owned by alice. Each call signs a spend
+  // An oracle pool's block-info coin holds height 100 and timestamp T0, owned by alice. Each call signs a spend
   // that replaces the commitment.
   const ORACLE_T0 = 1_700_000_000n;
   const oracleUpdate = (number: bigint, timestamp: bigint, locktime: number): true | string => {
-    const record = (height: bigint, time: bigint): Uint8Array => encodeBlockOracleCommitment(hash160(alicePub), {
-      number: height, timestamp: time, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: Uint8Array.of(0x51),
+    const record = (height: bigint, time: bigint): Uint8Array => encodePoolInfoCommitment({
+      flags: 0, owner: hash160(alicePub), number: height, timestamp: time, difficulty: 0n, size: 1n, totalFees: 0n,
+      coinbase: Uint8Array.of(0x51),
     });
-    const redeem = blockOracleRedeemScript(CATEGORY);
+    const redeem = poolInfoRedeemScript(CATEGORY);
     const lock = p2sh32(redeem);
     const next = record(number, timestamp);
     const sources: SourceOutputs = [
@@ -1428,7 +1428,7 @@ describe('October 2026 class C holes', () => {
     const signature = new SignatureTemplate(alicePriv).generateSignature(hash256(createSighashPreimage(
       transaction, sources, 0, redeem, SighashType.SIGHASH_ALL | SighashType.SIGHASH_UTXOS,
     )));
-    inputs[0] = input(0, blockOracleUpdateUnlocking(CATEGORY, alicePub, signature, next), 0xfffffffe);
+    inputs[0] = input(0, poolInfoUpdateUnlocking(CATEGORY, alicePub, signature, next, locktime), 0xfffffffe);
     return verdict(sources, transaction);
   };
 

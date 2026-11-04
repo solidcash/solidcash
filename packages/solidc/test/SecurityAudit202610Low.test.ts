@@ -7,8 +7,8 @@ import {
   hexToBin, secp256k1, type Output,
 } from '@bitauth/libauth';
 import {
-  asmToScript, blockOracleLockingBytecode, blockOracleRedeemScript, blockOracleUpdateUnlocking, bytecodeToScript,
-  encodeBlockOracleCommitment, encodeIntegerValue, hash160, scriptToAsm, scriptToBytecode, type Artifact,
+  asmToScript, bytecodeToScript, encodeIntegerValue, encodePoolInfoCommitment, hash160, poolInfoLockingBytecode,
+  poolInfoRedeemScript, poolInfoUpdateUnlocking, scriptToAsm, scriptToBytecode, type Artifact,
 } from '@solidcash/utils';
 import { compileString, compileStringSplit } from '../src/index.js';
 
@@ -61,13 +61,14 @@ function spend(artifact: Artifact, args: Uint8Array[] = [], inputValue = VALUE):
 const ORACLE_CATEGORY = Uint8Array.from({ length: 32 }, (_v, i) => (i === 31 ? 0x8e : 0x71));
 const ORACLE_OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 0 ? 0x02 : 0x11));
 
-/** An owner-signed spend of the block oracle covenant from one (number, timestamp) to another. */
+/** An owner-signed update of a pool block-info coin from one (number, timestamp) to another. */
 function oracleUpdate(locktime: number, from: [bigint, bigint], to: [bigint, bigint]): true | string {
   const ownerPub = secp256k1.derivePublicKeyCompressed(ORACLE_OWNER_KEY) as Uint8Array;
-  const record = ([number, timestamp]: [bigint, bigint]): Uint8Array => encodeBlockOracleCommitment(
-    hash160(ownerPub), { number, timestamp, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: Uint8Array.of(0x51) },
-  );
-  const lock = blockOracleLockingBytecode(ORACLE_CATEGORY);
+  const record = ([number, timestamp]: [bigint, bigint]): Uint8Array => encodePoolInfoCommitment({
+    flags: 0, owner: hash160(ownerPub), number, timestamp, difficulty: 0n, size: 1n, totalFees: 0n,
+    coinbase: Uint8Array.of(0x51),
+  });
+  const lock = poolInfoLockingBytecode(ORACLE_CATEGORY);
   const token = (commitment: Uint8Array): NonNullable<Output['token']> => ({
     category: ORACLE_CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment },
   });
@@ -86,11 +87,11 @@ function oracleUpdate(locktime: number, from: [bigint, bigint], to: [bigint, big
   };
   const sighash = Uint8Array.of(0x41);
   const digest = hash256(generateSigningSerializationBch({ inputIndex: 0, sourceOutputs, transaction }, {
-    coveredBytecode: blockOracleRedeemScript(ORACLE_CATEGORY), signingSerializationType: sighash,
+    coveredBytecode: poolInfoRedeemScript(ORACLE_CATEGORY), signingSerializationType: sighash,
   }));
   const signature = secp256k1.signMessageHashSchnorr(ORACLE_OWNER_KEY, digest) as Uint8Array;
-  transaction.inputs[0].unlockingBytecode = blockOracleUpdateUnlocking(
-    ORACLE_CATEGORY, ownerPub, Uint8Array.from([...signature, ...sighash]), next,
+  transaction.inputs[0].unlockingBytecode = poolInfoUpdateUnlocking(
+    ORACLE_CATEGORY, ownerPub, Uint8Array.from([...signature, ...sighash]), next, locktime,
   );
   return vm.verify({ sourceOutputs, transaction });
 }
@@ -172,7 +173,7 @@ describe('October 2026 low holes', () => {
       );
       const warnings = spy.mock.calls.map((call) => String(call[0])).join('\n');
       expect(warnings).toContain('block.timestamp is the last value the oracle owner wrote');
-      // The reader slices the shared oracle covenant, and that covenant bounds the owner's update.
+      // The reader slices a block-info coin of its pool, whose covenant bounds the owner's update.
       expect(artifact.usesBlockOracle).toBe(true);
     } finally {
       spy.mockRestore();

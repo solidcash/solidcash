@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
-  applyBlockOracleLock, asmToScript, blockOracleFieldBytes, blockOracleLockingBytecode,
+  asmToScript, blockOracleFieldBytes, blockOracleLockingBytecode,
   blockOracleReadUnlocking, blockOracleUpdateUnlocking,
-  encodeBlockOracleCommitment, hash160, scriptToBytecode,
+  encodeBlockOracleCommitment, findBlockOracleLockSlots, hash160, ORACLE_POOL_PARAMETER, scriptToBytecode,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
@@ -99,9 +99,9 @@ describe('block oracle commitment', () => {
     expect(artifact.usesBlockOracle).toBe(true);
     expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
     expect(artifact.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_timestamp');
-    expect(artifact.blockOracleLockSlots?.length).toBeGreaterThan(0);
-    const program = scriptToBytecode(asmToScript(artifact.bytecode));
-    const patched = applyBlockOracleLock(program, blockOracleLockingBytecode(category), artifact.blockOracleLockSlots!);
-    expect(patched).not.toEqual(program);
+    // The reader binds its oracle pool through a constructor input and pins no oracle lock.
+    expect(artifact.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
+    expect(artifact.blockOracleLockSlots).toBeUndefined();
+    expect(findBlockOracleLockSlots(scriptToBytecode(asmToScript(artifact.bytecode)))).toEqual([]);
   });
 });

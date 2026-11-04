@@ -494,7 +494,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     try {
       const { category, transactions } = buildOraclePoolGenesis({
         funding, funder: owner, ownerKey: owner, infoCoins: MOCK_ORACLE_POOL_INFO_COINS, ringDepth: POOL_MAX_DEPTH,
-        slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime()), ring,
+        // The second before the tip, as every refresh publishes it: a send here mines at the tip's own time.
+        slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1), ring,
       });
       for (const transaction of transactions) this.publishOraclePoolTransaction(transaction.hex);
       this.oraclePool = category;

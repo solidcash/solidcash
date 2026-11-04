@@ -109,6 +109,7 @@ import { entrySideCars } from '../call/side-cars.js';
 import {
   entryReadsBlockOracle, framedBlockOracle, framedOraclePool, withBlockOracleSideCar, type FramedBlockOracle,
 } from '../call/block-oracle.js';
+import { artifactOraclePool, bindArtifactOraclePool } from '../../oracle/pool/reader.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { chainsEnclosedTouch } from './enclosed-reads.js';
@@ -1758,7 +1759,9 @@ function helperArtifactWithStub(
       { ...stated, name: functionName, selector: selector.replace(/^0x/i, '').toLowerCase() },
     ],
   };
-  // The stub keeps the helper's oracle sentinel, which `deployMaster` fills with the contract's own oracle lock.
+  // The stub keeps the helper's pool slots, bound to the helper's pool.
+  const pool = artifactOraclePool(artifact);
+  if (pool !== undefined) bindArtifactOraclePool(stub, pool);
   return stub;
 }
 

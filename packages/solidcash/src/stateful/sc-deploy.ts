@@ -38,8 +38,10 @@ import { headSentinelCommitment } from './SortedList.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import { blockhashRingGenesisOutputs } from '../oracle/blockhash-ring-deployment.js';
-import { blockOracleGenesisOutput } from '../oracle/block-oracle-deployment.js';
+import { withOraclePoolArgument } from '../oracle/pool/reader.js';
+import {
+  mintsOraclePool, oraclePoolCategoryOption, resolveDeploymentOraclePool,
+} from '../oracle/pool/deployment.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
@@ -50,12 +52,27 @@ async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigin
 
 export async function deployStatefulContract<T extends Artifact>(
   artifact: T,
-  constructorArgs: ConstructorArgument[],
+  callerConstructorArgs: ConstructorArgument[],
   options: DeployOptions,
 ): Promise<DeployResult<T>> {
   if (!artifact.stateLayout) {
     throw new Error(`Contract ${artifact.contractName} is not a stateful contract`);
   }
+  if (mintsOraclePool(options.oraclePool)) {
+    // The pool goes first, in transactions of its own, so the constructor can read it; one info coin per master.
+    const masters = artifact.composition?.convention === 'framed'
+      ? (await import('../framed/deploy/pool.js')).resolveMasterPoolSize({
+        masters: options.threadCount, validators: options.validatorCount,
+      }).masters
+      : options.threadCount ?? 1;
+    const oraclePool = await resolveDeploymentOraclePool(options.provider, artifact, options.oraclePool, masters);
+    return deployStatefulContract(artifact, callerConstructorArgs, { ...options, oraclePool });
+  }
+  // A block.* reader's pool binding, filled once so every contract built below names the same pool.
+  const constructorArgs = withOraclePoolArgument(
+    artifact, callerConstructorArgs,
+    () => oraclePoolCategoryOption(options.oraclePool) ?? options.provider.oraclePoolCategory,
+  ) as ConstructorArgument[];
 
   if (options.fundingUtxo.vout !== 0) {
     throw new Error(
@@ -248,20 +265,9 @@ export async function deployStatefulContract<T extends Artifact>(
   const totalMessageBusVerifiers = dataNftAmount * BigInt(messageBusVerificationInputCount);
   const identityAnchors = options.identityAnchors ?? [];
   const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
-  const blockhashRing = blockhashRingGenesisOutputs(
-    artifact, categoryId, options.provider, options.blockhashKeeperPublicKey, options.blockhashDepth,
-  );
-  const totalBlockhashRing = blockhashRing.reduce((sum, slot) => sum + slot.amount, 0n);
-  const blockOracle = blockOracleGenesisOutput(
-    artifact, categoryId, options.provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? dataNftAmount,
-  );
-  // One oracle coin per master, all with the same commitment, so callers need not contend for one coin. A
-  // message-bus composition keeps its one.
-  const blockOracleCount = blockOracle === undefined ? 0 : artifact.messageBus === undefined ? threadCount : 1;
   const totalReserve = (prepared.reserveOutput?.amount ?? 0n) + (prepared.bearerOutput?.amount ?? 0n);
-  const totalRequired = totalBlockhashRing + (blockOracle?.amount ?? 0n) * BigInt(blockOracleCount)
-    + totalMaster + totalDataNft
-    + totalEntryNft + totalEventNft + totalDynamicNft
+  const totalRequired = totalMaster + totalDataNft + totalEntryNft
+    + totalEventNft + totalDynamicNft
     + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
   const changeAmount = inputTotal - totalRequired;
 
@@ -270,7 +276,7 @@ export async function deployStatefulContract<T extends Artifact>(
       `Insufficient funding: ${inputTotal} satoshis provided, `
       + `but ${totalRequired} needed `
       + `(master: ${totalMaster} (${threadCount}x${masterAmount}), data NFTs: ${totalDataNft}, `
-      + `entry NFTs: ${totalEntryNft}, event NFTs: ${totalEventNft}, blockhash slots: ${totalBlockhashRing}, `
+      + `entry NFTs: ${totalEntryNft}, event NFTs: ${totalEventNft}, `
       + `fee estimate: ${estimatedFee}).`,
     );
   }
@@ -553,8 +559,6 @@ export async function deployStatefulContract<T extends Artifact>(
   // one-satoshi-per-byte relay floor. This matters for near-limit contracts whose redeem script is revealed by
   // the genesis input and whose constructor transaction is consequently larger than the contract itself.
   const totalTransferAmount = transferOutputs.reduce((sum, t) => sum + t.amount, 0n);
-  for (const slot of blockhashRing) addFunded(slot);
-  for (let copy = 0; blockOracle !== undefined && copy < blockOracleCount; copy++) addFunded(blockOracle);
   builder.addOutput({ to: options.changeAddress, amount: 1000n });
   // The unsigned template contains a shorter placeholder for the funding signature. Leave enough headroom for
   // the final P2PKH unlocking bytecode (and minor serialization-length changes after the change amount is set).

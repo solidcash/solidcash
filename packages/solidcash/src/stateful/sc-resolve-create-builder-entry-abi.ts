@@ -12,7 +12,7 @@ export type CreateBuilderEntryCompilerRoute = NonNullable<ExternalCallUtxoGroup[
 export type CreateBuilderEntryResolvedCall = {
   type?: string;
   contract?: {
-    inner: { artifact: Artifact; blockOracleLock?: Uint8Array };
+    inner: { artifact: Artifact };
   };
   functionName?: string;
   args?: FunctionArgument[];
@@ -26,8 +26,6 @@ export interface ResolveCreateBuilderEntryAbiResult {
   /** Matches `_createBuilder` `args: any[]` so later loop/journal planning can rewrite frames. */
   entryArgs: any[];
   entryCompilerRoute: CreateBuilderEntryCompilerRoute | undefined;
-  /** The oracle lock the promoted implementation pins: its own category's, not the forwarder's. */
-  entryBlockOracleLock?: Uint8Array;
 }
 
 /**
@@ -46,7 +44,6 @@ export function resolveCreateBuilderEntryAbi(
   let entryArtifact: Artifact = ownerArtifact;
   let entryArgs: any[] = args;
   let entryCompilerRoute: CreateBuilderEntryCompilerRoute | undefined;
-  let entryBlockOracleLock: Uint8Array | undefined;
 
   // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
   // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
@@ -76,7 +73,6 @@ export function resolveCreateBuilderEntryAbi(
         entryAccesses = implFn.entryAccesses;
         entryAbiFunction = implFn;
         entryArtifact = ci.contract.inner.artifact;
-        entryBlockOracleLock = ci.contract.inner.blockOracleLock;
         entryCompilerRoute = ci.compilerRoute;
         if (entryCompilerRoute) {
           const compilerRoute = entryCompilerRoute;
@@ -125,6 +121,5 @@ export function resolveCreateBuilderEntryAbi(
     entryArtifact,
     entryArgs,
     entryCompilerRoute,
-    entryBlockOracleLock,
   };
 }

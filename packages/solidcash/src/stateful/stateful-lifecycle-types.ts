@@ -12,25 +12,15 @@ import type { StateValueType } from '../types/state-inference.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
+import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
 
 export interface DeployOptions {
   /**
-   * The key whose signed updates write a blockhash reader's slots, which its genesis mints. Defaults to the provider's
-   * own block oracle key on a simulator or devnet; a live deployment of a reader names one.
+   * The oracle pool a block.* reader binds, its category in display order; the provider's pool by default. The SDK
+   * fills the reader's `__oraclePool` constructor input from it. `'new'` or `{ create }` mints a pool first, shaped
+   * by what the contract and the contracts it creates read, and binds the deployment and its children to it.
    */
-  blockhashKeeperPublicKey?: Uint8Array;
-  /**
-   * How many recent blocks a blockhash reader's ring holds: 1 to 256, or 'now' for the latest. Defaults to the depth
-   * the compiler inferred from its reads (`artifact.blockhashDepth`); a smaller one is refused.
-   */
-  blockhashDepth?: number | 'now';
-  /**
-   * The key that updates a block.* reader's own oracle, which its genesis mints. Defaults to the provider's own key
-   * on a simulator or devnet; a live deployment of a reader names one.
-   */
-  blockOracleOwnerPublicKey?: Uint8Array;
-  /** Satoshis each oracle coin holds (a direct genesis mints one per master); defaults to the data NFT amount. */
-  blockOracleAmount?: bigint;
+  oraclePool?: DeploymentOraclePool;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
@@ -100,11 +90,6 @@ export interface DeployOptions {
    * derives each head's lock from `K` and that hash.
    */
   childCollections?: readonly Uint8Array[];
-  /**
-   * The 20-byte hash of the key that updates the block oracle each creation of a child that reads block.* mints: the
-   * creator's replay requires the oracle to name it.
-   */
-  childBlockOracleOwner?: Uint8Array;
   /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for

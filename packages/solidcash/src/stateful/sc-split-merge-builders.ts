@@ -2,50 +2,9 @@
  * phase-boundary extract: SC class-body extract — split/merge transaction builder construction.
  */
 
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { blockOracleLockingBytecode, blockOracleReadUnlocking, type Artifact } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import type { Output, Unlocker, Utxo } from '../interfaces.js';
-import type NetworkProvider from '../network/NetworkProvider.js';
-import { pickBlockOracleCoin } from '../oracle/block-oracle-lock.js';
+import type { Unlocker, Utxo } from '../interfaces.js';
 import type { StatefulContract } from './StatefulContract.js';
-
-/** The block-info oracle coin a split co-spends, and the output that recreates it or copies it. */
-export interface SplitBlockOracle {
-  utxo: Utxo;
-  unlocker: Unlocker;
-  output(): Output;
-}
-
-/**
- * A direct genesis mints one block-info oracle coin per master, so a direct split co-spends one coin on its read path
- * and copies it once per new master; its masters admit exactly those copies. A framed or message-bus compile keeps
- * one coin, and its split pins the coin's recreation alone.
- */
-export async function splitBlockOracle(
-  provider: NetworkProvider, artifact: Artifact, categoryId: string,
-): Promise<SplitBlockOracle | undefined> {
-  if (artifact.usesBlockOracle !== true || artifact.compiler?.options?.messageBus === true
-    || artifact.composition !== undefined) {
-    return undefined;
-  }
-  const category = hexToBin(categoryId);
-  const lock = blockOracleLockingBytecode(category);
-  const utxo = pickBlockOracleCoin(await provider.getUtxosForLockingBytecode(lock), lock);
-  if (utxo?.token?.nft === undefined) throw new Error('block oracle UTXO is not available');
-  const { category: coinCategory, amount } = utxo.token;
-  const { capability, commitment } = utxo.token.nft;
-  return {
-    utxo,
-    unlocker: {
-      generateLockingBytecode: (): Uint8Array => lock,
-      generateUnlockingBytecode: (): Uint8Array => blockOracleReadUnlocking(category),
-    },
-    output: (): Output => ({
-      to: lock, amount: utxo.satoshis, token: { category: coinCategory, amount, nft: { capability, commitment } },
-    }),
-  };
-}
 
 export interface SplitMergeBuilderHost {
   functionName?: string;
@@ -94,29 +53,21 @@ export async function buildSplitTransactionBuilder(
     throw new Error(`Master UTXO not found for contract '${contract.name}' (category ${categoryId}).`);
   }
 
-  const oracle = await splitBlockOracle(contract.provider, contract.artifact, categoryId);
-  const oracleCopies = oracle === undefined ? 0n : oracle.utxo.satoshis * BigInt(splitCount);
-
   const { TransactionBuilder: TxBuilder } = await import('../TransactionBuilder.js');
   const builder = new TxBuilder({
     provider: contract.provider,
     ...(maxFeeOverride != null ? { maximumFeeSatoshis: maxFeeOverride } : {}),
   });
 
-  // A block.* reader's oracle coin leads, recreated at its index.
-  if (oracle !== undefined) builder.addInput(oracle.utxo, oracle.unlocker);
-
-  // The master UTXO (unlocked with split function)
+  // Input 0: master UTXO (unlocked with split function)
   builder.addInput(masterUtxo, contract.unlock[host.functionName!]!(...host.functionArgs!));
 
-  // Then the funding UTXOs
+  // Inputs 1+: funding UTXOs
   for (const fundingUtxo of config.utxos) {
     builder.addInput(fundingUtxo, config.unlocker);
   }
 
-  if (oracle !== undefined) builder.addOutput(oracle.output());
-
-  // The master preserved
+  // Output 0: master preserved
   builder.addOutput({
     to: contract.tokenAddress,
     amount: masterUtxo.satoshis,
@@ -127,7 +78,7 @@ export async function buildSplitTransactionBuilder(
     },
   });
 
-  // N new minting NFTs
+  // Outputs 1..N: new minting NFTs
   for (let i = 0; i < splitCount; i++) {
     builder.addOutput({
       to: contract.tokenAddress,
@@ -140,9 +91,6 @@ export async function buildSplitTransactionBuilder(
     });
   }
 
-  // One copy of the oracle coin per new master, which the funding pays for.
-  for (let i = 0; oracle !== undefined && i < splitCount; i++) builder.addOutput(oracle.output());
-
   // Compute fee from actual transaction size (1 sat/byte minimum relay fee).
   // Add a placeholder change output before estimating so the fee accounts for it.
   builder.addOutput({ to: config.changeAddress, amount: 1000n }); // placeholder
@@ -150,11 +98,11 @@ export async function buildSplitTransactionBuilder(
 
   // Change output
   const totalFunding = config.utxos.reduce((sum, u) => sum + u.satoshis, 0n);
-  const changeAmount = totalFunding - (newMintingAmount * BigInt(splitCount)) - oracleCopies - fee;
+  const changeAmount = totalFunding - (newMintingAmount * BigInt(splitCount)) - fee;
   if (changeAmount < 0n) {
     builder.outputs.pop(); // remove placeholder
     throw new Error(
-      `Insufficient funding for split: need ${newMintingAmount * BigInt(splitCount) + oracleCopies + fee} sats `
+      `Insufficient funding for split: need ${newMintingAmount * BigInt(splitCount) + fee} sats `
       + `but only have ${totalFunding} sats from funding UTXOs.`,
     );
   }

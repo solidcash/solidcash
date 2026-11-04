@@ -8,9 +8,9 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  applyBlockOracleLock,
+  applyOraclePool,
   asmToScript,
   bytesEqual,
   hash256,
@@ -21,7 +21,7 @@ import {
   validatorAddress,
   validatorTemplateHash,
 } from '@solidcash/utils';
-import { framedOracleLock } from '../call/block-oracle.js';
+import { artifactOraclePool } from '../../oracle/pool/reader.js';
 import { compositionPlaceholders } from '@solidcash/solidc/runtime';
 
 const {
@@ -144,29 +144,37 @@ function programBytes(artifact: Artifact): Uint8Array {
  */
 interface FilledMasters {
   bytecode: string;
-  byLock: Map<string, WeakMap<Uint8Array, WeakMap<Uint8Array, DeployedMaster>>>;
+  byPool: Map<string, WeakMap<Uint8Array, WeakMap<Uint8Array, DeployedMaster>>>;
 }
 const filledMasters = new WeakMap<Artifact, FilledMasters>();
+
+/** The pool a reader's pool slots take: the one its deployment bound. Unbound, they keep the sentinel no coin has. */
+function slotPool(artifact: Artifact): string | undefined {
+  return (artifact.oraclePoolSlots?.length ?? 0) > 0 ? artifactOraclePool(artifact) : undefined;
+}
+
+/** The artifact's program with its pool slots filled, the bytes the category and address slots are filled in. */
+function poolFilledProgram(artifact: Artifact, pool: string | undefined): Uint8Array {
+  const assembled = programBytes(artifact);
+  return pool === undefined ? assembled : applyOraclePool(assembled, hexToBin(pool), artifact.oraclePoolSlots!);
+}
 
 export function deployMaster(
   artifact: Artifact,
   category: Uint8Array,
   validatorProgram: Uint8Array,
 ): DeployedMaster {
-  const oracleLock = framedOracleLock(artifact, category);
-  const lockKey = oracleLock === undefined ? '' : binToHex(oracleLock);
+  const pool = slotPool(artifact);
+  const poolKey = pool ?? '';
   const filled = filledMasters.get(artifact);
   const cached = filled?.bytecode === artifact.bytecode
-    ? filled.byLock.get(lockKey)?.get(category)?.get(validatorProgram)
+    ? filled.byPool.get(poolKey)?.get(category)?.get(validatorProgram)
     : undefined;
   const identity = framedCreate2Identity(category);
   if (cached !== undefined && (identity === undefined || bytesEqual(cached.self, identity))) return cached;
   const placeholders = requirePlaceholders(artifact);
   const address = validatorAddress(category, validatorProgram);
-  const assembled = programBytes(artifact);
-  const original = oracleLock !== undefined && artifact.blockOracleLockSlots !== undefined
-    ? applyBlockOracleLock(assembled, oracleLock, artifact.blockOracleLockSlots)
-    : assembled;
+  const original = poolFilledProgram(artifact, pool);
   assertPlaceholders(original, placeholders);
   // A constant-lock master is a creator's child: it presents its own category's address, never a CREATE2 identity,
   // and its program is the same for every category (docs/framed/CREATE2_IDENTITY.md).
@@ -195,13 +203,13 @@ export function deployMaster(
   const deployed = { script, address, self: identity ?? address, lockingBytecode: masterLock(script) };
   let remembered = filledMasters.get(artifact);
   if (remembered === undefined || remembered.bytecode !== artifact.bytecode) {
-    remembered = { bytecode: artifact.bytecode, byLock: new Map() };
+    remembered = { bytecode: artifact.bytecode, byPool: new Map() };
     filledMasters.set(artifact, remembered);
   }
-  let byCategory = remembered.byLock.get(lockKey);
+  let byCategory = remembered.byPool.get(poolKey);
   if (byCategory === undefined) {
     byCategory = new WeakMap();
-    remembered.byLock.set(lockKey, byCategory);
+    remembered.byPool.set(poolKey, byCategory);
   }
   let byProgram = byCategory.get(category);
   if (byProgram === undefined) {
@@ -225,7 +233,7 @@ export function verifyMasterDeployment(
   validatorProgram: Uint8Array,
 ): void {
   const placeholders = requirePlaceholders(artifact);
-  const original = programBytes(artifact);
+  const original = poolFilledProgram(artifact, slotPool(artifact));
 
   const expectedAddress = validatorAddress(category, validatorProgram);
   if (!bytesEqual(deployed.address, expectedAddress)) {
@@ -236,15 +244,10 @@ export function verifyMasterDeployment(
       `the deployed script is ${deployed.script.length} bytes, not the artifact's ${original.length}`,
     );
   }
-  // A constant-lock master carries no deployment constant: it is the compiled program, and its lock is that program's,
-  // whatever the category. One that reads block.* derives its own category's oracle lock from its token, so it
-  // publishes no oracle slot either; an artifact that still publishes one is checked with that slot filled.
+  // A constant-lock master carries no deployment constant: it is the compiled program with its pool slots filled, and
+  // its lock is that program's, whatever the category.
   if (placeholders.constantLock === true) {
-    const oracleLock = framedOracleLock(artifact, category);
-    const expected = oracleLock !== undefined && artifact.blockOracleLockSlots !== undefined
-      ? applyBlockOracleLock(original, oracleLock, artifact.blockOracleLockSlots)
-      : original;
-    if (!bytesEqual(deployed.script, expected)) {
+    if (!bytesEqual(deployed.script, original)) {
       throw new FramedDeploymentError('a constant-lock master is deployed as other bytes than its compiled program');
     }
     if (!bytesEqual(deployed.lockingBytecode, masterLock(deployed.script))) {

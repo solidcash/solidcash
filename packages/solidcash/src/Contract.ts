@@ -1,12 +1,9 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  applyBlockOracleLock,
-  blockOracleLockingBytecode,
   type AbiFunction,
   type Artifact,
   asmToScript,
-  bytesEqual,
   bytecodeToScript,
   countOpcodes,
   generateContractBytecodeScript,
@@ -33,6 +30,9 @@ import {
   type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
+import {
+  bindArtifactOraclePool, boundOraclePool, isPoolInfoOutput, isPoolSlotOutput, withOraclePoolArgument,
+} from './oracle/pool/reader.js';
 import semver from 'semver';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
@@ -341,11 +341,8 @@ export class Contract<
   usesExternalLibraries: boolean;
   salt?: Uint8Array;
   category?: Uint8Array;
-  /**
-   * The contract's own block-info oracle lock, baked over the reader's sentinel: the oracle is a coin of this
-   * contract's category, so a reader has a lock only once its category is known.
-   */
-  blockOracleLock?: Uint8Array;
+  /** The oracle pool a block.* reader binds (its category, display order), from its `__oraclePool` argument. */
+  oraclePool?: string;
 
   encodedConstructorArgs: Uint8Array[];
   private rawConstructorArgs: TResolved['constructorInputs'];
@@ -368,9 +365,6 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
-    this.blockOracleLock = artifact.usesBlockOracle === true && this.category !== undefined && this.category.length > 0
-      ? blockOracleLockingBytecode(this.category) : undefined;
-    this.rawConstructorArgs = constructorArgs;
 
     const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];
     if (!expectedProperties.every((property) => property in artifact)) {
@@ -381,12 +375,29 @@ export class Contract<
       throw new Error(`Artifact compiled with unsupported compiler version: ${artifact.compiler.version}, required >=0.7.0`);
     }
 
-    if (artifact.constructorInputs.length !== constructorArgs.length) {
-      throw new Error(`Incorrect number of arguments passed to ${artifact.contractName} constructor. Expected ${artifact.constructorInputs.length} arguments (${artifact.constructorInputs.map((input) => input.type)}) but got ${constructorArgs.length}`);
+    // A block.* reader takes its pool binding as the last input, which the SDK fills: callers leave it out.
+    const completeArgs = withOraclePoolArgument(
+      artifact, constructorArgs, () => this.options.oraclePool ?? this.provider.oraclePoolCategory,
+    ) as TResolved['constructorInputs'];
+    this.constructorArgs = completeArgs;
+    this.rawConstructorArgs = completeArgs;
+
+    if (artifact.constructorInputs.length !== completeArgs.length) {
+      throw new Error(`Incorrect number of arguments passed to ${artifact.contractName} constructor. Expected ${artifact.constructorInputs.length} arguments (${artifact.constructorInputs.map((input) => input.type)}) but got ${completeArgs.length}`);
     }
 
     // Encode arguments (this also performs type checking)
-    this.encodedConstructorArgs = encodeConstructorArguments(artifact, constructorArgs);
+    this.encodedConstructorArgs = encodeConstructorArguments(artifact, completeArgs);
+    this.oraclePool = boundOraclePool(artifact, this.encodedConstructorArgs);
+    if (this.oraclePool !== undefined) {
+      if (this.options.oraclePool !== undefined && this.options.oraclePool.toLowerCase() !== this.oraclePool) {
+        throw new Error(
+          `${artifact.contractName}'s __oraclePool argument binds pool ${this.oraclePool}, not the oraclePool `
+          + `${this.options.oraclePool}`,
+        );
+      }
+      bindArtifactOraclePool(artifact, this.oraclePool);
+    }
 
     // Populate the 'unlock' object with the contract's functions
     // (with a special case for single function, which has no "function selector") - EXCEPT a single DELEGATE
@@ -508,7 +519,6 @@ export class Contract<
       this.usesExternalLibraries ? 'library-pad' : '',
       this.isStateful && this.category ? binToHex(this.category) : '',
       this.salt === undefined ? 'no-salt' : `salt:${binToHex(this.salt)}`,
-      this.blockOracleLock === undefined ? 'no-oracle' : `oracle:${binToHex(this.blockOracleLock)}`,
     ].join('|');
     let compositions = composedBytecodeScripts.get(artifact.bytecode);
     if (!compositions) {
@@ -517,12 +527,8 @@ export class Contract<
     }
     let contractBytecodeScript = compositions.get(compositionKey);
     if (!contractBytecodeScript) {
-      let readerProgram = scriptToBytecode(parsedArtifactScript(this.artifact));
-      if (this.blockOracleLock !== undefined && this.artifact.blockOracleLockSlots !== undefined) {
-        readerProgram = applyBlockOracleLock(readerProgram, this.blockOracleLock, this.artifact.blockOracleLockSlots);
-      }
       contractBytecodeScript = generateContractBytecodeScript(
-        bytecodeToScript(readerProgram), this.encodedConstructorArgs,
+        parsedArtifactScript(this.artifact), this.encodedConstructorArgs,
       );
       if (this.usesExternalLibraries) {
         contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
@@ -862,11 +868,11 @@ export class Contract<
           return encodeFunctionArgument(finalize(arg), argInputs[index].type, structs) as Uint8Array;
         });
 
-        // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
+        // Fill the synthesized pool co-spend indices (locate the pool's coins among the spent inputs);
         // composition-safe - the reader does not assume the last input. Appended after the visible args.
         // Skipped when the caller already provided the full arg list (stateful orchestrator).
         const synthArgs = internalsProvided ? [] : [
-          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs, args),
+          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs),
           ...this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs),
         ];
 
@@ -1037,34 +1043,31 @@ export class Contract<
     return this.createUnlocker(abiFunction, selector);
   }
 
-  // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so a reader is
-  // always STATEFUL and its co-spend is resolved by StatefulContract via the blockhashOracle block-layout
-  // slot. Returns [] when the function reads no blockhash; otherwise reaching this base-Contract path means
-  // the call was not built through StatefulContract, which is unsupported - fail loudly.
-  private resolveBlockhashIndexArgs(
-    abiFunction: AbiFunction, _sourceOutputs: LibauthOutput[], _args: FunctionArgument[],
-  ): Uint8Array[] {
-    const bhIdx = abiFunction.inputs.find((inp) => inp.name === '__internal__blockhashInputIndex');
-    if (!bhIdx) return [];
-    // blockhash(n) brands its (n->hash) oracle to the contract's own category, so a reader is always STATEFUL
-    // and its co-spend is resolved by StatefulContract (via the blockhashOracle block-layout slot). Reaching
-    // the base Contract/TransactionBuilder path means the reader was not built through StatefulContract.
-    throw new Error('blockhash(n) is only supported in stateful contracts; build the call via StatefulContract.');
+  /**
+   * The base index of a stateless reader's blockhash reads: the first ring slot of the pool this contract binds, found
+   * by category and flags. Its reads' slots follow it in order.
+   */
+  private resolveBlockhashIndexArgs(abiFunction: AbiFunction, sourceOutputs: LibauthOutput[]): Uint8Array[] {
+    const wanted = abiFunction.inputs.some((input) => input.name === '__internal__blockhashInputIndex');
+    if (!wanted) return [];
+    const pool = this.oraclePool;
+    if (pool === undefined) throw new Error(`${this.name} reads blockhash(n), and binds no oracle pool`);
+    const index = sourceOutputs.findIndex((output) => isPoolSlotOutput(output, pool));
+    if (index < 0) throw new Error(`${this.name} reads blockhash(n), and the transaction spends no slot of pool ${pool}`);
+    return [bigIntToVmNumber(BigInt(index))];
   }
 
-  /** The co-spend index of the block-info oracle, located by the lock this contract was instantiated with. */
+  /** The co-spend index of a block-info coin of the pool this contract binds, found by category and flags. */
   private resolveBlockOracleIndexArgs(
     abiFunction: AbiFunction, sourceOutputs: LibauthOutput[],
   ): Uint8Array[] {
     const wanted = abiFunction.inputs.some((input) => input.name === '__internal__blockOracleInputIndex');
     if (!wanted) return [];
-    const lock = this.blockOracleLock;
-    if (lock === undefined) {
-      throw new Error(`${this.name} reads the block oracle, and no oracle lock was provided`);
-    }
-    const index = sourceOutputs.findIndex((output) => bytesEqual(output.lockingBytecode, lock));
+    const pool = this.oraclePool;
+    if (pool === undefined) throw new Error(`${this.name} reads the block oracle, and binds no oracle pool`);
+    const index = sourceOutputs.findIndex((output) => isPoolInfoOutput(output, pool));
     if (index < 0) {
-      throw new Error(`${this.name} reads the block oracle, and the transaction does not spend it`);
+      throw new Error(`${this.name} reads the block oracle, and the transaction spends no info coin of pool ${pool}`);
     }
     return [bigIntToVmNumber(BigInt(index))];
   }

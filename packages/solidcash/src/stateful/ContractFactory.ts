@@ -44,8 +44,6 @@ export interface DeployContractOptions {
   childOutputCount?: number;
   /** The hashes of the child's sorted collections, whose empty heads its genesis mints. */
   childCollections?: readonly Uint8Array[];
-  /** The key hash the block oracle of a child that reads block.* names. */
-  childBlockOracleOwner?: Uint8Array;
   /**
    * The lock a constructor that reads `msg.sender` sees. Defaults to the runner's own lock; a contract another contract
    * creates states its creator's, which is the `factory` a pair records.
@@ -76,12 +74,8 @@ export interface DeployContractOptions {
   bcmr?: DeployOptions['bcmr'];
   /** The ledger token's bearer category and premint; see `DeployOptions.nativeToken`. */
   nativeToken?: DeployOptions['nativeToken'];
-  /** The key that updates a `block.*` reader's oracle coins; see `DeployOptions.blockOracleOwnerPublicKey`. */
-  blockOracleOwnerPublicKey?: DeployOptions['blockOracleOwnerPublicKey'];
-  /** The key that writes a `blockhash` reader's ring; see `DeployOptions.blockhashKeeperPublicKey`. */
-  blockhashKeeperPublicKey?: DeployOptions['blockhashKeeperPublicKey'];
-  /** How many recent blocks a `blockhash` reader's ring holds; see `DeployOptions.blockhashDepth`. */
-  blockhashDepth?: DeployOptions['blockhashDepth'];
+  /** The oracle pool a block.* reader binds, or `'new'` or `{ create }` to mint one; see `DeployOptions.oraclePool`. */
+  oraclePool?: DeployOptions['oraclePool'];
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -343,7 +337,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const { resolveMasterPoolSize, poolGenesisSatoshis } = await import('../framed/deploy/pool.js');
     const { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } = await import('./logical-identity.js');
     const { registerDeployment } = await import('./deployment-registry.js');
-    const ctorCount = this.artifact.constructorInputs.length;
+    const { takesOraclePool, withOraclePoolArgument } = await import('../oracle/pool/reader.js');
+    // The pool binding is no caller's argument: the SDK fills it.
+    const ctorCount = this.artifact.constructorInputs.length - (takesOraclePool(this.artifact) ? 1 : 0);
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).
     // Count only the inputs a CALLER supplies. `__internal__` params (the msg.sender category, vmap slot/proof
@@ -362,11 +358,17 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = overrides.provider
       ?? (signer ? signer.provider : (this.runner as NetworkProvider));
-    const constructorArgs = await normalizeRegisteredAddressArguments(
+    // A pool the deployment mints goes first, in transactions of its own, so the constructor can read it.
+    const { resolveDeploymentOraclePool } = await import('../oracle/pool/deployment.js');
+    const masters = !this.artifact.stateLayout ? 1 : this.artifact.composition?.convention === 'framed'
+      ? resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount }).masters
+      : overrides.threadCount ?? 1;
+    const oraclePool = await resolveDeploymentOraclePool(provider, this.artifact, overrides.oraclePool, masters);
+    const constructorArgs = withOraclePoolArgument(this.artifact, await normalizeRegisteredAddressArguments(
       provider,
       this.artifact.constructorInputs,
       args.slice(0, ctorCount) as ConstructorArgument[],
-    );
+    ), () => oraclePool ?? provider.oraclePoolCategory) as ConstructorArgument[];
     const publicInitInputs = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
       .filter((input) => !input.name.startsWith('__internal__')) ?? [];
     const positionalInitArgs = await normalizeRegisteredAddressArguments(
@@ -416,15 +418,6 @@ export class ContractFactory<T extends Artifact = Artifact> {
         if (deployArtifact.composition?.convention === 'framed') {
           const pool = resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount });
           poolSatoshis = poolGenesisSatoshis(pool, 1200n, overrides.functionSplit?.shards.length ?? 1);
-        }
-        // A reader's genesis also mints its oracle coins: one block-info oracle per master outside a message-bus
-        // build, and its blockhash ring.
-        if (deployArtifact.usesBlockOracle === true) {
-          poolSatoshis += 1200n * (deployArtifact.messageBus === undefined ? BigInt(overrides.threadCount ?? 1) : 1n);
-        }
-        if (deployArtifact.usesBlockhash === true) {
-          const { BLOCKHASH_SLOT_AMOUNT, blockhashRingSlotCount } = await import('../oracle/blockhash-ring-deployment.js');
-          poolSatoshis += BLOCKHASH_SLOT_AMOUNT * BigInt(blockhashRingSlotCount(deployArtifact, overrides.blockhashDepth));
         }
         // A coin the deployment names for the token's category is not its genesis coin.
         const { genesisOutpointKey } = await import('./genesis-reservations.js');
@@ -484,8 +477,6 @@ export class ContractFactory<T extends Artifact = Artifact> {
         ...(overrides.childPool === undefined ? {} : { childPool: overrides.childPool }),
         ...(overrides.childOutputCount === undefined ? {} : { childOutputCount: overrides.childOutputCount }),
         ...(overrides.childCollections === undefined ? {} : { childCollections: overrides.childCollections }),
-        ...(overrides.childBlockOracleOwner === undefined
-          ? {} : { childBlockOracleOwner: overrides.childBlockOracleOwner }),
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
@@ -494,11 +485,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
         ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),
         ...(overrides.splitFacets === undefined ? {} : { splitFacets: overrides.splitFacets }),
-        ...(overrides.blockOracleOwnerPublicKey === undefined
-          ? {} : { blockOracleOwnerPublicKey: overrides.blockOracleOwnerPublicKey }),
-        ...(overrides.blockhashKeeperPublicKey === undefined
-          ? {} : { blockhashKeeperPublicKey: overrides.blockhashKeeperPublicKey }),
-        ...(overrides.blockhashDepth === undefined ? {} : { blockhashDepth: overrides.blockhashDepth }),
+        ...(oraclePool === undefined ? {} : { oraclePool }),
       });
       nonceReservation?.commit();
     } catch (error) {

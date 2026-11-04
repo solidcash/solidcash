@@ -7,18 +7,20 @@ import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/li
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  blockOracleReadUnlocking,
   isComputedBlockhashKey,
+  oraclePoolBinding,
   type AbiFunction,
 } from '@solidcash/utils';
-import { isContractUnlocker, type Output, type Unlocker, type Utxo } from '../interfaces.js';
+import {
+  isContractUnlocker, type Output, type UnlockableUtxo, type Unlocker, type Utxo,
+} from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
-import { pickBlockOracleCoin } from '../oracle/block-oracle-lock.js';
-import { requireBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { poolInfoCoSpend } from '../oracle/pool/reader.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
-import { extractBlockhashReadsFromTrace } from './trace-verified-value-helpers.js';
+import { extractBlockhashReadsFromTrace, unansweredBlockhashWalk } from './trace-verified-value-helpers.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
@@ -27,8 +29,8 @@ const inertUnlocker: Unlocker = {
   generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
 };
 
-/** A computed `block.number` is sliced before `blockhash` reads its own input. The probe has to spend the
- * info oracle at the slot the reader was given, or that slice aborts before n is on the stack. */
+/** A computed `block.number` is sliced before `blockhash` reads its own input. The probe has to spend a pool
+ * info coin at the slot the reader was given, or that slice aborts before n is on the stack. */
 async function placeBlockInfoOracle(
   host: BlockhashCoSpendHost,
   builder: {
@@ -44,8 +46,8 @@ async function placeBlockInfoOracle(
   const abi = stateInputUnlocker.abiFunction;
   const info = abi.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle');
   if (abi.usesBlockOracle !== true || info === undefined) return;
-  const lock = stateInputUnlocker.contract.blockOracleLock;
-  if (lock === undefined) return;
+  const pool = stateInputUnlocker.contract.oraclePool;
+  if (pool === undefined) return;
   const at = masterInputIndex + info.offset;
   while (builder.inputs.length < at) {
     const index = builder.inputs.length;
@@ -56,21 +58,19 @@ async function placeBlockInfoOracle(
     builder.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
   }
   if (builder.inputs.length !== at) return;
-  const oracle = pickBlockOracleCoin(await host.inner.provider.getUtxosForLockingBytecode(lock), lock);
-  if (oracle?.token?.category === undefined) return;
-  const category = hexToBin(oracle.token.category);
-  builder.addInput(oracle, {
-    generateLockingBytecode: () => lock,
-    generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
-  });
+  const coSpend = await poolInfoCoSpend(host.inner.provider, pool).catch(() => undefined);
+  if (coSpend === undefined) return;
+  const { unlocker, ...oracle } = coSpend;
+  builder.addInput(oracle, unlocker);
   // The probe executes the reader, which only inspects this input. The output still has to carry the NFT
   // or the builder refuses the transaction as an implicit burn before the trace runs.
-  builder.addOutput({ to: lock, amount: oracle.satoshis, token: oracle.token });
+  builder.addOutput({ to: unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
 }
 
 export interface BlockhashCoSpendHost {
   readonly categoryId: string;
-  readonly inner: { provider: NetworkProvider };
+  /** The reader: its provider and the oracle pool its slots come from. */
+  readonly inner: { provider: NetworkProvider; oraclePool?: string };
 }
 
 export function paramBlockhashN(readKey: string, args: any[], abiFunction: AbiFunction): bigint | null {
@@ -159,10 +159,10 @@ export async function extractGraphBlockhashRead(
     .find((read) => read.inputIndex === base + targetOrdinal)?.n ?? null;
 }
 
-// Resolve every blockhash oracle co-spend for a call, ordered by slot (ordinal 0..slotCount-1). Reads are
-// resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a param read's n
-// is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved lower
-// reads (so the covenant reaches this read). Single source of truth: computed n comes from the covenant.
+// Resolve every blockhash slot co-spend for a call, ordered by slot (ordinal 0..slotCount-1), from the reader's
+// oracle pool. Reads are resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a
+// param read's n is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved
+// lower reads (so the covenant reaches this read). Single source of truth: computed n comes from the covenant.
 export async function resolveBlockhashCoSpends(
   host: BlockhashCoSpendHost,
   abiFunction: AbiFunction, args: any[], base: number, slotCount: number,
@@ -170,6 +170,9 @@ export async function resolveBlockhashCoSpends(
 ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }>> {
   const reads = abiFunction.blockhashReads ?? [];
   const ordered: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+  if (reads.length === 0) return ordered;
+  const pool = host.inner.oraclePool;
+  if (pool === undefined) throw new Error('blockhash(n): the reader binds no oracle pool');
   for (let k = 0; k < reads.length; k++) {
     let n: bigint | null;
     if (isComputedBlockhashKey(reads[k])) {
@@ -181,8 +184,68 @@ export async function resolveBlockhashCoSpends(
       n = paramBlockhashN(reads[k], args, abiFunction);
     }
     if (n === null) throw new Error(`blockhash: could not resolve n for read "${reads[k]}" (slot ${k})`);
-    const cs = await requireBlockhashCoSpend(host.inner.provider, host.categoryId, n);
+    const cs = await resolveBlockhashCoSpend(host.inner.provider, pool, n, ordered.map(({ utxo }) => utxo));
+    if (!cs) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
     ordered.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
   }
   return ordered;
+}
+
+/** The blockhash reads a call may make through function pointers, each a probe round. */
+const MAX_INDIRECT_BLOCKHASH_READS = 8;
+
+/**
+ * The ring slots the blockhash walks of a function-pointer target read, which no block slot places. Each round probes
+ * the reader with its direct co-spends, `extra` and the slots found so far; the walk that runs past the last input
+ * names the next n. A slot in `exclude`, one the transaction already spends, is not chosen.
+ */
+export async function resolveIndirectBlockhashCoSpends(
+  host: BlockhashCoSpendHost,
+  masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
+  front: readonly UnlockableUtxo[], extra: readonly UnlockableUtxo[], exclude: readonly Pick<Utxo, 'txid' | 'vout'>[],
+): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }>> {
+  const pool = host.inner.oraclePool;
+  if (pool === undefined) throw new Error('blockhash(n): the reader binds no oracle pool');
+  const binding = oraclePoolBinding(hexToBin(pool));
+  const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+  const vm = createVirtualMachineBch2026ForProvider(host.inner.provider);
+  const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+  const recreateOf = (input: UnlockableUtxo): Output => ({
+    to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token,
+  });
+  for (let round = 0; round <= MAX_INDIRECT_BLOCKHASH_READS; round += 1) {
+    const b = new CovenantTransactionBuilder({ provider: host.inner.provider });
+    b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
+    const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(host.inner as any, 0, host.categoryId));
+    b.addInput(masterUtxo, stateInputUnlocker);
+    dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
+    for (const input of front) b.addInput(input, input.unlocker);
+    b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
+    dataNftUtxos.forEach((u, i) => b.addOutput({
+      to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
+    }));
+    for (const input of front) b.addOutput(recreateOf(input));
+    await placeBlockInfoOracle(host, b, stateInputUnlocker, 0);
+    for (const input of extra) {
+      b.addInput(input, input.unlocker);
+      b.addOutput(recreateOf(input));
+    }
+    for (const slot of resolved) {
+      b.addInput(slot.utxo, slot.unlocker);
+      b.addOutput(slot.recreate);
+    }
+    const transaction = b.buildLibauthTransaction();
+    const trace = vm.debug({
+      inputIndex: 0, sourceOutputs: generateLibauthSourceOutputs(b.inputs), transaction,
+    }) as AuthenticationProgramStateCommon[];
+    const n = unansweredBlockhashWalk(trace, b.inputs.length, binding);
+    if (n === undefined) return resolved;
+    if (round === MAX_INDIRECT_BLOCKHASH_READS) break;
+    const cs = await resolveBlockhashCoSpend(
+      host.inner.provider, pool, n, [...exclude, ...resolved.map(({ utxo }) => utxo)],
+    );
+    if (!cs) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
+    resolved.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
+  }
+  throw new Error(`a call reads blockhash through function pointers more than ${MAX_INDIRECT_BLOCKHASH_READS} times`);
 }

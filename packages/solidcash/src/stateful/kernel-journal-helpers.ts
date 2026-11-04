@@ -389,3 +389,21 @@ export function materializeInternalFunctionArgument(
   materialized[position] = value;
   return materialized;
 }
+
+/**
+ * Arguments of an unlocker that settles no record of its own, a probe or an outState read: every missing trailing
+ * compiler-owned argument at its default, so a void entry's record witness is -1 and needs no output.
+ */
+export function completeInternalFunctionArguments(
+  args: readonly FunctionArgument[],
+  inputs: readonly { name: string; type?: string }[],
+): FunctionArgument[] {
+  const visible = inputs.filter((input) => !input.name.startsWith('__internal__')).length;
+  const settlesRecord = inputs.some((input) => input.name === '__internal__returnOutputIdx');
+  if (args.length === visible && !settlesRecord) return [...args];
+  const completed = [...args];
+  while (completed.length < inputs.length && inputs[completed.length].name.startsWith('__internal__')) {
+    completed.push(defaultInternalFunctionArg(inputs[completed.length]));
+  }
+  return completed;
+}

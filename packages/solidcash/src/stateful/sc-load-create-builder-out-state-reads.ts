@@ -8,7 +8,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import { completeInternalFunctionArguments, materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 
 export type CreateBuilderOutStateCallInfo = {
   externalContract: {
@@ -203,6 +203,8 @@ export async function loadCreateBuilderOutStateReads(
           BigInt(masterInputIndex + bhSlot.offset),
         );
       }
+      // The read places no output for a void entry's record, so its record witness stays -1: B pins none.
+      if (bOsAbi !== undefined) bFinalArgs = completeInternalFunctionArguments(bFinalArgs, bOsAbi.inputs);
 
       // Create B's master unlocker
       const bMasterUnlocker = (group.externalContract.inner.unlock as any)[group.functionName](

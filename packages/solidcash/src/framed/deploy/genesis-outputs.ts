@@ -5,8 +5,7 @@
  * oracle this mirrors). A CREATOR mints them inside its own transaction instead, appended after the frames it runs,
  * so the same list has to be available without a transaction around it: the child's master pool at each entry lock,
  * the validator pool at `addrV(category)`, the tokenless facet UTXOs, the state records the constructor's frame
- * computed, the entries and chunks it wrote, the events it emitted, the authhead at output 0, and, for a child that
- * reads block.*, its own block-info oracle.
+ * computed, the entries and chunks it wrote, the events it emitted, and the authhead at output 0.
  *
  * The creator's own code requires the outputs of the child's category to be exactly this genesis, in this order
  * (docs/framed/CREATE2_IDENTITY.md, "The genesis replay"); this list is what a composer places, and both work from
@@ -16,8 +15,7 @@
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  UNSET_BLOCK_ORACLE_FIELDS, bytesEqual, computeCollectionHash, hash256, sha256, validatorAddress,
-  type Artifact, type FunctionSplitBundle,
+  bytesEqual, computeCollectionHash, hash256, sha256, validatorAddress, type Artifact, type FunctionSplitBundle,
 } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import { FACET_SATOSHIS } from '../composer/index.js';
@@ -26,7 +24,7 @@ import { authheadLockingBytecode } from '../../bcmr/index.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Output } from '../../interfaces.js';
-import { blockOracleGenesisOutput } from '../../oracle/block-oracle-deployment.js';
+import { bindFramedOraclePool, framedOraclePool } from '../call/block-oracle.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 import { MasterPoolDeployment } from './pool.js';
@@ -63,13 +61,6 @@ export interface ChildGenesisOutputsOptions {
    * arguments evaluated over the creating call. Its state is derived after the constructor's.
    */
   readonly initializer?: { readonly functionName: string; readonly args: readonly FunctionArgument[] };
-  /**
-   * The key that updates the child's own block oracle, which its genesis mints when the child reads block.*. Defaults
-   * to the provider's own key on a simulator or devnet, which keeps the oracle current; a live network names one.
-   */
-  readonly blockOracleOwnerPublicKey?: Uint8Array;
-  /** Satoshis the child's oracle coin holds; defaults to the data NFT amount. */
-  readonly blockOracleAmount?: bigint;
 }
 
 export interface ChildGenesisOutputs {
@@ -86,32 +77,37 @@ export function childCollectionHashes(artifact: Artifact): Uint8Array[] {
     .map((collection) => computeCollectionHash(collection.signature));
 }
 
-/**
- * A compressed public key that stands in for an oracle owner where only the shape of the genesis matters: the
- * secp256k1 generator, whose private key is 1 and so secures nothing.
- */
-const STAND_IN_ORACLE_OWNER = hexToBin('0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798');
-
-/**
- * How many outputs of the child's category its genesis mints: masters, validators, records, authhead, events and,
- * for a child that reads block.*, its oracle. The oracle's owner does not change the count, so a network that names
- * no owner key counts it with a stand-in.
- */
+/** How many outputs of the child's category its genesis mints: masters, validators, records, authhead and events. */
 export function childGenesisOutputCount(options: ChildGenesisOutputsOptions): number {
   const categoryId = binToHex(options.category);
-  const owner = options.blockOracleOwnerPublicKey ?? options.provider.blockOracleOwnerPublicKey
-    ?? STAND_IN_ORACLE_OWNER;
-  return childGenesisOutputs({ ...options, blockOracleOwnerPublicKey: owner }).outputs.filter(
+  return childGenesisOutputs(options).outputs.filter(
     (output) => output.token !== undefined && output.token.category === categoryId,
   ).length;
+}
+
+/**
+ * Binds the pool a child's block.* reads check into its programs, the one bound already or else the provider's, so
+ * its masters' locks carry it. Every creation names the same locks, so a creator's constants and its creations must
+ * bind the same pool.
+ */
+export function bindChildOraclePool(
+  provider: NetworkProvider, artifact: Artifact, split?: FunctionSplitBundle, pool?: string,
+): string | undefined {
+  const bound = pool === undefined ? framedOraclePool(provider, artifact) : bindFramedOraclePool(provider, artifact, pool);
+  for (const part of [split?.logical, ...split?.shards.map((shard) => shard.artifact) ?? [],
+    ...split?.internalCuts.map((cut) => cut.artifact) ?? []]) {
+    if (part !== undefined) bindFramedOraclePool(provider, part, bound);
+  }
+  return bound;
 }
 
 /** The outputs a creator mints for the child its `create2` names. */
 export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildGenesisOutputs {
   const { artifact, category, validatorProgram, provider } = options;
   const categoryId = binToHex(category);
-  // A master of a contract another contract creates derives its own category's oracle lock from its token, so its
-  // lock, and every lock below, is the same for each category the child is created as.
+  // A master of a contract another contract creates carries its pool in its pool slots, so its lock, and every lock
+  // below, is the same for each category the child is created as.
+  bindChildOraclePool(provider, artifact, options.split);
   if (artifact.stateLayout === undefined) {
     throw new FramedChildGenesisError(`Contract ${artifact.contractName} is not a stateful contract`);
   }
@@ -221,24 +217,6 @@ export function childGenesisOutputs(options: ChildGenesisOutputsOptions): ChildG
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: chunk.commitment } },
     });
   }
-  // A child that reads block.* owns its block-info oracle, minted here as a deployment mints a reader's: a mutable
-  // NFT of its category at the lock that category gives, which its masters derive from their own token and the
-  // creator's check admits.
-  if (artifact.usesBlockOracle === true
-    && (options.blockOracleOwnerPublicKey ?? provider.blockOracleOwnerPublicKey) === undefined) {
-    throw new FramedChildGenesisError(
-      `the child "${artifact.contractName}" reads block.*, so its genesis mints its own block oracle, and no key `
-      + 'updates it: name one as `creates.blockOracleOwnerPublicKey` or when registering the child '
-      + '(`registerFramedCreatedChild`), or use a network that provides one',
-    );
-  }
-  // Its fields are unset, whatever the network's current block: the creator's replay fixes the oracle's whole
-  // commitment, and the oracle's keeper fills them from the next block on.
-  const oracle = blockOracleGenesisOutput(
-    artifact, categoryId, provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? dataNftAmount,
-    UNSET_BLOCK_ORACLE_FIELDS,
-  );
-  if (oracle !== undefined) outputs.push({ ...oracle, amount: satoshisAtLeastDust(oracle.amount, oracle) });
   // The folded state's digest: a tokenless OP_RETURN over the category outputs' locks and commitments, in the order
   // the transaction lays them out. The creator's replay no longer reads it: it computes the genesis it requires.
   if (genesis !== undefined) {

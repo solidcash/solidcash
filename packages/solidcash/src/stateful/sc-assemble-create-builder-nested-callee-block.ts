@@ -6,7 +6,6 @@ import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  blockOracleReadUnlocking,
   parseEntryCommitment,
   joinValueChunks,
   parseValueChunkCommitment,
@@ -40,7 +39,7 @@ import { isMsgSenderKeySource } from './soft-state-overlays.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { planNestedStreamedEvents, type NestedStreamedEventPlan } from './nested-streamed-events.js';
 import { deriveChunkableArrayValueChannels } from './resource-fold-route.js';
-import { pickBlockOracleCoin, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { artifactOraclePool, poolInfoCoSpend, readPoolTimestamp } from '../oracle/pool/reader.js';
 
 export interface AssembleCreateBuilderNestedCalleeBlockHost {
   getUtxos(address: string): Promise<Utxo[]>;
@@ -49,7 +48,8 @@ export interface AssembleCreateBuilderNestedCalleeBlockHost {
     access: EntryAccessAbi, elementType: string, args: FunctionArgument[], handler: AbiFunction,
     artifact: Artifact, state: Record<string, unknown>,
   ): Uint8Array | undefined;
-  readonly sharedBlockOracleLocks: Set<string>;
+  /** Pools whose coin the transaction already co-spends: a later reader of one shares that coin. */
+  readonly sharedBlockOraclePools: Set<string>;
   readonly hasSigner: boolean;
   hasSharedFunder(): boolean;
   shiftSharedFunder(): UnlockableUtxo | undefined;
@@ -230,24 +230,16 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
             break;
           }
           case 'blockInfoOracle': {
-            // The selected callee pins its own oracle, even when the caller never reads the clock.
-            // A prior reader keeps the single co-spend; this fixed slot then remains a balanced pad.
-            const lock = bSc.inner.blockOracleLock;
-            if (lock === undefined) throw new Error('Nested block oracle reader has no bound oracle lock');
-            const lockHex = binToHex(lock);
-            if (host.sharedBlockOracleLocks.has(lockHex)) {
+            // The selected callee reads a coin of the pool it binds, even when the caller never reads the clock.
+            // A prior reader of that pool keeps the single co-spend; this fixed slot then remains a balanced pad.
+            const pool: string | undefined = bSc.inner.oraclePool ?? artifactOraclePool(bSc.inner.artifact);
+            if (pool === undefined) throw new Error('Nested block oracle reader binds no oracle pool');
+            if (host.sharedBlockOraclePools.has(pool)) {
               ctx.bBlockInputs.push(await makeFunder());
               break;
             }
-            const found: Utxo[] = await bSc.inner.provider.getUtxosForLockingBytecode(lock);
-            const oracle = pickBlockOracleCoin(found, lock);
-            if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
-            const category = hexToBin(oracle.token.category);
-            ctx.bBlockInputs.push({ ...oracle, unlocker: {
-              generateLockingBytecode: () => lock,
-              generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
-            } });
-            host.sharedBlockOracleLocks.add(lockHex);
+            ctx.bBlockInputs.push(await poolInfoCoSpend(bSc.inner.provider, pool));
+            host.sharedBlockOraclePools.add(pool);
             break;
           }
           case 'returnEvent':
@@ -544,9 +536,11 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                     && targetSlot instanceof Uint8Array && targetSlot.length === 32) {
                     const recipeState: Record<string, unknown> = { ...bState.state };
                     const selectedArtifact = bSc.inner.artifact as Artifact;
-                    const oracleLock = selectedArtifact.usesBlockOracle === true ? bSc.inner.blockOracleLock : undefined;
-                    const timestamp = oracleLock === undefined ? undefined
-                      : await readBlockOracleTimestamp(bSc.inner.provider, oracleLock);
+                    const oraclePool = selectedArtifact.usesBlockOracle !== true ? undefined
+                      : selectedArtifact === bSc.inner.artifact ? bSc.inner.oraclePool
+                        : artifactOraclePool(selectedArtifact) ?? bSc.inner.oraclePool;
+                    const timestamp = oraclePool === undefined ? undefined
+                      : await readPoolTimestamp(bSc.inner.provider, oraclePool);
                     if (timestamp !== undefined) recipeState.__block_timestamp = timestamp;
                     const currentElement = host.encodeStoredElementSource(
                       bEntryAccess, bCollection.valueType.slice(0, -2), bRouteArgs, bAbiFunc,

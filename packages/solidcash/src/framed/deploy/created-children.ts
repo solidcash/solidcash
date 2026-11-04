@@ -1,5 +1,6 @@
 import type { Artifact, FunctionSplitBundle } from '@solidcash/utils';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import { bindChildOraclePool } from './genesis-outputs.js';
 
 /**
  * The artifacts a creator publishes for the children it creates (`composition.creates`).
@@ -12,17 +13,15 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 export interface FramedCreatedChild {
   readonly artifact: Artifact;
   readonly split?: FunctionSplitBundle;
-  /**
-   * The key that updates the block oracle each creation of a child that reads block.* mints. Unset, the provider's
-   * own key on a simulator or devnet; a live network names one.
-   */
-  readonly blockOracleOwnerPublicKey?: Uint8Array;
 }
 
 /** What a project states about a child beside its artifact. */
 export interface FramedCreatedChildOptions {
-  /** The key that updates the block oracle each creation of a child that reads block.* mints. */
-  readonly blockOracleOwnerPublicKey?: Uint8Array;
+  /**
+   * The oracle pool a child that reads block.* binds, its category in display order: the one its creator's constants
+   * were computed with, the provider's by default.
+   */
+  readonly oraclePool?: string;
 }
 
 const registry = new WeakMap<object, Map<string, FramedCreatedChild>>();
@@ -34,14 +33,10 @@ export function registerFramedCreatedChild(
 ): void {
   const key = provider as unknown as object;
   // The child's masters are minted at the locks its creator checks, which are the same for every category: a child
-  // that reads block.* derives its own category's oracle lock on chain, and its genesis mints that oracle.
+  // that reads block.* carries its pool in its masters' pool slots.
+  bindChildOraclePool(provider, artifact, split, options.oraclePool);
   const byName = registry.get(key) ?? new Map<string, FramedCreatedChild>();
-  byName.set(contractName, {
-    artifact,
-    ...(split === undefined ? {} : { split }),
-    ...(options.blockOracleOwnerPublicKey === undefined
-      ? {} : { blockOracleOwnerPublicKey: options.blockOracleOwnerPublicKey }),
-  });
+  byName.set(contractName, { artifact, ...(split === undefined ? {} : { split }) });
   registry.set(key, byName);
 }
 

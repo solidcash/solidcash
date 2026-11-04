@@ -5,14 +5,14 @@
  * A creating entry requires the outputs of the new child's category `K` to be exactly the child's genesis. It computes
  * most of it from `K`, its own address and the folded state; what its compile cannot know are facts of the child's
  * compiled artifact and of the pool each creation funds, the same for every category the child is created as: the
- * child's entry locks (its masters are constant-lock) with how many masters and validators a creation funds, the
- * hashes of its sorted collections, and, for a child that reads block.*, the key its own oracle names. They are
- * computed once, here, and filled into the creator at its deployment (`DeployOptions.childLocks`, `childPool`,
- * `childCollections`, `childBlockOracleOwner`), or into its published bundle with `fillFramedChildSlots`.
+ * child's entry locks (its masters are constant-lock) with how many masters and validators a creation funds, and the
+ * hashes of its sorted collections. They are computed once, here, and filled into the creator at its deployment
+ * (`DeployOptions.childLocks`, `childPool`, `childCollections`), or into its published bundle with
+ * `fillFramedChildSlots`. A child that reads block.* carries its oracle pool in its masters, so its locks name it.
  */
 
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { bytesEqual, hash160, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
+import { bytesEqual, type Artifact, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { FunctionArgument } from '../../Argument.js';
@@ -20,7 +20,7 @@ import {
   childGenesisReservation, patchChildCollectionSentinels, patchChildGenesisSlots, patchChildLockSentinels,
   patchChildOutputCount,
 } from './child-locks.js';
-import { childCollectionHashes, childGenesisOutputCount } from './genesis-outputs.js';
+import { bindChildOraclePool, childCollectionHashes, childGenesisOutputCount } from './genesis-outputs.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize, type MasterPoolSize } from './pool.js';
 
@@ -58,10 +58,10 @@ export interface FramedChildConstantsOptions {
   /** The validator program the child is deployed with; the toolchain's own by default. */
   readonly validatorProgram?: Uint8Array;
   /**
-   * The key that updates the block oracle each creation of a child that reads block.* mints. Unset, the provider's own
-   * key on a simulator or devnet; a live network names one. Every creation must name the same key.
+   * The oracle pool a child that reads block.* binds, its category in display order: the creator's, the provider's
+   * by default. Its masters carry it, so every creation must bind the same pool.
    */
-  readonly blockOracleOwnerPublicKey?: Uint8Array;
+  readonly oraclePool?: string;
 }
 
 /** The constants a creator's deployment fills, in the shape `DeployOptions` takes them, and the pool they assume. */
@@ -70,12 +70,10 @@ export interface FramedChildConstants {
   readonly childLocks: readonly Uint8Array[];
   /** The 20-byte hashes of the child's sorted collections, whose empty heads its genesis mints. */
   readonly childCollections: readonly Uint8Array[];
-  /** How many outputs of the child's category a creation mints, its own block oracle included when it reads one. */
+  /** How many outputs of the child's category a creation mints. */
   readonly childOutputCount: number;
   /** The pool each creation funds: what the creator's replay requires, and what `creates.pool` must name. */
   readonly childPool: MasterPoolSize;
-  /** For a child that reads block.*, the 20-byte hash of the key its oracle names, which every creation must mint. */
-  readonly childBlockOracleOwner?: Uint8Array;
 }
 
 /** Two categories no creation mints, at which the child's locks must agree. */
@@ -85,11 +83,12 @@ const STAND_IN_CATEGORIES = [new Uint8Array(32).fill(7), new Uint8Array(32).fill
  * The constants a creator of `options.artifact` is deployed with.
  *
  * The entry locks are computed at two stand-in categories and must agree: a child whose masters reserve a deployment
- * slot, or still pin a deployment-filled oracle lock (an artifact compiled before children derived it), has a lock
- * per category, which no creator can name, and is refused here by name rather than at its first creation.
+ * slot has a lock per category, which no creator can name, and is refused here by name rather than at its first
+ * creation.
  */
 export function framedChildConstants(options: FramedChildConstantsOptions): FramedChildConstants {
   const { artifact, split, provider } = options;
+  bindChildOraclePool(provider, artifact, split, options.oraclePool);
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   const childPool = resolveMasterPoolSize(options.pool ?? {});
   const locksAt = (category: Uint8Array): readonly Uint8Array[] => (split === undefined
@@ -115,21 +114,7 @@ export function framedChildConstants(options: FramedChildConstantsOptions): Fram
     ...(options.constructorArgs === undefined ? {} : { constructorArgs: options.constructorArgs }),
     ...(options.initializer === undefined ? {} : { initializer: options.initializer }),
   });
-  let childBlockOracleOwner: Uint8Array | undefined;
-  if (artifact.usesBlockOracle === true) {
-    const owner = options.blockOracleOwnerPublicKey ?? provider.blockOracleOwnerPublicKey;
-    if (owner === undefined) {
-      throw new FramedChildConstantsError(
-        `"${artifact.contractName}" reads block.*, so each creation mints its own block oracle, which names the key `
-        + 'that updates it: name one (`blockOracleOwnerPublicKey`), or use a network that provides one',
-      );
-    }
-    childBlockOracleOwner = hash160(owner);
-  }
-  return {
-    childLocks, childCollections: childCollectionHashes(artifact), childOutputCount, childPool,
-    ...(childBlockOracleOwner === undefined ? {} : { childBlockOracleOwner }),
-  };
+  return { childLocks, childCollections: childCollectionHashes(artifact), childOutputCount, childPool };
 }
 
 /** The slots of one creator program, filled as its deployment fills them. */
@@ -139,7 +124,6 @@ function fillProgram(artifact: Artifact, constants: FramedChildConstants): Artif
       locks: constants.childLocks,
       pool: constants.childPool,
       collections: constants.childCollections,
-      ...(constants.childBlockOracleOwner === undefined ? {} : { blockOracleOwner: constants.childBlockOracleOwner }),
     });
   }
   return patchChildCollectionSentinels(

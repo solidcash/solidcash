@@ -42,6 +42,8 @@ import {
   childGenesisReservation, patchChildCollectionSentinels, patchChildGenesisSlots, patchChildLockSentinels,
   patchChildOutputCount, type ChildGenesisSlots,
 } from './child-locks.js';
+import { bindFramedOraclePool } from '../call/block-oracle.js';
+import { oraclePoolCategoryOption } from '../../oracle/pool/deployment.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -49,9 +51,7 @@ import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './record
 import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
 import { registerFunctionSplit } from './split-registry.js';
-import { blockhashRingGenesisOutputs } from '../../oracle/blockhash-ring-deployment.js';
 import { labelNextBroadcast } from '../../tx-survey.js';
-import { blockOracleGenesisOutput } from '../../oracle/block-oracle-deployment.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
 export class FramedDeployError extends Error {
@@ -103,9 +103,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   prepared: PreparedMetadata = {},
 ): Promise<DeployResult<T>> {
   // A creator replays its child's genesis, and names the parts its compile could not know by placeholders: the chain
-  // over the child's masters, the validators a creation funds, the child's collection hashes and its block oracle's
-  // owner. They exist only now: fill them from the child's constants, on the artifact and on every shard and cut of
-  // its bundle (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
+  // over the child's masters, the validators a creation funds and the child's collection hashes. They exist only
+  // now: fill them from the child's constants, on the artifact and on every shard and cut of its bundle
+  // (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
   const childLocks = options.childLocks;
   const childOutputCount = options.childOutputCount;
   const childPool = options.childPool;
@@ -116,7 +116,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       locks: childLocks,
       pool: childPool,
       ...(options.childCollections === undefined ? {} : { collections: options.childCollections }),
-      ...(options.childBlockOracleOwner === undefined ? {} : { blockOracleOwner: options.childBlockOracleOwner }),
     };
   const programs = [artifact, ...(options.functionSplit?.shards.map((shard) => shard.artifact) ?? []),
     ...(options.functionSplit?.internalCuts.map((cut) => cut.artifact) ?? [])];
@@ -124,8 +123,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(
       `"${artifact.contractName}" creates a child and replays its genesis: deploy it with the child's constants `
       + '(`framedDeploy.framedChildConstants`): its entry locks (`childLocks`), the pool each creation funds '
-      + '(`childPool`), its collection hashes (`childCollections`) and, for a child that reads block.*, its oracle\'s '
-      + 'owner (`childBlockOracleOwner`)',
+      + '(`childPool`) and its collection hashes (`childCollections`)',
     );
   }
   const withChildSlots = (target: Artifact): Artifact => {
@@ -160,6 +158,21 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + `Got vout ${options.fundingUtxo.vout}.`,
     );
   }
+  // The masters carry the pool their block.* reads check in their pool slots, the shards of a split as well.
+  const oraclePool = bindFramedOraclePool(options.provider, artifact, oraclePoolCategoryOption(options.oraclePool));
+  if (artifact.usesBlockOracle === true && oraclePool === undefined) {
+    throw new FramedDeployError(
+      `${artifact.contractName} reads block.* through an oracle pool: pass oraclePool, or use a provider with a `
+      + 'default pool',
+    );
+  }
+  // The shipped programs, whose child slots are filled in clones, carry the same pool.
+  for (const part of [shippedArtifact, ...[options.functionSplit, split].flatMap((bundle) => [
+    ...bundle?.shards.map((shard) => shard.artifact) ?? [], ...bundle?.internalCuts.map((cut) => cut.artifact) ?? [],
+  ])]) {
+    bindFramedOraclePool(options.provider, part, oraclePool ?? oraclePoolCategoryOption(options.oraclePool));
+  }
+
   const funderLock = options.funder.generateLockingBytecode();
   // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the
   // deployer's lock, not the placeholder a frame with no stated caller uses: a constructor that writes
@@ -184,12 +197,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   const categoryId = options.fundingUtxo.txid;
   const category = new Uint8Array(hexToBin(categoryId));
-  const blockhashRing = blockhashRingGenesisOutputs(
-    artifact, categoryId, options.provider, options.blockhashKeeperPublicKey, options.blockhashDepth,
-  );
-  const blockOracle = blockOracleGenesisOutput(
-    artifact, categoryId, options.provider, options.blockOracleOwnerPublicKey, options.blockOracleAmount ?? 1200n,
-  );
   const validatorProgram = framedValidator.buildValidatorProgram();
   // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
   // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
@@ -394,9 +401,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       token: { category: categoryId, amount: 0n, nft: { capability: 'none', commitment: anchor.commitment } },
     });
   }
-
-  for (const slot of blockhashRing) addFunded(slot);
-  if (blockOracle !== undefined) addFunded(blockOracle);
 
   // The premint: the token's fungible amount at the contract's token container for the token's own category; then the
   // bearer supply.

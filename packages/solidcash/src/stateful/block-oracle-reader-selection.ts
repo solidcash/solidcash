@@ -1,6 +1,9 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { UnlockableUtxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo } from '../interfaces.js';
+import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
+import { cloneToken } from './stb-output-utils.js';
 import type { AbiFunction } from '@solidcash/utils';
 
 /** A block oracle reader must publish both the effect and its physical witness slot. */
@@ -21,11 +24,11 @@ export function selectRootBlockOracleReader<T>(
   return delegateIndex < 0 ? undefined : { reader: delegates[delegateIndex].reader, delegateIndex };
 }
 
-/** Move one already-selected nested authority to the root band without changing any participant width. */
+/** Move one already-selected nested pool coin to the root band without changing any participant width. */
 export function takeNestedBlockOracleInput(
   externalGroups: readonly ExternalCallUtxoGroup[],
   lowLevelGroups: readonly ExternalCallUtxoGroup[],
-  lock: Uint8Array,
+  pool: string,
   takeFunder: () => UnlockableUtxo,
 ): UnlockableUtxo | undefined {
   const embedded = new Set(externalGroups.flatMap((group) => group.delegateEmbeddedInBlock
@@ -34,13 +37,12 @@ export function takeNestedBlockOracleInput(
     ...externalGroups.filter((group) => group.sharedGroupIndex === undefined),
     ...lowLevelGroups.filter((_group, index) => !embedded.has(index)),
   ];
-  const lockHex = binToHex(lock);
-  const matches = physicalGroups.flatMap((group) => (group.blockInputs ?? []).filter((input) =>
-    input.token?.nft?.capability === 'mutable'
-      && binToHex(input.unlocker.generateLockingBytecode()) === lockHex));
+  const matches = physicalGroups.flatMap((group) => (group.blockInputs ?? [])
+    .filter((input) => isPoolInfoInput(input, pool)));
   if (matches.length === 0) return undefined;
   if (matches.length !== 1) throw new Error('Block oracle reader has multiple physical authority inputs');
   const [oracle] = matches;
+  const lockHex = binToHex(oracle.unlocker.generateLockingBytecode());
   const sameOutpoint = (input: UnlockableUtxo): boolean => input.txid.toLowerCase() === oracle.txid.toLowerCase()
     && input.vout === oracle.vout;
   const occurrences = [...externalGroups, ...lowLevelGroups].flatMap((group) =>
@@ -62,4 +64,28 @@ export function takeNestedBlockOracleInput(
     group.blockInputs = group.blockInputs?.map((input) => sameOutpoint(input) ? funder : input);
   }
   return oracle;
+}
+
+/**
+ * Co-spend the pool coins a function-pointer target finds by category and flags, which no block slot places. Each is
+ * the last input, recreated at its own index: outputs short of it are neutral pads, and an output-only tail past it
+ * moves up one. A coin already spent, or an info coin of a pool whose live info coin the transaction spends, is left
+ * out.
+ */
+export function appendUnslottedPoolCoSpends(
+  coSpends: readonly UnlockableUtxo[], builder: { inputs: UnlockableUtxo[]; outputs: Output[] },
+): void {
+  for (const coin of coSpends) {
+    const category = coin.token?.category;
+    if (category === undefined) continue;
+    if (builder.inputs.some((input) => input.txid.toLowerCase() === coin.txid.toLowerCase()
+      && input.vout === coin.vout)) continue;
+    if (isPoolInfoInput(coin, category) && builder.inputs.some((input) => isPoolInfoInput(input, category))) continue;
+    const index = builder.inputs.length;
+    while (builder.outputs.length < index) builder.outputs.push({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+    builder.outputs.splice(index, 0, {
+      to: coin.unlocker.generateLockingBytecode(), amount: coin.satoshis, token: cloneToken(coin.token),
+    });
+    builder.inputs.push(coin);
+  }
 }

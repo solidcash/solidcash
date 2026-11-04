@@ -153,7 +153,7 @@ import { entrySideCars } from './side-cars.js';
 import {
   FALLBACK_ENTRY, RECEIVE_ENTRY, valueEntryOrRefusal, valueSendCallData,
 } from './value-entry.js';
-import { blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOracleLock } from './block-oracle.js';
+import { blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOraclePool } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import { FramedSendBelowDustError, sendBelowDustRefusal } from './send-dust.js';
 import {
@@ -313,11 +313,6 @@ export interface FramedCallCreation {
    * cannot run in the transaction that mints its masters.
    */
   readonly initializer?: { readonly functionName: string; readonly args: readonly FunctionArgument[] };
-  /**
-   * The key that updates the child's own block oracle, which its genesis mints when the child reads block.*. Defaults
-   * to the provider's own key on a simulator or devnet; a live network names one.
-   */
-  readonly blockOracleOwnerPublicKey?: Uint8Array;
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -1278,8 +1273,6 @@ function inferredCreates(
     ...(child.split === undefined ? {} : { split: child.split }),
     pool: resolveMasterPoolSize(),
     ...(initializer === undefined ? {} : { initializer }),
-    ...(child.blockOracleOwnerPublicKey === undefined
-      ? {} : { blockOracleOwnerPublicKey: child.blockOracleOwnerPublicKey }),
   };
 }
 
@@ -1299,7 +1292,8 @@ async function callInShape(
   // A shard that names a helper lock is replaced, once the validator program is known, by the clone whose
   // sentinel already holds that lock.
   let artifact = splitShard?.artifact ?? options.artifact;
-  const oracleLock = framedOracleLock(artifact, hexToBin(categoryId));
+  // A shard's clone below keeps the pool bound here.
+  const oraclePool = framedOraclePool(provider, artifact);
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
@@ -1444,7 +1438,7 @@ async function callInShape(
   // writes, as the hop sizes a frame's own run (`planHopDynamicRun`).
   const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
   const fetchedBlockOracle = entryReadsBlockOracle(artifact, functionName)
-    ? await framedBlockOracle(provider, oracleLock, functionName, (reason) => new FramedCallError(reason))
+    ? await framedBlockOracle(provider, oraclePool, functionName, (reason) => new FramedCallError(reason))
     : undefined;
   const blockClock = fetchedBlockOracle === undefined ? undefined : blockOracleClock(fetchedBlockOracle);
   const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.self);
@@ -1752,7 +1746,7 @@ async function callInShape(
     throw error;
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
-  // Every body finds the oracle by its pinned lock. A callee may already place the same live outpoint.
+  // Every body finds the pool coin by its category and flags. A callee may already place the same live outpoint.
   const blockOracle = fetchedBlockOracle !== undefined && [...calleePlan?.utxos.values() ?? []].some(
     (utxo) => utxo.txid === fetchedBlockOracle.utxo.txid && utxo.vout === fetchedBlockOracle.utxo.vout,
   ) ? undefined : fetchedBlockOracle;
@@ -2914,8 +2908,6 @@ async function callInShape(
         ...(creates.split === undefined ? {} : { split: creates.split }),
         ...(creates.pool === undefined ? {} : { pool: creates.pool }),
         ...(creates.initializer === undefined ? {} : { initializer: creates.initializer }),
-        ...(creates.blockOracleOwnerPublicKey === undefined
-          ? {} : { blockOracleOwnerPublicKey: creates.blockOracleOwnerPublicKey }),
         ownerLock: options.callerLockingBytecode,
       }).outputs.map((output) => ({
         lockingBytecode: output.to as Uint8Array,

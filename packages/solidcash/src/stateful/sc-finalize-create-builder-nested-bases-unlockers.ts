@@ -7,7 +7,8 @@ import type { AbiFunction } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { requireBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import { isPoolInfoInput } from '../oracle/pool/reader.js';
+import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
@@ -41,7 +42,8 @@ export interface FinalizeCreateBuilderNestedBasesUnlockersHost {
   readonly provider: NetworkProvider;
   readonly physicalRootLockingBytecode: Uint8Array;
   readonly rootLogicalAddress?: string;
-  readonly blockOracle?: { lock: Uint8Array; inputIndex: number };
+  /** The root reader's pool and the input of the coin it co-spends. */
+  readonly blockOracle?: { pool: string; inputIndex: number };
   ensureOrdinarySelfIdentityBand(contract: any, abi: AbiFunction): Promise<number | undefined>;
   readonly pendingAnchorFills: Array<{
     group: {
@@ -93,24 +95,22 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
   // Fix data NFT unlockers and create master unlockers with correct hidden params.
   // Uses ABI-driven param resolution: scans each group's ABI inputs for hidden param names
   // and computes values based on the param name and transaction layout.
+  // Pool category -> the input of the one coin of that pool the transaction co-spends.
   const sharedOracleInputs = new Map<string, number>();
   if (host.blockOracle !== undefined) {
-    sharedOracleInputs.set(binToHex(host.blockOracle.lock), host.blockOracle.inputIndex);
+    sharedOracleInputs.set(host.blockOracle.pool, host.blockOracle.inputIndex);
   }
   // A logical clock-writing call can promote an earlier read-only call's physical block.
-  // Inventory actual pinned oracle inputs before binding any logical alias's hidden frame.
+  // Inventory actual pool coin inputs before binding any logical alias's hidden frame.
   let oracleBlockBase = externalCallInputBase;
   for (const group of externalCallUtxoGroups) {
     // Logical aliases retain resource metadata but contribute no physical inputs or continuation band.
     if (group.sharedGroupIndex !== undefined) continue;
     const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
     const input = offset === undefined ? undefined : group.blockInputs?.[offset];
-    const lock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined;
-    if (offset !== undefined && input?.token?.nft?.capability === 'mutable' && lock !== undefined
-      && binToHex(input.unlocker.generateLockingBytecode()) === binToHex(lock)) {
-      if (!sharedOracleInputs.has(binToHex(lock))) {
-        sharedOracleInputs.set(binToHex(lock), oracleBlockBase + offset);
-      }
+    const pool = group.externalContract.inner.oraclePool as string | undefined;
+    if (offset !== undefined && input !== undefined && pool !== undefined && isPoolInfoInput(input, pool)) {
+      if (!sharedOracleInputs.has(pool)) sharedOracleInputs.set(pool, oracleBlockBase + offset);
     }
     oracleBlockBase += group.blockInputs?.length ?? 1 + group.dataNftUtxos.length;
     oracleBlockBase += group.ordinaryDynamicChunkInputs?.length ?? 0;
@@ -260,15 +260,13 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         }
       } else if (paramName === '__internal__blockOracleInputIndex') {
         const ownOffset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
-        const readerLock = group.externalContract.inner.blockOracleLock as Uint8Array | undefined;
-        const lockHex = readerLock === undefined ? undefined : binToHex(readerLock);
-        if (lockHex !== undefined && !sharedOracleInputs.has(lockHex)
-          && ownOffset !== undefined && group.blockInputs?.[ownOffset] !== undefined
-          && binToHex(group.blockInputs[ownOffset].unlocker.generateLockingBytecode()) === lockHex) {
-          sharedOracleInputs.set(lockHex, masterInputIndex + ownOffset);
+        const pool = group.externalContract.inner.oraclePool as string | undefined;
+        const own = ownOffset === undefined ? undefined : group.blockInputs?.[ownOffset];
+        if (pool !== undefined && !sharedOracleInputs.has(pool) && own !== undefined && isPoolInfoInput(own, pool)) {
+          sharedOracleInputs.set(pool, masterInputIndex + ownOffset!);
         }
-        const oracleIndex = lockHex === undefined ? undefined : sharedOracleInputs.get(lockHex);
-        if (oracleIndex === undefined) throw new Error('nested block oracle reader has no authenticated oracle input');
+        const oracleIndex = pool === undefined ? undefined : sharedOracleInputs.get(pool);
+        if (oracleIndex === undefined) throw new Error('nested block oracle reader has no co-spent pool coin');
         bFinalArgs.push(BigInt(oracleIndex));
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(
@@ -380,6 +378,10 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
       const absoluteBase = masterInputIndex + firstOracleOffset;
       const bSc = group.externalContract as any;
+      const pool: string | undefined = group.externalContract.inner.oraclePool;
+      if (pool === undefined) {
+        throw new Error(`${group.externalContract.inner.name} reads blockhash(n), and binds no oracle pool`);
+      }
       const prior: Array<{
         slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output;
       }> = [];
@@ -391,7 +393,8 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           )
           : host.paramBlockhashN(bSc, selection.readKey, selection.rowArgs, selection.handler);
         if (n === null) throw new Error(`blockhash: could not resolve external message-bus batch read "${selection.readKey}"`);
-        const coSpend = await requireBlockhashCoSpend(host.provider, group.categoryId, n);
+        const coSpend = await resolveBlockhashCoSpend(host.provider, pool, n, prior.map(({ utxo }) => utxo));
+        if (!coSpend) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
         const physicalOffset = firstOracleOffset + selection.slotOrdinal;
         group.blockInputs[physicalOffset] = { ...coSpend.utxo, unlocker: coSpend.unlocker };
         prior.push({

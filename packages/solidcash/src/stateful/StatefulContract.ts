@@ -37,8 +37,8 @@ import {
   type EventDefinitionAbi,
   type FunctionBlockLayout,
   isComputedBlockhashKey,
-  blockOracleReadUnlocking,
   encodePushdataValue,
+  ORACLE_POOL_PARAMETER,
   getDefaultStateValue,
   keccakComputeLockingBytecode,
   sha256 as sha256Sync,
@@ -135,9 +135,14 @@ import {
   type GraphEcrecoverCall,
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
+import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
-import { requireBlockhashCoSpend, type BlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { pickBlockOracleCoin, readBlockOracleTimestamp } from '../oracle/block-oracle-lock.js';
+import { resolveBlockhashCoSpend, type BlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
+import {
+  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
+} from '../oracle/pool/reader.js';
+import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
+import { groupPoolReader, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -588,6 +593,7 @@ import {
   extractBlockhashReads as extractBlockhashReadsImpl,
   extractGraphBlockhashRead as extractGraphBlockhashReadImpl,
   resolveBlockhashCoSpends as resolveBlockhashCoSpendsImpl,
+  resolveIndirectBlockhashCoSpends,
 } from './sc-resolve-blockhash-co-spends.js';
 import {
   refreshProjectedExternalReturns as refreshProjectedExternalReturnsImpl,
@@ -917,26 +923,15 @@ export function selectReturnAbiPlan<T>(
 }
 
 export interface DeployOptions {
-  /**
-   * The key whose signed updates write a blockhash reader's slots, which its genesis mints. Defaults to the provider's
-   * own block oracle key on a simulator or devnet; a live deployment of a reader names one.
-   */
-  blockhashKeeperPublicKey?: Uint8Array;
-  /**
-   * How many recent blocks a blockhash reader's ring holds: 1 to 256, or 'now' for the latest. Defaults to the depth
-   * the compiler inferred from its reads (`artifact.blockhashDepth`); a smaller one is refused.
-   */
-  blockhashDepth?: number | 'now';
-  /**
-   * The key that updates a block.* reader's own oracle, which its genesis mints. Defaults to the provider's own key
-   * on a simulator or devnet; a live deployment of a reader names one.
-   */
-  blockOracleOwnerPublicKey?: Uint8Array;
-  /** Satoshis each oracle coin holds (a direct genesis mints one per master); defaults to the data NFT amount. */
-  blockOracleAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
+  /**
+   * The oracle pool a block.* reader binds, its category in display order; the provider's pool by default. `'new'`
+   * or `{ create }` mints a pool first, shaped by what the contract and the contracts it creates read, and binds the
+   * deployment and its children to it.
+   */
+  oraclePool?: DeploymentOraclePool;
   initialState?: Record<string, StateValueType>;
   initArgs?: FunctionArgument[];  // arguments for constructor {} block
   changeAddress: string;
@@ -2704,6 +2699,8 @@ export interface LeanContractOptions {
   // without them.
   constructorArgs?: ConstructorArgument[];
   addressType?: AddressType;
+  /** The oracle pool a block.* reader was deployed bound to, when not the provider's; see `ContractOptions`. */
+  oraclePool?: string;
 }
 
 const CATEGORY_HEX = /^[0-9a-fA-F]{64}$/;
@@ -4048,6 +4045,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (runner instanceof Signer) this._signer = runner;
       const bare = new Contract(b as TArtifact, (options?.constructorArgs ?? []) as any, {
         provider, addressType: options?.addressType ?? 'p2sh32',
+        ...(options?.oraclePool === undefined ? {} : { oraclePool: options.oraclePool }),
       });
       StatefulContract._assertStateful(bare);
       if (CATEGORY_HEX.test(a)) {
@@ -5656,12 +5654,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B's master at input 0, so materialize B's __internal__blockhashInputIndex = slot offset before building the
     // unlocker (the base Contract resolver refuses it), then co-spend the oracles + their locktime.
     const bhSlot = bAbiFunc.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
-    const probeArgs = (bAbiFunc.blockhashReads?.length ?? 0) > 0 && bhSlot !== undefined
-      && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
+    const probeArgs = completeInternalFunctionArguments((bAbiFunc.blockhashReads?.length ?? 0) > 0
+      && bhSlot !== undefined && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
       ? materializeInternalFunctionArgument(
         args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
       )
-      : [...(args ?? [])];
+      : [...(args ?? [])], bAbiFunc.inputs);
     const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
     if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const frontRegionInputs: UnlockableUtxo[] = [];
@@ -5705,12 +5703,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const bhSlot = bhSlots[0];
     // Materialize B's __internal__blockhashInputIndex (the base Contract resolver refuses it), then resolve
     // each oracle in slot order. Param reads use B's call args; computed reads probe B with its own state.
-    const probeArgs = bhSlot !== undefined
+    // Each trailing witness defaults: the probe places no output for a void entry's record.
+    const probeArgs = completeInternalFunctionArguments(bhSlot !== undefined
       && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
       ? materializeInternalFunctionArgument(
         args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
       )
-      : [...(args ?? [])];
+      : [...(args ?? [])], bAbiFunc.inputs);
     const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
     if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const resolved = await resolveBlockhashCoSpendsImpl(
@@ -7081,7 +7080,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Only factory-registered mock deployments opt into the synthetic tip keeper; otherwise a plain read
       // silently rewrites authenticated state before the caller can inspect or spend it.
       if (!registered) return;
-      const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
+      const { syncMockBlockOracleDeployment } = await import('../oracle/legacy-block-registers.js');
       await syncMockBlockOracleDeployment(this.inner.provider, registered);
     };
     // The mock chain has no keeper. Refresh the state owner before reading it; nested participants are refreshed
@@ -7226,7 +7225,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryArtifact,
       entryArgs,
       entryCompilerRoute,
-      entryBlockOracleLock,
     } = resolveCreateBuilderEntryAbiImpl(
       abiFunction,
       args,
@@ -7234,12 +7232,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       overrides?.calls ?? [],
     );
     // Stored-value recipes execute in the selected implementation's context. A proxy's physical forwarder
-    // need not read time itself, even when its selected delegate recipe does. Read the oracle that implementation
-    // pins, its own category's, rather than inferring time from the provider's wall clock.
-    const oracleLock = entryArtifact.usesBlockOracle === true
-      ? entryBlockOracleLock ?? this.inner.blockOracleLock : undefined;
-    const oracleTimestamp = oracleLock === undefined
-      ? undefined : await readBlockOracleTimestamp(this.inner.provider, oracleLock);
+    // need not read time itself, even when its selected delegate recipe does. Read the coin of the pool that
+    // implementation binds, rather than inferring time from the provider's wall clock.
+    const oraclePool = entryArtifact.usesBlockOracle !== true ? undefined
+      : entryArtifact === this.inner.artifact ? this.inner.oraclePool
+        : artifactOraclePool(entryArtifact) ?? this.inner.oraclePool;
+    const oracleTimestamp = oraclePool === undefined
+      ? undefined : await readPoolTimestamp(this.inner.provider, oraclePool);
     const recipeState: Record<string, StateValue> = oracleTimestamp === undefined
       ? onChainState.state : { ...onChainState.state, __block_timestamp: oracleTimestamp };
 
@@ -12176,14 +12175,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
             .find((candidate) => candidate.name === group.functionName),
       })));
-    const nestedBlockOracleLocks = new Set<string>();
+    const nestedBlockOraclePools = new Set<string>();
     for (const group of externalCallUtxoGroups) {
       if (group.sharedGroupIndex !== undefined) continue;
       const offset = group.blockLayout?.slots.find((slot) => slot.kind === 'blockInfoOracle')?.offset;
       const input = offset === undefined ? undefined : group.blockInputs?.[offset];
-      if (input?.token?.nft?.capability === 'mutable') {
-        nestedBlockOracleLocks.add(binToHex(input.unlocker.generateLockingBytecode()));
-      }
+      const pool = input?.token?.category.toLowerCase();
+      if (input !== undefined && pool !== undefined && isPoolInfoInput(input, pool)) nestedBlockOraclePools.add(pool);
     }
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       const resolvedCalls = overrides?.calls ?? [];
@@ -12254,7 +12252,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 {
                   categoryId: this.categoryId,
                   inner: this.inner,
-                  sharedBlockOracleLocks: nestedBlockOracleLocks,
+                  sharedBlockOraclePools: nestedBlockOraclePools,
                   signer: this._signer,
                   logicalNonceSigner: this._logicalNonceSigner,
                   externalRegistry: this._externalRegistry,
@@ -12796,6 +12794,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }> = [];
       const graphBase = this.blockhashSlotBase(abiFunction).base;
       const graphSlotCount = abiFunction!.graphBlockhashOracle!.slotCount;
+      const pool = this.inner.oraclePool;
+      if (pool === undefined) throw new Error(`${this.inner.name} reads blockhash(n), and binds no oracle pool`);
       for (const selection of graphSelections) {
         const n = isComputedBlockhashKey(selection.readKey)
           ? await this._extractGraphBlockhashRead(
@@ -12804,7 +12804,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )
           : this.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
         if (n === null) throw new Error(`blockhash: could not resolve message-bus batch row read "${selection.readKey}"`);
-        const coSpend = await requireBlockhashCoSpend(this.inner.provider, this.categoryId, n);
+        const coSpend = await resolveBlockhashCoSpend(this.inner.provider, pool, n, resolved.map(({ utxo }) => utxo));
+        if (!coSpend) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
         resolved.push(coSpend);
         graphPrior.push({
           slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,
@@ -12822,43 +12823,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), maxBhLocktime);
     }
-    // A forwarder slices no oracle itself, but the implementation it delegates to may. That reader pins the lock
-    // its own contract was built with. Outside a compiler route its recreate rides the implementation band.
+    // A forwarder slices no oracle itself, but the implementation it delegates to may. That reader reads the pool
+    // its own contract binds. Outside a compiler route its recreate rides the implementation band.
     const rootOracleReader = selectRootOracleReader();
     const oracleDelegate = rootOracleReader?.delegateIndex === undefined
       ? undefined : lowLevelCallUtxoGroups[rootOracleReader.delegateIndex];
     delegateBlockInfoOracle = oracleDelegate !== undefined && oracleDelegate.compilerRoute === undefined;
     if (rootOracleReader !== undefined) {
       const { reader } = rootOracleReader;
-      const lock = reader.blockOracleLock;
-      if (lock === undefined) {
-        throw new Error(`${reader.name} reads the block oracle, and no oracle lock was provided`);
-      }
-      // Nested readers materialize their own pinned authority before a promoted delegate can change
-      // which root-side band is selected. Move that exact input into the final root band, preserving
-      // the nested fixed slot with a balanced funding input instead of promising a future co-spend.
+      const pool = reader.oraclePool;
+      if (pool === undefined) throw new Error(`${reader.name} reads the block oracle, and binds no oracle pool`);
+      // Nested readers materialize their own pool coin before a promoted delegate can change which root-side
+      // band is selected. Move that exact input into the final root band, preserving the nested fixed slot
+      // with a balanced funding input instead of promising a future co-spend.
       const nestedOracle = takeNestedBlockOracleInput(
-        externalCallUtxoGroups, lowLevelCallUtxoGroups, lock, () => {
+        externalCallUtxoGroups, lowLevelCallUtxoGroups, pool, () => {
           const funder = sharedFunderPool?.shift();
           if (funder === undefined) throw new Error('Insufficient funding UTXOs to preserve nested oracle slot');
           markSharedFunder(funder);
           return funder;
         },
       );
-      if (nestedOracle !== undefined) {
-        blockInfoCoSpendUtxos = [nestedOracle];
-      } else {
-        const oracle = pickBlockOracleCoin(await this.inner.provider.getUtxosForLockingBytecode(lock), lock);
-        if (oracle?.token?.category === undefined) throw new Error('block oracle UTXO is not available');
-        const category = hexToBin(oracle.token.category);
-        blockInfoCoSpendUtxos = [{
-          ...oracle,
-          unlocker: {
-            generateLockingBytecode: (): Uint8Array => lock,
-            generateUnlockingBytecode: (): Uint8Array => blockOracleReadUnlocking(category),
-          },
-        }];
-      }
+      blockInfoCoSpendUtxos = [nestedOracle ?? await poolInfoCoSpend(this.inner.provider, pool)];
+    }
+    // A function-pointer target finds its pool coins itself, so no block slot places them: they ride past the blocks.
+    const unslottedPoolCoSpends = await resolveUnslottedPoolInfoCoins(this.inner.provider, [
+      { abiFunction, pool: this.inner.oraclePool, name: this.inner.name },
+      ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).flatMap(groupPoolReader),
+      ...lowLevelCallUtxoGroups.flatMap(groupPoolReader),
+    ], [
+      ...blockInfoCoSpendUtxos,
+      ...[...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].flatMap((group) => group.blockInputs ?? []),
+    ]);
+    if (abiFunction?.indirectPoolReads?.blockhash === true && this.categoryId) {
+      const slots = await resolveIndirectBlockhashCoSpends(
+        { categoryId: this.categoryId, inner: this.inner }, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
+        blockhashCoSpendUtxos, unslottedPoolCoSpends, blockhashCoSpendUtxos,
+      );
+      unslottedPoolCoSpends.push(...slots.map(({ utxo, unlocker }) => ({ ...utxo, unlocker })));
+      maxBhLocktime = slots.reduce((max, slot) => Math.max(max, slot.locktime), maxBhLocktime);
     }
 
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the
@@ -13305,6 +13308,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         blockhashCoSpendUtxos,
         blockInfoCoSpendUtxos,
         delegateBlockInfoOracle,
+        unslottedPoolCoSpends,
         blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         keccakComputeCommitments,
@@ -15377,16 +15381,21 @@ export class StatefulFunctionCall {
       // Reconstruct the library's constructor args (branded -> __brand = consumer category; else none) so the
       // rebuilt instance hashes to the same address; bail to the manual path on any other constructor shape.
       let libArgs: ConstructorArgument[];
+      // The SDK fills a pool binding, which the address check below confirms.
+      const libInputs = libArtifact.constructorInputs.filter((input) => input.name !== ORACLE_POOL_PARAMETER).length;
       if (libArtifact.brandedLibrary) {
-        if (!consumer.categoryId || libArtifact.constructorInputs.length !== 1) continue;
+        if (!consumer.categoryId || libInputs !== 1) continue;
         libArgs = [StatefulContract.libraryBrand(consumer.categoryId)];
-      } else if (libArtifact.constructorInputs.length === 0) {
+      } else if (libInputs === 0) {
         libArgs = [];
       } else {
         continue;
       }
       const libCat = await resolveCategoryFromLockingBytecode(consumer.inner.provider, baked);
-      const libContract = new Contract(libArtifact, libArgs as never[], { provider: consumer.inner.provider });
+      const libContract = new Contract(libArtifact, libArgs as never[], {
+        provider: consumer.inner.provider,
+        ...(consumer.inner.oraclePool === undefined ? {} : { oraclePool: consumer.inner.oraclePool }),
+      });
       if (libContract.withCategory(hexToBin(libCat)).lockingBytecode !== binToHex(baked)) continue;
       consumer.registerLibrary(lc.library, StatefulContract.withCategory(libContract, libCat));
     }

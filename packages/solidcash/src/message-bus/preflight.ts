@@ -7,7 +7,7 @@ import { bigIntToVmNumber, decodeAuthenticationInstructions, encodeAuthenticatio
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { scriptToBytecode, type Artifact } from '@solidcash/utils';
-import { matchesExecutedBody } from '../oracle/block-oracle-lock.js';
+import { matchesExecutedBody } from '../oracle/pool/program.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { rememberPreparedCovenantValidation } from '../network/prepared-covenant-receipt.js';

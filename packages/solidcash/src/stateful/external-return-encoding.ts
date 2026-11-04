@@ -15,7 +15,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { matchesExecutedBody } from '../oracle/block-oracle-lock.js';
+import { matchesExecutedBody } from '../oracle/pool/program.js';
 import {
   decodeEvmInvocationResult,
   decodeEvmInvocationResultPrefix,

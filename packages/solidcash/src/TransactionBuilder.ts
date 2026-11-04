@@ -26,12 +26,14 @@ import { PLACEHOLDER_P2PKH_UNLOCKING_SIZE } from './constants.js';
 import type { NetworkProvider } from './network/index.js';
 import { traceBroadcast } from './tx-trace.js';
 import {
-  blockOracleReadUnlocking, hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
+  hash256, scriptToBytecode, buildSidecarRedeem, sidecarLockingBytecode, resolveLibraryBlob,
   SHARED_LIBRARY_SALT, type ExternalLibraryAbi,
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_COVENANT_HASH,
-  ecrecoverComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  ecrecoverComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isComputedBlockhashKey,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { indirectPoolReads, isPoolInfoInput, isPoolSlotInput, poolInfoCoSpend } from './oracle/pool/reader.js';
+import { resolveBlockhashCoSpend } from './oracle/blockhashCoSpend.js';
 import {
   pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace, scanKeccakPreimageReads,
   learnKeccakPreimages, OP_INPUTBYTECODE, leSmallNumber,
@@ -68,7 +70,6 @@ import { applyExternalSignatures } from './external-signing.js';
 import semver from 'semver';
 import type { WcTransactionObject } from './walletconnect-utils.js';
 import { attachWait } from './wait.js';
-import { pickBlockOracleCoin } from './oracle/block-oracle-lock.js';
 
 export interface TransactionBuilderOptions {
   provider: NetworkProvider;
@@ -1012,42 +1013,29 @@ export class TransactionBuilder {
   }
 
   /**
-   * Guard: blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound, so the
-   * reader is stateful), which means the co-spend rides a StatefulContract block-layout slot, not a base
-   * TransactionBuilder append. A blockhash reader reaching this builder means the call was NOT built through
-   * StatefulContract, so fail loudly. Auto-invoked by send() before sidecars.
-   */
-  /**
-   * Co-spend the block-info oracle and recreate it at the same index. A stateful block-layout slot already
-   * places it; this path is the stateless reader, whose script learns the index from the spent outputs.
+   * Co-spend a block-info coin of the pool a reader binds and recreate it at the same index. A stateful
+   * block-layout slot already places it; this path is the stateless reader, whose script learns the index from the
+   * spent outputs, or finds the coin itself when a function-pointer target it may enter reads.
    */
   async addRequiredBlockOracleCoSpends(): Promise<this> {
     for (const input of [...this.inputs]) {
       if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
       const abi = input.unlocker.abiFunction;
-      if (abi.usesBlockOracle !== true) continue;
+      if (abi.usesBlockOracle !== true && !indirectPoolReads(input.unlocker.contract.artifact, abi).blockInfo) continue;
       if (abi.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) continue;
-      const lock = input.unlocker.contract.blockOracleLock;
-      if (lock === undefined) {
-        throw new Error(`${input.unlocker.contract.name} reads the block oracle, and no oracle lock was provided`);
+      const pool = input.unlocker.contract.oraclePool;
+      if (pool === undefined) {
+        throw new Error(`${input.unlocker.contract.name} reads the block oracle, and binds no oracle pool`);
       }
-      if (this.inputs.some((spent) => isUnlockableUtxo(spent)
-        && bytesEqual(spent.unlocker.generateLockingBytecode(), lock))) continue;
-      const oracle = pickBlockOracleCoin(await this.provider.getUtxosForLockingBytecode(lock), lock);
-      if (oracle?.token?.category === undefined) {
-        throw new Error('block oracle UTXO is not available');
-      }
-      const category = hexToBin(oracle.token.category);
+      if (this.inputs.some((spent) => isPoolInfoInput(spent, pool))) continue;
+      const { unlocker, ...oracle } = await poolInfoCoSpend(this.provider, pool);
       while (this.outputs.length < this.inputs.length) {
         this.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       }
       // The covenant checks output[inputIndex]. Insert the recreate there when outputs already run ahead.
       const index = this.inputs.length;
-      this.addInput(oracle, {
-        generateLockingBytecode: () => lock,
-        generateUnlockingBytecode: () => blockOracleReadUnlocking(category),
-      });
-      this.addOutput({ to: lock, amount: oracle.satoshis, token: oracle.token });
+      this.addInput(oracle, unlocker);
+      this.addOutput({ to: unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
       const placed = this.outputs.length - 1;
       if (placed !== index) {
         const recreate = this.outputs.pop();
@@ -1057,14 +1045,51 @@ export class TransactionBuilder {
     return this;
   }
 
+  /**
+   * Co-spend one ring slot of the bound pool per blockhash(n) read, each recreated at its own index, and raise a
+   * height locktime to the largest n. A stateful block layout places them itself; this path is the stateless reader,
+   * whose script takes the first slot of its pool as the base of its reads. So one such reader per pool reads in a
+   * transaction, and a read's n is an argument: a computed one needs its slot spent by the caller.
+   */
   async addRequiredBlockhashCoSpends(): Promise<this> {
-    // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound, stateful), so the
-    // co-spend is resolved by StatefulContract via the blockhashOracle block-layout slot. A blockhash reader in
-    // the base TransactionBuilder means the call was not built through StatefulContract.
-    for (const input of this.inputs) {
+    const pools = new Set<string>();
+    for (const input of [...this.inputs]) {
       if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
-      if ((input.unlocker.abiFunction.blockhashReads ?? []).length > 0) {
-        throw new Error('blockhash(n) is only supported in stateful contracts; build the call via StatefulContract.');
+      const { abiFunction: abi, contract, params } = input.unlocker;
+      const reads = abi.blockhashReads ?? [];
+      if (reads.length === 0) continue;
+      if (abi.blockLayout?.slots.some((slot) => slot.kind === 'blockhashOracle')) continue;
+      const pool = contract.oraclePool;
+      if (pool === undefined) throw new Error(`${contract.name} reads blockhash(n), and binds no oracle pool`);
+      if (pools.has(pool)) throw new Error(`Two stateless blockhash(n) readers of oracle pool ${pool} share a transaction`);
+      pools.add(pool);
+      // Slots the caller spends stand.
+      if (this.inputs.some((spent) => isPoolSlotInput(spent, pool))) continue;
+      const visible = abi.inputs.filter((entry) => !entry.name.startsWith('__internal__'));
+      const chosen: Utxo[] = [];
+      for (const read of reads) {
+        const n = isComputedBlockhashKey(read) ? undefined : params[visible.findIndex((entry) => entry.name === read)];
+        if (typeof n !== 'bigint') {
+          throw new Error(`${contract.name} computes the n of a blockhash(n) read: co-spend its slot of pool ${pool}`);
+        }
+        const coSpend = await resolveBlockhashCoSpend(this.provider, pool, n, chosen);
+        if (coSpend === null) {
+          throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
+        }
+        chosen.push(coSpend.utxo);
+        while (this.outputs.length < this.inputs.length) {
+          this.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+        }
+        // The covenant checks output[inputIndex]. Insert the recreate there when outputs already run ahead.
+        const index = this.inputs.length;
+        this.addInput(coSpend.utxo, coSpend.unlocker);
+        this.addOutput(coSpend.recreateOutput);
+        const placed = this.outputs.length - 1;
+        if (placed !== index) {
+          const recreate = this.outputs.pop();
+          if (recreate !== undefined) this.outputs.splice(index, 0, recreate);
+        }
+        if (this.locktime < coSpend.locktime) this.locktime = coSpend.locktime;
       }
     }
     return this;
@@ -1450,7 +1475,7 @@ export class TransactionBuilder {
   async send(raw: true): Promise<string>;
   async send(raw?: true): Promise<TransactionDetails | string> {
     if (!this.options.skipAutomaticCoSpends) {
-      // Auto co-spend the blockhash(n) oracle (last input) before sidecars, which would otherwise claim it.
+      // Auto co-spend a stateless reader's pool slots and info coin before sidecars, which would otherwise claim them.
       await this.addRequiredBlockhashCoSpends();
       await this.addRequiredBlockOracleCoSpends();
       // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.

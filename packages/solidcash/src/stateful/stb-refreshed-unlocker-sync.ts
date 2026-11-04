@@ -3,8 +3,8 @@
  * flattened allInputs, and mirror refreshed carrier masters.
  */
 
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { isContractUnlocker } from '../interfaces.js';
+import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { UnlockableUtxo, Unlocker } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -52,13 +52,9 @@ export function syncBuilderUnlockers(
     const position = unlocker.abiFunction.inputs.findIndex((parameter) =>
       parameter.name === '__internal__blockOracleInputIndex');
     if (position < 0) continue;
-    const lock = unlocker.contract.blockOracleLock;
-    if (lock === undefined) throw new Error('Block oracle reader has no bound oracle lock');
-    const lockHex = binToHex(lock);
-    const matches = builder.inputs.flatMap((candidate, index) => (
-      candidate.token?.nft?.capability === 'mutable'
-        && binToHex(candidate.unlocker.generateLockingBytecode()) === lockHex ? [index] : []
-    ));
+    const pool = unlocker.contract.oraclePool;
+    if (pool === undefined) throw new Error('Block oracle reader binds no oracle pool');
+    const matches = builder.inputs.flatMap((candidate, index) => (isPoolInfoInput(candidate, pool) ? [index] : []));
     if (matches.length !== 1) throw new Error('Block oracle reader requires one authenticated oracle input');
     const oracleInputIndex = BigInt((host.coordinateBase ?? 0) + matches[0]);
     if (unlocker.params[position] === oracleInputIndex) continue;

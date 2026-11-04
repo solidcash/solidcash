@@ -17,6 +17,7 @@ import {
   type FunctionSplitShard,
 } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
+import { artifactOraclePool, bindArtifactOraclePool } from '../../oracle/pool/reader.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 
 /** Raised when a function's own master pool cannot serve the call. */
@@ -239,7 +240,9 @@ export function patchInternalHelperLocks(
   const clone = structuredClone(artifact);
   clone.bytecode = bytecodeToAsm(program);
   rewriteHelperLockHex(clone, replacements);
-  // The clone keeps its artifact's oracle sentinel, which `deployMaster` fills with the contract's own oracle lock.
+  // A helper lock is the same width as its sentinel, so the pool slots stay where they were, bound to the same pool.
+  const pool = artifactOraclePool(artifact);
+  if (pool !== undefined) bindArtifactOraclePool(clone, pool);
   return clone;
 }
 

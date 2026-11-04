@@ -176,10 +176,11 @@ export async function orchestrateCreateBuilderExternalCalls(
     isComputedBlockhashKey,
   } = params;
   const externalOutStateUtxoGroups = params.externalOutStateUtxoGroups;
-  const sharedBlockOracleLocks = new Set<string>();
-  if (host.inner.blockOracleLock !== undefined
+  // The root co-spends a coin of its own pool at its block-info slot; a nested reader of that pool shares it.
+  const sharedBlockOraclePools = new Set<string>();
+  if (host.inner.oraclePool !== undefined
     && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) {
-    sharedBlockOracleLocks.add(binToHex(host.inner.blockOracleLock));
+    sharedBlockOraclePools.add(host.inner.oraclePool);
   }
 
 
@@ -571,7 +572,7 @@ export async function orchestrateCreateBuilderExternalCalls(
             getUtxos: (address: string) => host.inner.provider.getUtxos(address),
             keysMatch: (...a: any[]) => host.keysMatch(...a),
             encodeStoredElementSource: (...a: any[]) => host.callerContract._encodeStoredElementSource(...a),
-            sharedBlockOracleLocks,
+            sharedBlockOraclePools,
             hasSigner: Boolean(host.signer),
             hasSharedFunder: () => Boolean(sharedFunderPool && sharedFunderPool.length > 0),
             shiftSharedFunder: () => sharedFunderPool?.shift(),
@@ -1001,9 +1002,9 @@ export async function orchestrateCreateBuilderExternalCalls(
         provider: host.inner.provider,
         physicalRootLockingBytecode: params.physicalSelfAddress,
         rootLogicalAddress: params.rootLogicalAddress,
-        blockOracle: host.inner.blockOracleLock !== undefined
+        blockOracle: host.inner.oraclePool !== undefined
           && abiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')
-          ? { lock: host.inner.blockOracleLock,
+          ? { pool: host.inner.oraclePool,
             inputIndex: (overrides?.blockBase ?? 0)
               + abiFunction.blockLayout.slots.find((slot) => slot.kind === 'blockInfoOracle')!.offset }
           : undefined,

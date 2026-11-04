@@ -107,7 +107,7 @@ import {
 import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  framedBlockOracle, framedOracleLock, withBlockOracleSideCar, type FramedBlockOracle,
+  entryReadsBlockOracle, framedBlockOracle, framedOraclePool, withBlockOracleSideCar, type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
@@ -2628,8 +2628,8 @@ function calleeEntryWrites(
  *
  * A body that hashes a runtime value or recovers a signer reads one side-car per call immediately after its own
  * input; the pushes the caller records for the call are what those calls' scalars are read from. A body that reads
- * the clock finds the one oracle input by its lock, so the frame co-spends the oracle after its side-cars unless an
- * earlier frame already does. A frame whose entry publishes none of these reads none, and contributes nothing.
+ * the clock finds the first pool coin by its category and flags, so the frame co-spends one after its side-cars unless
+ * an earlier frame already does. A frame whose entry publishes none of these reads none, and contributes nothing.
  */
 async function calleeSideCars(
   ctx: PlanContext,
@@ -2650,20 +2650,20 @@ async function calleeSideCars(
     provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
     taken: new Set([...ctx.utxos.values()].map((utxo) => `${utxo.txid}:${utxo.vout}`)),
   }) : undefined;
-  const oracle = abiFunction.usesBlockOracle === true
-    ? await unplacedBlockOracle(ctx, artifact, categoryId, entryName) : undefined;
+  const oracle = entryReadsBlockOracle(artifact, entryName)
+    ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
   const sideCars = oracle === undefined ? computed : withBlockOracleSideCar(master, computed, oracle);
   if (sideCars === undefined || sideCars.ids.length === 0) return;
   ctx.sideCars.set(master, sideCars);
   for (const [id, utxo] of Object.entries(sideCars.utxos)) ctx.utxos.set(id, utxo);
 }
 
-/** The frame's own live block oracle, or undefined when a frame this plan already placed co-spends it. */
+/** A live info coin of the callee's pool, or undefined when a frame this plan already placed co-spends it. */
 async function unplacedBlockOracle(
-  ctx: PlanContext, artifact: Artifact, categoryId: string, entryName: string,
+  ctx: PlanContext, artifact: Artifact, entryName: string,
 ): Promise<FramedBlockOracle | undefined> {
-  const lock = framedOracleLock(artifact, hexToBin(categoryId));
-  const oracle = await framedBlockOracle(ctx.provider, lock, entryName, (reason) => new FramedProxyDeployError(reason));
+  const pool = framedOraclePool(ctx.provider, artifact);
+  const oracle = await framedBlockOracle(ctx.provider, pool, entryName, (reason) => new FramedProxyDeployError(reason));
   const placed = [...ctx.utxos.values()].some((utxo) => utxo.txid === oracle.utxo.txid && utxo.vout === oracle.utxo.vout);
   return placed ? undefined : oracle;
 }
@@ -3027,6 +3027,7 @@ async function placeCalleeMasters(
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
     const path = calleePath(reach.callerPath, reach.site, occurrence);
+    framedOraclePool(ctx.provider, external.artifact);
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
     let masterUtxo = pool[base + position];
     if (calleeSplit !== undefined) {
@@ -3214,6 +3215,7 @@ async function placeProxiedCallee(
   const proxyCategory = hexToBin(external.categoryId);
   const implementationCategory = hexToBin(implementationCategoryId);
   const proxyDeployed = deployMaster(proxyArtifact, proxyCategory, ctx.validatorProgram);
+  framedOraclePool(ctx.provider, external.artifact);
   const implementationDeployed = deployMaster(external.artifact, implementationCategory, ctx.validatorProgram);
   // The proxy's records are the deployment's, shared by every master the hop places for it; a delegate frame reads
   // them without owning them, so none are placed for the implementation's own category.

@@ -3,7 +3,7 @@
  */
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { Artifact } from '@solidcash/utils';
+import { ORACLE_POOL_PARAMETER, type Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import {
@@ -61,7 +61,8 @@ export function inferConstructorArgs(
     }
   }
 
-  return artifact.constructorInputs.map((input) => {
+  // The pool binding is the SDK's to fill.
+  return artifact.constructorInputs.filter((input) => input.name !== ORACLE_POOL_PARAMETER).map((input) => {
     const ref = paramRefs.get(input.name);
     if (!ref) {
       throw new Error(

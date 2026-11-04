@@ -204,10 +204,13 @@ export async function framedNftLocks(
   artifact: Artifact, category: string, provider: NetworkProvider,
 ): Promise<DeploymentNftLocks> {
   const { framedValidator } = await import('@solidcash/solidc/runtime');
+  const { framedOraclePool } = await import('../framed/call/block-oracle.js');
   const { deployMaster } = await import('../framed/deploy/material.js');
   const {
     chunkRecordLockingBytecode, entryRecordLockingBytecode, stateRecordLockingBytecode,
   } = await import('../framed/deploy/records.js');
+  // A master that reads block.* carries its pool in its pool slots, which the deployment bound.
+  framedOraclePool(provider, artifact);
   const master = deployMaster(artifact, hexToBin(category), framedValidator.buildValidatorProgram());
   return {
     authhead: authheadLockingBytecode(category),

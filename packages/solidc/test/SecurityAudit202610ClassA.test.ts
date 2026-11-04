@@ -7,8 +7,9 @@ import {
   createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
-  asmToScript, blockhashOracleLockingBytecode, buildBlockhashCommitment, buildBlockhashOracleCovenantScript,
-  buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, scriptToBytecode,
+  asmToScript, buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, encodePoolInfoCommitment,
+  encodePoolSlotCommitment, oraclePoolBinding, ORACLE_POOL_PARAMETER, POOL_COIN_SATS, POOL_FLAG_SLOT,
+  POOL_FLAG_SLOT_STOPPED, poolSlotLockingBytecode, poolSlotReadUnlocking, scriptToBytecode,
   type AbiFunction,
 } from '@solidcash/utils';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
@@ -108,21 +109,27 @@ describe('October 2026 class A holes', () => {
     expect(spend(Uint8Array.of(0x75, 0x51, 0x51, 0x75)), 'DX-5 other-lock call').not.toBe(true);
   });
 
-  it('CRYPTO-3 a blockhash oracle at another lock cannot choose the hash, and the real lock can', () => {
+  it('CRYPTO-3 a blockhash read takes a live slot of its bound pool, and no other coin can choose the hash', () => {
     const artifact = compileString(
       `${P} contract C { function f(int n, bytes32 expect) { require(blockhash(n) == expect); } }`,
     );
     const fn = artifact.abi.find((entry) => entry.name === 'f');
     if (!fn) throw new Error(`no f; ${artifact.abi.map((entry) => entry.name).join(',')}`);
-    const redeem = scriptToBytecode(asmToScript(artifact.bytecode));
+    const pool = Uint8Array.from({ length: 32 }, (_, i) => (0x37 + i * 11) & 0xff);
+    const otherPool = Uint8Array.from({ length: 32 }, (_, i) => (0x91 + i * 7) & 0xff);
+    // The SDK pushes the constructor inputs, here the pool binding alone, before the program.
+    expect(artifact.constructorInputs.map((entry) => entry.name)).toEqual([ORACLE_POOL_PARAMETER]);
+    const redeem = new Uint8Array([
+      ...encodeDataPush(oraclePoolBinding(pool)), ...scriptToBytecode(asmToScript(artifact.bytecode)),
+    ]);
     const contractLock = p2sh32(redeem);
     const n = 1n;
     const hash = Uint8Array.from({ length: 32 }, (_, index) => index + 3);
     const forged = Uint8Array.from({ length: 32 }, () => 0x44);
-    const oracleRedeem = scriptToBytecode(buildBlockhashOracleCovenantScript(CATEGORY));
-    const oracleLock = blockhashOracleLockingBytecode(CATEGORY);
-    const oracleUnlock = pushesOf([num(0n), oracleRedeem]);
-    const commitment = buildBlockhashCommitment(n, hash);
+    const owner = new Uint8Array(20).fill(0x31);
+    const slot = (flags: number, slotHash: Uint8Array): Uint8Array => encodePoolSlotCommitment({
+      flags, n, hash: slotHash, owner, depth: 256,
+    });
     const values: Record<string, Uint8Array> = {};
     for (const entry of fn.inputs) {
       if (entry.name === 'n') values[entry.name] = num(n);
@@ -132,27 +139,45 @@ describe('October 2026 class A holes', () => {
       else values[entry.name] = new Uint8Array();
     }
     const masterUnlock = redeemUnlock(fn, redeem, values, artifact.messageBus?.routeInBytecode === true);
-    const spend = (sideLock: Uint8Array, sideHash: Uint8Array): true | string => {
-      const sideCommitment = buildBlockhashCommitment(n, sideHash);
+    // The bound pool's slot sits at its covenant, which its read path recreates. A stand-in sits at a lock its read
+    // unlocking satisfies, so only the reader refuses it.
+    const spend = (side: VmOutput): true | string => {
       const transaction: VmTransaction = {
         version: 2, locktime: 2,
         inputs: [
           input(0, masterUnlock, 0xfffffffe),
-          input(1, oracleUnlock, 0xfffffffe),
+          input(1, poolSlotReadUnlocking(pool), 0xfffffffe),
         ],
         outputs: [
           { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-          { lockingBytecode: sideLock, valueSatoshis: VALUE, token: tokenOf('none', sideCommitment) },
+          side,
         ],
       };
       const sourceOutputs: SourceOutputs = [
         { lockingBytecode: contractLock, valueSatoshis: VALUE, token: tokenOf('minting', new Uint8Array()) },
-        { lockingBytecode: sideLock, valueSatoshis: VALUE, token: tokenOf('none', commitment) },
+        side,
       ];
       return verdict(sourceOutputs, transaction);
     };
-    expect(spend(oracleLock, hash), 'CRYPTO-3 authorized').toBe(true);
-    expect(spend(Uint8Array.of(0x6d, 0x51), forged), 'CRYPTO-3 bare-lock oracle').not.toBe(true);
+    const coin = (
+      category: Uint8Array, capability: 'minting' | 'mutable' | 'none', commitment: Uint8Array, real = false,
+    ): VmOutput => ({
+      lockingBytecode: real ? poolSlotLockingBytecode(pool) : Uint8Array.of(0x75, 0x51),
+      valueSatoshis: POOL_COIN_SATS,
+      token: { category, amount: 0n, nft: { capability, commitment } },
+    });
+    const info = encodePoolInfoCommitment({
+      flags: 0, owner, number: n, timestamp: 1_700_000_000n, difficulty: 1n, size: 1_000n, totalFees: 0n,
+      coinbase: forged,
+    });
+    expect(spend(coin(pool, 'mutable', slot(POOL_FLAG_SLOT, hash), true)), 'CRYPTO-3 authorized').toBe(true);
+    expect(spend(coin(otherPool, 'mutable', slot(POOL_FLAG_SLOT, forged))), 'CRYPTO-3 another category')
+      .not.toBe(true);
+    expect(spend(coin(pool, 'none', slot(POOL_FLAG_SLOT, forged))), 'CRYPTO-3 an immutable NFT of the pool')
+      .not.toBe(true);
+    expect(spend(coin(pool, 'mutable', info)), 'CRYPTO-3 a block-info coin').not.toBe(true);
+    expect(spend(coin(pool, 'mutable', slot(POOL_FLAG_SLOT | POOL_FLAG_SLOT_STOPPED, hash))), 'CRYPTO-3 a stopped slot')
+      .not.toBe(true);
   });
 
   it('DS-7 a stray coin at a skipped read slot cannot make room to rewrite another node, and the write can', () => {

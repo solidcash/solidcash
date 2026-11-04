@@ -139,8 +139,8 @@ export function bindOraclePool(
 
 export default class SynthesizeBlockOracle extends AstTraversal {
   private legacyNow = false;
-  // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
-  // maintain the project-global (n->hash) oracle (docs/block-and-transaction-properties.md).
+  // Set when the contract references blockhash(n): surfaced to the artifact, as the reader co-spends ring slots of
+  // its oracle pool.
   usesBlockhash = false;
   private fnUsesBlockhash = false;
   // Distinct blockhash read keys in the current function - each rides its own oracle slot (param name for a
@@ -278,7 +278,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
 
-    // blockhash(n) brands its (n->hash) oracle to the contract's own category, so the reader must be stateful.
+    // A blockhash(n) reader is stateful.
     const bodies = [node.functions, node.constructorDef, node.fallbackDef, node.receiveDef].flat();
     node.usesBlockhash = bodies.some((fn) => fn?.usesBlockhash);
     node.usesBlockOracle = bodies.some((fn) => fn?.usesBlockOracle);

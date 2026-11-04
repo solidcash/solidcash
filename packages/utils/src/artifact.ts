@@ -866,6 +866,11 @@ export interface AbiFunction {
   blockhashReads?: readonly string[];
   /** The body slices the block-info oracle commitment. The SDK co-spends that UTXO and fills its input index. */
   usesBlockOracle?: boolean;
+  /**
+   * The pool coins a function-pointer target this entry may enter reads. The target finds them by category and flags,
+   * so no slot or index is published: the SDK co-spends an info coin, or the ring slot for each n, past the block.
+   */
+  indirectPoolReads?: { readonly blockInfo?: true; readonly blockhash?: true };
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;

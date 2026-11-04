@@ -4231,6 +4231,7 @@ function buildFunctionAbiMetadata(
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.usesBlockOracle && { usesBlockOracle: true }),
+    ...(func.indirectPoolReads && { indirectPoolReads: { ...func.indirectPoolReads } }),
     ...(func.messageBusBlockhashReadWidth && func.messageBusBlockhashReads && {
       graphBlockhashOracle: {
         inputBaseParameter: '__internal__blockhashInputIndex' as const,

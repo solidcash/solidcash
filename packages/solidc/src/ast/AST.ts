@@ -825,6 +825,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set when the body, or a function it calls, creates a contract bound to an oracle pool, which takes the
   // creator's own `__oraclePool` as its argument.
   passesOraclePool?: boolean;
+  // Set on an entry that reaches an indirect call while a function-pointer target reads the pool. The target finds
+  // its coin itself, so the entry takes no slot: the SDK co-spends one of each kind for it.
+  indirectPoolReads?: { blockInfo?: true; blockhash?: true };
   // Set by LowerInlineAssembly when this function's body contained an inline `assembly {}` block (before the
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).

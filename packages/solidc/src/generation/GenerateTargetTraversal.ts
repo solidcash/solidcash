@@ -2944,6 +2944,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return new Set(needy.filter((fn) => referenced.has(fn.functionId!)).map((fn) => fn.functionId!));
   }
 
+  /**
+   * Mark each entry that reaches an indirect call, directly or through a body it calls by name, with the pool reads
+   * the function-pointer targets make (`indirectPoolBodyIds`). They find their coins themselves, so the entry takes
+   * no slot for them and the SDK co-spends one of each kind.
+   */
+  private markIndirectPoolReaders(contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[]): void {
+    const bodies = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
+      ...freeFunctions].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    const targets = bodies.filter((fn) => fn.functionId !== undefined && this.oraclePoolIndirectIds.has(fn.functionId));
+    const blockInfo = targets.some((fn) => fn.usesBlockOracle === true);
+    const blockhash = targets.some((fn) => fn.usesBlockhash === true);
+    const reaches = new Map<FunctionDefinitionNode, boolean>();
+    const reachesIndirectCall = (fn: FunctionDefinitionNode): boolean => {
+      const known = reaches.get(fn);
+      if (known !== undefined) return known;
+      reaches.set(fn, false);
+      let found = fn.body !== undefined && this.containsIndirectCall(fn.body, true);
+      if (!found && fn.body !== undefined) {
+        walkInvocationAst(fn.body, (node) => {
+          if (!found && node instanceof FunctionCallNode && node.resolvedFunction !== undefined
+            && node.resolvedFunction !== fn) found = reachesIndirectCall(node.resolvedFunction);
+        });
+      }
+      reaches.set(fn, found);
+      return found;
+    };
+    for (const fn of bodies) {
+      fn.indirectPoolReads = (blockInfo || blockhash) && reachesIndirectCall(fn)
+        ? { ...(blockInfo && { blockInfo: true as const }), ...(blockhash && { blockhash: true as const }) }
+        : undefined;
+    }
+  }
+
   /** Emit a push of P: the `__oraclePool` parameter where this body holds it, else the binding helper's copy. */
   private emitOraclePoolBinding(locationData: SingleLocationData): void {
     if (this.oraclePoolBindingId === undefined || this.getStackIndex(ORACLE_POOL_PARAMETER, true) >= 0) {
@@ -4273,6 +4306,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .flatMap((lib) => (lib ? libraryDefinedIds(lib.blob) : []))))];
     // A body an indirect call may enter, a free one included, invokes the binding helper by this id.
     this.oraclePoolIndirectIds = this.indirectPoolBodyIds(node.contract, node.freeFunctions);
+    this.markIndirectPoolReaders(node.contract, node.freeFunctions);
     if (this.oraclePoolIndirectIds.size > 0) {
       let id = GenerateTargetTraversalWithLocation.ORACLE_POOL_BINDING_SUBROUTINE_ID;
       while (this.libraryDefinedIds.includes(id)) id -= 1n;

@@ -88,6 +88,7 @@ export function constructCreateBuilderTransactionBuilder(
     blockhashCoSpendUtxos: UnlockableUtxo[];
     blockInfoCoSpendUtxos?: UnlockableUtxo[];
     delegateBlockInfoOracle?: boolean;
+    unslottedPoolCoSpends?: UnlockableUtxo[];
     blockhashCoSpendSlotOrdinals: number[] | undefined;
     keccakComputeCoSpendUtxos: UnlockableUtxo[];
     keccakComputeCommitments: any;
@@ -139,7 +140,8 @@ export function constructCreateBuilderTransactionBuilder(
     runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
     kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
     tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
-    blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, blockhashCoSpendSlotOrdinals,
+    blockhashCoSpendUtxos, blockInfoCoSpendUtxos, delegateBlockInfoOracle, unslottedPoolCoSpends,
+    blockhashCoSpendSlotOrdinals,
     keccakComputeCoSpendUtxos,
     keccakComputeCommitments, delegateComputeResources, deferredKeccakCompute,
     deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
@@ -244,6 +246,7 @@ export function constructCreateBuilderTransactionBuilder(
     ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
     ...(blockInfoCoSpendUtxos && blockInfoCoSpendUtxos.length > 0 && { blockInfoCoSpendUtxos }),
     ...(delegateBlockInfoOracle && { delegateBlockInfoOracle: true }),
+    ...(unslottedPoolCoSpends && unslottedPoolCoSpends.length > 0 && { unslottedPoolCoSpends }),
     ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
     ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
     ...(delegateComputeResources && { delegateComputeResources: true }),

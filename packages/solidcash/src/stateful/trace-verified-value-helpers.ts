@@ -54,6 +54,30 @@ export function extractBlockhashReadsFromTrace(
 }
 
 
+/**
+ * The n of the slot walk a function-pointer target ran without finding a slot of its pool that answers it: the
+ * walk's last category read, at the index past the last input, where its stack is `[P || 0x01, n, i, i]`.
+ */
+export function unansweredBlockhashWalk(
+  fullTrace: AuthenticationProgramStateCommon[], inputCount: number, poolBinding: Uint8Array,
+): bigint | undefined {
+  const p2shStart = findRedeemScriptStart(fullTrace);
+  const trace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
+  const binding = `${binToHex(poolBinding)}01`;
+  for (let index = trace.length - 1; index >= 0; index -= 1) {
+    const step = trace[index];
+    const instruction = step.instructions[step.ip];
+    if (instruction?.opcode !== Op.OP_UTXOTOKENCATEGORY || step.controlStack.some((c) => c === false)) continue;
+    const top = step.stack.length - 1;
+    if (top < 3 || binToHex(Uint8Array.from(step.stack[top])) !== binToHex(Uint8Array.from(step.stack[top - 1]))
+      || binToHex(Uint8Array.from(step.stack[top - 3])) !== binding) continue;
+    if (decodeScriptNumber(Uint8Array.from(step.stack[top])) !== BigInt(inputCount)) return undefined;
+    return decodeScriptNumber(Uint8Array.from(step.stack[top - 2]));
+  }
+  return undefined;
+}
+
+
 export function decodeInlineVmapValue(
   value: Uint8Array | undefined,
   present: boolean,

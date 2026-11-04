@@ -137,8 +137,9 @@ import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
-  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
+  artifactOraclePool, indirectPoolReads, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
 } from '../oracle/pool/reader.js';
+import { groupPoolReader, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -592,6 +593,7 @@ import {
   extractBlockhashReads as extractBlockhashReadsImpl,
   extractGraphBlockhashRead as extractGraphBlockhashReadImpl,
   resolveBlockhashCoSpends as resolveBlockhashCoSpendsImpl,
+  resolveIndirectBlockhashCoSpends,
 } from './sc-resolve-blockhash-co-spends.js';
 import {
   refreshProjectedExternalReturns as refreshProjectedExternalReturnsImpl,
@@ -12525,6 +12527,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       blockInfoCoSpendUtxos = [nestedOracle ?? await poolInfoCoSpend(this.inner.provider, pool)];
     }
+    // A function-pointer target finds its pool coins itself, so no block slot places them: they ride past the blocks.
+    const unslottedPoolCoSpends = await resolveUnslottedPoolInfoCoins(this.inner.provider, [
+      { artifact: this.inner.artifact, abiFunction, pool: this.inner.oraclePool, name: this.inner.name },
+      ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).map(groupPoolReader),
+      ...lowLevelCallUtxoGroups.map(groupPoolReader),
+    ], [
+      ...blockInfoCoSpendUtxos,
+      ...[...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].flatMap((group) => group.blockInputs ?? []),
+    ]);
+    if (indirectPoolReads(this.inner.artifact, abiFunction).blockhash && this.categoryId) {
+      const slots = await resolveIndirectBlockhashCoSpends(
+        { categoryId: this.categoryId, inner: this.inner }, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
+        blockhashCoSpendUtxos, unslottedPoolCoSpends, blockhashCoSpendUtxos,
+      );
+      unslottedPoolCoSpends.push(...slots.map(({ utxo, unlocker }) => ({ ...utxo, unlocker })));
+      maxBhLocktime = slots.reduce((max, slot) => Math.max(max, slot.locktime), maxBhLocktime);
+    }
 
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the
     // ordinary batched keccak side-cars. Computed recovery arguments remain deferred; the full routed trace later
@@ -12948,6 +12967,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         blockhashCoSpendUtxos,
         blockInfoCoSpendUtxos,
         delegateBlockInfoOracle,
+        unslottedPoolCoSpends,
         blockhashCoSpendSlotOrdinals,
         keccakComputeCoSpendUtxos,
         keccakComputeCommitments,

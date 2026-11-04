@@ -4,7 +4,7 @@ import type { UnlockableUtxo, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { checkPoolCategory, poolLocks } from '../../oracle/pool/coins.js';
 import {
-  artifactOraclePool, bindArtifactOraclePool, poolInfoCoSpend, readsPoolOnlyIndirectly,
+  artifactOraclePool, bindArtifactOraclePool, indirectPoolReads, poolInfoCoSpend,
 } from '../../oracle/pool/reader.js';
 import type { DraftInput, RecoverySideCars } from '../composer/index.js';
 
@@ -35,10 +35,11 @@ export function framedOraclePool(provider: NetworkProvider, artifact: Artifact):
   return artifactOraclePool(artifact) ?? bindFramedOraclePool(provider, artifact);
 }
 
-/** Whether the entry `functionName` reads block.*, or may through a function pointer, the artifact's only reads. */
+/** Whether the entry `functionName` reads block.*, or a function-pointer target it may enter does. */
 export function entryReadsBlockOracle(artifact: Artifact, functionName: string): boolean {
-  return readsPoolOnlyIndirectly(artifact)
-    || artifact.abi.some((candidate) => candidate.name === functionName && candidate.usesBlockOracle === true);
+  // An artifact that publishes no entry's indirect reads co-spends for every entry when it reads only indirectly.
+  return indirectPoolReads(artifact, undefined).blockInfo || artifact.abi.some((candidate) => candidate.name === functionName
+    && (candidate.usesBlockOracle === true || candidate.indirectPoolReads?.blockInfo === true));
 }
 
 /**

@@ -8,16 +8,19 @@ import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   isComputedBlockhashKey,
+  oraclePoolBinding,
   type AbiFunction,
 } from '@solidcash/utils';
-import { isContractUnlocker, type Output, type Unlocker, type Utxo } from '../interfaces.js';
+import {
+  isContractUnlocker, type Output, type UnlockableUtxo, type Unlocker, type Utxo,
+} from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { poolInfoCoSpend } from '../oracle/pool/reader.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
-import { extractBlockhashReadsFromTrace } from './trace-verified-value-helpers.js';
+import { extractBlockhashReadsFromTrace, unansweredBlockhashWalk } from './trace-verified-value-helpers.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
@@ -186,4 +189,63 @@ export async function resolveBlockhashCoSpends(
     ordered.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
   }
   return ordered;
+}
+
+/** The blockhash reads a call may make through function pointers, each a probe round. */
+const MAX_INDIRECT_BLOCKHASH_READS = 8;
+
+/**
+ * The ring slots the blockhash walks of a function-pointer target read, which no block slot places. Each round probes
+ * the reader with its direct co-spends, `extra` and the slots found so far; the walk that runs past the last input
+ * names the next n. A slot in `exclude`, one the transaction already spends, is not chosen.
+ */
+export async function resolveIndirectBlockhashCoSpends(
+  host: BlockhashCoSpendHost,
+  masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
+  front: readonly UnlockableUtxo[], extra: readonly UnlockableUtxo[], exclude: readonly Pick<Utxo, 'txid' | 'vout'>[],
+): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }>> {
+  const pool = host.inner.oraclePool;
+  if (pool === undefined) throw new Error('blockhash(n): the reader binds no oracle pool');
+  const binding = oraclePoolBinding(hexToBin(pool));
+  const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+  const vm = createVirtualMachineBch2026ForProvider(host.inner.provider);
+  const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+  const recreateOf = (input: UnlockableUtxo): Output => ({
+    to: input.unlocker.generateLockingBytecode(), amount: input.satoshis, token: input.token,
+  });
+  for (let round = 0; round <= MAX_INDIRECT_BLOCKHASH_READS; round += 1) {
+    const b = new CovenantTransactionBuilder({ provider: host.inner.provider });
+    b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
+    const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(host.inner as any, 0, host.categoryId));
+    b.addInput(masterUtxo, stateInputUnlocker);
+    dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
+    for (const input of front) b.addInput(input, input.unlocker);
+    b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
+    dataNftUtxos.forEach((u, i) => b.addOutput({
+      to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
+    }));
+    for (const input of front) b.addOutput(recreateOf(input));
+    await placeBlockInfoOracle(host, b, stateInputUnlocker, 0);
+    for (const input of extra) {
+      b.addInput(input, input.unlocker);
+      b.addOutput(recreateOf(input));
+    }
+    for (const slot of resolved) {
+      b.addInput(slot.utxo, slot.unlocker);
+      b.addOutput(slot.recreate);
+    }
+    const transaction = b.buildLibauthTransaction();
+    const trace = vm.debug({
+      inputIndex: 0, sourceOutputs: generateLibauthSourceOutputs(b.inputs), transaction,
+    }) as AuthenticationProgramStateCommon[];
+    const n = unansweredBlockhashWalk(trace, b.inputs.length, binding);
+    if (n === undefined) return resolved;
+    if (round === MAX_INDIRECT_BLOCKHASH_READS) break;
+    const cs = await resolveBlockhashCoSpend(
+      host.inner.provider, pool, n, [...exclude, ...resolved.map(({ utxo }) => utxo)],
+    );
+    if (!cs) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
+    resolved.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
+  }
+  throw new Error(`a call reads blockhash through function pointers more than ${MAX_INDIRECT_BLOCKHASH_READS} times`);
 }

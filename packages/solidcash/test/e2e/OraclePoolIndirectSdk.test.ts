@@ -1,20 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, decodeTransaction, hexToBin } from '@bitauth/libauth';
-import { ORACLE_POOL_PARAMETER } from '@solidcash/utils';
+import { ORACLE_POOL_PARAMETER, POOL_FLAG_SLOT } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, TransactionBuilder } from '../../src/index.js';
+import { Contract, Signer, TransactionBuilder } from '../../src/index.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { getContractFactory, type StatefulContract } from '../../src/stateful/index.js';
 import {
-  poolInfoUnlockable, readsPoolOnlyIndirectly, selectPoolInfoCoin, type PoolBlockFields,
+  isPoolInfoInput, isPoolSlotInput, poolInfoUnlockable, poolSlotCoin, readsPoolOnlyIndirectly, selectPoolInfoCoin,
+  selectPoolSlot, type PoolBlockFields,
 } from '../../src/oracle/pool/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, mintTestOraclePool } from '../test-util.js';
+import { alicePriv } from '../fixture/vars.js';
 
 /**
- * A block.* read reached only through a function pointer (oracle pools, phase 3). An indirect call hands its target
- * no coin index, so the target finds the first block-info coin of the pool its contract binds, and the entry
- * publishes no index. The SDK co-spends a coin of that pool for every call of such a contract, recreated at its own
- * index, and the read checks the coin's category and flags, not its lock.
+ * A block.* or blockhash read reached only through a function pointer (oracle pools, phase 3). An indirect call hands
+ * its target no coin index, so the target finds the first coin of the pool its contract binds that answers it, and
+ * the entry publishes no index or slot, only `indirectPoolReads`. The SDK co-spends a coin of each kind for every
+ * call of such an entry, stateless or stateful, recreated at its own index, and the read checks the coin's category
+ * and flags, not its lock.
  */
 
 const POINTER_READER = `
@@ -33,8 +37,85 @@ const POOL_TIP: PoolBlockFields = {
   coinbase: hexToBin(`76a914${'11'.repeat(20)}88ac`),
 };
 
+// A stateful reader: the call that reads through the pointer advances its state.
+const STATEFUL_POINTER_READER = `
+contract PointerClockState() {
+    int reads;
+    function stamp() internal view returns (uint32) { return block.timestamp; }
+    function zero() internal view returns (uint32) { return 0; }
+    function check(int expected, bool live) {
+        function() internal view returns (uint32) read = live ? stamp : zero;
+        require(read() == expected);
+        this.reads = this.reads + 1;
+    }
+}`;
+
+// One entry reads directly and takes a slot; the other reads only through the pointer.
+const MIXED_READER = `
+contract MixedClock() {
+    int reads;
+    function stamp() internal view returns (uint32) { return block.timestamp; }
+    function zero() internal view returns (uint32) { return 0; }
+    function direct(int expected) {
+        require(block.timestamp == expected);
+        this.reads = this.reads + 1;
+    }
+    function pointer(int expected, bool live) {
+        function() internal view returns (uint32) read = live ? stamp : zero;
+        require(read() == expected);
+        this.reads = this.reads + 1;
+    }
+}`;
+
+// blockhash(n) through a pointer: the target walks to the first slot of its pool that answers n.
+const POINTER_HASHES = `
+contract PointerHashes() {
+    int reads;
+    function hashOf(int n) internal view returns (bytes32) { return blockhash(n); }
+    function before(int n) internal view returns (bytes32) { return blockhash(n - 1); }
+    function check(int n, bytes32 expected, bool live) {
+        function(int) internal view returns (bytes32) read = live ? hashOf : before;
+        require(read(n) == expected);
+        this.reads = this.reads + 1;
+    }
+}`;
+
 const TXID = /^[0-9a-f]{64}$/;
 const SCRIPT_FAILURE = /OP_VERIFY|EQUALVERIFY|non-truthy/;
+const ZERO = new Uint8Array(32);
+
+type Call = PromiseLike<{ txid: string }> & { build(): Promise<TransactionBuilder> };
+
+async function funded(provider: MockNetworkProvider): Promise<Signer> {
+  const signer = new Signer(alicePriv, provider);
+  for (let coin = 0; coin < 6; coin += 1) {
+    await provider.addUtxo(signer.getAddress(), randomUtxo({ vout: 0, satoshis: 1_000_000n }));
+  }
+  return signer;
+}
+
+/** The indices of the inputs `isCoin` picks, each of which the output at its own index recreates. */
+function recreatedAtOwnIndex(
+  builder: TransactionBuilder, isCoin: (input: TransactionBuilder['inputs'][number]) => boolean,
+): number[] {
+  const indices = builder.inputs.flatMap((input, index) => (isCoin(input) ? [index] : []));
+  for (const index of indices) {
+    const { token } = builder.inputs[index];
+    expect(builder.outputs[index]?.token?.category).toBe(token!.category);
+    expect(builder.outputs[index]?.token?.nft?.commitment).toBe(token!.nft!.commitment);
+  }
+  return indices;
+}
+
+/** The newest block a live slot of the pool holds. */
+async function newestSlot(provider: MockNetworkProvider, category: string): Promise<bigint> {
+  let newest = -1n;
+  for (const utxo of await provider.getUtxosByTokenCategory(category)) {
+    const fields = poolSlotCoin(utxo, category)?.fields;
+    if (fields !== undefined && fields.flags === POOL_FLAG_SLOT && fields.n > newest) newest = fields.n;
+  }
+  return newest;
+}
 
 const artifact = compileString(POINTER_READER);
 
@@ -71,6 +152,7 @@ describe('oracle pool reads reached only through a function pointer', () => {
     const check = artifact.abi.find((fn) => fn.name === 'check')!;
     expect(check.inputs.map((input) => input.name)).not.toContain('__internal__blockOracleInputIndex');
     expect(check.usesBlockOracle).toBeUndefined();
+    expect(check.indirectPoolReads).toEqual({ blockInfo: true });
     expect(readsPoolOnlyIndirectly(artifact)).toBe(true);
   });
 
@@ -115,4 +197,70 @@ describe('oracle pool reads reached only through a function pointer', () => {
     const txid = await spend(provider, reader, POOL_TIP.timestamp, true, [await coinOf(other), await coinOf(pool)]);
     expect(await recreatedPools(provider, txid)).toEqual([other, pool]);
   });
+
+  it('a stateful call co-spends a coin past its block, and a mixed contract\'s pointer entry co-spends too', async () => {
+    const provider = createTestProvider() as MockNetworkProvider;
+    const signer = await funded(provider);
+    const pool = await mintTestOraclePool(provider, POOL_TIP);
+
+    const statefulArtifact = compileString(STATEFUL_POINTER_READER);
+    const statefulCheck = statefulArtifact.abi.find((fn) => fn.name === 'check')!;
+    expect(statefulCheck.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')).toBe(false);
+    expect(statefulCheck.indirectPoolReads).toEqual({ blockInfo: true });
+    const stateful = await getContractFactory(statefulArtifact, signer).deploy({
+      initialState: { reads: 0n }, oraclePool: pool,
+    });
+    const clock = stateful as unknown as { check(expected: bigint, live: boolean): Call };
+    const built = await clock.check(POOL_TIP.timestamp, true).build();
+    expect(recreatedAtOwnIndex(built, (input) => isPoolInfoInput(input, pool))).toHaveLength(1);
+    expect((await clock.check(POOL_TIP.timestamp, true)).txid).toMatch(TXID);
+    await expect(clock.check(POOL_TIP.timestamp + 1n, true)).rejects.toThrow(SCRIPT_FAILURE);
+    expect((await (stateful as unknown as StatefulContract).getState()).reads).toBe(1n);
+
+    const mixedArtifact = compileString(MIXED_READER);
+    const direct = mixedArtifact.abi.find((fn) => fn.name === 'direct')!;
+    const pointer = mixedArtifact.abi.find((fn) => fn.name === 'pointer')!;
+    expect(direct.usesBlockOracle).toBe(true);
+    expect(direct.indirectPoolReads).toBeUndefined();
+    expect(pointer.usesBlockOracle).toBeUndefined();
+    expect(pointer.indirectPoolReads).toEqual({ blockInfo: true });
+    expect(readsPoolOnlyIndirectly(mixedArtifact)).toBe(false);
+    const mixed = await getContractFactory(mixedArtifact, signer).deploy({ initialState: { reads: 0n }, oraclePool: pool });
+    const reads = mixed as unknown as { direct(expected: bigint): Call; pointer(expected: bigint, live: boolean): Call };
+    const viaPointer = await reads.pointer(POOL_TIP.timestamp, true).build();
+    expect(recreatedAtOwnIndex(viaPointer, (input) => isPoolInfoInput(input, pool))).toHaveLength(1);
+    expect((await reads.pointer(POOL_TIP.timestamp, true)).txid).toMatch(TXID);
+    expect((await reads.direct(POOL_TIP.timestamp)).txid).toMatch(TXID);
+    expect((await (mixed as unknown as StatefulContract).getState()).reads).toBe(2n);
+  }, 300_000);
+
+  it('a pointer target reads blockhash from a slot it finds, the zero for a block 256 older than its residue', async () => {
+    const provider = createTestProvider() as MockNetworkProvider;
+    const signer = await funded(provider);
+    const artifact = compileString(POINTER_HASHES);
+    const check = artifact.abi.find((fn) => fn.name === 'check')!;
+    expect(check.blockhashReads).toBeUndefined();
+    expect(check.inputs.map((input) => input.name)).not.toContain('__internal__blockhashInputIndex');
+    expect(check.indirectPoolReads).toEqual({ blockhash: true });
+    const sc = await getContractFactory(artifact, signer).deploy({ initialState: { reads: 0n } });
+    const pool = provider.oraclePoolCategory!;
+    expect((sc as unknown as StatefulContract).inner.oraclePool).toBe(pool);
+    const reader = sc as unknown as { check(n: bigint, expected: Uint8Array, live: boolean): Call };
+    const hashOf = async (n: bigint): Promise<Uint8Array> => hexToBin(await provider.getBlockHash(Number(n)));
+
+    // A slot that holds n answers its hash; the other target reads n - 1.
+    const recent = (await newestSlot(provider, pool)) - 1n;
+    const built = await reader.check(recent, await hashOf(recent), true).build();
+    expect(recreatedAtOwnIndex(built, (input) => isPoolSlotInput(input, pool))).toHaveLength(1);
+    expect((await reader.check(recent, await hashOf(recent), true)).txid).toMatch(TXID);
+    expect((await reader.check(recent + 1n, await hashOf(recent), false)).txid).toMatch(TXID);
+    await expect(reader.check(recent, ZERO, true)).rejects.toThrow(SCRIPT_FAILURE);
+
+    // No slot holds a block 256 older than the newest of its residue, which reads as zero.
+    const old = (await newestSlot(provider, pool)) - 256n;
+    expect((await selectPoolSlot(provider, pool, old))?.exact).toBe(false);
+    expect((await reader.check(old, ZERO, true)).txid).toMatch(TXID);
+    await expect(reader.check(old, await hashOf(old), true)).rejects.toThrow(SCRIPT_FAILURE);
+    expect((await (sc as unknown as StatefulContract).getState()).reads).toBe(3n);
+  }, 300_000);
 });

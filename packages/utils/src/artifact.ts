@@ -763,6 +763,7 @@ export interface AbiFunction {
     contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
+    // `__oraclePool` forwards the creator's own `__oraclePool` constructor input.
     constructorArgs?: readonly (string | null)[];
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
@@ -902,6 +903,11 @@ export interface AbiFunction {
   blockhashReads?: readonly string[];
   /** The body slices the block-info oracle commitment. The SDK co-spends that UTXO and fills its input index. */
   usesBlockOracle?: boolean;
+  /**
+   * The pool coins a function-pointer target this entry may enter reads. The target finds them by category and flags,
+   * so no slot or index is published: the SDK co-spends an info coin, or the ring slot for each n, past the block.
+   */
+  indirectPoolReads?: { readonly blockInfo?: true; readonly blockhash?: true };
   blockLayout?: FunctionBlockLayout;
   isFallback?: boolean;
   isReceive?: boolean;
@@ -2305,16 +2311,24 @@ export interface Artifact {
    * the implementation's per-storage-path covenant checks.
    */
   delegateProxyStateOutputCountPinned?: boolean;
-  usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
-  /**
-   * How many recent blocks a blockhash reader's ring must hold, when every read is `blockhash(block.number - K)` with K
-   * a compile-time constant: the most K, 1 for K = 0. Absent when a read is unbounded; the deployer then picks.
-   */
+  usesBlockhash?: boolean;  // contract reads blockhash(n) from a ring slot of its oracle pool
+  /** The per-contract ring depth. The compiler no longer emits it; kept until the SDK reads pools. */
   blockhashDepth?: number;
-  /** A function reads the block-info oracle commitment. The update is not an entry of this contract. */
+  /** A function reads a block-info coin of the bound oracle pool. */
   usesBlockOracle?: boolean;
-  /** Offsets of the 35-byte oracle-lock sentinel in the published bytecode. The offset is the push opcode. */
+  /** The per-contract oracle's lock slots. The compiler no longer emits them; kept until the SDK reads pools. */
   blockOracleLockSlots?: readonly number[];
+  /**
+   * The pool coin kinds the bound contracts this one creates or names read, theirs included. With this contract's
+   * own reads it shapes a pool its deployment mints.
+   */
+  createdPoolReads?: { readonly blockInfo?: true; readonly blockhash?: true };
+  /**
+   * A framed reader's pool slots: offsets of each `push(ORACLE_POOL_SENTINEL || 0x01)` in the published bytecode,
+   * the offset being the push opcode. Deployment writes `oraclePoolBinding(P)` over them. A direct reader takes the
+   * `__oraclePool` constructor input instead.
+   */
+  oraclePoolSlots?: readonly number[];
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.

@@ -2,6 +2,9 @@ export * from './artifact.js';
 export * from './authhead.js';
 export * from './child-locks.js';
 export * from './block-oracle.js';
+export * from './oracle-pool.js';
+// Both modules name the field union; the pool's is the one codegen slices.
+export type { BlockOracleField } from './oracle-pool.js';
 export {
   functionSplitLoaderLock,
   functionSplitLoaderScript,

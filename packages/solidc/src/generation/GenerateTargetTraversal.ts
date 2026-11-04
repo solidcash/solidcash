@@ -2986,29 +2986,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[n]` -> `[hash]`: the first input that is a live slot of P holding block n answers its hash. Past the last input
-   * the introspection fails.
+   * `[n]` -> `[answer]`: the first input that is a live slot of P answering block n, one holding n or a block of n's
+   * residue at least 256 newer, gives the direct read's answer. Past the last input the introspection fails.
    */
   private emitOraclePoolSlotSearch(locationData: SingleLocationData): void {
+    const { n, hash, depth } = POOL_SLOT_OFFSETS;
     this.emitOraclePoolBinding(locationData);
     this.emit([
-      // [n, P || 0x01, 0x80 || n (4 LE), i]
-      Op.OP_1, Op.OP_CAT,
-      Uint8Array.of(POOL_FLAG_SLOT), Op.OP_2, Op.OP_PICK, Op.OP_4, Op.OP_NUM2BIN, Op.OP_CAT,
+      // [P || 0x01, n, i]: the category read sees [n, i, i], as at a direct read
+      Op.OP_1, Op.OP_CAT, Op.OP_SWAP,
       Op.OP_1NEGATE,
       Op.OP_BEGIN, Op.OP_1ADD,
       Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_3, Op.OP_PICK, Op.OP_EQUAL,
       Op.OP_IF,
-      Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, encodeInt(BigInt(POOL_SLOT_OFFSETS.hash)), Op.OP_SPLIT, Op.OP_DROP,
-      Op.OP_2, Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_SWAP, Uint8Array.of(POOL_FLAG_SLOT), Op.OP_EQUAL,
+      Op.OP_IF,
+      // [.., n4 || hash || owner || depth] -> [.., slot n - n, depth]
+      encodeInt(BigInt(hash - n)), Op.OP_SPLIT, Op.OP_SWAP, Op.OP_BIN2NUM, Op.OP_3, Op.OP_PICK, Op.OP_SUB,
+      Op.OP_SWAP, encodeInt(BigInt(depth - hash)), Op.OP_SPLIT, Op.OP_NIP, Op.OP_BIN2NUM,
+      // It holds n, or a block of n's residue at least 256 newer.
+      Op.OP_OVER, Op.OP_SWAP, Op.OP_MOD, Op.OP_NOT, Op.OP_OVER, encodeInt(256n), Op.OP_GREATERTHANOREQUAL,
+      Op.OP_BOOLAND, Op.OP_SWAP, Op.OP_NOT, Op.OP_BOOLOR,
+      Op.OP_ELSE,
+      Op.OP_DROP, Op.OP_0,
+      Op.OP_ENDIF,
       Op.OP_ELSE,
       Op.OP_0,
       Op.OP_ENDIF,
       Op.OP_UNTIL,
-      Op.OP_UTXOTOKENCOMMITMENT, encodeInt(BigInt(POOL_SLOT_OFFSETS.hash)), Op.OP_SPLIT, Op.OP_NIP,
-      encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
-      Op.OP_NIP, Op.OP_NIP, Op.OP_NIP,
+      // [P || 0x01, n, i] -> [n, slot after its flags byte]
+      Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP, Op.OP_ROT, Op.OP_DROP,
     ], locationData);
+    this.emitPoolSlotAnswer(locationData);
   }
 
   /**
@@ -16410,7 +16419,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[0] = this.visit(node.parameters[0]); // [n]
       this.emit([Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP], loc); // require(tx.time >= n), [n]
       if (!this.stack.includes(BLOCKHASH_INPUT_INDEX)) {
-        // A body an indirect call may enter takes no index, so it reads the first slot of P that holds n.
+        // A body an indirect call may enter takes no index, so it reads the first slot of P that answers n.
         this.emitOraclePoolSlotSearch(loc);
         this.popFromStack();
         this.pushToStack('(value)');

@@ -677,7 +677,6 @@ task('node', 'Start a persistent mem-cash devnet (the `npx hardhat node` analogu
   .addFlag('evm-rpc', 'Install the optional @mem-cash/server-evm chain-control extension')
   .addParam('network', 'Deprecated alias for the HRE network selector')
   .addParam('bch-network', 'BCH network for prefixes and Network mapping: mocknet or regtest')
-  .addFlag('no-block-oracle', 'Do not install the block-info oracle')
   .addFlag('json', 'Newline JSON output')
   .addFlag('quiet', 'Only endpoints and errors')
   .addParam('log-level', 'error, warn, info, or debug')

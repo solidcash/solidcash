@@ -13,6 +13,8 @@ import { addressToLockScript } from '../utils.js';
 
 interface OptionsBase {
   manualConnectionManagement?: boolean;
+  /** Category of the default oracle pool a block.* reader binds, 64 hex characters in display byte order. */
+  oraclePoolCategory?: string;
 }
 
 interface CustomHostNameOptions extends OptionsBase {
@@ -33,8 +35,15 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private electrum: ElectrumClient<ElectrumClientEvents>;
   private concurrentRequests: number = 0;
   private manualConnectionManagement: boolean;
+  readonly oraclePoolCategory?: string;
 
   constructor(public network: Network = Network.MAINNET, options: Options = {}) {
+    if (options.oraclePoolCategory !== undefined) {
+      if (!/^[0-9a-fA-F]{64}$/.test(options.oraclePoolCategory)) {
+        throw new Error('oraclePoolCategory must be 32 bytes of hex');
+      }
+      this.oraclePoolCategory = options.oraclePoolCategory.toLowerCase();
+    }
     this.electrum = this.instantiateElectrumClient(network, options);
     this.manualConnectionManagement = options?.manualConnectionManagement ?? false;
   }

@@ -1,7 +1,6 @@
-import { secp256k1, sha256 as sha256Instance } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { sha256 as sha256Instance } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { ElectrumClient, type ElectrumClientEvents } from '@electrum-cash/network';
-import { DEVNET_BLOCK_ORACLE_OWNER_KEY } from '@solidcash/utils';
 import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import type Signer from '../Signer.js';
 import { Network, type TokenDetails, type Utxo } from '../interfaces.js';
@@ -41,6 +40,8 @@ export interface MemCashProviderOptions {
    * default states them here.
    */
   readonly consensusLimits?: Partial<ConsensusLimits>;
+  /** Category of the default oracle pool (display order); the node's advertised pool otherwise. */
+  readonly oraclePoolCategory?: string;
 }
 
 export interface SignerOptions {
@@ -71,7 +72,8 @@ interface DevnetFeatures {
   api_version?: number;
   path?: string;
   accounts?: { path?: string; count?: number; initial_index?: number };
-  block_oracle?: { lock: string; category: string; outpoint: { txid: string; vout: number } } | null;
+  /** The node's default oracle pool, its category in display order. */
+  oracle_pool?: { category: string } | null;
   evm_rpc?: boolean;
   consensus?: Record<string, unknown>;
   policy?: { enforce_dust?: boolean };
@@ -113,8 +115,7 @@ export default class MemCashNetworkProvider implements NetworkProvider {
   readonly simulator = true;
   /** Informational mirror of `server.features.devnet.evm_rpc`; `send()` never branches on it. */
   evmRpc = false;
-  /** The devnet's oracle owner, set when the node keeps block oracles current (`server.features.devnet`). */
-  blockOracleOwnerPublicKey?: Uint8Array;
+  oraclePoolCategory?: string;
 
   /** The mock's constant EVM-shaped surface, read directly by ported suites. */
   readonly _network: { readonly chainId: number; readonly name: string } = { chainId: 1, name: 'chipnet' };
@@ -138,6 +139,7 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     if (options.consensusLimits !== undefined) {
       this.consensusLimits = { ...this.consensusLimits, ...options.consensusLimits };
     }
+    if (options.oraclePoolCategory !== undefined) this.oraclePoolCategory = options.oraclePoolCategory.toLowerCase();
   }
 
   get _internalBlockNumber(): { respTime: number; blockNumber: number } {
@@ -284,9 +286,10 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     if (devnet.policy !== undefined) {
       this.policy = { enforceDust: devnet.policy.enforce_dust ?? this.policy.enforceDust };
     }
-    // The node keeps every oracle naming its fixed owner key current, so a reader deployed here names that key.
-    if ((devnet.block_oracle ?? null) !== null) {
-      this.blockOracleOwnerPublicKey = secp256k1.derivePublicKeyCompressed(DEVNET_BLOCK_ORACLE_OWNER_KEY) as Uint8Array;
+    const pool = devnet.oracle_pool ?? null;
+    if (pool !== null && this.options.oraclePoolCategory === undefined && isHex(pool.category)
+      && pool.category.length === 64) {
+      this.oraclePoolCategory = pool.category.toLowerCase();
     }
   }
 
@@ -518,11 +521,6 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     };
     this.restorers.set(handle.id, restorer);
     return restorer;
-  }
-
-  /** The node owns the oracles it keeps current; a client cannot rewrite them. */
-  refreshBlockOracle(): void {
-    // Intentionally a no-op: the node refreshes the oracle on every tip change, and a second writer would race it.
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {

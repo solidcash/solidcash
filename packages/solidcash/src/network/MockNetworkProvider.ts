@@ -2,11 +2,7 @@ import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex
 import { decodeTransaction, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
-import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
-import {
-  encodeBlockOracleCommitment, blockOracleLockingBytecode, blockOracleReadUnlocking, blockOracleRedeemScript, hash160,
-  hash256, sha256, type BlockOracleCommitmentFields,
-} from '@solidcash/utils';
+import { hash256, sha256, POOL_MAX_DEPTH } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
@@ -20,6 +16,9 @@ import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
 import { runMockNetworkProviderResetHooks } from './mock-reset.js';
+import { type PoolBlock, checkPoolCategory } from '../oracle/pool/coins.js';
+import { buildOraclePoolGenesis, simulatorPoolFields } from '../oracle/pool/genesis.js';
+import { PoolKeeper } from '../oracle/pool/keeper.js';
 
 export { onMockNetworkProviderReset } from './mock-reset.js';
 
@@ -244,18 +243,24 @@ type LiveUtxoEntry = ReturnType<Indexer['storage']['snapshot']>['utxos'] extends
 
 interface Outpoint { readonly txid: string; readonly vout: number }
 
-function sameOutpoint(left: Outpoint, right: Outpoint): boolean {
-  return left.txid === right.txid && left.vout === right.vout;
-}
+/** The coin a fresh mock chain gives the oracle pool owner's P2PKH, which pays the pool's genesis and keeper. */
+const MOCK_ORACLE_POOL_FUNDING: Outpoint = { txid: `${'b0'.repeat(31)}b3`, vout: 0 };
 
-/** Whether `unlocking` spends a coin of the oracle of `category`: read and update both end with its redeem push. */
-function spendsBlockOracle(unlocking: Uint8Array | undefined, category: string): boolean {
-  if (unlocking === undefined) return false;
-  return binToHex(unlocking).endsWith(binToHex(encodeDataPush(blockOracleRedeemScript(hexToBin(category)))));
-}
+/** Info coins in the mock's oracle pool; its ring holds the last 256 blocks, one slot each. */
+const MOCK_ORACLE_POOL_INFO_COINS = 2;
 
-/** The coin a fresh mock chain gives the oracle owner's P2PKH, which pays its keeper's update fees. */
-const MOCK_BLOCK_ORACLE_FEE_COIN: Outpoint = { txid: `${'b0'.repeat(31)}b2`, vout: 0 };
+/** Key the mock's oracle pools name. */
+const MOCK_ORACLE_POOL_OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x55 : 0x22));
+
+/** The coin a fresh mock chain gives the owner's P2PKH, which pays the pools made through the mock. */
+const MOCK_ORACLE_POOL_PURSE: Outpoint = { txid: `${'b0'.repeat(31)}b4`, vout: 0 };
+
+/** The mock chain has no real blocks: block `height` hashes to sha256 of its 4-byte little-endian height. */
+function syntheticBlockHash(height: number): string {
+  const buf = new Uint8Array(4);
+  new DataView(buf.buffer).setUint32(0, height >>> 0, true);
+  return binToHex(sha256(buf));
+}
 
 /**
  * Write counters for indexer stores. mem-cash calls its storage by property lookup, so wrapping the writer methods
@@ -410,148 +415,165 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.indexer = createIndexer({ verifier });
     storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
-    this.installBlockOracle();
+    this.fundOraclePoolPurse();
   }
 
   /**
-   * Private key the mock owns block oracles with. A reader deployed on the mock names its public key unless the
-   * deployer names another owner; tests sign updates with it, and its P2PKH pays their fees.
+   * Key the mock's oracle pools name, the default owner of a pool a deployment creates. Its P2PKH, which holds a coin
+   * on every fresh chain, pays their geneses and keepers.
    */
-  readonly blockOracleOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x44 : 0x11));
-  readonly blockOracleOwnerPublicKey = secp256k1.derivePublicKeyCompressed(this.blockOracleOwnerKey) as Uint8Array;
-  /**
-   * The block-info oracles the mock keeps current, by category: each coin of a contract's own oracle that names the
-   * mock owner's key (a direct deployment mints one per master), at the outpoint the mock last wrote or first saw it.
-   */
-  private readonly blockOracles = new Map<string, readonly Outpoint[]>();
+  readonly oraclePoolOwnerKey = MOCK_ORACLE_POOL_OWNER_KEY.slice();
 
-  /** Fund the oracle owner's P2PKH, which pays its keeper's update fees. */
-  private installBlockOracle(): void {
-    const owner = publicKeyToP2PKHLockingBytecode(this.blockOracleOwnerPublicKey);
+  /** The last automatic pool refresh's failure, cleared by the next success. The pool lags the chain meanwhile. */
+  oraclePoolRefreshError?: unknown;
+  private oraclePool?: string;
+  /** Whether the pool was minted, or its genesis refused, on this chain. */
+  private oraclePoolInstalled = false;
+  private oraclePoolStep: Promise<void> = Promise.resolve();
+  private oraclePoolKeeperView?: NetworkProvider;
+  /** The newest height whose slot the pool took, so a refresh writes only the blocks mined since. */
+  private oraclePoolSlotHeight?: number;
+  /** Pools made through this provider that it keeps current, with the newest height whose slot each took. */
+  private keptOraclePools = new Map<string, number | undefined>();
+
+  /** Keep pool `category`, owned by `oraclePoolOwnerKey`, current after each block, as the mock's own. */
+  keepOraclePool(category: string): void {
+    const key = checkPoolCategory(category);
+    if (key !== this.oraclePool && !this.keptOraclePools.has(key)) this.keptOraclePools.set(key, undefined);
+  }
+
+  private oraclePoolPurse(): Uint8Array {
+    const pubkey = secp256k1.derivePublicKeyCompressed(MOCK_ORACLE_POOL_OWNER_KEY) as Uint8Array;
+    return publicKeyToP2PKHLockingBytecode(pubkey);
+  }
+
+  /** Give the owner's P2PKH the coin a fresh chain holds. */
+  private fundOraclePoolPurse(): void {
+    const purse = this.oraclePoolPurse();
     this.indexer.addUtxo({
-      ...MOCK_BLOCK_ORACLE_FEE_COIN, satoshis: 100_000_000n, scriptHash: binToHex(sha256(owner)), height: 100,
-      lockingBytecode: owner,
+      ...MOCK_ORACLE_POOL_PURSE, satoshis: 100_000_000n, scriptHash: binToHex(sha256(purse)), height: 100,
+      lockingBytecode: purse,
     });
   }
 
-  /** The mock's current block fields, which a newly deployed oracle starts from. */
-  blockOracleFields(): BlockOracleCommitmentFields {
-    return this.tipBlockOracleFields();
+  /**
+   * Category of the mock's oracle pool (display order), minted on this first read, so a test that reads no block
+   * field pays for no pool. Undefined when this profile's rules refused its genesis.
+   */
+  get oraclePoolCategory(): string | undefined {
+    if (!this.oraclePoolInstalled) this.installOraclePool();
+    return this.oraclePool;
   }
 
-  /** The category of `output` when it is a contract's block-info oracle that names the mock owner's key. */
-  private mockOwnedOracleCategory(
-    lockingBytecode: Uint8Array,
-    token: { category: string; nft?: { capability: string; commitment: string } } | undefined,
-  ): string | undefined {
-    if (token?.nft?.capability !== 'mutable') return undefined;
-    if (binToHex(lockingBytecode) !== binToHex(blockOracleLockingBytecode(hexToBin(token.category)))) return undefined;
-    const owner = hexToBin(token.nft.commitment).slice(0, 20);
-    return binToHex(owner) === binToHex(hash160(this.blockOracleOwnerPublicKey)) ? token.category : undefined;
+  /** Forget the pool, which the next `oraclePoolCategory` read mints again. */
+  private clearOraclePool(): void {
+    this.oraclePool = undefined;
+    this.oraclePoolInstalled = false;
+    this.oraclePoolRefreshError = undefined;
+    this.oraclePoolSlotHeight = undefined;
   }
 
-  /** Keep `outpoint`, a coin of the oracle of `category`, unless it is kept already. */
-  private keepBlockOracle(category: string, outpoint: Outpoint): void {
-    const kept = this.blockOracles.get(category) ?? [];
-    if (kept.some((at) => sameOutpoint(at, outpoint))) return;
-    this.blockOracles.set(category, [...kept, outpoint]);
+  /**
+   * Mint the oracle pool by its two genesis transactions, which wait in the mempool for the next mined block: two info
+   * coins at the tip's fields, one slot for each of the last 256 blocks, and the baton. A profile whose rules refuse
+   * them (an older VM, tight limits) has no pool.
+   */
+  private installOraclePool(): void {
+    this.clearOraclePool();
+    this.oraclePoolInstalled = true;
+    // The pool covenants loop, which the 2026 VM brought.
+    if (this.vmTarget !== VmTarget.BCH_2026_05 && this.vmTarget !== VmTarget.BCH_SPEC) return;
+    const owner = MOCK_ORACLE_POOL_OWNER_KEY;
+    const purse = this.oraclePoolPurse();
+    const funding = { ...MOCK_ORACLE_POOL_FUNDING, satoshis: 100_000_000n };
+    this.indexer.addUtxo({ ...funding, scriptHash: binToHex(sha256(purse)), height: 100, lockingBytecode: purse });
+    const ring: PoolBlock[] = [];
+    for (let n = Math.max(0, this.blockHeight - POOL_MAX_DEPTH + 1); n <= this.blockHeight; n += 1) {
+      ring.push({ n: BigInt(n), hash: hexToBin(syntheticBlockHash(n)) });
+    }
+    try {
+      const { category, transactions } = buildOraclePoolGenesis({
+        funding, funder: owner, ownerKey: owner, infoCoins: MOCK_ORACLE_POOL_INFO_COINS, ringDepth: POOL_MAX_DEPTH,
+        slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime()), ring,
+      });
+      for (const transaction of transactions) this.publishOraclePoolTransaction(transaction.hex);
+      this.oraclePool = category;
+      this.oraclePoolSlotHeight = this.blockHeight;
+    } catch {
+      // No pool on this profile.
+    }
   }
 
-  private tipBlockOracleFields(): BlockOracleCommitmentFields {
-    return {
-      number: BigInt(this.blockHeight),
-      timestamp: BigInt(this.getBlockTime()),
-      difficulty: 0n,
-      size: 1000n,
-      totalFees: 0n,
-      coinbase: hexToBin(`76a914${'00'.repeat(20)}88ac`),
+  /**
+   * The pool keeper's step after a block, for the mock's own pool and each one `keepOraclePool` names: every live
+   * info coin takes the tip's fields, and the slot of each block mined since the last step takes its hash, so the ring
+   * has no holes. A time-type locktime is final only below the median time past, which the mock keeps at its tip
+   * time, so a pool publishes the second before it. The keeper's transactions wait in the mempool for the next mined
+   * block, as a live keeper's would. Steps run one at a time, and only once a pool exists.
+   */
+  private refreshOraclePool(): Promise<void> {
+    if ((this.oraclePool === undefined && this.keptOraclePools.size === 0) || !this.options.updateUtxoSet) {
+      return this.oraclePoolStep;
+    }
+    this.oraclePoolStep = this.oraclePoolStep.then(async () => {
+      let failure: unknown;
+      const own = this.oraclePool;
+      if (own !== undefined) {
+        try {
+          this.oraclePoolSlotHeight = await this.refreshPool(own, this.oraclePoolSlotHeight);
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      for (const [category, slotHeight] of [...this.keptOraclePools]) {
+        try {
+          const written = await this.refreshPool(category, slotHeight);
+          if (this.keptOraclePools.has(category)) this.keptOraclePools.set(category, written);
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      this.oraclePoolRefreshError = failure;
+    });
+    return this.oraclePoolStep;
+  }
+
+  /** One pool's step; returns the newest height whose slot it took. */
+  private async refreshPool(category: string, slotHeight: number | undefined): Promise<number | undefined> {
+    const keeper = new PoolKeeper({
+      provider: this.oraclePoolKeeperProvider(), category, ownerKey: MOCK_ORACLE_POOL_OWNER_KEY,
+    });
+    await keeper.refreshInfo(simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1));
+    const height = this.blockHeight;
+    const first = Math.max(0, height - POOL_MAX_DEPTH + 1, (slotHeight ?? -1) + 1);
+    if (first > height) return slotHeight;
+    const blocks: PoolBlock[] = [];
+    for (let n = first; n <= height; n += 1) blocks.push({ n: BigInt(n), hash: hexToBin(syntheticBlockHash(n)) });
+    await keeper.writeSlots(blocks);
+    return height;
+  }
+
+  /** This chain as the pool keeper sees it: its sends wait in the mempool. */
+  private oraclePoolKeeperProvider(): NetworkProvider {
+    this.oraclePoolKeeperView ??= {
+      network: this.network,
+      simulator: true,
+      getUtxos: (address) => this.getUtxos(address),
+      getUtxosForLockingBytecode: (lockingBytecode) => this.getUtxosForLockingBytecode(lockingBytecode),
+      getUtxosByTokenCategory: (categoryId) => this.getUtxosByTokenCategory(categoryId),
+      getBlockHeight: () => this.getBlockHeight(),
+      getRawTransaction: (txid) => this.getRawTransaction(txid),
+      sendRawTransaction: async (txHex) => this.publishOraclePoolTransaction(txHex),
     };
+    return this.oraclePoolKeeperView;
   }
 
-  /**
-   * Write the provider's current height and time into every oracle coin it keeps. A coin an owner's signed update
-   * recreated keeps the owner's fields, as on chain; one only readers recreated is still the mock's.
-   */
-  refreshBlockOracle(): void {
-    for (const category of [...this.blockOracles.keys()]) {
-      for (const live of this.liveBlockOracles(category)) {
-        const written = this.writtenBeforeReads(category, live);
-        if (written !== undefined) this.writeBlockOracle(category, live, this.tipBlockOracleFields(), written);
-      }
-    }
-  }
-
-  /**
-   * Replace the block fields of every coin of the oracle of `categoryId` in place, or of every oracle the mock keeps.
-   * The commitment names the mock owner's key.
-   */
-  setBlockOracleFields(fields: BlockOracleCommitmentFields, categoryId?: string): void {
-    const categories = categoryId === undefined ? [...this.blockOracles.keys()] : [categoryId.toLowerCase()];
-    for (const category of categories) {
-      const live = this.liveBlockOracles(category);
-      for (const at of live.length > 0 ? live : this.blockOracles.get(category) ?? []) {
-        this.writeBlockOracle(category, at, fields);
-      }
-    }
-  }
-
-  /** The coins of the oracle of `category` a reader may co-spend: its mutable NFTs at that category's oracle lock. */
-  private liveBlockOracles(category: string): Outpoint[] {
-    const lock = blockOracleLockingBytecode(hexToBin(category));
-    return this.indexer.getUtxos(binToHex(sha256(lock)))
-      .filter((utxo) => utxo.tokenData?.nft?.capability === 'mutable'
-        && utxo.tokenData.category.toLowerCase() === category.toLowerCase())
-      .map((entry) => ({ txid: entry.outpoint.txid, vout: entry.outpoint.vout }));
-  }
-
-  /**
-   * The kept outpoint `outpoint` descends from through read-path spends alone, which recreate a coin unchanged, or
-   * undefined when another spend moved it since the mock wrote it.
-   */
-  private writtenBeforeReads(category: string, outpoint: Outpoint): Outpoint | undefined {
-    const kept = this.blockOracles.get(category) ?? [];
-    const keptAt = (point: Outpoint): Outpoint | undefined => kept.find((candidate) => sameOutpoint(candidate, point));
-    let read: string | undefined;
-    let at = outpoint;
-    for (;;) {
-      const written = keptAt(at);
-      if (written !== undefined) return written;
-      read ??= binToHex(blockOracleReadUnlocking(hexToBin(category)));
-      const raw = this.indexer.getRawTx(at.txid);
-      const decoded = raw === undefined ? undefined : decodeTransaction(hexToBin(raw));
-      // The read path recreates the oracle at its own input index.
-      const input = typeof decoded === 'object' ? decoded.inputs[at.vout] : undefined;
-      if (input === undefined || binToHex(input.unlockingBytecode) !== read) return undefined;
-      at = { txid: binToHex(input.outpointTransactionHash), vout: input.outpointIndex };
-    }
-  }
-
-  /**
-   * Rewrite the oracle coin of `category` at `outpoint` in place, keeping its value and height. It is kept at
-   * `outpoint` in place of `replaces`, the outpoint it was kept at before.
-   */
-  private writeBlockOracle(
-    category: string, outpoint: Outpoint, fields: BlockOracleCommitmentFields, replaces: Outpoint = outpoint,
-  ): void {
-    const lock = blockOracleLockingBytecode(hexToBin(category));
-    const commitment = encodeBlockOracleCommitment(hash160(this.blockOracleOwnerPublicKey), fields);
-    const { txid, vout } = outpoint;
-    const { storage } = this.indexer;
-    const live = storage.getUtxoByOutpoint(`${txid}:${vout}`);
-    storage._test.utxo.remove({ txid, vout });
-    this.indexer.addUtxo({
-      txid, vout, satoshis: live?.satoshis ?? 10_000n,
-      scriptHash: binToHex(sha256(lock)),
-      height: live?.height ?? 100,
-      lockingBytecode: lock,
-      tokenData: {
-        category, amount: 0n,
-        nft: { capability: 'mutable', commitment: binToHex(commitment) },
-      },
-    });
-    const kept = (this.blockOracles.get(category) ?? [])
-      .filter((at) => !sameOutpoint(at, replaces) && !sameOutpoint(at, outpoint));
-    this.blockOracles.set(category, [...kept, { txid, vout }]);
+  /** Accept a pool transaction into the mempool; the next mined block confirms it. */
+  private publishOraclePoolTransaction(txHex: string): string {
+    const result = this.submitToIndexer(txHex);
+    if (!result.success) throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
+    this.acceptedTransactions.add(result.txid);
+    return result.txid;
   }
 
   async getUtxos(address: string): Promise<Utxo[]> {
@@ -618,7 +640,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     const snap = storage.snapshot();
     const live: typeof snap.utxos = new Map(snap.utxos);
     for (const key of snap.mempoolSpends.keys()) live.delete(key);
-    for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
+    // A mempool output a mempool child spent stays in the store's mempool outputs, marked only as spent.
+    for (const [key, entry] of snap.mempoolUtxos) if (!snap.mempoolSpends.has(key)) live.set(key, entry);
     const entries = [...live.values()];
     // A read by category walks the whole set otherwise, and a composed transaction carries tens of thousands of
     // entries. One pass here indexes each entry under its category, and under its 64-character prefix as well when
@@ -662,13 +685,16 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   async mine(count: number = 1): Promise<void> {
     this.setBlockHeight(this.blockHeight + count);
-    const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+    const { syncMockBlockOracles } = await import('../oracle/legacy-block-registers.js');
     await syncMockBlockOracles(this);
+    await this.refreshOraclePool();
   }
 
   /** hardhat-network-helpers `mineUpTo`: mine until the tip height equals `height` (no-op if already past). */
   async mineUpTo(height: number): Promise<void> {
-    if (height > this.blockHeight) this.setBlockHeight(height);
+    if (height <= this.blockHeight) return;
+    this.setBlockHeight(height);
+    await this.refreshOraclePool();
   }
 
   /** Current simulated block timestamp (unix seconds), read from the chain tip. hardhat `time.latest()`. */
@@ -703,7 +729,10 @@ export default class MockNetworkProvider implements NetworkProvider {
     const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
     const height = this.blockHeight;
     const fundingNonce = this.fundingNonce;
-    const oracles = new Map(this.blockOracles);
+    const pool = {
+      category: this.oraclePool, installed: this.oraclePoolInstalled, slotHeight: this.oraclePoolSlotHeight,
+      kept: new Map(this.keptOraclePools),
+    };
     const signerNonces = new Map(
       [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
     );
@@ -715,8 +744,10 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.acceptedTransactions = new Set(accepted);
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
-      this.blockOracles.clear();
-      for (const [category, coins] of oracles) this.blockOracles.set(category, coins);
+      this.oraclePool = pool.category;
+      this.oraclePoolInstalled = pool.installed;
+      this.oraclePoolSlotHeight = pool.slotHeight;
+      this.keptOraclePools = new Map(pool.kept);
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -749,8 +780,9 @@ export default class MockNetworkProvider implements NetworkProvider {
         return '0x0';
       case 'evm_increaseTime': {
         const timestamp = this.increaseTime(Number(params[0]));
-        const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+        const { syncMockBlockOracles } = await import('../oracle/legacy-block-registers.js');
         await syncMockBlockOracles(this);
+        await this.refreshOraclePool();
         return timestamp;
       }
       case 'hardhat_mine': {
@@ -776,9 +808,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   async getBlockHash(height: number): Promise<string> {
-    const buf = new Uint8Array(4);
-    new DataView(buf.buffer).setUint32(0, height >>> 0, true);
-    return binToHex(sha256(buf)); // deterministic synthetic hash - the mock chain has no real blocks
+    return syntheticBlockHash(height);
   }
 
   async getRawTransaction(txid: string): Promise<string> {
@@ -837,24 +867,11 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
-    // libauth's CashToken introspection operations call the common checked-push helper rather than the selected
-    // BCH instruction set's stack-item limit. `@mem-cash/validation` 0.0.8 has that defect, so the published
-    // limit is scoped to the common value for this synchronous mock check; 0.0.10 - the version this package
-    // declares - overrides those operations natively in its own verifier, which leaves this scoping as a 0.0.8
-    // compatibility layer. It is a candidate for removal once nothing supports 0.0.8.
     if (surveyOn()) await this.surveyBroadcast(txHex);
-    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
-    const previousStackItemLength = commonConsensus.maximumStackItemLength;
-    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
     const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
     const submitStartedAt = debugTiming ? Date.now() : 0;
-    let result;
-    try {
-      result = this.indexer.submitTransaction(txHex);
-    } finally {
-      commonConsensus.maximumStackItemLength = previousStackItemLength;
-    }
+    const result = this.submitToIndexer(txHex);
     if (debugTiming) console.error('mock-provider-timing', {
       stage: 'submit-transaction', ms: Date.now() - submitStartedAt, success: result.success,
     });
@@ -865,34 +882,12 @@ export default class MockNetworkProvider implements NetworkProvider {
     }
     this.acceptedTransactions.add(txid);
     this.acceptedTransactions.add(result.txid);
-    const accepted = decodeTransaction(hexToBin(txHex));
-    if (typeof accepted === 'object') {
-      // The transaction that first creates a category's oracle coins (its genesis, one per master) is kept whole. A
-      // later one recreates a coin at the index of the input that spends it, and keeps any other coin it mints (a
-      // split's copies, one per new master).
-      const minted = new Map<string, Outpoint[]>();
-      for (const [vout, output] of accepted.outputs.entries()) {
-        const token = output.token === undefined ? undefined : {
-          category: binToHex(output.token.category),
-          nft: output.token.nft === undefined ? undefined
-            : { capability: output.token.nft.capability, commitment: binToHex(output.token.nft.commitment) },
-        };
-        const category = this.mockOwnedOracleCategory(output.lockingBytecode, token);
-        if (category === undefined) continue;
-        if (!this.blockOracles.has(category)) {
-          minted.set(category, [...minted.get(category) ?? [], { txid: result.txid, vout }]);
-        } else if (!spendsBlockOracle(accepted.inputs[vout]?.unlockingBytecode, category)) {
-          this.keepBlockOracle(category, { txid: result.txid, vout });
-        }
-      }
-      for (const [category, coins] of minted) this.blockOracles.set(category, coins);
-    }
 
     // Mine a block to confirm the transaction immediately. This moves outputs
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     const mineStartedAt = debugTiming ? Date.now() : 0;
-    // A transaction executes against the block oracle at the current tip time, so the block it is auto-mined
+    // A transaction executes against the chain's current tip time, so the block it is auto-mined
     // into must carry that same timestamp. `mine()` with no argument advances the clock by one second, which
     // makes `block.timestamp` inside the covenant one second behind the block the receipt reports (the
     // Hardhat automine model executes at the block's own timestamp).
@@ -901,10 +896,11 @@ export default class MockNetworkProvider implements NetworkProvider {
     // mined block. Keep the window on the tip's timestamp, as the mock's chain always did: nLocktime finality (the
     // node's time basis) is then measured against the block the next send will extend.
     this.keepSyntheticTimeWindow();
-    // A contract that reads `block.timestamp` holds the value in a register a block oracle updates; a mined block
-    // is when that value moves, so the chain's time reaches the register before the next transaction is built.
-    const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
+    // A mined block moves the clock: legacy `__block_*` registers and the oracle pool take it before the next
+    // transaction is built.
+    const { syncMockBlockOracles } = await import('../oracle/legacy-block-registers.js');
     await syncMockBlockOracles(this);
+    await this.refreshOraclePool();
     if (debugTiming) console.error('mock-provider-timing', {
       stage: 'mine', ms: Date.now() - mineStartedAt,
     });
@@ -925,6 +921,23 @@ export default class MockNetworkProvider implements NetworkProvider {
     }));
     const { createVirtualMachineBch2026ForProvider } = await import('./createVirtualMachine.js');
     surveyTransaction(raw, transaction, sourceOutputs, createVirtualMachineBch2026ForProvider(this));
+  }
+
+  /** Submit to the indexer under this provider's stack-item limit. */
+  private submitToIndexer(txHex: string): ReturnType<Indexer['submitTransaction']> {
+    // libauth's CashToken introspection operations call the common checked-push helper rather than the selected
+    // BCH instruction set's stack-item limit. `@mem-cash/validation` 0.0.8 has that defect, so the published
+    // limit is scoped to the common value for this synchronous mock check; 0.0.10 - the version this package
+    // declares - overrides those operations natively in its own verifier, which leaves this scoping as a 0.0.8
+    // compatibility layer. It is a candidate for removal once nothing supports 0.0.8.
+    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
+    const previousStackItemLength = commonConsensus.maximumStackItemLength;
+    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    try {
+      return this.indexer.submitTransaction(txHex);
+    } finally {
+      commonConsensus.maximumStackItemLength = previousStackItemLength;
+    }
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
@@ -948,10 +961,6 @@ export default class MockNetworkProvider implements NetworkProvider {
         nft: utxo.token.nft,
       } : undefined,
     });
-    const oracleCategory = this.mockOwnedOracleCategory(lockingBytecodeBin, utxo.token);
-    if (oracleCategory !== undefined) {
-      this.keepBlockOracle(oracleCategory, { txid: utxo.txid.toLowerCase(), vout: utxo.vout });
-    }
 
     return utxo;
   }
@@ -996,9 +1005,10 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
-    // The wipe took every oracle with it; a fresh chain funds only the owner's fee coin.
-    this.blockOracles.clear();
-    this.installBlockOracle();
+    // The wipe took the pools and the owner's coin with it; a fresh chain mints its pool on first use.
+    this.clearOraclePool();
+    this.keptOraclePools.clear();
+    this.fundOraclePoolPurse();
     runMockNetworkProviderResetHooks();
   }
 

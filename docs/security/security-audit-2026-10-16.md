@@ -1492,5 +1492,6 @@ Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM
 - Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
   its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
   the genesis of a pool someone else made.
-- The regtest, Electrum and MemCash pool code has not run. The port to sushi-port-node is ready on
-  `feat/oracle-pools-sushi` and waits for the user's OK.
+- The regtest, Electrum and MemCash pool code ran on BCHN regtest and the devnet (16a7cc23f), which found and
+  fixed two bugs: a young chain's ring lacked slots (208c8dd5a), and Electrum's concurrent requests failed
+  (d3fbbfea9). The port to sushi-port-node lands with this.

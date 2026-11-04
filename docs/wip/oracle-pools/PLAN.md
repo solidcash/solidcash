@@ -1,11 +1,11 @@
 # Oracle pools: backport plan
 
 Status: phases 1-5 done on master, 2026-11-04 (branch `feat/oracle-pools` from master `320a1e9d3`). Phase 6, the
-port to `sushi-port-node`, is ready on `feat/oracle-pools-sushi` and waits for the user's OK. The design is TRE
-rev. 39 decision 47 (branch `tre`, `analysis/tre/tre-rev39-addendum.md`, section 6c), settled by the user on
-2026-11-04. What is built is documented in `packages/solidc/docs/block-and-transaction-properties.md`, the guide
-`website/docs/guides/block-oracles.md`, and the ledger section "Oracle pools (2026-11-04)" of
-`docs/security/security-audit-2026-10-16.md`.
+port to `sushi-port-node`, lands from `feat/oracle-pools-sushi` with the follow-ups below (the user's OK,
+2026-11-04). The design is TRE rev. 39 decision 47 (branch `tre`, `analysis/tre/tre-rev39-addendum.md`, section 6c),
+settled by the user on 2026-11-04. What is built is documented in
+`packages/solidc/docs/block-and-transaction-properties.md`, the guide `website/docs/guides/block-oracles.md`, and the
+ledger section "Oracle pools (2026-11-04)" of `docs/security/security-audit-2026-10-16.md`.
 
 ## Design in brief
 
@@ -95,7 +95,8 @@ Phases 1-5 are done; the commits are listed under each.
    Done: `20ca0e7aa` (binding value, framed pool slots), `d8eed60a3` (ORACLE-1), `e3e275934` (`block.*`),
    `3b37569df` (function-pointer targets), `b2ec3b973` (`blockhash`), `ba5602b83` (message-bus refusal),
    `617b8fb81` (a pointer target's `blockhash` zero), `8e5ebe10e` (`indirectPoolReads`), `8ed9ffe1d`
-   (`createdPoolReads`), `aed65ad16` (the subroutine-use probe captures the binding).
+   (`createdPoolReads`), `aed65ad16` (the subroutine-use probe captures the binding), `2b9a65c18` and `bb9c5c194`
+   (it captures every constructor parameter, and a fallback says why).
 4. **SDK on master:**
    - a deploy option `oraclePool` (a category or a new pool), and the provider default;
    - fill `__oraclePool`;
@@ -107,7 +108,8 @@ Phases 1-5 are done; the commits are listed under each.
    (pointer readers per entry, stateful and nested calls), `46b83869a` (provider defaults, regtest pool),
    `119f2e58c` (the single oracle, the pairs and the baton deleted), `f02a4812a` (`solidhat node`'s pool),
    `1486fd510` (deployment-minted pools), `704791456` (`PoolKeeper.start`, `setDepth`), `7b76534cf` (a callee's
-   pointer `blockhash` slots).
+   pointer `blockhash` slots), `208c8dd5a` (regtest mints a young chain's ring slots), `d3fbbfea9` (Electrum's
+   concurrent requests).
 5. **Tests and docs:**
    - e2e on mocknet;
    - update the oracle e2e files: BlockOracle, BlockOracleValue, BlockhashKeeperDeployment, the CRYPTO-4 and -5
@@ -115,11 +117,11 @@ Phases 1-5 are done; the commits are listed under each.
    - the website guide, AGENTS.md and the security ledger. The pools fix ORACLE-1, -2 and -5 on master at the root.
 
    Done: `95f842e97`, `9cd17cad5`, `81fa92702`, `61cde84a4`, `32cbf9a52`, `79dd25186`, `e77571642`, `2393c541a`,
-   `7fee45f1d` (tests); `ced53f9c5`, `db42a467f`, `be46ad116` and the docs commit that corrects them against the
-   later fixes.
+   `7fee45f1d`, `d1d9ed16a`, `16a7cc23f` (tests, the last on BCHN regtest); `ced53f9c5`, `db42a467f`, `be46ad116`
+   and the docs commits that correct them against the later fixes.
 6. **Port to `sushi-port-node`:** replace its per-contract oracles (ORACLE-4, the per-contract ring, GENESIS-1's
    oracle part, the oracle output pins). Ready on `feat/oracle-pools-sushi`, whose `SUSHI-PORT.md` lists the port's
-   commits (docs `cab3fee31`); it lands on the user's OK.
+   commits (docs `cab3fee31`); it lands with the follow-ups on the user's OK.
 
 ## As built, where it differs from the plan
 
@@ -142,18 +144,14 @@ Phases 1-5 are done; the commits are listed under each.
 - `solidhat node` mints, keeps and advertises its pool (`f02a4812a`), but its owner key stays in the node: on the
   devnet, `oraclePool: 'new'` needs `create.ownerKey`, and nothing keeps that pool but its user's `PoolKeeper`.
   Regtest exposes its owner key but keeps no pool a deployment mints there, and needs `create.tip` (it is no
-  simulator).
+  simulator). Both keepers mint through the baton the ring slots a chain younger than the ring lacks, 16 per
+  transaction, as one baton walk's operation budget allows.
 - The message-bus refusal (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`) is tested on the verifier extraction alone
   (`OraclePoolBusVerifierRefusal.test.ts`). By reading, no source shape reaches it: a kernel build's verifier is
   compiled from its own host source, and a legacy build's closure takes compiler helpers and the verifier only.
 
 ## Open items
 
-- The pool code of the regtest, Electrum and MemCash providers has not run: `RegtestNetworkProvider`'s install and
-  refresh, `ElectrumNetworkProvider`'s `oraclePoolCategory` and the coin listing at the pool locks, and
-  `MemCashNetworkProvider`'s pool from the devnet's advertised `devnet.oracle_pool`.
-- The subroutine-use probe (`subroutineUseProbe`) captures `__oraclePool` alone (`aed65ad16`). An invoked body that
-  reads another constructor parameter still throws the probe into its define-all fallback, which loses helper
-  extraction across every body (`aed65ad16` measured +2,013 B on a kernel publisher). This predates the pools; the
-  general fix captures every parameter the emitting pass captures, and may move unrelated contracts' bytecode.
-- Phase 6: the port to `sushi-port-node` is ready on `feat/oracle-pools-sushi` and waits for the user's OK.
+- A callee reached only through an out-state read gets no pool co-spend probe, as on the block-info path.
+- The kernel-beta manifest's `coldCompiles` hashes predate the pools and the probe fix; the release battery's
+  kernel-beta gate re-pins them.

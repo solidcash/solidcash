@@ -3272,3 +3272,20 @@ to confirm no positive fixture breaks. Solidity-corpus strictness parity is defe
 run the solc corpus negatives and the `.sol` fixtures once.
 
 **Revisit if:** the corpus strictness work resumes, or a port relies on solc rejecting a missing visibility.
+
+
+## A message-bus handler whose entry calls an internal function reading a constructor parameter (2026-11-04)
+
+**What:** a stateful contract compiled with `messageBus: true` fails to compile when a public entry calls an internal
+function that reads a constructor parameter: "Expected variable '<parameter>' does not exist on the stack". It fails
+the same way before and after the subroutine-use probe fix (`2b9a65c18`). The likely cause, not yet confirmed, is
+that a handler clone captures the constructor parameters its own body reads but not those of the functions it calls.
+
+**Why deferred:** found while measuring the probe fix; it fails at compile time, predates the oracle pools, and lies
+outside the pool landing.
+
+**What it'd take:** make a handler clone's captures cover the internal functions it calls, then compile the failing
+shape and run its test once.
+
+**Revisit if:** a message-bus port calls internal functions that read immutables or constructor arguments.
+

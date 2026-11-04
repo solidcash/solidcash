@@ -1,13 +1,14 @@
 /**
  * The `solidhat node` / `solidcash node` action.
  *
- * Starts one `@mem-cash/server` process on a shared chain, prints the funded-account table (human or `--json`), and
- * exits 0 on SIGINT/SIGTERM after releasing the port.
+ * Starts one `@mem-cash/server` process on a shared chain, mints and keeps its oracle pool during `prepare`, prints the
+ * funded-account table (human or `--json`), and exits 0 on SIGINT/SIGTERM after releasing the port.
  */
 import { generateBip39Mnemonic } from '@bitauth/libauth/build/lib/key/bip39.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
 import type { NetworkConfig } from './config.js';
 import type { TaskArguments } from './tasks.js';
+import { createDevnetOraclePool, type PoolPrepareHandle } from './oracle-pool.js';
 
 /** The Hardhat test phrase; the node and the provider share this zero-config default. */
 const DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -130,7 +131,8 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     ...(netCfg?.consensus ?? {}),
   };
 
-  const extensions: unknown[] = [];
+  const oraclePool = createDevnetOraclePool(bchNetwork);
+  const extensions: unknown[] = [oraclePool.extension];
   if (evmRequested) {
     try {
       const evm = (await import('@mem-cash/server-evm')) as { evmCompat(): unknown };
@@ -188,6 +190,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
         quiet: quiet || json,
         ...(args.trace === true ? { traceRequests: true } : {}),
       },
+      prepare: (prepared: PoolPrepareHandle) => oraclePool.install(prepared),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -221,6 +224,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
       evmRpc,
       height: info.height,
       mining: info.mining.mode,
+      oraclePool: oraclePool.category ?? null,
     })}\n`);
     for (const account of accounts) {
       process.stdout.write(`${JSON.stringify({
@@ -249,6 +253,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     lines.push(`  Mining      ${info.mining.mode}${info.mining.mode === 'auto'
       ? ' — one block per accepted broadcast request, burn coinbase' : ''}`);
     lines.push(`  EVM compat  ${evmRpc ? 'on — chain-control names via @mem-cash/server-evm' : 'off — start with --evm-rpc to install @mem-cash/server-evm'}`);
+    lines.push(`  Oracle pool ${oraclePool.category ?? 'off (this profile refuses the pool covenants)'}`);
     lines.push(`  Accounts    ${accounts.length} funded · ${coins} coins each · ${balanceBch} BCH each`);
     if (!quiet) {
       lines.push('');
@@ -276,6 +281,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
         return;
       }
       stopping = true;
+      oraclePool.close();
       void (async () => {
         const heightAtStop = handle.devnet.height;
         await handle.close({ drainMs: shutdownTimeout });

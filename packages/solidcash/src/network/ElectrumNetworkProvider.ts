@@ -135,13 +135,13 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
     name: string,
     ...parameters: (string | number | boolean)[]
   ): Promise<RequestResponse> {
-    // Increment before any async work to prevent race conditions where
-    // concurrent calls both see concurrentRequests === 0 and both connect.
+    // Increment before any async work, so a request finishing meanwhile does not disconnect this one.
     this.concurrentRequests += 1;
 
     try {
-      // Only connect the electrum client when this is the first concurrent request
-      if (this.concurrentRequests === 1 && !this.manualConnectionManagement) {
+      // Every request awaits the connection: one started while another was still connecting found the socket down.
+      // The client's connect is serialized and returns at once on an open socket.
+      if (!this.manualConnectionManagement) {
         await this.electrum.connect();
       }
 

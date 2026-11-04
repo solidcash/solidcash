@@ -1730,8 +1730,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftAddressId: bigint | undefined;
   /** The pool block-info check, `[i, P]` -> `[commitment after its flags byte]`, once defined. */
   private oraclePoolCheckId: bigint | undefined;
-  /** The pool binding helper, `[]` -> `[P]`, which the contract level defines from `__oraclePool`. */
-  private oraclePoolBindingId: bigint | undefined;
+  /**
+   * The pool binding helper, `[]` -> `[P]`, which the contract level defines from `__oraclePool`. Its body is built at
+   * run time, so a program extracted from literal definitions (the detached bus verifier) lacks it.
+   */
+  oraclePoolBindingId: bigint | undefined;
   /** The bodies an indirect call may enter that need the pool binding (`indirectPoolBodyIds`). */
   private oraclePoolIndirectIds: ReadonlySet<number> = new Set();
   /** The loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix helpers, once defined. */

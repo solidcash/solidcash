@@ -3632,6 +3632,7 @@ function extractMessageBusVerifierProgram(
     requiredVerifierIds.add(verifierFunction.functionId);
   }
   const pendingVerifierIds = [...requiredVerifierIds];
+  const poolBindingId = traversal.oraclePoolBindingId === undefined ? undefined : Number(traversal.oraclePoolBindingId);
   while (pendingVerifierIds.length > 0) {
     const id = pendingVerifierIds.pop()!;
     const bytecode = verifierBytecodes.get(id);
@@ -3640,6 +3641,17 @@ function extractMessageBusVerifierProgram(
     for (let i = 1; i < bodyScript.length; i++) {
       if (bodyScript[i] !== Op.OP_INVOKE) continue;
       const invokedId = decodeFunctionId(bodyScript[i - 1]);
+      // The pool binding helper is defined at run time from the contract's `__oraclePool`, so the detached
+      // verifier, which carries literal definitions only, cannot invoke it, nor a function-pointer target an
+      // indirect call may enter, which takes P from it.
+      if (poolBindingId !== undefined && (invokedId === undefined || invokedId === poolBindingId)) {
+        throw new SolidcDiagnosticError(
+          'MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ',
+          `the message-bus route of '${ast.contract.name}' reaches a function-pointer target that reads block.* `
+            + 'through the oracle pool binding, which its detached verifier cannot carry. Call the reader directly.',
+          { functionName: functionNameById.get(id) ?? `__internal_${id}` },
+        );
+      }
       if (invokedId === undefined || requiredVerifierIds.has(invokedId) || !verifierBytecodes.has(invokedId)) continue;
       requiredVerifierIds.add(invokedId);
       pendingVerifierIds.push(invokedId);

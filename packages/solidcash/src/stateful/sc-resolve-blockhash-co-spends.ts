@@ -66,7 +66,8 @@ async function placeBlockInfoOracle(
 
 export interface BlockhashCoSpendHost {
   readonly categoryId: string;
-  readonly inner: { provider: NetworkProvider };
+  /** The reader: its provider and the oracle pool its slots come from. */
+  readonly inner: { provider: NetworkProvider; oraclePool?: string };
 }
 
 export function paramBlockhashN(readKey: string, args: any[], abiFunction: AbiFunction): bigint | null {
@@ -155,10 +156,10 @@ export async function extractGraphBlockhashRead(
     .find((read) => read.inputIndex === base + targetOrdinal)?.n ?? null;
 }
 
-// Resolve every blockhash oracle co-spend for a call, ordered by slot (ordinal 0..slotCount-1). Reads are
-// resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a param read's n
-// is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved lower
-// reads (so the covenant reaches this read). Single source of truth: computed n comes from the covenant.
+// Resolve every blockhash slot co-spend for a call, ordered by slot (ordinal 0..slotCount-1), from the reader's
+// oracle pool. Reads are resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a
+// param read's n is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved
+// lower reads (so the covenant reaches this read). Single source of truth: computed n comes from the covenant.
 export async function resolveBlockhashCoSpends(
   host: BlockhashCoSpendHost,
   abiFunction: AbiFunction, args: any[], base: number, slotCount: number,
@@ -166,6 +167,9 @@ export async function resolveBlockhashCoSpends(
 ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }>> {
   const reads = abiFunction.blockhashReads ?? [];
   const ordered: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
+  if (reads.length === 0) return ordered;
+  const pool = host.inner.oraclePool;
+  if (pool === undefined) throw new Error('blockhash(n): the reader binds no oracle pool');
   for (let k = 0; k < reads.length; k++) {
     let n: bigint | null;
     if (isComputedBlockhashKey(reads[k])) {
@@ -177,8 +181,8 @@ export async function resolveBlockhashCoSpends(
       n = paramBlockhashN(reads[k], args, abiFunction);
     }
     if (n === null) throw new Error(`blockhash: could not resolve n for read "${reads[k]}" (slot ${k})`);
-    const cs = await resolveBlockhashCoSpend(host.inner.provider, host.categoryId, n);
-    if (!cs) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
+    const cs = await resolveBlockhashCoSpend(host.inner.provider, pool, n, ordered.map(({ utxo }) => utxo));
+    if (!cs) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
     ordered.push({ utxo: cs.utxo, unlocker: cs.unlocker, recreate: cs.recreateOutput, locktime: cs.locktime });
   }
   return ordered;

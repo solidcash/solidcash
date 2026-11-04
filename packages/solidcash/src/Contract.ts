@@ -33,7 +33,7 @@ import {
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import { bindBlockOracleLock } from './oracle/block-oracle-lock.js';
 import {
-  bindArtifactOraclePool, boundOraclePool, isPoolInfoOutput, withOraclePoolArgument,
+  bindArtifactOraclePool, boundOraclePool, isPoolInfoOutput, isPoolSlotOutput, withOraclePoolArgument,
 } from './oracle/pool/reader.js';
 import semver from 'semver';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -882,11 +882,11 @@ export class Contract<
           return encodeFunctionArgument(finalize(arg), argInputs[index].type, structs) as Uint8Array;
         });
 
-        // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
+        // Fill the synthesized pool co-spend indices (locate the pool's coins among the spent inputs);
         // composition-safe - the reader does not assume the last input. Appended after the visible args.
         // Skipped when the caller already provided the full arg list (stateful orchestrator).
         const synthArgs = internalsProvided ? [] : [
-          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs, args),
+          ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs),
           ...this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs),
         ];
 
@@ -1057,19 +1057,18 @@ export class Contract<
     return this.createUnlocker(abiFunction, selector);
   }
 
-  // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so a reader is
-  // always STATEFUL and its co-spend is resolved by StatefulContract via the blockhashOracle block-layout
-  // slot. Returns [] when the function reads no blockhash; otherwise reaching this base-Contract path means
-  // the call was not built through StatefulContract, which is unsupported - fail loudly.
-  private resolveBlockhashIndexArgs(
-    abiFunction: AbiFunction, _sourceOutputs: LibauthOutput[], _args: FunctionArgument[],
-  ): Uint8Array[] {
-    const bhIdx = abiFunction.inputs.find((inp) => inp.name === '__internal__blockhashInputIndex');
-    if (!bhIdx) return [];
-    // blockhash(n) brands its (n->hash) oracle to the contract's own category, so a reader is always STATEFUL
-    // and its co-spend is resolved by StatefulContract (via the blockhashOracle block-layout slot). Reaching
-    // the base Contract/TransactionBuilder path means the reader was not built through StatefulContract.
-    throw new Error('blockhash(n) is only supported in stateful contracts; build the call via StatefulContract.');
+  /**
+   * The base index of a stateless reader's blockhash reads: the first ring slot of the pool this contract binds, found
+   * by category and flags. Its reads' slots follow it in order.
+   */
+  private resolveBlockhashIndexArgs(abiFunction: AbiFunction, sourceOutputs: LibauthOutput[]): Uint8Array[] {
+    const wanted = abiFunction.inputs.some((input) => input.name === '__internal__blockhashInputIndex');
+    if (!wanted) return [];
+    const pool = this.oraclePool;
+    if (pool === undefined) throw new Error(`${this.name} reads blockhash(n), and binds no oracle pool`);
+    const index = sourceOutputs.findIndex((output) => isPoolSlotOutput(output, pool));
+    if (index < 0) throw new Error(`${this.name} reads blockhash(n), and the transaction spends no slot of pool ${pool}`);
+    return [bigIntToVmNumber(BigInt(index))];
   }
 
   /** The co-spend index of a block-info coin of the pool this contract binds, found by category and flags. */

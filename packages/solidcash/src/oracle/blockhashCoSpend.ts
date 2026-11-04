@@ -1,50 +1,41 @@
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import {
-  blockhashCommitmentNumber, blockhashOracleLockingBytecode, buildBlockhashOracleCovenantScript,
-  scriptToBytecode,
-} from '@solidcash/utils';
 import type { NetworkProvider } from '../network/index.js';
 import type { Utxo, Unlocker, Output } from '../interfaces.js';
+import { poolSlotUnlockable } from './pool/reader.js';
+import { selectPoolSlot } from './pool/select.js';
 
 /**
- * Consumer-side resolver for blockhash(n) (docs/block-and-transaction-properties.md s11). The read codegen co-spends the
- * project-global (n->hash) oracle UTXO as the LAST input and self-preservingly recreates it at the MATCHING
- * output index, under tx.time >= n. This packages the three pieces a consumer wires for that, so call sites
- * stop hand-rolling the covenant redeem + read flag.
+ * Consumer-side resolver for blockhash(n). A read co-spends a ring slot of the reader's oracle pool and checks its
+ * category, capability and flags, no lock; the slot's read path recreates it exactly at its own index. The read
+ * also requires tx.time >= n.
  */
 export interface BlockhashCoSpend {
   utxo: Utxo;
   unlocker: Unlocker;
-  // Self-preserving recreate; the caller MUST place it at the same output index as the co-spend input
-  // (the covenant checks output[INPUTINDEX] == the input).
+  // The exact recreation; the caller places it at the co-spend input's own index.
   recreateOutput: Output;
-  locktime: number; // tx.time floor the read covenant requires (= n)
+  locktime: number; // tx.time floor the read requires (= n)
+  /** The slot holds n; otherwise it holds a block of n's residue at least 256 newer, and n reads as zero. */
+  exact: boolean;
 }
 
 /**
- * Resolve the master's (n->hash) UTXO. Every block of the category shares one lock; the commitment's
- * first 4 bytes select `n`. Returns null when that block has not been published.
+ * A live slot of pool `poolCategory` that answers block n, chosen by selectPoolSlot, or null when none does. A coin in
+ * `exclude`, one the transaction already spends, is not chosen.
  */
 export async function resolveBlockhashCoSpend(
   provider: NetworkProvider,
-  oracleCategory: string,
+  poolCategory: string,
   n: bigint,
+  exclude: readonly Pick<Utxo, 'txid' | 'vout'>[] = [],
 ): Promise<BlockhashCoSpend | null> {
-  const category = hexToBin(oracleCategory);
-  const lock = blockhashOracleLockingBytecode(category);
-  const utxos = await provider.getUtxosForLockingBytecode(lock);
-  const utxo = utxos.find((candidate) => {
-    const commitment = candidate.token?.nft?.commitment;
-    return commitment !== undefined && blockhashCommitmentNumber(hexToBin(commitment)) === n;
-  });
-  if (utxo === undefined) return null;
-
-  const redeem = scriptToBytecode(buildBlockhashOracleCovenantScript(category));
-  const readUnlock = scriptToBytecode([new Uint8Array(0), redeem]);
+  const slot = await selectPoolSlot(provider, poolCategory, n, exclude);
+  if (slot === undefined) return null;
+  const { unlocker, ...utxo } = poolSlotUnlockable(slot.utxo, poolCategory);
   return {
     utxo,
-    unlocker: { generateLockingBytecode: (): Uint8Array => lock, generateUnlockingBytecode: (): Uint8Array => readUnlock },
-    recreateOutput: { to: lock, amount: utxo.satoshis, token: utxo.token },
+    unlocker,
+    recreateOutput: { to: unlocker.generateLockingBytecode(), amount: utxo.satoshis, token: utxo.token },
     locktime: Number(n),
+    exact: slot.exact,
   };
 }

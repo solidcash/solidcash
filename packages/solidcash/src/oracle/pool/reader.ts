@@ -1,6 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
-  ORACLE_POOL_PARAMETER, decodePoolInfoCommitment, oraclePoolBinding, poolInfoReadUnlocking, type Artifact,
+  ORACLE_POOL_PARAMETER, POOL_FLAG_SLOT, decodePoolInfoCommitment, oraclePoolBinding, poolInfoReadUnlocking,
+  poolSlotReadUnlocking, type Artifact,
 } from '@solidcash/utils';
 import type { LibauthOutput, UnlockableUtxo, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
@@ -8,7 +9,8 @@ import { checkPoolCategory, poolLocks } from './coins.js';
 import { selectPoolInfoCoin } from './select.js';
 
 // A direct reader's side of an oracle pool: the `__oraclePool` constructor input that binds it to a pool, and the
-// block-info coin of that pool a read co-spends. A read checks the coin's category, capability and flags, no lock.
+// block-info coin or ring slots of that pool a read co-spends. A read checks a coin's category, capability and flags,
+// no lock.
 
 type ConstructorShape = Pick<Artifact, 'constructorInputs' | 'contractName'>;
 
@@ -72,6 +74,31 @@ export function poolInfoUnlockable(utxo: Utxo, category: string): UnlockableUtxo
     ...utxo,
     lockingBytecode: locks.info,
     unlocker: { generateLockingBytecode: () => locks.info, generateUnlockingBytecode: () => unlocking },
+  };
+}
+
+/** Whether a coin passes a blockhash read's check for pool `category`: a mutable NFT of it whose flags byte is 0x80. */
+export function isPoolSlotInput(utxo: Pick<Utxo, 'token'>, category: string): boolean {
+  const { token } = utxo;
+  return token?.nft?.capability === 'mutable' && token.category.toLowerCase() === category.toLowerCase()
+    && token.nft.commitment.slice(0, 2) === POOL_FLAG_SLOT.toString(16);
+}
+
+/** `isPoolSlotInput` over a spent output, as an unlocker sees it. */
+export function isPoolSlotOutput(output: LibauthOutput, category: string): boolean {
+  const { token } = output;
+  return token?.nft?.capability === 'mutable' && binToHex(token.category) === category.toLowerCase()
+    && token.nft.commitment[0] === POOL_FLAG_SLOT;
+}
+
+/** A ring slot of pool `category`, unlocked by its read path, which recreates it at its own index. */
+export function poolSlotUnlockable(utxo: Utxo, category: string): UnlockableUtxo {
+  const locks = poolLocks(category);
+  const unlocking = poolSlotReadUnlocking(locks.category);
+  return {
+    ...utxo,
+    lockingBytecode: locks.slot,
+    unlocker: { generateLockingBytecode: () => locks.slot, generateUnlockingBytecode: () => unlocking },
   };
 }
 

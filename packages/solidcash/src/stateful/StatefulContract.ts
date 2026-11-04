@@ -12471,6 +12471,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }> = [];
       const graphBase = this.blockhashSlotBase(abiFunction).base;
       const graphSlotCount = abiFunction!.graphBlockhashOracle!.slotCount;
+      const pool = this.inner.oraclePool;
+      if (pool === undefined) throw new Error(`${this.inner.name} reads blockhash(n), and binds no oracle pool`);
       for (const selection of graphSelections) {
         const n = isComputedBlockhashKey(selection.readKey)
           ? await this._extractGraphBlockhashRead(
@@ -12479,8 +12481,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )
           : this.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
         if (n === null) throw new Error(`blockhash: could not resolve message-bus batch row read "${selection.readKey}"`);
-        const coSpend = await resolveBlockhashCoSpend(this.inner.provider, this.categoryId, n);
-        if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO for block ${n}`);
+        const coSpend = await resolveBlockhashCoSpend(this.inner.provider, pool, n, resolved.map(({ utxo }) => utxo));
+        if (!coSpend) throw new Error(`blockhash(${n}): oracle pool ${pool} has no live slot that answers block ${n}`);
         resolved.push(coSpend);
         graphPrior.push({
           slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,

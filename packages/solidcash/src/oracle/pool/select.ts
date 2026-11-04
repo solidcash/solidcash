@@ -38,14 +38,17 @@ export async function selectPoolInfoCoin(
 
 /**
  * A random live slot (flags 0x80) for block n: one holding exactly n, else one holding a block of n's residue at
- * least 256 newer (the zero case), else undefined.
+ * least 256 newer (the zero case), else undefined. A coin in `exclude`, one a transaction already spends, is skipped.
  */
 export async function selectPoolSlot(
-  provider: NetworkProvider, category: string, n: bigint,
+  provider: NetworkProvider, category: string, n: bigint, exclude: readonly Pick<Utxo, 'txid' | 'vout'>[] = [],
 ): Promise<PoolSlotSelection | undefined> {
+  const spent = ({ utxo }: PoolCoin<PoolSlotFields>): boolean => exclude.some(({ txid, vout }) => vout === utxo.vout
+    && txid.toLowerCase() === utxo.txid.toLowerCase());
   const live = (await categoryCoins(provider, category))
     .map((utxo) => poolSlotCoin(utxo, category))
-    .filter((coin): coin is PoolCoin<PoolSlotFields> => coin !== undefined && coin.fields.flags === POOL_FLAG_SLOT);
+    .filter((coin): coin is PoolCoin<PoolSlotFields> => coin !== undefined && coin.fields.flags === POOL_FLAG_SLOT
+      && !spent(coin));
   const exact = pick(live.filter(({ fields }) => fields.n === n));
   if (exact !== undefined) return { ...exact, exact: true };
   const zero = pick(live.filter(({ fields }) => fields.depth > 0 && fields.n >= n + POOL_BLOCKHASH_WINDOW

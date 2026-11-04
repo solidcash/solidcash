@@ -38,7 +38,6 @@ import { headSentinelCommitment } from './SortedList.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
-import { blockhashKeeperGenesisOutput } from '../oracle/blockhash-keeper-deployment.js';
 import { withOraclePoolArgument } from '../oracle/pool/reader.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
@@ -252,11 +251,8 @@ export async function deployStatefulContract<T extends Artifact>(
   const totalMessageBusVerifiers = dataNftAmount * BigInt(messageBusVerificationInputCount);
   const identityAnchors = options.identityAnchors ?? [];
   const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
-  const keeperBaton = blockhashKeeperGenesisOutput(
-    artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
-  );
   const totalReserve = (prepared.reserveOutput?.amount ?? 0n) + (prepared.bearerOutput?.amount ?? 0n);
-  const totalRequired = (keeperBaton?.amount ?? 0n) + totalMaster + totalDataNft + totalEntryNft
+  const totalRequired = totalMaster + totalDataNft + totalEntryNft
     + totalEventNft + totalDynamicNft
     + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
   const changeAmount = inputTotal - totalRequired;
@@ -548,7 +544,6 @@ export async function deployStatefulContract<T extends Artifact>(
   // one-satoshi-per-byte relay floor. This matters for near-limit contracts whose redeem script is revealed by
   // the genesis input and whose constructor transaction is consequently larger than the contract itself.
   const totalTransferAmount = transferOutputs.reduce((sum, t) => sum + t.amount, 0n);
-  if (keeperBaton !== undefined) addFunded(keeperBaton);
   builder.addOutput({ to: options.changeAddress, amount: 1000n });
   // The unsigned template contains a shorter placeholder for the funding signature. Leave enough headroom for
   // the final P2PKH unlocking bytecode (and minor serialization-length changes after the change amount is set).

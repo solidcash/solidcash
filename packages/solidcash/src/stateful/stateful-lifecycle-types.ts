@@ -19,9 +19,9 @@ export interface DeployOptions {
    * fills the reader's `__oraclePool` constructor input from it.
    */
   oraclePool?: string;
-  /** Mint a confined blockhash keeper baton at genesis; requires a blockhash-reading artifact. */
+  /** @deprecated Ignored: a blockhash reader reads the ring slots of its oracle pool, and no genesis mints a baton. */
   blockhashKeeperPublicKey?: Uint8Array;
-  /** Initial keeper baton balance, spent on oracle mints and fees; default 10,000 satoshis. */
+  /** @deprecated Ignored, as blockhashKeeperPublicKey is. */
   blockhashKeeperAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;

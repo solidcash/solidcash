@@ -45,7 +45,6 @@ import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
-import { blockhashKeeperGenesisOutput } from '../../oracle/blockhash-keeper-deployment.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
 export class FramedDeployError extends Error {
@@ -118,9 +117,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   const categoryId = options.fundingUtxo.txid;
   const category = new Uint8Array(hexToBin(categoryId));
-  const keeperBaton = blockhashKeeperGenesisOutput(
-    artifact, categoryId, options.blockhashKeeperPublicKey, options.blockhashKeeperAmount,
-  );
   const validatorProgram = framedValidator.buildValidatorProgram();
   // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
   // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
@@ -325,8 +321,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       token: { category: categoryId, amount: 0n, nft: { capability: 'none', commitment: anchor.commitment } },
     });
   }
-
-  if (keeperBaton !== undefined) addFunded(keeperBaton);
 
   // The premint: the token's fungible amount at the contract's token container for the token's own category; then the
   // bearer supply.

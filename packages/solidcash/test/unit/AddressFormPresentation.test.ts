@@ -91,11 +91,11 @@ describe('addressForm presentation', () => {
     expect(presentedState(P2PKH, { evmCompat: true })).toBe(PAYLOAD);
   });
 
-  it('names a deployment by its whole lock under evmCompat and bytecode, and keeps an account\'s lock', () => {
+  it('names a deployment by its lock\'s identity under evmCompat and bytecode, and keeps an account\'s lock', () => {
+    // The resolver finds deployments by the 20-byte identity, as D54 does: a framed handle and its lock share it.
     const deployed = 'bchtest:qqysjzgfpyysjzgfpyysjzgfpyysjzgfpynsmzst5t';
     const compat = artifact({ evmCompat: true, addressForm: 'bytecode' });
-    const resolver = (value: Uint8Array): string | undefined => (
-      binToHex(value) === binToHex(P2SH32) ? deployed : undefined);
+    const resolver = (value: Uint8Array): string | undefined => (binToHex(value) === identity ? deployed : undefined);
     expect(decorateStateAccessorResult(P2SH32, 'owner', 0, compat, resolver)).toBe(deployed);
     const account = decorateStateAccessorResult(P2PKH, 'owner', 0, compat, resolver) as Uint8Array;
     expect(binToHex(account)).toBe(binToHex(P2PKH));

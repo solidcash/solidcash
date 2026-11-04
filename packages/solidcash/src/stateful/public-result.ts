@@ -1,5 +1,5 @@
 import {
-  attachDecodedAccessors, decorateDecodedResult, parseArrayTypeString,
+  attachDecodedAccessors, decorateDecodedResult, decodedSolidityAddressIdentity, parseArrayTypeString,
   type AbiFunction, type Artifact, type StateValue,
 } from '@solidcash/utils';
 import {
@@ -65,11 +65,14 @@ export function decorateStateAccessorResult(
     externalResultUsesEvmWords(artifact, [type]) ? 'evm-abi-v1' : 'compact-pushdata-v1', artifactAddressForm(artifact));
   // An unmodified Solidity test compares a `public address` getter with `contract.getAddress()`, which names the
   // deployed contract, and hands it to `getContractAt`, so present the registered deployment's address when the
-  // value names one: the 20-byte identity, or under `evmCompat` the whole lock `addressForm: 'bytecode'` keeps. Any
-  // other address keeps its form (an account's whole lock), and raw `getState()`/entry reads keep their storage form.
-  if (type === 'address' && resolveDeployedAddress !== undefined && decorated instanceof Uint8Array
-    && (decorated.length === 20 || (artifactUsesSolidityAbi(artifact) && decorated.length > 0))) {
-    const resolved = resolveDeployedAddress(decorated);
+  // value names one (D54). A deployment is found by its 20-byte identity, the value itself under 'hash' and, under
+  // `evmCompat` with 'bytecode', the identity of the whole lock: a framed deployment's handle and its lock are
+  // registered under one identity, where a lookup by the lock alone can meet another registration. Any other address
+  // keeps its form - under 'bytecode' an account's whole lock - and raw `getState()`/entry reads keep their storage.
+  if (type === 'address' && resolveDeployedAddress !== undefined && decorated instanceof Uint8Array) {
+    const identity = decorated.length === 20 ? decorated
+      : artifactUsesSolidityAbi(artifact) ? decodedSolidityAddressIdentity(decorated) : undefined;
+    const resolved = identity === undefined ? undefined : resolveDeployedAddress(identity);
     if (resolved !== undefined) return resolved;
   }
   return decorated;

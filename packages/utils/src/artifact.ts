@@ -2312,12 +2312,8 @@ export interface Artifact {
    */
   delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n) from a ring slot of its oracle pool
-  /** The per-contract ring depth. The compiler no longer emits it; kept until the SDK reads pools. */
-  blockhashDepth?: number;
   /** A function reads a block-info coin of the bound oracle pool. */
   usesBlockOracle?: boolean;
-  /** The per-contract oracle's lock slots. The compiler no longer emits them; kept until the SDK reads pools. */
-  blockOracleLockSlots?: readonly number[];
   /**
    * The pool coin kinds the bound contracts this one creates or names read, theirs included. With this contract's
    * own reads it shapes a pool its deployment mints.

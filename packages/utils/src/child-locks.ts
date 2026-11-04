@@ -85,15 +85,6 @@ export function childMastersDigestSentinel(): Uint8Array {
   return bytes;
 }
 
-/** The 20-byte placeholder push a creator reserves for the owner its child's block oracle names. */
-export function childOracleOwnerSentinel(): Uint8Array {
-  const bytes = new Uint8Array(20);
-  bytes[0] = 0xc1;
-  bytes[1] = 0x0e;
-  for (let at = 2; at < 20; at += 1) bytes[at] = (0xe3 + at * 0x13) & 0xff;
-  return bytes;
-}
-
 /**
  * The placeholder a creator reserves for how many validators each creation of its child funds, filled at deployment
  * like the category-output count before it (a 3-byte push the body reads with `OP_BIN2NUM`).

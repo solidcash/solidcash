@@ -184,8 +184,9 @@ The genesis transaction is assembled from the compiler's artifact metadata. Ever
 9. Immutable **logical identity anchors** for signer/factory deployments.
 10. Change to the selected change address.
 
-A genesis mints no oracle coins: a contract that reads block data binds an existing
-[oracle pool](/docs/guides/block-oracles) (the `oraclePool` option, else the provider's).
+A genesis mints no oracle coins: a contract that reads block data binds an
+[oracle pool](/docs/guides/block-oracles) (the `oraclePool` option, else the provider's). `oraclePool: 'new'` mints
+a pool in two transactions of its own before the genesis.
 
 The SDK calculates these outputs; application code should not manually serialize state commitments. Chunking,
 vmap sentinels, output ordering, and commitment encodings are covenant protocol details.
@@ -210,7 +211,7 @@ The factory's trailing overrides object supports:
 | `identity` | deployer's lock | `{ owner }`: the lock that owns the category's BCMR identity |
 | `bcmr` | none | A registry the genesis publishes at output 1 |
 | `nativeToken` | none | A `BchNative` token's own category, premint, bearer supply and scale |
-| `oraclePool` | the provider's pool | The [oracle pool](/docs/guides/block-oracles) a `block.*` or `blockhash` reader binds (its category) |
+| `oraclePool` | the provider's pool | The [oracle pool](/docs/guides/block-oracles) a `block.*` or `blockhash` reader binds (its category), or `'new'` / `{ create }` to mint one first |
 | `validatorCount` | `4` | Framed deployments only: validator UTXOs at the contract's address |
 | `functionSplit` | none | A `split: 'func'` bundle: genesis mints a master pool at each shard's lock |
 

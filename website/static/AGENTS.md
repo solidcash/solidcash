@@ -634,8 +634,8 @@ bytes32 blobhash(int i)        -- always zero
   coins, but cannot over-report the height or time or rewind them.
 - `blockhash(n)` makes the contract stateful. It returns the hash a slot holds for n, zero when the slot of n's
   residue holds a block at least 256 newer, and fails for a block the pool has not written. A message-bus build
-  refuses a `block.*` read reached through a function pointer (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See
-  https://solidcash.org/docs/guides/block-oracles
+  refuses a `block.*` or `blockhash` read reached through a function pointer
+  (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 

@@ -89,7 +89,7 @@ following fields belong to its third `options` argument.
 | `validatorCount` | `number` | `4` for a framed artifact | Validator UTXOs a framed genesis mints (experimental) |
 | `salt` | `Uint8Array` | none | CREATE/address salt and optional operation-density reserve |
 | `initArgs` | `FunctionArgument[]` | inferred/none | Arguments for an explicit `constructor(...)` block |
-| `oraclePool` | `string` | the provider's pool | Category (display order) of the oracle pool a `block.*` or `blockhash` reader binds |
+| `oraclePool` | `string \| 'new' \| { create }` | the provider's pool | Category (display order) of the oracle pool a `block.*` or `blockhash` reader binds; `'new'` or `{ create }` mints one before the genesis |
 | `identity`, `bcmr`, `nativeToken` | object | deployer owns the identity | BCMR identity owner, registry publication, and the ledger token's own category |
 
 The `ContractFactory` options object takes the same fields except `provider`, `masterAmount`, `dataNftAmount` and

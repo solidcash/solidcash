@@ -122,9 +122,11 @@ cannot forward it is refused at compile time with `BlockOracleIndexNotForwardedE
 as well, or pass the value in as an argument.
 
 A body reached through a function pointer takes no index: it reads the first block-info coin of its pool among the
-inputs, and the SDK co-spends one on every call of a contract that reads `block.*` only that way. A message-bus
-route cannot carry such a body, so a message-bus build that reaches one is refused with
-`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`. Call the reader directly.
+inputs, and for `blockhash(n)` the first slot there that answers n, with the hash or the zero a direct read gives.
+The artifact marks each entry that may reach such a body (`indirectPoolReads`), and the SDK co-spends what the body
+reads on every call of that entry. A call of it from another contract, a delegate call included, gets the
+block-info coin but no slot. A message-bus route cannot carry such a body, so a message-bus build that reaches one
+is refused with `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`. Call the reader directly.
 
 ## Create a pool
 

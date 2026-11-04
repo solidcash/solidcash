@@ -20,8 +20,7 @@ import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
-  FrameKind, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION,
-  blockOracleRedeemScriptParts, encodeInt, hash256,
+  FrameKind, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION, encodeInt, hash256,
 } from '@solidcash/utils';
 import {
   PUSHDATA1_OPCODE,
@@ -135,8 +134,6 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
 
 /** The identifier the depth-first visit is defined under. */
 const ORDERED_VISIT_ID = 1;
-/** The identifier the oracle lock derivation is defined under, in the census facet. */
-const ORACLE_LOCK_ID = 4;
 
 /** One check: a run of instructions that takes the stack shape `[M]` and leaves it. */
 type CheckEmitter = (e: Emitter) => void;
@@ -167,7 +164,6 @@ const HEAD_CHECKS: readonly CheckEmitter[] = [
   emitRootsAreInputs,
   emitMasterIndicesInRange,
   emitMintedMastersIfV3,
-  emitDefineOracleLock,
   emitSettledStateInputs,
   emitMintedMasterCompleteness,
   emitSettlement,
@@ -184,7 +180,6 @@ const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
     emitSettlementFungibleAmounts,
   ],
   [
-    emitDefineOracleLock,
     emitCensus,
   ],
 ];
@@ -2130,19 +2125,12 @@ function emitRequireStateInputs(s: NamedStack): void {
       fs.push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['t'], O.OP_AND)
         .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, [], O.OP_EQUALVERIFY);
     }), () => s.call((fs) => {
-      // Not listed: not a state UTXO of a settled contract. A contract's block oracle, a mutable NFT of its category at
-      // the lock its category derives, is no state UTXO either.
+      // Not listed: not a state UTXO of a settled contract.
       fs.pick('i', 'ii').op(1, ['pin'], O.OP_UTXOTOKENCATEGORY).emit(1, ['pin', 'isMutable'], (em) => emitHasCapability(em, TokenCapability.MUTABLE));
       fs.pick('i', 'ii').emit(1, ['isSelf'], isHead).op(1, ['notSelf'], O.OP_NOT)
         .op(2, ['isState'], O.OP_BOOLAND).branch(() => {
-          fs.pick('pin', 'p').count(32, 'width').op(2, ['category'], O.OP_SPLIT, O.OP_DROP);
-          fs.pick('category', 'c').emit(1, ['oracleLock'], emitOracleLockInvoke).pick('i', 'ii')
-            .op(1, ['lock'], O.OP_UTXOBYTECODE).op(2, ['isOracle'], O.OP_EQUAL).op(1, ['notOracle'], O.OP_NOT)
-            .branch(() => {
-              fs.pick('declared', 'd').pick('category', 'c').emit(2, ['k'], emitIndexOf32).count(0, 'zero')
-                .op(2, [], O.OP_LESSTHAN, O.OP_VERIFY);
-            });
-          fs.remove('category');
+          fs.pick('declared', 'd').pick('pin', 'p').count(32, 'width').op(2, ['category'], O.OP_SPLIT, O.OP_DROP)
+            .emit(2, ['k'], emitIndexOf32).count(0, 'zero').op(2, [], O.OP_LESSTHAN, O.OP_VERIFY);
         });
       fs.remove('pin');
     }));
@@ -2171,54 +2159,36 @@ function emitRequireOutputClasses(s: NamedStack): void {
     s.roll('pin').emit(1, ['pin', 'mutable'], (em) => emitHasCapability(em, TokenCapability.MUTABLE));
     s.pick('immutable', 'i').pick('mutable', 'm').op(2, ['classed'], O.OP_BOOLOR).branch(() => s.call((fs) => {
       fs.pick('pin', 'p').count(32, 'width').op(2, ['category'], O.OP_SPLIT, O.OP_DROP);
-      // A mutable NFT at the lock its category derives is that contract's block oracle: a settled contract's is
-      // admitted only as the input at its index, recreated with the same lock, token and commitment, and never as a
-      // record. An unsettled category's is not this validator's to class (V7 weighs the settled contracts' outputs):
-      // a child created in this transaction mints its own oracle where no input stands, and its creator's check
-      // weighs it.
-      fs.pick('mutable', 'm').branch(() => {
-        fs.pick('category', 'c').emit(1, ['oracleLock'], emitOracleLockInvoke).pick('o', 'oo')
-          .op(1, ['lock'], O.OP_OUTPUTBYTECODE).op(2, ['isOracle'], O.OP_EQUAL);
-        fs.pick('declared', 'd').pick('category', 'c').emit(2, ['k'], emitIndexOf32).count(0, 'zero')
-          .op(2, ['settled'], O.OP_GREATERTHANOREQUAL).op(2, ['isOracle'], O.OP_BOOLAND);
-      }, () => {
-        fs.count(0, 'isOracle');
-      });
-      fs.branch(() => {
-        fs.pick('o', 'oo').emit(1, ['oo'], emitRequireRecreatedInPlace).remove('oo');
-      }, () => {
-        fs.pick('marks', 'map').pick('o', 'oo').op(2, ['mark'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
-          .op(2, ['mark'], O.OP_SPLIT, O.OP_DROP);
-        // Whether the mark is the output's own contract's.
-        fs.pick('mark', 'mk').push(Uint8Array.from([MARK_RECORD | MARK_EVENT]), 'kinds').op(2, ['kinds'], O.OP_AND)
-          .push(new Uint8Array([0x00]), 'zero').op(2, ['unmarked'], O.OP_EQUAL).branch(() => {
-            fs.count(0, 'own');
-          }, () => {
-            fs.pick('declared', 'd').pick('mark', 'mk').push(Uint8Array.from([MARK_CONTRACT]), 'mask').op(2, ['k'], O.OP_AND)
-              .emit(1, ['k'], (em) => em.unsignedByteOnTop()).emit(2, ['markCategory'], emitDeclaredAt)
-              .pick('category', 'c').op(2, ['own'], O.OP_EQUAL);
-          });
-        fs.branch(() => {
-          // Marked by its own contract: an immutable NFT is one of its events, a mutable one one of its records or this
-          // validator's own recreation.
-          fs.pick('immutable', 'i').branch(() => {
-            fs.pick('mark', 'mk').push(Uint8Array.from([MARK_EVENT]), 'event').op(2, ['e'], O.OP_AND)
-              .push(Uint8Array.from([MARK_EVENT]), 'event').op(2, [], O.OP_EQUALVERIFY);
-          }, () => {
-            fs.pick('mark', 'mk').push(Uint8Array.from([MARK_RECORD]), 'record').op(2, ['r'], O.OP_AND)
-              .push(Uint8Array.from([MARK_RECORD]), 'record').op(2, ['declared'], O.OP_EQUAL)
-              .pick('o', 'oo').emit(1, ['isSelf'], isHead).op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
-          });
+      fs.pick('marks', 'map').pick('o', 'oo').op(2, ['mark'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
+        .op(2, ['mark'], O.OP_SPLIT, O.OP_DROP);
+      // Whether the mark is the output's own contract's.
+      fs.pick('mark', 'mk').push(Uint8Array.from([MARK_RECORD | MARK_EVENT]), 'kinds').op(2, ['kinds'], O.OP_AND)
+        .push(new Uint8Array([0x00]), 'zero').op(2, ['unmarked'], O.OP_EQUAL).branch(() => {
+          fs.count(0, 'own');
         }, () => {
-          // Not marked by its own contract: of no settled contract, unless it is this validator's own recreation.
-          fs.pick('declared', 'd').pick('category', 'c').emit(2, ['k'], emitIndexOf32).count(0, 'zero')
-            .op(2, ['unsettled'], O.OP_LESSTHAN);
-          fs.pick('mutable', 'm').pick('o', 'oo').emit(1, ['isSelf'], isHead)
-            .op(2, ['recreation'], O.OP_BOOLAND).op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
+          fs.pick('declared', 'd').pick('mark', 'mk').push(Uint8Array.from([MARK_CONTRACT]), 'mask').op(2, ['k'], O.OP_AND)
+            .emit(1, ['k'], (em) => em.unsignedByteOnTop()).emit(2, ['markCategory'], emitDeclaredAt)
+            .pick('category', 'c').op(2, ['own'], O.OP_EQUAL);
         });
-        fs.remove('mark');
+      fs.branch(() => {
+        // Marked by its own contract: an immutable NFT is one of its events, a mutable one one of its records or this
+        // validator's own recreation.
+        fs.pick('immutable', 'i').branch(() => {
+          fs.pick('mark', 'mk').push(Uint8Array.from([MARK_EVENT]), 'event').op(2, ['e'], O.OP_AND)
+            .push(Uint8Array.from([MARK_EVENT]), 'event').op(2, [], O.OP_EQUALVERIFY);
+        }, () => {
+          fs.pick('mark', 'mk').push(Uint8Array.from([MARK_RECORD]), 'record').op(2, ['r'], O.OP_AND)
+            .push(Uint8Array.from([MARK_RECORD]), 'record').op(2, ['declared'], O.OP_EQUAL)
+            .pick('o', 'oo').emit(1, ['isSelf'], isHead).op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
+        });
+      }, () => {
+        // Not marked by its own contract: of no settled contract, unless it is this validator's own recreation.
+        fs.pick('declared', 'd').pick('category', 'c').emit(2, ['k'], emitIndexOf32).count(0, 'zero')
+          .op(2, ['unsettled'], O.OP_LESSTHAN);
+        fs.pick('mutable', 'm').pick('o', 'oo').emit(1, ['isSelf'], isHead)
+          .op(2, ['recreation'], O.OP_BOOLAND).op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
       });
-      fs.remove('category');
+      fs.remove('mark').remove('category');
     }));
     s.remove('mutable').remove('pin').remove('immutable');
     s.roll('o').op(1, ['o'], O.OP_1ADD).pick('o', 'oo').op(1, ['done'], O.OP_TXOUTPUTCOUNT, O.OP_GREATERTHANOREQUAL);
@@ -2959,35 +2929,6 @@ export function contextCategoryScript(): Uint8Array {
   const e = new Emitter();
   emitContextCategory(e);
   return e.done();
-}
-
-/**
- * Defines the derivation of a contract's block oracle lock, `P2SH32` of the oracle covenant with the category baked
- * in, as a function the census invokes. Entry `[category]`, in the machine's order, exit `[lock]`.
- */
-function emitDefineOracleLock(e: Emitter): void {
-  const O = Opcodes;
-  const { prefix, suffix } = blockOracleRedeemScriptParts();
-  const v = new Emitter();
-  v.push(prefix).op(O.OP_SWAP, O.OP_CAT);
-  v.push(suffix).op(O.OP_CAT, O.OP_HASH256);
-  v.push(Uint8Array.of(O.OP_HASH256, 32)).op(O.OP_SWAP, O.OP_CAT);
-  v.push(Uint8Array.of(O.OP_EQUAL)).op(O.OP_CAT);
-  e.push(v.done());
-  e.count(ORACLE_LOCK_ID).op(O.OP_DEFINE);
-}
-
-/** Invokes the oracle lock derivation. Entry `[category]`, exit `[lock]`. */
-function emitOracleLockInvoke(e: Emitter): void {
-  e.count(ORACLE_LOCK_ID).op(Opcodes.OP_INVOKE);
-}
-
-/** Entry `[.., index]`, exit the same. The output at `index` has the lock, token and commitment of the input there. */
-function emitRequireRecreatedInPlace(e: Emitter): void {
-  const O = Opcodes;
-  e.op(O.OP_DUP, O.OP_UTXOBYTECODE, O.OP_OVER, O.OP_OUTPUTBYTECODE, O.OP_EQUALVERIFY);
-  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY, O.OP_OVER, O.OP_OUTPUTTOKENCATEGORY, O.OP_EQUALVERIFY);
-  e.op(O.OP_DUP, O.OP_UTXOTOKENCOMMITMENT, O.OP_OVER, O.OP_OUTPUTTOKENCOMMITMENT, O.OP_EQUALVERIFY);
 }
 
 /** Entry `[haystack, needle]`, exit `[found]`. `needle` is 32 bytes; `haystack` is a run of them. */

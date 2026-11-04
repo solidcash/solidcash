@@ -3,3 +3,4 @@
 export * from './block-oracle-lock.js';
 export * from './blockOracleUpdater.js';
 export * from './blockhashCoSpend.js';
+export * from './pool/index.js';

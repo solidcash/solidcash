@@ -137,7 +137,7 @@ import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
-  artifactOraclePool, indirectPoolReads, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
+  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
 } from '../oracle/pool/reader.js';
 import { groupPoolReader, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
@@ -12529,14 +12529,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     // A function-pointer target finds its pool coins itself, so no block slot places them: they ride past the blocks.
     const unslottedPoolCoSpends = await resolveUnslottedPoolInfoCoins(this.inner.provider, [
-      { artifact: this.inner.artifact, abiFunction, pool: this.inner.oraclePool, name: this.inner.name },
-      ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).map(groupPoolReader),
-      ...lowLevelCallUtxoGroups.map(groupPoolReader),
+      { abiFunction, pool: this.inner.oraclePool, name: this.inner.name },
+      ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).flatMap(groupPoolReader),
+      ...lowLevelCallUtxoGroups.flatMap(groupPoolReader),
     ], [
       ...blockInfoCoSpendUtxos,
       ...[...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].flatMap((group) => group.blockInputs ?? []),
     ]);
-    if (indirectPoolReads(this.inner.artifact, abiFunction).blockhash && this.categoryId) {
+    if (abiFunction?.indirectPoolReads?.blockhash === true && this.categoryId) {
       const slots = await resolveIndirectBlockhashCoSpends(
         { categoryId: this.categoryId, inner: this.inner }, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
         blockhashCoSpendUtxos, unslottedPoolCoSpends, blockhashCoSpendUtxos,

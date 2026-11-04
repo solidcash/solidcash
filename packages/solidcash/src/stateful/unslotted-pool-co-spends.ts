@@ -1,5 +1,5 @@
 import type { AbiFunction } from '@solidcash/utils';
-import type { UnlockableUtxo } from '../interfaces.js';
+import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { isPoolInfoInput, poolInfoCoSpend } from '../oracle/pool/reader.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -9,6 +9,8 @@ export interface PoolReaderParticipant {
   readonly abiFunction: AbiFunction | undefined;
   readonly pool: string | undefined;
   readonly name: string;
+  /** The input that runs the entry, for a call group. */
+  readonly master?: Pick<Utxo, 'txid' | 'vout'>;
 }
 
 /** The participant a call group runs, when it names a contract. */
@@ -20,7 +22,18 @@ export function groupPoolReader(group: ExternalCallUtxoGroup): PoolReaderPartici
       ?? (inner.artifact.abi as readonly AbiFunction[]).find((fn) => fn.name === group.functionName),
     pool: inner.oraclePool,
     name: inner.name,
+    master: group.masterUtxo,
   }];
+}
+
+/** The participants a transaction's nested and low-level calls run; a logical alias of another call runs none. */
+export function calleePoolReaders(
+  externalCallUtxoGroups: readonly ExternalCallUtxoGroup[], lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[],
+): PoolReaderParticipant[] {
+  return [
+    ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).flatMap(groupPoolReader),
+    ...lowLevelCallUtxoGroups.flatMap(groupPoolReader),
+  ];
 }
 
 /**

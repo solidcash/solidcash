@@ -1,7 +1,7 @@
 import { POOL_FLAG_SLOT, type PoolInfoFields, type PoolSlotFields } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
-import { type PoolCoin, checkPoolCategory, poolInfoCoin, poolSlotCoin } from './coins.js';
+import { type PoolCoin, checkPoolCategory, poolInfoCoin, poolLocks, poolSlotCoin } from './coins.js';
 
 /** The EVM blockhash window: a block this much older than its residue's newest reads as zero. */
 export const POOL_BLOCKHASH_WINDOW = 256n;
@@ -12,10 +12,17 @@ export interface PoolSlotSelection extends PoolCoin<PoolSlotFields> {
 }
 
 async function categoryCoins(provider: NetworkProvider, category: string): Promise<Utxo[]> {
-  if (provider.getUtxosByTokenCategory === undefined) {
-    throw new Error('oracle pool selection needs a provider that lists UTXOs by token category');
-  }
-  return provider.getUtxosByTokenCategory(checkPoolCategory(category));
+  const key = checkPoolCategory(category);
+  if (provider.getUtxosByTokenCategory !== undefined) return provider.getUtxosByTokenCategory(key);
+  // A provider that lists by lock only, such as an Electrum server, finds them at the info and slot locks.
+  const { info, slot } = poolLocks(key);
+  const [infoCoins, slots] = await Promise.all([
+    provider.getUtxosForLockingBytecode(info), provider.getUtxosForLockingBytecode(slot),
+  ]);
+  return [
+    ...infoCoins.map((utxo) => ({ ...utxo, lockingBytecode: info })),
+    ...slots.map((utxo) => ({ ...utxo, lockingBytecode: slot })),
+  ];
 }
 
 function pick<T>(items: readonly T[]): T | undefined {

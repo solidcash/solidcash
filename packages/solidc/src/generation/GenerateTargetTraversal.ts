@@ -7416,6 +7416,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.preambleComputedFor = node;
       probe.contractUsesMsgValue = this.contractUsesMsgValue;
       probe.constructorParameterCount = this.constructorParameterCount;
+      // The probe captures the pool binding as the emitting pass does; without it a pool read in an invoked body
+      // throws the probe into the define-all fallback. Other constructor parameters stay uncaptured, as before.
+      probe.contractParameters = this.contractParameters.filter((param) => param.name === ORACLE_POOL_PARAMETER);
+      probe.contractFunctionKeys = this.contractFunctionKeys;
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.sourcePrimaryContract = this.sourcePrimaryContract;
       probe.oraclePoolBindingId = this.oraclePoolBindingId;

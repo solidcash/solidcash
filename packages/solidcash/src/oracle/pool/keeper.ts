@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   POOL_COIN_SATS, POOL_FLAG_NUMBER_STOPPED, POOL_FLAG_SLOT, POOL_FLAG_SLOT_STOPPED, POOL_FLAG_TIMESTAMP_STOPPED,
-  encodePoolBatonCommitment, encodePoolInfoCommitment, encodePoolSlotCommitment,
+  POOL_MAX_DEPTH, encodePoolBatonCommitment, encodePoolInfoCommitment, encodePoolSlotCommitment,
   poolBatonMintUnlocking, poolBatonSweepUnlocking, poolBatonUpdateUnlocking, poolInfoReadUnlocking,
   poolInfoRotateUnlocking, poolInfoStopUnlocking, poolInfoSweepUnlocking, poolInfoUpdateUnlocking,
   poolSlotRotateUnlocking, poolSlotStopUnlocking, poolSlotSweepUnlocking, poolSlotWriteUnlocking,
@@ -15,6 +15,7 @@ import {
   p2pkhSpend, poolBatonCoin, poolCoinKind, poolInfoCoin, poolLocks, poolOutput, poolOwnerOf, poolSlotCoin,
   publicKeyOf, purseCoin,
 } from './coins.js';
+import { simulatorPoolFields } from './genesis.js';
 
 export interface PoolKeeperOptions {
   readonly provider: NetworkProvider;
@@ -22,6 +23,23 @@ export interface PoolKeeperOptions {
   readonly category: string;
   /** Signs every owner path; its P2PKH pays each transaction's fee and takes the change. */
   readonly ownerKey: Uint8Array;
+  /**
+   * The fields `start` publishes for the tip at `height`. A simulator's are its height and the second before its
+   * block time, the newest a time-type locktime admits; a live network needs this.
+   */
+  readonly fields?: (height: number) => Promise<PoolBlockFields>;
+  /** The hash of block n in display order, which `start` writes to its slot. Defaults to the provider's. */
+  readonly blockHash?: (n: bigint) => Promise<Uint8Array>;
+}
+
+/** How often `start` looks for a new block by default, in milliseconds. */
+export const POOL_KEEPER_INTERVAL_MS = 1_000;
+
+export interface PoolKeeperStartOptions {
+  /** Called with a step's failure; the next new block tries again. Default: logged. */
+  readonly onError?: (error: unknown) => void;
+  /** Called after each step with the height it published. */
+  readonly onStep?: (height: number) => void;
 }
 
 /** Most pool coins one stop, sweep or rotate transaction spends, so a large pool's stays standard-size. */
@@ -55,6 +73,10 @@ export class PoolKeeper {
   readonly category: string;
   private key: Uint8Array;
   private readonly locks: PoolLocks;
+  private readonly fields?: (height: number) => Promise<PoolBlockFields>;
+  private readonly blockHash?: (n: bigint) => Promise<Uint8Array>;
+  /** Blocks this keeper's own sends mined, on a simulator that mines each send. */
+  private ownBlocks = 0;
 
   constructor(options: PoolKeeperOptions) {
     this.provider = options.provider;
@@ -62,6 +84,74 @@ export class PoolKeeper {
     this.locks = poolLocks(this.category);
     publicKeyOf(options.ownerKey);
     this.key = options.ownerKey;
+    this.fields = options.fields;
+    this.blockHash = options.blockHash;
+  }
+
+  /**
+   * Keeps the pool current until the returned stop is called: at once, then on each tick that finds a new block, it
+   * publishes the tip's fields with `refreshInfo` and writes the slot of each block since its last step, the newest
+   * included. A block its own transactions mine, as a simulator's do, is no new block. A step's failure goes to
+   * `onError`, and the next new block tries again. Stop resolves once the running step ends.
+   */
+  start(intervalMs = POOL_KEEPER_INTERVAL_MS, options: PoolKeeperStartOptions = {}): () => Promise<void> {
+    const report = options.onError ?? ((error: unknown): void => {
+      console.error(`[oracle pool ${this.category}] keeper step failed:`, error instanceof Error ? error.message : error);
+    });
+    let stopped = false;
+    let seen: number | undefined;
+    let written: number | undefined;
+    let running: Promise<void> = Promise.resolve();
+    const step = async (): Promise<void> => {
+      const height = await this.provider.getBlockHeight();
+      if (stopped || height === seen) return;
+      const own = this.ownBlocks;
+      const fields = await (this.fields === undefined ? this.simulatorFields(height) : this.fields(height));
+      await this.refreshInfo(fields);
+      const first = Math.max(0, height - POOL_MAX_DEPTH + 1, written === undefined ? height : written + 1);
+      const blocks: PoolBlock[] = [];
+      for (let n = first; n <= height; n += 1) blocks.push({ n: BigInt(n), hash: await this.hashOf(BigInt(n)) });
+      if (blocks.length > 0) await this.writeSlots(blocks);
+      written = height;
+      seen = height + this.ownBlocks - own;
+      options.onStep?.(height);
+    };
+    let busy = false;
+    // A tick while a step runs is dropped: the next one looks again.
+    const tick = (): void => {
+      if (busy) return;
+      busy = true;
+      running = step().catch(report).finally(() => {
+        busy = false;
+      });
+    };
+    tick();
+    const timer = setInterval(tick, intervalMs);
+    return async () => {
+      stopped = true;
+      clearInterval(timer);
+      await running;
+    };
+  }
+
+  /** Sets the baton's depth, 1 to 256, through its update path: slots it mints later take it. Returns the txid. */
+  async setDepth(depth: number): Promise<string> {
+    if (!Number.isInteger(depth) || depth < 1 || depth > POOL_MAX_DEPTH) {
+      throw new Error(`oracle pool depth ${depth} is not an integer from 1 to ${POOL_MAX_DEPTH}`);
+    }
+    const baton = await this.ownBaton();
+    const commitment = encodePoolBatonCommitment({ owner: baton.fields.owner, depth });
+    const pubkey = publicKeyOf(this.key);
+    return (await this.send([{
+      spend: {
+        utxo: baton.utxo,
+        lockingBytecode: this.locks.baton,
+        unlock: (sign) => poolBatonUpdateUnlocking(
+          this.locks.category, pubkey, sign(this.key, this.locks.batonRedeem), commitment,
+        ),
+      },
+      output: poolOutput(this.locks.baton, baton.utxo.satoshis, this.category, 'minting', commitment),
+    }], [], 0)).txid;
   }
 
   /** The key the pool's commitments name; `rotate` replaces it. */
@@ -327,6 +417,21 @@ export class PoolKeeper {
     return poolOwnerOf(this.key);
   }
 
+  private simulatorFields(height: number): Promise<PoolBlockFields> {
+    const { getBlockTime } = this.provider as { getBlockTime?: () => number };
+    if (this.provider.simulator !== true || getBlockTime === undefined) {
+      throw new Error('PoolKeeper.start needs `fields` on a live network: only a simulator supplies its own');
+    }
+    return Promise.resolve(simulatorPoolFields(height, getBlockTime.call(this.provider) - 1));
+  }
+
+  private async hashOf(n: bigint): Promise<Uint8Array> {
+    if (this.blockHash !== undefined) return this.blockHash(n);
+    const { getBlockHash } = this.provider as { getBlockHash?: (height: number) => Promise<string> };
+    if (getBlockHash === undefined) throw new Error('PoolKeeper.start needs `blockHash`: the provider has no getBlockHash');
+    return hexToBin(await getBlockHash.call(this.provider, Number(n)));
+  }
+
   private kindOf(utxo: Utxo): 'info' | 'slot' | 'baton' {
     const kind = poolCoinKind(utxo, this.category);
     if (kind === undefined) throw new Error(`${utxo.txid}:${utxo.vout} is not a coin of oracle pool ${this.category}`);
@@ -417,7 +522,9 @@ export class PoolKeeper {
       locktime,
       p2pkhLockOf(changeKey),
     );
+    const before = this.provider.simulator === true ? await this.provider.getBlockHeight() : undefined;
     await this.provider.sendRawTransaction(assembled.hex);
+    if (before !== undefined && await this.provider.getBlockHeight() === before + 1) this.ownBlocks += 1;
     return assembled;
   }
 }

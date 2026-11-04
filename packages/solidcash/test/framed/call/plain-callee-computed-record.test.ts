@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeDataPush, hexToBin, utf8ToBin } from '@bitauth/libauth';
 import {
-  INDEX_NONE, VALUE_INLINE_LIMIT, blockOracleFieldBytes, blockOracleLockingBytecode, concatBytes, encodeWitnessBlock,
-  hash160, splitFirstPush,
+  INDEX_NONE, VALUE_INLINE_LIMIT, concatBytes, decodePoolInfoCommitment, encodeWitnessBlock, hash160, splitFirstPush,
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { FramedCallResult } from '../../../src/framed/call/index.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { isPoolInfoOutput } from '../../../src/oracle/pool/index.js';
 import {
   compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type PlainDeployment, type World,
 } from '../ahead/composition-world.js';
@@ -26,9 +26,9 @@ import {
  * plan whose book frame declares a chunk record of the value otherwise is refused by the validator, which settles
  * the book's contract beside the desk's (V8).
  *
- * A book that stamps with the clock reads its own block oracle, a coin of its own category that a framed body finds by
- * its lock, so the planner co-spends it beside the callee's master. A root that also reads the clock co-spends its own
- * oracle beside the book's.
+ * A book that stamps with the clock reads a block-info coin of its oracle pool, which a framed body finds by its
+ * category and flags, so the planner co-spends one beside the callee's master. The root and every later callee
+ * reuse that one input.
  */
 
 /** The book and desk, the book's filing stamping each record with `stamp`. */
@@ -191,25 +191,19 @@ describe('a plain root whose callee writes a record its own body computes part o
     const book = await deployPlain(world, selected.Book!);
     const desk = await deployPlain(world, selected.Desk!, [book.address]);
     const result = await enter({ world, book, desk }, 'file', [ID, NOTE], ['Book.open()', 'Desk.file()']);
-    // Each reader co-spends its own oracle, a coin of its own category: the book always, the desk when it reads.
-    const oracleInputs = (deployment: PlainDeployment): number[] => {
-      const lock = binToHex(blockOracleLockingBytecode(hexToBin(deployment.categoryId)));
-      return result.sourceOutputs.flatMap((output, index) => (binToHex(output.lockingBytecode) === lock ? [index] : []));
-    };
-    expect(oracleInputs(desk)).toHaveLength(rootReads ? 1 : 0);
-    const oracleIndices = oracleInputs(book);
+    const pool = world.network.oraclePoolCategory!;
+    const oracleIndices = result.sourceOutputs.flatMap((output, index) =>
+      (isPoolInfoOutput(output, pool) ? [index] : []));
     expect(oracleIndices).toHaveLength(1);
     const oracleIndex = oracleIndices[0]!;
     const oracle = result.sourceOutputs[oracleIndex]!;
-    const timestamp = blockOracleFieldBytes(oracle.token!.nft!.commitment, 'timestamp');
-    let expected = 0n;
-    for (let index = timestamp.length - 1; index >= 0; index -= 1) expected = (expected << 8n) | BigInt(timestamp[index]!);
+    const expected = decodePoolInfoCommitment(oracle.token!.nft!.commitment).timestamp;
     expect(await view({ world, book, desk }, book, 'atOf', [ID])).toBe(expected);
     const frame = result.completed.find((candidate) => candidate.functionName === 'Book.open()')!;
     const index = result.draft.layout.participants.find((placed) => placed.id === frame.master)!.index;
-    // A mutable NFT at another lock cannot replace the oracle this callee's emitted bytecode pins.
+    // A coin of another category cannot stand in for the pool coin this callee's reads find.
     const forgedSources = [...result.sourceOutputs];
-    forgedSources[oracleIndex] = { ...oracle, lockingBytecode: hexToBin('aa20' + '77'.repeat(32) + '87') };
+    forgedSources[oracleIndex] = { ...oracle, token: { ...oracle.token!, category: hexToBin('77'.repeat(32)) } };
     const vm = compositionMachine();
     expect(vm.stateSuccess(vm.evaluate({
       inputIndex: index, sourceOutputs: forgedSources, transaction: result.transaction,

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
-import { blockOracleFieldBytes, blockOracleLockingBytecode } from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import { decodePoolInfoCommitment } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { isPoolInfoOutput, selectPoolInfoCoin } from '../../../src/oracle/pool/index.js';
 import { compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts } from '../ahead/composition-world.js';
 
 const artifacts = compileFramed(`
@@ -29,19 +30,14 @@ contract Desk {
 }
 `);
 
-describe('a plain frame whose guarded calls and writes read their own oracles', () => {
+describe('a plain frame whose guarded calls and writes read the one pool coin they share', () => {
   it.each([false, true])('settles with the deadline passed: %s', async (expired) => {
     const world = await newWorld(expired ? 0x75 : 0x74);
     const book = await deployPlain(world, artifacts.Book!);
     const desk = await deployPlain(world, artifacts.Desk!, [book.address]);
     const externals = { Book: { artifact: book.artifact, categoryId: book.categoryId } };
-    // Each reader co-spends its own oracle: the desk's guards read the desk's, the book's stamp reads the book's.
-    const deskLock = blockOracleLockingBytecode(hexToBin(desk.categoryId));
-    const bookLock = blockOracleLockingBytecode(hexToBin(book.categoryId));
-    const [oracle] = await world.network.getUtxosForLockingBytecode(deskLock);
-    const timestampBytes = blockOracleFieldBytes(hexToBin(oracle!.token!.nft!.commitment), 'timestamp');
-    let timestamp = 0n;
-    for (let at = timestampBytes.length - 1; at >= 0; at -= 1) timestamp = (timestamp << 8n) | BigInt(timestampBytes[at]!);
+    const pool = world.network.oraclePoolCategory!;
+    const { timestamp } = (await selectPoolInfoCoin(world.network, pool))!.fields;
     const deadline = expired ? timestamp - 86_400n : timestamp + 86_400n;
     const opened = await enterPlain(world, desk, 'open', [1n, deadline, 100n], externals);
     expect(opened.error).toBeUndefined();
@@ -54,12 +50,8 @@ describe('a plain frame whose guarded calls and writes read their own oracles', 
     expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(
       expired ? ['Book.take()', 'Book.stamp()', 'Desk.close()'] : ['Book.stamp()', 'Desk.close()'],
     );
-    const inputsAt = (lock: Uint8Array): number[] => result.sourceOutputs.flatMap((output, index) =>
-      (binToHex(output.lockingBytecode) === binToHex(lock) ? [index] : []));
-    const deskOracles = inputsAt(deskLock);
-    const bookOracles = inputsAt(bookLock);
-    expect(deskOracles).toHaveLength(1);
-    expect(bookOracles).toHaveLength(1);
+    const clockInputs = result.sourceOutputs.filter((output) => isPoolInfoOutput(output, pool));
+    expect(clockInputs).toHaveLength(1);
     const read = async (deployment: typeof book, functionName: string, args: bigint[]): Promise<unknown> => {
       const value = await readFramedEntry({
         provider: world.network, artifact: deployment.artifact, categoryId: deployment.categoryId,
@@ -70,14 +62,13 @@ describe('a plain frame whose guarded calls and writes read their own oracles', 
     };
     expect(await read(book, 'received', [])).toBe(expired ? 100n : 0n);
     expect(await read(desk, 'owed', [1n])).toBe(expired ? 0n : 100n);
-    const actual = blockOracleFieldBytes(result.sourceOutputs[bookOracles[0]!]!.token!.nft!.commitment, 'timestamp');
-    let actualTimestamp = 0n;
-    for (let at = actual.length - 1; at >= 0; at -= 1) actualTimestamp = (actualTimestamp << 8n) | BigInt(actual[at]!);
+    const actualTimestamp = decodePoolInfoCommitment(clockInputs[0]!.token!.nft!.commitment).timestamp;
     expect(await read(book, 'stamped', [])).toBe(actualTimestamp);
-    // The desk's master pins its own oracle's lock: a mutable NFT at another lock cannot stand in for it.
-    const oracleIndex = deskOracles[0]!;
+    // A coin of another category cannot stand in for the pool coin the root's reads find.
+    const oracleIndex = result.sourceOutputs.findIndex((output) => isPoolInfoOutput(output, pool));
     const forged = [...result.sourceOutputs];
-    forged[oracleIndex] = { ...forged[oracleIndex]!, lockingBytecode: hexToBin(`aa20${'76'.repeat(32)}87`) };
+    const coin = forged[oracleIndex]!;
+    forged[oracleIndex] = { ...coin, token: { ...coin.token!, category: hexToBin('76'.repeat(32)) } };
     const rootIndex = result.draft.layout.participants.find((input) => input.id === 'master')!.index;
     const vm = compositionMachine();
     expect(vm.stateSuccess(vm.evaluate({

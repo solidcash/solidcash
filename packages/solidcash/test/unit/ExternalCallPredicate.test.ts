@@ -1392,7 +1392,7 @@ describe('conditional external-call topology', () => {
       categoryId: '00'.repeat(32),
       inner: {
         provider, artifact, lockingBytecode: '51', encodedConstructorArgs: [],
-        blockOracleLock: undefined, getExternalTargetEntriesByInterface: () => [],
+        oraclePool: undefined, getExternalTargetEntriesByInterface: () => [],
       },
       signer: undefined,
       externalRegistry: new Map(),

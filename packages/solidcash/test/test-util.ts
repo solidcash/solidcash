@@ -8,9 +8,7 @@ import {
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import {
-  BLOCKHASH_MAX_DEPTH, blockOracleLockingBytecode, blockhashOracleLockingBytecode, buildBlockhashSlotCommitment,
-  buildInitialStateCommitments, encodeBlockOracleCommitment, hash160, hash256, messageBusVerifierCommitment,
-  type StateLayout,
+  buildInitialStateCommitments, hash256, messageBusVerifierCommitment, type StateLayout,
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
@@ -36,10 +34,12 @@ import {
 } from './fixture/vars.js';
 import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import {
-  addressToLockScript, generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput, randomUtxo,
+  addressToLockScript, generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput,
 } from '../src/utils.js';
 import type NetworkProvider from '../src/network/NetworkProvider.js';
-import { utxoComparator } from '../src/utils.js';
+import { randomUtxo, utxoComparator } from '../src/utils.js';
+import { createOraclePool, type PoolBlockFields } from '../src/oracle/pool/index.js';
+import { p2pkhLockOf } from '../src/oracle/pool/coins.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
 
@@ -360,25 +360,6 @@ export interface StatefulUtxoSetup {
  * @param initialState - Initial state values (e.g., `{ counter: 0n }`)
  * @param opts - Optional overrides for satoshi amounts
  */
-/**
- * A block.* reader's own oracle, as its genesis mints it: a mutable NFT of its category at that category's oracle
- * lock, naming the provider's owner key and starting from the provider's clock.
- */
-function blockOracleSeed(
-  provider: MockNetworkProvider | RegtestNetworkProvider, contract: Contract, categoryId: string,
-): { address: string; commitment: string } | undefined {
-  if (contract.artifact.usesBlockOracle !== true) return undefined;
-  const owner = (provider as { blockOracleOwnerPublicKey?: Uint8Array }).blockOracleOwnerPublicKey;
-  const fields = (provider as { blockOracleFields?: () => Parameters<typeof encodeBlockOracleCommitment>[1] })
-    .blockOracleFields?.();
-  if (owner === undefined || fields === undefined) throw new Error('this provider keeps no block oracles');
-  const lock = blockOracleLockingBytecode(hexToBin(categoryId));
-  const prefix = getNetworkPrefix(provider.network);
-  const address = lockingBytecodeToCashAddress({ bytecode: lock, prefix, tokenSupport: true });
-  if (typeof address !== 'object' || !('address' in address)) throw new Error('block oracle lock has no address');
-  return { address: address.address, commitment: binToHex(encodeBlockOracleCommitment(hash160(owner), fields)) };
-}
-
 export async function setupStatefulUtxos(
   provider: MockNetworkProvider | RegtestNetworkProvider,
   contract: Contract,
@@ -387,8 +368,8 @@ export async function setupStatefulUtxos(
   opts?: {
     masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
     messageBusVerificationInputCount?: number;
-    // Extra token UTXOs to genesis under the SAME category. Receives the resolved categoryId; the seeded UTXOs are
-    // returned as `extraUtxos`. A blockhash reader's ring is not seeded: see seedBlockhashSlot.
+    // Extra token UTXOs to genesis under the SAME category (e.g. a blockhash (n->hash) oracle NFT branded to
+    // the contract). Receives the resolved categoryId; the seeded UTXOs are returned as `extraUtxos`.
     extraOutputs?: (categoryId: string) => Array<{ address: string; satoshis: bigint; token: any }>;
   },
 ): Promise<StatefulUtxoSetup> {
@@ -440,14 +421,6 @@ export async function setupStatefulUtxos(
         },
       }));
     }
-    const oracle = blockOracleSeed(provider, contract, categoryId);
-    if (oracle !== undefined) {
-      await (provider as any).addUtxo(oracle.address, {
-        txid: categoryId, vout: commitments.length + sortedCollections.length + verifierCount + 1,
-        satoshis: dataNftSatoshis,
-        token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: oracle.commitment } },
-      });
-    }
     return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses, verifierUtxos };
   }
 
@@ -484,13 +457,6 @@ export async function setupStatefulUtxos(
         },
       })),
       ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),
-      ...((): Array<{ address: string; satoshis: bigint; token: any }> => {
-        const oracle = blockOracleSeed(provider, contract, categoryId);
-        return oracle === undefined ? [] : [{
-          address: oracle.address, satoshis: dataNftSatoshis,
-          token: { amount: 0n, nft: { capability: 'mutable' as const, commitment: oracle.commitment } },
-        }];
-      })(),
     ];
   });
 
@@ -512,23 +478,6 @@ export async function setupStatefulUtxos(
     ),
     extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length + verifierCount),
   };
-}
-
-/**
- * A blockhash slot of `categoryId` holding block n's hash, as the reader's ring keeps it once the keeper has written
- * n: a mutable NFT of the category at its slot lock, owned by the provider's block oracle key, in a ring of `depth`.
- */
-export async function seedBlockhashSlot(
-  provider: TestProvider, categoryId: string, n: bigint, hash: Uint8Array,
-  opts: { satoshis?: bigint; depth?: number } = {},
-): Promise<Utxo> {
-  const owner = (provider as { blockOracleOwnerPublicKey?: Uint8Array }).blockOracleOwnerPublicKey;
-  if (owner === undefined) throw new Error('this provider keeps no block oracle key');
-  const commitment = buildBlockhashSlotCommitment(n, hash, hash160(owner), opts.depth ?? BLOCKHASH_MAX_DEPTH);
-  return (provider as any).addUtxo(binToHex(blockhashOracleLockingBytecode(hexToBin(categoryId))), {
-    ...randomUtxo({ satoshis: opts.satoshis ?? 1_200n }),
-    token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
-  });
 }
 
 /**
@@ -624,4 +573,23 @@ export async function seedNativeToken(
     holders.push(coin);
   }
   return { reserve, holders };
+}
+
+/** Owner key of the oracle pools tests mint. Its P2PKH pays their genesis and keeper fees. */
+export const TEST_ORACLE_POOL_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => index + 101);
+
+/**
+ * Mint an oracle pool whose info coins hold `tip`: the mock's own pool publishes the chain's tip, this one any
+ * fields. A reader binds it through the `oraclePool` option. `slots` adds one ring slot, holding block `tip.number`.
+ */
+export async function mintTestOraclePool(
+  provider: MockNetworkProvider | RegtestNetworkProvider, tip: PoolBlockFields,
+  options: { infoCoins?: number; slots?: boolean } = {},
+): Promise<string> {
+  await provider.addUtxo(binToHex(p2pkhLockOf(TEST_ORACLE_POOL_KEY)), randomUtxo({ vout: 0, satoshis: 10_000_000n }));
+  const pool = await createOraclePool(provider, {
+    ownerKey: TEST_ORACLE_POOL_KEY, funder: TEST_ORACLE_POOL_KEY, infoCoins: options.infoCoins ?? 1, ringDepth: 1,
+    slotReplicas: options.slots === true ? 1 : 0, tip,
+  });
+  return pool.category;
 }

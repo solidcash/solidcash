@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { blockOracleFieldValue, blockOracleLockingBytecode, type StateLayout } from '@solidcash/utils';
+import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import type { StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileString, compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
@@ -12,6 +12,7 @@ import { ContractFactory } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import { readFramedState } from '../../../src/framed/deploy/index.js';
+import { selectPoolInfoCoin } from '../../../src/oracle/pool/index.js';
 import {
   FramedProxyDeployError, buildProxyArtifact, callFramedProxyEntry, deployFramedProxy,
   type FramedProxyCallResult,
@@ -24,11 +25,12 @@ import { fundShippedFacets } from '../shapes/harness.js';
 /**
  * The mock chain's clock in a framed contract's `block.timestamp`.
  *
- * `block.timestamp` slices the commitment of the reader's own block oracle, a mutable NFT of its category that its
- * genesis mints; no record holds a register. The mock chain writes its clock into every such oracle on
- * `evm_increaseTime` and `evm_mine` (the Hardhat analogue) and with every block it mines for a transaction it
- * accepts. An entry run through a framed proxy reads its implementation's oracle as a plain framed deployment's entry
- * reads its own, and a direct contract beside them co-spends its own: one mined block moves the clock all of them read.
+ * `block.timestamp` slices the commitment of a block-info coin of the oracle pool an entry co-spends; no record holds
+ * a register. The mock chain mints its pool and its keeper writes the clock into every info coin on `evm_increaseTime`
+ * and `evm_mine` (the Hardhat analogue) and with every block it mines for a transaction it accepts, as the second
+ * before the tip's time, the latest a time-locked update can publish. An entry run through a framed proxy reads that
+ * commitment as a plain framed deployment's entry does, and a direct contract beside them binds the same pool: one
+ * mined block moves the clock all of them read.
  */
 
 const DAY = 86_400n;
@@ -89,15 +91,15 @@ async function stateOf(
   return Object.assign({}, ...byNft) as Record<string, unknown>;
 }
 
-/** The timestamp of the oracle a reader of `categoryId` co-spends: the mutable NFT of its category at its own lock. */
-async function oracleClock(network: MockNetworkProvider, categoryId: string): Promise<bigint> {
-  const oracle = (await network.getUtxosForLockingBytecode(blockOracleLockingBytecode(hexToBin(categoryId))))
-    .find((utxo) => utxo.token?.nft?.capability === 'mutable');
-  expect(oracle?.token?.category).toBe(categoryId);
-  return blockOracleFieldValue(hexToBin(oracle?.token?.nft?.commitment ?? ''), 'timestamp');
+/** The timestamp of a live info coin of the provider's pool, the one every reader binds. */
+async function oracleClock(network: MockNetworkProvider): Promise<bigint> {
+  return (await selectPoolInfoCoin(network, network.oraclePoolCategory!))!.fields.timestamp;
 }
 
-/** Calls the direct reader's `gated(started)`; the call co-spends the reader's own oracle. */
+/** The clock the pool publishes for the chain's tip: the second before it. */
+const tipClock = (network: MockNetworkProvider): bigint => BigInt(network.getBlockTime()) - 1n;
+
+/** Calls the direct reader's `gated(started)`; the call co-spends a coin of the pool it binds. */
 async function gated(direct: StatefulContract, started: bigint): Promise<string> {
   const call = direct.call as unknown as { gated: (from: bigint) => { send: () => Promise<{ txid: string }> } };
   return (await call.gated(started).send()).txid;
@@ -198,20 +200,19 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
     world = await deployWorld();
   }, 300_000);
 
-  it('the clock is the oracle commitment, not a field of the proxy\'s record, and a mined block moves it', async () => {
+  it('the clock is a pool coin\'s commitment, not a field of the proxy\'s record; a mined block moves it', async () => {
     expect(proxyArtifact.stateLayout!.variables.map((variable) => variable.name)).not.toContain('__block_timestamp');
     const genesis = await proxyState(world);
     await world.network.send('evm_mine', []);
-    const now = BigInt(world.network.getBlockTime());
-    expect(now).toBeGreaterThan(DAY);
-    // A hop reads the implementation's own oracle.
-    expect(await oracleClock(world.network, world.implementation)).toBe(now);
-    // The record decodes as it did: the mined block writes only the oracle.
+    expect(BigInt(world.network.getBlockTime())).toBeGreaterThan(DAY);
+    // A hop reads a coin of the pool its implementation binds.
+    expect(await oracleClock(world.network)).toBe(tipClock(world.network));
+    // The record decodes as it did: the mined block writes only the pool.
     expect(await proxyState(world)).toStrictEqual(genesis);
   }, 300_000);
 
   it('an entry gated a day after its stamp is refused before the day and settles after it', async () => {
-    const read = await oracleClock(world.network, world.implementation);
+    const read = await oracleClock(world.network);
     const marked = await enter(world, 'mark');
     expect(marked.error).toBeUndefined();
     expect(marked.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
@@ -220,8 +221,8 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
     // below, not on the confirming block.
     const stamped = await proxyState(world);
     expect(stamped.stamp).toBe(read);
-    const confirmed = await oracleClock(world.network, world.implementation);
-    expect(confirmed).toBe(BigInt(world.network.getBlockTime()));
+    const confirmed = await oracleClock(world.network);
+    expect(confirmed).toBe(tipClock(world.network));
     expect(confirmed).toBeGreaterThanOrEqual(read);
 
     const early = await enter(world, 'later');
@@ -232,8 +233,8 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
 
     await world.network.send('evm_increaseTime', [Number(DAY)]);
     await world.network.send('evm_mine', []);
-    const moved = await oracleClock(world.network, world.implementation);
-    expect(moved).toBe(BigInt(world.network.getBlockTime()));
+    const moved = await oracleClock(world.network);
+    expect(moved).toBe(tipClock(world.network));
     expect(moved).toBeGreaterThanOrEqual((stamped.stamp as bigint) + DAY);
 
     const settled = await enter(world, 'later');
@@ -254,17 +255,14 @@ describe('the mock chain\'s clock in a plain framed contract, with a direct one 
     const plain = await new ContractFactory(clock, signer).deploy() as unknown as StatefulContract;
     const plainState = (): Promise<Record<string, unknown>> => stateOf(network, plain.categoryId, clock.stateLayout!);
     expect(clock.stateLayout!.variables.map((variable) => variable.name)).not.toContain('__block_timestamp');
-    // The direct reader is stateful with no state of its own, and pins its own oracle's lock, not the framed one's.
+    // The direct reader is stateful with no state of its own, and binds the pool the framed entries co-spend.
     const direct = await new ContractFactory(timed, signer).deploy() as unknown as StatefulContract;
     expect(timed.stateLayout?.variables).toStrictEqual([]);
-    const directLock = blockOracleLockingBytecode(hexToBin(direct.categoryId));
-    expect(binToHex(direct.inner.blockOracleLock!)).toBe(binToHex(directLock));
-    expect(binToHex(directLock)).not.toBe(binToHex(blockOracleLockingBytecode(hexToBin(plain.categoryId))));
+    expect(direct.inner.oraclePool).toBe(network.oraclePoolCategory);
 
     await network.send('evm_mine', []);
-    const now = BigInt(network.getBlockTime());
-    expect(await oracleClock(network, plain.categoryId)).toBe(now);
-    expect(await oracleClock(network, direct.categoryId)).toBe(now);
+    const now = tipClock(network);
+    expect(await oracleClock(network)).toBe(now);
 
     const calls = plain.call as unknown as { mark: () => Promise<unknown>; later: () => Promise<unknown> };
     await calls.mark();
@@ -275,9 +273,7 @@ describe('the mock chain\'s clock in a plain framed contract, with a direct one 
 
     await network.send('evm_increaseTime', [Number(DAY)]);
     await network.send('evm_mine', []);
-    const moved = BigInt(network.getBlockTime());
-    expect(await oracleClock(network, plain.categoryId)).toBe(moved);
-    expect(await oracleClock(network, direct.categoryId)).toBe(moved);
+    expect(await oracleClock(network)).toBe(tipClock(network));
     await expect(gated(direct, now)).resolves.toMatch(/^[0-9a-f]{64}$/);
     await calls.later();
     expect((await plainState()).count).toBe(1n);

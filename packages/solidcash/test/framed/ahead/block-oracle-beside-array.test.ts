@@ -26,8 +26,8 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  *
  * Reading `block.timestamp` once gave a contract a register beside its own fields and the oracle owner's key in a
  * data NFT of its own after every other record, and the hop's delegate frame declared that record where an append's
- * body looks for the array's chunk run. The clock is now a slice of the contract's own oracle, which the entry
- * co-spends and which is no record, so it adds no field and no record. The frame declares the records the entry names, as a callee frame does, and
+ * body looks for the array's chunk run. The clock is now a slice of a block-info coin of the oracle pool the entry
+ * co-spends, so it adds no field and no record. The frame declares the records the entry names, as a callee frame does, and
  * each shape below settles (the post's, with the fixture's clock stamp beside a store call; the append alone; an
  * isolated field of the source's own after the record the entry names; a record the entry does not name ahead of
  * one it does). The direct call path declares the entry's own records the same way.
@@ -395,10 +395,10 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: the block clock beside 
       .map((variable) => `${variable.name}@${variable.nftIndex}`);
     expect(layout.dataNftCount).toBe(1);
     expect(fields(layout)).toStrictEqual(['implementation@0', 'journal@0', 'tasks@0']);
-    // The entry names the one record it reads and writes, and slices the oracle through its lock pin.
+    // The entry names the one record it reads and writes, and slices a coin of the pool its pool slots name.
     expect(namedRecords(desk, 'open')).toStrictEqual([0]);
     expect(desk.abi.find((entry) => entry.name === 'open')?.usesBlockOracle).toBe(true);
-    expect(desk.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    expect(desk.oraclePoolSlots?.length).toBeGreaterThan(0);
     // Without the clock the record is the same.
     const unclocked = compiled(postSource(false)).Desk!.stateLayout!;
     expect(unclocked.dataNftCount).toBe(1);
@@ -413,7 +413,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: the block clock beside 
     const desk = await deployProxied(chain, Desk!, [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], [journal.address]);
     const outcome = await enter(chain, desk, 'open', [TITLE, 100n, true], { IJournal: externalOf(journal) });
     // The delegate frame declares the records its entry's block layout names (`buildHopPlan`,
-    // `frameDataRecordIndices`), and the clock is the co-spent oracle, not a record ahead of the task's chunk.
+    // `frameDataRecordIndices`), and the clock is the co-spent pool coin, not a record ahead of the task's chunk.
     expectSettled(outcome);
     expect(settledRecords(outcome)).toStrictEqual(['proxy-record-0']);
   }, 300_000);
@@ -459,7 +459,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: the block clock beside 
     const chain = await freshChain();
     const desk = await deployProxied(chain, compiled(CLOCK_ONLY_SOURCE).Desk!,
       [DESK_IMPL_CATEGORY, DESK_PROXY_CATEGORY], []);
-    // The clock adds no record: the entry names its one record and co-spends the oracle.
+    // The clock adds no record: the entry names its one record and co-spends a pool coin.
     expect(desk.artifact.stateLayout!.dataNftCount).toBe(1);
     expect(namedRecords(desk.artifact, 'open')).toStrictEqual([0]);
     expectSettled(await enter(chain, desk, 'open', []));

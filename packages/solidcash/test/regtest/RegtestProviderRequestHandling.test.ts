@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex } from '@bitauth/libauth';
 import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } from '@solidcash/utils';
 import RegtestNetworkProvider from '../../src/network/RegtestNetworkProvider.js';
 import { onMockNetworkProviderReset } from '../../src/network/mock-reset.js';
@@ -126,16 +125,18 @@ describeRegtest('RegtestNetworkProvider request handling', () => {
     expect(`${other.txid}:${other.vout}`).not.toBe(`${first.txid}:${first.vout}`);
   });
 
-  it('funds without moving the block oracle', async () => {
+  it('funds without moving the oracle pool\'s block-info coins', async () => {
     const provider = new RegtestNetworkProvider(options);
     await provider.getBlockHeight();
     const oracle = async (): Promise<string> => {
-      const category = provider.blockOracleCategory;
-      if (category === undefined) throw new Error('the provider installed no block oracle');
-      const utxos = await provider.getUtxosByTokenCategory(binToHex(category));
-      const live = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable');
-      if (live === undefined) throw new Error('no live block oracle UTXO');
-      return `${live.txid}:${live.vout}`;
+      const category = provider.oraclePoolCategory;
+      if (category === undefined) throw new Error('the provider installed no oracle pool');
+      const live = (await provider.getUtxosByTokenCategory(category))
+        .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && utxo.token.nft.commitment.startsWith('00'))
+        .map((utxo) => `${utxo.txid}:${utxo.vout}`)
+        .sort();
+      if (live.length === 0) throw new Error('no live block-info coin');
+      return live.join(',');
     };
     const before = await oracle();
     await provider.addUtxo(`76a914${'11'.repeat(20)}88ac`, randomUtxo({ satoshis: 10_000n }));

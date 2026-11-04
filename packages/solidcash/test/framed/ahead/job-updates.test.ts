@@ -10,6 +10,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import { callFramedEntry } from '../../../src/framed/call/index.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
+import { selectPoolInfoCoin } from '../../../src/oracle/pool/index.js';
 import * as composer from '../../../src/framed/composer/index.js';
 import {
   buildProxyArtifact, callFramedProxyEntry, deployFramedProxy, type FramedProxyCallResult,
@@ -29,15 +30,16 @@ import { VALIDATOR_PROGRAM, fundShippedFacets } from '../shapes/harness.js';
  * `update` reads the judge's registration and each tag's label `STATIC`, pulls the token in when the amount rises
  * and pays it out when it falls a day after posting, and appends an entry (store up to 4, token 1); `close`,
  * `withdraw` and `reopen` move the token at most once and append an entry (store 1, token 1). A guarded entry runs
- * its pause check through an invoked helper, as the fixture's `whenNotPaused` does, so its block names both of the
- * root's records; `mark` is a job writer without it, as the fixture's `deliverResult` is.
+ * its pause check through an invoked helper, as the fixture's `whenNotPaused` does; `mark` is a job writer without
+ * it, as the fixture's `deliverResult` is. The clock adds no record, so the root's fields share one record, which
+ * every entry's block names.
  *
- * The clock is the root's own `block.timestamp` register, as in the fixture: the mock provider syncs the chain's own
- * time into it on every mine a send performs, so it carries that time from the framed proxy's first block on, and
- * the fixture's `evm_increaseTime` and `evm_mine` move it by the day they advance (pinned). A job posted a day before
- * that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting itself settles
- * (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the root on the
- * token first, as the fixture's setup does.
+ * The clock is a block-info coin of the mock provider's oracle pool: its keeper writes the second before the chain's
+ * own time into every info coin on every mine a send performs, so it carries that time from the framed proxy's first
+ * block on, and the fixture's `evm_increaseTime` and `evm_mine` move it by the day they advance (pinned). A job
+ * posted a day before that clock is written by a plain setup entry, `seed`, with a stamp of minus one day; posting
+ * itself settles (pinned). Each deployment holds one job, id 0, with its opening entry, and the creator approves the
+ * root on the token first, as the fixture's setup does.
  *
  * Each entry is pinned where it stands today; one that settles moves its case to every verdict accepted and the
  * broadcast. A last deployment steps the token's allowance read around and pins what stands behind it. The whole
@@ -518,6 +520,11 @@ async function entries(world: World): Promise<unknown> {
   return read.value;
 }
 
+/** The clock a reader slices: the timestamp of a live info coin of the provider's pool. */
+async function poolClock(world: World): Promise<bigint> {
+  return (await selectPoolInfoCoin(world.network, world.network.oraclePoolCategory!))!.fields.timestamp;
+}
+
 /** Job 0 as the root proxy's records hold it. */
 async function job0(world: World): Promise<Record<string, unknown>> {
   const jobs = (await deskState(world)).jobs as readonly Record<string, unknown>[];
@@ -532,25 +539,25 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): a job updated, clo
       expect(artifact.composition.refusedEntries ?? []).toStrictEqual([]);
     }
     const desk = compiled('allowance').Desk!;
-    expect(desk.stateLayout?.dataNftCount).toBe(2);
+    expect(desk.stateLayout?.dataNftCount).toBe(1);
     // As `updateJobPost`: the judge and each tag read `STATIC`, a pull or a payout on the amount's arms, the entry.
     expect(publishedFacts(desk, 'update')).toStrictEqual({
       calls: ['IJournal.isJudge@conditional', 'IJournal.labelOf@loop', 'ICoin.transferFrom@conditional',
         'ICoin.transfer@conditional', 'IJournal.log@once'],
-      records: [0, 1], writes: ['jobs'],
+      records: [0], writes: ['jobs'],
     });
     // As `closeJob`, `withdrawCollateral` and `reopenJob`: one token call and the entry.
     expect(publishedFacts(desk, 'close')).toStrictEqual({
-      calls: ['ICoin.transfer@conditional', 'IJournal.log@once'], records: [0, 1], writes: ['jobs'],
+      calls: ['ICoin.transfer@conditional', 'IJournal.log@once'], records: [0], writes: ['jobs'],
     });
     expect(publishedFacts(desk, 'withdraw')).toStrictEqual({
-      calls: ['ICoin.transfer@once', 'IJournal.log@once'], records: [0, 1], writes: ['jobs'],
+      calls: ['ICoin.transfer@once', 'IJournal.log@once'], records: [0], writes: ['jobs'],
     });
     expect(publishedFacts(desk, 'reopen')).toStrictEqual({
-      calls: ['ICoin.transferFrom@conditional', 'IJournal.log@once'], records: [0, 1], writes: ['jobs'],
+      calls: ['ICoin.transferFrom@conditional', 'IJournal.log@once'], records: [0], writes: ['jobs'],
     });
-    expect(publishedFacts(desk, 'post')).toStrictEqual({ calls: ['IJournal.log@once'], records: [0, 1], writes: ['jobs'] });
-    // As `deliverResult`: no pause check, so its block names only the first of the root's two records.
+    expect(publishedFacts(desk, 'post')).toStrictEqual({ calls: ['IJournal.log@once'], records: [0], writes: ['jobs'] });
+    // As `deliverResult`: no pause check, and the same one record.
     expect(publishedFacts(desk, 'mark')).toStrictEqual({ calls: ['IJournal.log@once'], records: [0], writes: ['jobs'] });
   });
 
@@ -558,22 +565,23 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): a job updated, clo
     let world: World;
     /** The chain as it stands right after the job is posted, so each entry that settles is planned from it. */
     let pristine: SnapshotRestorer;
-    /** The chain's own time the mock chain's day moved the root's register to. */
+    /** The pool's clock after the mock chain's day. */
     let clock: bigint;
     it('setup: the approval, the store registrations and both proxies settle and broadcast', async () => {
       world = await deployWorld('allowance', undefined);
     }, 900_000);
 
-    it('the clock the root reads is the chain\'s own time, and the mock chain\'s day moves it by that day', async () => {
+    it('the clock the root reads is the second before the chain\'s time, and the mock chain\'s day moves it', async () => {
       const before = world.network.getBlockTime();
-      expect((await deskState(world)).__block_timestamp).toBe(BigInt(before));
+      expect(await poolClock(world)).toBe(BigInt(before) - 1n);
       await world.network.send('evm_increaseTime', [Number(DAY)]);
       await world.network.send('evm_mine', []);
       expect(world.network.getBlockTime()).toBe(before + Number(DAY));
-      // The mock clock (`oracle/blockOracleUpdater.ts`) rewrites the register in the proxy's own records, where the
-      // implementation's delegate frames read it.
-      clock = (await deskState(world)).__block_timestamp as bigint;
-      expect(clock).toBe(BigInt(world.network.getBlockTime()));
+      // The mock pool's keeper writes the tip's time into every info coin, which the implementation's delegate frames
+      // read; no record of the proxy holds it.
+      clock = await poolClock(world);
+      expect(clock).toBe(BigInt(world.network.getBlockTime()) - 1n);
+      expect((await deskState(world)).__block_timestamp).toBeUndefined();
     }, 600_000);
 
     it('posting the job (18) settles, stamped with that clock, and the history read answers its entry', async () => {
@@ -620,7 +628,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): a job updated, clo
       expect([updated.amount, updated.owed]).toStrictEqual([50n, 50n]);
     }, 900_000);
 
-    it('a job writer whose block names only the first record settles', async () => {
+    it('a job writer without the pause check settles', async () => {
       // The delegate frame declares the one record the entry names (`buildHopPlan`, `frameDataRecordIndices`).
       await pristine.restore();
       expectSettled(await enter(world, 'Desk', 'mark', [JOB, DIGEST]));
@@ -726,8 +734,9 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): a job updated, clo
       expectSettled(await enter(world, 'Desk', 'reopen', [JOB]));
       const reopened = await job0(world);
       expect([reopened.state, reopened.owed]).toStrictEqual([0n, 0n]);
-      // The reopen stamps the job with the chain's own time, distinct from the minus-day the setup seeded it with.
-      expect(reopened.stamp).toBe(chainTime);
+      // The reopen stamps the job with the pool's clock, the second before the chain's own time, distinct from the
+      // minus-day the setup seeded it with.
+      expect(reopened.stamp).toBe(chainTime - 1n);
       expect(reopened.stamp).not.toBe(-DAY);
       expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
         .toStrictEqual([800n, 200n]);
@@ -746,7 +755,7 @@ describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead (L4): a job updated, clo
       expectSettled(await enter(world, 'Desk', 'reopen', [JOB]));
       const reopened = await job0(world);
       expect([reopened.state, reopened.owed]).toStrictEqual([0n, 0n]);
-      expect(reopened.stamp).toBe(chainTime);
+      expect(reopened.stamp).toBe(chainTime - 1n);
       expect(reopened.stamp).not.toBe(-DAY);
       expect([await balanceOf(world, CREATOR), await balanceOf(world, addressOf(DESK_PROXY_CATEGORY))])
         .toStrictEqual([800n, 200n]);

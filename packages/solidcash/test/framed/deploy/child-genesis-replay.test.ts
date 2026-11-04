@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
-  asmToBytecode, blockOracleLockingBytecode, buildPushdataCommitment, bytesEqual, childMastersDigest,
-  encodeBlockOracleCommitment, encodePushdataValue, hash160, parsePushdataCommitment, sha256, UNSET_BLOCK_ORACLE_FIELDS,
-  type FunctionSplitBundle, type StateLayout,
+  asmToBytecode, buildPushdataCommitment, bytesEqual, childMastersDigest, encodePushdataValue,
+  parsePushdataCommitment, sha256, type FunctionSplitBundle, type StateLayout,
 } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
@@ -15,6 +14,8 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import { fillFramedChildSlots, framedChildConstants } from '../../../src/framed/deploy/child-constants.js';
 import { childGenesisReservation, patchChildGenesisSlots } from '../../../src/framed/deploy/child-locks.js';
+import { deployMaster } from '../../../src/framed/deploy/material.js';
+import { artifactOraclePool } from '../../../src/oracle/pool/reader.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { functionSplitFor } from '../../../src/framed/deploy/split-registry.js';
 import { makeCallResolver } from '../../../src/framed/proxy/call-resolution.js';
@@ -72,7 +73,7 @@ contract Factory {
   }
 }`;
 
-/** A child that reads block.timestamp, so its genesis mints its own block oracle. */
+/** A child that reads block.timestamp, so its masters carry the oracle pool its creator binds. */
 const CLOCK_SOURCE = `pragma solidity ^0.8.0;
 contract Clock {
   uint256 public stamp;
@@ -124,7 +125,7 @@ interface Creation {
 async function plannedCreation(
   source: string, childName: string, entry: string, args: (child: FunctionSplitBundle) => Uint8Array[],
   initializer?: string,
-): Promise<Creation & { readonly child: FunctionSplitBundle }> {
+): Promise<Creation & { readonly child: FunctionSplitBundle; readonly provider: MockNetworkProvider }> {
   const factory = compileStringSplit(source, { ...FRAMED, primaryContractName: 'Factory' }) as FunctionSplitBundle;
   const child = compileStringSplit(source, { ...FRAMED, primaryContractName: childName }) as FunctionSplitBundle;
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -133,7 +134,6 @@ async function plannedCreation(
     provider, fundingUtxo: await freshCoin(provider, 1_500_000n), funder, changeAddress: callerAddress,
     threadCount: 1, validatorCount: 1, functionSplit: factory,
     childLocks: constants.childLocks, childPool: constants.childPool, childCollections: constants.childCollections,
-    ...(constants.childBlockOracleOwner === undefined ? {} : { childBlockOracleOwner: constants.childBlockOracleOwner }),
   });
   const callArgs = args(child);
   let initializerCall: { functionName: string; args: Uint8Array[] } | undefined;
@@ -165,6 +165,7 @@ async function plannedCreation(
   const machine = compositionMachine();
   return {
     child,
+    provider,
     result,
     category: hexToBin(caller.txid),
     categoryId: caller.txid,
@@ -311,37 +312,24 @@ describe('a creation a hostile composer lays down', () => {
     expect(creatorAccepts([...outputs(), { ...outputs()[authheadAt]! }])).toBe(false);
   }, 600_000);
 
-  it('is refused for a child that reads block.* with two oracles, none, or one whose fields or owner it chose', async () => {
+  it('mints the masters of a child that reads block.* at locks that carry its pool', async () => {
     const creation = await plannedCreation(CLOCK_SOURCE, 'Clock', 'make', () => [new Uint8Array(32)]);
-    const { result, category, categoryId, outputs, creatorAccepts } = creation;
+    const { child, provider, category, outputs, creatorAccepts } = creation;
     expect(creatorAccepts(outputs())).toBe(true);
-    const oracleLock = blockOracleLockingBytecode(category);
-    const oracleAt = outputs().findIndex((output) => bytesEqual(output.lockingBytecode, oracleLock));
-    expect(oracleAt).toBeGreaterThanOrEqual(0);
-    const oracle = outputs()[oracleAt]!;
-    // The child's oracle starts unset, naming the network's owner: no creator knows its creation's block.
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    expect(binToHex(commitmentOf(oracle))).toBe(binToHex(
-      encodeBlockOracleCommitment(hash160(provider.blockOracleOwnerPublicKey), UNSET_BLOCK_ORACLE_FIELDS),
-    ));
-    const forgedClock = encodeBlockOracleCommitment(hash160(provider.blockOracleOwnerPublicKey), {
-      ...UNSET_BLOCK_ORACLE_FIELDS, number: 900_000n, timestamp: 4_000_000_000n,
-    });
-    // A second oracle, whose fields a reader could take for the time.
-    expect(creatorAccepts([...outputs(), withCommitment({ ...oracle }, forgedClock)])).toBe(false);
-    // None: the child's reads would fail until someone mints one, at fields of their choosing.
-    expect(creatorAccepts(outputs().filter((_output, index) => index !== oracleAt))).toBe(false);
-    // One, starting at a time the composer chose, or naming a key the composer holds.
-    const chosen = outputs();
-    chosen[oracleAt] = withCommitment(oracle, forgedClock);
-    expect(creatorAccepts(chosen)).toBe(false);
-    const owned = outputs();
-    const composerOwner = encodeBlockOracleCommitment(hash160(ATTACKER.slice(0, 33)), UNSET_BLOCK_ORACLE_FIELDS);
-    owned[oracleAt] = withCommitment(oracle, composerOwner);
-    expect(creatorAccepts(owned)).toBe(false);
-    expect(result.transaction.outputs.filter((output) => ofCategory(output, category)
-      && bytesEqual(output.lockingBytecode, oracleLock))).toHaveLength(1);
-    expect(categoryId).toBe(binToHex(category));
+    const touch = child.shards.find((shard) => shard.function === 'touch')!.artifact;
+    expect(touch.oraclePoolSlots?.length).toBeGreaterThan(0);
+    // The constants bound the provider's pool, so the master the creation mints is filled with it.
+    expect(artifactOraclePool(touch)).toBe(provider.oraclePoolCategory);
+    const filledLock = deployMaster(touch, category, VALIDATOR).lockingBytecode;
+    const masterAt = outputs().findIndex((output) => ofCategory(output, category)
+      && bytesEqual(output.lockingBytecode, filledLock));
+    expect(masterAt).toBeGreaterThanOrEqual(0);
+    // The same master at the lock its unfilled program gives is refused.
+    const unfilledLock = deployMaster(structuredClone(touch), category, VALIDATOR).lockingBytecode;
+    expect(binToHex(unfilledLock)).not.toBe(binToHex(filledLock));
+    const unfilled = outputs();
+    unfilled[masterAt] = { ...unfilled[masterAt]!, lockingBytecode: unfilledLock };
+    expect(creatorAccepts(unfilled)).toBe(false);
   }, 600_000);
 
   it('takes its constants from the child, and a deployment refuses constants of another child or none', async () => {
@@ -350,20 +338,16 @@ describe('a creation a hostile composer lays down', () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const constants = framedChildConstants({ artifact: pair.logical, split: pair, provider, pool: POOL });
     const creating = factory.shards.find((shard) => shard.function === 'createPair')!.artifact;
-    // The creating shard reserves the masters' chain, the validator count and one hash per sorted collection, and no
-    // oracle owner: the pair reads no block.*.
-    expect(childGenesisReservation(creating)).toEqual({ replays: true, collections: 2, blockOracle: false });
-    expect(constants.childBlockOracleOwner).toBeUndefined();
+    // The creating shard reserves the masters' chain, the validator count and one hash per sorted collection.
+    expect(childGenesisReservation(creating)).toEqual({ replays: true, collections: 2 });
     const filled = fillFramedChildSlots(factory, constants).shards.find((shard) => shard.function === 'createPair')!;
-    expect(childGenesisReservation(filled.artifact)).toEqual({ replays: false, collections: 0, blockOracle: false });
+    expect(childGenesisReservation(filled.artifact)).toEqual({ replays: false, collections: 0 });
     const digest = childMastersDigest(constants.childLocks, constants.childPool.masters);
     expect(binToHex(asmToBytecode(filled.artifact.bytecode))).toContain(binToHex(digest));
     // Constants that do not match the child the creator replays.
     const slots = { locks: constants.childLocks, pool: constants.childPool, collections: constants.childCollections };
     expect(() => patchChildGenesisSlots(creating, { ...slots, collections: constants.childCollections.slice(1) }))
       .toThrow(/sorted collections/);
-    expect(() => patchChildGenesisSlots(creating, { ...slots, blockOracleOwner: new Uint8Array(20).fill(1) }))
-      .toThrow(/replays no block oracle/);
     expect(() => patchChildGenesisSlots(creating, { ...slots, pool: { masters: 2, validators: 0 } }))
       .toThrow(/at least one validator/);
     // A creator deployed without its child's constants would refuse every creation: the deployment refuses it.

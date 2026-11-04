@@ -23,7 +23,6 @@ import {
   FrameKind,
   INDEX_NONE,
   TokenCapability,
-  blockOracleLockingBytecode,
   encodeTranscript,
   validatorRedeemScript,
 } from '@solidcash/utils';
@@ -1175,51 +1174,6 @@ describe('the validator program refuses each rule it enforces', () => {
     const tampered: ModelledTransaction = { ...modelled, outputs: [...modelled.outputs, extra] };
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_UNEXPECTED_MUTABLE');
     expect(accepted(tampered, index)).toBe(false);
-  });
-
-  test('admits the contract\'s block oracle only as recreated in place, and never as a state UTXO', () => {
-    // The census derives the oracle lock from the settled category. Recreated at its own index the oracle settles
-    // unlisted; rewritten, or minted where no oracle was spent, it is refused by all three.
-    const composition = laidOut(singleContractPlan());
-    const index = composition.validatorIndex;
-    const modelled = materialise(composition);
-    const category = modelled.outputs.find((output) => output.token.capability === TokenCapability.MUTABLE)!
-      .token.category;
-    const lockingBytecode = blockOracleLockingBytecode(category);
-    const commitment = seedBytes('oracle-commitment', 40);
-    const at = Math.max(modelled.inputs.length, modelled.outputs.length);
-    const pad = (position: number): { lockingBytecode: Uint8Array; token: ReturnType<typeof emptyToken> } => ({
-      lockingBytecode: userLockOf(`oracle-pad-${position}`), token: emptyToken(),
-    });
-    const withOracle = (spent: boolean, recreated: Uint8Array): ModelledTransaction => ({
-      inputs: [...modelled.inputs, ...Array.from({ length: at + 1 - modelled.inputs.length }, (_none, k) => {
-        const position = modelled.inputs.length + k;
-        return {
-          index: position, value: 1_000n, unlockingBytecode: Uint8Array.of(0x51), outpointIndex: 0,
-          outpointTransactionHash: seedBytes(`oracle-input-${position}`, 32),
-          ...(position === at && spent
-            ? { lockingBytecode, token: mutableTokenShape(category, commitment) } : pad(position)),
-        };
-      })],
-      outputs: [...modelled.outputs, ...Array.from({ length: at + 1 - modelled.outputs.length }, (_none, k) => {
-        const position = modelled.outputs.length + k;
-        return {
-          index: position, value: 1_000n,
-          ...(position === at ? { lockingBytecode, token: mutableTokenShape(category, recreated) } : pad(position)),
-        };
-      })],
-    });
-    const reference = (transaction: ModelledTransaction): boolean =>
-      decideReference(transaction, { validatorTemplate: PROGRAM, validatorInputIndex: index }).accepted;
-    const honest = withOracle(true, commitment);
-    expect(derivationOf(honest, index).accepted).toBe(true);
-    expect(reference(honest)).toBe(true);
-    expect(accepted(honest, index)).toBe(true);
-    for (const tampered of [withOracle(true, seedBytes('oracle-rewritten', 40)), withOracle(false, commitment)]) {
-      expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_UNEXPECTED_MUTABLE');
-      expect(reference(tampered)).toBe(false);
-      expect(accepted(tampered, index)).toBe(false);
-    }
   });
 
   test('refuses a record left with less value than it came with, even by its frame\'s send', () => {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hexToBin } from '@bitauth/libauth';
-import { blockOracleLockingBytecode, type AbiFunction } from '@solidcash/utils';
+import type { AbiFunction } from '@solidcash/utils';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import type { UnlockableUtxo } from '../../src/interfaces.js';
 import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
@@ -14,8 +13,8 @@ describe('nested block oracle coordinates', () => {
     const categoryId = '11'.repeat(31) + 'ee';
     const provider = new MockNetworkProvider();
     const lock = Uint8Array.of(0x51);
-    // The reader's oracle is a coin of its own category, at the lock that category gives.
-    const oracleLock = blockOracleLockingBytecode(hexToBin(categoryId));
+    const oracleLock = Uint8Array.of(0x52);
+    const oraclePool = '22'.repeat(31) + 'dd';
     const plain = (): UnlockableUtxo => ({
       txid: '01'.repeat(32), vout: 0, satoshis: 1200n,
       unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => new Uint8Array() },
@@ -29,7 +28,7 @@ describe('nested block oracle coordinates', () => {
         categoryId, functionName, functionArgs: [], masterUtxo: plain(), dataNftUtxos: [],
         requiredDataNftIndices: [], stateLayout: { variables: [], dataNftCount: 0 },
         externalContract: { inner: {
-          artifact: { abi: [abiFunction] }, blockOracleLock: oracleLock, provider, addressType: 'p2sh32',
+          artifact: { abi: [abiFunction] }, oraclePool, provider, addressType: 'p2sh32',
           lockingBytecode: `aa20${'00'.repeat(32)}87`,
           unlock: { [functionName]: makeUnlocker }, createAbiUnlocker: () => makeUnlocker,
         } },
@@ -47,7 +46,7 @@ describe('nested block oracle coordinates', () => {
     const reader = group('stamp', [{ name: '__internal__blockOracleInputIndex', type: 'bigint' }]);
     reader.blockLayout = { blockSize: 2, slots: [{ kind: 'master', offset: 0 },
       { kind: 'blockInfoOracle', offset: 1 }] };
-    reader.blockInputs = [plain(), { ...plain(), token: { category: categoryId, amount: 0n,
+    reader.blockInputs = [plain(), { ...plain(), token: { category: oraclePool, amount: 0n,
       nft: { capability: 'mutable', commitment: '00' } }, unlocker: {
       generateLockingBytecode: () => oracleLock, generateUnlockingBytecode: () => new Uint8Array(),
     } }];
@@ -58,7 +57,7 @@ describe('nested block oracle coordinates', () => {
     await finalizeCreateBuilderNestedBasesUnlockers(host, groups, groups.map(() => ({
       parentGroupIndex: -1, callerCategoryId: categoryId, ecSlot: { requiredDataNftIndices: [] },
     })), 3, new Map(), () => undefined);
-    // Three root inputs, then one master + four read chunks, then the reader's oracle at offset one.
+    // Three root inputs, then one master + four read chunks, then the reader's pool coin at offset one.
     expect((reader.masterUtxo as UnlockableUtxo & { unlocker: { params: unknown[] } })
       .unlocker.params).toEqual([9n]);
   });

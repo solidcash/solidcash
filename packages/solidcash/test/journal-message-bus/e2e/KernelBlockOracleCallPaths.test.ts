@@ -1,6 +1,5 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from '@solidcash/solidc';
-import { blockOracleLockingBytecode, type BlockOracleCommitmentFields } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, type TransactionBuilder } from '../../../src/index.js';
 import type { ConstructorArgument } from '../../../src/Argument.js';
@@ -8,13 +7,11 @@ import { StatefulContract } from '../../../src/stateful/index.js';
 import { MockNetworkProvider } from '../../../src/network/mock/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import * as messageBus from '../../../src/message-bus/index.js';
+import { isPoolInfoOutput } from '../../../src/oracle/pool/index.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, mintTestOraclePool, setupStatefulUtxos } from '../../test-util.js';
 
 const T = 1_699_990_000n;
-const CLOCK: BlockOracleCommitmentFields = {
-  number: 133_699n, timestamp: T, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array(),
-};
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
 const direct = { forceStateful: true, messageBus: false } as const;
 const results = (builder: TransactionBuilder): Array<true | string> => {
@@ -26,52 +23,45 @@ const results = (builder: TransactionBuilder): Array<true | string> => {
   })));
 };
 
+/** A chain and a pool of its own whose info coins hold timestamp T; the provider's pool publishes the chain's. */
+interface Clock {
+  readonly provider: MockNetworkProvider;
+  readonly pool: string;
+}
+
 async function connect(
-  provider: MockNetworkProvider, artifact: ReturnType<typeof compileString>, args: ConstructorArgument[] = [],
+  clock: Clock, artifact: ReturnType<typeof compileString>, args: ConstructorArgument[] = [],
 ): Promise<StatefulContract> {
-  const base = new Contract(artifact, args, { provider });
+  const { provider, pool } = clock;
+  const base = new Contract(artifact, args, { provider, oraclePool: pool });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
   return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
 }
 
-/** Set the test clock on each reader's own oracle, which its genesis minted. */
-function setClock(provider: MockNetworkProvider, readers: readonly StatefulContract[]): void {
-  for (const reader of readers) provider.setBlockOracleFields(CLOCK, reader.categoryId);
-}
-
-/** Each reader co-spends its own oracle once, recreated in place, and no other oracle is spent. */
-function expectOwnOracles(builder: TransactionBuilder, readers: readonly StatefulContract[]): number[] {
-  const sources = generateLibauthSourceOutputs(builder.inputs);
-  const oracles = sources.flatMap((output, index) => output.token?.nft?.capability === 'mutable'
-    && binToHex(output.lockingBytecode) === binToHex(blockOracleLockingBytecode(output.token.category))
-    ? [index] : []);
-  expect(oracles).toHaveLength(readers.length);
-  return readers.map((reader) => {
-    const own = oracles.filter((index) => binToHex(sources[index].lockingBytecode)
-      === binToHex(reader.inner.blockOracleLock!));
-    expect(own).toHaveLength(1);
-    expect(builder.outputs[own[0]].token!.nft!.commitment).toBe(builder.inputs[own[0]].token!.nft!.commitment);
-    return own[0];
+async function providerWithClock(): Promise<Clock> {
+  const provider = new MockNetworkProvider();
+  const pool = await mintTestOraclePool(provider, {
+    number: 133_699n, timestamp: T, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array(),
   });
+  return { provider, pool };
 }
 
-/** A changed commitment on any reader's oracle fails the transaction. */
-function expectOraclesAuthenticated(builder: TransactionBuilder, oracles: readonly number[]): void {
-  for (const oracle of oracles) {
-    const commitment = builder.outputs[oracle].token!.nft!.commitment;
-    builder.outputs[oracle].token!.nft!.commitment = '00';
-    expect(results(builder).some((result) => result !== true)).toBe(true);
-    builder.outputs[oracle].token!.nft!.commitment = commitment;
-  }
+/** The one coin of the pool the transaction co-spends, recreated at its own index. */
+function expectOneOracle(builder: TransactionBuilder, clock: Clock): number {
+  const inputs = generateLibauthSourceOutputs(builder.inputs);
+  const indexes = inputs.flatMap((output, index) => (isPoolInfoOutput(output, clock.pool) ? [index] : []));
+  expect(indexes).toHaveLength(1);
+  expect(builder.outputs[indexes[0]].token!.nft!.commitment).toBe(builder.inputs[indexes[0]].token!.nft!.commitment);
+  return indexes[0];
 }
 
-describe('own block-info oracles on additional call paths', () => {
-  it('forwards a nested non-bus reader the index of its own oracle', async () => {
-    const provider = new MockNetworkProvider();
-    const reader = await connect(provider, compileString(`contract Reader() {
+describe('shared block-info pool coin on additional call paths', () => {
+  it('forwards the same pool coin index to a nested non-bus reader', async () => {
+    const clock = await providerWithClock();
+    const reader = await connect(clock, compileString(`contract Reader() {
       function read(int expected) public { require(block.timestamp == expected); }
     }`, direct));
-    const caller = await connect(provider, compileString(`interface IReader { function read(int expected); }
+    const caller = await connect(clock, compileString(`interface IReader { function read(int expected); }
       contract Forward(address reader) {
         function invoke(int expected) public {
           require(block.timestamp == expected);
@@ -80,17 +70,19 @@ describe('own block-info oracles on additional call paths', () => {
         }
       }`, direct), [reader.inner.lockingBytecode]);
     caller._registerResolvedExternal('IReader', reader);
-    setClock(provider, [caller, reader]);
     const call = caller.call.invoke(T);
     const builder = await call.build();
-    const oracles = expectOwnOracles(builder, [caller, reader]);
+    const oracle = expectOneOracle(builder, clock);
     expect(results(builder)).toEqual(builder.inputs.map(() => true));
-    expectOraclesAuthenticated(builder, oracles);
+    const commitment = builder.outputs[oracle].token!.nft!.commitment;
+    builder.outputs[oracle].token!.nft!.commitment = '00';
+    expect(results(builder).some((result) => result !== true)).toBe(true);
+    builder.outputs[oracle].token!.nft!.commitment = commitment;
     await expect(call.send()).resolves.toHaveProperty('txid');
   }, 120_000);
 
-  it('forwards an oracle read of the implementation\'s own oracle through a plain delegate forwarder', async () => {
-    const provider = new MockNetworkProvider();
+  it('forwards a pool read through a plain delegate forwarder', async () => {
+    const clock = await providerWithClock();
     const implementationArtifact = compileString(`contract ClockImplementation() {
       int seen;
       function read(int expected) public {
@@ -98,8 +90,8 @@ describe('own block-info oracles on additional call paths', () => {
         require(this.seen == expected);
       }
     }`, direct);
-    const implementation = await connect(provider, implementationArtifact.delegateArtifact!);
-    const forwarder = await connect(provider, compileString(`contract DelegateForward() {
+    const implementation = await connect(clock, implementationArtifact.delegateArtifact!);
+    const forwarder = await connect(clock, compileString(`contract DelegateForward() {
       int seen;
       function forward(bytes input) public {
         address implementation = address(0x${implementation.inner.lockingBytecode});
@@ -107,25 +99,27 @@ describe('own block-info oracles on additional call paths', () => {
         require(input.length > 0);
       }
     }`, direct));
-    // The forwarder reads no clock: the oracle is the implementation's.
-    setClock(provider, [implementation]);
     const selector = implementation.inner.artifact.abi.find((entry) => entry.name === 'read')!.selector!;
     const call = forwarder.call.forward(hexToBin(selector)).withDelegatecall(implementation, 'read', [T]);
     const builder = await call.build();
-    const oracles = expectOwnOracles(builder, [implementation]);
+    const oracle = expectOneOracle(builder, clock);
     expect(results(builder)).toEqual(builder.inputs.map(() => true));
-    expectOraclesAuthenticated(builder, oracles);
+    const commitment = builder.outputs[oracle].token!.nft!.commitment;
+    builder.outputs[oracle].token!.nft!.commitment = '00';
+    expect(results(builder).some((result) => result !== true)).toBe(true);
+    builder.outputs[oracle].token!.nft!.commitment = commitment;
     await expect(call.send()).resolves.toHaveProperty('txid');
   }, 120_000);
 
-  it('keeps each reader of an all-staticcall composition its own oracle, none padded away', async () => {
-    const provider = new MockNetworkProvider();
+  it('shares one pool coin across an all-staticcall composition and authenticates its neutral pads', async () => {
+    const clock = await providerWithClock();
+    const { provider } = clock;
     const readerArtifact = compileString(`contract ClockReader() {
       function read(int expected) public view { require(block.timestamp == expected); }
     }`, KERNEL);
-    const first = await connect(provider, readerArtifact);
-    const second = await connect(provider, readerArtifact);
-    const caller = await connect(provider, compileString(`interface IClock { function read(int expected); }
+    const first = await connect(clock, readerArtifact);
+    const second = await connect(clock, readerArtifact);
+    const caller = await connect(clock, compileString(`interface IClock { function read(int expected); }
       contract StaticForward(address first, address second) {
         function invoke(int expected) public {
           require(block.timestamp == expected);
@@ -134,22 +128,21 @@ describe('own block-info oracles on additional call paths', () => {
           require(true);
         }
       }`, KERNEL), [first.inner.lockingBytecode, second.inner.lockingBytecode]);
-    setClock(provider, [caller, first, second]);
     const funder = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
       calls: [caller.call.invoke(T), first.call.read(T), second.call.read(T)], funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
     const builder = await composition.build();
-    // A neutral pad stands in only for a later copy of one contract's oracle: distinct readers keep their own.
-    const oracles = expectOwnOracles(builder, [caller, first, second]);
+    expectOneOracle(builder, clock);
     expect(results(builder)).toEqual(builder.inputs.map(() => true));
-    // Each kept oracle is pinned at its full value.
-    for (const oracle of oracles) {
-      builder.outputs[oracle].amount -= 1n;
-      expect(results(builder).some((result) => result !== true)).toBe(true);
-      builder.outputs[oracle].amount += 1n;
-    }
+    const sources = generateLibauthSourceOutputs(builder.inputs);
+    const pads = sources.flatMap((output, index) => output.token === undefined
+      && binToHex(output.lockingBytecode).startsWith('aa20953c') ? [index] : []);
+    expect(pads.length).toBeGreaterThanOrEqual(2);
+    const hostile = await composition.build();
+    hostile.outputs[pads[0]].amount -= 1n;
+    expect(results(hostile).some((result) => result !== true)).toBe(true);
     await expect(composition.send()).resolves.toHaveProperty('txid');
   }, 120_000);
 });

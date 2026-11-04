@@ -7,10 +7,12 @@ import {
   StatefulContract,
   getDataNftLockingBytecode,
 } from '../../src/stateful/index.js';
-import { createTestProvider, seedBlockhashSlot, setupStatefulUtxos } from '../test-util.js';
+import { selectPoolSlot } from '../../src/oracle/pool/index.js';
+import type { MockNetworkProvider } from '../../src/network/mock/index.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // One stateful function combining every front-region auxiliary co-spend family the unified band allocates:
-// a blockhash slot, a keccak256 compute side-car, a read-only external state read, and an external call.
+// a blockhash ring slot, a keccak256 compute side-car, a read-only external state read, and an external call.
 // The block layout must order them in one band (master -> dataNft -> readOnlyDataNft -> blockhashOracle ->
 // keccakSideCar) and the SDK must co-spend them at exactly those slots, or the transaction cannot settle.
 
@@ -52,7 +54,7 @@ contract AuxBandCaller(bytes readableAddr, bytes counterAddr) {
 
 describe('unified auxiliary co-spend band (oracle + keccak + external read + external call)', () => {
   it('builds and settles a call mixing all four auxiliary families', async () => {
-    const provider = createTestProvider();
+    const provider = createTestProvider() as MockNetworkProvider;
     const before = await provider.getBlockHeight();
     await provider.mine(1);
     const n = before + 1;
@@ -81,12 +83,12 @@ describe('unified auxiliary co-spend band (oracle + keccak + external read + ext
     const callerContract = new Contract(
       callerArtifact, [readableDataLock, counterMasterLock], { provider },
     );
+    // blockhash(n) reads a ring slot of the pool the caller binds, the provider's, which holds the mined block n.
+    expect(callerContract.oraclePool).toBe(provider.oraclePoolCategory);
+    expect((await selectPoolSlot(provider, callerContract.oraclePool!, BigInt(n)))?.exact).toBe(true);
     const { categoryId: callerCategory } = await setupStatefulUtxos(
       provider, callerContract, callerArtifact.stateLayout!, { lastSeen: 0n }, { saltContract: true },
     );
-
-    // Seed the caller's blockhash slot holding n, which the covenant reads.
-    await seedBlockhashSlot(provider, callerCategory, BigInt(n), hash);
 
     const readableSc = StatefulContract.withCategory(readableContract, readableCategory);
     const counterSc = StatefulContract.withCategory(counterContract, counterCategory);

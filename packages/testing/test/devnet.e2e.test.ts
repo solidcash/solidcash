@@ -27,10 +27,9 @@ import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumWebSocket } from '@electrum-cash/web-socket';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const ORACLE_USER = `contract OracleUser() {
+const POOL_READER = `contract PoolReader() {
   uint seen;
   function record() public { this.seen = block.number; require(true); }
-  function reset() public { this.seen = 0; require(true); }
 }`;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -46,7 +45,7 @@ interface NodeHandle {
   readonly httpUrl: string;
   readonly wsUrl: string;
   readonly evmRpc: boolean;
-  readonly blockOracle: { lock: string; category: string; outpoint: { txid: string; vout: number } } | null;
+  readonly oraclePool: string | null;
   readonly accounts: { index: number; address: string; path: string; wif?: string }[];
   readonly lines: string[];
   exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
@@ -141,7 +140,7 @@ async function startNode(extraArgs: string[] = [], cwd = fixture): Promise<NodeH
     httpUrl: String(info.httpUrl),
     wsUrl: String(info.wsUrl),
     evmRpc: info.evmRpc === true,
-    blockOracle: (info.blockOracle ?? null) as NodeHandle['blockOracle'],
+    oraclePool: (info.oraclePool ?? null) as string | null,
     accounts,
     lines,
     exit,
@@ -235,9 +234,11 @@ describe('solidhat node end to end', () => {
     expect(node.chainId).toBe('mem-cash-devnet');
     expect(node.genesisHash).toMatch(/^[0-9a-f]{64}$/);
     expect(node.evmRpc).toBe(false);
-    expect(node.blockOracle).not.toBeNull();
+    expect(node.oraclePool).toMatch(/^[0-9a-f]{64}$/);
     const listeningLine = node.lines.find((line) => line.includes('"event":"listening"'));
     expect(listeningLine).toBeDefined();
+    // The node installs no single block oracle; readers read its pool.
+    expect(listeningLine).not.toContain('blockOracle');
     expect(listeningLine).not.toContain('wif');
     expect(listeningLine).not.toContain('Mnemonic');
     expect(node.accounts).toHaveLength(20);
@@ -458,70 +459,79 @@ describe('solidhat node end to end', () => {
     expect((await call<{ ok: boolean }>(node, 'devnet.verifyHeaders')).ok).toBe(true);
   }, 60_000);
 
-  it('deploys a block.number reader against the spawned node, whose own oracle holds the next block', async () => {
+  it('advertises its oracle pool, which a block.number reader reads across mine, time, revert and reset', async () => {
     const { createHardhatRuntimeEnvironment } = await import('../src/hre.js');
     const { resolveConfig } = await import('../src/config.js');
     const { compileString } = await import('@solidcash/solidc');
-    const { blockOracleLockingBytecode } = await import('@solidcash/utils');
+
+    const features = await call<{ devnet: { oracle_pool?: { category: string } | null } }>(node, 'server.features');
+    const category = features.devnet.oracle_pool?.category;
+    expect(category).toMatch(/^[0-9a-f]{64}$/);
+    expect(category).toBe(node.oraclePool);
+
+    // Each info coin of the pool: flags 0x00, the owner (20), then 5-byte fields of 4 LE bytes and a 0x00.
+    const infoCoins = async (): Promise<{ number: number; timestamp: number }[]> => {
+      const utxos = await call<{ token?: { nft?: { capability: string; commitment: string } } }[]>(
+        node, 'devnet.utxosByCategory', [category],
+      );
+      return utxos.flatMap(({ token }) => {
+        if (token?.nft?.capability !== 'mutable' || !token.nft.commitment.startsWith('00')) return [];
+        const bytes = Buffer.from(token.nft.commitment, 'hex');
+        return [{ number: bytes.readUInt32LE(21), timestamp: bytes.readUInt32LE(26) }];
+      });
+    };
+    // The keeper holds both info coins at the tip's height and the second before its median time past.
+    const expectPoolAtTip = async (): Promise<number> => {
+      const info = await call<{ height: number; medianTimePast: number }>(node, 'devnet.info');
+      const tip = { number: info.height, timestamp: info.medianTimePast - 1 };
+      expect(await infoCoins()).toEqual([tip, tip]);
+      return info.height;
+    };
 
     const hre = createHardhatRuntimeEnvironment(resolveConfig({
       defaultNetwork: 'localhost',
       networks: { localhost: { type: 'mem-cash', memCash: { port: node.port } } },
     }), 'localhost');
     const provider = hre.network.provider as unknown as {
+      oraclePoolCategory?: string;
       mine(count?: number): Promise<void>;
       disconnect(): Promise<void>;
     };
 
-    // The reader's own oracle, read at its lock.
-    const readOracle = async (categoryId: string): Promise<{ number: number; timestamp: number } | undefined> => {
-      const lock = blockOracleLockingBytecode(Uint8Array.from(Buffer.from(categoryId, 'hex')));
-      const utxos = await hre.network.provider.getUtxosForLockingBytecode(lock);
-      const commitment = utxos.find((utxo) => utxo.token?.nft?.capability === 'mutable')?.token?.nft?.commitment;
-      if (commitment === undefined) return undefined;
-      const bytes = Buffer.from(commitment, 'hex');
-      // owner pkh (20), then 5-byte fields: 4 LE bytes + a 0x00 terminator.
-      return { number: bytes.readUInt32LE(20), timestamp: bytes.readUInt32LE(25) };
-    };
-    const tip = async (): Promise<number> => (await call<{ height: number }>(node, 'devnet.info')).height;
-
     try {
       const [signer] = await hre.ethers.getSigners(1);
-      const artifact = compileString(ORACLE_USER, { composition: 'direct' });
-      const contract = await hre.ethers.getContractFactory(artifact, signer).deploy();
-      const oracle = (): ReturnType<typeof readOracle> => readOracle(contract.categoryId);
+      expect(provider.oraclePoolCategory).toBe(category);
+      const artifact = compileString(POOL_READER, { composition: 'direct' });
+      expect(artifact.constructorInputs.map((input) => input.name)).toEqual(['__oraclePool']);
+      let reader = await hre.ethers.getContractFactory(artifact, signer).deploy();
+      // A read takes the height of the info coin it co-spends: the tip's when the call is built.
+      const record = async (): Promise<void> => {
+        const height = await expectPoolAtTip();
+        await reader.call.record().send();
+        expect((await reader.getState()).seen).toBe(BigInt(height));
+      };
+      await record();
 
-      expect((await oracle())?.number).toBe((await tip()) + 1);
-      await contract.call.record().send();
-      expect((await oracle())?.number).toBe((await tip()) + 1);
-
-      // A block mined from another process advances the oracle; the reader still records.
+      // A block mined from another process moves the pool; so does time travel.
       await call(node, 'devnet.mine', [1]);
-      expect((await oracle())?.number).toBe((await tip()) + 1);
-      await contract.call.record().send();
-
-      // Time travel from another process moves the committed timestamp.
+      await record();
       await call(node, 'devnet.increaseTime', [3600]);
-      const afterTime = await call<{ timestamp: number }>(node, 'devnet.info');
-      expect((await oracle())?.timestamp).toBe(afterTime.timestamp + 1);
-      await contract.call.record().send();
+      await record();
 
-      // Snapshot -> time travel -> record -> revert -> record keeps working.
+      // Snapshot -> time travel -> record -> revert -> mine -> record.
       const snapshot = await call<{ id: string }>(node, 'devnet.snapshot');
       await call(node, 'devnet.increaseTime', [86_400]);
-      await contract.call.record().send();
+      await record();
       expect(await call(node, 'devnet.revert', [snapshot.id])).toBe(true);
       await provider.mine(1);
-      await contract.call.record().send();
-      expect((await oracle())?.number).toBe((await tip()) + 1);
+      await record();
 
-      // Reset restores the post-prepare baseline, which predates the reader and its oracle; a new reader mints its own.
+      // Reset restores the post-prepare baseline, the pool's genesis included; the reader is deployed again.
       await call(node, 'devnet.reset');
       await provider.mine(1);
-      expect(await oracle()).toBeUndefined();
-      const redeployed = await hre.ethers.getContractFactory(artifact, signer).deploy();
-      await redeployed.call.record().send();
-      expect((await readOracle(redeployed.categoryId))?.number).toBe((await tip()) + 1);
+      await expectPoolAtTip();
+      reader = await hre.ethers.getContractFactory(artifact, signer).deploy();
+      await record();
     } finally {
       await provider.disconnect();
     }

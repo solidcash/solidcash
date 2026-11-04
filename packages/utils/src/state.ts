@@ -121,9 +121,8 @@ export interface StateRecord { [key: string]: StateValue; }
 /**
  * `[authorityIndex]` stays. The authority is a 35-byte P2SH32 whose final redeem push is longer than 128
  * bytes. The redeem is the push that reaches the end of the unlocking; every push in front, of any size, is an
- * argument and is skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem, and the keeper baton is a
- * one-byte redeem. The walk parses a 512-byte head at a time, so a contract-sized redeem is not copied on every
- * argument.
+ * argument and is skipped. A pad in front of `OP_DROP OP_1` leaves a 2-byte redeem. The walk parses a 512-byte
+ * head at a time, so a contract-sized redeem is not copied on every argument.
  */
 function bindMintingAuthorityLock(masterLock?: Uint8Array): Script {
   if (masterLock !== undefined) {
@@ -250,7 +249,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_IF,
     // === Destroy path (flag=2): verify master only, no output preservation ===
     Op.OP_DROP, // drop original flag
-    // A second minting baton (the block-oracle keeper) must not burn this record.
+    // A second minting NFT of the category must not burn this record.
     ...bindMintingAuthorityLock(masterLock),
     // Verify minting NFT at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
@@ -298,8 +297,8 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     // === Original two-path logic (flag=0 or flag=1) ===
     Op.OP_IF,
     // === Write path (flag=1): verify minting NFT at masterInputIndex ===
-    // The block-oracle keeper is a second minting NFT at its own short lock. Its unlocking is a few
-    // bytes; the contract master reveals its redeem. Require a P2SH32 lock and that long unlocking.
+    // A second minting NFT of the category sits at a short lock; the contract master reveals its redeem.
+    // Require a P2SH32 lock and that long unlocking.
     ...bindMintingAuthorityLock(masterLock),
     // Part 1: verify minting NFT of expected category at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
@@ -2349,91 +2348,6 @@ export function splitEventPayload(payload: Uint8Array, chunkBytes: number = EVEN
   return chunks;
 }
 
-/**
- * One blockhash covenant per master category. Every block of that contract is an immutable NFT at the
- * same lock. The commitment is `n` as 4 little-endian bytes followed by the 32-byte hash. Readers of the
- * master co-spend the UTXO whose commitment starts with the `n` they asked for. `n` is not baked in.
- *
- * The covenant self-pins the master category (capability 'none'). Flag 0 recreates bytecode, category,
- * and commitment. Flag 1 wipes once `tx.time >= n + 256`, with `n` read from the commitment.
- */
-export function buildBlockhashOracleCovenantScript(categoryId: Uint8Array): Script {
-  if (categoryId.length !== 32) throw new Error('blockhash oracle category is 32 bytes');
-  const catInternal = categoryId.slice().reverse();
-  return [
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n), Op.OP_SPLIT, Op.OP_SWAP,
-    catInternal, Op.OP_EQUALVERIFY,
-    encodeInt(0n), Op.OP_EQUALVERIFY,
-    Op.OP_IF,
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT,
-    encodeInt(4n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_BIN2NUM,
-    encodeInt(256n), Op.OP_ADD, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP,
-    Op.OP_ELSE,
-    Op.OP_INPUTINDEX, Op.OP_UTXOBYTECODE, Op.OP_INPUTINDEX, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
-    Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_INPUTINDEX, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
-    Op.OP_ENDIF,
-    Op.OP_1,
-  ];
-}
-
-/** The one p2sh32 lock for every (n -> hash) NFT of this master category. */
-export function blockhashOracleLockingBytecode(categoryId: Uint8Array): Uint8Array {
-  const scriptHash = sha256(sha256(scriptToBytecode(buildBlockhashOracleCovenantScript(categoryId))));
-  return Uint8Array.from([0xaa, 0x20, ...scriptHash, 0x87]);
-}
-
-/**
- * The blockhash keeper's minting baton of the consumer's own category (audit CRYPTO-4). A bare baton could stand
- * in for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master.
- * Under this covenant it can only mint (n -> hash) oracles. A spend needs the keeper's signature and this shape:
- *  - input 0 is the baton; at most one other input, carrying no token, so no record or master co-spends;
- *  - output 0 recreates the baton (same lock and token category);
- *  - output 1 is a capability-none NFT of the category with a 36-byte n(4 LE)||hash commitment, at the
- *    category's one blockhash oracle lock, with tx.time >= n;
- *  - an optional output 2 carries no token.
- */
-export function buildBlockhashKeeperBatonScript(categoryId: Uint8Array, keeperPublicKey: Uint8Array): Script {
-  return [
-    keeperPublicKey, Op.OP_CHECKSIGVERIFY,
-    Op.OP_INPUTINDEX, Op.OP_NOT, Op.OP_VERIFY,
-    Op.OP_TXINPUTCOUNT, Op.OP_DUP, Op.OP_3, Op.OP_LESSTHAN, Op.OP_VERIFY,
-    Op.OP_2, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_1, Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
-    Op.OP_TXOUTPUTCOUNT, Op.OP_DUP, Op.OP_2, Op.OP_4, Op.OP_WITHIN, Op.OP_VERIFY,
-    Op.OP_3, Op.OP_NUMEQUAL, Op.OP_IF, Op.OP_2, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY, Op.OP_ENDIF,
-    Op.OP_0, Op.OP_OUTPUTBYTECODE, Op.OP_0, Op.OP_UTXOBYTECODE, Op.OP_EQUALVERIFY,
-    Op.OP_0, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_0, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
-    Op.OP_1, Op.OP_OUTPUTTOKENCATEGORY, categoryId.slice().reverse(), Op.OP_EQUALVERIFY,
-    Op.OP_1, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_SIZE, encodeInt(36n), Op.OP_NUMEQUALVERIFY,
-    Op.OP_4, Op.OP_SPLIT, Op.OP_DROP, Op.OP_BIN2NUM, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP,
-    // n is in the commitment, so every block of the category shares this one lock.
-    Op.OP_1, Op.OP_OUTPUTBYTECODE, blockhashOracleLockingBytecode(categoryId), Op.OP_EQUAL,
-  ];
-}
-
-/** p2sh32 locking bytecode of the keeper baton covenant. */
-export function blockhashKeeperBatonLockingBytecode(categoryId: Uint8Array, keeperPublicKey: Uint8Array): Uint8Array {
-  const redeem = scriptToBytecode(buildBlockhashKeeperBatonScript(categoryId, keeperPublicKey));
-  return Uint8Array.from([0xaa, 0x20, ...hash256(redeem), 0x87]);
-}
-
-/** Build the (n,hash) commitment: n as 4 little-endian bytes followed by the 32-byte hash. */
-export function buildBlockhashCommitment(n: bigint, hash: Uint8Array): Uint8Array {
-  const n4 = new Uint8Array(4);
-  let v = n;
-  for (let i = 0; i < 4; i++) { n4[i] = Number(v & 0xffn); v >>= 8n; }
-  return Uint8Array.from([...n4, ...hash]);
-}
-
-// Decode the block number from a (n->hash) oracle commitment: the first 4 bytes, little-endian (the inverse
-// of buildBlockhashCommitment). Used to match a co-spent oracle UTXO to a blockhash(n) reader.
-export function blockhashCommitmentNumber(commitment: Uint8Array): bigint {
-  let n = 0n;
-  for (let i = 0; i < 4 && i < commitment.length; i++) n |= BigInt(commitment[i]) << BigInt(8 * i);
-  return n;
-}
-
 // A blockhashReads entry is either a function param name (n = the call arg) or a synthetic computed-read key
 // `<computed:i>`. For a computed key the SDK resolves n from the auto-derivation probe trace - the covenant
 // computes n on-stack from ANY expression (block.number - K, arbitrary arithmetic), so n is never re-derived
@@ -2653,7 +2567,7 @@ export function buildSatoshiContainerCovenantScript(
   return [
     // Stack: <masterInputIndex | mergeOutputIndex> <flag>
     Op.OP_IF,
-    // === Master path (flag=1): the contract's own locking bytecode, not a keeper baton ===
+    // === Master path (flag=1): the contract's own locking bytecode, not another minting NFT ===
     ...bindMintingAuthorityLock(masterLock),
     ...masterCategoryRead(retires),
     encodeInt(32n),

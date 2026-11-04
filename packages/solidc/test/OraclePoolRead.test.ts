@@ -12,7 +12,7 @@ import {
 } from '@bitauth/libauth';
 import {
   applyOraclePool, asmToBytecode, asmToScript, encodeIntegerValue, encodePoolInfoCommitment, encodePoolSlotCommitment,
-  findBlockOracleLockSlots, findOraclePoolSlots, oraclePoolBinding, ORACLE_POOL_PARAMETER, POOL_COIN_SATS,
+  findOraclePoolSlots, oraclePoolBinding, ORACLE_POOL_PARAMETER, POOL_COIN_SATS,
   POOL_FLAG_NUMBER_STOPPED, POOL_FLAG_SLOT, poolInfoLockingBytecode, poolInfoReadUnlocking, poolSlotLockingBytecode,
   poolSlotReadUnlocking, scriptToBytecode, type AbiFunction, type Artifact, type PoolInfoFields,
 } from '@solidcash/utils';
@@ -168,12 +168,12 @@ function readSpend(artifact: Artifact, coin: Coin, time = TIME): Spend {
 describe('a block.* reader bound to an oracle pool', () => {
   const artifact = compileString(READER, { messageBus: false });
 
-  it('takes the __oraclePool input and publishes no lock slots', () => {
+  it('takes the __oraclePool input, and no pool slots, update entry or block register', () => {
     expect(artifact.usesBlockOracle).toBe(true);
     expect(artifact.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
-    expect(artifact.blockOracleLockSlots).toBeUndefined();
     expect(artifact.oraclePoolSlots).toBeUndefined();
-    expect(findBlockOracleLockSlots(asmToBytecode(artifact.bytecode))).toEqual([]);
+    expect(artifact.abi.map((fn) => fn.name)).not.toContain('__updateBlockOracle');
+    expect(artifact.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_timestamp');
   });
 
   it('accepts a read of a block-info coin of its pool', () => {
@@ -210,7 +210,6 @@ describe('a framed block.* reader', () => {
     const artifact = compileString(source, { composition: 'framed', suppressWarnings: true });
     const program = asmToBytecode(artifact.bytecode);
     expect(artifact.constructorInputs.map((entry) => entry.name)).not.toContain(ORACLE_POOL_PARAMETER);
-    expect(artifact.blockOracleLockSlots).toBeUndefined();
     expect(artifact.oraclePoolSlots?.length).toBeGreaterThan(0);
     expect(artifact.oraclePoolSlots).toEqual(findOraclePoolSlots(program));
     const filled = applyOraclePool(program, POOL, artifact.oraclePoolSlots!);

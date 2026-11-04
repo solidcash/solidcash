@@ -1,6 +1,5 @@
 export * from './artifact.js';
 export * from './authhead.js';
-export * from './block-oracle.js';
 export * from './oracle-pool.js';
 export {
   functionSplitLoaderLock,

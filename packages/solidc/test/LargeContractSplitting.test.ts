@@ -626,13 +626,12 @@ describe('large-contract state-local splitting', () => {
     for (const info of bundle.manifest.facets) {
       expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(baselineSlots);
     }
-    // Each shard that runs a read takes the pool binding its deployment fills, and pins no oracle lock.
+    // Each shard that runs a read takes the pool binding its deployment fills.
     const readers = [bundle.root, ...Object.values(bundle.facets)].filter((shard) => shard.usesBlockOracle === true);
     expect(readers.length).toBeGreaterThan(0);
     for (const shard of readers) {
       expect(shard.constructorInputs.map((input) => input.name), `${shard.contractName} binding`)
         .toContain('__oraclePool');
-      expect(shard.blockOracleLockSlots, `${shard.contractName} pin`).toBeUndefined();
     }
   });
 

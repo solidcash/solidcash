@@ -95,7 +95,6 @@ describe('X162: a divided ERC-7201 split bundle agrees about storage, loads, and
     const touchBFacet = bundle.facets[touchB.target];
     expect(touchBFacet.abi.find((fn: { name: string }) => fn.name === 'touchB')?.usesBlockOracle).toBe(true);
     // The facet reads a block-info coin of the pool it binds: its last input is the binding, after the brand.
-    expect(touchBFacet.blockOracleLockSlots).toBeUndefined();
     expect(touchBFacet.constructorInputs.map((input: { name: string }) => input.name))
       .toEqual(['__brand', '__oraclePool']);
     for (const info of bundle.manifest.facets) {

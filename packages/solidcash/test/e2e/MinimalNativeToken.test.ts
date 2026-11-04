@@ -59,9 +59,8 @@ describe('MinimalNativeToken bytecode budget', () => {
     for (const name of ['deposit', 'claimDeposit', 'cancelDeposit']) {
       expect(abi).not.toContain(name);
     }
-    // Immediate BchNative has no quarantine timing, so it reads no block oracle and has no lock pin to bind.
+    // Immediate BchNative has no quarantine timing, so it reads no block oracle and binds no pool.
     expect(artifact.usesBlockOracle).toBeUndefined();
-    expect(artifact.blockOracleLockSlots).toBeUndefined();
     expect(abi).not.toContain('setQuarantineBlocks');
     expect(abi).not.toContain('quarantineBlocks');
     expect(abi).not.toContain('name');

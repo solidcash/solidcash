@@ -43,6 +43,9 @@ export const POOL_INFO_OFFSETS = {
   flags: 0, owner: 1, number: 21, timestamp: 26, difficulty: 31, size: 36, totalFees: 41, coinbase: 46,
 } as const;
 
+/** A numeric block-info field a `block.*` read slices. */
+export type BlockOracleField = 'number' | 'timestamp' | 'difficulty' | 'size' | 'totalFees';
+
 /** Slot commitment: `flags || n (4 LE) || hash || owner || depth (2 LE)`. */
 export const POOL_SLOT_OFFSETS = { flags: 0, n: 1, hash: 5, owner: 37, depth: 57 } as const;
 export const POOL_SLOT_COMMITMENT_BYTES = 59;

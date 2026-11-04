@@ -5,8 +5,7 @@ import {
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString, compileStringMulti } from '@solidcash/solidc';
 import {
-  blockhashOracleLockingBytecode, buildBlockhashCommitment,
-  buildChunkCommitment, scriptToBytecode, sha256,
+  buildChunkCommitment, decodePoolSlotCommitment, scriptToBytecode, sha256,
   MESSAGE_BUS_BINDING_DOMAIN,
   keccakComputeLockingBytecode,
   ecrecoverComputeLockingBytecode,
@@ -31,6 +30,7 @@ import {
 } from '../../../src/stateful/index.js';
 import * as messageBus from '../../../src/message-bus/index.js';
 import { decodeAtomicMessageEnvelope, encodeAtomicMessageEnvelope } from '../../../src/message-bus/atomic.js';
+import { isPoolSlotInput, poolSlotUnlockable, selectPoolSlot } from '../../../src/oracle/pool/index.js';
 import {
   getDynamicChunkAddress, getEntryNftAddress, getMessageBusVerifierLockingBytecode,
   getSatoshiContainerAddress, getTokenContainerAddress, getValueChunkAddress,
@@ -38,7 +38,7 @@ import {
 import { encodeEntryCommitment, keyToSlot } from '../../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import {
-  createBareP2pkhFeeFunder, genesisFtContainer, setupStatefulUtxos,
+  createBareP2pkhFeeFunder, genesisFtContainer, mintTestOraclePool, setupStatefulUtxos,
 } from '../../test-util.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
@@ -2045,17 +2045,13 @@ describe('messageBus.compose atomic transaction', () => {
     const sinkArtifact = compileString(`contract ComposeBlockhashSink() {
       function accept(bytes32 value) public pure { require(value.length == 32); }
     }`, { forceStateful: true, messageBus: true });
+    // The caller binds the provider's pool, whose ring holds the block and the one before it.
     const callerBase = new Contract(callerArtifact, [], { provider });
+    const pool = callerBase.oraclePool!;
+    expect(pool).toBe(provider.oraclePoolCategory);
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
     );
-    await provider.addUtxo(binToHex(blockhashOracleLockingBytecode(hexToBin(callerSetup.categoryId))), {
-      txid: 'b4'.repeat(32), vout: 0, satoshis: 1000n,
-      token: {
-        category: callerSetup.categoryId, amount: 0n,
-        nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(BigInt(height), hash)) },
-      },
-    });
     const caller = StatefulContract.withCategory(
       callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
     );
@@ -2066,6 +2062,17 @@ describe('messageBus.compose atomic transaction', () => {
     const sink = StatefulContract.withCategory(
       sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
     );
+    // Live slots that do not answer the read: the bound pool's slot of the block before, another pool's of the block.
+    const otherPool = await mintTestOraclePool(provider, {
+      number: BigInt(height), timestamp: 1_699_990_000n, difficulty: 0n, size: 1n, totalFees: 0n,
+      coinbase: new Uint8Array(),
+    }, { slots: true });
+    const older = await selectPoolSlot(provider, pool, BigInt(height - 1));
+    const foreign = await selectPoolSlot(provider, otherPool, BigInt(height));
+    expect([older?.exact, foreign?.exact]).toEqual([true, true]);
+    const swaps = {
+      stale: poolSlotUnlockable(older!.utxo, pool), substituted: poolSlotUnlockable(foreign!.utxo, otherPool),
+    };
     const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
     const composition = messageBus.compose({
       calls: [caller.call.invoke(sink.inner.lockingBytecode, BigInt(height)), sink.call.accept(hash)],
@@ -2076,30 +2083,32 @@ describe('messageBus.compose atomic transaction', () => {
     expect(verifierInputCosts(canonical).filter(({ cost, budget }) => cost > budget)).toEqual([]);
     expectBchInputLimits(canonical);
     expect(vmRejects(canonical)).toBe(false);
+    // The read co-spends the pool's slot of the block, recreated at its own index.
+    const slots = canonical.inputs.flatMap((input, index) => (isPoolSlotInput(input, pool) ? [index] : []));
+    expect(slots).toHaveLength(1);
+    const [slot] = slots;
+    const held = decodePoolSlotCommitment(hexToBin(canonical.inputs[slot].token!.nft!.commitment));
+    expect([held.n, binToHex(held.hash)]).toEqual([BigInt(height), binToHex(hash)]);
+    expect(canonical.outputs[slot].token!.nft!.commitment).toBe(canonical.inputs[slot].token!.nft!.commitment);
+    // A swapped slot is recreated exactly at its index, so its own read path passes and only a reader refuses it.
+    const slotPasses = (candidate: TransactionBuilder): boolean => {
+      const transaction = candidate.buildLibauthTransaction();
+      const vm = createVirtualMachineBch2026ForProvider(candidate.provider);
+      return vm.stateSuccess(vm.evaluate({
+        inputIndex: slot, sourceOutputs: generateLibauthSourceOutputs(candidate.inputs), transaction,
+      })) === true;
+    };
     for (const mutation of ['stale', 'substituted', 'omitted', 'duplicate'] as const) {
       const hostile = await composition.build();
-      if (mutation === 'stale') {
-        hostile.inputs[1] = {
-          ...hostile.inputs[1],
-          token: { ...hostile.inputs[1].token!, nft: { ...hostile.inputs[1].token!.nft! } },
-        };
-        hostile.inputs[1].token!.nft!.commitment = binToHex(
-          buildBlockhashCommitment(BigInt(height - 1), hash),
-        );
-      } else if (mutation === 'substituted') {
-        hostile.inputs[1] = {
-          ...hostile.inputs[1],
-          token: { ...hostile.inputs[1].token!, nft: { ...hostile.inputs[1].token!.nft! } },
-        };
-        const wrongHash = hash.slice();
-        wrongHash[0] ^= 1;
-        hostile.inputs[1].token!.nft!.commitment = binToHex(
-          buildBlockhashCommitment(BigInt(height), wrongHash),
-        );
+      if (mutation === 'stale' || mutation === 'substituted') {
+        const coin = swaps[mutation];
+        hostile.inputs[slot] = coin;
+        hostile.outputs[slot] = { to: coin.unlocker.generateLockingBytecode(), amount: coin.satoshis, token: coin.token };
+        expect(slotPasses(hostile), mutation).toBe(true);
       } else if (mutation === 'omitted') {
-        hostile.inputs[1] = { ...hostile.inputs[2] };
+        hostile.inputs[slot] = { ...hostile.inputs[slot + 1] };
       } else {
-        hostile.inputs[2] = { ...hostile.inputs[1] };
+        hostile.inputs[slot + 1] = { ...hostile.inputs[slot] };
       }
       expect(vmRejects(hostile), mutation).toBe(true);
     }

@@ -99,6 +99,35 @@ function createsBoundContract(fn: FunctionDefinitionNode): boolean {
 }
 
 /**
+ * The pool coin kinds read by the bound contracts that `contract`'s bodies create or name, theirs included, or
+ * undefined when they read none.
+ */
+export function createdPoolReads(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+): { blockInfo?: true; blockhash?: true } | undefined {
+  let blockInfo = false;
+  let blockhash = false;
+  const bodies = [
+    contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  for (const fn of bodies) {
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof InstantiationNode || node instanceof ContractReferenceNode)) return;
+      const child = node.referencedContract;
+      if (child === undefined || !takesOraclePool(child)) return;
+      const reads = child.poolTreeReads ?? {
+        ...(child.usesBlockOracle && { blockInfo: true as const }),
+        ...(child.usesBlockhash && { blockhash: true as const }),
+      };
+      if (reads.blockInfo === true) blockInfo = true;
+      if (reads.blockhash === true) blockhash = true;
+    });
+  }
+  if (!blockInfo && !blockhash) return undefined;
+  return { ...(blockInfo ? { blockInfo: true as const } : {}), ...(blockhash ? { blockhash: true as const } : {}) };
+}
+
+/**
  * Binds a direct contract to its oracle pool P. A contract that reads block info or blockhash, or that creates or
  * names the lock of a bound contract, takes `__oraclePool` (bytes32, P as OP_UTXOTOKENCATEGORY pushes it) as its
  * last parameter, and passes its own value to that child. Marks the named-call closure of each creating body, which

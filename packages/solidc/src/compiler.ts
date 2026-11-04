@@ -15,7 +15,7 @@ import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
-  findOraclePoolSlots, ORACLE_POOL_PARAMETER, BytesType,
+  findOraclePoolSlots, ORACLE_POOL_PARAMETER, oraclePoolTreeReads, type OraclePoolReads, BytesType,
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
@@ -247,7 +247,7 @@ import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './semantic/KernelEntryActivation.js';
 import SynthesizeBlockOracle, {
-  bindOraclePool, markBlockOracleCallers, readsBlockOracle, setOraclePoolBinding, takesOraclePool,
+  bindOraclePool, createdPoolReads, markBlockOracleCallers, readsBlockOracle, setOraclePoolBinding, takesOraclePool,
 } from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
@@ -18816,6 +18816,9 @@ function compileResolvedAst(
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
+  // The reads of the bound contracts it creates shape a pool its deployment mints.
+  const childPoolReads = createdPoolReads(ast.contract, ast.freeFunctions);
+  if (childPoolReads !== undefined) artifact.createdPoolReads = childPoolReads;
   if (ast.contract.usesBlockOracle) {
     artifact.usesBlockOracle = true;
     // A direct reader takes P as its `__oraclePool` input; a framed one carries it in pool slots.
@@ -20596,6 +20599,7 @@ function compileReferencedContracts(
     const standalone = compileReferencedContractStandalone(code, contractName, childOptions);
     // The creator encodes the arguments of the bytes it embeds, so the embedded compile decides the binding.
     if (standalone.oraclePool !== undefined) setOraclePoolBinding(contract, standalone.oraclePool);
+    if (standalone.poolReads !== undefined) contract.poolTreeReads = standalone.poolReads;
     if (standalone.bytecode === undefined) {
       // The bytes generated here never expanded the child's modifiers: embedding them would drop its guards.
       const host = unexpandedModifierHost(contract, new Set([ast.contract.name, ...contractMap.keys()]));
@@ -20713,7 +20717,7 @@ const referencedContractCompileStack: string[] = [];
  */
 function compileReferencedContractStandalone(
   code: string, contractName: string, options: CompilerOptions,
-): { bytecode?: Uint8Array; oraclePool?: boolean; error?: Error } {
+): { bytecode?: Uint8Array; oraclePool?: boolean; poolReads?: OraclePoolReads; error?: Error } {
   // A contract that creates itself, directly or through another, has no standalone compile to embed.
   if (referencedContractCompileStack.includes(contractName)) return {};
   // The enclosing compile may have recorded its own admission analysis; the nested one starts by clearing it.
@@ -20729,6 +20733,7 @@ function compileReferencedContractStandalone(
     return {
       bytecode: scriptToBytecode(asmToScript(artifact.bytecode)),
       oraclePool: artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER),
+      poolReads: oraclePoolTreeReads(artifact),
     };
   } catch (error) {
     return { error: error instanceof Error ? error : new Error(String(error)) };

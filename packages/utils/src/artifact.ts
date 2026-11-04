@@ -2193,6 +2193,11 @@ export interface Artifact {
   /** A function reads a block-info coin of the bound oracle pool. */
   usesBlockOracle?: boolean;
   /**
+   * The pool coin kinds the bound contracts this one creates or names read, theirs included. With this contract's
+   * own reads it shapes a pool its deployment mints.
+   */
+  createdPoolReads?: { readonly blockInfo?: true; readonly blockhash?: true };
+  /**
    * A framed reader's pool slots: offsets of each `push(ORACLE_POOL_SENTINEL || 0x01)` in the published bytecode,
    * the offset being the push opcode. Deployment writes `oraclePoolBinding(P)` over them. A direct reader takes the
    * `__oraclePool` constructor input instead.

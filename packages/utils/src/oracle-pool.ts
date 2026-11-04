@@ -221,6 +221,21 @@ export function oraclePoolBinding(categoryId: Uint8Array): Uint8Array {
   return vmCategory(categoryId);
 }
 
+/** The pool coin kinds a contract reads. */
+export interface OraclePoolReads {
+  readonly blockInfo?: true;
+  readonly blockhash?: true;
+}
+
+/** What a contract and every bound contract it creates or names read, from its artifact. */
+export function oraclePoolTreeReads(artifact: {
+  readonly usesBlockOracle?: boolean; readonly usesBlockhash?: boolean; readonly createdPoolReads?: OraclePoolReads;
+}): OraclePoolReads {
+  const blockInfo = artifact.usesBlockOracle === true || artifact.createdPoolReads?.blockInfo === true;
+  const blockhash = artifact.usesBlockhash === true || artifact.createdPoolReads?.blockhash === true;
+  return { ...(blockInfo && { blockInfo: true as const }), ...(blockhash && { blockhash: true as const }) };
+}
+
 /** 32-byte stand-in for P in a framed reader, which pushes it with the mutable capability after it. */
 export const ORACLE_POOL_SENTINEL = Uint8Array.from([0xa5, ...new Uint8Array(31).fill(0x5c)]);
 

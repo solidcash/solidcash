@@ -188,6 +188,8 @@ export class ContractNode extends Node implements Named {
   // A function reads block.number/timestamp/.... The data is a separate covenant's commitment, not this
   // contract's state, and this contract does not grow an update entry.
   usesBlockOracle: boolean = false;
+  // Set on a contract another one embeds: the pool coin kinds it and the bound contracts it creates read.
+  poolTreeReads?: { readonly blockInfo?: true; readonly blockhash?: true };
   // Set by SymbolTableTraversal once block layouts are known: any entry reserves the satoshi container slot, so an
   // in-place upgrade must migrate (or drain) that container. Read by the upgrade codegen.
   keepsSatoshiContainer: boolean = false;

@@ -133,6 +133,7 @@ import {
   type GraphEcrecoverCall,
   type MessageBusRuntimeAbiFunction,
 } from './kernel-route-planning.js';
+import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
@@ -5526,12 +5527,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B's master at input 0, so materialize B's __internal__blockhashInputIndex = slot offset before building the
     // unlocker (the base Contract resolver refuses it), then co-spend the oracles + their locktime.
     const bhSlot = bAbiFunc.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
-    const probeArgs = (bAbiFunc.blockhashReads?.length ?? 0) > 0 && bhSlot !== undefined
-      && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
+    const probeArgs = completeInternalFunctionArguments((bAbiFunc.blockhashReads?.length ?? 0) > 0
+      && bhSlot !== undefined && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
       ? materializeInternalFunctionArgument(
         args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
       )
-      : [...(args ?? [])];
+      : [...(args ?? [])], bAbiFunc.inputs);
     const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
     if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const frontRegionInputs: UnlockableUtxo[] = [];
@@ -5575,12 +5576,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const bhSlot = bhSlots[0];
     // Materialize B's __internal__blockhashInputIndex (the base Contract resolver refuses it), then resolve
     // each oracle in slot order. Param reads use B's call args; computed reads probe B with its own state.
-    const probeArgs = bhSlot !== undefined
+    // Each trailing witness defaults: the probe places no output for a void entry's record.
+    const probeArgs = completeInternalFunctionArguments(bhSlot !== undefined
       && bAbiFunc.inputs.some((input) => input.name === '__internal__blockhashInputIndex')
       ? materializeInternalFunctionArgument(
         args ?? [], bAbiFunc.inputs, '__internal__blockhashInputIndex', BigInt(bhSlot.offset),
       )
-      : [...(args ?? [])];
+      : [...(args ?? [])], bAbiFunc.inputs);
     const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...probeArgs);
     if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const resolved = await resolveBlockhashCoSpendsImpl(

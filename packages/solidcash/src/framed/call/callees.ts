@@ -110,7 +110,7 @@ export interface PlannedCallees {
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
-  /** The authenticated oracle input, placed once beside the first callee that reads it. */
+  /** The pool coin a reading callee co-spends, placed once beside the first callee that reads it. */
   readonly sideCars: ReadonlyMap<string, RecoverySideCars>;
   /** One block per callee deployment, in placement order: its masters and the records its frames declare. */
   readonly blocks: readonly ContractBlock[];
@@ -191,7 +191,7 @@ export interface CalleePlanOptions {
   /** The root's own address, `address(this)`, and its caller's lock, `msg.sender`. */
   readonly selfAddress: Uint8Array;
   readonly senderAddress: Uint8Array;
-  /** The clock of the oracle the root co-spends, shared by its call predicates and write recipes. */
+  /** The clock of the pool coin the root co-spends, shared by its call predicates and write recipes. */
   readonly blockClock?: Readonly<Record<string, bigint>>;
   /** The results earlier calls returned, as a stopped plan's frames handed them back (`reachedResultKey`). */
   readonly reachedResults?: ReadonlyMap<string, FunctionArgument>;
@@ -376,7 +376,7 @@ function withSpelledCalls(plan: HopExternalPlan, artifact: Artifact, entry: stri
   };
 }
 
-/** Compute side-cars remain unsupported; an oracle is placed as the hop places its shared oracle. */
+/** Compute side-cars remain unsupported; a pool coin is placed as the hop places the one it shares. */
 function sideCarRefusal(label: string, master: string, sideCars: RecoverySideCars | undefined): string | undefined {
   if (sideCars === undefined || sideCars.ids.length === 0) return undefined;
   if (sideCars.ids.every((id) => id === blockOracleSideCarId(master))) {

@@ -38,7 +38,7 @@ import { leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js'
 import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
-import { bindProviderBlockOracle } from '../call/block-oracle.js';
+import { bindFramedOraclePool } from '../call/block-oracle.js';
 import { deriveFramedGenesis } from './genesis.js';
 import { deployMaster } from './material.js';
 import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
@@ -90,8 +90,17 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + `Got vout ${options.fundingUtxo.vout}.`,
     );
   }
-  // The masters pin the oracle lock the contract's calls co-spend.
-  bindProviderBlockOracle(options.provider, artifact);
+  // The masters carry the pool their block.* reads check in their pool slots, the shards of a split as well.
+  const oraclePool = bindFramedOraclePool(options.provider, artifact, options.oraclePool);
+  if (artifact.usesBlockOracle === true && oraclePool === undefined) {
+    throw new FramedDeployError(
+      `${artifact.contractName} reads block.* through an oracle pool: pass oraclePool, or use a provider with a `
+      + 'default pool',
+    );
+  }
+  for (const part of [...options.functionSplit?.shards ?? [], ...options.functionSplit?.internalCuts ?? []]) {
+    bindFramedOraclePool(options.provider, part.artifact, oraclePool ?? options.oraclePool);
+  }
 
   const funderLock = options.funder.generateLockingBytecode();
   // The constructor's own frame is entered by the deployer. A body that reads `msg.sender` therefore resolves to the

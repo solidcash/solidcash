@@ -1,71 +1,96 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
-import { blockOracleFieldBytes, blockOracleReadUnlocking, type Artifact } from '@solidcash/utils';
-import type { Utxo } from '../../interfaces.js';
+import { decodePoolInfoCommitment, poolInfoReadUnlocking, type Artifact } from '@solidcash/utils';
+import type { UnlockableUtxo, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
-import { bindBlockOracleLock } from '../../oracle/block-oracle-lock.js';
+import { checkPoolCategory, poolLocks } from '../../oracle/pool/coins.js';
+import { artifactOraclePool, bindArtifactOraclePool, poolInfoCoSpend } from '../../oracle/pool/reader.js';
 import type { DraftInput, RecoverySideCars } from '../composer/index.js';
 
-/** The block oracle a framed entry co-spends: its live UTXO and the read-path input that recreates it in place. */
+/** The pool coin a framed entry co-spends: a live info coin and the read-path input that recreates it in place. */
 export interface FramedBlockOracle {
   readonly utxo: Utxo;
   readonly input: DraftInput;
 }
 
-/** The provider's oracle lock, bound into `artifact` when the artifact reads the oracle, so its masters pin it. */
-export function bindProviderBlockOracle(provider: NetworkProvider, artifact: Artifact): Uint8Array | undefined {
-  const lock = provider.blockOracleLock;
-  if (lock !== undefined && artifact.usesBlockOracle === true) bindBlockOracleLock(artifact, lock);
-  return lock;
+/**
+ * Binds the oracle pool a framed reader's masters carry in their pool slots, `pool` or else the provider's, so
+ * `deployMaster` fills them. Returns it, or undefined for an artifact that reads no block.*.
+ */
+export function bindFramedOraclePool(
+  provider: NetworkProvider, artifact: Artifact, pool?: string,
+): string | undefined {
+  if (artifact.usesBlockOracle !== true) return undefined;
+  const chosen = pool ?? provider.oraclePoolCategory;
+  if (chosen === undefined) return undefined;
+  const category = checkPoolCategory(chosen);
+  bindArtifactOraclePool(artifact, category);
+  return category;
 }
 
-/** Whether the entry `functionName` slices the block oracle. */
+/** The pool a framed reader's deployment bound, or else the provider's, bound into `artifact`. */
+export function framedOraclePool(provider: NetworkProvider, artifact: Artifact): string | undefined {
+  if (artifact.usesBlockOracle !== true) return undefined;
+  return artifactOraclePool(artifact) ?? bindFramedOraclePool(provider, artifact);
+}
+
+/** Whether the entry `functionName` reads block.*. */
 export function entryReadsBlockOracle(artifact: Artifact, functionName: string): boolean {
   return artifact.abi.some((candidate) => candidate.name === functionName && candidate.usesBlockOracle === true);
 }
 
 /**
- * The oracle's timestamp under the register name an artifact still publishes a clock read as
+ * The coin's timestamp under the register name an artifact still publishes a clock read as
  * (`state:__block_timestamp`), so a stored value's source resolves to what the body slices.
  */
 export function blockOracleClock(oracle: FramedBlockOracle): Readonly<Record<string, bigint>> {
-  const bytes = blockOracleFieldBytes(hexToBin(oracle.utxo.token?.nft?.commitment ?? ''), 'timestamp');
-  let timestamp = 0n;
-  for (let index = bytes.length - 1; index >= 0; index -= 1) timestamp = (timestamp << 8n) | BigInt(bytes[index]!);
-  return { __block_timestamp: timestamp };
+  const commitment = hexToBin(oracle.utxo.token?.nft?.commitment ?? '');
+  return { __block_timestamp: decodePoolInfoCommitment(commitment).timestamp };
 }
 
-/** The live oracle at `lock`, which a reader picks as the first mutable NFT there. */
+/**
+ * A live info coin of `pool` for the entry to co-spend, chosen as every reader of a transaction chooses it
+ * (`poolInfoCoSpend`). A body finds the first input of the pool's category whose flags are 0x00, so any such coin
+ * serves.
+ */
 export async function framedBlockOracle(
-  provider: NetworkProvider, lock: Uint8Array | undefined, functionName: string, fail: (reason: string) => Error,
+  provider: NetworkProvider, pool: string | undefined, functionName: string, fail: (reason: string) => Error,
 ): Promise<FramedBlockOracle> {
-  if (lock === undefined) throw fail(`entry "${functionName}" reads the block oracle, and no oracle lock was provided`);
-  const utxos = await provider.getUtxosForLockingBytecode(lock);
-  const utxo = utxos.find((candidate) => candidate.token?.nft?.capability === 'mutable');
-  if (utxo?.token?.category === undefined) throw fail('block oracle UTXO is not available');
-  const category = hexToBin(utxo.token.category);
+  if (pool === undefined) {
+    throw fail(`entry "${functionName}" reads block.* through an oracle pool, and none is bound`);
+  }
+  let spent: UnlockableUtxo;
+  try {
+    spent = await poolInfoCoSpend(provider, pool);
+  } catch (error) {
+    throw fail((error as Error).message);
+  }
+  const { unlocker: _unlocker, ...coin } = spent;
+  const locks = poolLocks(pool);
   return {
-    utxo,
+    utxo: coin,
     input: {
       source: {
-        lockingBytecode: lock,
-        valueSatoshis: utxo.satoshis,
+        lockingBytecode: locks.info,
+        valueSatoshis: coin.satoshis,
         token: {
-          category, amount: 0n, nft: { capability: 'mutable', commitment: hexToBin(utxo.token.nft?.commitment ?? '') },
+          category: locks.category,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: hexToBin(coin.token?.nft?.commitment ?? '') },
         },
       },
-      unlockingBytecode: blockOracleReadUnlocking(category),
+      unlockingBytecode: poolInfoReadUnlocking(locks.category),
     },
   };
 }
 
-/** The id the block oracle is co-spent under after `master`'s side-cars. */
+/** The id the pool coin is co-spent under after `master`'s side-cars. */
 export function blockOracleSideCarId(master: string): string {
   return `${master}:block-oracle`;
 }
 
 /**
- * `own` with the block oracle co-spent after its compute side-cars. The oracle is not a compute side-car: a body
- * finds it by its pinned lock, so it only has to sit after the side-cars the body addresses by offset.
+ * `own` with the pool coin co-spent after its compute side-cars. The coin is not a compute side-car: a body finds it
+ * by its category and flags, so it only has to sit after the side-cars the body addresses by offset.
  */
 export function withBlockOracleSideCar(
   master: string, own: RecoverySideCars | undefined, oracle: FramedBlockOracle,

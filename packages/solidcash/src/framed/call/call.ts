@@ -131,7 +131,7 @@ import {
   type LoopRecordMint, type LoopRecordSpan,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
-import { bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle } from './block-oracle.js';
+import { blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOraclePool } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import {
   framedCalleeTokenAccesses, framedTokenAccesses, framedTokenContainerLockingBytecode,
@@ -933,7 +933,8 @@ async function callInShape(
   // A shard that names a helper lock is replaced, once the validator program is known, by the clone whose
   // sentinel already holds that lock.
   let artifact = splitShard?.artifact ?? options.artifact;
-  const providerOracleLock = bindProviderBlockOracle(provider, artifact);
+  // A shard's clone below keeps the pool bound here.
+  const oraclePool = framedOraclePool(provider, artifact);
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
     throw new FramedCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
@@ -995,7 +996,6 @@ async function callInShape(
       throw new FramedCallError(`function "${functionName}" is not in the prepared split`);
     }
     artifact = patched;
-    bindProviderBlockOracle(provider, artifact);
   }
   const published = publishedEntryOf(artifact, functionName);
   const deployed = deployMaster(artifact, category, validatorProgram);
@@ -1077,7 +1077,7 @@ async function callInShape(
   // writes, as the hop sizes a frame's own run (`planHopDynamicRun`).
   const BLOCK_ORACLE_INPUT = `${MASTER_ID}:block-oracle`;
   const fetchedBlockOracle = entryReadsBlockOracle(artifact, functionName)
-    ? await framedBlockOracle(provider, providerOracleLock, functionName, (reason) => new FramedCallError(reason))
+    ? await framedBlockOracle(provider, oraclePool, functionName, (reason) => new FramedCallError(reason))
     : undefined;
   const blockClock = fetchedBlockOracle === undefined ? undefined : blockOracleClock(fetchedBlockOracle);
   const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
@@ -1306,7 +1306,7 @@ async function callInShape(
     throw error;
   }
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
-  // Every body finds the oracle by its pinned lock. A callee may already place the same live outpoint.
+  // Every body finds the pool coin by its category and flags. A callee may already place the same live outpoint.
   const blockOracle = fetchedBlockOracle !== undefined && [...calleePlan?.utxos.values() ?? []].some(
     (utxo) => utxo.txid === fetchedBlockOracle.utxo.txid && utxo.vout === fetchedBlockOracle.utxo.vout,
   ) ? undefined : fetchedBlockOracle;

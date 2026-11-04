@@ -83,8 +83,8 @@ import {
 } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  bindProviderBlockOracle, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, withBlockOracleSideCar,
-  type FramedBlockOracle,
+  bindFramedOraclePool, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOraclePool,
+  withBlockOracleSideCar, type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
@@ -1016,17 +1016,17 @@ async function implementationFrameSideCars(
   return frame.ids.length === 0 ? new Map() : new Map([[IMPLEMENTATION_MASTER_ID, frame]]);
 }
 
-/** The block oracle the implementation's entry co-spends, or undefined for an entry that reads none. */
+/** The pool coin the implementation's entry co-spends, or undefined for an entry that reads none. */
 async function hopBlockOracle(
-  provider: NetworkProvider, lock: Uint8Array | undefined, artifact: Artifact, functionName: string,
+  provider: NetworkProvider, pool: string | undefined, artifact: Artifact, functionName: string,
 ): Promise<FramedBlockOracle | undefined> {
   if (!entryReadsBlockOracle(artifact, functionName)) return undefined;
-  return framedBlockOracle(provider, lock, functionName, (reason) => new FramedProxyDeployError(reason));
+  return framedBlockOracle(provider, pool, functionName, (reason) => new FramedProxyDeployError(reason));
 }
 
 /**
- * The implementation master's side-cars with the block oracle after them, where a direct call places it: the
- * plan lays it out and spends it as one, and every frame's body finds it by its lock.
+ * The implementation master's side-cars with the pool coin after them, where a direct call places it: the plan lays
+ * it out and spends it as one, and every frame's body finds it by its category and flags.
  */
 function withBlockOracle(
   sideCars: ReadonlyMap<string, RecoverySideCars>, oracle: FramedBlockOracle | undefined,
@@ -1135,8 +1135,10 @@ export async function deployFramedProxy(
   const validatorProgram = framedValidator.buildValidatorProgram();
   const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
   const proxyCategory = hexToBin(options.proxyDeploy.fundingUtxo.txid);
-  // The implementation's masters pin the oracle lock its later calls co-spend.
-  const oracleLock = bindProviderBlockOracle(options.provider, implementationArtifact);
+  // The implementation's masters carry the pool its block.* reads check, which its calls co-spend a coin of.
+  const oraclePool = bindFramedOraclePool(
+    options.provider, implementationArtifact, options.implementationDeploy.oraclePool,
+  );
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
 
@@ -1347,7 +1349,7 @@ export async function deployFramedProxy(
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
   const implementationSideCars = withBlockOracle(await implementationFrameSideCars(
     provider, implementationArtifact, options.initialize.functionName, initializeArgs, loopTurns.hashes,
-  ), await hopBlockOracle(provider, oracleLock, implementationArtifact, options.initialize.functionName));
+  ), await hopBlockOracle(provider, oraclePool, implementationArtifact, options.initialize.functionName));
   const { externalPlan, settled } = await planAndSettleHop({
     plan: (externalReturns, reachedResults, calleeWriteViews, calleeWriteValues, heldContinuations, stopBefore) =>
       planHopExternalCalls({
@@ -5537,8 +5539,8 @@ export async function callFramedProxyEntry(
   const proxyCategory = hexToBin(options.proxyCategoryId);
   const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
-  // The implementation was deployed pinning the oracle lock, so its master is found under the same lock.
-  const oracleLock = bindProviderBlockOracle(provider, implementationProgram);
+  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
+  const oraclePool = framedOraclePool(provider, implementationProgram);
   const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
   let implementationMasterUtxo = implementationPools.masters[0];
   if (splitShard !== undefined) {
@@ -5562,9 +5564,9 @@ export async function callFramedProxyEntry(
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
-  // Read once: the hop co-spends this oracle, and a stored clock value is the time it holds.
-  const blockOracle = await hopBlockOracle(provider, oracleLock, implementationArtifact, options.functionName);
-  // Call predicates and write recipes read the same clock the body authenticates from this co-spent oracle.
+  // Read once: the hop co-spends this pool coin, and a stored clock value is the time it holds.
+  const blockOracle = await hopBlockOracle(provider, oraclePool, implementationArtifact, options.functionName);
+  // Call predicates and write recipes read the same clock the body authenticates from this co-spent coin.
   const executionState = {
     ...deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
     ...(blockOracle === undefined ? {} : blockOracleClock(blockOracle)),

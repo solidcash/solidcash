@@ -407,7 +407,6 @@ export default class MockNetworkProvider implements NetworkProvider {
     storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
     this.installBlockOracle();
-    this.installOraclePool();
   }
 
   /** Compressed key the mock oracle's commitment names. Tests sign updates with it, and its P2PKH pays their fees. */
@@ -507,14 +506,28 @@ export default class MockNetworkProvider implements NetworkProvider {
   /** The last automatic pool refresh's failure, cleared by the next success. The pool lags the chain meanwhile. */
   oraclePoolRefreshError?: unknown;
   private oraclePool?: string;
+  /** Whether the pool was minted, or its genesis refused, on this chain. */
+  private oraclePoolInstalled = false;
   private oraclePoolStep: Promise<void> = Promise.resolve();
   private oraclePoolKeeperView?: NetworkProvider;
-  /** The height whose slot the pool last took, so a send that mined no new height skips the ring. */
+  /** The newest height whose slot the pool took, so a refresh writes only the blocks mined since. */
   private oraclePoolSlotHeight?: number;
 
-  /** Category of the mock's oracle pool (display order), undefined when this profile's rules refused its genesis. */
+  /**
+   * Category of the mock's oracle pool (display order), minted on this first read, so a test that reads no block
+   * field pays for no pool. Undefined when this profile's rules refused its genesis.
+   */
   get oraclePoolCategory(): string | undefined {
+    if (!this.oraclePoolInstalled) this.installOraclePool();
     return this.oraclePool;
+  }
+
+  /** Forget the pool, which the next `oraclePoolCategory` read mints again. */
+  private clearOraclePool(): void {
+    this.oraclePool = undefined;
+    this.oraclePoolInstalled = false;
+    this.oraclePoolRefreshError = undefined;
+    this.oraclePoolSlotHeight = undefined;
   }
 
   /**
@@ -523,9 +536,8 @@ export default class MockNetworkProvider implements NetworkProvider {
    * them (an older VM, tight limits) has no pool.
    */
   private installOraclePool(): void {
-    this.oraclePool = undefined;
-    this.oraclePoolRefreshError = undefined;
-    this.oraclePoolSlotHeight = undefined;
+    this.clearOraclePool();
+    this.oraclePoolInstalled = true;
     // The pool covenants loop, which the 2026 VM brought.
     if (this.vmTarget !== VmTarget.BCH_2026_05 && this.vmTarget !== VmTarget.BCH_SPEC) return;
     const owner = this.oraclePoolOwnerKey;
@@ -550,10 +562,11 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   /**
-   * The pool keeper's step after a block: every live info coin takes the tip's fields, and the slot of the tip
-   * height's residue takes its hash. A time-type locktime is final only below the median time past, which the mock
-   * keeps at its tip time, so the pool publishes the second before it. The keeper's transactions wait in the mempool
-   * for the next mined block, as a live keeper's would. Steps run one at a time.
+   * The pool keeper's step after a block: every live info coin takes the tip's fields, and the slot of each block
+   * mined since the last step takes its hash, so the ring has no holes. A time-type locktime is final only below the
+   * median time past, which the mock keeps at its tip time, so the pool publishes the second before it. The keeper's
+   * transactions wait in the mempool for the next mined block, as a live keeper's would. Steps run one at a time, and
+   * only once the pool exists.
    */
   private refreshOraclePool(): Promise<void> {
     const category = this.oraclePool;
@@ -565,8 +578,11 @@ export default class MockNetworkProvider implements NetworkProvider {
         });
         await keeper.refreshInfo(simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1));
         const height = this.blockHeight;
-        if (this.oraclePoolSlotHeight !== height) {
-          await keeper.writeNewestSlot(BigInt(height), hexToBin(syntheticBlockHash(height)));
+        const first = Math.max(0, height - POOL_MAX_DEPTH + 1, (this.oraclePoolSlotHeight ?? -1) + 1);
+        if (first <= height) {
+          const blocks: PoolBlock[] = [];
+          for (let n = first; n <= height; n += 1) blocks.push({ n: BigInt(n), hash: hexToBin(syntheticBlockHash(n)) });
+          await keeper.writeSlots(blocks);
           this.oraclePoolSlotHeight = height;
         }
         this.oraclePoolRefreshError = undefined;
@@ -754,6 +770,9 @@ export default class MockNetworkProvider implements NetworkProvider {
     const height = this.blockHeight;
     const fundingNonce = this.fundingNonce;
     const oracleOutpoint = this.blockOracleOutpoint;
+    const pool = {
+      category: this.oraclePool, installed: this.oraclePoolInstalled, slotHeight: this.oraclePoolSlotHeight,
+    };
     const signerNonces = new Map(
       [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
     );
@@ -766,7 +785,9 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
       this.blockOracleOutpoint = oracleOutpoint;
-      this.oraclePoolSlotHeight = undefined;
+      this.oraclePool = pool.category;
+      this.oraclePoolInstalled = pool.installed;
+      this.oraclePoolSlotHeight = pool.slotHeight;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -1004,9 +1025,9 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
-    // The wipe took the oracle and the pool with it, and a fresh chain has both.
+    // The wipe took the oracle and the pool with it. A fresh chain has the oracle, and mints the pool on first use.
     this.installBlockOracle();
-    this.installOraclePool();
+    this.clearOraclePool();
     runMockNetworkProviderResetHooks();
   }
 

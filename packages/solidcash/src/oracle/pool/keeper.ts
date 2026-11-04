@@ -148,6 +148,49 @@ export class PoolKeeper {
     return (await this.send(steps, [], Number(n))).txid;
   }
 
+  /**
+   * Moves every live slot this key owns forward to the newest of `blocks` of its residue, if that is newer than the
+   * block it holds, in transactions of at most POOL_COINS_PER_TRANSACTION slots, each locked at its newest height.
+   * Returns the txids sent.
+   */
+  async writeSlots(blocks: readonly PoolBlock[]): Promise<string[]> {
+    for (const { n, hash } of blocks) {
+      if (n < 0n || n >= LOCKTIME_THRESHOLD) throw new Error(`oracle pool slot block ${n} is not a height`);
+      if (hash.length !== 32) throw new Error('oracle pool slot hash is 32 bytes');
+    }
+    const owner = this.owner();
+    const pubkey = publicKeyOf(this.key);
+    const writes = (await this.slots()).flatMap(({ utxo, fields }) => {
+      if (fields.flags !== POOL_FLAG_SLOT || !sameBytes(fields.owner, owner) || fields.depth < 1) return [];
+      const next = blocks.reduce<PoolBlock | undefined>((best, block) => (block.n > fields.n
+        && (block.n - fields.n) % BigInt(fields.depth) === 0n && (best === undefined || block.n > best.n)
+        ? block : best), undefined);
+      if (next === undefined) return [];
+      const step: CoinStep = {
+        spend: {
+          utxo,
+          lockingBytecode: this.locks.slot,
+          unlock: (sign) => poolSlotWriteUnlocking(
+            this.locks.category, pubkey, sign(this.key, this.locks.slotRedeem), next.n, next.hash,
+          ),
+        },
+        output: poolOutput(this.locks.slot, utxo.satoshis, this.category, 'mutable', encodePoolSlotCommitment({
+          ...fields, flags: POOL_FLAG_SLOT, n: next.n, hash: next.hash,
+        })),
+      };
+      return [{ step, n: next.n }];
+    });
+    const txids: string[] = [];
+    let purse: Utxo | undefined;
+    for (const part of chunks(writes)) {
+      const locktime = part.reduce((max, { n }) => (n > max ? n : max), 0n);
+      const sent = await this.send(part.map(({ step }) => step), [], Number(locktime), purse);
+      txids.push(sent.txid);
+      purse = assembledUtxo(sent, sent.transaction.outputs.length - 1);
+    }
+    return txids;
+  }
+
   /** Mints `k` exact copies of a live info coin through the baton, which co-spends that coin by its read path. */
   async growInfo(k: number): Promise<string> {
     if (!Number.isSafeInteger(k) || k < 1) throw new Error(`oracle pool growInfo needs a positive count, not ${k}`);

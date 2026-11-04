@@ -431,8 +431,7 @@ compiled from its own host source, and a legacy build's closure takes compiler h
   commitment, so a new authority policy (a keeper datasig any relayer can push, or a copy from another
   canonical oracle) is a new covenant beside these, not a reader change. Both would ride the section-5
   bounds.
-- **Multisig owners (open):** the owner hash is the seam to a committee / m-of-n later (a key commitment
-  instead of a single key's hash). The covenants check one key today.
+- **Multisig owners:** out of scope for now; every pool covenant checks one owner key hash.
 - `prevrandao` has no BCH analogue (no randomness beacon); not planned.
 
 ## 10. Decisions

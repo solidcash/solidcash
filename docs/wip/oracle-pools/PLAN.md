@@ -150,7 +150,6 @@ Phases 1-5 are done; the commits are listed under each.
 - The pool code of the regtest, Electrum and MemCash providers has not run: `RegtestNetworkProvider`'s install and
   refresh, `ElectrumNetworkProvider`'s `oraclePoolCategory` and the coin listing at the pool locks, and
   `MemCashNetworkProvider`'s pool from the devnet's advertised `devnet.oracle_pool`.
-- Multisig owners: every covenant checks a single owner key hash.
 - The subroutine-use probe (`subroutineUseProbe`) captures `__oraclePool` alone (`aed65ad16`). An invoked body that
   reads another constructor parameter still throws the probe into its define-all fallback, which loses helper
   extraction across every body (`aed65ad16` measured +2,013 B on a kernel publisher). This predates the pools; the

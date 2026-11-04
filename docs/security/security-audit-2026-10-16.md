@@ -1488,7 +1488,7 @@ Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM
 ### Open
 
 - Trust: the owner key writes every block field and hash unchecked, and can stop or sweep coins, which halts every
-  reader bound to the pool, as readers cannot change pools. An owner is a single key; multisig owners are open.
+  reader bound to the pool, as readers cannot change pools. An owner is a single key.
 - Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
   its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
   the genesis of a pool someone else made.

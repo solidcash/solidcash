@@ -210,6 +210,48 @@ function vmCategory(categoryId: Uint8Array): Uint8Array {
   return categoryId.slice().reverse();
 }
 
+/** The hidden bytes32 contract parameter that binds a direct reader to its pool. */
+export const ORACLE_POOL_PARAMETER = '__oraclePool';
+
+/** The value a reader binds: P as OP_UTXOTOKENCATEGORY pushes it, the display-order id reversed. */
+export function oraclePoolBinding(categoryId: Uint8Array): Uint8Array {
+  return vmCategory(categoryId);
+}
+
+/** 32-byte stand-in for P in a framed reader, which pushes it with the mutable capability after it. */
+export const ORACLE_POOL_SENTINEL = Uint8Array.from([0xa5, ...new Uint8Array(31).fill(0x5c)]);
+
+const ORACLE_POOL_SLOT_PUSH = Uint8Array.from([0x21, ...ORACLE_POOL_SENTINEL, MUTABLE]);
+
+/** Offsets of each `push(sentinel || 0x01)` in a framed reader. The offset is the push opcode; P follows it. */
+export function findOraclePoolSlots(program: Uint8Array): number[] {
+  const slots: number[] = [];
+  for (let index = 0; index + ORACLE_POOL_SLOT_PUSH.length <= program.length; index += 1) {
+    let same = true;
+    for (let byte = 0; byte < ORACLE_POOL_SLOT_PUSH.length; byte += 1) {
+      if (program[index + byte] !== ORACLE_POOL_SLOT_PUSH[byte]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) slots.push(index);
+  }
+  return slots;
+}
+
+/** Writes `oraclePoolBinding(categoryId)` over every slot. */
+export function applyOraclePool(program: Uint8Array, categoryId: Uint8Array, slots: readonly number[]): Uint8Array {
+  const binding = oraclePoolBinding(categoryId);
+  const out = program.slice();
+  for (const offset of slots) {
+    if (out[offset] !== ORACLE_POOL_SLOT_PUSH[0] || out[offset + 1 + binding.length] !== MUTABLE) {
+      throw new Error(`no oracle pool slot at ${offset}`);
+    }
+    out.set(binding, offset + 1);
+  }
+  return out;
+}
+
 /** PIN(P, capability): this coin is an NFT of P with that capability. */
 function pin(categoryId: Uint8Array, capability: number): Script {
   return [

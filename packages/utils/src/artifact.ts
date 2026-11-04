@@ -726,6 +726,7 @@ export interface AbiFunction {
     contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
+    // `__oraclePool` forwards the creator's own `__oraclePool` constructor input.
     constructorArgs?: readonly (string | null)[];
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
@@ -2188,6 +2189,12 @@ export interface Artifact {
   usesBlockOracle?: boolean;
   /** Offsets of the 35-byte oracle-lock sentinel in the published bytecode. The offset is the push opcode. */
   blockOracleLockSlots?: readonly number[];
+  /**
+   * A framed reader's pool slots: offsets of each `push(ORACLE_POOL_SENTINEL || 0x01)` in the published bytecode,
+   * the offset being the push opcode. Deployment writes `oraclePoolBinding(P)` over them. A direct reader takes the
+   * `__oraclePool` constructor input instead.
+   */
+  oraclePoolSlots?: readonly number[];
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.

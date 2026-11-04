@@ -1,7 +1,8 @@
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   POOL_COIN_SATS, POOL_FLAG_SLOT, POOL_MAX_DEPTH, encodePoolBatonCommitment, encodePoolInfoCommitment,
-  encodePoolSlotCommitment,
+  encodePoolSlotCommitment, sha256,
 } from '@solidcash/utils';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
@@ -70,6 +71,17 @@ function checkCount(value: number, what: string): void {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`oracle pool ${what} ${value} is not a whole number`);
 }
 
+/**
+ * The one-time key that holds the funding output until the genesis spends it, so no keeper or wallet of the funder
+ * spends it first: a hash of the funder's key and the funding outpoint.
+ */
+function genesisHopKey(funder: Uint8Array, funding: Utxo): Uint8Array {
+  const vout = Uint8Array.from([0, 8, 16, 24].map((shift) => (funding.vout >>> shift) & 0xff));
+  let key = sha256(Uint8Array.from([...funder, ...hexToBin(funding.txid), ...vout]));
+  while (!secp256k1.validatePrivateKey(key)) key = sha256(key);
+  return key;
+}
+
 function checkDepth(depth: number): void {
   if (!Number.isInteger(depth) || depth < 1 || depth > POOL_MAX_DEPTH) {
     throw new Error(`oracle pool ringDepth ${depth} is not an integer from 1 to ${POOL_MAX_DEPTH}`);
@@ -77,7 +89,7 @@ function checkDepth(depth: number): void {
 }
 
 /**
- * The two genesis transactions. The first moves the funding coin to vout 0 of the funder's P2PKH, which a genesis
+ * The two genesis transactions. The first moves the funding coin to vout 0 of a one-time P2PKH, which a genesis
  * needs; the second spends it, so the pool category is the first's txid. It mints, at 1,200 satoshis each, the info
  * coins at the tip's fields and flags 0x00, the ring's slots with flags 0x80, and the baton, which holds the owner
  * and the depth. The change returns to the funder.
@@ -87,7 +99,8 @@ export function buildOraclePoolGenesis(plan: OraclePoolGenesisPlan): OraclePoolG
   checkCount(plan.slotReplicas, 'slotReplicas');
   checkDepth(plan.ringDepth);
   const purse = p2pkhLockOf(plan.funder);
-  const funding = assemblePoolTransaction([p2pkhSpend(plan.funding, plan.funder)], [], 0, purse);
+  const hop = genesisHopKey(plan.funder, plan.funding);
+  const funding = assemblePoolTransaction([p2pkhSpend(plan.funding, plan.funder)], [], 0, p2pkhLockOf(hop));
   const category = funding.txid;
   const locks = poolLocks(category);
   const owner = poolOwnerOf(plan.ownerKey);
@@ -101,7 +114,7 @@ export function buildOraclePoolGenesis(plan: OraclePoolGenesisPlan): OraclePoolG
       owner, depth: plan.ringDepth,
     })),
   ];
-  const genesis = assemblePoolTransaction([p2pkhSpend(assembledUtxo(funding, 0), plan.funder)], outputs, 0, purse);
+  const genesis = assemblePoolTransaction([p2pkhSpend(assembledUtxo(funding, 0), hop)], outputs, 0, purse);
   return { category, transactions: [funding, genesis] };
 }
 
@@ -121,7 +134,8 @@ function providerBlockHash(provider: NetworkProvider): (n: bigint) => Promise<Ui
 
 /**
  * Mints a pool by two ordinary transactions (see `buildOraclePoolGenesis`): `infoCoins` info coins at the tip's
- * fields, `slotReplicas` slots for each of the last `ringDepth` blocks, and the baton.
+ * fields, `slotReplicas` slots for each of the last `ringDepth` blocks, and the baton. A provider that keeps pools
+ * owned by its `oraclePoolOwnerKey` keeps this one when that key owns it.
  */
 export async function createOraclePool(provider: NetworkProvider, options: OraclePoolOptions): Promise<OraclePool> {
   const slotReplicas = options.slotReplicas ?? 1;
@@ -141,5 +155,7 @@ export async function createOraclePool(provider: NetworkProvider, options: Oracl
     ringDepth: options.ringDepth, slotReplicas, tip, ring,
   });
   for (const transaction of transactions) await provider.sendRawTransaction(transaction.hex);
+  const keeperKey = provider.keepOraclePool === undefined ? undefined : provider.oraclePoolOwnerKey;
+  if (keeperKey !== undefined && binToHex(keeperKey) === binToHex(options.ownerKey)) provider.keepOraclePool!(category);
   return { category, fundingTxid: transactions[0].txid, genesisTxid: transactions[1].txid };
 }

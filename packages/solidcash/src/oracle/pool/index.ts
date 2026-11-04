@@ -5,6 +5,7 @@ export {
   type PoolBlock, type PoolBlockFields, type PoolCoin, type PoolCoinKind, type AssembledPoolTransaction,
   poolCoinKind, poolInfoCoin, poolSlotCoin, poolBatonCoin,
 } from './coins.js';
+export * from './deployment.js';
 export * from './genesis.js';
 export * from './keeper.js';
 export * from './reader.js';

@@ -12,13 +12,15 @@ import type { StateValueType } from '../types/state-inference.js';
 import type { BcmrPublication, NativeTokenOptions, PublishedRegistry } from '../bcmr/deployment.js';
 import type { IdentityOptions, IdentityRecord } from '../bcmr/identity.js';
 import type { ConnectedStatefulContract, StatefulContract } from './StatefulContract.js';
+import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
 
 export interface DeployOptions {
   /**
    * The oracle pool a block.* reader binds, its category in display order; the provider's pool by default. The SDK
-   * fills the reader's `__oraclePool` constructor input from it.
+   * fills the reader's `__oraclePool` constructor input from it. `'new'` or `{ create }` mints a pool first, shaped
+   * by what the contract and the contracts it creates read, and binds the deployment and its children to it.
    */
-  oraclePool?: string;
+  oraclePool?: DeploymentOraclePool;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;

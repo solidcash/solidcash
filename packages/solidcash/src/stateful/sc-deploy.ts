@@ -39,6 +39,9 @@ import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { withOraclePoolArgument } from '../oracle/pool/reader.js';
+import {
+  mintsOraclePool, oraclePoolCategoryOption, resolveDeploymentOraclePool,
+} from '../oracle/pool/deployment.js';
 
 async function computeFeeFromBuilder(builder: TransactionBuilder): Promise<bigint> {
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
@@ -52,13 +55,24 @@ export async function deployStatefulContract<T extends Artifact>(
   callerConstructorArgs: ConstructorArgument[],
   options: DeployOptions,
 ): Promise<DeployResult<T>> {
-  // A block.* reader's pool binding, filled once so every contract built below names the same pool.
-  const constructorArgs = withOraclePoolArgument(
-    artifact, callerConstructorArgs, () => options.oraclePool ?? options.provider.oraclePoolCategory,
-  ) as ConstructorArgument[];
   if (!artifact.stateLayout) {
     throw new Error(`Contract ${artifact.contractName} is not a stateful contract`);
   }
+  if (mintsOraclePool(options.oraclePool)) {
+    // The pool goes first, in transactions of its own, so the constructor can read it; one info coin per master.
+    const masters = artifact.composition?.convention === 'framed'
+      ? (await import('../framed/deploy/pool.js')).resolveMasterPoolSize({
+        masters: options.threadCount, validators: options.validatorCount,
+      }).masters
+      : options.threadCount ?? 1;
+    const oraclePool = await resolveDeploymentOraclePool(options.provider, artifact, options.oraclePool, masters);
+    return deployStatefulContract(artifact, callerConstructorArgs, { ...options, oraclePool });
+  }
+  // A block.* reader's pool binding, filled once so every contract built below names the same pool.
+  const constructorArgs = withOraclePoolArgument(
+    artifact, callerConstructorArgs,
+    () => oraclePoolCategoryOption(options.oraclePool) ?? options.provider.oraclePoolCategory,
+  ) as ConstructorArgument[];
 
   if (options.fundingUtxo.vout !== 0) {
     throw new Error(

@@ -114,8 +114,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   public oraclePoolCategory?: string;
   /** The last pool refresh's failure, cleared by the next success. The pool lags the chain meanwhile. */
   public oraclePoolRefreshError?: unknown;
-  /** Key the oracle pool's coins name. Its P2PKH pays the pool's genesis and its keeper's fees. */
-  private readonly oraclePoolOwnerKey = Uint8Array.from(
+  /**
+   * Key the oracle pool's coins name, the default owner of a pool a deployment creates. Its P2PKH pays the pool's
+   * genesis and its keeper's fees.
+   */
+  readonly oraclePoolOwnerKey = Uint8Array.from(
     { length: 32 }, (_byte, index) => (index === 31 ? 0x55 : 0x22),
   );
   private oraclePoolInstalled = false;

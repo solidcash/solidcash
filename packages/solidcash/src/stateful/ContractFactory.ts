@@ -61,8 +61,8 @@ export interface DeployContractOptions {
   bcmr?: DeployOptions['bcmr'];
   /** The ledger token's bearer category and premint; see `DeployOptions.nativeToken`. */
   nativeToken?: DeployOptions['nativeToken'];
-  /** The oracle pool a block.* reader binds, its category in display order; see `DeployOptions.oraclePool`. */
-  oraclePool?: string;
+  /** The oracle pool a block.* reader binds, or `'new'` or `{ create }` to mint one; see `DeployOptions.oraclePool`. */
+  oraclePool?: DeployOptions['oraclePool'];
 }
 
 /** A deployed contract with ethers-style deployment accessors. */
@@ -345,11 +345,17 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = overrides.provider
       ?? (signer ? signer.provider : (this.runner as NetworkProvider));
+    // A pool the deployment mints goes first, in transactions of its own, so the constructor can read it.
+    const { resolveDeploymentOraclePool } = await import('../oracle/pool/deployment.js');
+    const masters = !this.artifact.stateLayout ? 1 : this.artifact.composition?.convention === 'framed'
+      ? resolveMasterPoolSize({ masters: overrides.threadCount, validators: overrides.validatorCount }).masters
+      : overrides.threadCount ?? 1;
+    const oraclePool = await resolveDeploymentOraclePool(provider, this.artifact, overrides.oraclePool, masters);
     const constructorArgs = withOraclePoolArgument(this.artifact, await normalizeRegisteredAddressArguments(
       provider,
       this.artifact.constructorInputs,
       args.slice(0, ctorCount) as ConstructorArgument[],
-    ), () => overrides.oraclePool ?? provider.oraclePoolCategory) as ConstructorArgument[];
+    ), () => oraclePool ?? provider.oraclePoolCategory) as ConstructorArgument[];
     const publicInitInputs = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
       .filter((input) => !input.name.startsWith('__internal__')) ?? [];
     const positionalInitArgs = await normalizeRegisteredAddressArguments(
@@ -460,6 +466,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
         ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),
         ...(overrides.splitFacets === undefined ? {} : { splitFacets: overrides.splitFacets }),
+        ...(oraclePool === undefined ? {} : { oraclePool }),
       });
       nonceReservation?.commit();
     } catch (error) {

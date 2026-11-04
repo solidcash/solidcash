@@ -139,6 +139,7 @@ import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
   artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
 } from '../oracle/pool/reader.js';
+import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
 import { groupPoolReader, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
@@ -926,6 +927,12 @@ export interface DeployOptions {
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;
+  /**
+   * The oracle pool a block.* reader binds, its category in display order; the provider's pool by default. `'new'`
+   * or `{ create }` mints a pool first, shaped by what the contract and the contracts it creates read, and binds the
+   * deployment and its children to it.
+   */
+  oraclePool?: DeploymentOraclePool;
   initialState?: Record<string, StateValueType>;
   initArgs?: FunctionArgument[];  // arguments for constructor {} block
   changeAddress: string;

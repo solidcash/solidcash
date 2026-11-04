@@ -86,6 +86,7 @@ import {
   bindFramedOraclePool, blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOraclePool,
   withBlockOracleSideCar, type FramedBlockOracle,
 } from '../call/block-oracle.js';
+import { oraclePoolCategoryOption } from '../../oracle/pool/deployment.js';
 import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from '../call/loop-turns.js';
@@ -1137,7 +1138,7 @@ export async function deployFramedProxy(
   const proxyCategory = hexToBin(options.proxyDeploy.fundingUtxo.txid);
   // The implementation's masters carry the pool its block.* reads check, which its calls co-spend a coin of.
   const oraclePool = bindFramedOraclePool(
-    options.provider, implementationArtifact, options.implementationDeploy.oraclePool,
+    options.provider, implementationArtifact, oraclePoolCategoryOption(options.implementationDeploy.oraclePool),
   );
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);

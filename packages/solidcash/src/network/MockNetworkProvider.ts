@@ -13,7 +13,7 @@ import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
 import { runMockNetworkProviderResetHooks } from './mock-reset.js';
-import type { PoolBlock } from '../oracle/pool/coins.js';
+import { type PoolBlock, checkPoolCategory } from '../oracle/pool/coins.js';
 import { buildOraclePoolGenesis, simulatorPoolFields } from '../oracle/pool/genesis.js';
 import { PoolKeeper } from '../oracle/pool/keeper.js';
 
@@ -246,6 +246,12 @@ const MOCK_ORACLE_POOL_FUNDING: Outpoint = { txid: `${'b0'.repeat(31)}b3`, vout:
 /** Info coins in the mock's oracle pool; its ring holds the last 256 blocks, one slot each. */
 const MOCK_ORACLE_POOL_INFO_COINS = 2;
 
+/** Key the mock's oracle pools name. */
+const MOCK_ORACLE_POOL_OWNER_KEY = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x55 : 0x22));
+
+/** The coin a fresh mock chain gives the owner's P2PKH, which pays the pools made through the mock. */
+const MOCK_ORACLE_POOL_PURSE: Outpoint = { txid: `${'b0'.repeat(31)}b4`, vout: 0 };
+
 /** The mock chain has no real blocks: block `height` hashes to sha256 of its 4-byte little-endian height. */
 function syntheticBlockHash(height: number): string {
   const buf = new Uint8Array(4);
@@ -397,10 +403,15 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.indexer = createIndexer({ verifier });
     storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
+    this.fundOraclePoolPurse();
   }
 
-  /** Key the mock oracle pool's coins name. Its P2PKH pays the pool's genesis and its keeper's fees. */
-  readonly oraclePoolOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x55 : 0x22));
+  /**
+   * Key the mock's oracle pools name, the default owner of a pool a deployment creates. Its P2PKH, which holds a coin
+   * on every fresh chain, pays their geneses and keepers.
+   */
+  readonly oraclePoolOwnerKey = MOCK_ORACLE_POOL_OWNER_KEY.slice();
+
   /** The last automatic pool refresh's failure, cleared by the next success. The pool lags the chain meanwhile. */
   oraclePoolRefreshError?: unknown;
   private oraclePool?: string;
@@ -410,6 +421,28 @@ export default class MockNetworkProvider implements NetworkProvider {
   private oraclePoolKeeperView?: NetworkProvider;
   /** The newest height whose slot the pool took, so a refresh writes only the blocks mined since. */
   private oraclePoolSlotHeight?: number;
+  /** Pools made through this provider that it keeps current, with the newest height whose slot each took. */
+  private keptOraclePools = new Map<string, number | undefined>();
+
+  /** Keep pool `category`, owned by `oraclePoolOwnerKey`, current after each block, as the mock's own. */
+  keepOraclePool(category: string): void {
+    const key = checkPoolCategory(category);
+    if (key !== this.oraclePool && !this.keptOraclePools.has(key)) this.keptOraclePools.set(key, undefined);
+  }
+
+  private oraclePoolPurse(): Uint8Array {
+    const pubkey = secp256k1.derivePublicKeyCompressed(MOCK_ORACLE_POOL_OWNER_KEY) as Uint8Array;
+    return publicKeyToP2PKHLockingBytecode(pubkey);
+  }
+
+  /** Give the owner's P2PKH the coin a fresh chain holds. */
+  private fundOraclePoolPurse(): void {
+    const purse = this.oraclePoolPurse();
+    this.indexer.addUtxo({
+      ...MOCK_ORACLE_POOL_PURSE, satoshis: 100_000_000n, scriptHash: binToHex(sha256(purse)), height: 100,
+      lockingBytecode: purse,
+    });
+  }
 
   /**
    * Category of the mock's oracle pool (display order), minted on this first read, so a test that reads no block
@@ -438,8 +471,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.oraclePoolInstalled = true;
     // The pool covenants loop, which the 2026 VM brought.
     if (this.vmTarget !== VmTarget.BCH_2026_05 && this.vmTarget !== VmTarget.BCH_SPEC) return;
-    const owner = this.oraclePoolOwnerKey;
-    const purse = publicKeyToP2PKHLockingBytecode(secp256k1.derivePublicKeyCompressed(owner) as Uint8Array);
+    const owner = MOCK_ORACLE_POOL_OWNER_KEY;
+    const purse = this.oraclePoolPurse();
     const funding = { ...MOCK_ORACLE_POOL_FUNDING, satoshis: 100_000_000n };
     this.indexer.addUtxo({ ...funding, scriptHash: binToHex(sha256(purse)), height: 100, lockingBytecode: purse });
     const ring: PoolBlock[] = [];
@@ -460,35 +493,52 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   /**
-   * The pool keeper's step after a block: every live info coin takes the tip's fields, and the slot of each block
-   * mined since the last step takes its hash, so the ring has no holes. A time-type locktime is final only below the
-   * median time past, which the mock keeps at its tip time, so the pool publishes the second before it. The keeper's
-   * transactions wait in the mempool for the next mined block, as a live keeper's would. Steps run one at a time, and
-   * only once the pool exists.
+   * The pool keeper's step after a block, for the mock's own pool and each one `keepOraclePool` names: every live
+   * info coin takes the tip's fields, and the slot of each block mined since the last step takes its hash, so the ring
+   * has no holes. A time-type locktime is final only below the median time past, which the mock keeps at its tip
+   * time, so a pool publishes the second before it. The keeper's transactions wait in the mempool for the next mined
+   * block, as a live keeper's would. Steps run one at a time, and only once a pool exists.
    */
   private refreshOraclePool(): Promise<void> {
-    const category = this.oraclePool;
-    if (category === undefined || !this.options.updateUtxoSet) return this.oraclePoolStep;
+    if ((this.oraclePool === undefined && this.keptOraclePools.size === 0) || !this.options.updateUtxoSet) {
+      return this.oraclePoolStep;
+    }
     this.oraclePoolStep = this.oraclePoolStep.then(async () => {
-      try {
-        const keeper = new PoolKeeper({
-          provider: this.oraclePoolKeeperProvider(), category, ownerKey: this.oraclePoolOwnerKey,
-        });
-        await keeper.refreshInfo(simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1));
-        const height = this.blockHeight;
-        const first = Math.max(0, height - POOL_MAX_DEPTH + 1, (this.oraclePoolSlotHeight ?? -1) + 1);
-        if (first <= height) {
-          const blocks: PoolBlock[] = [];
-          for (let n = first; n <= height; n += 1) blocks.push({ n: BigInt(n), hash: hexToBin(syntheticBlockHash(n)) });
-          await keeper.writeSlots(blocks);
-          this.oraclePoolSlotHeight = height;
+      let failure: unknown;
+      const own = this.oraclePool;
+      if (own !== undefined) {
+        try {
+          this.oraclePoolSlotHeight = await this.refreshPool(own, this.oraclePoolSlotHeight);
+        } catch (error) {
+          failure ??= error;
         }
-        this.oraclePoolRefreshError = undefined;
-      } catch (error) {
-        this.oraclePoolRefreshError = error;
       }
+      for (const [category, slotHeight] of [...this.keptOraclePools]) {
+        try {
+          const written = await this.refreshPool(category, slotHeight);
+          if (this.keptOraclePools.has(category)) this.keptOraclePools.set(category, written);
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      this.oraclePoolRefreshError = failure;
     });
     return this.oraclePoolStep;
+  }
+
+  /** One pool's step; returns the newest height whose slot it took. */
+  private async refreshPool(category: string, slotHeight: number | undefined): Promise<number | undefined> {
+    const keeper = new PoolKeeper({
+      provider: this.oraclePoolKeeperProvider(), category, ownerKey: MOCK_ORACLE_POOL_OWNER_KEY,
+    });
+    await keeper.refreshInfo(simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1));
+    const height = this.blockHeight;
+    const first = Math.max(0, height - POOL_MAX_DEPTH + 1, (slotHeight ?? -1) + 1);
+    if (first > height) return slotHeight;
+    const blocks: PoolBlock[] = [];
+    for (let n = first; n <= height; n += 1) blocks.push({ n: BigInt(n), hash: hexToBin(syntheticBlockHash(n)) });
+    await keeper.writeSlots(blocks);
+    return height;
   }
 
   /** This chain as the pool keeper sees it: its sends wait in the mempool. */
@@ -669,6 +719,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     const fundingNonce = this.fundingNonce;
     const pool = {
       category: this.oraclePool, installed: this.oraclePoolInstalled, slotHeight: this.oraclePoolSlotHeight,
+      kept: new Map(this.keptOraclePools),
     };
     const signerNonces = new Map(
       [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
@@ -684,6 +735,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.oraclePool = pool.category;
       this.oraclePoolInstalled = pool.installed;
       this.oraclePoolSlotHeight = pool.slotHeight;
+      this.keptOraclePools = new Map(pool.kept);
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -921,8 +973,10 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
-    // The wipe took the pool with it; a fresh chain mints it on first use.
+    // The wipe took the pools and the owner's coin with it; a fresh chain mints its pool on first use.
     this.clearOraclePool();
+    this.keptOraclePools.clear();
+    this.fundOraclePoolPurse();
     runMockNetworkProviderResetHooks();
   }
 

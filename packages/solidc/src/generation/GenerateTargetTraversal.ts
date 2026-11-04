@@ -675,6 +675,8 @@ const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** The `ordinal 0 || selector` the selector dispatcher leaves a dispatched entry, its call record's prefix. */
 const CALL_RECORD_PREFIX = '__internal__callRecordPrefix';
+/** The input index of the block-info coin a direct reader's caller forwards. */
+const BLOCK_ORACLE_INPUT_INDEX = '__internal__blockOracleInputIndex';
 /** F1 caller-edge record form byte, appended to the call digest so the edge is distinct from a result record. */
 const CALL_EDGE_FORM = 0x03;
 /** F1 caller-edge carrier lock: OP_1 OP_NOP - anyone-can-spend but distinct from OP_TRUE, so the call-record
@@ -1719,6 +1721,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftAddressId: bigint | undefined;
   /** The pool block-info check, `[i, P]` -> `[commitment after its flags byte]`, once defined. */
   private oraclePoolCheckId: bigint | undefined;
+  /** The pool binding helper, `[]` -> `[P]`, which the contract level defines from `__oraclePool`. */
+  private oraclePoolBindingId: bigint | undefined;
+  /** The bodies an indirect call may enter that need the pool binding (`indirectPoolBodyIds`). */
+  private oraclePoolIndirectIds: ReadonlySet<number> = new Set();
   /** The loop int encoder's opcode arm and OP_PUSHDATA1/2 prefix helpers, once defined. */
   private loopIntSmallId: bigint | undefined;
   private loopIntWideId: bigint | undefined;
@@ -1886,6 +1892,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
   private static readonly WIDE_PUSHDATA_DECODE_SUBROUTINE_ID = -17n;
   private static readonly SORTED_INT_READ_SUBROUTINE_ID = -18n;
+  /** The pool binding helper's preferred id: free functions are defined before the helper pool is seeded. */
+  private static readonly ORACLE_POOL_BINDING_SUBROUTINE_ID = -127n;
   /**
    * Use-count keys for an address build that binds a lock other than the executing input's (a delegate's proxy, or
    * an explicit lock). Counted by the probe, never emitted: no helper identifier is this negative.
@@ -2881,10 +2889,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private constructorCaptures(func: FunctionDefinitionNode): ParameterNode[] {
     if (!func.body || func.functionId === undefined) return [];
-    // A block-info read and a bound child's argument take the pool binding by name, not by an identifier.
-    const pool = func.usesBlockOracle === true || func.passesOraclePool === true
+    // A block-info read and a bound child's argument take the pool binding by name, not by an identifier. A body an
+    // indirect call may enter takes it from the binding helper instead.
+    const pool = (func.usesBlockOracle === true || func.passesOraclePool === true)
+      && !this.oraclePoolIndirectIds.has(func.functionId)
       ? this.contractParameters.filter((param) => param.name === ORACLE_POOL_PARAMETER) : [];
-    if (pool.length > 0) this.refuseIndirectPoolCapture(func);
     // A free function names no constructor parameter, so the binding is all it captures.
     if (!this.contractFunctionKeys.has(`${func.functionId}:${func.name}`)) return func.isFreeFunction ? pool : [];
     const collector = new IdentifierUsageCollector();
@@ -2905,21 +2914,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * An indirect call pushes a body's declared arguments only, so a function-pointer target would read its pool
-   * binding from a slot its caller chose, and a read would admit a coin of any category. Refused while the contract
-   * makes an indirect call.
+   * The function-pointer targets that need the pool binding, in a contract that calls through a function value. An
+   * indirect call pushes a body's declared arguments only, so such a body would read a binding and a coin index from
+   * slots its caller chose: it takes neither, and finds a block-info coin of P from the binding helper instead.
    */
-  private refuseIndirectPoolCapture(func: FunctionDefinitionNode): void {
-    const contract = this.sourcePrimaryContract;
-    if (!contract || func.functionId === undefined || !this.functionReferenceIds(contract).has(func.functionId)) return;
-    const bodies = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions];
-    if (!bodies.some((fn) => fn?.body !== undefined && this.containsIndirectCall(fn.body, true))) return;
-    throw new SolidcDiagnosticError(
-      'ORACLE_POOL_INDIRECT_READ',
-      `'${func.name}' reads the block oracle or creates a contract bound to an oracle pool, and it is a `
-        + 'function-pointer target: an indirect call cannot hand it the pool binding. Call it directly.',
-      { functionName: func.name },
-    );
+  private indirectPoolBodyIds(
+    contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+  ): Set<number> {
+    if (!this.contractParameters.some((parameter) => parameter.name === ORACLE_POOL_PARAMETER)) return new Set();
+    const bodies = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
+      ...freeFunctions].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    const needy = bodies.filter((fn) => fn.functionId !== undefined
+      && (fn.usesBlockOracle === true || fn.passesOraclePool === true));
+    if (needy.length === 0 || !bodies.some((fn) => fn.body !== undefined && this.containsIndirectCall(fn.body, true))) {
+      return new Set();
+    }
+    const referenced = new Set(this.functionReferenceIds(contract));
+    for (const fn of freeFunctions) for (const id of this.functionReferenceIds(fn)) referenced.add(id);
+    return new Set(needy.filter((fn) => referenced.has(fn.functionId!)).map((fn) => fn.functionId!));
+  }
+
+  /** Emit a push of P: the `__oraclePool` parameter where this body holds it, else the binding helper's copy. */
+  private emitOraclePoolBinding(locationData: SingleLocationData): void {
+    if (this.oraclePoolBindingId === undefined || this.getStackIndex(ORACLE_POOL_PARAMETER, true) >= 0) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(ORACLE_POOL_PARAMETER))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
+    this.emit(encodeInt(this.oraclePoolBindingId), locationData);
+    this.emit(Op.OP_INVOKE, locationData);
+  }
+
+  /**
+   * Define the pool binding helper, `[]` -> `[P]`, whose body is the push of P. The function table is the source no
+   * caller chooses: only this script can OP_DEFINE, an identifier once, and it does so here from the parameter at a
+   * slot this level knows. Inside OP_INVOKE, OP_ACTIVEBYTECODE is the invoked body, and the redeem's offset in the
+   * unlocking bytecode moves with the other arguments' lengths and the SDK's prologue.
+   */
+  private emitOraclePoolBindingDefine(id: bigint, locationData: SingleLocationData): void {
+    this.emit([
+      Uint8Array.of(0x20), encodeInt(BigInt(this.getStackIndex(ORACLE_POOL_PARAMETER) + 1)), Op.OP_PICK, Op.OP_CAT,
+      encodeInt(id), Op.OP_DEFINE,
+    ], locationData);
+  }
+
+  /** `[]` -> `[i]`: the first input that is a block-info coin of P. Past the last input the introspection fails. */
+  private emitOraclePoolCoinSearch(locationData: SingleLocationData): void {
+    this.emitOraclePoolBinding(locationData);
+    this.emit([
+      Op.OP_1, Op.OP_CAT, Op.OP_1NEGATE,
+      Op.OP_BEGIN, Op.OP_1ADD,
+      Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_2, Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_IF,
+      Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_DROP, Uint8Array.of(0x00), Op.OP_EQUAL,
+      Op.OP_ELSE,
+      Op.OP_0,
+      Op.OP_ENDIF,
+      Op.OP_UNTIL,
+      Op.OP_NIP,
+    ], locationData);
   }
 
   /**
@@ -4152,6 +4205,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A library load OP_DEFINEs these at run time, so the seeding reserves them too.
     this.libraryDefinedIds = [...new Set(allFunctions.flatMap((fn) => this.loadedLibraries(fn)
       .flatMap((lib) => (lib ? libraryDefinedIds(lib.blob) : []))))];
+    // A body an indirect call may enter, a free one included, invokes the binding helper by this id.
+    this.oraclePoolIndirectIds = this.indirectPoolBodyIds(node.contract, node.freeFunctions);
+    if (this.oraclePoolIndirectIds.size > 0) {
+      let id = GenerateTargetTraversalWithLocation.ORACLE_POOL_BINDING_SUBROUTINE_ID;
+      while (this.libraryDefinedIds.includes(id)) id -= 1n;
+      this.oraclePoolBindingId = id;
+    }
 
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
@@ -5367,6 +5427,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const id of invokedFunctionIds) this.compactHelperIds.used.add(BigInt(id));
     for (const id of this.freeFunctionIds) this.compactHelperIds.used.add(id);
     for (const id of this.libraryDefinedIds) this.compactHelperIds.used.add(id);
+    if (this.oraclePoolBindingId !== undefined) this.compactHelperIds.used.add(this.oraclePoolBindingId);
     this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
       .filter((id) => !this.compactHelperIds.used.has(id));
     // vmap sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
@@ -5670,6 +5731,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         (t) => t.emitOraclePoolCheck(loc),
       );
     }
+    if (this.oraclePoolBindingId !== undefined) this.emitOraclePoolBindingDefine(this.oraclePoolBindingId, loc);
     // The loop int encoder's arms run inside a loop pass, so they are defined for one site too: inline, every pass
     // pays for each of their instructions even when it steps over them.
     const defineLoopIntArm = (
@@ -6107,17 +6169,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Cached result of `functionReferenceIds` per contract node. It is a whole-contract walk called twice on the
-   * same node during one emission (the indirect-dispatch prelude and `emitFunctionDefinesAndDispatch`), and a
-   * read-only call census measured it at ~70-80ms per compile. The walk reads only node classes and the
-   * `functionReference.functionId` marks that symbol resolution attaches before codegen.
+   * Cached result of `functionReferenceIds` per root, a contract or a free function. It is a whole-contract walk
+   * called twice on the same node during one emission (the indirect-dispatch prelude and
+   * `emitFunctionDefinesAndDispatch`), and a read-only call census measured it at ~70-80ms per compile. The walk
+   * reads only node classes and the `functionReference.functionId` marks that symbol resolution attaches before
+   * codegen.
    *
    * A module-level WeakMap cannot be used because codegen rewrites child pointers in place, so the cache is
    * per traversal instance; callers only call `.has` on the returned set, so it is never mutated.
    */
-  private functionReferenceIdsCache = new WeakMap<ContractNode, Set<number>>();
+  private functionReferenceIdsCache = new WeakMap<Node, Set<number>>();
 
-  private functionReferenceIds(node: ContractNode): Set<number> {
+  private functionReferenceIds(node: Node): Set<number> {
     const cached = this.functionReferenceIdsCache.get(node);
     if (cached !== undefined) return cached;
     const ids = new Set<number>();
@@ -7005,6 +7068,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
     sub.oraclePoolCheckId = this.oraclePoolCheckId;
+    sub.oraclePoolBindingId = this.oraclePoolBindingId;
+    sub.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
     sub.loopIntSmallId = this.loopIntSmallId;
     sub.loopIntWideId = this.loopIntWideId;
     sub.sharedEntryChecks = this.sharedEntryChecks;
@@ -7101,6 +7166,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.valueChunkAddressId = this.valueChunkAddressId;
     sub.dataNftAddressId = this.dataNftAddressId;
     sub.oraclePoolCheckId = this.oraclePoolCheckId;
+    sub.oraclePoolBindingId = this.oraclePoolBindingId;
+    sub.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
     sub.loopIntSmallId = this.loopIntSmallId;
     sub.loopIntWideId = this.loopIntWideId;
     sub.sharedEntryChecks = this.sharedEntryChecks;
@@ -7251,6 +7318,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.constructorParameterCount = this.constructorParameterCount;
       probe.compiledBytecodes = this.compiledBytecodes;
       probe.sourcePrimaryContract = this.sourcePrimaryContract;
+      probe.oraclePoolBindingId = this.oraclePoolBindingId;
+      probe.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
       probe.compactHelperIds = this.compactHelperIds;
       probe.sharedEntryChecks = this.sharedEntryChecks;
       // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
@@ -7647,6 +7716,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.valueChunkAddressId = this.valueChunkAddressId;
     subTraversal.dataNftAddressId = this.dataNftAddressId;
     subTraversal.oraclePoolCheckId = this.oraclePoolCheckId;
+    subTraversal.oraclePoolBindingId = this.oraclePoolBindingId;
+    subTraversal.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
     subTraversal.loopIntSmallId = this.loopIntSmallId;
     subTraversal.loopIntWideId = this.loopIntWideId;
     subTraversal.sharedEntryChecks = this.sharedEntryChecks;
@@ -8071,6 +8142,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.valueChunkAddressId = this.valueChunkAddressId;
       subTraversal.dataNftAddressId = this.dataNftAddressId;
       subTraversal.oraclePoolCheckId = this.oraclePoolCheckId;
+      subTraversal.oraclePoolBindingId = this.oraclePoolBindingId;
+      subTraversal.oraclePoolIndirectIds = this.oraclePoolIndirectIds;
       subTraversal.loopIntSmallId = this.loopIntSmallId;
       subTraversal.loopIntWideId = this.loopIntWideId;
       subTraversal.sharedEntryChecks = this.sharedEntryChecks;
@@ -9537,6 +9610,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Do NOT mutate node.parameters: the entry-point define shares this node and needs the full list.
       for (const p of node.parameters) {
         if (p.name === '__internal__returnOutputIdx' || p.name === CALL_BATCH_ROW_SHIFT) continue;
+        // A body an indirect call may enter takes no coin index; its reads find the coin.
+        if (p.name === BLOCK_ORACLE_INPUT_INDEX && this.oraclePoolIndirectIds.has(node.functionId!)) continue;
         this.visit(p);
       }
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
@@ -17376,8 +17451,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // don't push the returnOutputIdx arg (TypeCheck forwarded it only to satisfy the arity check), so the
     // subroutine's declared params line up on the stack. Other synthetic params (msgSenderCategory, ...) ARE
     // consumed by the subroutine, so they are still pushed.
+    // A target an indirect call may enter takes no coin index either way it is called.
     const skipArg = (i: number): boolean => targetFunc.parameters[i]?.name === '__internal__returnOutputIdx'
-      || targetFunc.parameters[i]?.name === CALL_BATCH_ROW_SHIFT;
+      || targetFunc.parameters[i]?.name === CALL_BATCH_ROW_SHIFT
+      || (targetFunc.parameters[i]?.name === BLOCK_ORACLE_INPUT_INDEX
+        && this.oraclePoolIndirectIds.has(targetFunc.functionId!));
 
     // Capture immutable constructor values before evaluating declared
     // arguments: an argument expression may itself move one of these values.
@@ -17387,8 +17465,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (constructorCaptures.length > 0) {
       for (let i = constructorCaptures.length - 1; i >= 0; i--) {
         const name = constructorCaptures[i].name;
-        this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
-        this.emit(Op.OP_PICK, locationData);
+        if (name === ORACLE_POOL_PARAMETER) {
+          this.emitOraclePoolBinding(locationData);
+        } else {
+          this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        }
         this.pushToStack(`(__constructor_arg_${targetFunc.functionId}_${i})`);
         hiddenContextCount += 1;
       }
@@ -17426,6 +17508,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(contextIndex)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack(`(__vmap_cardinality_arg_${targetFunc.functionId}_${i})`);
+      } else if (argument instanceof IdentifierNode && argument.name === BLOCK_ORACLE_INPUT_INDEX
+        && !this.stack.includes(argument.name)) {
+        // A caller an indirect call may enter holds no index: it hands its callee the first coin of P.
+        this.emitOraclePoolCoinSearch(locationData);
+        this.pushToStack(`(__oracle_index_arg_${targetFunc.functionId})`);
       } else {
         node.parameters[i] = this.visit(argument);
         // Internal-helper bodies are OP_DEFINE subroutines whose parameters skip enforceFunctionParameterTypes
@@ -18823,6 +18910,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         Op.OP_UNTIL,
         Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP,
       ], locationData);
+    } else if (!this.stack.includes(BLOCK_ORACLE_INPUT_INDEX)) {
+      // A body an indirect call may enter takes no index, so it finds the first such input of P.
+      this.emitOraclePoolCoinSearch(locationData);
+      this.emit([Op.OP_UTXOTOKENCOMMITMENT, Op.OP_1, Op.OP_SPLIT, Op.OP_NIP], locationData);
     } else {
       this.emit([
         encodeInt(BigInt(this.getStackIndex('__internal__blockOracleInputIndex'))), Op.OP_PICK,
@@ -21916,8 +22007,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Push this contract's own pool binding, the argument a bound child takes for its `__oraclePool`. */
   private emitOraclePoolArgument(locationData: SingleLocationData): void {
-    this.emit(encodeInt(BigInt(this.getStackIndex(ORACLE_POOL_PARAMETER))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitOraclePoolBinding(locationData);
     this.pushToStack('(value)');
   }
 

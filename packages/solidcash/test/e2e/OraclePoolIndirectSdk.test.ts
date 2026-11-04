@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, decodeTransaction, hexToBin } from '@bitauth/libauth';
 import { ORACLE_POOL_PARAMETER, POOL_FLAG_SLOT, type Artifact } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Signer, type TransactionBuilder } from '../../src/index.js';
+import { Contract, Signer, type TransactionBuilder } from '../../src/index.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { getContractFactory, StatefulContract, upgrades } from '../../src/stateful/index.js';
 import {

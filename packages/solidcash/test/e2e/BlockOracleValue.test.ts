@@ -1,12 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import {
-  blockhashCommitmentNumber, blockhashKeeperBatonLockingBytecode, blockhashOracleLockingBytecode, hash256,
-  poolInfoRedeemScript, poolInfoUpdateUnlocking, type PoolInfoFields,
+  hash256, poolInfoRedeemScript, poolInfoUpdateUnlocking, type PoolInfoFields,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
-import { BLOCKHASH_WINDOW, BlockOracleUpdater, type RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 import {
   PoolKeeper, poolInfoUnlockable, type PoolBlockFields, type PoolCoin,
 } from '../../src/oracle/pool/index.js';
@@ -15,14 +13,13 @@ import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { createSighashPreimage, randomUtxo } from '../../src/utils.js';
 import {
   createBareP2pkhFeeFunder, createFeeFunder, createTestProvider, expectScriptRejection, mintTestOraclePool,
-  setupStatefulUtxos, TEST_ORACLE_POOL_KEY,
+  TEST_ORACLE_POOL_KEY,
 } from '../test-util.js';
-import { alicePriv, alicePub, bobAddress } from '../fixture/vars.js';
+import { bobAddress } from '../fixture/vars.js';
 
 /**
  * A pool's block-info covenant refuses any spend that recreates a coin with fewer satoshis, read or owner update,
- * so no reader can drain it. The keeper pays update fees from its own P2PKH. The blockhash keeper's sweep pays its
- * fee out of the pairs it reclaims, so a sync past 256 blocks succeeds.
+ * so no reader can drain it. The keeper pays update fees from its own P2PKH.
  */
 
 const READ_BACK = `
@@ -32,8 +29,6 @@ contract BlockOracleOwned() {
         require(block.timestamp == eTimestamp);
     }
 }`;
-
-const CONSUMER = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
 
 // Below the mock's median time past (its tip time), so a time-type locktime up to T0 + 600 is final.
 const T0 = 1_699_990_000n;
@@ -66,10 +61,6 @@ async function liveCoin(o: Owned): Promise<PoolCoin<PoolInfoFields>> {
 async function balance(provider: MockNetworkProvider, lock: Uint8Array): Promise<bigint> {
   return (await provider.getUtxosForLockingBytecode(lock)).reduce((sum, utxo) => sum + utxo.satoshis, 0n);
 }
-
-const outpoints = async (provider: MockNetworkProvider, lock: Uint8Array): Promise<string[]> => (
-  (await provider.getUtxosForLockingBytecode(lock)).map((utxo) => `${utxo.txid}:${utxo.vout}`)
-);
 
 // Broadcast the built bytes, so the verdict is the mock node's.
 function broadcast(provider: MockNetworkProvider, builder: TransactionBuilder): Promise<string> {
@@ -159,58 +150,3 @@ describe('a pool info coin keeps its value', () => {
   });
 });
 
-// The mock chain over BCHN's two blockhash calls.
-function chainRpc(provider: MockNetworkProvider): RpcLike {
-  return {
-    request: async (method: string, ...params: unknown[]): Promise<unknown> => {
-      if (method === 'getblockcount') return provider.getBlockHeight();
-      if (method === 'getblockhash') return provider.getBlockHash(Number(params[0]));
-      throw new Error(`unexpected rpc ${method}`);
-    },
-  };
-}
-
-describe('the blockhash keeper sweep', () => {
-  it('syncs past 256 blocks and sweeps the aged pairs to the keeper in one batch', async () => {
-    const provider = createTestProvider();
-    if (!('setBlockOracleFields' in provider)) return;
-    const artifact = compileString(CONSUMER);
-    const consumer = new Contract(artifact, [], { provider });
-    const { categoryId: cat } = await setupStatefulUtxos(provider, consumer, artifact.stateLayout!, {}, {
-      saltContract: true,
-      extraOutputs: (category) => [{
-        address: binToHex(blockhashKeeperBatonLockingBytecode(hexToBin(category), alicePub)),
-        satoshis: 100_000n,
-        token: { nft: { capability: 'minting', commitment: '' } },
-      }],
-    });
-    const keeper = new BlockOracleUpdater({
-      contract: consumer, categoryId: cat, keeperKey: alicePriv, rpc: chainRpc(provider), blockhashOracleCategory: cat,
-    });
-    const pairLock = blockhashOracleLockingBytecode(hexToBin(cat));
-    const pairs = async (): Promise<bigint[]> => (await provider.getUtxosForLockingBytecode(pairLock))
-      .map((utxo) => blockhashCommitmentNumber(hexToBin(utxo.token?.nft?.commitment ?? '')))
-      .sort((a, b) => Number(a - b));
-    const keeperLock = new SignatureTemplate(alicePriv).unlockP2PKH().generateLockingBytecode();
-
-    const first = BigInt(await provider.getBlockHeight());
-    expect(await keeper.syncOnce()).toBeNull();
-    await provider.mine(1);
-    expect(await keeper.syncOnce()).toBeNull();
-    expect(await pairs()).toEqual([first, first + 1n]);
-
-    const held = new Set(await outpoints(provider, keeperLock));
-    await provider.mine(BLOCKHASH_WINDOW);
-    const tip = BigInt(await provider.getBlockHeight());
-    expect(tip).toBe(first + 1n + BigInt(BLOCKHASH_WINDOW));
-    // Both pairs are out of the window: the old sweep built a 0-satoshi output for one 1,000-satoshi pair.
-    expect(await keeper.syncOnce()).toBeNull();
-    expect(await pairs()).toEqual([tip]);
-    const swept = (await provider.getUtxosForLockingBytecode(keeperLock))
-      .filter((utxo) => !held.has(`${utxo.txid}:${utxo.vout}`));
-    expect(swept).toHaveLength(1);
-    // 2,000 reclaimed satoshis less a size-priced fee, above dust.
-    expect(swept[0].satoshis).toBeGreaterThan(546n);
-    expect(swept[0].satoshis).toBeLessThan(2_000n);
-  });
-});

@@ -1,5 +1,5 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { blockOracleLockingBytecode, sha256 } from '@solidcash/utils';
+import { sha256 } from '@solidcash/utils';
 import {
   ElectrumClient,
   type RequestResponse,
@@ -13,8 +13,6 @@ import { addressToLockScript } from '../utils.js';
 
 interface OptionsBase {
   manualConnectionManagement?: boolean;
-  /** Shared block-info oracle category (32 bytes, display byte order); derives its covenant lock. */
-  blockOracleCategory?: Uint8Array;
   /** Category of the default oracle pool a block.* reader binds, 64 hex characters in display byte order. */
   oraclePoolCategory?: string;
 }
@@ -37,16 +35,9 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private electrum: ElectrumClient<ElectrumClientEvents>;
   private concurrentRequests: number = 0;
   private manualConnectionManagement: boolean;
-  readonly blockOracleCategory?: Uint8Array;
-  readonly blockOracleLock?: Uint8Array;
   readonly oraclePoolCategory?: string;
 
   constructor(public network: Network = Network.MAINNET, options: Options = {}) {
-    if (options.blockOracleCategory !== undefined) {
-      if (options.blockOracleCategory.length !== 32) throw new Error('blockOracleCategory must be exactly 32 bytes');
-      this.blockOracleCategory = options.blockOracleCategory.slice();
-      this.blockOracleLock = blockOracleLockingBytecode(this.blockOracleCategory);
-    }
     if (options.oraclePoolCategory !== undefined) {
       if (!/^[0-9a-fA-F]{64}$/.test(options.oraclePoolCategory)) {
         throw new Error('oraclePoolCategory must be 32 bytes of hex');

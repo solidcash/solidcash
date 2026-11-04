@@ -34,7 +34,6 @@ export interface MemCashProviderOptions {
   readonly controlMining?: boolean;
   /** Forward `hardhat_reset` to the shared node. Default false (no-op). */
   readonly controlChain?: boolean;
-  readonly blockOracleCategory?: Uint8Array;
   /** Category of the default oracle pool (display order); the node's advertised pool otherwise. */
   readonly oraclePoolCategory?: string;
 }
@@ -67,7 +66,6 @@ interface DevnetFeatures {
   api_version?: number;
   path?: string;
   accounts?: { path?: string; count?: number; initial_index?: number };
-  block_oracle?: { lock: string; category: string; outpoint: { txid: string; vout: number } } | null;
   /** The node's default oracle pool, its category in display order. */
   oracle_pool?: { category: string } | null;
   evm_rpc?: boolean;
@@ -111,8 +109,6 @@ export default class MemCashNetworkProvider implements NetworkProvider {
   readonly simulator = true;
   /** Informational mirror of `server.features.devnet.evm_rpc`; `send()` never branches on it. */
   evmRpc = false;
-  blockOracleCategory?: Uint8Array;
-  blockOracleLock?: Uint8Array;
   oraclePoolCategory?: string;
 
   /** The mock's constant EVM-shaped surface, read directly by ported suites. */
@@ -134,7 +130,6 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     this.network = network ?? Network.MOCKNET;
     this.options = options;
     this.mnemonic = options.mnemonic ?? MEM_CASH_DEFAULT_MNEMONIC;
-    if (options.blockOracleCategory !== undefined) this.blockOracleCategory = options.blockOracleCategory;
     if (options.oraclePoolCategory !== undefined) this.oraclePoolCategory = options.oraclePoolCategory.toLowerCase();
   }
 
@@ -281,11 +276,6 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     }
     if (devnet.policy !== undefined) {
       this.policy = { enforceDust: devnet.policy.enforce_dust ?? this.policy.enforceDust };
-    }
-    const oracle = devnet.block_oracle ?? null;
-    if (oracle !== null) {
-      this.blockOracleLock = hexToBin(oracle.lock);
-      this.blockOracleCategory = hexToBin(oracle.category);
     }
     const pool = devnet.oracle_pool ?? null;
     if (pool !== null && this.options.oraclePoolCategory === undefined && isHex(pool.category)
@@ -519,11 +509,6 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     };
     this.restorers.set(handle.id, restorer);
     return restorer;
-  }
-
-  /** The shared block-info oracle is owned by the node; a client cannot rewrite it. */
-  refreshBlockOracle(): void {
-    // Intentionally a no-op: the node refreshes the oracle on every tip change, and a second writer would race it.
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {

@@ -134,7 +134,6 @@ describe('oracle pool block-info reads by direct contracts', () => {
     const { provider, signer } = await chain();
     const artifact = compileString(STATEFUL_READER);
     expect(artifact.constructorInputs.map((input) => input.name)).toEqual([ORACLE_POOL_PARAMETER]);
-    expect(artifact.blockOracleLockSlots).toBeUndefined();
     const sc = await getContractFactory(artifact, signer).deploy({ initialState: { reads: 0n } });
     const category = provider.oraclePoolCategory!;
     expect(category).toMatch(TXID);

@@ -19,10 +19,6 @@ export interface DeployOptions {
    * fills the reader's `__oraclePool` constructor input from it.
    */
   oraclePool?: string;
-  /** @deprecated Ignored: a blockhash reader reads the ring slots of its oracle pool, and no genesis mints a baton. */
-  blockhashKeeperPublicKey?: Uint8Array;
-  /** @deprecated Ignored, as blockhashKeeperPublicKey is. */
-  blockhashKeeperAmount?: bigint;
   provider: NetworkProvider;
   fundingUtxo: Utxo;
   funder: Unlocker;

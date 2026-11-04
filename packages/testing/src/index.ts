@@ -83,7 +83,3 @@ export {
 
 // ethers utils (forwarded to ethers v6) + v5-compat shims
 export * from './ethers-utils.js';
-
-// block.* oracle bridge: drive Solidity block.timestamp/block.number from the harness time-travel
-export { mockBlockOracleRpc, BlockOracleUpdater, fetchBlockOracleFields } from './oracle-helpers.js';
-export type { RpcLike, BlockOracleFields } from './oracle-helpers.js';

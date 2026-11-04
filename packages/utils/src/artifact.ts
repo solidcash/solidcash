@@ -2189,11 +2189,9 @@ export interface Artifact {
    * the implementation's per-storage-path covenant checks.
    */
   delegateProxyStateOutputCountPinned?: boolean;
-  usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
-  /** A function reads the block-info oracle commitment. The update is not an entry of this contract. */
+  usesBlockhash?: boolean;  // contract reads blockhash(n) from a ring slot of its oracle pool
+  /** A function reads a block-info coin of the bound oracle pool. */
   usesBlockOracle?: boolean;
-  /** Offsets of the 35-byte oracle-lock sentinel in the published bytecode. The offset is the push opcode. */
-  blockOracleLockSlots?: readonly number[];
   /**
    * A framed reader's pool slots: offsets of each `push(ORACLE_POOL_SENTINEL || 0x01)` in the published bytecode,
    * the offset being the push opcode. Deployment writes `oraclePoolBinding(P)` over them. A direct reader takes the

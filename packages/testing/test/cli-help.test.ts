@@ -30,9 +30,11 @@ describe.each(Object.keys(clis) as (keyof typeof clis)[])('%s task help', (cli) 
     expect(status).toBe(0);
     expect(stdout).toContain(`Usage: ${cli} node [options]`);
     expect(stdout).toContain('Start a persistent mem-cash devnet');
-    for (const flag of ['--evm-rpc', '--no-block-oracle', '--shutdown-timeout', '--bch-network']) {
+    for (const flag of ['--evm-rpc', '--shutdown-timeout', '--bch-network']) {
       expect(stdout, `missing ${flag}`).toContain(flag);
     }
+    // The node installs no block oracle; readers read an oracle pool.
+    expect(stdout).not.toContain('--no-block-oracle');
     expect(stdout).toContain('--port <value>');
     expect(stdout).toContain('--allow-origin <value...>');
     // The global init help must not stand in for the task table.

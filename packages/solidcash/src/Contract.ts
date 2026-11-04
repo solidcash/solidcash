@@ -1,7 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  applyBlockOracleLock,
   type AbiFunction,
   type Artifact,
   asmToScript,
@@ -31,7 +30,6 @@ import {
   type OpaqueLoopCallContext, type OpaqueLoopContractCall, type OpaqueLoopCoSpend, type ExternalTargetEntry,
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
-import { bindBlockOracleLock } from './oracle/block-oracle-lock.js';
 import {
   bindArtifactOraclePool, boundOraclePool, isPoolInfoOutput, isPoolSlotOutput, withOraclePoolArgument,
 } from './oracle/pool/reader.js';
@@ -343,8 +341,6 @@ export class Contract<
   usesExternalLibraries: boolean;
   salt?: Uint8Array;
   category?: Uint8Array;
-  /** The legacy single oracle's lock, which the framed and message-bus readers still co-spend. */
-  blockOracleLock?: Uint8Array;
   /** The oracle pool a block.* reader binds (its category, display order), from its `__oraclePool` argument. */
   oraclePool?: string;
 
@@ -369,11 +365,6 @@ export class Contract<
       throw new Error('Salt must be 520 bytes or less');
     }
     this.category = this.options.category;
-    const providerLock = this.provider.blockOracleLock;
-    this.blockOracleLock = this.options.blockOracleLock ?? providerLock;
-    if (this.blockOracleLock !== undefined && (artifact.blockOracleLockSlots?.length ?? 0) > 0) {
-      bindBlockOracleLock(artifact, this.blockOracleLock);
-    }
 
     const expectedProperties = ['abi', 'bytecode', 'constructorInputs', 'contractName', 'compiler'];
     if (!expectedProperties.every((property) => property in artifact)) {
@@ -528,7 +519,6 @@ export class Contract<
       this.usesExternalLibraries ? 'library-pad' : '',
       this.isStateful && this.category ? binToHex(this.category) : '',
       this.salt === undefined ? 'no-salt' : `salt:${binToHex(this.salt)}`,
-      this.blockOracleLock === undefined ? 'no-oracle' : `oracle:${binToHex(this.blockOracleLock)}`,
     ].join('|');
     let compositions = composedBytecodeScripts.get(artifact.bytecode);
     if (!compositions) {
@@ -537,12 +527,8 @@ export class Contract<
     }
     let contractBytecodeScript = compositions.get(compositionKey);
     if (!contractBytecodeScript) {
-      let readerProgram = scriptToBytecode(parsedArtifactScript(this.artifact));
-      if (this.blockOracleLock !== undefined && this.artifact.blockOracleLockSlots !== undefined) {
-        readerProgram = applyBlockOracleLock(readerProgram, this.blockOracleLock, this.artifact.blockOracleLockSlots);
-      }
       contractBytecodeScript = generateContractBytecodeScript(
-        bytecodeToScript(readerProgram), this.encodedConstructorArgs,
+        parsedArtifactScript(this.artifact), this.encodedConstructorArgs,
       );
       if (this.usesExternalLibraries) {
         contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];

@@ -25,11 +25,12 @@ describe('node task registry', () => {
       expect(params.has(name), `missing --${name}`).toBe(true);
     }
     for (const flag of [
-      'interval-empty', 'random-mnemonic', 'no-fund', 'no-keys', 'evm-rpc', 'no-block-oracle',
+      'interval-empty', 'random-mnemonic', 'no-fund', 'no-keys', 'evm-rpc',
       'json', 'quiet', 'trace', 'unsafe-expose', 'metrics', 'no-compile',
     ]) {
       expect(params.get(flag)?.isFlag, `--${flag} is not a flag`).toBe(true);
     }
+    expect(params.has('no-block-oracle')).toBe(false);
     for (const array of ['allow-origin', 'allow-host']) {
       expect(params.get(array)?.isArray, `--${array} is not repeatable`).toBe(true);
     }

@@ -1138,7 +1138,7 @@ export async function deployProxy<TImpl extends Artifact>(
     // Mock chains do not run the production block-oracle keeper. Refresh only this completed deployment graph:
     // doing it before the initializer would invalidate that transaction's authenticated state transition, while
     // refreshing every registered deployment here makes unrelated contracts change out of band.
-    const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
+    const { syncMockBlockOracleDeployment } = await import('../oracle/legacy-block-registers.js');
     await syncMockBlockOracleDeployment(proxy.inner.provider, { contract: handle });
 
     nonceReservation?.commit();

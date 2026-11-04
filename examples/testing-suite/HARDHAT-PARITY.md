@@ -12,7 +12,7 @@ Session Log as work lands. Do NOT delete completed items (they document the mapp
 > modules were MOVED there from `solidcash/src/hardhat` (per user: "consolidate into @solidcash/testing"). The
 > earlier incomplete files (`accounts`/`environment`/`factory`/`compile`) were replaced. SDK-level primitives
 > stay in `@solidcash/solidcash` (MockNetworkProvider snapshot/time, the `@solidcash/solidcash/vitest` matchers, `SnapshotRestorer`
-> export, ContractFactory, Signer, BlockOracleUpdater) and the harness imports them from the `@solidcash/solidcash` package.
+> export, ContractFactory, Signer, the oracle pool) and the harness imports them from the `@solidcash/solidcash` package.
 > **Public surface**: `@solidcash/testing` (main = HRE/ethers/tasks/config), `@solidcash/testing/chai`,
 > `@solidcash/testing/network-helpers`, `@solidcash/testing/ethers`; CLI bin `solidcash` -> `dist/cli.js`.
 > The testing-suite imports `@solidcash/testing` (aliased to `hardhat`/`chai`/`@nomicfoundation/hardhat-network-helpers`
@@ -214,9 +214,9 @@ Height advancement exists; **timestamp/time control does NOT** (mock block time 
   duration.{seconds..years}`. mock is now indexer-authoritative for block time (`setNextBlockTimestamp` is a
   mem-cash pending value; `increase`/`increaseTo` are immediate + mine). **These drive Solidity `block.timestamp`
   / `block.number`** (the Hardhat surface) via the oracle bridge below - NOT `tx.locktime`. DONE.
-- [x] **block.* oracle bridge**: the mock chain writes its height/time into the shared block-oracle commitment
-  that `block.*` readers co-spend; `mockBlockOracleRpc(provider)` lets a `BlockOracleUpdater` run against the
-  mock chain. Proven by `test/block-timestamp.test.ts` (TimeVault withdraw locks then unlocks). DONE.
+- [x] **block.* oracle bridge**: the mock chain's oracle pool keeper writes its height/time into the block-info
+  coins that `block.*` readers co-spend, on every mined block. Proven by `test/block-timestamp.test.ts` (TimeVault
+  withdraw locks then unlocks). DONE.
 - [x] **Raw RPC shim**: intercept `provider.send("evm_increaseTime"|"evm_mine"|"evm_setNextBlockTimestamp")` so
   ported EA/MS time-travel calls (which call raw RPC) run verbatim. P1. DONE: MockNetworkProvider.send handles
   evm_snapshot/revert/mine/increaseTime/setNextBlockTimestamp/setAutomine + eth_blockNumber/chainId; hex-quantity
@@ -424,9 +424,9 @@ Foundational seams FIRST (D2/D3), then the helpers that bind to them, then polis
   - **WS6 time/block**: `MockNetworkProvider` now indexer-authoritative for block time (removed drifting
     `blockTime` field); `mine`/`mineUpTo`/`setNextBlockTimestamp` (pending, mem-cash) / `increaseTime`
     (immediate, uses REAL tip height so setChainTip sticks); `time.*` (latest/increase/increaseTo/duration).
-    **block.timestamp/block.number bridge**: `mockBlockOracleRpc(provider)` feeds `BlockOracleUpdater` from the
-    mock chain, so `time.increaseTo` moves the on-chain `block.timestamp` register (proven: TimeVault withdraw
-    covenant locks then unlocks). This is the Hardhat time surface, NOT tx.locktime. DONE.
+    **block.timestamp/block.number bridge**: the mock chain's oracle pool takes every mined block's clock, so
+    `time.increaseTo` moves the `block.timestamp` its coins hold (proven: TimeVault withdraw covenant locks then
+    unlocks). This is the Hardhat time surface, NOT tx.locktime. DONE.
   - **WS1 config**: `solidcash.config.ts` + `defineConfig` + `loadConfig` (imports .ts/.mjs/.js). DONE.
   - **WS2 tasks/HRE/CLI**: `task()/subtask()` v2 builder + registry, `hre` (config/network/ethers/networkHelpers/
     run) over a `network.create()` v3 seam (D2), builtin tasks compile/test/run/clean/node, `solidcash` CLI bin.

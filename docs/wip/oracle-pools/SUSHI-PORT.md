@@ -11,7 +11,17 @@ Status: done, 2026-11-04: utils, compiler, SDK, tests and docs, on `feat/oracle-
   and BlockOracleCommitment.test.ts deleted);
 - tests: `d5a70b769`, `961ec8007`, `cdc9730d4`, `9770aafb6` (the two stateful reader helpers get their own names),
   `8edb89d0a` (FRAMED_AHEAD escrow labels at the current template);
-- docs: `1f85ed33e` and `d720fc57a` (this file), and the docs commit that marks this file done ("Docs", below).
+- docs: `1f85ed33e` and `d720fc57a` (this file), and the docs commit that marks this file done ("Docs", below);
+- follow-ups from master, 2026-11-04:
+  - `db2a6751c` and `b8ff3ee40`: a nested or delegate callee's function-pointer `blockhash` walk gets its slot;
+    `453263fae` adds the test's `Contract` import;
+  - `fab3440ee`, `2fbcfbb89` and `e34b79770`: the subroutine-use probe captures every constructor parameter, and a
+    fallback says why;
+  - `6f7a1669a` and `abd865b4e`: the regtest and devnet keepers mint a young chain's ring slots, 16 per baton
+    transaction;
+  - `4e8d21205`: every Electrum provider request awaits the connection.
+  Master's regtest file `test/regtest/OraclePoolProviders.test.ts` (16a7cc23f) is not ported: its Electrum case
+  reads through a stateless reader, which this branch refuses. The provider code it ran is the same here.
 
 Every block.* reader stays stateful here, so master's stateless-reader test cases were dropped or made stateful.
 `8edb89d0a` swapped the FRAMED_AHEAD escrow labels for the current validator template:

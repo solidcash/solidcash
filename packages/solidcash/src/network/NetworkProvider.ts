@@ -59,6 +59,8 @@ export default interface NetworkProvider {
   blockOracleLock?: Uint8Array;
   /** Category used by the oracle covenant (display byte order). */
   blockOracleCategory?: Uint8Array;
+  /** Category of the provider's default oracle pool, hex in display byte order. */
+  readonly oraclePoolCategory?: string;
 
   /** Optional provider-specific consensus limits. Omitted providers use BCH production limits. */
   consensusLimits?: ConsensusLimits;

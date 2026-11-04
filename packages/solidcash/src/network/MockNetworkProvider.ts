@@ -4,7 +4,7 @@ import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import {
   encodeBlockOracleCommitment, blockOracleLockingBytecode, blockOracleReadUnlocking, hash160, hash256, sha256,
-  type BlockOracleCommitmentFields,
+  POOL_MAX_DEPTH, type BlockOracleCommitmentFields,
 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
@@ -16,6 +16,9 @@ import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
 import { runMockNetworkProviderResetHooks } from './mock-reset.js';
+import type { PoolBlock } from '../oracle/pool/coins.js';
+import { buildOraclePoolGenesis, simulatorPoolFields } from '../oracle/pool/genesis.js';
+import { PoolKeeper } from '../oracle/pool/keeper.js';
 
 export { onMockNetworkProviderReset } from './mock-reset.js';
 
@@ -246,6 +249,19 @@ const MOCK_BLOCK_ORACLE_OUTPOINT: Outpoint = { txid: `${'b0'.repeat(31)}b1`, vou
 /** The coin a fresh mock chain gives the oracle owner's P2PKH, which pays its keeper's update fees. */
 const MOCK_BLOCK_ORACLE_FEE_COIN: Outpoint = { txid: `${'b0'.repeat(31)}b2`, vout: 0 };
 
+/** The coin a fresh mock chain gives the oracle pool owner's P2PKH, which pays the pool's genesis and keeper. */
+const MOCK_ORACLE_POOL_FUNDING: Outpoint = { txid: `${'b0'.repeat(31)}b3`, vout: 0 };
+
+/** Info coins in the mock's oracle pool; its ring holds the last 256 blocks, one slot each. */
+const MOCK_ORACLE_POOL_INFO_COINS = 2;
+
+/** The mock chain has no real blocks: block `height` hashes to sha256 of its 4-byte little-endian height. */
+function syntheticBlockHash(height: number): string {
+  const buf = new Uint8Array(4);
+  new DataView(buf.buffer).setUint32(0, height >>> 0, true);
+  return binToHex(sha256(buf));
+}
+
 /**
  * Write counters for indexer stores. mem-cash calls its storage by property lookup, so wrapping the writer methods
  * and the `_test` helpers (which edit the internals directly) sees every change to the UTXO set.
@@ -391,6 +407,7 @@ export default class MockNetworkProvider implements NetworkProvider {
     storeGeneration(this.indexer.storage);
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
     this.installBlockOracle();
+    this.installOraclePool();
   }
 
   /** Compressed key the mock oracle's commitment names. Tests sign updates with it, and its P2PKH pays their fees. */
@@ -485,6 +502,104 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.blockOracleOutpoint = { txid, vout };
   }
 
+  /** Key the mock oracle pool's coins name. Its P2PKH pays the pool's genesis and its keeper's fees. */
+  readonly oraclePoolOwnerKey = Uint8Array.from({ length: 32 }, (_byte, index) => (index === 31 ? 0x55 : 0x22));
+  /** The last automatic pool refresh's failure, cleared by the next success. The pool lags the chain meanwhile. */
+  oraclePoolRefreshError?: unknown;
+  private oraclePool?: string;
+  private oraclePoolStep: Promise<void> = Promise.resolve();
+  private oraclePoolKeeperView?: NetworkProvider;
+  /** The height whose slot the pool last took, so a send that mined no new height skips the ring. */
+  private oraclePoolSlotHeight?: number;
+
+  /** Category of the mock's oracle pool (display order), undefined when this profile's rules refused its genesis. */
+  get oraclePoolCategory(): string | undefined {
+    return this.oraclePool;
+  }
+
+  /**
+   * Mint the oracle pool by its two genesis transactions, which wait in the mempool for the next mined block: two info
+   * coins at the tip's fields, one slot for each of the last 256 blocks, and the baton. A profile whose rules refuse
+   * them (an older VM, tight limits) has no pool.
+   */
+  private installOraclePool(): void {
+    this.oraclePool = undefined;
+    this.oraclePoolRefreshError = undefined;
+    this.oraclePoolSlotHeight = undefined;
+    // The pool covenants loop, which the 2026 VM brought.
+    if (this.vmTarget !== VmTarget.BCH_2026_05 && this.vmTarget !== VmTarget.BCH_SPEC) return;
+    const owner = this.oraclePoolOwnerKey;
+    const purse = publicKeyToP2PKHLockingBytecode(secp256k1.derivePublicKeyCompressed(owner) as Uint8Array);
+    const funding = { ...MOCK_ORACLE_POOL_FUNDING, satoshis: 100_000_000n };
+    this.indexer.addUtxo({ ...funding, scriptHash: binToHex(sha256(purse)), height: 100, lockingBytecode: purse });
+    const ring: PoolBlock[] = [];
+    for (let n = Math.max(0, this.blockHeight - POOL_MAX_DEPTH + 1); n <= this.blockHeight; n += 1) {
+      ring.push({ n: BigInt(n), hash: hexToBin(syntheticBlockHash(n)) });
+    }
+    try {
+      const { category, transactions } = buildOraclePoolGenesis({
+        funding, funder: owner, ownerKey: owner, infoCoins: MOCK_ORACLE_POOL_INFO_COINS, ringDepth: POOL_MAX_DEPTH,
+        slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime()), ring,
+      });
+      for (const transaction of transactions) this.publishOraclePoolTransaction(transaction.hex);
+      this.oraclePool = category;
+      this.oraclePoolSlotHeight = this.blockHeight;
+    } catch {
+      // No pool on this profile.
+    }
+  }
+
+  /**
+   * The pool keeper's step after a block: every live info coin takes the tip's fields, and the slot of the tip
+   * height's residue takes its hash. A time-type locktime is final only below the median time past, which the mock
+   * keeps at its tip time, so the pool publishes the second before it. The keeper's transactions wait in the mempool
+   * for the next mined block, as a live keeper's would. Steps run one at a time.
+   */
+  private refreshOraclePool(): Promise<void> {
+    const category = this.oraclePool;
+    if (category === undefined || !this.options.updateUtxoSet) return this.oraclePoolStep;
+    this.oraclePoolStep = this.oraclePoolStep.then(async () => {
+      try {
+        const keeper = new PoolKeeper({
+          provider: this.oraclePoolKeeperProvider(), category, ownerKey: this.oraclePoolOwnerKey,
+        });
+        await keeper.refreshInfo(simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1));
+        const height = this.blockHeight;
+        if (this.oraclePoolSlotHeight !== height) {
+          await keeper.writeNewestSlot(BigInt(height), hexToBin(syntheticBlockHash(height)));
+          this.oraclePoolSlotHeight = height;
+        }
+        this.oraclePoolRefreshError = undefined;
+      } catch (error) {
+        this.oraclePoolRefreshError = error;
+      }
+    });
+    return this.oraclePoolStep;
+  }
+
+  /** This chain as the pool keeper sees it: its sends wait in the mempool. */
+  private oraclePoolKeeperProvider(): NetworkProvider {
+    this.oraclePoolKeeperView ??= {
+      network: this.network,
+      simulator: true,
+      getUtxos: (address) => this.getUtxos(address),
+      getUtxosForLockingBytecode: (lockingBytecode) => this.getUtxosForLockingBytecode(lockingBytecode),
+      getUtxosByTokenCategory: (categoryId) => this.getUtxosByTokenCategory(categoryId),
+      getBlockHeight: () => this.getBlockHeight(),
+      getRawTransaction: (txid) => this.getRawTransaction(txid),
+      sendRawTransaction: async (txHex) => this.publishOraclePoolTransaction(txHex),
+    };
+    return this.oraclePoolKeeperView;
+  }
+
+  /** Accept a pool transaction into the mempool; the next mined block confirms it. */
+  private publishOraclePoolTransaction(txHex: string): string {
+    const result = this.submitToIndexer(txHex);
+    if (!result.success) throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
+    this.acceptedTransactions.add(result.txid);
+    return result.txid;
+  }
+
   async getUtxos(address: string): Promise<Utxo[]> {
     const lockingBytecode = addressToLockScript(address);
     return this.getUtxosForLockingBytecode(lockingBytecode);
@@ -549,7 +664,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     const snap = storage.snapshot();
     const live: typeof snap.utxos = new Map(snap.utxos);
     for (const key of snap.mempoolSpends.keys()) live.delete(key);
-    for (const [key, entry] of snap.mempoolUtxos) live.set(key, entry);
+    // A mempool output a mempool child spent stays in the store's mempool outputs, marked only as spent.
+    for (const [key, entry] of snap.mempoolUtxos) if (!snap.mempoolSpends.has(key)) live.set(key, entry);
     const entries = [...live.values()];
     // A read by category walks the whole set otherwise, and a composed transaction carries tens of thousands of
     // entries. One pass here indexes each entry under its category, and under its 64-character prefix as well when
@@ -595,11 +711,14 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.setBlockHeight(this.blockHeight + count);
     const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
     await syncMockBlockOracles(this);
+    await this.refreshOraclePool();
   }
 
   /** hardhat-network-helpers `mineUpTo`: mine until the tip height equals `height` (no-op if already past). */
   async mineUpTo(height: number): Promise<void> {
-    if (height > this.blockHeight) this.setBlockHeight(height);
+    if (height <= this.blockHeight) return;
+    this.setBlockHeight(height);
+    await this.refreshOraclePool();
   }
 
   /** Current simulated block timestamp (unix seconds), read from the chain tip. hardhat `time.latest()`. */
@@ -647,6 +766,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       this.blockHeight = height;
       this.fundingNonce = fundingNonce;
       this.blockOracleOutpoint = oracleOutpoint;
+      this.oraclePoolSlotHeight = undefined;
       for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
       // Snapshot restoration can abandon transactions just as completely as reset(). Any process-local cache
       // derived from the prior chain tip is stale after this point and must be rebuilt from the restored UTXO set.
@@ -681,6 +801,7 @@ export default class MockNetworkProvider implements NetworkProvider {
         const timestamp = this.increaseTime(Number(params[0]));
         const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
         await syncMockBlockOracles(this);
+        await this.refreshOraclePool();
         return timestamp;
       }
       case 'hardhat_mine': {
@@ -706,9 +827,7 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   async getBlockHash(height: number): Promise<string> {
-    const buf = new Uint8Array(4);
-    new DataView(buf.buffer).setUint32(0, height >>> 0, true);
-    return binToHex(sha256(buf)); // deterministic synthetic hash - the mock chain has no real blocks
+    return syntheticBlockHash(height);
   }
 
   async getRawTransaction(txid: string): Promise<string> {
@@ -767,23 +886,10 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
-    // libauth's CashToken introspection operations call the common checked-push helper rather than the selected
-    // BCH instruction set's stack-item limit. `@mem-cash/validation` 0.0.8 has that defect, so the published
-    // limit is scoped to the common value for this synchronous mock check; 0.0.10 - the version this package
-    // declares - overrides those operations natively in its own verifier, which leaves this scoping as a 0.0.8
-    // compatibility layer. It is a candidate for removal once nothing supports 0.0.8.
-    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
-    const previousStackItemLength = commonConsensus.maximumStackItemLength;
-    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
     const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
     const submitStartedAt = debugTiming ? Date.now() : 0;
-    let result;
-    try {
-      result = this.indexer.submitTransaction(txHex);
-    } finally {
-      commonConsensus.maximumStackItemLength = previousStackItemLength;
-    }
+    const result = this.submitToIndexer(txHex);
     if (debugTiming) console.error('mock-provider-timing', {
       stage: 'submit-transaction', ms: Date.now() - submitStartedAt, success: result.success,
     });
@@ -808,11 +914,29 @@ export default class MockNetworkProvider implements NetworkProvider {
     // is when that value moves, so the chain's time reaches the register before the next transaction is built.
     const { syncMockBlockOracles } = await import('../oracle/blockOracleUpdater.js');
     await syncMockBlockOracles(this);
+    await this.refreshOraclePool();
     if (debugTiming) console.error('mock-provider-timing', {
       stage: 'mine', ms: Date.now() - mineStartedAt,
     });
 
     return result.txid;
+  }
+
+  /** Submit to the indexer under this provider's stack-item limit. */
+  private submitToIndexer(txHex: string): ReturnType<Indexer['submitTransaction']> {
+    // libauth's CashToken introspection operations call the common checked-push helper rather than the selected
+    // BCH instruction set's stack-item limit. `@mem-cash/validation` 0.0.8 has that defect, so the published
+    // limit is scoped to the common value for this synchronous mock check; 0.0.10 - the version this package
+    // declares - overrides those operations natively in its own verifier, which leaves this scoping as a 0.0.8
+    // compatibility layer. It is a candidate for removal once nothing supports 0.0.8.
+    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
+    const previousStackItemLength = commonConsensus.maximumStackItemLength;
+    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    try {
+      return this.indexer.submitTransaction(txHex);
+    } finally {
+      commonConsensus.maximumStackItemLength = previousStackItemLength;
+    }
   }
 
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
@@ -880,8 +1004,9 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
-    // The wipe took the oracle with it, and a fresh chain has one.
+    // The wipe took the oracle and the pool with it, and a fresh chain has both.
     this.installBlockOracle();
+    this.installOraclePool();
     runMockNetworkProviderResetHooks();
   }
 

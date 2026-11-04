@@ -62,7 +62,7 @@ follows once the sushi-port session signals (it reads that branch's dist). The d
   - slot outputs at the slot lock with the kind bit set, stop bit clear, the baton's owner and depth, and `n` no
     greater than a height-type `OP_TXLOCKTIME`;
   - no fungible amount of `P`.
-- **Baton update and sweep:** owner-signed. The update may change the depth or rotate the owner.
+- **Baton update and sweep:** owner-signed. The update may change the depth, within 1 to 256, or rotate the owner.
 
 ## Phases
 

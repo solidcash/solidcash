@@ -170,8 +170,13 @@ describe('oracle pool commitments', () => {
     expect(decodePoolBatonCommitment(baton)).toEqual({ owner, depth: 4 });
   });
 
+  it('refuses to encode a depth outside 1 to 256', () => {
+    expect(() => encodePoolBatonCommitment({ owner, depth: 0 })).toThrow(/depth 0/);
+    expect(() => slotWith({ depth: 257 })).toThrow(/depth 257/);
+  });
+
   it('pins each covenant redeem size', () => {
-    expect([infoRedeem.length, slotRedeem.length, batonRedeem.length]).toEqual([212, 201, 294]);
+    expect([infoRedeem.length, slotRedeem.length, batonRedeem.length]).toEqual([212, 201, 306]);
   });
 });
 
@@ -302,5 +307,16 @@ describe('oracle pool baton', () => {
     accepted(verify([sweep], [plain(1_500n)]));
     refused(verify([update, funder()], [retunedCoin, nft(slotLock, grown), plain(5_000n)], 1_000));
     refused(verify([sweep, funder()], [plain(5_000n), nft(slotLock, grown)], 1_000));
+  });
+
+  it('admits an update to depth 256 and refuses one to depth 0 or 257, which would brick later slots', () => {
+    const retune = (depthBytes: readonly number[]): string | true => {
+      const commitment = Uint8Array.from([...owner, ...depthBytes]);
+      const update = owned(batonCoin, batonRedeem, (pub, sig) => poolBatonUpdateUnlocking(P, pub, sig, commitment));
+      return verify([update], [nft(batonLock, commitment, 'minting', P, 2_000n)]);
+    };
+    accepted(retune([0, 1]));
+    refused(retune([0, 0]));
+    refused(retune([1, 1]));
   });
 });

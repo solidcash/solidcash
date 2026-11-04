@@ -32,6 +32,9 @@ export const POOL_FLAG_SLOT_STOPPED = 0x01;
 /** Owner public-key hash. Sigcheck is hash160(pubkey) against these bytes. */
 export const POOL_OWNER_BYTES = 20;
 
+/** A ring depth is 1 to this, the EVM blockhash window: a slot write takes n' - n modulo the depth. */
+export const POOL_MAX_DEPTH = 256;
+
 /** Each block-info numeric field is 4 little-endian bytes and a 0x00, a non-negative script number. */
 export const POOL_FIELD_WIDTH = 5;
 
@@ -113,7 +116,9 @@ function checkOwner(owner: Uint8Array): void {
 }
 
 function encodeDepth(depth: number): Uint8Array {
-  if (!Number.isInteger(depth)) throw new Error(`oracle pool depth ${depth} is not an integer`);
+  if (!Number.isInteger(depth) || depth < 1 || depth > POOL_MAX_DEPTH) {
+    throw new Error(`oracle pool depth ${depth} is not an integer from 1 to ${POOL_MAX_DEPTH}`);
+  }
   return littleEndian(BigInt(depth), 2, 'depth');
 }
 
@@ -395,8 +400,8 @@ export function buildPoolSlotCovenantScript(categoryId: Uint8Array): Script {
  *  - sweep `<0>`: no output carries P;
  *  - mint `<template> <1>` and update `<commitment'> <2>` walk the outputs. An output carrying P has no fungible
  *    amount. At the baton's own index it is the recreation, checked after the walk: the commitment stays on the
- *    mint and becomes the new 22 bytes on the update. Any other is a mutable NFT that recreates the pool coin
- *    co-spent at its index (its covenant checks it), or, on the mint only, a new pool coin:
+ *    mint and becomes the new 22 bytes, with a depth of 1 to 256, on the update. Any other is a mutable NFT that
+ *    recreates the pool coin co-spent at its index (its covenant checks it), or, on the mint only, a new pool coin:
  *    - at the info lock, a copy of the input at index `template`, a live info coin at the same lock;
  *    - at the slot lock, `0x80 || n || hash || this commitment`, with n a height that CLTV bounds.
  */
@@ -461,7 +466,10 @@ export function buildPoolBatonCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_IF,
     Op.OP_DROP, Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCOMMITMENT,
     Op.OP_ELSE,
+    // owner' || depth', with depth' from 1 to POOL_MAX_DEPTH.
     Op.OP_SIZE, encodeInt(BigInt(POOL_BATON_COMMITMENT_BYTES)), Op.OP_NUMEQUALVERIFY,
+    Op.OP_DUP, encodeInt(BigInt(POOL_OWNER_BYTES)), Op.OP_SPLIT, Op.OP_NIP, Op.OP_BIN2NUM,
+    Op.OP_1, encodeInt(BigInt(POOL_MAX_DEPTH + 1)), Op.OP_WITHIN, Op.OP_VERIFY,
     Op.OP_ENDIF,
     ...recreation,
     Op.OP_ENDIF,

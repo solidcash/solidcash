@@ -106,15 +106,17 @@ Phases 1-5 are done; the commits are listed under each.
    `e06bc849f` (framed), `5b75bb09d` (message bus), `abba1a162` (pointer-only readers), `3d5e9ea0d`, `651f0f025`
    (pointer readers per entry, stateful and nested calls), `46b83869a` (provider defaults, regtest pool),
    `119f2e58c` (the single oracle, the pairs and the baton deleted), `f02a4812a` (`solidhat node`'s pool),
-   `1486fd510` (deployment-minted pools), `704791456` (`PoolKeeper.start`, `setDepth`).
+   `1486fd510` (deployment-minted pools), `704791456` (`PoolKeeper.start`, `setDepth`), `7b76534cf` (a callee's
+   pointer `blockhash` slots).
 5. **Tests and docs:**
    - e2e on mocknet;
    - update the oracle e2e files: BlockOracle, BlockOracleValue, BlockhashKeeperDeployment, the CRYPTO-4 and -5
      audits, KernelCalleeOnlyBlockOracle, TransitiveBlockhashOutState;
    - the website guide, AGENTS.md and the security ledger. The pools fix ORACLE-1, -2 and -5 on master at the root.
 
-   Done: `95f842e97`, `9cd17cad5`, `81fa92702`, `61cde84a4`, `32cbf9a52`, `79dd25186`, `e77571642`, `2393c541a`
-   (tests); `ced53f9c5`, `db42a467f`, `be46ad116` and the docs commit that corrects them against the later fixes.
+   Done: `95f842e97`, `9cd17cad5`, `81fa92702`, `61cde84a4`, `32cbf9a52`, `79dd25186`, `e77571642`, `2393c541a`,
+   `7fee45f1d` (tests); `ced53f9c5`, `db42a467f`, `be46ad116` and the docs commit that corrects them against the
+   later fixes.
 6. **Port to `sushi-port-node`:** replace its per-contract oracles (ORACLE-4, the per-contract ring, GENESIS-1's
    oracle part, the oracle output pins). Ready on `feat/oracle-pools-sushi`, whose `SUSHI-PORT.md` lists the port's
    commits (docs `cab3fee31`); it lands on the user's OK.
@@ -133,10 +135,10 @@ Phases 1-5 are done; the commits are listed under each.
   `n` and gives the direct read's hash or zero (`617b8fb81`).
 - An entry that may reach such a target publishes `indirectPoolReads` (`8e5ebe10e`), and the SDK co-spends on it
   (`3d5e9ea0d`, `651f0f025`): a block-info coin on the stateless path and for a stateful call's own entry and its
-  nested and low-level callees', and the slots of the stateful entry's own `blockhash` walks, found by probing. A
-  callee's `blockhash` walk gets no slot of its own (it fails closed unless the transaction spends one that
-  answers). An artifact compiled before the field keeps `abba1a162`'s artifact-level rule on the stateless and
-  framed paths.
+  nested and low-level callees', and the slots of their `blockhash` walks, found by probing. The stateful entry is
+  probed on its own; a nested or low-level callee, delegates included, at its own input of the built transaction
+  (`7b76534cf`). Each slot is appended and recreated at its own index, and the locktime rises to the largest n. An
+  artifact compiled before the field keeps `abba1a162`'s artifact-level rule on the stateless and framed paths.
 - `solidhat node` mints, keeps and advertises its pool (`f02a4812a`), but its owner key stays in the node: on the
   devnet, `oraclePool: 'new'` needs `create.ownerKey`, and nothing keeps that pool but its user's `PoolKeeper`.
   Regtest exposes its owner key but keeps no pool a deployment mints there, and needs `create.tip` (it is no
@@ -155,7 +157,4 @@ Phases 1-5 are done; the commits are listed under each.
   reads another constructor parameter still throws the probe into its define-all fallback, which loses helper
   extraction across every body (`aed65ad16` measured +2,013 B on a kernel publisher). This predates the pools; the
   general fix captures every parameter the emitting pass captures, and may move unrelated contracts' bytecode.
-- A `blockhash` read in a function-pointer target gets its ring slot co-spent only on the stateful root entry. A
-  nested or low-level callee, delegates included, gets the block-info coin but no slot, so its walk refuses unless
-  the transaction already spends a slot holding its block. It fails closed.
 - Phase 6: the port to `sushi-port-node` is ready on `feat/oracle-pools-sushi` and waits for the user's OK.

@@ -23,6 +23,11 @@ those clean paths. During debugging, run only the target test and at most one ad
 switch, classify it here as observational, output-changing, experimental, or timing-related; include a bounded
 invocation and explain what evidence it provides. Do not preserve one-off logging solely because it once helped.
 
+`SOLIDC_PROFILE=1` also reports the subroutine-use probe: when it throws, codegen defines every captured helper
+and loses helper extraction across all bodies, and that contract's `codegen:probe` line carries `fallback`, the
+error the probe threw. A contract whose script jumps by hundreds of bytes after an unrelated change is worth
+compiling once with it.
+
 `compiler.tagSingletonDataNfts: true` is a persisted state-layout option, not a diagnostic switch. It adds a
 verified record-index header to single-record state so an implementation can share that record with a generated
 proxy that owns an additional pointer record. The artifact publishes `stateLayout.taggedDataNfts: true`; codecs,

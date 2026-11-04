@@ -1911,6 +1911,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * compact helper ids, which the probe draws from the same pool the real pass continues from.
    */
   private isSubroutineUseProbe = false;
+  /** Why the probe threw and fell back to defining every captured subroutine, if it did. */
+  private subroutineProbeFallback: string | undefined;
   private bodyOptimiseMs = 0;
 
   // Function IDs are allocated monotonically from zero, so reserve compact negative script numbers for
@@ -5752,6 +5754,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         label: 'codegen:probe',
         ms: Date.now() - probeStarted,
         contract: node.name,
+        ...(this.subroutineProbeFallback !== undefined && { fallback: this.subroutineProbeFallback }),
       }));
     }
     const count = (id: bigint): number => probe?.get(id) ?? 0;
@@ -7430,6 +7433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * map on failure (conservative).
    */
   private subroutineUseProbe(node: ContractNode): Map<bigint, number> | null {
+    this.subroutineProbeFallback = undefined;
     // Subroutine sites arise from packed state/entry reads, state/entry writes and events - and also from
     // structural helpers (struct field extract/prefix/skip, array element/split/truncate), which a contract
     // with no state at all can have plenty of. Skipping the probe for those left their ids assigned purely in
@@ -7543,7 +7547,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.compactHelperIds = probe.compactHelperIds;
       this.rehomeHotHelperIds(probe);
       return probe.subroutineUseCount;
-    } catch {
+    } catch (error) {
+      // Kept for the SOLIDC_PROFILE probe line: the fallback costs every body its helper extraction.
+      this.subroutineProbeFallback = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       return new Map(this.capturedSubroutineIds.map((id) => [id, 2]));
     } finally {
       allFns.forEach((f, i) => { f.deployTargets = savedDeployTargets[i]; });

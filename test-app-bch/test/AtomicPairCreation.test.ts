@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import hre from "hardhat";
-import { binToHex, hash160, lockingBytecodeToCashAddress } from "@bitauth/libauth";
+import { binToHex, lockingBytecodeToCashAddress } from "@bitauth/libauth";
 import { framedValidator } from "@solidcash/solidc/runtime";
 import { bytesEqual, validatorAddress, type Artifact, type FunctionSplitBundle } from "@solidcash/utils";
 import { framedCall, framedDeploy } from "@solidcash/solidcash/framed";
@@ -81,7 +81,8 @@ describe("the pair created with create2", () => {
     // (a) `create2` returns `addrV(K)` of the caller's coin.
     const category = Uint8Array.from(Buffer.from(caller.txid, "hex"));
     const address = validatorAddress(category, VALIDATOR);
-    expect(binToHex(result.values[0] as Uint8Array)).toBe(binToHex(hash160(address)));
+    // The app compiles with `addressForm: 'bytecode'`, so the address result is the whole lock (DECISIONS D56).
+    expect(binToHex(result.values[0] as Uint8Array)).toBe(binToHex(address));
 
     // (b) The genesis carries a master at each of the pair's 26 entry locks, the validator and the records.
     const ofCategory = result.transaction.outputs.filter((output) => output.token !== undefined

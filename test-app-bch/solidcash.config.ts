@@ -19,6 +19,9 @@ export default defineConfig({
   },
   compiler: {
     evmCompat: true,
+    // The app's own form (sushi-port's solidcash.config.ts): an address is its exact locking bytecode, stored,
+    // compared and returned whole (DECISIONS D56).
+    addressForm: 'bytecode',
     messageBus: true,
     messageBusKernel: true,
     messageBusGraphContext: true,

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import hre from "hardhat";
-import { binToHex, hash160, hexToBin, lockingBytecodeToCashAddress } from "@bitauth/libauth";
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from "@bitauth/libauth";
 import { framedValidator } from "@solidcash/solidc/runtime";
 import { bytesEqual, validatorAddress, type Artifact, type FunctionSplitBundle } from "@solidcash/utils";
 import { framedCall, framedDeploy } from "@solidcash/solidcash/framed";
@@ -94,7 +94,8 @@ describe("UniswapV2Factory.createPair", () => {
 
     const category = Uint8Array.from(Buffer.from(caller.txid, "hex"));
     const address = validatorAddress(category, VALIDATOR);
-    expect(binToHex(result.values[0] as Uint8Array)).toBe(binToHex(hash160(address)));
+    // The app compiles with `addressForm: 'bytecode'`, so the address result is the whole lock (DECISIONS D56).
+    expect(binToHex(result.values[0] as Uint8Array)).toBe(binToHex(address));
     const ofCategory = result.transaction.outputs.filter((output) => output.token !== undefined
       && binToHex(output.token.category) === binToHex(category));
     // The shard artifacts are deployment-prepared (each presents its entry's lock), so the genesis locks come from

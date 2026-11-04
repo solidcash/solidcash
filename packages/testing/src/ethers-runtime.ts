@@ -11,7 +11,7 @@ import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
-import { asmToBytecode } from '@solidcash/utils';
+import { asmToBytecode, decodedSolidityAddressIdentity } from '@solidcash/utils';
 import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
@@ -478,19 +478,22 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       },
     });
   };
-  // A Solidity-compat read answers an `address` with its 20-byte identity (DECISIONS D13), while a handle's
-  // `getAddress()` names a contract by its address, so a test that compares a getter's answer with a contract's
-  // address by `===`, as ethers lets it, would never find them equal. A framed handle answers an identity that names a
-  // deployment the provider registers with that deployment's address instead; any other identity, a key's hash or the
-  // zero address, is answered as given, and a handle the contract connects to a signer answers the same way.
+  // A Solidity-compat read answers an `address` with its 20-byte identity (DECISIONS D13), or under `addressForm:
+  // 'bytecode'` with the whole lock (D56), while a handle's `getAddress()` names a contract by its address, so a test
+  // that compares a getter's answer with a contract's address by `===`, as ethers lets it, would never find them
+  // equal. A framed handle answers an address whose identity names a deployment the provider registers with that
+  // deployment's address instead; any other address, a key's hash or lock or the zero address, is answered as given,
+  // and a handle the contract connects to a signer answers the same way.
   const presentAddresses = <T extends object>(contract: T, loaded: Artifact): T => {
     if (loaded.composition?.convention !== 'framed') return contract;
     const addressGetters = new Set((loaded.abi ?? [])
       .filter((entry) => entry.outputs?.length === 1 && entry.outputs[0]!.type === 'address')
       .map((entry) => entry.name));
     const addressOf = (value: unknown): unknown => {
-      if (!(value instanceof Uint8Array) || value.length !== 20) return value;
-      const identity = binToHex(value);
+      if (!(value instanceof Uint8Array) || value.length === 0) return value;
+      const identityBytes = value.length === 20 ? value : decodedSolidityAddressIdentity(value);
+      if (identityBytes === undefined) return value;
+      const identity = binToHex(identityBytes);
       const registered = [...listDeployments(provider as never)].reverse().find((entry) => entry.address === identity
         || (entry.lockingBytecode !== undefined && binToHex(hash160(hexToBin(entry.lockingBytecode))) === identity));
       const named = (registered?.contract as { _framedAddress?: string } | undefined)?._framedAddress;
@@ -528,12 +531,14 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       const { findDeploymentByAddress, listDeployments } = await import('@solidcash/solidcash/stateful');
       let registered = typeof addressOrCategory === 'string'
         ? findDeploymentByAddress(provider as never, addressOrCategory) : undefined;
-      // A getter's decoded `address` is the 20-byte Solidity identity of the child's physical lock; resolve it
-      // against the same registry when a test feeds that value back into `getContractAt`.
+      // A getter's decoded `address` is the 20-byte Solidity identity of the child's physical lock, or under
+      // `addressForm: 'bytecode'` that whole lock; resolve either by the identity against the same registry when a
+      // test feeds that value back into `getContractAt`.
       const rawAddress: unknown = addressOrCategory;
-      if (registered === undefined && rawAddress instanceof Uint8Array
-        && rawAddress.length === 20) {
-        const wanted = binToHex(rawAddress);
+      const rawIdentity = rawAddress instanceof Uint8Array
+        ? (rawAddress.length === 20 ? rawAddress : decodedSolidityAddressIdentity(rawAddress)) : undefined;
+      if (registered === undefined && rawIdentity !== undefined) {
+        const wanted = binToHex(rawIdentity);
         registered = [...listDeployments(provider as never)].reverse().find((entry) => (
           entry.lockingBytecode !== undefined
           && binToHex(hash160(hexToBin(entry.lockingBytecode))) === wanted
@@ -573,7 +578,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       }
       if (lookupAddress === undefined) {
         throw new Error(
-          `getContractAt: no deployment matches the 20-byte identity ${binToHex(rawAddress as Uint8Array)}`,
+          `getContractAt: no deployment matches the address ${binToHex(rawAddress as Uint8Array)}`,
         );
       }
       // `at` is async (it eagerly resolves the category); await it before the dispatch proxy wraps the handle,

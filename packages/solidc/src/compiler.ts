@@ -15,7 +15,7 @@ import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   type AbiFunctionReference, type Artifact, type ArtifactMap, ArrayType, AddressType, asmToBytecode,
-  findBlockOracleLockSlots, BytesType,
+  findOraclePoolSlots, ORACLE_POOL_PARAMETER, BytesType,
   type CompilerOptions,
   FixedType, IntType,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSelectorHex,
@@ -246,7 +246,9 @@ import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.
 import {
   kernelArgumentConditionActivation, kernelBooleanArgumentIndices, stableKernelArgumentIndices,
 } from './semantic/KernelEntryActivation.js';
-import SynthesizeBlockOracle, { markBlockOracleCallers, readsBlockOracle } from './semantic/SynthesizeBlockOracle.js';
+import SynthesizeBlockOracle, {
+  bindOraclePool, markBlockOracleCallers, readsBlockOracle, setOraclePoolBinding, takesOraclePool,
+} from './semantic/SynthesizeBlockOracle.js';
 import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
@@ -4454,9 +4456,9 @@ function childDeploymentSites(
         ...(entryNftOutputCount > 0 && { entryNftOutputCount }),
         totalOutputCount: spanWidth,
         categorySource: 'genesis-input-outpoint-txhash',
-        constructorArgs: value.parameters.map((parameter, index) => (analyzed
+        constructorArgs: childDeploymentArguments(child, value.parameters.map((parameter, index) => (analyzed
           ? analyzed.constructorArgs[index] ?? { kind: 'expression' }
-          : source(parameter))),
+          : source(parameter)))),
         ...(value.callOptions?.salt && {
           salt: analyzed ? analyzed.salt ?? { kind: 'expression' } : saltSource(value.callOptions.salt),
         }),
@@ -8819,7 +8821,8 @@ function synthesizeMessageBusRoute(
           && !value.isStatefulDeploy && hasEffectiveCallValue(value.callOptions?.value)) {
           const effect = fixedEffectRecipes.get(value);
           const derived = contractRecipientRecipes.get(value);
-          const bakedArguments = value.referencedContract.parameters.length;
+          const bakedArguments = value.referencedContract.parameters
+            .filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER).length;
           if (!effect?.amount || !derived?.supported
             || derived.constructorArgs.slice(0, bakedArguments).some((recipe) => recipe === undefined)
             || (value.callOptions?.salt !== undefined && derived.salt === undefined)) {
@@ -9151,8 +9154,10 @@ function synthesizeMessageBusRoute(
                   deploymentEntryCountsByChild.set(child.name, genesisEntries.length);
                 }
               }
-              const declaredConstructorParameters = child.parameters.length > 0
-                ? child.parameters : (child.constructorDef?.parameters ?? []);
+              const declaredParameters = child.parameters
+                .filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER);
+              const declaredConstructorParameters = declaredParameters.length > 0
+                ? declaredParameters : (child.constructorDef?.parameters ?? []);
               for (const [argumentIndex] of node.parameters.slice(0, declaredConstructorParameters.length).entries()) {
                 const recipe = analyzed?.constructorArgs[argumentIndex];
                 if (!recipe) {
@@ -17199,6 +17204,8 @@ function compileResolvedAst(
   // structural-helper probe plus exact-span outliner retained 50KB. Both paths emit the same unoptimized
   // semantics and the whole-program optimiser below still runs. Canonicalize kernel codegen onto the compact
   // path so bytecode size does not depend on the front-end compilation-speed preference.
+  // The children are compiled, so a creator knows which of them take the pool binding it passes on.
+  bindOraclePool(ast.contract, ast.freeFunctions, isFramedMaster(mergedCompilerOptions as InternalCompilerOptions));
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions.messageBusKernel === true
     ? { ...mergedCompilerOptions, optimizeForCompilationSpeed: true }
     : mergedCompilerOptions);
@@ -18798,12 +18805,17 @@ function compileResolvedAst(
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   if (ast.contract.usesBlockOracle) {
-    const slots = findBlockOracleLockSlots(asmToBytecode(artifact.bytecode));
-    if (slots.length === 0) {
-      throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its lock pin`);
-    }
     artifact.usesBlockOracle = true;
-    artifact.blockOracleLockSlots = slots;
+    // A direct reader takes P as its `__oraclePool` input; a framed one carries it in pool slots.
+    if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
+      const slots = findOraclePoolSlots(asmToBytecode(artifact.bytecode));
+      if (slots.length === 0) {
+        throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its pool slot`);
+      }
+      artifact.oraclePoolSlots = slots;
+    } else if (!takesOraclePool(ast.contract)) {
+      throw new Error(`'${artifact.contractName}' reads the block oracle but takes no ${ORACLE_POOL_PARAMETER}`);
+    }
   }
   const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
   if (boundVerifierProgram && artifact.messageBus?.route.inputs.some((input) =>
@@ -18846,6 +18858,18 @@ function compileResolvedAst(
     console.warn(`Error: ${message}`);
   }
   return artifact;
+}
+
+/**
+ * The child's constructor inputs as a creating site fills them: its arguments when the child takes them as contract
+ * parameters, then the creator's own `__oraclePool` for a bound child, which no recipe describes yet.
+ */
+function childDeploymentArguments(
+  child: ContractNode, siteArguments: ChildDeploymentSiteAbi['constructorArgs'][number][],
+): ChildDeploymentSiteAbi['constructorArgs'][number][] {
+  if (!takesOraclePool(child)) return siteArguments;
+  const baked = child.parameters.some((parameter) => parameter.name !== ORACLE_POOL_PARAMETER);
+  return [...(baked ? siteArguments : []), { kind: 'expression' }];
 }
 
 function validateAbstractContractInstantiations(ast: Ast): void {
@@ -20256,8 +20280,9 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   // publishes a detached verifier program but leaves its 6 KB atomic body inlined into this shard's route.
   // The complete compiler owns admission, pristine-AST retries, exact verifier binding, and final certificates.
   const artifact = compileStringUnchecked(code, { ...options, __parsedAst: ast } as InternalCompilerOptions);
+  const facetInputs = artifact.constructorInputs.filter((input) => input.name !== ORACLE_POOL_PARAMETER);
   if (!artifact.isLibrary || !artifact.brandedLibrary
-    || artifact.constructorInputs.length !== 1 || artifact.constructorInputs[0].name !== '__brand') {
+    || facetInputs.length !== 1 || facetInputs[0].name !== '__brand') {
     throw new Error(`Split facet '${facetName}' lost its projected branded-library compilation context`);
   }
   artifact.contractName = facetName;
@@ -20527,6 +20552,9 @@ function compileReferencedContracts(
 
     refuseEmittingReturningStateHelpers(singleAst.contract);
 
+    bindOraclePool(
+      singleAst.contract, singleAst.freeFunctions, isFramedMaster(compilerOptions as InternalCompilerOptions),
+    );
     const traversal = new GenerateTargetTraversal(compilerOptions);
     traversal.compiledBytecodes = compiledBytecodes;
     singleAst.accept(traversal);
@@ -20554,6 +20582,8 @@ function compileReferencedContracts(
     // cannot compile on its own (an unrelated file-level helper embedding its own runtimeCode, say) has no such
     // artifact to differ from, so it keeps the bytes generated here.
     const standalone = compileReferencedContractStandalone(code, contractName, childOptions);
+    // The creator encodes the arguments of the bytes it embeds, so the embedded compile decides the binding.
+    if (standalone.oraclePool !== undefined) setOraclePoolBinding(contract, standalone.oraclePool);
     if (standalone.bytecode === undefined) {
       // The bytes generated here never expanded the child's modifiers: embedding them would drop its guards.
       const host = unexpandedModifierHost(contract, new Set([ast.contract.name, ...contractMap.keys()]));
@@ -20671,7 +20701,7 @@ const referencedContractCompileStack: string[] = [];
  */
 function compileReferencedContractStandalone(
   code: string, contractName: string, options: CompilerOptions,
-): { bytecode?: Uint8Array; error?: Error } {
+): { bytecode?: Uint8Array; oraclePool?: boolean; error?: Error } {
   // A contract that creates itself, directly or through another, has no standalone compile to embed.
   if (referencedContractCompileStack.includes(contractName)) return {};
   // The enclosing compile may have recorded its own admission analysis; the nested one starts by clearing it.
@@ -20684,7 +20714,10 @@ function compileReferencedContractStandalone(
       suppressWarnings: true,
       __artifactCache: true,
     } as CompileOptions));
-    return { bytecode: scriptToBytecode(asmToScript(artifact.bytecode)) };
+    return {
+      bytecode: scriptToBytecode(asmToScript(artifact.bytecode)),
+      oraclePool: artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER),
+    };
   } catch (error) {
     return { error: error instanceof Error ? error : new Error(String(error)) };
   } finally {

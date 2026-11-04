@@ -626,11 +626,13 @@ describe('large-contract state-local splitting', () => {
     for (const info of bundle.manifest.facets) {
       expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(baselineSlots);
     }
-    // Each shard that runs a read publishes the pin its deployment fills.
+    // Each shard that runs a read takes the pool binding its deployment fills, and pins no oracle lock.
     const readers = [bundle.root, ...Object.values(bundle.facets)].filter((shard) => shard.usesBlockOracle === true);
     expect(readers.length).toBeGreaterThan(0);
     for (const shard of readers) {
-      expect(shard.blockOracleLockSlots?.length, `${shard.contractName} pin`).toBeGreaterThan(0);
+      expect(shard.constructorInputs.map((input) => input.name), `${shard.contractName} binding`)
+        .toContain('__oraclePool');
+      expect(shard.blockOracleLockSlots, `${shard.contractName} pin`).toBeUndefined();
     }
   });
 
@@ -922,7 +924,7 @@ contract Mixed() {
     expect(setRoute!.target).not.toBe('root');
   });
 
-  it('synthesizes no oracle maintenance entry point, and the shard running the read pins the oracle', () => {
+  it('synthesizes no oracle maintenance entry point, and the shard running the read takes the pool binding', () => {
     const bundle = compileStringSplit(`
       contract OracleUser() {
         uint seen;
@@ -936,7 +938,7 @@ contract Mixed() {
     expect(target).toBeDefined();
     const shard = target === 'root' ? bundle.root : bundle.facets[target!]!;
     expect(shard.usesBlockOracle).toBe(true);
-    expect(shard.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    expect(shard.constructorInputs.map((input) => input.name)).toContain('__oraclePool');
   });
 
   it('does not compile the logical constructor into inherited-function facets', () => {

@@ -1,6 +1,9 @@
 import {
   ContractNode,
+  ContractReferenceNode,
   FunctionDefinitionNode,
+  InstantiationNode,
+  ParameterNode,
   SourceFileNode,
   Node,
   NullaryOpNode,
@@ -11,7 +14,7 @@ import {
   VariableDefinitionNode,
 } from '../ast/AST.js';
 import { DeprecatedNowError } from '../Errors.js';
-import { encodeComputedBlockhashKey } from '@solidcash/utils';
+import { BytesType, encodeComputedBlockhashKey, ORACLE_POOL_PARAMETER } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -67,18 +70,71 @@ export function markBlockOracleCallers(
   contract.usesBlockOracle = true;
 }
 
+/** True when `contract` takes the oracle pool binding. */
+export function takesOraclePool(contract: ContractNode | undefined): boolean {
+  return contract?.parameters.some((parameter) => parameter.name === ORACLE_POOL_PARAMETER) === true;
+}
+
+/** Adds or removes the binding, so a creator encodes the arguments the embedded child takes. */
+export function setOraclePoolBinding(contract: ContractNode, bound: boolean): void {
+  if (bound === takesOraclePool(contract)) return;
+  if (!bound) {
+    contract.parameters = contract.parameters.filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER);
+    return;
+  }
+  const parameter = new ParameterNode(new BytesType(32), ORACLE_POOL_PARAMETER);
+  parameter.location = contract.location;
+  parameter.syntheticallyUsed = true;
+  contract.parameters.push(parameter);
+}
+
+/** Whether a body creates, or names the lock of, a contract bound to a pool. */
+function createsBoundContract(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if ((node instanceof InstantiationNode || node instanceof ContractReferenceNode)
+      && takesOraclePool(node.referencedContract)) found = true;
+  });
+  return found;
+}
+
+/**
+ * Binds a direct contract to its oracle pool P. A contract that reads block info or blockhash, or that creates or
+ * names the lock of a bound contract, takes `__oraclePool` (bytes32, P as OP_UTXOTOKENCATEGORY pushes it) as its
+ * last parameter, and passes its own value to that child. Marks the named-call closure of each creating body, which
+ * an invoked frame must hand the value. A framed master has no contract parameters: each read carries P in a pool
+ * slot. Runs once the children are compiled, before code generation.
+ */
+export function bindOraclePool(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[], framed: boolean,
+): void {
+  const bodies = [
+    contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  const creators = new Set(framed ? [] : bodies.filter(createsBoundContract).map((fn) => fn.name));
+  if (creators.size > 0) {
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of bodies) byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
+    for (const fn of bodies) {
+      if ([...collectNamedFunctionClosure(fn, byName)].some((name) => creators.has(name))) fn.passesOraclePool = true;
+    }
+  }
+  setOraclePoolBinding(contract, !framed
+    && (contract.usesBlockOracle || contract.usesBlockhash || creators.size > 0));
+}
+
 /**
  * Oracle-backed `block.*` reads.
  *
- * The block data lives in one raw covenant's NFT commitment, not in this contract. A read stays a
- * `block.*` nullary; codegen slices that commitment. The owner update is the oracle covenant's own
- * spend and is never added to this contract. `block.basefee` is Floor(1000 * totalFees / size) over
- * two of those slices. `block.chainid` is a separate baked constant.
+ * The block data lives in the commitment of a block-info coin of the contract's oracle pool, not in this
+ * contract. A read stays a `block.*` nullary; codegen checks the coin's category and flags and slices that
+ * commitment. The owner update is the pool covenant's own spend and is never added to this contract.
+ * `block.basefee` is Floor(1000 * totalFees / size) over two of those slices. `block.chainid` is a separate
+ * baked constant.
  *
- * The owner's bounds live in that covenant (utils/block-oracle.ts): a height update keeps `number` below
- * 500000000, does not rewind it, CLTVs it, and keeps `timestamp`; a timestamp update runs under a
- * time-type locktime, does not rewind it, CLTVs it, and keeps `number`. `block.number` and
- * `block.timestamp` warn: each is the last value that owner wrote, not the chain's.
+ * The owner's bounds live in that covenant (utils/oracle-pool.ts): a height update raises `number`, CLTVs it and
+ * keeps `timestamp`; a timestamp update runs under a time-type locktime, raises it, CLTVs it and keeps the other
+ * fields. `block.number` and `block.timestamp` warn: each is the last value that owner wrote, not the chain's.
  */
 
 export default class SynthesizeBlockOracle extends AstTraversal {
@@ -167,7 +223,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       result.blockhashSlotCount = this.fnBlockhashArgs.size;
     }
     // Re-running this pass on a split root sees a forwarder, not the read. Clear a mark left by the
-    // earlier pass so a shard that no longer slices the commitment is not required to publish the lock pin.
+    // earlier pass so a shard that no longer slices the commitment is not bound to a pool for it.
     if (this.fnUsesOracle) result.usesBlockOracle = true;
     else result.usesBlockOracle = undefined;
     this.fnUsesBlockhash = prev;

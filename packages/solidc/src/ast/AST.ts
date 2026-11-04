@@ -586,7 +586,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (a direct `new C(param)`
     // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
-    // deploy-function args instead of requiring them again.
+    // deploy-function args instead of requiring them again. `__oraclePool` forwards the creator's own binding.
     constructorArgs?: (string | null)[];
     // create2 salt (`new C{salt}()`): the forwarded param name, a hex literal, or computed (non-trivial -
     // SDK needs an explicit childSalt). Lets the SDK build the child Contract with the salt the covenant pins.
@@ -822,6 +822,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   usesBlockhash?: boolean;
   // Set when the body reads the block-info oracle commitment. SymbolTable injects the co-spend index.
   usesBlockOracle?: boolean;
+  // Set when the body, or a function it calls, creates a contract bound to an oracle pool, which takes the
+  // creator's own `__oraclePool` as its argument.
+  passesOraclePool?: boolean;
   // Set by LowerInlineAssembly when this function's body contained an inline `assembly {}` block (before the
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).

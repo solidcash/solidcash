@@ -40,6 +40,7 @@ import { stateNftPackingLimit } from '../semantic/maxEncodedSize.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import { CALL_BATCH_MAXIMUM_FRAMES, CALL_BATCH_SELECTOR_HEX } from '../semantic/CallBatch.js';
+import { takesOraclePool } from '../semantic/SynthesizeBlockOracle.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
 } from '../deploymentRecipes.js';
@@ -2368,7 +2369,9 @@ const transferEffects = (
           name: parameter.name, type: abiTypeString(parameter.type),
         }));
         const constructorArgs = analysis?.constructorArgs.slice(0, constructorInputs.length);
+        // No recipe describes the creator's own pool binding a bound child takes.
         if (!constructorArgs || constructorArgs.some((recipe) => recipe === undefined)
+          || takesOraclePool(transfer.node.referencedContract)
           || (transfer.node!.callOptions?.salt !== undefined && analysis?.salt === undefined)) return undefined;
         return {
           contractName: transfer.node!.referencedContract!.name,

@@ -94,8 +94,8 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
     expect(a.contractName).toBe('C');
   });
 
-  it('routes block.timestamp via the shared oracle covenant, not tx.locktime', () => {
-    // block.timestamp slices the raw oracle covenant's commitment in every mode. The oracle rework (2aeaee406)
+  it('routes block.timestamp via the oracle pool, not tx.locktime', () => {
+    // block.timestamp slices a block-info coin of the contract's pool in every mode. The oracle rework (2aeaee406)
     // removed the injected __block_timestamp register. `evmCompat` is set only so the `pragma solidity` header
     // parses.
     const a = compileString(`pragma solidity ^0.8.26;
@@ -103,7 +103,7 @@ describe('SBE-10: storage-pointer locals + block.timestamp + stmt-form interface
     { evmCompat: true });
     expect(a.bytecode).not.toContain('OP_TXLOCKTIME');
     expect(a.usesBlockOracle).toBe(true);
-    expect(a.blockOracleLockSlots?.length).toBeGreaterThan(0);
+    expect(a.constructorInputs.map((input) => input.name)).toContain('__oraclePool');
     expect(a.stateLayout?.variables.map((variable) => variable.name) ?? []).not.toContain('__block_timestamp');
   });
 

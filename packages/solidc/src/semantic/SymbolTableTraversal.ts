@@ -245,6 +245,7 @@ import {
   type FunctionBlockLayout, type BlockLayoutSlot, resolveLibraries, type ExternalLibrary, parseTypeStrict,
   INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, type LocationI,
   KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS, KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX, EVENT_CHUNK_BYTES, libraryDefinedIds,
+  ORACLE_POOL_PARAMETER,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
@@ -15188,9 +15189,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
       // level parameters; use whichever carries them. Synthetic __internal__ params (a child's own semantic
       // pass appends them onto the SHARED ctor node, e.g. for a ctor msg.sender read) are never call-site
-      // arguments - count declared params only.
-      const expectedCtorParams = (contract.parameters.length > 0
-        ? contract.parameters : (contract.constructorDef?.parameters ?? []))
+      // arguments - count declared params only. Nor is the pool binding, which the creator passes itself.
+      const declaredParams = contract.parameters.filter((p) => p.name !== ORACLE_POOL_PARAMETER);
+      const expectedCtorParams = (declaredParams.length > 0
+        ? declaredParams : (contract.constructorDef?.parameters ?? []))
         .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
       if (node.parameters.length !== expectedCtorParams.length) {
         throw new ContractConstructorArgCountError(node, contract.name, expectedCtorParams.length, node.parameters.length);
@@ -16970,7 +16972,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.expression instanceof IdentifierNode && node.name === 'lockingBytecode') {
       const contract = this.contractMap.get(node.expression.name);
       if (contract) {
-        if (contract.parameters.length > 0) {
+        if (contract.parameters.some((parameter) => parameter.name !== ORACLE_POOL_PARAMETER)) {
           throw new ContractNoArgsRequiredError(node, contract.name);
         }
         const ref = new ContractReferenceNode(contract.name, contract, [], 'lockingBytecode');
@@ -16983,9 +16985,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.expression instanceof FunctionCallNode && node.name === 'lockingBytecode') {
       const contract = this.contractMap.get(node.expression.identifier.name);
       if (contract) {
-        if (node.expression.parameters.length !== contract.parameters.length) {
+        const declaredCount = contract.parameters.filter((parameter) => parameter.name !== ORACLE_POOL_PARAMETER)
+          .length;
+        if (node.expression.parameters.length !== declaredCount) {
           throw new ContractConstructorArgCountError(
-            node, contract.name, contract.parameters.length, node.expression.parameters.length,
+            node, contract.name, declaredCount, node.expression.parameters.length,
           );
         }
         // Visit the constructor args for symbol resolution

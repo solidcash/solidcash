@@ -87,6 +87,8 @@ export type SolidcDiagnosticCode =
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
   // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.
   | 'ROUTE_ONLY_ENTRY_UNSERVED'
+  // A function-pointer target that needs the oracle pool binding, which an indirect call cannot hand it.
+  | 'ORACLE_POOL_INDIRECT_READ'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
   | 'KERNEL_LAYOUT'
   | 'KERNEL_UNBOUNDED_KEY'

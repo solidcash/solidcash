@@ -52,7 +52,8 @@ follows once the sushi-port session signals (it reads that branch's dist). The d
 - **Slot write** (owner-signed): `n' > n`, `(n' - n) mod depth == 0`, CLTV height `n'`, any hash. Owner and depth are
   kept, the kind bit stays set, and the stop bit is cleared.
 - **Stop:** owner-signed; set stop bits and change nothing else.
-- **Sweep:** owner-signed; no recreation.
+- **Sweep:** owner-signed; no recreation, and no output may carry `P` (a walk on this path only). A swept mutable coin
+  frees its one-NFT allowance, and the baton an unlimited one, which could otherwise mint a readable forgery.
 - **Rotate:** owner-signed; a new owner hash, nothing else changed.
 - **Baton mint** (owner-signed by the baton commitment's key). It walks the outputs and admits:
   - exactly one minting output: its own recreation at its index;

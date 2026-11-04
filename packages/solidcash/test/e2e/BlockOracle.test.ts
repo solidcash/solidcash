@@ -363,7 +363,7 @@ describe('blobhash / blockhash', () => {
 // sets the locktime the read requires (tx.time >= n). blockhash forces the reader stateful.
 const BH_SRC = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
 
-async function statefulReader(
+async function statefulBlockhashReader(
   provider: ReturnType<typeof createTestProvider>, source: string, state: Record<string, bigint | Uint8Array> = {},
 ): Promise<{ artifact: ReturnType<typeof compileString>; sc: any; categoryId: string }> {
   const artifact = compileString(source);
@@ -378,14 +378,14 @@ describe('blockhash(n) e2e (oracle pool slots)', () => {
   it('returns the hash the pool slot holds for n', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    const { sc } = await statefulReader(provider, BH_SRC);
+    const { sc } = await statefulBlockhashReader(provider, BH_SRC);
     expect((await sc.f(BigInt(n), hash).send()).txid).toMatch(TXID);
   });
 
   it('rejects a wrong expected hash', async () => {
     const provider = createTestProvider();
     const { n } = await allocHeight(provider);
-    const { sc } = await statefulReader(provider, BH_SRC);
+    const { sc } = await statefulBlockhashReader(provider, BH_SRC);
     await expect(sc.f(BigInt(n), hexToBin('bb'.repeat(32))).send()).rejects.toThrow(verifyFailure);
   });
 
@@ -419,7 +419,7 @@ describe('blockhash(n) e2e (oracle pool slots)', () => {
     const b = await allocHeight(provider);
     const src = 'contract B(){ function f(int x, bytes32 hx, int y, bytes32 hy){'
       + ' require(blockhash(x)==hx); require(blockhash(y)==hy); } }';
-    const { artifact, sc } = await statefulReader(provider, src);
+    const { artifact, sc } = await statefulBlockhashReader(provider, src);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['x', 'y']);
     expect((await sc.f(BigInt(a.n), a.hash, BigInt(b.n), b.hash).send()).txid).toMatch(TXID);
   });
@@ -438,7 +438,7 @@ describe('keccak256 + blockhash front-region (stateful)', () => {
   it('resolves a nested keccak alongside a blockhash read (front-region slot before the side-cars)', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    const { artifact, sc, categoryId } = await statefulReader(provider, SRC, { c: 0n });
+    const { artifact, sc, categoryId } = await statefulBlockhashReader(provider, SRC, { c: 0n });
     // The keccak side-car base is shifted past the data NFT count by the blockhashOracle slot.
     const fnAbi = artifact.abi.find((f) => f.name === 'f');
     expect(fnAbi?.blockhashReads).toEqual(['bn']);
@@ -472,7 +472,7 @@ describe('keccak256 + blockhash front-region (stateful)', () => {
     const { n, hash } = await allocHeight(provider);
     const seed = hexToBin('56'.repeat(32));
     let target = seed; for (let i = 0; i < 3; i++) target = keccak_256(target);
-    const { artifact, sc, categoryId } = await statefulReader(provider, LOOP_SRC, { acc: seed });
+    const { artifact, sc, categoryId } = await statefulBlockhashReader(provider, LOOP_SRC, { acc: seed });
     expect(artifact.abi.find((f) => f.name === 'run')?.keccakLoopReads).toBe(true);
     const scLock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
     for (let i = 0; i < 5; i++) {
@@ -502,7 +502,7 @@ describe('blockhash(n) stateful reader', () => {
   it('reads blockhash from a stateful function via the block-layout slot', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    const { sc } = await statefulReader(provider, BH_STATEFUL_SRC, { counter: 5n });
+    const { sc } = await statefulBlockhashReader(provider, BH_STATEFUL_SRC, { counter: 5n });
     expect((await sc.bump(BigInt(n), hash).send()).txid).toMatch(TXID);
   });
 });
@@ -515,7 +515,7 @@ describe('blockhash(x - 1) computed read (probe-trace extraction)', () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
     const src = 'contract B(){ function f(int x, bytes32 h){ require(blockhash(x - 1) == h); } }';
-    const { artifact, sc } = await statefulReader(provider, src);
+    const { artifact, sc } = await statefulBlockhashReader(provider, src);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
     expect((await sc.f(BigInt(n) + 1n, hash).send()).txid).toMatch(TXID);
   });

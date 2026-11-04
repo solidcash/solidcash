@@ -2647,6 +2647,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractIsBrandedLibrary: boolean = false;
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
+  // True when the contract reads block.number and the rest from a block-info coin of its pool.
+  private currentContractUsesBlockOracle: boolean = false;
   private currentContractHasMessageBus: boolean = false;
   /**
    * An entry of this contract returns values, or it carries the multi-call entry, so every direct run of it accounts
@@ -5252,6 +5254,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
+    this.currentContractUsesBlockOracle = node.usesBlockOracle;
     this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
     this.currentContractSettlesCallRecords = node.functions.some((fn) => fn.isEntryPoint && fn.returnTypes.length > 0
       && !fn.graphEmissionHandler && !this.isCompilerMessageBusRoute(fn));
@@ -7191,6 +7194,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       probe.eventDefinitions = this.eventDefinitions;
       probe.currentContractEmitsEvent = this.currentContractEmitsEvent;
       probe.currentContractHasEvents = this.currentContractHasEvents;
+      probe.currentContractUsesBlockhash = this.currentContractUsesBlockhash;
+      probe.currentContractUsesBlockOracle = this.currentContractUsesBlockOracle;
       probe.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
       probe.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       probe.userFunctionDefs = this.userFunctionDefs;
@@ -7572,6 +7577,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.eventDefinitions = this.eventDefinitions;
     subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
     subTraversal.currentContractHasEvents = this.currentContractHasEvents;
+    subTraversal.currentContractUsesBlockhash = this.currentContractUsesBlockhash;
+    subTraversal.currentContractUsesBlockOracle = this.currentContractUsesBlockOracle;
     // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
     // output-only offsets in that body disagree with the ones in the main script.
     subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
@@ -7991,6 +7998,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.eventDefinitions = this.eventDefinitions;
       subTraversal.currentContractEmitsEvent = this.currentContractEmitsEvent;
       subTraversal.currentContractHasEvents = this.currentContractHasEvents;
+      subTraversal.currentContractUsesBlockhash = this.currentContractUsesBlockhash;
+      subTraversal.currentContractUsesBlockOracle = this.currentContractUsesBlockOracle;
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;

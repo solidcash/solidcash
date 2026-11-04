@@ -2,9 +2,16 @@
 
 Status: utils and compiler ported on `feat/oracle-pools-sushi` (from `sushi-port-node` 29405c333), 2026-11-04:
 `b6fcf05bc` (utils pool module), `7c24b63b0` (validator template), `3148c0cac` (per-contract output-side codegen out),
-`a3396494e` (reads move to pools), `837bfe866` (compiler tests). The SDK is not ported: until it is, a block.* or
-blockhash reader compiles but no SDK path deploys or calls it (the reads fail closed). The design and the master
-commits are in master's `docs/wip/oracle-pools/PLAN.md`.
+`a3396494e` (reads move to pools), `837bfe866` (compiler tests). The design and the master commits are in master's
+`docs/wip/oracle-pools/PLAN.md`.
+
+SDK ported, 2026-11-04: `c97733b83` (master's pool modules), `aca6fae8a` (readers, deployments, framed pool slots
+and created children), `1a8ade1ad` (providers; per-contract oracle SDK deleted), `e16d296a0` (validator reference
+model, FRAMED_AHEAD escrow label back to 'escrow 47'), `d5a70b769`, `961ec8007`, `cdc9730d4` (tests), `5d504eae0`
+(mock pool at the tip's last final second, helper stub binding), `1a7850973` (utils per-contract code deleted).
+Every block.* reader stays stateful here, so master's stateless-reader test cases were dropped or made stateful.
+Still on the per-contract model: the docs listed at the end of this file. The list below is the record of what the
+SDK item changed.
 
 ## What the compiler now emits
 
@@ -68,14 +75,11 @@ commits are in master's `docs/wip/oracle-pools/PLAN.md`.
   - `sc-orchestrate-create-builder-external-calls.ts:180`, `sc-resolve-create-builder-entry-abi.ts:15`,
     `stb-refreshed-unlocker-sync.ts:53`, `framed/proxy/external-calls.ts:2653`.
 
-## Left for the SDK item to delete
+## Left after the SDK item
 
-- `utils/src/block-oracle.ts`, and in `utils/src/state.ts` the ring covenant, its codecs and `BLOCKHASH_MAX_DEPTH`.
-- `utils/src/child-locks.ts` `childOracleOwnerSentinel`.
-- `utils/src/artifact.ts` `blockOracleLockSlots` and `blockhashDepth`.
-- The old-covenant cases of `packages/solidc/test/BlockOracleCommitment.test.ts`, as master's 756c6e2b2 did.
-- Docs still on the per-contract model:
-  - `packages/solidc/docs/block-and-transaction-properties.md`;
-  - `docs/framed/SPEC_FRAMED_TRANSACTION.md` (the validator's oracle admission);
-  - `docs/framed/CREATE2_IDENTITY.md` (the genesis replay's oracle);
-  - `website/docs/guides/block-oracles.md` and `website/static/AGENTS.md`.
+The utils code and BlockOracleCommitment.test.ts went in `1a7850973`. Docs still on the per-contract model:
+
+- `packages/solidc/docs/block-and-transaction-properties.md`;
+- `docs/framed/SPEC_FRAMED_TRANSACTION.md` (the validator's oracle admission);
+- `docs/framed/CREATE2_IDENTITY.md` (the genesis replay's oracle);
+- `website/docs/guides/block-oracles.md` and `website/static/AGENTS.md`.

@@ -89,14 +89,13 @@ following fields belong to its third `options` argument.
 | `validatorCount` | `number` | `4` for a framed artifact | Validator UTXOs a framed genesis mints (experimental) |
 | `salt` | `Uint8Array` | none | CREATE/address salt and optional operation-density reserve |
 | `initArgs` | `FunctionArgument[]` | inferred/none | Arguments for an explicit `constructor(...)` block |
-| `blockhashDepth` | `number \| 'now'` | the artifact's `blockhashDepth`, else `256` | Slots in a `blockhash` reader's ring, from 1 to 256; `'now'` holds the latest block only; below the artifact's depth is refused |
-| `blockhashKeeperPublicKey` | `Uint8Array` | the provider's block oracle key | Owner of a `blockhash` reader's ring, whose signed updates write its slots; name one on a live network |
+| `oraclePool` | `string \| 'new' \| { create }` | the provider's pool | Category (display order) of the oracle pool a `block.*` or `blockhash` reader binds; `'new'` or `{ create }` mints one before the genesis |
 | `identity`, `bcmr`, `nativeToken` | object | deployer owns the identity | BCMR identity owner, registry publication, and the ledger token's own category |
 
-The `ContractFactory` options object takes the same fields except `provider`, `masterAmount`, `dataNftAmount`,
-`maxFee` and the blockhash ring fields; its funding fields default to the signer. See
+The `ContractFactory` options object takes the same fields except `provider`, `masterAmount`, `dataNftAmount` and
+`maxFee`; its funding fields default to the signer. See
 [Contract Deployment](/docs/guides/deployment#cashtoken-metadata) for the BCMR identity and the ledger token, and
-[Block Data & Oracles](/docs/guides/block-oracles#the-ring) for the blockhash ring and its keeper. An artifact compiled with
+[Block Data & Oracles](/docs/guides/block-oracles) for oracle pools. An artifact compiled with
 `composition: 'framed'` (experimental) deploys a pool of masters and validators; see
 [Framed Composition](/docs/guides/framed-composition).
 

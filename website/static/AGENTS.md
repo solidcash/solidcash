@@ -593,7 +593,7 @@ tx.gasprice   -- uint32: this transaction's fee rate in sat/kB
   and `.length` as `uint256`.
 
 ```solidity
-block.number, block.timestamp  -- uint32: height / time last written to the block-info oracle (they lag)
+block.number, block.timestamp  -- uint32: height / time the oracle pool's keeper last wrote (they lag)
 block.difficulty               -- uint32: raw nBits, not randomness
 block.coinbase                 -- address: locking bytecode of coinbase output 0
 block.size, block.totalFees    -- uint32: block bytes / block fees in sats (BCH extensions)
@@ -601,29 +601,40 @@ block.basefee                  -- uint32: 1000 * totalFees / size in sat/kB; blo
 block.chainid                  -- uint256: chainId option & 0xff (mainnet 0, chipnet 1, testnet4 2, regtest 255)
 block.prevrandao               -- uint256: abs(int(sha256(input 0 outpoint txid))), set by the tx builder
 block.gaslimit, gasleft()      -- always 1000000
-bytes32 blockhash(int n)       -- block n's hash from the contract's blockhash ring; zero past the last 256
+bytes32 blockhash(int n)       -- from a ring slot of the oracle pool; zero once n is out of the 256-block window
 bytes32 blobhash(int i)        -- always zero
 ```
 
-- `block.number` and `block.timestamp` warn that they lag the oracle. `blobbasefee`, `prevrandao`, `gaslimit` and
-  `gasleft()` are compiler-warned shims; none of these values is randomness. For deadlines prefer `tx.time` /
-  `this.age`, which need no oracle. For randomness use commit-reveal or a `checkDataSig` oracle.
-- Any `block.*` property or `blockhash(n)` makes the contract stateful; call it through `StatefulContract`. Oracle
-  fields co-spend the contract's own block-info oracle, an NFT of its category its deployment mints, read-only
-  (only its owner updates it); the SDK adds the input. A live deployment names the owner with
-  `blockOracleOwnerPublicKey`; `MockNetworkProvider` owns and updates its readers' oracles.
-- `blockhash(n)` co-spends, read-only, the slot holding n in the contract's blockhash ring: mutable NFTs of its
-  category, one block each, which only its genesis mints. The deploy option `blockhashDepth` sets the slot count (1
-  to 256, `'now'` for 1, 1,200 sats each); a ring of depth d holds the last d blocks its owner wrote. The default is
-  the depth the compiler infers, published as `artifact.blockhashDepth` when every read is `blockhash(block.number -
-  K)` with K a constant: the most K over the reads (1 for K = 0), and a smaller depth is refused. A read of any other
-  block (a parameter, a stored value) leaves the depth to the deployer, 256 by default. A read more than 256 blocks
-  back is a compile error.
-  The owner, `blockhashKeeperPublicKey` (required live; the mock and devnet name their own key), writes slots with
-  `BlockOracleUpdater.writeBlockhashSlot`; the mock does not keep the ring current. A full ring (depth 256) gives
-  zero for a block older than the last 256, as the EVM does, so `blockhash(n) == 0` detects an expired commitment.
-  A shallower ring refuses a block it no longer holds, and any ring refuses one its owner has not written yet; the
-  SDK's error names the ring's depth and blocks. See https://solidcash.org/docs/guides/block-oracles
+- `block.number` and `block.timestamp` warn that they lag: they are the keeper's last write, and the keeper's cycle
+  is the only bound on their age. `blobbasefee`, `prevrandao`, `gaslimit` and `gasleft()` are compiler-warned shims;
+  none of these values is randomness. For deadlines prefer `tx.time` / `this.age`, which need no oracle. For
+  randomness use commit-reveal or a `checkDataSig` oracle.
+- Any `block.*` property, the shims included, or `blockhash(n)` makes the contract stateful; call it through
+  `StatefulContract`.
+- Block data comes from an oracle pool: one CashToken category of block-info coins and blockhash ring slots that any
+  contract may read; no contract owns them. A read co-spends a live coin and recreates it unchanged at the same
+  index; the SDK adds it. A reader checks the coin's category and kind, not its lock.
+- A reader takes a hidden last constructor input, `__oraclePool`, that the SDK fills from the `oraclePool` option
+  (a category in display order) or else `provider.oraclePoolCategory`. It is part of the address, so a deployed
+  reader keeps its pool, and a contract passes its own to the contracts it creates. A framed master carries its pool
+  in its bytecode; a framed child a factory creates with `create2` carries the pool its constants were computed with
+  (`framedDeploy.framedChildConstants({ ..., oraclePool })`), so every creation binds that pool.
+- `MockNetworkProvider` mints its pool on first use and refreshes it on every mined block. `solidhat node` mints a
+  pool, keeps it current and advertises it, so devnet readers bind it by default. On a live network pass
+  `oraclePoolCategory` to `ElectrumNetworkProvider`, or mint a pool with `createOraclePool` and keep it current with
+  `PoolKeeper` (both from `@solidcash/solidcash/oracle`); `keeper.start(intervalMs?)` runs the keeper loop and
+  returns a stop function, and `keeper.setDepth(depth)` retunes the baton.
+- A stateful or factory deployment with `oraclePool: 'new'`, or `{ create: { infoCoins?, ringDepth?, slotReplicas?,
+  ownerKey? } }`, mints a pool before its genesis, shaped by what the contract and the contracts it creates read:
+  block-info coins (one per master) only for `block.*`, ring slots (depth 256, or 1 for `'now'`) only for
+  `blockhash`. Its children on the direct path bind the same pool. The owner defaults to
+  `provider.oraclePoolOwnerKey` (mock, regtest); elsewhere pass `ownerKey`.
+- A reader trusts its pool's genesis and owner key: the owner writes every field and hash and can stop or sweep
+  coins, but cannot over-report the height or time or rewind them.
+- `blockhash(n)` returns the hash a slot holds for n, zero when the slot of n's residue holds a block at least 256
+  newer, and fails for a block the pool has not written. Framed contracts do not serve it. A message-bus build
+  refuses a `block.*` read reached through a function pointer (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See
+  https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 

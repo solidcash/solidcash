@@ -320,9 +320,9 @@ read of `msg.sender` and `tx.origin`.
 ## Block properties
 
 Bitcoin Cash Script has no opcode for block metadata, so the oracle-backed `block.*` reads slice the NFT commitment
-of **the contract's own block-info oracle**, an NFT of its own category that its deployment mints, which the reader
-co-spends and only its owner updates. Any `block.*` property or `blockhash(n)` makes the contract stateful. The
-compiler adds no state variable and no update function to the reader.
+of a **block-info coin of an oracle pool**, which the reader co-spends and only the pool's owner updates. Any
+`block.*` property, the shims included, or `blockhash(n)` makes the contract stateful. The compiler adds no state
+variable and no update function to the reader.
 
 | Global | Type | Source | Notes |
 | --- | --- | --- | --- |
@@ -348,9 +348,9 @@ so it fully controls the value. Use commit-reveal or a `checkDataSig` oracle ins
 running. Do not branch on their values.
 :::
 
-The oracle fields co-spend the contract's own block-info oracle read-only; the SDK adds that input. A live
-deployment names the key that updates it with `blockOracleOwnerPublicKey`, while `MockNetworkProvider` owns and
-updates its readers' oracles itself.
+The oracle fields co-spend a live block-info coin of the contract's pool, which the read recreates unchanged; the
+SDK adds that input. A reader binds its pool when it is built, from the `oraclePool` option or the provider's
+`oraclePoolCategory`; `MockNetworkProvider` runs its own pool.
 
 #### Example
 ```solidity
@@ -381,10 +381,9 @@ bytes32 blockhash(int blockNumber)
 bytes32 blobhash(int index)
 ```
 
-`blockhash(n)` reads the slot holding block `n` in the contract's blockhash ring, NFTs of its own category that its
-genesis mints. It makes the contract stateful, so call it through `StatefulContract`. A full ring (depth 256) gives
-zero for a block older than the last 256, as the EVM does, so `blockhash(n) == 0` detects an expired commitment. A
-shallower ring refuses a block it no longer holds, and any ring refuses a block its keeper has not written yet.
+`blockhash(n)` reads a ring slot of the contract's oracle pool. It returns zero once the slot of `n`'s residue holds
+a block 256 or more newer, as the EVM does outside its window, and fails for a block the pool has not written. It
+makes the contract stateful, so call it through `StatefulContract`.
 `blobhash(i)` always returns zero: Bitcoin Cash has no EIP-4844 blobs, so it is a porting shim.
 
 ## ABI encoding and decoding

@@ -492,9 +492,11 @@ See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the 
 
 ## Block data and time
 
-- `block.timestamp` and `block.number` read the block oracle, as on the direct path. Deployment pins the provider's
-  oracle lock into the masters, and a call whose entry reads the oracle co-spends the oracle input. See
-  [Block Data & Oracles](/docs/guides/block-oracles).
+- `block.timestamp` and `block.number` read a block-info coin of an oracle pool, as on the direct path. Deployment
+  writes the pool (the `oraclePool` option, else the provider's) into the masters, and a call whose entry reads it
+  co-spends a live coin of that pool. A contract another contract creates carries the pool its creator's child
+  constants were computed with, so every creation binds that pool. See
+  [Block Data & Oracles](/docs/guides/block-oracles#a-reader-another-contract-creates).
 - `blockhash(n)` is not served: every entry of a contract that reads it is refused.
 - `tx.time` is the transaction's locktime. The SDK fixes it once, before it derives any frame, so every frame of a
   transaction reads the same value. A constructor that gates on `tx.time` is refused at deployment.
@@ -605,4 +607,4 @@ The contract handle covers most applications. The `@solidcash/solidcash/framed` 
 - [Large Contracts & Split Bundles](/docs/compiler/large-contracts): `--split size` and `--split func`.
 - [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies): proxies on the direct path.
 - [Contract Deployment](/docs/guides/deployment): genesis funding, identity outputs and `nativeToken`.
-- [Block Data & Oracles](/docs/guides/block-oracles): the block oracle framed entries co-spend.
+- [Block Data & Oracles](/docs/guides/block-oracles): the oracle pools framed entries co-spend.

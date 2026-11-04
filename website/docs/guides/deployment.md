@@ -182,8 +182,11 @@ The genesis transaction is assembled from the compiler's artifact metadata. Ever
 7. A plain **satoshi-container output** when `initialBalance` is non-zero.
 8. The token premint and bearer supply that `nativeToken` asks for.
 9. Immutable **logical identity anchors** for signer/factory deployments.
-10. A `blockhash(n)` reader's **blockhash ring**: `blockhashDepth` mutable slot NFTs.
-11. Change to the selected change address.
+10. Change to the selected change address.
+
+A genesis mints no oracle coins: a contract that reads block data binds an
+[oracle pool](/docs/guides/block-oracles) (the `oraclePool` option, else the provider's). `oraclePool: 'new'` mints
+a pool in two transactions of its own before the genesis.
 
 The SDK calculates these outputs; application code should not manually serialize state commitments. Chunking,
 vmap sentinels, output ordering, and commitment encodings are covenant protocol details.
@@ -208,6 +211,7 @@ The factory's trailing overrides object supports:
 | `identity` | deployer's lock | `{ owner }`: the lock that owns the category's BCMR identity |
 | `bcmr` | none | A registry the genesis publishes at output 1 |
 | `nativeToken` | none | A `BchNative` token's own category, premint, bearer supply and scale |
+| `oraclePool` | the provider's pool | The [oracle pool](/docs/guides/block-oracles) a `block.*` or `blockhash` reader binds (its category), or `'new'` / `{ create }` to mint one first |
 | `validatorCount` | `4` | Framed deployments only: validator UTXOs at the contract's address |
 | `functionSplit` | none | A `split: 'func'` bundle: genesis mints a master pool at each shard's lock |
 
@@ -224,8 +228,6 @@ that deployment gets no logical CREATE address, so `target` is the physical addr
 | `masterAmount` | `1200n` | Satoshis on each master NFT |
 | `dataNftAmount` | `1200n` | Satoshis on each other covenant NFT, raised to the output's dust threshold when higher |
 | `maxFee` | none | Refuse a genesis whose fee is higher |
-| `blockhashDepth` | the artifact's `blockhashDepth`, else `256` | Slots in a [`blockhash(n)` reader's ring](/docs/guides/block-oracles#the-ring): 1 to 256, or `'now'` for one; below the artifact's depth is refused |
-| `blockhashKeeperPublicKey` | the provider's block oracle key | Owner of the ring, whose signed updates write it; a live network has none, so name one |
 
 Treat custom NFT amounts as an advanced policy choice: every later transaction must still satisfy relay and covenant
 requirements.

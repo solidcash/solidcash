@@ -1,17 +1,22 @@
 # Oracle pools on sushi-port-node: what the SDK item must change
 
-Status: utils and compiler ported on `feat/oracle-pools-sushi` (from `sushi-port-node` 29405c333), 2026-11-04:
-`b6fcf05bc` (utils pool module), `7c24b63b0` (validator template), `3148c0cac` (per-contract output-side codegen out),
-`a3396494e` (reads move to pools), `837bfe866` (compiler tests). The design and the master commits are in master's
-`docs/wip/oracle-pools/PLAN.md`.
+Status: done, 2026-11-04: utils, compiler, SDK, tests and docs, on `feat/oracle-pools-sushi` (from `sushi-port-node`
+29405c333). The design and the master commits are in master's `docs/wip/oracle-pools/PLAN.md`. The port's commits:
 
-SDK ported, 2026-11-04: `c97733b83` (master's pool modules), `aca6fae8a` (readers, deployments, framed pool slots
-and created children), `1a8ade1ad` (providers; per-contract oracle SDK deleted), `e16d296a0` (validator reference
-model, FRAMED_AHEAD escrow label back to 'escrow 47'), `d5a70b769`, `961ec8007`, `cdc9730d4` (tests), `5d504eae0`
-(mock pool at the tip's last final second, helper stub binding), `1a7850973` (utils per-contract code deleted).
+- utils and compiler: `b6fcf05bc` (utils pool module), `7c24b63b0` (validator template), `3148c0cac` (per-contract
+  output-side codegen out), `a3396494e` (reads move to pools), `837bfe866` (compiler tests), `6dda950fc` (comments);
+- SDK: `c97733b83` (master's pool modules), `aca6fae8a` (readers, deployments, framed pool slots and created
+  children), `1a8ade1ad` (providers; per-contract oracle SDK deleted), `e16d296a0` (validator reference model),
+  `5d504eae0` (mock pool at the tip's last final second, helper stub binding), `1a7850973` (utils per-contract code
+  and BlockOracleCommitment.test.ts deleted);
+- tests: `d5a70b769`, `961ec8007`, `cdc9730d4`, `9770aafb6` (the two stateful reader helpers get their own names),
+  `8edb89d0a` (FRAMED_AHEAD escrow labels at the current template);
+- docs: `1f85ed33e` and `d720fc57a` (this file), and the docs commit that marks this file done ("Docs", below).
+
 Every block.* reader stays stateful here, so master's stateless-reader test cases were dropped or made stateful.
-Still on the per-contract model: the docs listed at the end of this file. The list below is the record of what the
-SDK item changed.
+`8edb89d0a` swapped the FRAMED_AHEAD escrow labels for the current validator template:
+`ESCROW_BELOW_BUYER = idOf('escrow 3')` and `ESCROW_ABOVE_BUYER = idOf('escrow 47')`; the file passes 6/6. The lists
+below record what the SDK item changed.
 
 ## What the compiler now emits
 
@@ -34,7 +39,8 @@ SDK item changed.
   The SDK must stop minting per-contract oracle coins and rings, at genesis, at split and for created children.
 - The framed validator template changed (`7c24b63b0`): its hash and every framed address change. The reference
   model must drop the same admission. The FRAMED_AHEAD fixture `packages/solidcash/test/framed/ahead/
-  origin-gated-payout.test.ts` picked its escrow label for an address order at the old template (59b519af8).
+  origin-gated-payout.test.ts` picked its escrow labels for an address order at the old template (59b519af8);
+  `8edb89d0a` swapped them for the current one.
 
 ## SDK files on the per-contract model (file:line)
 
@@ -75,11 +81,24 @@ SDK item changed.
   - `sc-orchestrate-create-builder-external-calls.ts:180`, `sc-resolve-create-builder-entry-abi.ts:15`,
     `stb-refreshed-unlocker-sync.ts:53`, `framed/proxy/external-calls.ts:2653`.
 
-## Left after the SDK item
+## Docs
 
-The utils code and BlockOracleCommitment.test.ts went in `1a7850973`. Docs still on the per-contract model:
+Done, 2026-11-04: master's text ported to `website/docs/guides/block-oracles.md`, `website/static/AGENTS.md`,
+`packages/solidc/docs/block-and-transaction-properties.md` and 14 website pages, and to the security ledger (a
+2026-11-04 note in "Block oracle hardening (2026-11-03)" and the section "Oracle pools (2026-11-04)"). Where this
+branch differs from master:
 
-- `packages/solidc/docs/block-and-transaction-properties.md`;
+- every `block.*` or `blockhash` reader is stateful, the shims included, so the guide's examples deploy readers
+  with `StatefulContract`;
+- framed is the main composition: framed pool slots, constant-lock masters filled with the pool, and created
+  children that carry the pool their creator's constants were computed with (no GENESIS-1 child oracle);
+- the validator template lost its oracle admission (`7c24b63b0`), so every framed address changed;
+- master's docs commit db42a467f predates the fixes merged in c93ed973d and the later 704791456 and 2393c541a,
+  which be46ad116 covered only in part, so the port also states: a function-pointer target's `blockhash` zero,
+  `indirectPoolReads` with the stateful co-spends it drives, the message-bus refusal's test, and `PoolKeeper.start`
+  and `setDepth` in the compiler reference's keeper sections.
+
+Still on the per-contract model, outside this item's paths:
+
 - `docs/framed/SPEC_FRAMED_TRANSACTION.md` (the validator's oracle admission);
-- `docs/framed/CREATE2_IDENTITY.md` (the genesis replay's oracle);
-- `website/docs/guides/block-oracles.md` and `website/static/AGENTS.md`.
+- `docs/framed/CREATE2_IDENTITY.md` (the genesis replay's oracle).

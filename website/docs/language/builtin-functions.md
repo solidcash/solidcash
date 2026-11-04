@@ -234,9 +234,10 @@ use `checkDataSig` instead: it is a single opcode. See [Cryptography](/docs/lang
 bytes32 blockhash(int blockNumber)
 ```
 
-Returns the hash of the given block, read from the contract's blockhash ring, slot NFTs of its own category. It
-makes the contract stateful; a block the ring does not hold is an error, not a zero hash. See
-[Global Variables](/docs/language/globals#blockhash-and-blobhash).
+Returns the hash of the given block, read from a ring slot of the contract's oracle pool. It returns zero once the
+slot of the block's residue is 256 or more blocks newer, outside the EVM's window, and fails for a block the pool
+has not written. It makes the contract stateful.
+See [Global Variables](/docs/language/globals#blockhash-and-blobhash).
 
 ### blobhash()
 ```solidity

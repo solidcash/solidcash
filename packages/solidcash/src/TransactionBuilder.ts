@@ -1032,14 +1032,14 @@ export class TransactionBuilder {
         throw new Error(`${input.unlocker.contract.name} reads the block oracle, and binds no oracle pool`);
       }
       if (this.inputs.some((spent) => isPoolInfoInput(spent, pool))) continue;
-      const oracle = await poolInfoCoSpend(this.provider, pool);
+      const { unlocker, ...oracle } = await poolInfoCoSpend(this.provider, pool);
       while (this.outputs.length < this.inputs.length) {
         this.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
       }
       // The covenant checks output[inputIndex]. Insert the recreate there when outputs already run ahead.
       const index = this.inputs.length;
-      this.addInput(oracle, oracle.unlocker);
-      this.addOutput({ to: oracle.unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
+      this.addInput(oracle, unlocker);
+      this.addOutput({ to: unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
       const placed = this.outputs.length - 1;
       if (placed !== index) {
         const recreate = this.outputs.pop();

@@ -55,12 +55,13 @@ async function placeBlockInfoOracle(
     builder.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
   }
   if (builder.inputs.length !== at) return;
-  const oracle = await poolInfoCoSpend(host.inner.provider, pool).catch(() => undefined);
-  if (oracle === undefined) return;
-  builder.addInput(oracle, oracle.unlocker);
+  const coSpend = await poolInfoCoSpend(host.inner.provider, pool).catch(() => undefined);
+  if (coSpend === undefined) return;
+  const { unlocker, ...oracle } = coSpend;
+  builder.addInput(oracle, unlocker);
   // The probe executes the reader, which only inspects this input. The output still has to carry the NFT
   // or the builder refuses the transaction as an implicit burn before the trace runs.
-  builder.addOutput({ to: oracle.unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
+  builder.addOutput({ to: unlocker.generateLockingBytecode(), amount: oracle.satoshis, token: oracle.token });
 }
 
 export interface BlockhashCoSpendHost {

@@ -3,7 +3,9 @@ import { decodePoolInfoCommitment, poolInfoReadUnlocking, type Artifact } from '
 import type { UnlockableUtxo, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { checkPoolCategory, poolLocks } from '../../oracle/pool/coins.js';
-import { artifactOraclePool, bindArtifactOraclePool, poolInfoCoSpend } from '../../oracle/pool/reader.js';
+import {
+  artifactOraclePool, bindArtifactOraclePool, poolInfoCoSpend, readsPoolOnlyIndirectly,
+} from '../../oracle/pool/reader.js';
 import type { DraftInput, RecoverySideCars } from '../composer/index.js';
 
 /** The pool coin a framed entry co-spends: a live info coin and the read-path input that recreates it in place. */
@@ -33,9 +35,10 @@ export function framedOraclePool(provider: NetworkProvider, artifact: Artifact):
   return artifactOraclePool(artifact) ?? bindFramedOraclePool(provider, artifact);
 }
 
-/** Whether the entry `functionName` reads block.*. */
+/** Whether the entry `functionName` reads block.*, or may through a function pointer, the artifact's only reads. */
 export function entryReadsBlockOracle(artifact: Artifact, functionName: string): boolean {
-  return artifact.abi.some((candidate) => candidate.name === functionName && candidate.usesBlockOracle === true);
+  return readsPoolOnlyIndirectly(artifact)
+    || artifact.abi.some((candidate) => candidate.name === functionName && candidate.usesBlockOracle === true);
 }
 
 /**

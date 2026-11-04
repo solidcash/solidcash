@@ -100,7 +100,7 @@ import {
 import { readEntryNode } from '../call/entry-records.js';
 import { entrySideCars } from '../call/side-cars.js';
 import {
-  framedBlockOracle, framedOraclePool, withBlockOracleSideCar, type FramedBlockOracle,
+  entryReadsBlockOracle, framedBlockOracle, framedOraclePool, withBlockOracleSideCar, type FramedBlockOracle,
 } from '../call/block-oracle.js';
 import type { RecoverySideCars } from '../composer/recovery.js';
 import { bytesToSlotValue, decodeEntryCommitment } from '../../stateful/SortedList.js';
@@ -1972,7 +1972,8 @@ async function calleeSideCars(
   const computed = hashes || recovers ? await entrySideCars({
     provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
   }) : undefined;
-  const oracle = abiFunction.usesBlockOracle === true ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
+  const oracle = entryReadsBlockOracle(artifact, entryName)
+    ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
   const sideCars = oracle === undefined ? computed : withBlockOracleSideCar(master, computed, oracle);
   if (sideCars === undefined || sideCars.ids.length === 0) return;
   ctx.sideCars.set(master, sideCars);

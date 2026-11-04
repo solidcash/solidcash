@@ -32,7 +32,7 @@ import {
   ecrecoverComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isComputedBlockhashKey,
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { isPoolInfoInput, isPoolSlotInput, poolInfoCoSpend } from './oracle/pool/reader.js';
+import { isPoolInfoInput, isPoolSlotInput, poolInfoCoSpend, readsPoolOnlyIndirectly } from './oracle/pool/reader.js';
 import { resolveBlockhashCoSpend } from './oracle/blockhashCoSpend.js';
 import {
   pushDataBytes, buildKeccakComputeSidecar, extractKeccakPreimageFromTrace, scanKeccakPreimageReads,
@@ -1014,13 +1014,13 @@ export class TransactionBuilder {
   /**
    * Co-spend a block-info coin of the pool a reader binds and recreate it at the same index. A stateful
    * block-layout slot already places it; this path is the stateless reader, whose script learns the index from the
-   * spent outputs.
+   * spent outputs, or finds the coin itself when it reads only through a function pointer.
    */
   async addRequiredBlockOracleCoSpends(): Promise<this> {
     for (const input of [...this.inputs]) {
       if (!isUnlockableUtxo(input) || !isContractUnlocker(input.unlocker)) continue;
       const abi = input.unlocker.abiFunction;
-      if (abi.usesBlockOracle !== true) continue;
+      if (abi.usesBlockOracle !== true && !readsPoolOnlyIndirectly(input.unlocker.contract.artifact)) continue;
       if (abi.blockLayout?.slots.some((slot) => slot.kind === 'blockInfoOracle')) continue;
       const pool = input.unlocker.contract.oraclePool;
       if (pool === undefined) {

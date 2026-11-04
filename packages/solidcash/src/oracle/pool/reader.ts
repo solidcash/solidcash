@@ -25,6 +25,14 @@ export function takesOraclePool(artifact: Pick<Artifact, 'constructorInputs'>): 
 }
 
 /**
+ * Whether the artifact reads block.* only in bodies a function pointer enters. No entry then takes a coin index or
+ * a slot: each read finds the first block-info coin of the pool itself, so every call co-spends one.
+ */
+export function readsPoolOnlyIndirectly(artifact: Pick<Artifact, 'abi' | 'usesBlockOracle'>): boolean {
+  return artifact.usesBlockOracle === true && !artifact.abi.some((fn) => fn.usesBlockOracle === true);
+}
+
+/**
  * The constructor arguments with `oraclePoolBinding(category())` appended when the artifact takes the binding last
  * and the caller left it out. Any other count is returned as given, and `category` is not called.
  */

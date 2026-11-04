@@ -1482,7 +1482,8 @@ Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM
 - **The message-bus refusal** (`ba5602b83`). A function-pointer target takes `P` from a helper the contract defines
   at run time from `__oraclePool`, which the detached verifier cannot carry. A verifier body that invokes it, or
   makes an indirect call while the contract defines it, is refused as `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`, so no
-  verifier runs a pointer reader without its binding. Not tested.
+  verifier runs a pointer reader without its binding. Tested on the verifier extraction
+  (`OraclePoolBusVerifierRefusal.test.ts`); it catches `blockhash` pointer reads too.
 
 ### Open
 
@@ -1491,7 +1492,9 @@ Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM
 - Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
   its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
   the genesis of a pool someone else made.
-- Found while documenting, by reading, untested: a `blockhash` read in a function-pointer target answers only a slot
-  holding exactly `n` (no zero case), and no SDK path adds its slot; in an artifact where an entry reads `block.*`
-  directly, an entry that reaches a reader only through a pointer gets no coin from the SDK. Both fail closed.
-- The regtest pool code has not run, and the port to sushi-port-node is phase 6 of the plan.
+- A `blockhash` read in a function-pointer target has the direct read's zero answer (`617b8fb81`), and every entry
+  that may reach a pointer reader publishes `indirectPoolReads`, so the SDK co-spends its coins (`3d5e9ea0d`,
+  `651f0f025`). Its ring slot is co-spent only on the stateful root entry: a nested or delegate callee's pointer
+  `blockhash` read refuses unless the transaction already spends the slot. It fails closed.
+- The regtest, Electrum and MemCash pool code has not run. The port to sushi-port-node is ready on
+  `feat/oracle-pools-sushi` and waits for the user's OK.

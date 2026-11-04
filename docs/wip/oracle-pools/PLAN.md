@@ -155,4 +155,7 @@ Phases 1-5 are done; the commits are listed under each.
   reads another constructor parameter still throws the probe into its define-all fallback, which loses helper
   extraction across every body (`aed65ad16` measured +2,013 B on a kernel publisher). This predates the pools; the
   general fix captures every parameter the emitting pass captures, and may move unrelated contracts' bytecode.
+- A `blockhash` read in a function-pointer target gets its ring slot co-spent only on the stateful root entry. A
+  nested or low-level callee, delegates included, gets the block-info coin but no slot, so its walk refuses unless
+  the transaction already spends a slot holding its block. It fails closed.
 - Phase 6: the port to `sushi-port-node` is ready on `feat/oracle-pools-sushi` and waits for the user's OK.

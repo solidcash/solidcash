@@ -18815,7 +18815,7 @@ function compileResolvedAst(
       stampKernelCapabilitySchema(artifact);
     }
   }
-  // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
+  // This contract reads blockhash(n): its pool needs ring slots, and the SDK co-spends the slot for n.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   // The reads of the bound contracts it creates shape a pool its deployment mints.
   const childPoolReads = createdPoolReads(ast.contract, ast.freeFunctions);

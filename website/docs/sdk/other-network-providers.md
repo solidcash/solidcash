@@ -106,11 +106,12 @@ time; its `restore()` rewinds to that point and can be called repeatedly.
 The EIP-1193-style `send(method, params)` surface implements the Hardhat-compatible network helpers used by
 SolidHat: `evm_snapshot`, `evm_revert`, `evm_mine`, `hardhat_mine`, `evm_increaseTime`,
 `evm_setNextBlockTimestamp`, `eth_blockNumber` and `eth_chainId`; `evm_setAutomine` is accepted and ignored.
-`reset()` clears the UTXO set, accepted transactions and signer funding, resets the block time and re-creates the
-block oracle; the block height stays.
+`reset()` clears the UTXO set, accepted transactions and signer funding, resets the block time and drops the
+oracle pool; the block height stays.
 
-The mock mints its own block-info oracle and writes its height and time into it as it mines, so contracts that read
-`block.*` values work without setup. See [Block Data & Oracles](/docs/guides/block-oracles).
+The mock mints its own oracle pool on first use and writes its height, time and block hashes into it as it mines,
+so contracts that read `block.*` values or `blockhash(n)` work without setup. See
+[Block Data & Oracles](/docs/guides/block-oracles#testing-on-the-mock-network).
 
 ## `RegtestNetworkProvider`
 
@@ -138,7 +139,7 @@ It imports addresses into the node wallet as needed, returns token-aware `listun
 and ordinary CashAddress views of the same script, and supports raw-locking-bytecode lookup where the script can be
 converted to an address, plus outputs it broadcast itself. Its `addUtxo(address, utxo)` and token fixture helpers
 create actual transactions and preserve genuine genesis categories rather than silently substituting labels. Each
-broadcast is mined into a block at once, and the provider mints and updates its own block-info oracle as the mock
+broadcast is mined into a block at once, and the provider mints and refreshes its own oracle pool as the mock
 does.
 
 `increaseTime(seconds)` is asynchronous: it sets the node's mock clock and mines a median-time window of blocks,

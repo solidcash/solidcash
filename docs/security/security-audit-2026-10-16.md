@@ -5,7 +5,8 @@ Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery 
 
 Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
 KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
-fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22".
+fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1, -2 and -5 (ids of
+sushi-port-node's ledger) are fixed on `feat/oracle-pools`; see "Oracle pools (2026-11-04)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1417,3 +1418,80 @@ Design: `docs/wip/call-records/DESIGN.md`.
   bus), which binds each row. Two master threads of one callee in one transaction are refused by the count.
 - A loop iteration's result must fit 96 bytes inline: there is no per-iteration preimage witness, so a hashed record
   fails the read (fail closed).
+
+## Oracle pools (2026-11-04)
+
+Branch `feat/oracle-pools` (`docs/wip/oracle-pools/PLAN.md`) replaces the single network block-info oracle, the
+per-contract `(n -> hash)` pairs and the per-contract keeper baton with oracle pools: one token category `P` of
+block-info coins and blockhash ring slots that any contract may read, at three covenants in
+`packages/utils/src/oracle-pool.ts` (design: `packages/solidc/docs/block-and-transaction-properties.md`, sections
+3, 4 and 11). The ORACLE ids are those of sushi-port-node's ledger ("Block oracle hardening (2026-11-03)"), whose
+holes master shared. Evidence is the BCH 2026 VM and mocknet; nothing ran on BCHN or a live network.
+
+### Fixed
+
+- **ORACLE-1** (CRITICAL; `d8eed60a3`). An entry or invoked body compiled on its own sub-traversal, and the
+  helper-use probe, did not inherit the contract's blockhash and block-oracle flags (`currentContractUsesBlockhash`,
+  `currentContractUsesBlockOracle`). In a contract whose only stateful feature is `blockhash`, such a body compiled
+  as stateless and carried no master covenant, so a call could move the contract's minting NFT to an
+  anyone-can-spend lock. Both sub-traversals and the probe now inherit both flags. Test: the ORACLE-1 cases of
+  `packages/solidc/test/OraclePoolRead.test.ts` (a two-function blockhash-only contract keeps its master covenant in
+  a body that reads nothing).
+- **ORACLE-2** (HIGH; gone with the pairs). A `blockhash(n)` reader trusted any capability-none NFT of its own
+  category at the category's pair lock, so the contract's own minting NFT could mint a forged `(n -> hash)` pair
+  beside a read. No contract mints oracle coins now: a read checks the pool category (`P || 0x01`) and the slot kind
+  (`flags == 0x80`), and only the pool's covenants admit a coin of `P` (below). The pair covenant and its binder are
+  deleted (`b2ec3b973`, `756c6e2b2`). Test: `packages/solidcash/test/e2e/OraclePoolBlockhash.test.ts` (a slot of
+  another pool, a block-info coin given as a slot, a stopped slot and a slot that moved past the block are refused
+  at the reader's own input).
+- **ORACLE-5** (HIGH; gone with the baton). The keeper baton, a minting NFT of the reading contract's own category,
+  passed the category-only container covenant's authority test, so its key could drain framed BCH containers. No
+  genesis mints a keeper baton (`09bcabbae`), and its covenant and deploy options are deleted (`119f2e58c`,
+  `756c6e2b2`). A pool's baton is a minting NFT of `P`, not of any contract's category, so no container takes it
+  for authority. Test: `BlockhashKeeperDeployment.test.ts` (a blockhash reader's genesis holds one minting NFT of
+  its category, its master).
+
+### The pool's own rules
+
+Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM unless another test is named.
+
+- **PIN.** Every covenant starts with `PIN(P, capability)`, so a coin of another category or capability at a pool
+  lock cannot be spent, and each path that reads the coin's own category reads `P`. PIN also salts each pool's
+  addresses.
+- **A read is the exact recreation at its own index**: lock, category and capability, commitment, and at least the
+  value. A spent mutable NFT may yield one NFT of its category, and the recreation uses that allowance up, so no
+  read mints a look-alike beside itself. A read checks no lock, as every NFT of `P` sits at a pool lock.
+- **A sweep forbids any output of `P`** (`ced53f9c5`). A swept mutable coin frees its allowance, and the baton an
+  unlimited one, which could otherwise mint a readable forgery.
+- **The baton's mint census.** Every baton path walks the outputs. An output of `P` carries no fungible amount; the
+  one minting output is the baton's recreation at its own index; every other is the recreation of the pool coin
+  co-spent at its index, or, on the mint only, a new coin: an exact copy of a co-spent live block-info coin at the
+  info lock, or a slot with the kind bit set, the stop bit clear, the baton's owner and depth, and a CLTV-bound
+  height. The update mints nothing, and its new depth is 1 to 256 (`c90c7f864`). Tests: the baton cases (a second
+  minting output, an info copy unlike the co-spent coin, a slot with the wrong owner or depth, a fungible amount, a
+  mint inside an update or a sweep, a depth of 0 or 257).
+- **The kind bit.** Block-info coins and slots share `P` and the mutable capability, and flags bit 7 keeps them
+  apart: a slot handed to a `block.*` read fails `flags == 0x00`, and a block-info coin handed to `blockhash` fails
+  `flags == 0x80`. Tests: `OraclePoolRead.test.ts` and `OraclePoolBlockInfo.test.ts` (a ring slot, a stopped coin
+  and a coin of another category refused as the block-info coin), `OraclePoolBlockhash.test.ts` (above).
+- **Owner paths** check `hash160(pubkey)` against the commitment's owner, then the signature. A height update raises
+  `number` under CLTV and keeps `timestamp`, a time update raises `timestamp` under CLTV, neither rewinds, and a slot
+  moves forward by a multiple of its depth to a CLTV-bound height. Tests: `AuditCrypto4KeeperAuthority.test.ts`
+  (another key's write, update and rotation refused; a write past its locktime refused),
+  `AuditCrypto5OracleRewind.test.ts` (rewinds refused).
+- **The message-bus refusal** (`ba5602b83`). A function-pointer target takes `P` from a helper the contract defines
+  at run time from `__oraclePool`, which the detached verifier cannot carry. A verifier body that invokes it, or
+  makes an indirect call while the contract defines it, is refused as `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`, so no
+  verifier runs a pointer reader without its binding. Not tested.
+
+### Open
+
+- Trust: the owner key writes every block field and hash unchecked, and can stop or sweep coins, which halts every
+  reader bound to the pool, as readers cannot change pools. An owner is a single key; multisig owners are open.
+- Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
+  its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
+  the genesis of a pool someone else made.
+- Found while documenting, by reading, untested: a `blockhash` read in a function-pointer target answers only a slot
+  holding exactly `n` (no zero case), and no SDK path adds its slot; in an artifact where an entry reads `block.*`
+  directly, an entry that reaches a reader only through a pointer gets no coin from the SDK. Both fail closed.
+- The regtest pool code has not run, and the port to sushi-port-node is phase 6 of the plan.

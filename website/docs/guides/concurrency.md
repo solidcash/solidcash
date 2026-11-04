@@ -214,7 +214,7 @@ A master/data partition does not automatically partition every side covenant. Ca
 - the same dynamic chunk NFT;
 - one token container or satoshi container;
 - one external contract master/state input;
-- one block oracle or computation sidecar instance;
+- one oracle-pool coin or computation sidecar instance;
 - one message-bus verifier NFT; or
 - any ordinary funding input selected by both clients.
 

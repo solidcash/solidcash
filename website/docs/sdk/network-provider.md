@@ -122,12 +122,12 @@ You can create a PR to add your custom `NetworkProvider` to the SolidCash codeba
 | Member | Purpose |
 | --- | --- |
 | `consensusLimits`, `policy` | Limits and relay policy the SDK preflights against (see below) |
-| `blockOracleCategory`, `blockOracleLock` | The shared block-info oracle that contracts reading `block.*` values co-spend |
-| `getUtxosByTokenCategory(categoryId)` | Every live UTXO of a CashToken category, used to find a CREATE identity NFT that moved |
+| `oraclePoolCategory` | The default oracle pool (category, display order) that contracts reading block data bind |
+| `getUtxosByTokenCategory(categoryId)` | Every live UTXO of a CashToken category, used to find a CREATE identity NFT that moved and to list an oracle pool's coins |
 
-Contracts that read block data need an oracle on the provider. `MockNetworkProvider` and `RegtestNetworkProvider`
-mint their own; on a public network pass the oracle's category to `ElectrumNetworkProvider`. See
-[Block Data & Oracles](/docs/guides/block-oracles).
+Contracts that read block data bind an oracle pool: the `oraclePool` option, or else the provider's
+`oraclePoolCategory`. `MockNetworkProvider` and `RegtestNetworkProvider` mint their own; on a public network pass a
+pool's category to `ElectrumNetworkProvider`. See [Block Data & Oracles](/docs/guides/block-oracles).
 
 ## Provider-Specific functionality
 

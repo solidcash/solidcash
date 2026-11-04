@@ -320,8 +320,8 @@ read of `msg.sender` and `tx.origin`.
 ## Block properties
 
 Bitcoin Cash Script has no opcode for block metadata, so the oracle-backed `block.*` reads slice the NFT commitment
-of **one shared block-oracle covenant**, which the reader co-spends and only its owner updates. The compiler adds no
-state and no update function to the reader.
+of a **block-info coin of an oracle pool**, which the reader co-spends and only the pool's owner updates. The
+compiler adds no state and no update function to the reader.
 
 | Global | Type | Source | Notes |
 | --- | --- | --- | --- |
@@ -347,8 +347,9 @@ so it fully controls the value. Use commit-reveal or a `checkDataSig` oracle ins
 running. Do not branch on their values.
 :::
 
-The oracle fields co-spend one shared block-info oracle UTXO read-only; the SDK adds that input. A live network
-provider needs its `blockOracleCategory` set, while `MockNetworkProvider` runs its own oracle.
+The oracle fields co-spend a live block-info coin of the contract's pool, which the read recreates unchanged; the
+SDK adds that input. A reader binds its pool when it is built, from the `oraclePool` option or the provider's
+`oraclePoolCategory`; `MockNetworkProvider` runs its own pool.
 
 #### Example
 ```solidity
@@ -379,8 +380,9 @@ bytes32 blockhash(int blockNumber)
 bytes32 blobhash(int index)
 ```
 
-`blockhash(n)` reads a per-height `(n, hash)` oracle NFT of the contract's own category. It makes the contract
-stateful, so call it through `StatefulContract`; a missing `(n, hash)` NFT is an error, not a zero hash.
+`blockhash(n)` reads a ring slot of the contract's oracle pool. It returns zero once the slot of `n`'s residue holds
+a block 256 or more newer, as the EVM does outside its window, and fails for a block the pool has not written. It
+makes the contract stateful, so call it through `StatefulContract`.
 `blobhash(i)` always returns zero: Bitcoin Cash has no EIP-4844 blobs, so it is a porting shim.
 
 ## ABI encoding and decoding

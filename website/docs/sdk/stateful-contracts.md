@@ -89,14 +89,13 @@ following fields belong to its third `options` argument.
 | `validatorCount` | `number` | `4` for a framed artifact | Validator UTXOs a framed genesis mints (experimental) |
 | `salt` | `Uint8Array` | none | CREATE/address salt and optional operation-density reserve |
 | `initArgs` | `FunctionArgument[]` | inferred/none | Arguments for an explicit `constructor(...)` block |
-| `blockhashKeeperPublicKey` | `Uint8Array` | none | Mint a blockhash keeper baton; only for an artifact that reads `blockhash` |
-| `blockhashKeeperAmount` | `bigint` | `10_000n` | Initial keeper baton balance (at least 3,000 satoshis) |
+| `oraclePool` | `string` | the provider's pool | Category (display order) of the oracle pool a `block.*` or `blockhash` reader binds |
 | `identity`, `bcmr`, `nativeToken` | object | deployer owns the identity | BCMR identity owner, registry publication, and the ledger token's own category |
 
-The `ContractFactory` options object takes the same fields except `provider`, `masterAmount`, `dataNftAmount`,
-`maxFee` and the keeper fields; its funding fields default to the signer. See
+The `ContractFactory` options object takes the same fields except `provider`, `masterAmount`, `dataNftAmount` and
+`maxFee`; its funding fields default to the signer. See
 [Contract Deployment](/docs/guides/deployment#cashtoken-metadata) for the BCMR identity and the ledger token, and
-[Block Data & Oracles](/docs/guides/block-oracles) for the blockhash keeper. An artifact compiled with
+[Block Data & Oracles](/docs/guides/block-oracles) for oracle pools. An artifact compiled with
 `composition: 'framed'` (experimental) deploys a pool of masters and validators; see
 [Framed Composition](/docs/guides/framed-composition).
 

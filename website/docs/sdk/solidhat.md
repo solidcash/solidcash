@@ -208,9 +208,10 @@ The helpers act on the active network: the in-memory mock, or BCHN on regtest, w
 blocks mined since the snapshot and time uses the node's mock clock. Electrum and Bitcoin RPC networks do not
 support them.
 
-Contracts read Solidity-style `block.number` and `block.timestamp` from a shared block-oracle covenant. The mock
-chain writes its height and time into that oracle whenever it mines, so these helpers move `block.*` as Hardhat's
-do; see [Block Data & Oracles](/docs/guides/block-oracles#testing-on-the-mock-network).
+Contracts read Solidity-style `block.number` and `block.timestamp` from a block-info coin of an oracle pool. The
+mock chain's keeper writes its height and time into its pool whenever it mines, so these helpers move `block.*` as
+Hardhat's do; see [Block Data & Oracles](/docs/guides/block-oracles#testing-on-the-mock-network). `solidhat node`
+mints no pool yet.
 
 ## Chai matchers
 

@@ -36,14 +36,14 @@ Any other network needs a `hostname` or a custom `electrum` client. The server m
 1.5, which returns CashToken data with each UTXO.
 
 Using the `options` parameter, you can specify a custom electrum client or hostname, enable manual connection
-management, and name the block-info oracle for contracts that read block data.
+management, and name the default oracle pool for contracts that read block data.
 
 ```ts
 type Options = OptionsBase | CustomHostNameOptions | CustomElectrumOptions;
 
 interface OptionsBase {
   manualConnectionManagement?: boolean;
-  blockOracleCategory?: Uint8Array; // 32 bytes, display byte order
+  oraclePoolCategory?: string; // 64 hex characters, display byte order
 }
 
 interface CustomHostNameOptions extends OptionsBase {
@@ -63,9 +63,9 @@ const hostname = 'chipnet.bch.ninja';
 const provider = new ElectrumNetworkProvider('chipnet', { hostname });
 ```
 
-`blockOracleCategory` sets the provider's `blockOracleCategory` and derives its `blockOracleLock`. A contract that
-reads `block.*` values bakes that lock into its bytecode and co-spends the oracle; spending one built without a
-lock fails. See [Block Data & Oracles](/docs/guides/block-oracles).
+`oraclePoolCategory` sets the provider's default oracle pool. A contract that reads `block.*` values or
+`blockhash(n)` binds that pool, unless its own `oraclePool` option names another, and co-spends the pool's coins;
+building one with neither fails. See [Block Data & Oracles](/docs/guides/block-oracles).
 
 ## ElectrumNetworkProvider Methods
 

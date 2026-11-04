@@ -62,7 +62,7 @@ extension; there is no separate `@solidcash/solidcash/jest` package export.
 
 | Import | Provides |
 | --- | --- |
-| `@solidcash/testing` | `hre` (also the default export), `ethers`, `network`, `config`, `run`, `upgrades`, the task registry, the config helpers, the network helpers, the Ethers utilities, and block-oracle helpers (`mockBlockOracleRpc`, `BlockOracleUpdater`, `fetchBlockOracleFields`) |
+| `@solidcash/testing` | `hre` (also the default export), `ethers`, `network`, `config`, `run`, `upgrades`, the task registry, the config helpers, the network helpers and the Ethers utilities |
 | `@solidcash/testing/config` | `defineConfig`, `solidcashConfigSchema`, `resolveConfig`, `loadConfig`, `findConfigFile`, `findHardhatConfigFile`, `migrateHardhatConfig` |
 | `@solidcash/testing/hre` | `initHre`, `createHardhatRuntimeEnvironment`, `getActiveHre`, `createProvider`, `loadArtifactByName` and the runtime types |
 | `@solidcash/testing/network-helpers` | `loadFixture`, `takeSnapshot`, `clearSnapshots`, `mine`, `mineUpTo`, `time`, `duration`, `setBalance`, `impersonateAccount`, `getImpersonatedSigner` |
@@ -139,9 +139,9 @@ await time.setNextBlockTimestamp(new Date('2027-01-01T00:00:00Z'));
 only the next block timestamp. These operations affect the mock chain, or the BCHN node on regtest. Electrum and
 Bitcoin RPC networks do not support them.
 
-Contracts read Solidity-style `block.number` and `block.timestamp` from one shared block-oracle covenant. The mock
-chain writes its own height and time into that oracle whenever it mines, so these helpers move `block.*` as
-Hardhat's do, with no keeper. To drive a keeper against the mock chain, see
+Contracts read Solidity-style `block.number` and `block.timestamp` from a block-info coin of an oracle pool. The
+mock chain's keeper writes its height and time into its pool whenever it mines, so these helpers move `block.*` as
+Hardhat's do. To mint a pool with chosen fields or drive a keeper yourself, see
 [Block Data & Oracles](../guides/block-oracles.md#testing-on-the-mock-network).
 
 ## Balance helpers and BCH differences

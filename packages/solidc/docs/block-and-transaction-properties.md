@@ -2,44 +2,43 @@
 
 Solidity's "Block and Transaction Properties" - the `block.*` and `tx.*` globals - mapped onto the BCH UTXO
 substrate. The transaction-local ones (`tx.gasprice`, `block.prevrandao`) and the gas/blob shims are pure
-introspection or constants; the block-level values that have no VM source are served by **one shared
-block-info oracle covenant** (sections 3-8), and `blockhash(n)` by **one covenant per master category**
-(section 11).
+introspection or constants. The block-level values that have no VM source are served by **oracle pools**: one
+token category of block-info coins and blockhash ring slots that any contract may read (sections 3-8 and 11).
 
-Status: **IMPLEMENTED (compiler + SDK e2e).**
+Status: **IMPLEMENTED (compiler + SDK e2e on mocknet).** Oracle pools replaced the single network block-info
+oracle, the per-contract `(n -> hash)` pairs and the keeper baton on `feat/oracle-pools`
+(`docs/wip/oracle-pools/PLAN.md`).
 - `block.chainid` - baked single-byte network constant.
-- Oracle reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
+- Pool reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
   aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns). `block.gaslimit` + `gasleft()` are
   fixed shims (`1000000`, no gas metering on BCH; compiler warns). `block.prevrandao` is a transaction-local
   shim (`abs(int(sha256(input[0] prevout txid)))`, no oracle; grindable; compiler warns).
 - `tx.gasprice` - the current transaction's realized fee rate, `1000*(sum in - sum out)/tx_size` sat/KB,
   reconstructed from introspection (no oracle; tx_size estimated since there is no `OP_TXSIZE`). See s12.
-- Owner-update path: a signed spend of the oracle covenant itself (`utils/block-oracle.ts`), never a function
-  of the reader. The owner is the public-key hash at the front of the commitment; a height update and a
-  timestamp update are separate spends, each CLTV-bound and non-rewinding (sections 4-5).
-- Off-chain keeper: `packages/solidcash/src/oracle/blockOracleUpdater.ts` (Fulcrum
-  `blockchain.headers.subscribe` + a single BCHN `getblock` verbosity-2 call: coinbase inline, fees =
-  `sum(coinbase outputs) - subsidy(height)`). On a new tip it pushes a height update, then a timestamp update
-  at `min(header time, MTP - 1)`.
-- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)`: one `(n->hash)` covenant per master category
-  with `n` in the commitment, keeper mint/sweep, co-spent automatically from the call args or the probe trace
-  (section 11).
+- Pool covenants, codecs, locks and unlocking builders: `packages/utils/src/oracle-pool.ts`. Every owner path is a
+  signed spend of a pool covenant, never a function of a reader (section 4).
+- SDK: `packages/solidcash/src/oracle/pool/`, exported from `@solidcash/solidcash/oracle`: `createOraclePool`
+  (genesis), `PoolKeeper` (the owner's operator), `selectPoolInfoCoin` / `selectPoolSlot` (coin choice) and the
+  reader helpers in `reader.ts` (binding and co-spends).
+- `blobhash(i)` -> `bytes32(0)` (no BCH blobs). `blockhash(n)` reads a ring slot of the bound pool (section 11).
 
-Implementation notes: `SynthesizeBlockOracle` injects no state. A `block.*` read stays a nullary (`basefee`
-lowers to `Floor(1000 * totalFees / size)`) and marks its function `usesBlockOracle`, which gets a hidden
-`__internal__blockOracleInputIndex` (a stateful function also gets a `blockInfoOracle` block-layout slot).
-Codegen picks that input, checks its locking bytecode against a 35-byte lock sentinel and slices the field out
-of its commitment, so a reader stays stateless unless something else makes it stateful. The artifact publishes
-`usesBlockOracle` + `blockOracleLockSlots`; the deployment writes the real oracle lock over the sentinel (the
-`blockOracleLock` contract option, else the provider's). `block.timestamp` reads the oracle in every mode,
-`evmCompat` included. Tests: `packages/solidcash/test/e2e/BlockOracle.test.ts` (chainid, reads, owner update,
-keeper), `AuditCrypto4KeeperAuthority.test.ts` / `AuditCrypto5OracleRewind.test.ts` (update bounds),
-`packages/solidc/test/BlockOracleCommitment.test.ts` (commitment, covenant paths, lock pin).
+Implementation notes: `SynthesizeBlockOracle` injects no state. A `block.*` read stays a nullary (`basefee` lowers
+to `Floor(1000 * totalFees / size)`) and marks its function `usesBlockOracle`; `bindOraclePool` gives the contract
+its hidden `__oraclePool` parameter (section 8). Codegen checks a co-spent coin's category and flags and slices the
+field out of its commitment, so a `block.*` reader stays stateless unless something else makes it stateful; a
+`blockhash` reader is stateful. `block.timestamp` reads the pool in every mode, `evmCompat` included. Tests:
+- `packages/utils/test/oracle-pool.test.ts`: codecs and every covenant path on the BCH 2026 VM, redeem sizes pinned;
+- `packages/solidc/test/OraclePoolRead.test.ts`, `OraclePoolIndirectRead.test.ts`: reader checks, framed pool slots,
+  creators, function-pointer targets and ORACLE-1, on the VM;
+- `packages/solidcash/test/e2e/OraclePoolCore.test.ts` (genesis, keeper, selection, mock refresh),
+  `OraclePoolBlockInfo.test.ts`, `OraclePoolBlockhash.test.ts`, `OraclePoolIndirectSdk.test.ts`, `BlockOracle.test.ts`,
+  and `AuditCrypto4KeeperAuthority.test.ts` / `AuditCrypto5OracleRewind.test.ts` (the owner rule and the write
+  bounds), on mocknet.
 
 This consolidates the design discussion for exposing Solidity-style block and transaction properties
 (`block.*`, `tx.*`) in SolidCash on the BCH UTXO substrate. The transaction-local properties are covered in
 sections 11-12 (`blockhash`/`blobhash`, `tx.gasprice`) and the per-field table (s6); the rest of the
-document is the oracle that backs the block-level reads. Normative rules use MUST/SHOULD. ASCII only (no
+document is the oracle pools that back the block-level reads. Normative rules use MUST/SHOULD. ASCII only (no
 em-dash / non-ascii), per repo style.
 
 ## 1. Goal & scope
@@ -86,66 +85,151 @@ v1 picks **category-trust**: the oracle data lives on-chain in an NFT commitment
 trust is "it came from the oracle", not "someone signed it". The cost is bounded concurrency, accepted
 for v1 and lifted later by split/merge.
 
-## 3. The model: one raw oracle covenant
+## 3. The model: oracle pools
 
-The block-info oracle is raw P2SH32 bytecode (`buildBlockOracleCovenantScript` in `utils/block-oracle.ts`),
-not a stateful contract and not part of any reader's state:
+The design is TRE rev. 39 decision 47 (branch `tre`, `analysis/tre/tre-rev39-addendum.md`, section 6c), settled
+by the user on 2026-11-04 and backported to master by `docs/wip/oracle-pools/PLAN.md`.
 
-- **One mutable NFT is the whole record.** Its commitment holds the owner's public-key hash and the block
-  fields (section 7). The category is baked into the covenant, so the lock identifies the oracle token; the
-  owner is not, so one bytecode serves every operator. The genesis must mint exactly one mutable NFT of that
-  category and no minting NFT, because readers pin only the lock.
-- **Reads co-spend it.** A reader spends the oracle on the read path (flag 0), which recreates bytecode,
-  category and commitment unchanged, with at least its value, at the same output index, and slices what it
-  needs. No master, no register, no operands: the SDK places the input and fills
-  `__internal__blockOracleInputIndex`.
-- **Every reader of a deployment shares it.** Reads serialize on the one UTXO (section 9), the price of a
-  value that is on-chain and unique rather than signed and replicable (section 2.1).
+- **A pool is one category `P`** of mutable NFTs that any contract may read. Oracle coins belong to no contract: a
+  reader binds `P` (section 8) and reads any live coin of it. A deployment binds a pool; it never mints one.
+- **Three P2SH32 covenants** (`oracle-pool.ts`), each starting with `PIN(P, capability)`:
+  `push(P || cap) OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY`, which also salts each pool's addresses.
+  - block-info coins, mutable (`buildPoolInfoCovenantScript`);
+  - ring slots, mutable (`buildPoolSlotCovenantScript`);
+  - one baton, minting (`buildPoolBatonCovenantScript`), through which the owner grows the pool.
 
-### 3.1 Read lowering (0-param)
+  The coins of one kind share one lock. `categoryId` is in display order; the covenants push it reversed, as
+  `OP_UTXOTOKENCATEGORY` does.
+- **The owner** is the 20-byte key hash in each commitment, so one bytecode serves every operator of a pool. An
+  owner path unlocks `<args> <selector> <sig> <pubkey>`, checks `hash160(pubkey)` against that hash, then the
+  signature.
+- **The read path** is the empty unlocking: the output at the coin's own index is its exact recreation (same lock,
+  category and capability, and commitment, and at least its value). No input or output walk.
+- Every pool coin holds 1,200 sat (`POOL_COIN_SATS`).
 
-`block.number` (etc.) lowers to: pick `input[__internal__blockOracleInputIndex]`, `OP_UTXOBYTECODE` equal to
-the pinned oracle lock (the 35-byte sentinel the deployment overwrites), `OP_UTXOTOKENCOMMITMENT`, split out
-the field, `OP_BIN2NUM` (`coinbase` is a length-prefixed slice instead). The SDK co-spends the oracle in
-`TransactionBuilder.addRequiredBlockOracleCoSpends` (stateless readers), at the `blockInfoOracle` block-layout
-slot (`StatefulContract`) and as a recovery input of the master (framed `callFramedEntry`).
+### 3.1 Why a reader checks no lock
 
-## 4. Refresh: the owner's signed update
+A read matches a coin by its category, capability and flags byte. That suffices because every path keeps each
+mutable NFT of `P` at a pool lock, with a commitment its covenant admitted:
 
-The update path (flag 1, unlocking `<pubkey> <sig> <newCommitment> 1`) requires `hash160(pubkey)` to equal the
-owner hash already in the commitment, the new commitment to keep that same hash, a valid signature, and the
-output to carry the new commitment at the same lock and category, with at least the oracle's value. nLocktime is
-a height or a time, so one update anchors one field to the chain and keeps the other:
+- a spent mutable NFT may yield one NFT of its category. Every coin path but the sweep recreates the coin at its
+  own index, which uses that allowance up, and the sweep refuses any output carrying `P`;
+- a spent minting NFT may yield any NFT of `P`, so every baton path walks the outputs (section 4.4).
 
-- **height-type nLockTime:** `number` is below 500,000,000, does not rewind, and `tx.time >= number`;
-  `timestamp` is unchanged.
-- **time-type nLockTime:** `timestamp` does not rewind and `tx.time >= timestamp`, which is final only below
-  the median time past; `number` is unchanged.
+The genesis is the one transaction no covenant constrains: it may mint NFTs of `P` at any lock. A pool is sound only
+when its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does, so a reader
+trusts the genesis of the pool it binds as it trusts the owner.
 
-The keeper (`BlockOracleUpdater.syncOnce`) pushes a height update when the chain is ahead of `number`, then a
-timestamp update at the last final second, `min(header time, MTP - 1)`, when that is ahead of `timestamp`.
-A coin at the keeper's P2PKH pays each update's fee and takes the change.
-The owner is trusted for the data; staleness is the owner's responsibility and is not script-enforceable
-(section 5). The mock provider mints one oracle owned by `blockOracleOwnerKey`, funds that key's P2PKH, seeds
-the oracle with `setBlockOracleFields`, and writes its own height and time into it when it mines.
+The two mutable kinds share `P` and the capability, and the kind bit (flags bit 7) keeps them apart: a slot handed
+to a `block.*` read fails its `flags == 0x00`, and a block-info coin handed to a `blockhash` read fails
+`flags == 0x80`. A stopped coin fails both.
+
+### 3.2 Read lowering (0-param)
+
+`block.number` (etc.) lowers in one of three forms (`emitBlockOracleField`). Each leaves the commitment after its
+flags byte, and the field is sliced at `POOL_INFO_OFFSETS[field] - 1`, 5 bytes, `OP_BIN2NUM` (`coinbase` is a
+length-prefixed slice instead):
+
+- **Direct read.** Push `__internal__blockOracleInputIndex` and `__oraclePool`, then `emitOraclePoolCheck`:
+  `OP_1 OP_CAT OP_OVER OP_UTXOTOKENCATEGORY OP_EQUALVERIFY` (a mutable NFT of `P`), then
+  `OP_UTXOTOKENCOMMITMENT OP_1 OP_SPLIT OP_SWAP 0x00 OP_EQUALVERIFY` (flags `0x00`). Two or more reads share the
+  check as one lock-supplied helper (`ORACLE_POOL_CHECK_USE_KEY`).
+- **Function-pointer target** (section 8.2). It holds no index, so `emitOraclePoolCoinSearch` walks the inputs
+  from 0 to the first with category `P || 0x01` and flags `0x00`, with `P` from the binding helper. Past the last
+  input the introspection fails.
+- **Framed master.** The same walk, with `P` from the pool slot that deployment fills (section 8.1).
+
+The SDK places the coin (section 8.4).
+
+## 4. The owner's paths
+
+Selectors (`COIN_PATH`, `BATON_PATH`): a block-info coin or a slot takes `0` sweep, `1` update or write, `2` stop
+and `3` rotate, and any other selector or the empty unlocking reads; the baton takes `0` sweep, `1` mint and
+`2` update.
+
+### 4.1 Block-info update (`infoUpdate`)
+
+nLockTime is a height or a time, so one update moves one clock and keeps the other. The coin is recreated at its
+own index, and the kind bit stays clear.
+
+- **Height-type nLockTime** (below 500,000,000): unlocking `<rest> <number> <flags'>`, `rest` being difficulty
+  through coinbase. The new `number` is 5 bytes, does not rewind and CLTV bounds it; `timestamp` stays.
+- **Time-type nLockTime:** unlocking `<timestamp> <flags'>`. The new `timestamp` is 5 bytes, does not rewind and
+  CLTV bounds it; every other field stays. CLTV also refuses an operand of the other locktime type.
+- `flags'` uses bits 0 and 1 only (`flags' & 0xfc == 0`) and keeps the stop bit of the field that stays: a height
+  update may clear bit 0 (`number` stopped), a time update bit 1 (`timestamp` stopped). Either may set either bit.
+
+### 4.2 Slot write (`slotWrite`)
+
+Unlocking `<hash> <n'>`: `n' > n`, `(n' - n) mod depth == 0`, `n'` below 500,000,000 and CLTV-bound, and a
+32-byte hash. The flags become `0x80`, which clears the stop bit; owner and depth stay.
+
+### 4.3 Stop, rotate and sweep
+
+- **Stop** `<2>`: sets the stop bits (`0x03` on a block-info coin, `0x01` on a slot) and changes nothing else. A
+  later update or write may clear them (4.1, 4.2); `PoolKeeper` never does.
+- **Rotate** `<owner'> <3>`: a new 20-byte owner hash, nothing else changed.
+- **Sweep** `<0>`: no recreation, and `sweepWalk` refuses any output carrying `P`, the one walk on a coin path. A
+  swept mutable coin frees its one-NFT allowance, and the baton an unlimited one, which could otherwise mint a
+  readable forgery.
+
+### 4.4 The baton
+
+Commitment `owner (20) || depth (2 LE)`, the tail every slot of the pool carries. Unlocking
+`<arg> <selector> <sig> <pubkey>`, signed by the commitment's key. The mint `<template> <1>` and the update
+`<commitment'> <2>` walk every output. An output carrying `P` has no fungible amount, and:
+
+- at the baton's own index it is the recreation, checked after the walk, and the one minting output: the
+  commitment stays on the mint, and on the update becomes the new 22 bytes, with a depth of 1 to 256 (`c90c7f864`:
+  a depth of 0 bricked every later slot);
+- elsewhere it is a mutable NFT that recreates the pool coin co-spent at its index (that coin's covenant checks
+  it), or, on the mint only, a new coin:
+  - at the info lock, a copy of the input at index `template`, a live block-info coin (flags `0x00`) at that lock;
+  - at the slot lock, `0x80 || n || hash || <baton commitment>`, with `n` a height that CLTV bounds.
+
+The sweep `<0>` runs `sweepWalk`. A depth change applies to the slots minted after it, as each slot keeps the depth
+in its own commitment; `PoolKeeper` exposes none.
+
+### 4.5 The keeper (`PoolKeeper`)
+
+The owner's operator (`packages/solidcash/src/oracle/pool/keeper.ts`). It lists the coins at the pool's locks and
+sends ordinary transactions the covenants admit, each paying 1 sat/byte from the largest token-free coin at the
+owner's P2PKH, with the change back there. It runs no loop; its caller drives it per block.
+
+- `refreshInfo(fields)`: every live block-info coin the key owns, by one height-locked, then one time-locked
+  transaction, so every coin reads one clock. A step already published, or one that would rewind a coin, is
+  skipped. `fields.timestamp` must be final: at most MTP - 1.
+- `writeNewestSlot(n, hash)` moves every live slot of `n`'s residue forward to `n`, locked at height `n`;
+  `writeSlots(blocks)` moves each live slot to the newest block of its residue, in transactions of at most
+  `POOL_COINS_PER_TRANSACTION` (64) slots, each locked at its newest height.
+- `growInfo(k)` mints `k` copies of a live block-info coin, which it co-spends by its read path; `growSlots(blocks)`
+  mints slots with the baton's owner and depth.
+- `stop`, `sweep` and `rotate`, 64 coins per transaction. `rotate` moves every coin the key owns and the baton to
+  the new owner, sends the last change to the new key's P2PKH, and then signs with the new key.
+
+The owner is trusted for the data. Staleness is the owner's responsibility and is not script-enforceable
+(section 5).
 
 ## 5. Hardening (what nLocktime can and cannot do)
 
 `nLocktime` is a one-sided **lower** bound on the including block's height/time. Therefore:
 
-- **Anti-over-reporting (enforced):** the CLTV on the anchored field means the oracle cannot claim a height
-  above the real tip, nor a time at or above the median time past.
-- **Non-rewind (enforced):** an update cannot move `number` or `timestamp` back to replay an old window. Equal
-  values are admitted.
-- **Value pin (enforced):** every spend, read or update, recreates the oracle with at least its value, so no
-  spend drains it.
+- **Anti-over-reporting (enforced):** the CLTV on the moved field means a pool cannot claim a height above the
+  real tip, nor a time at or above the median time past. A slot write is CLTV-bound the same way.
+- **Non-rewind (enforced):** an update cannot move `number` or `timestamp` back to replay an old window, and a
+  slot moves only forward, by a multiple of its depth. An update admits equal values; a slot write does not.
+- **Value pin (enforced):** every path but the sweep recreates the coin with at least its value, so no reader
+  drains it.
 - **Type confusion (enforced):** `number` must stay below 500,000,000, so a time-type nLockTime cannot stand
   in for a height, and CLTV refuses an operand of the other locktime type.
+- **Kind confusion (enforced):** a read checks the flags byte, so a slot cannot stand in for a block-info coin, or
+  the reverse (section 3.1).
 - **Anti-staleness (NOT possible):** no covenant can prove a value is recent (no upper bound on mining
-  height is readable). `block.number` and `block.timestamp` are the owner's last write, and the compiler warns
-  so. A deadline stays open until the owner updates the oracle.
+  height is readable). `block.number` and `block.timestamp` are the keeper's last write, and the compiler warns
+  so; the keeper's cycle is the only bound. A reader may co-spend any live coin, so a coin the keeper left behind
+  is as readable as a current one.
 - **Adversarial floors SHOULD stay native.** If a spender *benefits* from a stale value (e.g. sneaking past
-  a deadline with an old `block.number`), the oracle cannot stop them. A trustless floor is
+  a deadline with an old `block.number`), the pool cannot stop them. A trustless floor is
   `require(tx.time >= K)`; auto-lowering `block.number/timestamp >= K` to it is still open (section 10).
 
 ## 6. block.* property table
@@ -208,44 +292,125 @@ Notes:
 - `block.size` / `block.totalFees` are **BCH-native extensions** (Solidity has neither); they are encoded
   because `block.basefee` needs them and they are independently useful.
 
-## 7. Commitment layout
+## 7. Commitment layouts
 
-`utils/block-oracle.ts` (`encodeBlockOracleCommitment`, `blockOracleFieldOffset`):
+`oracle-pool.ts` (`encodePoolInfoCommitment`, `encodePoolSlotCommitment`, `encodePoolBatonCommitment`; offsets
+`POOL_INFO_OFFSETS`, `POOL_SLOT_OFFSETS`):
 
 ```
-ownerPkh(20) | number(5) | timestamp(5) | difficulty(5) | size(5) | totalFees(5) | coinbaseLen(1) | coinbase(<= 80)
+block-info  flags(1) | owner(20) | number(5) | timestamp(5) | difficulty(5) | size(5) | totalFees(5)
+            | coinbaseLen(1) | coinbase
+slot        flags(1) | n(4 LE) | hash(32) | owner(20) | depth(2 LE)                      59 bytes
+baton       owner(20) | depth(2 LE)                                                       22 bytes
 ```
 
-Each numeric field is a uint32 as 4 little-endian bytes plus a trailing `0x00`, so `OP_BIN2NUM` reads a
-non-negative script number. `number` and `timestamp` are adjacent, which the covenant's update path relies
-on. `block.basefee` is derived and `block.chainid` is baked, so neither is stored. With a 25-byte p2pkh
-coinbase the commitment is 71 bytes; the 80-byte coinbase cap keeps it within the 128-byte limit.
+Each numeric block-info field is a uint32 as 4 little-endian bytes plus a trailing `0x00`, so `OP_BIN2NUM` reads a
+non-negative script number. The 128-byte commitment limit caps `coinbase` at 81 bytes; a 25-byte p2pkh coinbase
+gives a 72-byte commitment. `block.basefee` is derived and `block.chainid` is baked, so neither is stored. The slot
+hash is the block hash in display order, as `getblockhash` prints it.
+
+`flags`: bit 7 is the kind (0 for a block-info coin, 1 for a slot). Block-info bit 0 marks `number` stopped and
+bit 1 `timestamp` stopped; slot bit 0 marks the slot stopped. A read accepts `0x00` (block-info) or `0x80` (slot)
+only. The baton has no flags: its minting capability is its kind.
 
 ## 8. Compiler / SDK integration
 
-- `SynthesizeBlockOracle` marks a reading function `usesBlockOracle`; SymbolTable adds the hidden
-  `__internal__blockOracleInputIndex` (and the `blockInfoOracle` block-layout slot on a stateful function);
-  codegen emits the read of section 3.1. The artifact carries `usesBlockOracle` on the function and the
-  artifact, and `blockOracleLockSlots`, the offsets of the lock sentinel pushes.
-- `block.chainid` lowers to a pushed constant (per `--network`); no oracle, no co-spend.
-- Deployment: `Contract` writes the oracle lock (the `blockOracleLock` option, else the provider's) over every
-  sentinel slot (`applyBlockOracleLock`); the framed deploy material does the same. Spending a reader that has
-  no lock throws ("no oracle lock was provided").
-- SDK co-spend: section 3.1. The input is spent on the read path and recreated at its own output index; the
-  index argument is the input's position, located by lock.
+### 8.1 The binding: `__oraclePool` and framed's placeholder
+
+- `bindOraclePool` (`SynthesizeBlockOracle.ts`) appends a hidden `bytes32 __oraclePool` (`ORACLE_POOL_PARAMETER`)
+  as the last parameter of a direct contract that reads block info or blockhash, or that creates or names the lock
+  of a contract taking the binding. It runs once the children are compiled, before code generation. The value is
+  `P` as `OP_UTXOTOKENCATEGORY` pushes it, the display-order id reversed (`oraclePoolBinding`).
+- A creator passes its own binding as a bound child's last argument, in the in-script child lock and in
+  `deployTargets[].constructorArgs`, where it is named `__oraclePool` (`childDeploymentArguments`).
+  `passesOraclePool` marks the named-call closure of each creating body, which an invoked frame must hand the
+  value; the embedded child's own compile decides whether it takes one (`setOraclePoolBinding`). A creator that
+  reads nothing takes the binding to pass it on.
+- A body that reads, or creates a bound child, captures the binding as a constructor parameter
+  (`constructorCaptures`); a free function captures it too.
+- Hidden indices: a function that reads `block.*`, or calls one by name (`markBlockOracleCallers`), takes
+  `__internal__blockOracleInputIndex`, and a stateful one a `blockInfoOracle` block-layout slot; a `blockhash`
+  reader takes `__internal__blockhashInputIndex` and its `blockhashOracle` slots (section 11). A call that cannot
+  forward the index is refused (`BlockOracleIndexNotForwardedError`).
+- A framed master has no contract parameters, so `bindOraclePool` adds none. Each read pushes
+  `ORACLE_POOL_SENTINEL || 0x01` (`0xa5`, 31 bytes of `0x5c`, then the mutable capability) as one 33-byte push, and
+  the artifact publishes the offsets of those pushes, the push opcode's, as `oraclePoolSlots`
+  (`findOraclePoolSlots`). The SDK's `deployMaster` writes `oraclePoolBinding(P)` over them (`applyOraclePool`) and
+  keys its cache on the pool, and `verifyMasterDeployment` compares against the same filled program.
+- The compiler refuses a direct reader that takes no `__oraclePool`, and a framed reader that published no pool
+  slot. The artifact carries `usesBlockOracle` on the function and the artifact, `usesBlockhash`,
+  `abi.blockhashReads`, and a framed reader's `oraclePoolSlots`.
+- `block.chainid` lowers to a pushed constant (per `--network`); no pool, no co-spend.
+
+### 8.2 Function-pointer targets: the binding helper and the input walk
+
+An indirect call pushes a body's declared arguments only, so a target could take the binding and a coin index only
+from slots its caller chose (`3b37569df`). In a contract that calls through a function value, each body that needs
+the pool and that a function reference names (`indirectPoolBodyIds`), a free one included, takes neither:
+
+- the contract level defines a binding helper, `[]` -> `[P]` (`emitOraclePoolBindingDefine`): `0x20` and the
+  contract's own `__oraclePool` concatenated, `OP_DEFINE`d as a body that pushes `P`. Only this script can
+  `OP_DEFINE`, an identifier once, so no caller chooses `P`. Inside `OP_INVOKE`, `OP_ACTIVEBYTECODE` is the invoked
+  body and the redeem's offset in the unlocking bytecode moves with the other arguments, so neither can supply `P`.
+  The id is `ORACLE_POOL_BINDING_SUBROUTINE_ID` (-127), moved below any id a library load defines;
+- a `block.*` read walks to the first block-info coin of `P` (`emitOraclePoolCoinSearch`, section 3.2);
+- a `blockhash(n)` read walks to the first input whose category is `P || 0x01` and whose commitment starts with
+  `0x80 || n (4 LE)`, a live slot holding exactly `n`, and takes its hash (`emitOraclePoolSlotSearch`). It has no
+  zero case;
+- a direct call the target makes hands its callee `P` and that coin's index the same way, and a creation in it
+  passes the helper's `P`.
+
+A contract with no such target emits no helper, and direct reads keep the parameter and the caller's index.
+
+### 8.3 Message-bus refusal of pointer readers
+
+The detached verifier carries the bodies its closure invokes by a literal id, read from literal `OP_DEFINE`s. The
+binding helper is defined at run time from `__oraclePool`, so the verifier can carry neither it nor a target that
+takes `P` from it (`ba5602b83`). `extractMessageBusVerifierProgram` refuses a verifier body that invokes the
+helper, or that makes an indirect call while the contract defines one, as `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`;
+a default build falls back to the direct artifact. No test covers the refusal yet.
+
+### 8.4 SDK co-spend
+
+- **Binding.** `Contract`, `ContractFactory`, `StatefulContract.deploy`, the lean constructor and framed
+  deployments fill `__oraclePool` from the `oraclePool` option (a category in display order), else
+  `provider.oraclePoolCategory` (`withOraclePoolArgument`), and throw with neither. A binding passed in the
+  arguments must agree with `oraclePool`. `Contract.oraclePool` names the bound pool. `deployFrom` gives a bound
+  child its creator's binding, as the creator's covenant builds the child's lock.
+- **Choice.** `selectPoolInfoCoin` picks a random live block-info coin of the pool, listed by category, or at the
+  info and slot locks where the provider cannot list by category. `poolInfoCoSpend` keeps the coin it chose last
+  while it is live, so every reader of a transaction, and each probe of it, spends the same one. `selectPoolSlot`
+  picks a live slot holding `n`, else one of `n`'s residue at least 256 newer (the zero case), and skips a slot the
+  transaction already spends.
+- **Placement.** A coin is spent by its read path (`poolInfoReadUnlocking`, `poolSlotReadUnlocking`) and recreated
+  at its own index. An index argument is found among the spent outputs by category and flags, never by lock.
+  - Stateless: `TransactionBuilder.addRequiredBlockOracleCoSpends` / `addRequiredBlockhashCoSpends` on `send()`,
+    padding the outputs with 1,000-sat `OP_1` outputs up to the coin's index; `Contract` fills the index.
+  - Stateful: the `blockInfoOracle` and `blockhashOracle` block-layout slots, nested callee blocks, nested compose
+    slots and the blockhash probe.
+  - Framed: the root entry, a callee frame and a proxy hop co-spend a live block-info coin after the master's
+    side-cars. A frame that an earlier one already serves co-spends nothing, as its body finds the coin by
+    category and flags.
+  - Message bus: each participant block carries its own copy of a coin of its pool. The composer keeps the first
+    coin of each pool, pads the later copies, and repoints every reader of that pool to the kept input.
+- **Pointer-only readers.** An artifact that sets `usesBlockOracle` while no ABI entry does reads only through
+  function pointers (`readsPoolOnlyIndirectly`): the stateless builder and framed entries co-spend a coin for every
+  call (`abba1a162`). An artifact with an entry that reads directly keeps the per-entry rule, so there an entry
+  that reaches a reader only through a pointer gets no coin from the SDK.
+- Stored-value recipes read the co-spent coin's timestamp (`readPoolTimestamp`).
 
 ## 9. Deferred / future
 
-- **Concurrency fan-out (next major):** lift the single-UTXO serialization with the **split/merge
-  replicate-policy** - the read-dual of the existing disjoint-partition write policy. Reads need a policy that
-  **replicates** a read-only record into every thread (sound because read-only copies cannot diverge), with
-  merge = `OP_EQUALVERIFY` the copies equal then collapse. No change to the `block.*` surface.
-- **Trust-minimized foreign update:** the update authority is one owner key, named by its hash in the
+- **Concurrency:** a pool serves concurrent readers by replicas - several block-info coins, `slotReplicas` slots
+  per block, and growth through the baton - and the SDK picks a random live coin. Reads of one coin still serialize.
+  The **split/merge replicate-policy** (a read-only record replicated into every thread, merged by
+  `OP_EQUALVERIFY`) stays deferred.
+- **Trust-minimized foreign update:** the update authority is one owner key, named by its hash in each
   commitment, so a new authority policy (a keeper datasig any relayer can push, or a copy from another
-  canonical oracle) is a new covenant beside this one, not a reader change. Both would ride the section-5
+  canonical oracle) is a new covenant beside these, not a reader change. Both would ride the section-5
   bounds.
-- **Signer decentralization:** the owner hash is the seam to a committee / m-of-n later (a key commitment
-  instead of a single key's hash).
+- **Multisig owners (open):** the owner hash is the seam to a committee / m-of-n later (a key commitment
+  instead of a single key's hash). The covenants check one key today.
 - `prevrandao` has no BCH analogue (no randomness beacon); not planned.
 
 ## 10. Decisions
@@ -266,54 +431,10 @@ Still open:
 
 ## 11. blockhash(n) and blobhash(i)
 
-Status: **blobhash IMPLEMENTED; blockhash IMPLEMENTED (branded oracle + hardened covenant + keeper
-mint/sweep).** `blobhash(i) == bytes32(0)`. `blockhash(n)` reads **one `(n->hash)` covenant per master
-category** (`buildBlockhashOracleCovenantScript` in `utils/state.ts`): every block of that contract is a
-capability-none NFT of the master's category at the same lock, with `n(4 LE) || hash` in the commitment, so
-every function of the contract co-spends that one lock. Using `blockhash` **forces the contract stateful**
-(`ContractNode.usesBlockhash` -> `isStateful` + a `stateLayout`; the oracle needs a master/category to
-anchor). The reader verifies the co-spent `(n->hash)`
-NFT's category BASE `== the master's` (`emitVerifyCatBaseEqMaster`, via `OP_INPUTINDEX`), NOT a baked
-category, plus `commitment.n == n` + `require(tx.time >= n)`, returning the 32-byte hash. Consequences:
-
-- **`blockhashOracleCategory` is REMOVED as a compiler option** (and dropped from artifact serialization).
-  No deploy-time oracle-category config: the reader knows its oracle's category because it IS its own.
-- The read path is supported **only through `StatefulContract`**: the co-spend rides a `blockhashOracle`
-  block-layout slot (index = master input index + slot offset), resolved by `StatefulContract` from
-  `this.categoryId`; the derivation probe co-spends it and the SDK auto-sets the CLTV locktime. The base
-  `Contract`/`TransactionBuilder` path fails loudly ("build the call via StatefulContract").
-- The keeper mints/sweeps `(n->hash)` NFTs **under the contract's own category**
-  (`BlockOracleUpdater.mintBlockhashPair` / `sweepBlockhashPair` / `maintainBlockhashWindow`), from a
-  minting baton of that category. Genesis must place that baton at the keeper baton covenant
-  (`blockhashKeeperBatonLockingBytecode(category, keeperPubkey)`, audit CRYPTO-4): a bare baton could stand in
-  for the master on the data/entry write and destroy paths, move to any lock, or mint a counterfeit master. A
-  covenant spend needs the keeper's signature, co-spends no token input, recreates the baton at output 0 and
-  mints exactly one capability-none `(n->hash)` NFT at the category's blockhash lock (output 1, `tx.time >= n`).
-
-The hardened `(n->hash)` covenant (self-pin + self-preserving recreate + CLTV `n+256` wipe), the
-`artifact.usesBlockhash` marker + `abi.blockhashReads`, and keccak side-car coexistence are in place and
-e2e-green. Absent reads error by design (s11.2), not EVM's `bytes32(0)`. **`blockhash(n)` is
-feature-complete** for stateful readers, including:
-
-- **Multiple distinct reads per tx** - each distinct `n` rides its OWN consecutive `blockhashOracle`
-  block-layout slot (the k-th read reads `input[base + k]`; `blockhashSlotCount` on the fn drives the slot
-  allocation, codegen adds the read ordinal, the SDK co-spends 1:1 with `blockhashReads`). A direct-identifier
-  `n` read twice shares one slot (deduped by param name).
-- **Computed `n` - ANY expression** (`block.number - K`, `x - 1`, arbitrary arithmetic), resolved by the
-  **single source of truth**: the auto-derivation probe. The covenant computes `n` on-stack (whatever the
-  expression), so the SDK does NOT re-derive it in JS - it reads `n` straight off the probe trace. Codegen
-  records each computed call site as a framed-site `<computed:i>` key (its own slot); at build time the SDK
-  runs a minimal covenant probe (master + data NFTs + already-resolved lower reads, max-height locktime) and
-  extracts `(inputIndex, n)` at the read's `OP_UTXOTOKENCATEGORY` (stack `[n, idx, idx]`; `idx` in the
-  reserved slot range identifies it). Reads resolve strictly in slot order so the probe reaches each computed
-  read in turn (`extractBlockhashReadsFromTrace` + `_resolveBlockhashCoSpends` in the SDK). `block.number - K`
-  is just one such expression - `block.number` comes from the block-info oracle, which the stateful builder
-  places beside the blockhash slots, so both oracles ride the same tx. `blockhash(block.number)` (K=0, the
-  current block) stays unavailable (no oracle
-  pair; EVM returns 0). (Limitation: a function that co-spends other inputs - entries, external-call targets -
-  *before* the blockhash read would abort the extraction probe early; blockhash composed with those is future
-  work.)
-
+Status: **IMPLEMENTED.** `blobhash(i) == bytes32(0)`. `blockhash(n)` reads a ring slot of the bound pool
+(`b2ec3b973`, `e0c815f3b`). Using `blockhash` still **forces the contract stateful** (`ContractNode.usesBlockhash`
+-> `isStateful` + a `stateLayout`): the statefulness rules did not change with the pools. A framed master refuses
+every entry of a contract that reads it, as the master head locates no co-spent slot.
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
 `GlobalFunction`s (the keccak256 path is the template), not nullary oracle reads.
@@ -326,61 +447,49 @@ shim so Solidity that references it compiles and runs. Codegen: drop the arg, pu
 (Optional compile warning that blobs do not exist on BCH.) An `OP_RETURN`-data reinterpretation is
 rejected - it silently changes Solidity semantics.
 
-### 11.2 blockhash(uint n) -> bytes32: the per-pair (n -> hash) oracle
+### 11.2 blockhash(uint n) -> bytes32: the ring
 
-The current block's own hash is unavailable on-chain (the block is not yet mined; EVM's
-`blockhash(block.number)` is 0), so there is no current-block value - every real use is historical.
-The hard part is historical `n`, which no single record can hold. Design (category-trust, no datasig):
-the `(n->hash)` oracle below. A computed `n` (`block.number - K`, arbitrary arithmetic) is resolved at build
-time by the SDK extracting it from the auto-derivation probe trace - the covenant's own on-stack computation,
-single source of truth (s11, "Computed `n` - ANY expression"); the oracle serves the resulting `n`.
+The current block's own hash is unavailable on-chain (EVM's `blockhash(block.number)` is 0), so every real use is
+historical. A ring of depth `d` holds the last `d` blocks, one slot per residue `n mod d`; the keeper moves a slot
+forward `d` blocks at a time (4.2), and a pool may hold several slots per block (`slotReplicas`).
 
-**The `(n -> hash)` UTXO.** One per block, under the master's category, all at that category's one lock:
-- **One lock per category** (`blockhashOracleLockingBytecode(category)`); `n` is not baked in, so the SDK
-  lists the lock and picks the UTXO whose commitment starts with `n` (`blockhashCommitmentNumber`).
-- **Commitment `(n, hash)`** - this is the contract's on-chain pin: the consumer checks `commitment.n == n`.
-- **Covenant: three paths** - (1) the keeper mints through its baton covenant; (2) **read = self-preserving
-  recreate** (self-pins the category, capability none); (3) **wipe** = anyone may consume once
-  `tx.time >= n + 256`, `n` read from the commitment. Bounded 256-deep window (EVM parity), dust recycled on
-  wipe, cleanup permissionless so the set stays bounded even if the keeper stalls.
+**The read** (direct form). Codegen emits `OP_DUP OP_CHECKLOCKTIMEVERIFY OP_DROP` (`require(tx.time >= n)`), picks
+`input[__internal__blockhashInputIndex + ordinal]`, and checks `OP_UTXOTOKENCATEGORY == __oraclePool || 0x01` and the
+commitment's flags byte `== 0x80`, a live slot of `P`. `emitPoolSlotAnswer` then answers from the slot's block `n'`:
 
-**The consumer (`blockhash(n)`)** co-spends the `(n->hash)` UTXO read-only, checks that its category base is
-the master's (only the keeper baton of that category mints) and `commitment.n == n`, returns `hash`, and
-emits `require(tx.time >= n)` (no-future bound). No merkle proof.
+- `n' == n`: the slot's hash;
+- `n' - n >= 256` and `(n' - n) mod depth == 0`: `bytes32(0)`, as `n` has left the EVM's 256-block window;
+- anything else fails: a block the pool has not written, one the ring overwrote less than 256 blocks ago, or a
+  future one.
 
-**Absent reads error, not `bytes32(0)`.** If the SDK finds no live UTXO for `n` at the lock (outside the window
-or unpublished), it errors rather than yielding EVM's `bytes32(0)`. On BCH the tx-builder controls the
-inputs, so a "return `0` when the oracle is not co-spent" rule would let a malicious builder force
-`blockhash(n) == 0` for an **in-window** block by simply omitting the co-spend - a forgeable read EVM does
-not have (there the node supplies the hash). Erroring keeps a contract from ever seeing a forged `0`. A
-contract that wants the EVM "too old -> 0" branch checks the window itself (`block.number - n` against the
-256 bound) instead of trusting a `0`.
+A current ring of depth 256 answers every block, its hash inside the window and zero beyond it. A shallower ring
+holds only its last `d` blocks and refuses the older ones until their residue's slot is 256 blocks ahead.
 
-**Why category + commitment:** `commitment.n` is both the on-chain *contract* pin and the off-chain
-*index* (the SDK filters the lock's UTXOs by it); the master's category (self-pin, baton-minted) is the
-*trust*.
+**A zero is not forgeable by omission.** The SDK errors when no live slot answers `n` ("no live slot that answers
+block n"), and the script answers zero only from a real slot of `P` whose block is at least 256 newer, a block CLTV
+kept at or below the chain tip when it was written. Omitting the co-spend fails the read; it never reads zero. (The
+per-pair design this replaces errored on every absent read for the same reason, and left the EVM's "too old"
+branch to the contract.)
 
-**Keeper (the updater).** On each new tip `n`: mint `(n, hash)` at the category's lock, and sweep the record
-of `n - 256`. This is `BlockOracleUpdater.maintainBlockhashWindow` (mint via `mintBlockhashPair`,
-best-effort wipe via `sweepBlockhashPair`), gated on `usesBlockhash(artifact)` and signed by the keeper key.
-Sweeping is a dust-reclaim convenience: the covenant's `tx.time >= n+256` path lets anyone wipe, so the
-window stays bounded even if the keeper stalls.
+**Multiple and computed reads.** Each distinct `n` in a function rides its own consecutive `blockhashOracle` slot
+(`input[base + k]`, `blockhashSlotCount` driving the allocation; a direct-identifier `n` read twice shares one
+slot, keyed by parameter name). A computed `n` (`block.number - K`, any expression) is keyed `<computed:i>` by its
+call site (`encodeComputedBlockhashKey`), and the SDK reads it off the auto-derivation probe trace at the read's
+`OP_UTXOTOKENCATEGORY` (stack `[n, idx, idx]`), resolving reads strictly in slot order
+(`extractBlockhashReadsFromTrace` + `_resolveBlockhashCoSpends`). `block.number` there is the co-spent block-info
+coin's, so `blockhash(block.number)` answers the hash of the block the keeper last published once its slot is
+written, where the EVM answers 0 for the current block. The message-bus batch route adds a row offset
+(`__internal__blockhashRowOffset`) to the base, selecting that row's band.
 
 **Grinding caveat (unchanged):** the tx-builder picks `n`, so `uint(blockhash(n)) % k` randomness is
 grindable - worse than EVM. Legitimate commit-reveal must **pin `n`** (committed in a prior tx). A compiler
 warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
 
-### 11.3 Open decision: public primitive vs keeper-gated
+### 11.3 Decision: a public primitive
 
-- **Public primitive (recommended):** reads are **permissionless self-serve**; integrity comes from
-  self-pin + self-preserve; reads are contention-free because they partition by `n`. No keeper on the read
-  path. This is the right model if `blockhash` is a language primitive any contract may call.
-- **Keeper-gated (project-private):** require the keeper's **minting baton** co-spent in every read.
-  This excludes alien consumers, but (a) re-creates the single-master **global lock** the per-pair design
-  exists to avoid - so it needs **master fan-out** (the deferred split mechanism) to keep throughput - and
-  (b) for the gate to actually exclude aliens the master spend must be keeper-signed, putting the keeper on
-  the read path. Integrity does **not** need this (self-pin already gives it); the gate only buys access
-  control. Pick this only for a deliberately private oracle, and pull master fan-out into v1.
+Reads are permissionless self-serve: integrity comes from the pool's covenants (section 3.1), and reads of distinct
+coins do not contend. Any contract may read any pool, and no keeper is on the read path. The keeper-gated
+alternative (a baton co-spent in every read) is not built.
 
 ### 11.4 Alternatives (recorded)
 
@@ -391,53 +500,21 @@ warning when `blockhash(...)` feeds modulo/arithmetic is advisable.
   `n`, no storage, no shared UTXO - but key-trust, and it allows permissionless bootstrap (no keeper
   liveness on the read path). The escape if you ever want consumer-bootstrapped pairs.
 
-### 11.5 Compiler / SDK integration
+### 11.5 SDK integration
 
-> **Superseded (branded re-architecture).** The bullets below describe the original *stateless*
-> auto-injection model (a separate oracle category passed as `blockhashOracleCategory`, co-spend appended by
-> the base `TransactionBuilder`). That is no longer how it works: `blockhash` now brands its `(n->hash)`
-> oracle to the contract's OWN category, forces the reader stateful, drops the `blockhashOracleCategory`
-> option entirely, and resolves the co-spend through `StatefulContract` at a block-layout slot (see the
-> section 11 status above). The per-`n` address `addr(n)` is gone too: every `(n->hash)` NFT of a category sits
-> at that category's one lock. `resolveBlockhashCoSpend` remains only as an internal lookup helper. The
-> historical notes are kept for context.
-
-- Register `blockhash`/`blobhash` as `GlobalFunction`s, signature `(uint) -> bytes32`. `blobhash` -> push
-  `bytes32(0)`. `blockhash` -> external read of `C_oracle` (category + `commitment.n` check) + the
-  `tx.time >= n` floor; `0` outside the window.
-- Artifact `usesBlockhash` marker (DONE): `SynthesizeBlockOracle` detects `blockhash()` and the compiler
-  stamps `artifact.usesBlockhash`, driving `BlockOracleUpdater.usesBlockhash(artifact)` so the keeper
-  auto-maintains the oracle.
-- SDK co-spend resolver (DONE): `resolveBlockhashCoSpend(provider, category, n)` looks up `addr(n)` and
-  returns the `(utxo, read-flag unlocker, self-preserving recreate, locktime)` the consumer wires (or null
-  outside the window). The VM is the arbiter, so a wrong injection fails the category/`n` check.
-- SDK auto-injection (DONE): the compiler tags `abi.blockhashReads` (the param feeding `n`, recorded in
-  codegen for a direct-identifier arg); `TransactionBuilder.addRequiredBlockhashCoSpends()` (auto-invoked by
-  `send()` before sidecars) reads that arg, calls `resolveBlockhashCoSpend`, and appends the `(n->hash)`
-  input + recreate at the matching index, bumping `tx.time` to `n`. `blockhashOracleCategory` is persisted
-  in `artifact.compiler.options` for the lookup. The VM is the arbiter, so a wrong injection fails the
-  category/`n` check.
-- Absent read = error (DECIDED, s11.2): the resolver/builder errors when no UTXO exists at `addr(n)` rather
-  than returning EVM's `bytes32(0)`, since on BCH a builder could otherwise force a `0` read by omitting the
-  co-spend. No EVM-parity `0` branch.
-- Composition-safe co-spend slot (DONE): the reader no longer uses `OP_TXINPUTCOUNT OP_1SUB` (the last input
-  belongs to whoever the builder appended last, breaking cross-contract composition). `SynthesizeBlockOracle`
-  flags blockhash functions; SymbolTable injects a hidden `__internal__blockhashInputIndex` BIGINT param
-  (after validating user params - it uses the reserved prefix, like `_externalCallInputBase`); codegen reads
-  `input[that]`. `Contract.createUnlocker` fills it by locating the `C_oracle` co-spend in `sourceOutputs`,
-  and accepts either the visible-arg list (stateless, SDK fills internals) or the full list (stateful
-  orchestrator). The covenant (`output[INPUTINDEX] == input`) is unchanged; the VM re-verifies, so a wrong
-  index just fails.
-- Multiple `n` + side-car coexistence (DONE): the fill matches its co-spend on `commitment.n` (the reader's
-  `n` from `blockhashReads`), `addRequiredBlockhashCoSpends` auto-injects every distinct `n`, and the keccak
-  side-car guard is dropped (the reader uses its index param; the keccak loader uses the last input).
-- Stateful readers (DONE): a `blockhashOracle` block-layout slot (computeBlockLayout, after readOnlyDataNft)
-  holds the co-spend, so the stateful tx assembly places input + self-preserving recreate at the same index
-  and the index param is filled deterministically (master input index + slot offset). The auto-derivation
-  probes co-spend it (`_deriveFullTransactionState` via the stb that carries the slot; `_deriveCommitments`
-  via an explicit probe input + recreate), and the SDK auto-sets the tx locktime to `max(n)` so the
-  `require(tx.time >= n)` CLTV passes in both the probe and the final tx (the probe otherwise ran at locktime
-  0 and derived wrong state). `blockhash(n)` is feature-complete.
+- `resolveBlockhashCoSpend(provider, pool, n, exclude)` picks the slot (`selectPoolSlot`) and returns it with its
+  read unlocker, its exact recreation, the locktime floor `n`, and whether it holds `n` (`exact`) or answers zero.
+- Stateful readers: the `blockhashOracle` block-layout slots hold the co-spends, so the stateful assembly places each
+  slot and its recreation at one index. The auto-derivation probes co-spend them, and the SDK sets the height
+  locktime to `max(n)`, so the CLTV passes in both the probe and the final transaction. A transitive callee's slots
+  and the message-bus graph rows, direct and nested, take slots the same way. A transaction's reads never choose one
+  slot twice.
+- Stateless path: `TransactionBuilder.addRequiredBlockhashCoSpends` co-spends one slot per read of a reader without
+  a block layout and raises the locktime, and `Contract` fills `__internal__blockhashInputIndex` with the first slot
+  of its pool among the spent outputs. A computed `n` needs its slot spent by the caller, and two such readers of one
+  pool cannot share a transaction. The statefulness rule keeps every compiled reader off this path today.
+- A `blockhash` read in a function-pointer target (8.2) answers only a slot holding exactly `n`, and no SDK path
+  adds its slot, as no entry publishes `blockhashReads` for it. Untested.
 
 ## 12. tx.gasprice - the current transaction's fee rate
 
@@ -503,17 +580,17 @@ extensions are added on top.
 
 | Solidity property | SolidCash | Mechanism | Notes / divergence |
 |---|---|---|---|
-| `blockhash(uint) -> bytes32` | **yes** | per-block `(n->hash)` co-spend oracle, 256-block window (s11) | window matches EVM; an absent read **errors** (not `0`) - on BCH the builder controls inputs, so a forced `0` is unsafe (s11.2) |
+| `blockhash(uint) -> bytes32` | **yes** | a ring slot of the bound oracle pool (s11) | zero once `n` is 256 or more blocks older than its residue's slot (the EVM window); an unwritten block **errors**, and no omitted co-spend reads `0` (s11.2) |
 | `blobhash(uint) -> bytes32` | **yes** | `bytes32(0)` | no EIP-4844 blobs on BCH; EVM also returns `0` for an absent index |
-| `block.basefee` (uint) | **yes** | oracle: `Floor(1000 * totalFees / size)` sat/KB (s6) | reinterpreted as the block's realized fee rate (BCH has no consensus base fee) |
+| `block.basefee` (uint) | **yes** | pool: `Floor(1000 * totalFees / size)` sat/KB (s6) | reinterpreted as the block's realized fee rate (BCH has no consensus base fee) |
 | `block.blobbasefee` (uint) | **yes** | aliases `block.basefee` (warned) | no blobs; aliased (not `0`) to avoid zero-out / divide-by-zero in ported code |
 | `block.chainid` (uint) | **yes** | baked single-byte network constant | typed **`bytes1`**, not `uint` - intentional 1-byte cap (user-land); Solidity code using it as a uint needs a cast |
-| `block.coinbase` (address) | **yes** | oracle: coinbase output-0 locking bytecode (`address`) | the full payout locking bytecode |
-| `block.difficulty` (uint) | **yes** | oracle: nBits (uint32) | the **real PoW difficulty** - NOT aliased to `prevrandao` (BCH is PoW; on EVM>=Paris `difficulty` is a deprecated alias for `prevrandao`) |
+| `block.coinbase` (address) | **yes** | pool: coinbase output-0 locking bytecode (`address`) | the full payout locking bytecode |
+| `block.difficulty` (uint) | **yes** | pool: nBits (uint32) | the **real PoW difficulty** - NOT aliased to `prevrandao` (BCH is PoW; on EVM>=Paris `difficulty` is a deprecated alias for `prevrandao`) |
 | `block.gaslimit` (uint) | **yes** | fixed shim `1000000` (warned) | no gas metering on BCH |
-| `block.number` (uint) | **yes** | oracle commitment field (uint32), owner-updated, CLTV-bound | a value, not just a CLTV floor; the owner's last write |
+| `block.number` (uint) | **yes** | pool block-info coin field (uint32), owner-updated, CLTV-bound | a value, not just a CLTV floor; the keeper's last write |
 | `block.prevrandao` (uint) | **yes** | tx-local `abs(int(sha256(input[0] prevout txid)))` (warned) | no beacon/VM randomness; grindable by the builder - not secure (s12-adjacent note in field table) |
-| `block.timestamp` (uint) | **yes** | oracle commitment field (uint32), owner-updated, CLTV-bound | the owner's last write, below the MTP when written; the same under `evmCompat` |
+| `block.timestamp` (uint) | **yes** | pool block-info coin field (uint32), owner-updated, CLTV-bound | the keeper's last write, below the MTP when written; the same under `evmCompat` |
 | `gasleft() -> uint256` | **yes** | fixed shim `1000000` (warned) | no gas metering |
 | `msg.data` (bytes) | **yes** | the call's argument bytes (calldata) | see docs/call-model.md |
 | `msg.sender` (address) | **yes** | the calling contract's locking bytecode; `tx.origin` for a direct (EOA) call | EVM-parity caller, from the external-call model (`__internal__msgSenderCategory`) |
@@ -536,25 +613,31 @@ are compiler-derived and therefore add no category parameter to the public ABI.
 values are fixed shims (no metering on BCH); randomness (`prevrandao`) is grindable, not a beacon; `chainid`
 is a single byte; and `difficulty` stays the real PoW difficulty rather than aliasing `prevrandao`.
 
-### SDK oracle configuration and keeper genesis (2026-10-14)
+### SDK pool configuration (2026-11-04)
 
-Live Electrum providers accept typed `blockOracleCategory` (32 display-order bytes) and derive the shared
-block-info covenant lock; `NetworkProvider` publishes the optional category and lock, and `ContractOptions`
-publishes an optional per-reader lock override. Reader and updater code need no structural casts.
+- `NetworkProvider.oraclePoolCategory` (display order) names a provider's default pool. `ElectrumNetworkProvider`
+  takes it as the `oraclePoolCategory` option (64 hex characters, lowercased); `MemCashNetworkProvider` takes it as
+  an option or from the node's advertised `devnet.oracle_pool`, which `solidhat node` does not advertise yet.
+- `MockNetworkProvider` mints its pool on the first `oraclePoolCategory` read, by the two genesis transactions: two
+  block-info coins, a depth-256 ring with one slot per block and the baton, owned by `oraclePoolOwnerKey` and paid
+  from a fixed coin the mock gives that key's P2PKH. After each send, `mine`, `mineUpTo`, `evm_mine`,
+  `hardhat_mine` and `evm_increaseTime`, a `PoolKeeper` moves every live block-info coin to the tip height and the
+  tip time less one second, and writes the slot of each block mined since, up to the depth. Its transactions wait
+  in the mempool for the next block. Block `n` hashes to the SHA-256 of `n` as 4 little-endian bytes. A snapshot
+  keeps whether the pool exists, and `reset` forgets it. A VM target older than BCH 2026 has no pool, and a failed
+  refresh is kept in `oraclePoolRefreshError`.
+- `RegtestNetworkProvider` mints a pool of the same shape on its first request (`createOraclePool`, owned by a fixed
+  key) and refreshes it the same way after each mine and after `increaseTime`. A snapshot confirms the keeper's
+  pending transactions first, and a restore rewinds the slot height. Not run.
+- The mock's rewrite of legacy `__block_*` registers (`oracle/legacy-block-registers.ts`) stays for vendored
+  artifacts compiled before the oracle covenant; the compiler emits none.
+- Gone with the old mechanism: `blockOracleLock` and `blockOracleCategory` on providers and contracts,
+  `setBlockOracleFields`, `BlockOracleUpdater` with its rpc helpers and pair keeper, the `blockhashKeeperPublicKey`
+  and `blockhashKeeperAmount` deploy options, and the testing package's devnet oracle runtime and
+  `--no-block-oracle` flag.
 
-Direct and framed `StatefulContract.deploy` accept opt-in `blockhashKeeperPublicKey` and
-`blockhashKeeperAmount` (default 10,000 satoshis). Genesis mints one extra empty minting NFT of the consumer's
-category at the keeper baton covenant, after the participant records so existing record coordinates stay fixed.
-The key must be a valid compressed public key and the artifact must publish `usesBlockhash`. The confined
-baton signs every mint and can produce only its one blockhash record, as required by CRYPTO-4.
-
-Local follow-up evidence uses `KernelBlockOracleCallPaths.test.ts`: nested non-bus readers receive the
-root's authenticated shared-oracle input index, a named direct forwarder delegates to an oracle-reading
-implementation, and an all-staticcall composition shares one oracle plus exact neutral pads. Every input
-passes the ordinary VM. Forged oracle records and unequal-value pads fail. Static snapshots exempt only
-canonical token-free neutral pads from lock preservation and still require their complete input value.
-`BlockhashKeeperDeployment.test.ts` proves direct and framed baton genesis; its direct test also mints
-through the keeper, settles the consumer read, and refuses a mutable record in place of the immutable
-blockhash record under the ordinary VM. Framed genesis runs with the existing local composition profile.
-`LiveBlockOracleConfiguration.test.ts` checks typed category configuration and its derived covenant lock.
-These tests provide local evidence only; no BCHN or live-network checks were run for this follow-up.
+Evidence, on mocknet only: `KernelBlockOracleCallPaths.test.ts` (one pool coin index forwarded to a nested non-bus
+reader, a pool read through a plain delegate forwarder, one pool coin shared across an all-staticcall composition
+with authenticated neutral pads), `BlockhashKeeperDeployment.test.ts` (a blockhash reader's genesis binds the
+provider pool and holds one minting NFT of its category, its master) and `LiveBlockOracleConfiguration.test.ts`
+(the typed `oraclePoolCategory` option). No BCHN or live-network check was run.

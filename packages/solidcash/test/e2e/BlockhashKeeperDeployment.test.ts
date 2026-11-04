@@ -1,23 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, hexToBin } from '@bitauth/libauth';
-import {
-  blockhashKeeperBatonLockingBytecode, blockhashOracleLockingBytecode, buildBlockhashCommitment,
-} from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import { blockhashKeeperBatonLockingBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
-import { SignatureTemplate, TransactionBuilder } from '../../src/index.js';
-import { BlockOracleUpdater, blockhashKeeperBatonUnlocker } from '../../src/oracle/index.js';
-import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
-import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
+import { SignatureTemplate } from '../../src/index.js';
+import { selectPoolSlot } from '../../src/oracle/pool/index.js';
+import { randomUtxo } from '../../src/utils.js';
 import { aliceAddress, alicePriv, alicePub } from '../fixture/vars.js';
 import { fundShippedFacets } from '../framed/shapes/harness.js';
 import { COMPOSITION_LIMITS } from '../../../solidc/test/framed/machine.js';
 
 const SOURCE = 'contract Reader(){ function check(int n, bytes32 expected) { require(blockhash(n) == expected); } }';
 
-describe('SDK genesis blockhash keeper baton', () => {
-  it('mints a confined keeper baton and the updater uses it without fixture seeding', async () => {
+// A blockhash reader reads the ring slots of its oracle pool, so no genesis mints the per-contract keeper baton any
+// more, even when its options are passed.
+describe('SDK genesis and the blockhash keeper baton', () => {
+  it('mints no keeper baton, and the reader reads blockhash through its oracle pool', async () => {
     const provider = new MockNetworkProvider();
     const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 500_000n }));
     const deployed = await StatefulContract.deploy(compileString(SOURCE), [], {
@@ -25,42 +24,18 @@ describe('SDK genesis blockhash keeper baton', () => {
       blockhashKeeperPublicKey: alicePub, blockhashKeeperAmount: 20_000n,
     });
     const lock = blockhashKeeperBatonLockingBytecode(hexToBin(deployed.categoryId), alicePub);
-    const [baton] = await provider.getUtxosForLockingBytecode(lock);
-    expect(baton.token).toEqual({ category: deployed.categoryId, amount: 0n,
-      nft: { capability: 'minting', commitment: '' } });
-    expect(baton.satoshis).toBe(20_000n);
-    const updater = new BlockOracleUpdater({
-      contract: deployed.contract.inner, categoryId: deployed.categoryId, keeperKey: alicePriv,
-      blockhashOracleCategory: deployed.categoryId,
-      rpc: { request: async (): Promise<never> => { throw new Error('unused'); } },
-    });
+    expect(await provider.getUtxosForLockingBytecode(lock)).toEqual([]);
+
+    const pool = deployed.contract.inner.oraclePool;
+    expect(pool).toBe(provider.oraclePoolCategory);
     const n = BigInt(await provider.getBlockHeight()) - 1n;
-    const hash = new Uint8Array(32).fill(0xb7);
-    expect(await updater.mintBlockhashPair(n, hash)).toMatch(/^[0-9a-f]{64}$/);
-    expect((await provider.getUtxosForLockingBytecode(lock))[0].satoshis).toBe(18_000n);
+    expect((await selectPoolSlot(provider, pool!, n))?.exact).toBe(true);
+    const hash = hexToBin(await provider.getBlockHash(Number(n)));
     await expect(deployed.contract.call.check(n, hash).send()).resolves.toHaveProperty('txid');
-    const current = (await provider.getUtxosForLockingBytecode(lock))[0];
-    const builder = new TransactionBuilder({ provider })
-      .addInput(current, blockhashKeeperBatonUnlocker(deployed.categoryId, alicePriv))
-      .addOutput({ to: lock, amount: current.satoshis - 2_000n, token: current.token })
-      .addOutput({
-        to: blockhashOracleLockingBytecode(hexToBin(deployed.categoryId)), amount: 1_000n,
-        token: { category: deployed.categoryId, amount: 0n,
-          nft: { capability: 'none', commitment: binToHex(buildBlockhashCommitment(n - 1n, hash)) } },
-      }).setLocktime(Number(n));
-    const success = (): true | string => {
-      const vm = createVirtualMachineBch2026ForProvider();
-      return vm.stateSuccess(vm.evaluate({
-        inputIndex: 0, sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
-        transaction: builder.buildLibauthTransaction(),
-      }));
-    };
-    expect(success()).toBe(true);
-    builder.outputs[1].token!.nft!.capability = 'mutable';
-    expect(success()).not.toBe(true);
+    await expect(deployed.contract.call.check(n, new Uint8Array(32).fill(0xb7)).send()).rejects.toThrow();
   }, 120_000);
 
-  it('mints the same confined keeper baton in a framed genesis', async () => {
+  it('mints no keeper baton in a framed genesis either', async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     await fundShippedFacets(provider);
     const fundingUtxo = await provider.addUtxo(aliceAddress, randomUtxo({ vout: 0, satoshis: 5_000_000n }));
@@ -73,10 +48,6 @@ describe('SDK genesis blockhash keeper baton', () => {
       blockhashKeeperPublicKey: alicePub, blockhashKeeperAmount: 20_000n,
     });
     const lock = blockhashKeeperBatonLockingBytecode(hexToBin(deployed.categoryId), alicePub);
-    expect(await provider.getUtxosForLockingBytecode(lock)).toEqual([
-      expect.objectContaining({ satoshis: 20_000n, token: {
-        category: deployed.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' },
-      } }),
-    ]);
+    expect(await provider.getUtxosForLockingBytecode(lock)).toEqual([]);
   }, 120_000);
 });

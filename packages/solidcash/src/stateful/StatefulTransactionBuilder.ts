@@ -751,6 +751,7 @@ export {
   type ExternalCallUtxoGroup,
 } from './external-call-utxo-group.js';
 import {
+  sameOutpoint,
   type EntryNftInfo,
   type TransferData,
   type EventEmitData,
@@ -6662,6 +6663,14 @@ export class StatefulTransactionBuilder {
   setLocktime(locktime: number): this {
     this.locktimeOverride = locktime;
     return this;
+  }
+
+  /** Co-spend more pool coins a function-pointer target finds itself; a coin already listed is kept once. */
+  addUnslottedPoolCoSpends(coins: readonly UnlockableUtxo[]): void {
+    for (const coin of coins) {
+      if (this.unslottedPoolCoSpends.some((listed) => sameOutpoint(listed, coin))) continue;
+      this.unslottedPoolCoSpends.push(coin);
+    }
   }
 
   addInput(utxo: Utxo, unlocker: Unlocker): this {

@@ -140,7 +140,7 @@ import {
   artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
 } from '../oracle/pool/reader.js';
 import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
-import { groupPoolReader, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
+import { calleePoolReaders, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
 import { selectRootBlockOracleReader, takeNestedBlockOracleInput } from './block-oracle-reader-selection.js';
 import Signer from '../Signer.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -594,6 +594,7 @@ import {
   extractBlockhashReads as extractBlockhashReadsImpl,
   extractGraphBlockhashRead as extractGraphBlockhashReadImpl,
   resolveBlockhashCoSpends as resolveBlockhashCoSpendsImpl,
+  resolveCalleeIndirectBlockhashCoSpends,
   resolveIndirectBlockhashCoSpends,
 } from './sc-resolve-blockhash-co-spends.js';
 import {
@@ -12533,8 +12534,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // A function-pointer target finds its pool coins itself, so no block slot places them: they ride past the blocks.
     const unslottedPoolCoSpends = await resolveUnslottedPoolInfoCoins(this.inner.provider, [
       { abiFunction, pool: this.inner.oraclePool, name: this.inner.name },
-      ...externalCallUtxoGroups.filter((group) => group.sharedGroupIndex === undefined).flatMap(groupPoolReader),
-      ...lowLevelCallUtxoGroups.flatMap(groupPoolReader),
+      ...calleePoolReaders(externalCallUtxoGroups, lowLevelCallUtxoGroups),
     ], [
       ...blockInfoCoSpendUtxos,
       ...[...externalCallUtxoGroups, ...lowLevelCallUtxoGroups].flatMap((group) => group.blockInputs ?? []),
@@ -13197,6 +13197,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     );
     // derive-prelude-complete (size-guarded end marker for prepareCreateBuilderDerivePrelude)
+
+    // A callee's function-pointer blockhash walks run at its own input, which the root's probe never reaches: probe
+    // each in the built transaction and co-spend its slots past the blocks, as the root's are.
+    const calleeSlotLocktime = await resolveCalleeIndirectBlockhashCoSpends(
+      this.inner.provider, builder, calleePoolReaders(externalCallUtxoGroups, lowLevelCallUtxoGroups),
+    );
+    if (calleeSlotLocktime > maxBhLocktime) builder.setLocktime(calleeSlotLocktime);
 
     assembledWitnessBag.stateInputUnlocker = stateInputUnlocker;
     await runCreateBuilderDerivePassImpl(

@@ -1492,9 +1492,5 @@ Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM
 - Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
   its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
   the genesis of a pool someone else made.
-- A `blockhash` read in a function-pointer target has the direct read's zero answer (`617b8fb81`), and every entry
-  that may reach a pointer reader publishes `indirectPoolReads`, so the SDK co-spends its coins (`3d5e9ea0d`,
-  `651f0f025`). Its ring slot is co-spent only on the stateful root entry: a nested or delegate callee's pointer
-  `blockhash` read refuses unless the transaction already spends the slot. It fails closed.
 - The regtest, Electrum and MemCash pool code has not run. The port to sushi-port-node is ready on
   `feat/oracle-pools-sushi` and waits for the user's OK.

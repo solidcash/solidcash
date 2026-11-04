@@ -6,13 +6,14 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
+import { StatefulContract } from '../../src/stateful/index.js';
 import { PoolKeeper, type PoolBlockFields, type PoolCoin } from '../../src/oracle/pool/index.js';
 import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { createSighashPreimage, randomUtxo } from '../../src/utils.js';
 import {
   createBareP2pkhFeeFunder, createFeeFunder, createTestProvider, expectScriptRejection, mintTestOraclePool,
-  TEST_ORACLE_POOL_KEY,
+  setupStatefulUtxos, TEST_ORACLE_POOL_KEY,
 } from '../test-util.js';
 import { bobAddress } from '../fixture/vars.js';
 
@@ -103,14 +104,11 @@ async function writeSlot(o: Owned, n: bigint, locktime: bigint): Promise<string>
     (pubkey, signature) => poolSlotWriteUnlocking(category, pubkey, signature, n, H));
 }
 
+/** A read of the pool through the reader, which is stateful as every block.* reader is: a call on its state. */
 async function readBack(o: Owned, number: bigint, timestamp: bigint): Promise<string> {
-  const utxo = await o.provider.addUtxo(o.contract.address, randomUtxo({ satoshis: 100000n }));
-  const feeFunder = await createFeeFunder(o.provider, 20000n);
-  const tx = await new TransactionBuilder({ provider: o.provider })
-    .addInput(utxo, o.contract.unlock.readBack(number, timestamp))
-    .addInput(feeFunder.utxo, feeFunder.unlocker)
-    .addOutput({ to: o.contract.address, amount: 110000n })
-    .send();
+  const { categoryId } = await setupStatefulUtxos(o.provider, o.contract, o.contract.artifact.stateLayout!, {});
+  const reader = StatefulContract.withCategory(o.contract, categoryId);
+  const tx = await (reader as any).readBack(number, timestamp).send();
   return tx.txid;
 }
 

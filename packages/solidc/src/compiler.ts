@@ -3572,7 +3572,8 @@ function detachedVerifierLockKey(source: string, options: CompilerOptions, lifec
   return optionsKey === undefined ? undefined : `${lifecycle ? 'L' : '-'}\u0000${optionsKey}\u0000${source}`;
 }
 
-function extractMessageBusVerifierProgram(
+/** @internal Exported for tests. */
+export function extractMessageBusVerifierProgram(
   ast: Ast,
   traversal: GenerateTargetTraversal,
   script: ReturnType<typeof bytecodeToScript>,

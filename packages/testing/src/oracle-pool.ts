@@ -100,6 +100,9 @@ export interface DevnetOraclePool {
   close(): void;
 }
 
+/** Ring slots one baton mint creates; its walk costs about 9,000 operations per new slot. */
+const SLOTS_PER_GROWTH = 16;
+
 export function createDevnetOraclePool(network: 'mocknet' | 'regtest'): DevnetOraclePool {
   let category: string | undefined;
   let unsubscribe: (() => void) | undefined;
@@ -116,7 +119,10 @@ export function createDevnetOraclePool(network: 'mocknet' | 'regtest'): DevnetOr
       const blocks = ringBlocks(node, tip.height);
       const held = new Set((await keeper.slots()).map(({ fields }) => fields.n % RING));
       const missing = blocks.filter(({ n }) => !held.has(n % RING));
-      if (missing.length > 0) await keeper.growSlots(missing);
+      // The baton's mint walks every output under its one input's operation budget, so new slots go in parts.
+      for (let at = 0; at < missing.length; at += SLOTS_PER_GROWTH) {
+        await keeper.growSlots(missing.slice(at, at + SLOTS_PER_GROWTH));
+      }
       await keeper.writeSlots(blocks);
     } catch (error) {
       warn('refresh', error);

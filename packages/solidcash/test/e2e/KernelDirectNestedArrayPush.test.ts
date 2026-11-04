@@ -1,14 +1,16 @@
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
 import { Signer } from '../../src/index.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';
 import { bytesToSlotValue, keyToSlot } from '../../src/stateful/SortedList.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { isPoolInfoOutput } from '../../src/oracle/pool/index.js';
 import { deriveLogicalCreateAddress, getContractFactory } from '../../src/stateful/index.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
+import { mintTestOraclePool } from '../test-util.js';
 
 const OPTIONS = {
   forceStateful: true, evmCompat: true, messageBus: true, messageBusKernel: true,
@@ -59,9 +61,15 @@ describe('ordinary direct nested authenticated array pushes', () => {
         txid: (0xb00 + lane * 100 + index).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
       });
     }
+    // A pool of its own holds the clock the publisher stamps; the provider's pool would publish the chain's.
+    const timestamp = 1_800_000_000n;
+    const pool = await mintTestOraclePool(provider, {
+      number: 100n, timestamp, difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array(),
+    });
     const predictedRoot = deriveLogicalCreateAddress(rootSigner.getAddress(), await rootSigner.getNonce());
     const probe = await getContractFactory(artifacts.Probe, helperSigner).deploy();
-    const publisher = await getContractFactory(artifacts.Publisher, helperSigner).deploy(predictedRoot);
+    const publisher = await getContractFactory(artifacts.Publisher, helperSigner)
+      .deploy(predictedRoot, { oraclePool: pool });
     const publisherAddress = await publisher.getAddress();
     const publisherIdentityLock = addressToLockScript(publisherAddress);
     const root = await getContractFactory(artifacts.RootLedger, rootSigner).deploy(
@@ -75,9 +83,6 @@ describe('ordinary direct nested authenticated array pushes', () => {
     const insertSlot = keyToSlot(encodeFunctionArgument(27n, 'uint256') as Uint8Array);
     expect(bytesToSlotValue(insertSlot)).toBeGreaterThan(bytesToSlotValue(firstSlot));
     for (const [ordinal, [key, length]] of [[7n, 121], [7n, 181], [27n, 121]].entries()) {
-      const timestamp = 1_800_000_000n + BigInt(ordinal);
-      provider.setBlockOracleFields({ number: 100n + BigInt(ordinal), timestamp,
-        difficulty: 0n, size: 1n, totalFees: 0n, coinbase: new Uint8Array() });
       const next = new Uint8Array(Number(length)).fill(0x41 + ordinal);
       const builder = await root.call.settle(key, next).build();
       expect(messageBusVmAccepts(builder)).toBe(true);
@@ -101,13 +106,13 @@ describe('ordinary direct nested authenticated array pushes', () => {
       expect(transaction.outputs[publisherIdentityIndex].value).toBe(publisherIdentity.value);
       const publisherIndex = builder.inputs.findIndex((input) => input.token?.category === publisher.categoryId
         && input.token.nft?.capability === 'minting');
-      const oracleIndex = sourceOutputs.findIndex((output) => binToHex(output.lockingBytecode)
-        === binToHex(provider.blockOracleLock));
+      const oracleIndex = sourceOutputs.findIndex((output) => isPoolInfoOutput(output, pool));
       expect(publisherIndex).toBeGreaterThanOrEqual(0);
       expect(oracleIndex).toBeGreaterThanOrEqual(0);
       const vm = createVirtualMachineBch2026ForProvider(provider);
+      // A read checks no lock, so the forged coin is one of another category.
       const foreignOracle = sourceOutputs.map((output, index) => index === oracleIndex
-        ? { ...output, lockingBytecode: Uint8Array.of(0x51) } : output);
+        ? { ...output, token: { ...output.token!, category: hexToBin('77'.repeat(32)) } } : output);
       expect(vm.stateSuccess(vm.evaluate({ transaction, sourceOutputs: foreignOracle,
         inputIndex: publisherIndex }))).not.toBe(true);
       const entry = transaction.outputs.find((output) => output.token?.nft?.capability === 'mutable'

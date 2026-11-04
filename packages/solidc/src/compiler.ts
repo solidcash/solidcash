@@ -6022,8 +6022,7 @@ function synthesizeMessageBusRoute(
   const masterOnlyLifecycleContract = contract.stateVariables.length === 0
     && contract.collections.length === 0
     && !bearsEvents
-    && !contract.usesBlockhash
-    && !contract.usesBlockOracle;
+    && !contract.usesBlockhash;
   const kernelDeploymentSiteCounts = new Map<FunctionDefinitionNode, number>();
   const kernelDeploymentSiteWidths = new Map<FunctionDefinitionNode, number[]>();
   const kernelDeploymentSiteDescriptorDigests = new Map<FunctionDefinitionNode, string[]>();
@@ -7753,8 +7752,7 @@ function synthesizeMessageBusRoute(
       || footprint.reads.some((resource) => !isFixedScalarStateRead(resource));
     const fixedStateOnlyContract = contract.collections.length === 0
       && !bearsEvents
-      && !contract.usesBlockhash
-      && !contract.usesBlockOracle;
+      && !contract.usesBlockhash;
     const hasSelfdestructStatement = fn.impliedSelfdestruct === true || (() => {
       if (kernelLifecycleKind !== 'selfdestruct') return false;
       let found = false;
@@ -12279,11 +12277,6 @@ function synthesizeMessageBusRoute(
         // A block.* reader co-spends the oracle in its slot, and only a sidecar row exempts that foreign NFT.
         return found || readsBlockOracle(candidate);
       })));
-  // A block.* reader's oracle and a blockhash reader's slots are mutable NFTs of its own category, so their sidecar
-  // rows also exempt them from the resource cardinality while they are recreated unchanged.
-  const ownOracleSidecarMode = sidecarVerificationMode && (graphBlockhashReads.size > 0 || eligible.some((fn) =>
-    [...collectNamedFunctionClosure(fn, signatureClosureByName)].some((name) =>
-      (signatureClosureByName.get(name) ?? []).some(readsBlockOracle))));
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',
@@ -12895,10 +12888,8 @@ function synthesizeMessageBusRoute(
               }
               // The return coordinate publishes a mutable participant NFT, but it is authenticated separately by
               // the result-vector commitment below. It is not a state-resource endpoint and must not inflate the
-              // resource cardinality merely because the route returns a value. Nor is an unchanged own oracle.
-              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput${ownOracleSidecarMode
-    ? ` && (isSidecarSlot == 0
-                || tx.inputs[slot].nftCommitment != tx.outputs[outputSlot].nftCommitment)` : ''}) {
+              // resource cardinality merely because the route returns a value.
+              if (inCategory.length + outCategory.length > 0 && outputSlot != activeReturnOutput) {
                 if (inCategory == activeMutableCategory) {
                   physicalResourceEndpoints = physicalResourceEndpoints + 1;
                 }

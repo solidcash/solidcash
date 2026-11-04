@@ -7,9 +7,9 @@
  * produces: the child's constructor (state-variable initializers included), with the creator's own address as its
  * `msg.sender`, then the initializer the creator calls on it, with the creator's arguments. This module folds that
  * construction, with the compiler's own deploy folder, into what the creating body emits: each data record's
- * commitment as bytes the compile fixes and values the body computes, how many sorted collections get an empty head,
- * and whether the child owns a block oracle. A construction the folder cannot reduce to that, or a child state it
- * cannot encode, is refused by name rather than replayed approximately.
+ * commitment as bytes the compile fixes and values the body computes, and how many sorted collections get an empty
+ * head. A construction the folder cannot reduce to that, or a child state it cannot encode, is refused by name rather
+ * than replayed approximately.
  */
 
 import {
@@ -19,7 +19,7 @@ import {
 } from '@solidcash/utils';
 import {
   BoolLiteralNode, ContractNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
-  InstantiationNode, IntLiteralNode, Node, NullaryOpNode, UnaryOpNode,
+  InstantiationNode, IntLiteralNode, NullaryOpNode, UnaryOpNode,
 } from '../ast/AST.js';
 import { NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { cloneNode } from '../ast/clone.js';
@@ -39,8 +39,6 @@ export interface FramedChildGenesisReplay {
   readonly records: readonly (readonly FramedGenesisRecordPart[])[];
   /** How many sorted collections of the child its genesis mints an empty head for. */
   readonly collections: number;
-  /** Whether the child reads block.*, so its genesis mints its own block oracle. */
-  readonly blockOracle: boolean;
 }
 
 /** The initializer the creating body calls on the child, with the creator's argument expressions. */
@@ -51,12 +49,6 @@ export interface FramedGenesisInitializer {
 
 /** The names the folder sees for the initializer's arguments, so a folded field names the argument it takes. */
 const ARGUMENT_STAND_IN = '__framedGenesisArgument';
-
-/** The block.* reads a child serves from its own block-info oracle. */
-const ORACLE_READS = new Set<NullaryOperator>([
-  NullaryOperator.BLOCK_NUMBER, NullaryOperator.BLOCK_TIMESTAMP, NullaryOperator.BLOCK_DIFFICULTY,
-  NullaryOperator.BLOCK_SIZE, NullaryOperator.BLOCK_TOTAL_FEES, NullaryOperator.BLOCK_COINBASE,
-]);
 
 function refuse(child: ContractNode, detail: string): never {
   throw new SolidcDiagnosticError(
@@ -93,30 +85,6 @@ function sameEncoding(field: Type, value: Type | undefined): boolean {
 function isCreatorAddress(expression: ExpressionNode): boolean {
   return expression instanceof UnaryOpNode && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
     && expression.expression instanceof NullaryOpNode && expression.expression.operator === NullaryOperator.INPUT_INDEX;
-}
-
-/** Whether the child reads block.* anywhere in its declaration. */
-function readsBlockOracle(child: ContractNode): boolean {
-  let found = false;
-  const seen = new WeakSet<object>();
-  const skip = new Set(['definition', 'referencedContract', 'resolvedFunction', 'functionReference', 'symbolTable',
-    'type', 'location', 'stateVariable', 'collection']);
-  const walk = (value: unknown): void => {
-    if (found || value === null || typeof value !== 'object' || seen.has(value as object)) return;
-    seen.add(value as object);
-    if (value instanceof NullaryOpNode && ORACLE_READS.has(value.operator)) {
-      found = true;
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) walk(item);
-      return;
-    }
-    if (!(value instanceof Node)) return;
-    for (const [key, member] of Object.entries(value)) if (!skip.has(key)) walk(member);
-  };
-  walk(child);
-  return found;
 }
 
 /**
@@ -224,6 +192,5 @@ export function framedChildGenesisReplay(options: {
     contractName: child.name,
     records,
     collections: child.collections.length,
-    blockOracle: readsBlockOracle(child),
   };
 }

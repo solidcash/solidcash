@@ -352,8 +352,7 @@ import { childAddressFromProgramScript, validatorProgramScript } from '../framed
 import { childGenesisChainsScript } from '../framed/master/child-category-check.js';
 import type { FramedChildGenesisReplay, FramedGenesisRecordPart } from '../framed/child-genesis-replay.js';
 import {
-  AUTHHEAD_BODY, childCollectionSentinel, childMastersDigestSentinel, childOracleOwnerSentinel,
-  childValidatorCountSentinel, encodeBlockOracleCommitment, UNSET_BLOCK_ORACLE_FIELDS,
+  AUTHHEAD_BODY, childCollectionSentinel, childMastersDigestSentinel, childValidatorCountSentinel,
 } from '@solidcash/utils';
 import {
   declaredRecordFirstViewByNameScript, declaredRecordOrdinalFieldsScript,
@@ -747,25 +746,6 @@ function slotScanResidue(sat: boolean, foreign: boolean, mint: boolean): string[
   return [
     ...(mint ? [SCAN_MINT_CATEGORY] : []), SCAN_CATEGORY, ...(sat ? [SCAN_SATOSHI_LOCK] : []),
     ...(foreign ? [SCAN_OWN_MUTABLE] : []), ...(sat ? [SCAN_IN_SUM] : []), ...(mint ? [SCAN_IN_MINTS] : []),
-  ];
-}
-
-/** `[j]` -> `[j]`, failing unless output j recreates input j unchanged: lock, token category, commitment, amount. */
-function oracleRecreation(): Op[] {
-  return [
-    Op.OP_DUP, Op.OP_UTXOBYTECODE, Op.OP_OVER, Op.OP_OUTPUTBYTECODE, Op.OP_EQUALVERIFY,
-    Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, Op.OP_OVER, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
-    Op.OP_DUP, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OVER, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
-    Op.OP_DUP, Op.OP_UTXOTOKENAMOUNT, Op.OP_OVER, Op.OP_OUTPUTTOKENAMOUNT, Op.OP_NUMEQUALVERIFY,
-  ];
-}
-
-/** `[k, n, j]` -> `[k, n, j]`, failing unless output j copies input k: category and capability, commitment, amount. */
-function oracleCopy(): Script {
-  return [
-    Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, encodeInt(3n), Op.OP_PICK, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
-    Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, encodeInt(3n), Op.OP_PICK, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
-    Op.OP_DUP, Op.OP_OUTPUTTOKENAMOUNT, encodeInt(3n), Op.OP_PICK, Op.OP_UTXOTOKENAMOUNT, Op.OP_NUMEQUALVERIFY,
   ];
 }
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
@@ -4421,7 +4401,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(framedConstantLockMaster(this.compilerOptions as Parameters<typeof framedConstantLockMaster>[0])
         ? { constantLock: { validatorTemplateHash: constantLockValidatorTemplateHash() } }
         : {}),
-      ...(node.usesBlockOracle ? { admitsBlockOracle: true } : {}),
       callCount,
       ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
       ...(returnsValue ? { returnsValue: true } : {}),
@@ -10849,8 +10828,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // logs at any other index. Scoped to contracts that declare an event or emit one declared in any scope (file
       // level, library, interface): the forged output is only readable as a log at getEventNftAddress(contract,
       // category, signature), which needs such a signature, and a hand-written covenant with no events may
-      // legitimately place own-category immutable NFTs of its own. A blockhash reader pins its slot lock, and a
-      // block.* reader its block-info oracle lock (emitOracleOutputPin), with or without events.
+      // legitimately place own-category immutable NFTs of its own.
       // SEC-13: `selfdestruct` and `delegate` were excluded and admitted the SAME forgery. A selfdestruct spends
       // the master minting NFT, so it can mint own-category immutable NFTs at will and no later honest emit can
       // ever contradict them; a delegate function's own event NFT carries the PROXY's category, so an appended
@@ -10882,12 +10860,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
-        if (this.currentContractUsesBlockhash || this.currentContractUsesBlockOracle) {
-          this.emitOracleOutputPin(node, this.currentContractUsesBlockhash, this.currentContractUsesBlockOracle);
-        }
-      } else if (node.name !== '__construct' && isStatefulContract
-        && (this.currentContractUsesBlockhash || this.currentContractUsesBlockOracle)) {
-        this.emitOracleOutputPin(node, this.currentContractUsesBlockhash, this.currentContractUsesBlockOracle);
       }
       // Value preservation: satoshi and fungible token amounts
       // Selfdestruct functions skip - all NFTs and containers are being destroyed
@@ -10914,18 +10886,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Lifecycle topology and tiered unsafe state policies still protect this category's addressable event logs.
     // They do not authorize a source emit here, so an unrelated immutable event output must be refused just as
     // on an ordinary spend. unsafe(0) deliberately has no covenant policy and remains the explicit escape hatch.
-    if (isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) {
-      const pairs = this.currentContractUsesBlockhash;
-      if (this.currentContractHasEvents) this.emitOwnCategoryImmutableNftOutputPin(node);
-      // A direct genesis mints one block-info oracle coin per master, so a direct split mints one per new master.
-      // Framed and message-bus builds keep one coin.
-      if (isSplit && this.currentContractUsesBlockOracle && this.directConvention
-        && this.compilerOptions.messageBus !== true) {
-        if (pairs) this.emitOracleOutputPin(node, true, false);
-        this.emitSplitOracleCopyPin(node);
-      } else if (pairs || this.currentContractUsesBlockOracle) {
-        this.emitOracleOutputPin(node, pairs, this.currentContractUsesBlockOracle);
-      }
+    if ((isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)) && this.currentContractHasEvents) {
+      this.emitOwnCategoryImmutableNftOutputPin(node);
     }
 
     // Function ending
@@ -18961,8 +18923,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * child's masters as the deployment filled them in, and the rest must chain to the genesis this body computes, in
    * the order a creation lays them down, last output first:
    *
-   * - the child's block-info oracle when it reads block.*, at the lock the oracle covenant gives `K`, naming the owner
-   *   the deployment filled in, its fields unset;
    * - one empty head per sorted collection, at the entry covenant of `K` and the collection's deployment-filled hash;
    * - each data record at `K`'s record covenant, its commitment the folded state: bytes the compile fixed and the
    *   values this body computes (its own address as the constructor's `msg.sender`, the initializer's arguments);
@@ -19057,22 +19017,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       lockOfCategory();
       this.emitCatTracked(locationData);
     };
-    if (genesis.blockOracle) {
-      mutableAt(() => this.emit(blockOracleLockDerivationScript(), locationData));
-      this.emit(childOracleOwnerSentinel(), locationData);
-      this.pushToStack('(value)');
-      this.emitCatTracked(locationData);
-      // The fields a creation leaves unset, which the oracle's keeper fills.
-      const unset = encodeBlockOracleCommitment(new Uint8Array(20), UNSET_BLOCK_ORACLE_FIELDS).slice(20);
-      if (unset.every((byte) => byte === 0)) {
-        this.emit([Op.OP_0, encodeInt(BigInt(unset.length)), Op.OP_NUM2BIN], locationData);
-      } else {
-        this.emit(unset, locationData);
-      }
-      this.pushToStack('(value)');
-      this.emitCatTracked(locationData);
-      link();
-    }
     for (let slot = genesis.collections - 1; slot >= 0; slot -= 1) {
       mutableAt(() => this.emitEntryP2sh32(childCollectionSentinel(slot), locationData));
       // An empty head: slot 0, next 0 and the empty value's pad, 128 zero bytes.
@@ -52767,100 +52711,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);
       this.popFromStack(); // (imm_not_alone)
     }
-  }
-
-  /**
-   * Every block oracle a contract reads is of its own category, and every master spend holds the minting NFT that
-   * could mint a look-alike: a blockhash slot with a forged hash or a second slot of an n, or a block-info oracle
-   * with forged fields. So an output at the category's slot lock (`pairs`) or at its block-info oracle lock (`info`,
-   * the sentinel deployment fills) is admitted only as an unchanged recreation of the input at its index: same lock,
-   * token category, commitment and fungible amount. The owner's oracle updates run in transactions of their own.
-   */
-  private emitOracleOutputPin(node: FunctionDefinitionNode, pairs: boolean, info: boolean): void {
-    const loc = { location: node.body.location, positionHint: PositionHint.END };
-    // It reads only the transaction and the master's category, so a contract's entries share one helper.
-    const key = `oracleOutputPin:${pairs ? 'pairs' : ''}:${info ? 'info' : ''}`;
-    if (this.invokeSharedEntryCheck(key, (t, l) => t.emitOracleOutputPinBody(pairs, info, l), loc)) return;
-    this.emitOracleOutputPinBody(pairs, info, loc);
-  }
-
-  /** The body of `emitOracleOutputPin`: stack-neutral, leaving nothing it pushed. */
-  private emitOracleOutputPinBody(pairs: boolean, info: boolean, loc: SingleLocationData): void {
-    if (pairs) {
-      this.emitMasterInputIndex(loc);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emitTakeFirst32(loc);
-      this.emitBlockhashOracleLockOf(loc);
-      this.pushToStack('(pair_lock)');
-    }
-    // A constant-lock master derives its block-info oracle's lock once, beneath the walk, rather than in each turn.
-    const derivedInfo = info && this.derivesOwnBlockOracleLock();
-    if (derivedInfo) {
-      this.emitOwnBlockOracleLock(loc);
-      this.pushToStack('(info_lock)');
-    }
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.pushToStack('(oracle_j)');
-    // [pairLock?, infoLock?, n] -> [pairLock?, infoLock?, 0], visiting every j below n from the top.
-    this.emit([Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE], loc);
-    if (pairs && derivedInfo) {
-      // [pairLock, infoLock, j, lock]
-      this.emit([Op.OP_DUP, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
-        Op.OP_SWAP, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL, Op.OP_BOOLOR], loc);
-    } else if (pairs && info) {
-      this.emit([Op.OP_DUP, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL,
-        Op.OP_SWAP, BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL, Op.OP_BOOLOR], loc);
-    } else if (pairs || derivedInfo) {
-      this.emit([encodeInt(2n), Op.OP_PICK, Op.OP_EQUAL], loc);
-    } else {
-      this.emit([BLOCK_ORACLE_LOCK_SENTINEL, Op.OP_EQUAL], loc);
-    }
-    this.emit([
-      Op.OP_IF, ...oracleRecreation(), Op.OP_ENDIF,
-      Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
-    ], loc);
-    this.popFromStack();
-    if (derivedInfo) {
-      this.emit(Op.OP_DROP, loc);
-      this.popFromStack();
-    }
-    if (pairs) {
-      this.emit(Op.OP_DROP, loc);
-      this.popFromStack();
-    }
-  }
-
-  /**
-   * A direct split's block-info oracle pin, in place of `emitOracleOutputPin`. The split co-spends one coin of its
-   * oracle and copies it once per new master: the output at the coin's index recreates it unchanged, and exactly n
-   * other outputs sit at the lock, each copying the spent coin (category and capability, commitment, amount). A
-   * split that spends no coin of the lock fails at the search, past the last input.
-   */
-  private emitSplitOracleCopyPin(node: FunctionDefinitionNode): void {
-    const loc = { location: node.body.location, positionHint: PositionHint.END };
-    this.emit(BLOCK_ORACLE_LOCK_SENTINEL, loc);
-    this.pushToStack('(info_lock)');
-    // [lock] -> [lock, k]. The covenant refuses a second input at its lock, so the first is the one.
-    this.emit([Op.OP_1NEGATE, Op.OP_BEGIN, Op.OP_1ADD, Op.OP_DUP, Op.OP_UTXOBYTECODE, encodeInt(2n), Op.OP_PICK,
-      Op.OP_EQUAL, Op.OP_UNTIL], loc);
-    this.pushToStack('(oracle_k)');
-    this.emit(encodeInt(BigInt(this.getStackIndex(node.splitCountParam!))), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.pushToStack('(oracle_copies)');
-    this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.pushToStack('(oracle_j)');
-    // [lock, k, n, j] -> [lock, k, n - copies, 0], visiting every j below the output count from the top.
-    this.emit([
-      Op.OP_BEGIN, Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(4n), Op.OP_PICK, Op.OP_EQUAL,
-      Op.OP_IF,
-      Op.OP_DUP, encodeInt(3n), Op.OP_PICK, Op.OP_NUMEQUAL,
-      Op.OP_IF, ...oracleRecreation(), Op.OP_ELSE, ...oracleCopy(), Op.OP_SWAP, Op.OP_1SUB, Op.OP_SWAP, Op.OP_ENDIF,
-      Op.OP_ENDIF,
-      Op.OP_DUP, Op.OP_NOT, Op.OP_UNTIL, Op.OP_DROP,
-    ], loc);
-    this.popFromStack();
-    this.emit([Op.OP_NOT, Op.OP_VERIFY, Op.OP_2DROP], loc);
-    this.popFromStack(3);
   }
 
   /**

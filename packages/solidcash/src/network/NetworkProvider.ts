@@ -61,6 +61,21 @@ export default interface NetworkProvider {
    */
   network: Network;
 
+  /** Category of the provider's default oracle pool, hex in display byte order. */
+  readonly oraclePoolCategory?: string;
+
+  /**
+   * Simulators and devnets: the key their own oracle pools name, its P2PKH funded. A pool a deployment creates
+   * names it and is paid by it unless the deployment passes `ownerKey`.
+   */
+  readonly oraclePoolOwnerKey?: Uint8Array;
+
+  /**
+   * Simulators: keeps pool `category`, owned by `oraclePoolOwnerKey`, current after each block, as the provider keeps
+   * its own. `createOraclePool` calls it for every pool that key owns.
+   */
+  keepOraclePool?(category: string): void;
+
   /**
    * The key a simulator or devnet owns the block oracles it keeps current with. A block.* reader's deployment names
    * it as its oracle's owner unless the deployer names one.

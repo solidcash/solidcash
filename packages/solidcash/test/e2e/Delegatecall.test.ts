@@ -397,7 +397,7 @@ describe('Delegatecall', () => {
           masterUtxo: {
             ...proxy.utxos.master,
             unlocker: (proxy.contract.unlock as any).up(
-              input, targetLbc, alicePub, new SignatureTemplate(alicePriv), delegateIdx,
+              input, targetLbc, alicePub, new SignatureTemplate(alicePriv), -1n, delegateIdx,
             ),
           },
           dataNftUtxos: proxy.utxos.dataNfts.map((nft) => ({

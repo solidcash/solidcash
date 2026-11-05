@@ -241,6 +241,7 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
             addressToLockScript(implementation.contract.address),
             stranger ? bobPub : alicePub,
             new SignatureTemplate(stranger ? bobPriv : alicePriv),
+            -1n,
             2n,
           ),
         },

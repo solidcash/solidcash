@@ -66,8 +66,9 @@ describe('a loop over targets followed by a pointer call', () => {
 
 // A loop over targets, then a fixed call on a constructor address, then a single pointer call: the pointer's witness
 // must also differ from the fixed call's fixed-offset input (the fixed call keeps no witness in a loop function).
+// Two methods: a one-method interface would read a void record, which a stand-in callee cannot settle.
 const LOOP_FIXED_PTR = `pragma solidcash >=0.8.0;
-interface IFoo { function m(int x) external; }
+interface IFoo { function m(int x) external; function n() external; }
 contract C(address a) {
   function run(address[] ts, function(int) external p, int x) {
     for (uint i = 0; i < ts.length; i++) { IFoo(ts[i]).m(x); }
@@ -77,11 +78,13 @@ contract C(address a) {
 }`;
 
 describe('a loop, a fixed call, then a pointer call', () => {
-  const callee = trivialCallee([7n]);
+  const M = hexToBin(compileString(`pragma solidcash >=0.8.0;
+    contract D() { bigint c; function m(int x) { this.c = this.c + x; } function n() { this.c = this.c + 1; } }`)
+    .abi.find((entry) => entry.name === 'm')!.selector!);
+  const callee = trivialCallee([7n], M);
   const A = callee.lock;                                  // the fixed call's target (constructor arg a)
   const X = Uint8Array.of(...callee.lock, 0x61);          // a distinct loop target
   const P = Uint8Array.of(...callee.lock, 0x61, 0x61);    // a distinct honest pointer target
-  const SEL = hexToBin('00000000');
   const OP_TRUE = hexToBin('51');
 
   /** `C(A).run([X], p, 7)`: loop callee at base, fixed call at base+1, pointer resolved to `pTarget` at `ptrIdx`. */
@@ -91,7 +94,7 @@ describe('a loop, a fixed call, then a pointer call', () => {
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n }, contract.unlock.run(
-      encodePushdataValue([X], 'address[]'), pTarget, SEL, 7n, 1n, SEL, ptrIdx, -1n, -1n,
+      encodePushdataValue([X], 'address[]'), pTarget, M, 7n, 1n, M, M, M, ptrIdx, -1n, -1n,
     ) as never);
     callees.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n }, {
       generateLockingBytecode: (): Uint8Array => lock,

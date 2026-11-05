@@ -82,9 +82,10 @@ describe('calls on different targets', () => {
   }, 300_000);
 });
 
-// The loop's callee for iteration i sits at base + i, the call after it at base + 1.
+// The loop's callee for iteration i sits at base + i, the call after it at base + 1. A one-method interface would read
+// a void record, which a stand-in callee cannot settle, so this one has two and its calls check their selector.
 const LOOP_THEN_CALL = `pragma solidcash >=0.8.0;
-interface IFoo { function m(int x) external; }
+interface IFoo { function m(int x) external; function n() external; }
 contract C(address a) {
   function run(address[] ts, int x) {
     for (uint i = 0; i < ts.length; i++) { IFoo(ts[i]).m(x); }
@@ -94,7 +95,10 @@ contract C(address a) {
 
 describe('a loop over targets followed by a call', () => {
   // Two stand-in callees running m(7): the call's own (A) and one more the loop may name (X).
-  const callee = trivialCallee([7n]);
+  const M = hexToBin(compileString(`pragma solidcash >=0.8.0;
+    contract D() { bigint c; function m(int x) { this.c = this.c + x; } function n() { this.c = this.c + 1; } }`)
+    .abi.find((entry) => entry.name === 'm')!.selector!);
+  const callee = trivialCallee([7n], M);
   const A = callee.lock;
   const X = Uint8Array.of(...callee.lock, 0x61);
   const OP_TRUE = hexToBin('51');
@@ -106,7 +110,7 @@ describe('a loop over targets followed by a call', () => {
     const funder = await createFeeFunder(provider, 10000n);
     const builder = new TransactionBuilder({ provider });
     builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
-      contract.unlock.run(encodePushdataValue(loop, 'address[]'), 7n, 1n, -1n) as never);
+      contract.unlock.run(encodePushdataValue(loop, 'address[]'), 7n, 1n, M, M, -1n) as never);
     callees.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n }, {
       generateLockingBytecode: (): Uint8Array => lock,
       generateUnlockingBytecode: (): Uint8Array => callee.unlocking,

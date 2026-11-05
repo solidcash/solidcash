@@ -3307,3 +3307,26 @@ shape and run its test once.
 
 **Revisit if:** a message-bus port calls internal functions that read immutables or constructor arguments.
 
+## A child genesis a direct creator cannot fold (2026-11-05)
+
+**What:** a direct creator folds its child's constructor into its own check rather than running it. A statement the
+fold could not express used to vanish: `genesisState` came out null and the covenant pinned type defaults, so a child
+whose constructor says `require(tx.locktime > 4000000000)` deployed, and a write the fold could not express stayed 0.
+Each such statement is now refused by name (`ChildGenesisFoldError`, `ChildGenesisReadRefusals.test.ts`). Framed keeps
+its own replay refusals. The user's rule of 2026-11-04: a silently miscompiled shape gets a named refusal now, then a
+follow-up stream builds each shape and lifts its refusal.
+
+**Why deferred:** each shape below is a build of its own. They were silently wrong before the refusal, so nothing that
+worked stopped working; contracts that compiled by accident now say why they do not.
+
+**What it'd take, in order:**
+- nested `new` in a folded constructor (a three-contract chain left `B.a` at 0);
+- the requires and writes the fold misses: state, `msg.value`, `tx.*`, `checkSig`, branches the state join cannot
+  express, `emit`, transfers, and mapping writes whose keys may be one key;
+- the `DOMAIN_SEPARATOR` hash: `keccak256`, `abi.encode`, `block.chainid` and `address(this)`;
+- a chain read in a child's genesis, which `fix/child-chainread` folds to the creator's own read on per-contract
+  oracles and which now reads the creator's pool.
+
+**Revisit if:** a port needs a direct creator for a child with such a constructor; the framed convention creates it
+today.
+

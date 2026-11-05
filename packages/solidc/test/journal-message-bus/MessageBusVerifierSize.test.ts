@@ -37,8 +37,10 @@ describe('atomic verifier bytecode specialization', () => {
     // index, and the route pins its records past the block, skipping its verifier by the bound index.
     // +8 B composed once the route binds its participant's physical size and claims only that block.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 767, // B+F1 void-record/edge overhead on the direct verifier
-      composed: 1805,
+      // B+F1 void-record/edge overhead on the direct verifier, then 70 B on both for the record lock a master rebuilds,
+      // which carries the data-record covenant's authority bind and category, each now defined once (590aca164).
+      direct: 837,
+      composed: 1875,
       frameworkTax: 1038,
     });
     expect(composed).toBeLessThanOrEqual(1900);

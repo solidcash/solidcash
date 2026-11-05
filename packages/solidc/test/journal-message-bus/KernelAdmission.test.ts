@@ -5,6 +5,8 @@ import { FunctionCallNode, IdentifierNode } from '../../src/ast/AST.js';
 import { childDeploymentValueRecipe } from '../../src/deploymentRecipes.js';
 
 const KERNEL = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
+/** A child genesis the direct creator cannot fold, which used to deploy with its statements dropped. */
+const REFUSED_GENESIS = /A direct creator folds the genesis of the "\w+" it creates/;
 
 const denied = (source: string, name: string): NonNullable<
 ReturnType<typeof compileString>['messageBus']
@@ -3902,17 +3904,15 @@ describe('required kernel admission', () => {
     'constructor(int seed) { require(helper(seed) > 0); this.marker = seed; } '
       + 'function helper(int x) internal returns (int) { this.marker = x; return x; }',
     'constructor(int seed) { if (seed > 0) { require(seed < 65); } this.marker = seed; }',
-  ])('keeps resource-dependent or non-straight-line constructor logic fenced: %s', (constructor) => {
-    const artifact = compileString(`contract Unit() { int marker; ${constructor} }
+  ])('refuses resource-dependent or non-straight-line constructor logic: %s', (constructor) => {
+    expect(() => compileString(`contract Unit() { int marker; ${constructor} }
       contract Coordinator() {
         function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
-      }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, KERNEL)).toThrow(REFUSED_GENESIS);
   });
 
-  it('keeps signature-dependent constructor predicates fenced', () => {
-    const artifact = compileString(`contract Unit() {
+  it('refuses signature-dependent constructor predicates', () => {
+    expect(() => compileString(`contract Unit() {
         int marker;
         constructor(sig proof, pubkey key) { require(checkSig(proof, key)); this.marker = 1; }
       }
@@ -3921,9 +3921,7 @@ describe('required kernel admission', () => {
           Unit child = new Unit(proof, key);
           require(true);
         }
-      }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')?.eligible)
-      .toBe(false);
+      }`, KERNEL)).toThrow(REFUSED_GENESIS);
   });
 
   it('authenticates a replayable helper-produced constructor predicate', () => {
@@ -4201,17 +4199,15 @@ describe('required kernel admission', () => {
       + 'function other(int x) internal pure returns (int) { return helper(x); }'],
     ['same-arity overloaded', 'function helper(int x) internal pure returns (int) { return x; } '
       + 'function helper(bool x) internal pure returns (int) { return x ? 1 : 0; }'],
-  ])('keeps %s constructor helpers outside genesis replay', (_label, helper) => {
-    const artifact = compileString(`contract Unit() {
+  ])('refuses %s constructor helpers', (_label, helper) => {
+    expect(() => compileString(`contract Unit() {
         int marker;
         constructor(int seed) { this.marker = helper(seed); }
         ${helper}
       }
       contract Coordinator() {
         function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
-      }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, KERNEL)).toThrow(REFUSED_GENESIS);
   });
 
   it.each([
@@ -4657,48 +4653,44 @@ describe('required kernel admission', () => {
     });
     expect(asmToBytecode(supported.bytecode).length).toBeLessThanOrEqual(10_000);
 
-    const refused = compileString(`contract Ambiguous(int first, int second, int value) {
-        mapping(int => int) values;
-        constructor() { this.values[first] = value; this.values[second] = value + 1; }
-      }
-      contract Dynamic(bytes key, int value) {
+    // A dynamic key folds for the direct path and stays off the route.
+    const dynamic = compileString(`contract Dynamic(bytes key, int value) {
         mapping(bytes => int) values;
         constructor() { this.values[key] = value; }
       }
-      contract CrossLiteral(int value) {
+      contract Coordinator() {
+        function dynamic(bytes key, int value) public { Dynamic child = new Dynamic(key, value); require(true); }
+      }`, KERNEL);
+    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'dynamic'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+
+    // Two keys that may be one key do not fold, so the direct creator refuses them.
+    for (const [child, parameters, args] of [
+      [`contract Child(int first, int second, int value) {
+        mapping(int => int) values;
+        constructor() { this.values[first] = value; this.values[second] = value + 1; }
+      }`, 'int first, int second, int value', 'first, second, value'],
+      [`contract Child(int value) {
         mapping(int => int) values;
         constructor() { this.values[1] = value; this.values[hex"01"] = value + 1; }
-      }
-      contract RuntimeThenLiteral(int key, int value) {
+      }`, 'int value', 'value'],
+      [`contract Child(int key, int value) {
         mapping(int => int) values;
         constructor() { this.values[key] = value; this.values[7] = value + 1; }
-      }
-      contract LiteralThenRuntime(int key, int value) {
+      }`, 'int key, int value', 'key, value'],
+      [`contract Child(int key, int value) {
         mapping(int => int) values;
         constructor() { this.values[7] = value; this.values[key] = value + 1; }
-      }
-      contract Coordinator() {
-        function ambiguous(int first, int second, int value) public {
-          Ambiguous child = new Ambiguous(first, second, value); require(true);
-        }
-        function dynamic(bytes key, int value) public { Dynamic child = new Dynamic(key, value); require(true); }
-        function crossLiteral(int value) public { CrossLiteral child = new CrossLiteral(value); require(true); }
-        function runtimeThenLiteral(int key, int value) public {
-          RuntimeThenLiteral child = new RuntimeThenLiteral(key, value); require(true);
-        }
-        function literalThenRuntime(int key, int value) public {
-          LiteralThenRuntime child = new LiteralThenRuntime(key, value); require(true);
-        }
-      }`, KERNEL);
-    for (const name of [
-      'ambiguous', 'dynamic', 'crossLiteral', 'runtimeThenLiteral', 'literalThenRuntime',
+      }`, 'int key, int value', 'key, value'],
     ]) {
-      expect(refused.messageBus?.handlers.find((candidate) => candidate.name === name))
-        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      expect(() => compileString(`${child}
+        contract Coordinator() {
+          function make(${parameters}) public { Child child = new Child(${args}); require(true); }
+        }`, KERNEL)).toThrow(REFUSED_GENESIS);
     }
   });
 
-  it('publishes fixed-layout struct entry recipes and fences dynamic aggregate layouts', () => {
+  it('publishes fixed-layout struct entry recipes and refuses dynamic aggregate layouts', () => {
     const artifact = compileString(`struct Cell { int32 amount; bool enabled; }
       contract RecordStore(int32 seed) {
         Cell[2] rows;
@@ -4732,46 +4724,32 @@ describe('required kernel admission', () => {
     });
     expect(asmToBytecode(artifact.bytecode).length).toBeLessThanOrEqual(10_000);
 
-    const dynamic = compileString(`struct DynamicCell { string label; int32 amount; }
-      contract DynamicStore() {
+    for (const source of [
+      `struct DynamicCell { string label; int32 amount; }
+      contract Child() {
         DynamicCell[1] rows;
         constructor() { this.rows[0] = DynamicCell("x", 1); }
-      }
-      contract NestedCollectionStore() {
+      }`,
+      `contract Child() {
         mapping(int => int32[2]) groups;
         constructor() { this.groups[1] = [1, 2]; }
-      }
-      contract DynamicCoordinator() {
-        function dynamic() public { DynamicStore child = new DynamicStore(); require(true); }
-        function nested() public {
-          NestedCollectionStore child = new NestedCollectionStore(); require(true);
-        }
-      }
-      `, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'dynamic')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
-    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'nested')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+      }`,
+    ]) {
+      expect(() => compileString(`${source}
+        contract Coordinator() {
+          function make() public { Child child = new Child(); require(true); }
+        }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(REFUSED_GENESIS);
+    }
   });
 
-  it('does not publish or reserve an entry whose folded value has no materializable recipe', () => {
-    const artifact = compileString(`contract StringEntry() {
+  it('refuses an entry whose folded value has no materializable recipe', () => {
+    expect(() => compileString(`contract StringEntry() {
         string[1] values;
         constructor() { this.values[0] = "seed"; }
       }
       contract Coordinator() {
         function make() public { StringEntry child = new StringEntry(); require(true); }
-      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'make'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    const make = artifact.abi.find((candidate) => candidate.name === 'make')!;
-    expect(make.deployTargets?.[0]).not.toHaveProperty('entryNftCount');
-    expect(make.deployTargets?.[0]).not.toHaveProperty('genesisEntries');
-    expect(make.blockLayout?.slots.filter((slot) => slot.kind === 'deployDataNft')).toHaveLength(0);
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(REFUSED_GENESIS);
   });
 
   it('publishes arithmetic and hash child recipes per resolved overload', () => {

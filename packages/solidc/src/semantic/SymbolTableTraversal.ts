@@ -15909,9 +15909,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Fold the child ctor's writes into the genesis: the deploy covenant otherwise verifies TYPE
       // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later
       // deploy-then-call folds so their `this.field` reads see the true genesis value. A direct creator refuses by
-      // name what the fold cannot express: a chain read or a dropped statement.
-      this.refuseChildConstructorChainRead(contract);
-      this.refuseDroppedChildStatement(contract, this.tryFoldChildConstructor(node));
+      // name what the fold cannot express: a chain read or a dropped statement. A contract creating itself is
+      // refused as circular at codegen.
+      const createsItself = contract.name === this.currentContract?.name;
+      if (!createsItself) this.refuseChildConstructorChainRead(contract);
+      const droppedStatement = this.tryFoldChildConstructor(node);
+      if (!createsItself) this.refuseDroppedChildStatement(contract, droppedStatement);
 
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
       // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,

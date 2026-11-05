@@ -21,8 +21,8 @@ const VAULT_SRC = `contract TimeVault(int unlockTime) {
 }`;
 
 async function deployVaultFixture() {
-  // A block.* reader is stateful; it binds the provider's oracle pool.
-  const artifact = compileString(VAULT_SRC);
+  // A block.* reader keeps no oracle state, so the vault is zero-state; forceStateful deploys it via the factory.
+  const artifact = compileString(VAULT_SRC, { forceStateful: true });
   const [deployer] = await ethers.getSigners();
   const unlockTime = BigInt(await time.latest()) + BigInt(time.duration.days(7));
   const deployed = await getContractFactory(artifact, deployer).deploy(unlockTime);

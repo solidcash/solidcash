@@ -29,9 +29,10 @@ describe('BchNativeMultiplier', () => {
     // BchNative's own bearer category, 8_811 with the bound on what a named minting
     // container mints, security NAMED-MINT-1, 7_568 with always-run sorted writes
     // laid out unconditionally, 7_618 with the containers' destroy arm, 7_514 once
-    // only a master that can retire carries it, and 7_513 with the scale as an
-    // override of BchNative's `_nativeAmount` hook).
-    expect(artifactBytes).toBeLessThan(7_700);
+    // only a master that can retire carries it, 7_513 with the scale as an
+    // override of BchNative's `_nativeAmount` hook, and 7_733 with the void call
+    // record and the filler lock its drains pin).
+    expect(artifactBytes).toBeLessThan(7_800);
     expect(artifact.constructorInputs).toEqual([]);
     // The immutables are written at construction: the scale factor is baked in, and the
     // bearer category is the constructor's one argument.

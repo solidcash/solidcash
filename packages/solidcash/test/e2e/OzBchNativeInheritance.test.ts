@@ -51,8 +51,9 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     // destroy arm added 50 B (9_308), and the forged-log pin, which an event declared in IERC20 now gets as a
     // contract-level one does (SEC-10), 70 B (9_378). Call records (D50) left it at 9_517, over this budget; one
     // helper per collection reading the master's category with its entry address, and shared bounded-bytes
-    // parameter checks, took it to 9_350. This budget guards further growth.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_450);
+    // parameter checks, took it to 9_350. The void call record and the filler lock its drains pin took it to 9_498.
+    // This budget guards further growth.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_550);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [

@@ -30,8 +30,8 @@ describe('mock HRE funding for read-only CREATE look-ahead', () => {
     const [signer] = await hre.ethers.getSigners(1);
     const provider = hre.ethers.provider as MockNetworkProvider;
     const before = await signer.getUtxos();
-    expect(before).toHaveLength(128);
-    expect(before.reduce((sum, coin) => sum + coin.satoshis, 0n)).toBe(128n * 1_234_567n);
+    expect(before).toHaveLength(512);
+    expect(before.reduce((sum, coin) => sum + coin.satoshis, 0n)).toBe(512n * 1_234_567n);
     expect(before.filter((coin) => coin.vout === 0)).toHaveLength(4);
     expect(new Set(before.map((coin) => coin.txid)).size).toBe(4);
     const broadcast = vi.spyOn(provider, 'sendRawTransaction');
@@ -47,7 +47,7 @@ describe('mock HRE funding for read-only CREATE look-ahead', () => {
     expect(reserved.getReservedCount()).toBe(4);
     expect(reserved.getReservedUtxos().every((coin) => coin.vout === 0)).toBe(true);
     expect(before.filter((coin) => !isReservedGenesisOutpoint(genesisOutpointKey(coin.txid, coin.vout))))
-      .toHaveLength(124);
+      .toHaveLength(508);
     expect(await hre.ethers.getSigners(1)).toEqual([signer]);
     expect(await signer.getUtxos()).toEqual(before);
 

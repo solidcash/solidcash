@@ -3330,3 +3330,18 @@ worked stopped working; contracts that compiled by accident now say why they do 
 **Revisit if:** a port needs a direct creator for a child with such a constructor; the framed convention creates it
 today.
 
+
+## A call argument computed from `block.number` (2026-11-05)
+
+**Deferred:** a published call argument that reads `block.*` describes that read as `unsupported`, so the SDK refuses
+the call by name ("expression-based argSources that cannot be auto-resolved") and `withExternalCall()` must state it.
+MasterChef's `updatePool` mints from `block.number`, so a fresh compile of it stops at `deposit`.
+
+**Why now:** oracle pools removed the `__block_number` register the argument used to name. Prebuilt 0.13.1 fixtures hid
+the gap until the landing regenerated them. It fails closed.
+
+**What it'd take:** a `block.*` argument source in the compiler's published expressions, and the SDK evaluator reading
+it from the info coin the transaction co-spends. The evaluator is synchronous and a pool read is not, so the read
+belongs in the caller state snapshot taken before the arguments resolve.
+
+**Revisit if:** a port's call argument reads the chain; `MasterChefDeposit` pins the refusal and flips when this lands.

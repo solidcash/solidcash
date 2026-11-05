@@ -48,7 +48,7 @@ export interface ArtifactSource {
   artifactOrSplit(name: string): Artifact | SplitArtifactBundle;
 }
 
-/** Plain coins each regtest signer holds; mock accounts hold 128. */
+/** Plain coins each regtest signer holds; mock accounts hold 512. */
 export const REGTEST_PLAIN_COINS = 64;
 export const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 // BCH's per-input unlocking bytecode limit, which the relaxed mock defaults lift.
@@ -277,7 +277,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
     // Each `addUtxo` is its own transaction with the requested output at vout 0, which is the geometry
     // CREATE look-ahead reserves. Fund serially because every call spends a shared wallet coin.
     const existing = await provider.getUtxos(signer.getAddress());
-    // Mock accounts come pre-split into 128 coins so compiler-owned funder slots never meet an artificial wallet
+    // Mock accounts come pre-split into 512 coins so compiler-owned funder slots never meet an artificial wallet
     // limit. A regtest signer gets the same room from one fan-out, fed by one extra coin so the vout-0 coins above
     // stay intact; with four coins a nested oracle slot found the shared funder pool empty.
     const fanOut = existing.filter((utxo) => !utxo.token).length < REGTEST_PLAIN_COINS;

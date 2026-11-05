@@ -102,7 +102,7 @@ describe('an external call beside a delegatecall', () => {
     // Another deployment of the callee, the callee running another function, and no callee at all.
     await expect(fire().withExternalCall(other.sc, 'inc', [3n]).send()).rejects.toThrow(/input 0/);
     await expect(fire().withExternalCall(foo.sc, 'dec', [3n]).send()).rejects.toThrow(/input 0/);
-    await expect(fire().send()).rejects.toThrow(/input 0/);
+    await expect(fire().send()).rejects.toThrow(/could not pin the callee/);
 
     const tx = await fire().withExternalCall(foo.sc, 'inc', [3n]).send();
     expect(field(tx, proxy.category, proxyArtifact, 'counter')).toBe(6n);

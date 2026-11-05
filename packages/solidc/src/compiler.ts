@@ -2601,6 +2601,64 @@ function compileWithExternalAdmissionFallback(
  * recorded functions refused until none is new. Retries are silent; one warning per refused function is printed.
  */
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  // A default build may be replaced by a direct one below, so it holds its warnings until its own outcome stands.
+  const internal = compilerOptions as InternalCompilerOptions;
+  const auto = compilerOptions.messageBus === undefined && !internal.__messageBusVerifierProgram;
+  const held: string[] = [];
+  const replay = (): void => { for (const message of held) emitCompilerWarning(message); };
+  let artifact: Artifact;
+  try {
+    artifact = auto ? withWarningListener(({ message }) => { held.push(message); },
+      () => compileStringRefusingLoopGuards(code, compilerOptions))
+      : compileStringRefusingLoopGuards(code, compilerOptions);
+  } catch (failure) {
+    replay();
+    throw failure;
+  }
+  const unserved = artifact.abi.filter((fn) => fn.routeOnly === true && !routeServes(artifact, fn));
+  // A default build whose route leaves an entry unserved is compiled direct, as the bus is chosen only to help.
+  if (unserved.length > 0 && auto) {
+    const direct = { ...compilerOptions, messageBus: false } as InternalCompilerOptions;
+    delete direct.__parsedAst;
+    try {
+      return compileStringUnchecked(code, direct as CompileOptions);
+    } catch {
+      // The direct convention refuses the contract, so the message-bus build stands with those entries refused.
+    }
+  }
+  replay();
+  return unserved.length === 0 ? artifact : refuseUnservedEntries(artifact, unserved);
+}
+
+/**
+ * An entry only the route runs, which the route does not serve, is refused: the SDK is not offered it (a sole entry's
+ * program also fails outright), and the artifact names why, as for a function refused for its loop guard. Its body's
+ * looped call still carries the entry's direct-spend guard, so a direct run that enters the loop fails at the VM.
+ */
+function refuseUnservedEntries(artifact: Artifact, unserved: Artifact['abi']): Artifact {
+  const refusedFunctions = [...(artifact.refusedFunctions ?? [])];
+  for (const fn of unserved) {
+    const call = fn.externalCalls?.find((candidate) => candidate.occurrence === 'loop');
+    const target = call ? ` to ${call.interfaceName}.${call.functionName}` : '';
+    const reason = `ROUTE_ONLY_ENTRY_UNSERVED: its looped call${target} is bound only by the message-bus route, `
+      + 'which does not serve it; `messageBus: false` runs the loop as frames of the callee\'s multi-call entry, '
+      + 'or refuses it';
+    emitCompilerWarning(`Warning: function '${fn.name}' is refused: ${reason}`);
+    refusedFunctions.push({ functionName: entryFunctionName(artifact.contractName, fn.name), reason });
+  }
+  return { ...artifact, refusedFunctions };
+}
+
+/** Whether the artifact's message-bus route serves the entry: the route is in the bytecode and admits it. */
+function routeServes(artifact: Artifact, fn: Artifact['abi'][number]): boolean {
+  const bus = artifact.messageBus;
+  if (bus?.available !== true || bus.routeInBytecode !== true) return false;
+  const handler = (bus.handlers ?? []).find((candidate) => (fn.selector !== undefined && candidate.selector !== undefined
+    ? candidate.selector === fn.selector : candidate.name === fn.name));
+  return handler?.eligible === true && (bus.admittedHandlerIds ?? []).includes(handler.name);
+}
+
+function compileStringRefusingLoopGuards(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const inherited = (compilerOptions as InternalCompilerOptions).__loopGuardRefusals;
   const refusals = new Map(inherited ?? []);
   for (let attempt = 0; ; attempt += 1) {
@@ -2643,9 +2701,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
 function settleCallBatch(code: string, compilerOptions: CompileOptions, artifact: Artifact): Artifact {
   if (compilerOptions.callBatch !== true) return artifact;
   const carried = typeof artifact.callBatch === 'object';
-  if (!carried && !artifact.abi.some((fn) => fn.inputs.some((input) => input.name === CALL_BATCH_ROW_SHIFT))) {
-    return artifact;
-  }
+  // A frame candidate's witnesses: an entry shift, or a void entry's record index.
+  const takesFrameWitness = artifact.abi.some((fn) => fn.inputs.some((input) => input.name === CALL_BATCH_ROW_SHIFT
+    || (input.name === '__internal__returnOutputIdx' && (fn.outputs?.length ?? 0) === 0)));
+  if (!carried && !takesFrameWitness) return artifact;
   const limit = Math.min(compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE, MAX_INPUT_BYTESIZE);
   const room = Math.floor(limit * (1 - CALL_BATCH_INPUT_RESERVE_FRACTION));
   const bytes = asmToBytecode(artifact.bytecode).length;
@@ -4580,7 +4639,7 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
   // master block and therefore cannot soundly advertise or execute message-bus batch. `forceStateful` remains the explicit
   // way to opt a zero-storage contract into the stateful/master-NFT model.
   return contract.stateVariables.length > 0 || contract.collections.length > 0
-    || !!compilerOptions.forceStateful || contract.readsBlock || contract.deploysStatefulChild
+    || !!compilerOptions.forceStateful || contract.readsBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 }
@@ -15938,8 +15997,9 @@ function compileResolvedAst(
   }
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
-  // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.
-  if (needsExternalCallLowering) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
+  // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case. A call through a function
+  // pointer parameter becomes an external call only in the pointer lowering above, after the survey.
+  if (needsExternalCallLowering || hasFunctionPointers) ast = ast.accept(new InlineExternalCallHelpers()) as Ast;
 
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
@@ -17312,6 +17372,10 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  if (traversal.routeOnlyEntries.size > 0) {
+    artifact.abi = artifact.abi.map((fn) => (traversal.routeOnlyEntries.has(fn.selector ?? fn.name)
+      ? { ...fn, routeOnly: true } : fn));
+  }
   if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     // The slots are located in the finished script, after the optimiser: emission records them, but only the
     // emitted bytes say where they survived. A master that can be reached through a call reserves the third slot
@@ -18818,7 +18882,7 @@ function compileResolvedAst(
       stampKernelCapabilitySchema(artifact);
     }
   }
-  // A blockhash reader co-spends ring slots of its oracle pool.
+  // This contract reads blockhash(n): its pool needs ring slots, and the SDK co-spends the slot for n.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   // The reads of the bound contracts it creates shape a pool its deployment mints.
   const childPoolReads = createdPoolReads(ast.contract, ast.freeFunctions);

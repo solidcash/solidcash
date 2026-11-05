@@ -35,6 +35,8 @@ export interface BuildStatefulFunctionCallHost {
   functionName?: string;
   parentContract?: StatefulContract;
   trySplitMergeBuild(): Promise<TransactionBuilder | undefined>;
+  /** The bus composition of a call whose graph runs as bus rows; undefined keeps the direct builder. */
+  busRowComposition(): Promise<TransactionBuilder | undefined>;
   applyOverrides(): Promise<StatefulTransactionBuilder>;
   selectedAbiFunction(): AbiFunction | undefined;
   recursivePreflightHasSignatures(): boolean;
@@ -46,6 +48,11 @@ export async function buildStatefulFunctionCall(
 ): Promise<TransactionBuilder> {
   const splitMergeBuilder = await host.trySplitMergeBuild();
   if (splitMergeBuilder) return splitMergeBuilder;
+  // A participant's compiler route is one row of a composition already planned; only a root call plans one.
+  if (!host.compilerRoute) {
+    const composed = await host.busRowComposition();
+    if (composed) return composed;
+  }
   const stb = await host.applyOverrides();
   const buildFinalized = (): TransactionBuilder => {
     const valueChunkVariables = stb.getValueChunkVars();

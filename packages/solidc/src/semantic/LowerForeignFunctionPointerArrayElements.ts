@@ -33,16 +33,20 @@ import {
   DoWhileNode,
   DeleteLocalNode,
   DeleteStateNode,
+  StateAssignNode,
+  AssignNode,
+  StateAccessNode,
 } from '../ast/AST.js';
-import { ArrayType, FunctionType, AddressType, BytesType } from '@solidcash/utils';
+import { ArrayType, FunctionType, AddressType, BytesType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { FnPtrArrayLoweringError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 const SELECTOR_ARRAY_PREFIX = '__fnsel_';
 
 type ArrayClassification = { kind: 'fixed' | 'varying' | 'none'; iface: string; method: string };
-type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; returns: boolean };
+type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; returns: boolean; parameterTypes: Type[] };
 
 /**
  * FOREIGN external function-pointer ARRAYS whose every written value is an inline `IFace(a).method` (a dispatch
@@ -56,9 +60,9 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  *   `bytes4 __fnelemsel = bytes4(__fnsel_fns[idx]);` runtime selector for a varying table) and emits the
  *   single computed-receiver call `IFace(__fnelem).m(args)`. Value-returning calls work here.
  * - `fns[i](args)` INSIDE a loop is the notify-all idiom and maps to the BROADCAST covenant: the epilogue
- *   co-spends + verifies + calls EVERY element (the source loop is harmless iteration; the receiver keeps the
- *   live element, the shape of the array-element call `IFace(arr[i]).m()` in a loop). A broadcast cannot
- *   return a value (rejected).
+ *   co-spends + verifies + calls EVERY element once, so the loop's calls must take the elements in turn (the
+ *   receiver keeps the live element, the shape of the array-element call `IFace(arr[i]).m()` in a loop). A
+ *   broadcast cannot return a value (rejected).
  *
  * Mutations stay in LOCKSTEP with the selector array: a varying table's element assign / pop / element or whole
  * delete rewrites to a two-statement block mutating both arrays; classification scans pushes AND element assigns.
@@ -66,6 +70,7 @@ type TableInfo = { kind: 'fixed' | 'varying'; iface: string; method: string; ret
  */
 export default class LowerForeignFunctionPointerArrayElements extends AstTraversal {
   private typeNames = new Set<string>();
+  private members?: ForeignMemberTypes;
   private tables = new Map<string, TableInfo>();
   private loopDepth = 0;
   private hoistCounter = 0;
@@ -82,9 +87,10 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
-    for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
-    for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
-    if (node.contract) this.typeNames.add(node.contract.name);
+    this.members = new ForeignMemberTypes(node);
+    const types = [...node.interfaceDefinitions as InterfaceNode[], ...node.importedContracts as ContractNode[],
+      ...(node.contract ? [node.contract] : [])];
+    for (const type of types) this.typeNames.add(type.name);
     if (node.contract) node.contract = this.visitContract(node.contract) as ContractNode;
     return node;
   }
@@ -104,14 +110,16 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     this.tables = new Map();
     for (const coll of fnPtrArrays) {
       if (!(coll.type instanceof ArrayType)) continue;
-      const c = this.classifyArray(coll.name, bodies);
+      const c = this.classifyArray(coll.name, bodies, coll.type.elementType as FunctionType);
       if (c.kind === 'none') continue;
       const ft = coll.type.elementType as FunctionType;
       this.tables.set(coll.name, {
         kind: c.kind, iface: c.iface, method: c.method, returns: (ft.returnTypes ?? []).length > 0,
+        parameterTypes: ft.parameterTypes,
       });
     }
     if (this.tables.size === 0) return node;
+    for (const fn of bodies) this.refuseWholeTableAssigns(fn.body!);
 
     // A plain-`address[]` array is registered as a dynamic-array STATE VARIABLE (not a collection), so MOVE each
     // classified fn-ptr array out of collections into a plain `address[]` state var (+ the parallel `bytes[]`
@@ -140,15 +148,51 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     return node;
   }
 
-  private classifyArray(name: string, bodies: FunctionDefinitionNode[]): ArrayClassification {
-    const written: Array<{ iface: string; method: string } | undefined> = [];
-    for (const fn of bodies) this.forEachWriteTo(fn.body!, name, (val) => written.push(this.foreignMember(val)));
-    if (written.length === 0 || written.some((p) => !p)) return { kind: 'none', iface: '', method: '' };
-    const members = written as { iface: string; method: string }[];
+  private classifyArray(name: string, bodies: FunctionDefinitionNode[], type: FunctionType): ArrayClassification {
+    const written: { value: ExpressionNode; member: { iface: string; method: string } | undefined }[] = [];
+    for (const fn of bodies) {
+      this.forEachWriteTo(fn.body!, name, (value) => written.push({ value, member: this.foreignMember(value) }));
+    }
+    if (written.length === 0 || written.some((p) => !p.member)) return { kind: 'none', iface: '', method: '' };
+    const members = written.map((p) => p.member!);
     const { iface, method } = members[0];
     if (members.some((p) => p.iface !== iface)) return { kind: 'none', iface: '', method: '' };
+    // A call through the table binds its type's arguments for every element, so each element's method takes them.
+    const misfit = written.find((p) => !this.members!.fits(p.member!, type));
+    if (misfit) {
+      throw new FnPtrArrayLoweringError(misfit.value, name,
+        `'${misfit.member!.iface}.${misfit.member!.method}' does not name one method of the table's type ${type}`);
+    }
     const varying = members.some((p) => p.method !== method);
     return { kind: varying ? 'varying' : 'fixed', iface, method };
+  }
+
+  /**
+   * Refuses a whole assignment to a table this pass lowers, except a copy of another table of the same interface and
+   * method: the classification sees only pushes and element writes, and the lowered copy moves the addresses alone.
+   */
+  private refuseWholeTableAssigns(body: Node): void {
+    const walk = (n: Node): void => {
+      const target = n instanceof StateAssignNode ? n.name
+        : n instanceof AssignNode ? n.identifier.name : undefined;
+      const table = target !== undefined ? this.tables.get(target) : undefined;
+      if (table) {
+        const value = n instanceof StateAssignNode ? n.expression : (n as AssignNode).expression;
+        const sourceName = value instanceof IdentifierNode || value instanceof StateAccessNode ? value.name : undefined;
+        const source = sourceName !== undefined ? this.tables.get(sourceName) : undefined;
+        if (!source || table.kind !== 'fixed' || source.kind !== 'fixed' || source.iface !== table.iface
+          || source.method !== table.method) {
+          throw new FnPtrArrayLoweringError(n, target!,
+            'a whole assignment to the table must copy a table of the same interface and method');
+        }
+      }
+      for (const key of Object.keys(n)) {
+        const value = (n as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
   }
 
   private rewrite(fn: FunctionDefinitionNode | undefined): FunctionDefinitionNode | undefined {
@@ -216,7 +260,9 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     if (!t || !fm) return undefined;
     const addrPush = this.copyLoc(new StateArrayPushNode(name, this.addressOf(value)), at);
     if (t.kind === 'fixed') return addrPush;
-    const selPush = this.copyLoc(new StateArrayPushNode(this.selArrayName(name), this.selectorExpr(fm, at)), at);
+    const selPush = this.copyLoc(
+      new StateArrayPushNode(this.selArrayName(name), this.selectorExpr(fm, t.parameterTypes, at)), at,
+    );
     return this.twoStatementBlock(addrPush, selPush, at);
   }
 
@@ -237,7 +283,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     const addrAssign = this.copyLoc(new StateArrayAssignNode(name, idx, this.addressOf(value)), at);
     if (t.kind === 'fixed') return addrAssign;
     const selAssign = this.copyLoc(new StateArrayAssignNode(
-      this.selArrayName(name), cloneNode(idx) as ExpressionNode, this.selectorExpr(fm, at),
+      this.selArrayName(name), cloneNode(idx) as ExpressionNode, this.selectorExpr(fm, t.parameterTypes, at),
     ), at);
     return this.twoStatementBlock(addrAssign, selAssign, at);
   }
@@ -318,10 +364,12 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
     const block = new BlockNode([a, b]); block.location = at.location; return block;
   }
 
-  // `bytes(IFace.method.selector)` for the parallel selector array element (framed `bytes[]` element).
-  private selectorExpr(fm: { iface: string; method: string }, at: Node): ExpressionNode {
+  // `bytes(IFace.method.selector)` for the parallel selector array element (framed `bytes[]` element), naming the
+  // overload of the table's parameter types.
+  private selectorExpr(fm: { iface: string; method: string }, parameterTypes: Type[], at: Node): ExpressionNode {
     const ifaceId = new IdentifierNode(fm.iface); ifaceId.location = at.location;
     const methodAccess = new FieldAccessNode(ifaceId, fm.method); methodAccess.location = at.location;
+    methodAccess.overloadParameterTypes = parameterTypes;
     const selector = new FieldAccessNode(methodAccess, 'selector'); selector.location = at.location;
     const bounded = new CastNode(new BytesType(), selector, false); bounded.location = at.location;
     return bounded;

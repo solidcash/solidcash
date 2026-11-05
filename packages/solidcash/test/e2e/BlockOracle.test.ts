@@ -143,23 +143,20 @@ function blockPool(provider: ReturnType<typeof createTestProvider>): Promise<str
   });
 }
 
-/** A reader of `source` bound to `oraclePool`. Every block.* reader is stateful, so it is set up with its state. */
-async function statefulReader(
-  provider: ReturnType<typeof createTestProvider>, source: string, oraclePool: string,
-): Promise<StatefulContract> {
-  const artifact = compileString(source);
-  const contract = new Contract(artifact, [], { provider, oraclePool });
-  const { categoryId } = await setupStatefulUtxos(provider, contract, artifact.stateLayout!, {});
-  return StatefulContract.withCategory(contract, categoryId);
-}
-
 async function spendReader(
   number: bigint, timestamp: bigint, difficulty: bigint, size: bigint, fees: bigint, basefee: bigint,
   coinbase: Uint8Array,
 ): Promise<string> {
   const provider = createTestProvider();
-  const sc = await statefulReader(provider, ORACLE_READER, await blockPool(provider));
-  const tx = await (sc as any).check(number, timestamp, difficulty, size, fees, basefee, coinbase).send();
+  const oraclePool = await blockPool(provider);
+  const contract = new Contract(compileString(ORACLE_READER), [], { provider, oraclePool });
+  const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(provider, 20000n);
+  const tx = await new TransactionBuilder({ provider })
+    .addInput(utxo, contract.unlock.check(number, timestamp, difficulty, size, fees, basefee, coinbase))
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addOutput({ to: contract.address, amount: 110000n })
+    .send();
   return tx.txid;
 }
 
@@ -215,8 +212,15 @@ contract InternalReader() {
 describe('block.* read behind an internal call e2e', () => {
   const spend = async (expected: bigint): Promise<string> => {
     const provider = createTestProvider();
-    const sc = await statefulReader(provider, INTERNAL_READER, await blockPool(provider));
-    const tx = await (sc as any).check(expected).send();
+    const oraclePool = await blockPool(provider);
+    const contract = new Contract(compileString(INTERNAL_READER), [], { provider, oraclePool });
+    const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const feeFunder = await createFeeFunder(provider, 20000n);
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.check(expected))
+      .addInput(feeFunder.utxo, feeFunder.unlocker)
+      .addOutput({ to: contract.address, amount: 110000n })
+      .send();
     return tx.txid;
   };
 
@@ -264,8 +268,14 @@ describe('block.* owner-update path e2e', () => {
       coinbase: hexToBin('00'),
     });
     expect(txids).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/)]);
-    const sc = await statefulReader(provider, READ_BACK, oraclePool);
-    const tx = await (sc as any).readBack(100000n, 1700000000n).send();
+    const contract = new Contract(compileString(READ_BACK), [], { provider, oraclePool });
+    const utxo = await provider.addUtxo(contract.address, randomUtxo({ satoshis: 100000n }));
+    const feeFunder = await createFeeFunder(provider, 20000n);
+    const tx = await new TransactionBuilder({ provider })
+      .addInput(utxo, contract.unlock.readBack(100000n, 1700000000n))
+      .addInput(feeFunder.utxo, feeFunder.unlocker)
+      .addOutput({ to: contract.address, amount: 110000n })
+      .send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
@@ -363,7 +373,7 @@ describe('blobhash / blockhash', () => {
 // sets the locktime the read requires (tx.time >= n). blockhash forces the reader stateful.
 const BH_SRC = 'contract B(){ function f(int bn, bytes32 h){ require(blockhash(bn) == h); } }';
 
-async function statefulBlockhashReader(
+async function statefulReader(
   provider: ReturnType<typeof createTestProvider>, source: string, state: Record<string, bigint | Uint8Array> = {},
 ): Promise<{ artifact: ReturnType<typeof compileString>; sc: any; categoryId: string }> {
   const artifact = compileString(source);
@@ -378,14 +388,14 @@ describe('blockhash(n) e2e (oracle pool slots)', () => {
   it('returns the hash the pool slot holds for n', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    const { sc } = await statefulBlockhashReader(provider, BH_SRC);
+    const { sc } = await statefulReader(provider, BH_SRC);
     expect((await sc.f(BigInt(n), hash).send()).txid).toMatch(TXID);
   });
 
   it('rejects a wrong expected hash', async () => {
     const provider = createTestProvider();
     const { n } = await allocHeight(provider);
-    const { sc } = await statefulBlockhashReader(provider, BH_SRC);
+    const { sc } = await statefulReader(provider, BH_SRC);
     await expect(sc.f(BigInt(n), hexToBin('bb'.repeat(32))).send()).rejects.toThrow(verifyFailure);
   });
 
@@ -419,7 +429,7 @@ describe('blockhash(n) e2e (oracle pool slots)', () => {
     const b = await allocHeight(provider);
     const src = 'contract B(){ function f(int x, bytes32 hx, int y, bytes32 hy){'
       + ' require(blockhash(x)==hx); require(blockhash(y)==hy); } }';
-    const { artifact, sc } = await statefulBlockhashReader(provider, src);
+    const { artifact, sc } = await statefulReader(provider, src);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['x', 'y']);
     expect((await sc.f(BigInt(a.n), a.hash, BigInt(b.n), b.hash).send()).txid).toMatch(TXID);
   });
@@ -438,7 +448,7 @@ describe('keccak256 + blockhash front-region (stateful)', () => {
   it('resolves a nested keccak alongside a blockhash read (front-region slot before the side-cars)', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    const { artifact, sc, categoryId } = await statefulBlockhashReader(provider, SRC, { c: 0n });
+    const { artifact, sc, categoryId } = await statefulReader(provider, SRC, { c: 0n });
     // The keccak side-car base is shifted past the data NFT count by the blockhashOracle slot.
     const fnAbi = artifact.abi.find((f) => f.name === 'f');
     expect(fnAbi?.blockhashReads).toEqual(['bn']);
@@ -472,7 +482,7 @@ describe('keccak256 + blockhash front-region (stateful)', () => {
     const { n, hash } = await allocHeight(provider);
     const seed = hexToBin('56'.repeat(32));
     let target = seed; for (let i = 0; i < 3; i++) target = keccak_256(target);
-    const { artifact, sc, categoryId } = await statefulBlockhashReader(provider, LOOP_SRC, { acc: seed });
+    const { artifact, sc, categoryId } = await statefulReader(provider, LOOP_SRC, { acc: seed });
     expect(artifact.abi.find((f) => f.name === 'run')?.keccakLoopReads).toBe(true);
     const scLock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
     for (let i = 0; i < 5; i++) {
@@ -502,7 +512,7 @@ describe('blockhash(n) stateful reader', () => {
   it('reads blockhash from a stateful function via the block-layout slot', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    const { sc } = await statefulBlockhashReader(provider, BH_STATEFUL_SRC, { counter: 5n });
+    const { sc } = await statefulReader(provider, BH_STATEFUL_SRC, { counter: 5n });
     expect((await sc.bump(BigInt(n), hash).send()).txid).toMatch(TXID);
   });
 });
@@ -515,7 +525,7 @@ describe('blockhash(x - 1) computed read (probe-trace extraction)', () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
     const src = 'contract B(){ function f(int x, bytes32 h){ require(blockhash(x - 1) == h); } }';
-    const { artifact, sc } = await statefulBlockhashReader(provider, src);
+    const { artifact, sc } = await statefulReader(provider, src);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.blockhashReads).toEqual(['<computed:0>']);
     expect((await sc.f(BigInt(n) + 1n, hash).send()).txid).toMatch(TXID);
   });

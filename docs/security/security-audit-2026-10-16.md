@@ -9,8 +9,9 @@ fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". O
 are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, and GENESIS-1, the item
 that branch recorded about a creation's genesis, on `fix/genesis-replay`; ORACLE-6 on `fix/blockhash-ring` removes the
 keeper baton (CRYPTO-4, ORACLE-5), ORACLE-7 gives an expired block the EVM's zero, and ORACLE-8 infers a reader's
-ring depth; see "Block oracle hardening (2026-11-03)" at the end. Oracle pools (2026-11-04, `feat/oracle-pools-sushi`)
-supersede the per-contract mechanisms of ORACLE-2, -4 and -6 to -8; see "Oracle pools (2026-11-04)" at the end.
+ring depth; see "Block oracle hardening (2026-11-03)" at the end. Oracle pools (2026-11-04, `feat/oracle-pools` and
+`feat/oracle-pools-sushi`) supersede the per-contract mechanisms of ORACLE-2, -4 and -6 to -8, and fix ORACLE-1, -2
+and -5 on master; see "Oracle pools (2026-11-04)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -950,21 +951,431 @@ refusal (`packages/solidc/test/SecurityAudit202610*.test.ts`, `packages/solidcas
 `packages/testing/src/chai.ts` (missing args fail, addresses normalised, events that do not decode fail, `.reverted`
 needs VM evidence, `rejectedWith` has no source fallback).
 
+- **Direct multi-call census** (`9285c4f39`, found 2026-10-24 in the opt-in multi-call entry of `b05a11f83`). The
+  entry walked only its inputs, and a frame's data-record and collection censuses run only standalone, so beside a batch
+  of entry-reading frames an extra data record or mapping node of the contract was accepted (reproduced on mocknet: an
+  exact copy of an existing record, paid for by the funder). The entry now holds every own-category mutable output to
+  an input at its index, inside the callee's script. Only contracts compiled with `callBatch: true` (or an obvious
+  need) carried the entry; it never shipped in a release. Test: `CallBatch.test.ts`.
+- **Direct looped returning writer** (found 2026-10-24 while building direct call ordinals, closed 2026-10-25). In a
+  direct compile, a returning call to a fixed target inside a loop checked neither the callee nor the record's
+  category, so every iteration after the first read a record its callee, spent once, never pinned. `9323f7bae`
+  counts state-preserving calls, which check the callee, the record's category and its carrier form on every
+  iteration. `76d31b1ce` refuses the rest (`MESSAGE_BUS_REQUIRED`): a looped returning call that changes state, or
+  cannot be a frame for another reason, no longer compiles direct. `f27311797` does the same for an opaque
+  `target.call(payload)` to a fixed target in a loop once its data is read (a Multicall over array targets checks
+  each iteration's callee and record inline, and is unchanged); `08d816ded` extends it to a loop-invariant computed
+  target, such as a ternary of two addresses. In message-bus artifacts a looped call's direct entry is a stub that
+  reads no record, so the bus binds the same shapes per row; the entry body's loop ran its counter unguarded for a
+  direct spend of its own selector until `9ba15c3a0` (below) made that loop branch fail closed. Since phase 4 of the
+  direct multi-call, a looped
+  state-changing call to a fixed target runs as counted frames of the callee's multi-call spend, each iteration bound
+  to its own frame's record, instead of being refused; a looped call that can be no frame stays refused, a void one
+  included, since its callee runs once however many times the loop calls it (a call carrying value, a raw call to one
+  target whatever its data, a loop-invariant computed target). Test:
+  `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts`.
+- **Blind-written record tag** (found 2026-10-25 reviewing the multi-call writer frames; accepted on master at the VM
+  for a direct entry, a standalone frame, a multi-call batch and a framed master). In a layout of two or more data
+  records, an entry that wrote every field of a record and read none never decoded that record's input, so its
+  nftIndex tag went unchecked: the data-NFT covenant reads no commitment, and the input pins hold only the record's
+  lock and category. A spender could lay a sibling record at that input; the sibling was consumed and replaced by a
+  record carrying the written record's tag, and the genuine record stayed unspent, duplicated. `a6e7307d6` requires a
+  rebuilt record's input to carry its tag unless a decode of that input already runs on every path to the rebuild
+  (about 9-22 B per blind write; partial writes, read-modify-write and single-record layouts keep their bytes). The
+  kernel route's journal pre-reads already check each written record's tag. Test:
+  `packages/solidc/test/BlindWriteRecordTag.test.ts`.
+- **Direct void call arguments** (found 2026-10-25, `0b94c0f13`). A direct entry's typed call bound its callee's
+  lock, master and method but its arguments only through the D50 record digest, so a call to a method returning
+  nothing, one naming fewer arguments than its method declares, and a returning call to a contract-typed target (no
+  selector to digest) left them free: `ISink(c).put(x)`, `put(x + 1)` and `put(7)` compiled to one caller, and a spender
+  could run the callee on other arguments beside a genuine caller run. The caller now checks each argument it names
+  against the unlocking that runs the call, from the redeem end after parsing every push from the first, in the
+  encoding the digest takes (`sig` arguments and the ones a call does not name stay free). It fails closed on a
+  non-script-hash lock, too few pushes or a redeem that drops a budget pad, and so on a call into a forwarding proxy,
+  whose frame names another input the caller cannot tie to the proxy. Callees and already-bound callers keep their
+  bytes; a one-call caller grows about 155 B, three calls sharing the helper about 213 B. D8's compat binding now
+  refuses a padded redeem too: it compared a one-argument payload with the pad, leaving the real argument free.
+  Test: `VoidCallArguments.test.ts` (a forged callee argument is refused by the caller's input, and the same
+  transaction with the caller agreeing is accepted).
+- **Readonly alias across a write** (found 2026-10-25 reviewing the multi-call writer frames of `87384e849`; never
+  released). In a direct multi-call group a zero-argument view call shared the record and ordinal of the first
+  identical call even when a call that may write ran between them, so `before = c.get(); c.add(a); after = c.get()`
+  read `after` from the frame before the write and the stale value was accepted. `1f6aa9bb1` ends the run of reads
+  sharing a record at each call that may write. No other view-call test source changes bytes. Test:
+  `DirectCallOrdinals.test.ts`, `DirectMultiCall.test.ts` (k).
+- **Loop targets the contract fixes** (found 2026-10-25 reviewing the view witnesses of R11; accepted on master at the
+  VM). A loop's per-iteration callee is read from a caller-supplied witness. For a loop-local receiver
+  (`IPair p = IPair(ps[i])`), a computed target and R11's multi-use view witnesses, the compiler replaced the target
+  with that witness whenever the receiver indexed a loop array, so a target the contract fixes (a local array of
+  constructor addresses, a state array, a mapping or another contract's result) was the spender's choice: a spend
+  through callees the spender picked was accepted at the caller's input, and R11 dropped such callees altogether,
+  leaving their view results to the spender. `b6c2e106d` lets a witness stand for a target only when its
+  per-iteration part reads elements of the function's parameters, the caller's choice (Router02's
+  `pairFor(factory, path[i], path[i + 1])`); otherwise the witness must equal the value computed on chain, and a
+  multi-use receiver runs its views as calls (a direct compile refuses two calls on one such callee). No test source
+  changes bytes. Test: `LoopTargetProvenance.test.ts`.
+- **Looped void call method and arguments** (found 2026-10-25 beside the loop targets). A void call in a loop over
+  per-iteration targets compared its callee's selector with a witness the spender sets, so MD1's compile-time selector
+  held only outside loops, and it bound no argument: each co-spent callee could run another method on other arguments
+  while the caller assumed its own call ran. `ca737ef32` checks the compile-time selector in both loop forms and, in a
+  loop over a parameter array or computed targets, each argument the call names against that iteration's callee
+  unlocking, as outside loops. A looped call into a forwarding proxy now fails closed under `messageBus: false`.
+  Nine contracts in five test files change bytes; their stand-in callees now push the call's selector and arguments.
+  Test: `TypedLoopDispatch.test.ts` (a callee run on another argument is refused), `MultiUseViewMutate.test.ts`
+  (another selector).
+- **Two call sites on one callee run** (found 2026-10-25 by a review of the multi-call frames; accepted on master at
+  the VM). In a function with several direct calls each call's callee input index is a witness its identity check
+  binds to its own target only, so two calls on different target expressions that are equal at run time
+  (`ISink(a).put(x); ISink(b).put(x)` with `a == b`) both named the one callee input and accepted one run of it: the
+  caller counted two calls for one. The SDK builds that spend itself, sharing one master by outpoint. `29d652dad`
+  requires pairwise different inputs for calls on different targets once both run, and for calls on `msg.sender`,
+  `this` or a computed target, which no target key groups; calls on one target (a frame group, a readonly alias, a
+  batch row) still share theirs. A counted call whose ordinal counter is not in scope now fails to compile instead of
+  digesting ordinal 0 without its inline checks (unreachable today). The same holds for a loop over targets: its
+  callee for iteration i sits at `base + offset + i * stride`, while the call slot after it (or a second such loop)
+  sits at the next fixed offset, which the loop's second iteration also took, so a loop target equal to that call's
+  target served both calls with one run (accepted at the VM), and an honest spend of two or more iterations could not
+  be laid out. `a074dcabb` keeps each iteration's input below the first callee laid out after the loop, in the inline
+  and the state-array forms, and adds looped frame calls to the distinct-input check. Test:
+  `AliasedCalleeSites.test.ts`.
+- **A pointer call aliasing another call's input** (found 2026-10-25 beside the two call sites, source-traced; the
+  loop case VM-confirmed 2026-10-26). `29d652dad`/`a074dcabb` made calls on different targets, and loops over
+  targets, claim distinct callee inputs, but a call through an external function pointer takes its co-spent callee
+  from a spender-supplied input witness (`__internal__extcallMasterIdx<n>`) that neither check compared with a loop's
+  per-iteration inputs or with a fixed-offset call's. In a function with a loop over targets the fixed calls keep no
+  witness, so the pointer witness was the function's only distinct-input "claim" and went unchecked: a pointer
+  resolving to a loop target could name that loop iteration's callee, or resolving to a fixed call's target could
+  name the fixed call's own input, and one callee run served both sites (accepted at the VM for the loop case).
+  acd85975b makes every loop iteration over targets (the inline-dispatch and state-array forms) require its input to
+  differ from each pointer witness, and makes the distinct-input check require each pointer witness to differ from
+  each fixed-offset call's input (`externalCallInputBase + computedOffset`, the offset the fixed call's identity
+  already reads). The new checks are emitted only in a function that has both a loop and a pointer call, or a pointer
+  call beside a fixed call under a loop, so no other contract changes bytes. Test: `AliasedFnPtrCalleeSites.test.ts`
+  (honest settles; a pointer naming the loop iteration's input, and one naming the fixed call's input, are refused).
+  Still open: a table of received pointers' witness list is now compared with single pointer calls but not yet with
+  the function's fixed-offset calls or a second loop (see Open).
+- **Loop receiver resolved by name** (found 2026-10-25 by a review of the day's loop fixes; accepted at the VM).
+  `b6c2e106d` judged a loop receiver's target by the first declaration of its name in the function, so a second
+  loop declaring `IPair pair` over the contract's own addresses took the first loop's caller-chosen initializer, and
+  its target was replaced by an unbound witness again; R11 grouped both loops' view calls under the one name. `671dc23f1`
+  resolves a receiver to the declaration in force at the call, lifts a target only through locals the body defines
+  once and through parameter arrays no local shadows, gives a receiver name defined more than once no view
+  witnesses, and groups a loop's calls by their receiver's declaration. Test: `LoopTargetProvenance.test.ts`.
+- **Loop iterations naming one callee input** (same review; accepted at the VM; older than the day's fixes). A loop
+  over targets took its callee input from the index its target reads (`base + offset + index * stride`), not from
+  its counter, so `ts[which[i]]` with a repeated index, a loop-invariant `ts[k]`, or a state-array body
+  `subscribers[which[i]]` (whose callees are checked once per element after the loop) let several calls accept one
+  callee run. `671dc23f1` makes each call of such a loop claim an input, or a state-array element, above the one the loop
+  claimed last; a loop that walks its targets backwards is refused now. (A table of received function pointers was
+  not covered: see the next entry.) Test: `AliasedCalleeSites.test.ts`.
+- **Loop aliases, written parameter arrays and past-the-end elements** (found 2026-10-26 by a third review of the
+  loop fixes; accepted at the VM). An address local holding a loop element (`address p = arr[i]; IFoo(p).m()`) was
+  rewritten to the element of its first declaration, so a reassigned `p`, or a second loop's `p`, was checked
+  against another value. A parameter array the body writes (`chosen[0] = a`, a push, a write through a local that
+  holds it) still counted as the caller's choice, so its loop target was lifted to a free witness. A state-array
+  loop's body call past the last element (`which = [0, 1, 2]` over two) ran on no callee, where Solidity reverts.
+  A loop calling through a state table of received function pointers is lowered to a broadcast that runs every
+  element once after the loop, whatever the source's index, so `fns[which[i]]` with a repeated index, a bound past
+  the table's end or a nested loop ran calls the source did not make. `60b758023` rewrites a local only when the body
+  defines it once; counts a parameter array as the caller's only when neither it nor a local holding it is written
+  and no assembly runs; requires the last element a state-array loop's body claimed to be below the array's length;
+  and requires a pointer table's broadcast to index the table by the counter of its one loop (refused at compile
+  time otherwise) and to make one call per element. Test: `LoopTargetProvenance.test.ts`,
+  `AliasedCalleeSites.test.ts`.
+- **Inlined helpers, deleted locals and pointer-table claims** (found 2026-10-26 by a fourth review of the loop
+  fixes; the nested broadcast accepted at the VM). A pointer table's broadcast had its loop's form checked before
+  helpers are inlined, and then only counted its calls: a helper holding the loop, inlined into another loop, called
+  one pointer twice and another never within the count, and a loop starting past 0 or skipping an index made a last
+  call past the table's end. An inlined helper's array parameter that the helper reassigns (`if (path.length == 0)
+  path = fb`) was followed to the caller's argument, so its target counted as the caller's choice, and `delete p` did
+  not count as a definition of `p`. Since `671dc23f1` a helper holding a loop over targets (Router02's `_swap`) no
+  longer compiled: its body is still compiled for its diagnostics after its callers inlined it, with no loop floor in
+  scope. `9abf04ce5` makes each call through a pointer table claim the element it indexes, the one after its loop's
+  last claim, and requires the last claim to be the table's last element, so a broadcast runs each pointer once, in
+  order, through any index or loop form; follows an array alias only through locals defined once; counts a delete
+  as a definition; and compiles such a loop call in a body nothing invokes as a failure (an invoked body still
+  refuses it). Test: `AliasedCalleeSites.test.ts`, `LoopTargetProvenance.test.ts`.
+- **Arguments of a void call on a state-array element** (open since `ca737ef32`; accepted at the VM). A void call in a
+  loop over a state array (`IListener(listeners[i]).hear(value, 7)`) bound its callee's method after the loop, where
+  the iteration's arguments are gone, and none of its arguments: each element's callee could run the method on other
+  arguments while the caller assumed its own call ran. `6126221c0` binds the arguments the call names where it runs,
+  against the unlocking of the input the epilogue checks for the element the call claims. A table of received function
+  pointers does not bind its callees' arguments: their methods are not known at compile time. Test:
+  `AliasedCalleeSites.test.ts`.
+- **Loops over a state array call every element in turn, against the array the loop saw** (found 2026-10-26 by a
+  fifth review; both accepted at the VM). The epilogue of a loop over a state array runs every element's callee, but
+  the body's calls only had to take increasing elements, so a loop that skipped an element or stopped before the last
+  (a condition, a `break`, an index list naming fewer, `fns[i](v)` over a table of fixed-method pointers, which lowers
+  to an address array and missed `9abf04ce5`'s rule for received tables) still ran the others, on arguments the
+  spender picked. The epilogue read a dynamic array as it stood before the function's writes and a packed array or a
+  varying table's selector array as it stood after them, so a write before the loop (`fns[0] =
+  ICounter(a).increment`) had the replaced callee run instead of the new one. `5311db02e` makes every call of such a
+  loop take the element after the last one claimed and the last claim be the last element, or no call be made (then
+  no callee is checked), and reads the arrays as the loop saw them: before the writes when they all follow the loop,
+  after them when they all precede it. Writes to an array's loop cache count as its writes; a function writing the
+  array inside the loop, or on both sides of it, is refused at compile time (`LOOP_ARRAY_WRITTEN_AROUND_CALLS`). Test:
+  `AliasedCalleeSites.test.ts`.
+- **Arguments of a call through a table of pointers** (open since `6126221c0`; accepted at the VM). A call on an
+  element of a table of received function pointers, or of a varying-method table, bound its callee's identity and
+  method after the loop but none of its arguments, as the table's methods vary by element: each callee could run its
+  method on other arguments. The elements share the table's function type, whose parameters the call names, so
+  `fc5f4f09b` binds the arguments where the call runs, as on any state-array element: a varying table's callee at its
+  laid-out input, a received table's at the next entry of the witness list the epilogue checks, read in turn as the
+  calls take the elements. Test: `AliasedCalleeSites.test.ts`.
+- **Loop-array writes through collection loops, pointer calls and call options** (found 2026-10-26 by a sixth review;
+  compile probes). `5311db02e` placed a function's writes to a loop's arrays relative to the outermost `while` or `do`
+  around its calls: a collection loop (`for (k in this.m)`) around the calls did not count, so a write inside it was
+  taken for one after the loop and the epilogue checked the array as it stood before the write; a call through an
+  internal function pointer counted at the pointer's reference, not at its call, and a pointer held in state was not
+  seen; a write in a call's options (`{value: f()}`) was not walked. `5a475d031` counts a collection loop as a loop, a
+  pointer call as a write wherever any of the contract's functions writes the arrays, and walks call options. The
+  review also found a varying-method table's arguments unbound (accepted at the VM), closed by `fc5f4f09b`, which it
+  predated. Test: `AliasedCalleeSites.test.ts`.
+- **Overloaded callee methods, table element types and overloaded writers** (found 2026-10-26 by a seventh review;
+  the first accepted at the VM). An external call to an overloaded method took the first declaration of its name
+  everywhere: its compile-time selector could pin another overload's (a call naming `hear(uint256, uint256)` pinned
+  `hear(bytes)`), and its arguments, method and call record went unbound because the name was not unique. A table of
+  fixed- or varying-method pointers accepted an element whose method takes other parameters than the table's type,
+  leaving that method's extra arguments free. The pointer-call write check scanned a map keyed by function name, so
+  an overload hid the array's writer. `4f2589e8c` resolves a call to the overload its argument count selects,
+  recorded on the call for its selector, argument types and record, and refuses a call two overloads of its arity
+  could take; requires every table element to name one method of the table's type; and scans every function. Test:
+  `AliasedCalleeSites.test.ts`.
+- **The overload a table holds, deploy folds and interface overrides** (found 2026-10-26 by an eighth review; the first
+  accepted at the VM). A varying-method table stored `IT.hit.selector`, resolved to the first `hit` declared, while
+  its type and its call bind another overload, so the stored method took an argument no one binds. An interface
+  redeclaring its parent's method counted twice, so a table of it was refused (a regression from `4f2589e8c`). A
+  contract's internal overload passed as a table element and resolved an external call. A same-transaction deploy
+  folded the first method of the called name by position (`c.set(5, 7)` with `set(int)` first baked `v = 5`). The
+  evmCompat payable check, the read-only selector and the framed read and argument types took a unique name or the
+  first method. `1fce472ed` makes a table's selector name the overload of its parameter types and refuses a source
+  `IFace.m.selector` of an overloaded `m`, as Solidity does; counts methods one per signature and only those another
+  contract calls; folds the selected overload and refuses another arity; and gives those checks the selected
+  overload. Test: `AliasedCalleeSites.test.ts`, `DeployThenCallFold.test.ts`.
+- **Foreign pointer types, calls through pointer parameters, table copies** (found 2026-10-26 by a ninth review; the
+  first accepted at the VM). A single foreign pointer of a narrower type than its method (`function(uint256)
+  external cb = IT(a).big` with `big(uint256, uint256)`) compiled, as a state variable, a struct field or a local: those
+  lowerings checked the interface and method name only and rewrote the call before type checking, so it bound one
+  argument and left the second to the spender. A call through an external pointer an internal helper receives became
+  an external call only after the survey that decides whether helpers making external calls are inlined, so a
+  contract whose only call was that one kept it inside the helper's invoked body, where no entry point binds a
+  callee (its honest spend failed at preflight). A whole table copy from a table of another method moved the
+  addresses only. A constant `IFace.m.selector` of an overloaded `m` folded the first declaration, and the framed
+  head took a call's selector by name when no compile-time selector was set. `e10d574f9` requires every foreign member
+  a pointer or table holds to name one method of its type, inlines helpers whenever a contract has function pointers
+  and refuses an external call left in an invoked body of a direct build, allows a whole table copy only between
+  tables of one interface and method, refuses that constant selector, and gives the framed head the selected
+  overload. Test: `ForeignPointerTypes.test.ts`. The same review found a deploy-then-call typed by an interface folding
+  the deployed contract's overload without comparing parameters (`ISet.set(bytes)` folded `Child.set(int)`):
+  `68e8e247e` folds it only into a function of the interface method's parameters. Test: `DeployThenCallFold.test.ts`.
+  Left as found (fail closed): a static low-level call's result is typed by the first overload of the name it encodes.
+- **Looped calls on a message-bus entry, a pointer helper's calls, pointer types through receivers, helpers and
+  arguments** (found 2026-10-26 by a tenth review; the first read from the emitted script). A message-bus build, the
+  default for a contract that makes calls, leaves a looped call to a fixed target to its route, which binds it row by
+  row. The selector dispatcher still ran the entry's own body for the entry's selector, and that body checks no
+  callee for the call (its loop ran the counter alone), so a spend naming that selector advanced the caller with the
+  callee run once, on another method or not at all. The SDK refuses to build that spend; a hand-built one met no
+  check. It held whether the route admitted the entry or not, and a default build without a route kept such an entry
+  as its whole program. A call made by a helper an internal function pointer reaches (`g = k ? h : h2; g(v)`) was
+  bound on neither path of a message-bus build: the effect analysis does not follow the pointer, and the refusal of
+  a call in an invoked body applied to direct builds only. The ninth review's type check of a foreign pointer missed
+  an interface-typed receiver (`IT t; .. f = t.big`), a member passed to a single-return helper (substituted by
+  position, so named arguments swapped) and a member passed to an internal or external call (split into its address
+  and selector unchecked; the argument binding then counted the pair as one argument and left the next unbound), and
+  it read a named struct constructor by position; named arguments of an external call lost the split selector.
+  `9ba15c3a0` marks such an entry `routeOnly` in its ABI and makes its entry body's per-iteration loop branch fail
+  closed (`OP_0 OP_VERIFY` before the counter): the route re-derives the loop row by row in its own handler and never
+  runs the entry body, so a direct spend of the entry's own selector passes only with an empty loop (no callee) and a
+  direct run that enters the loop (>= 1 iteration) is rejected at the VM, while the routed spend keeps its per-row
+  callee binding. The guard copy lives only in the entry body, not in the shared loop-body or the route's handler. A
+  routeOnly fallback's or receive's arm, and a sole routeOnly entry's whole program, still fail outright. It refuses
+  an entry the route does not serve (`refusedFunctions`, `ROUTE_ONLY_ENTRY_UNSERVED`: the SDK is not offered it, and a
+  sole entry's program fails) and compiles a default build direct instead, where the loop runs as counted frames or
+  is refused; refuses a call in an invoked body in every build but the bus's own bodies; and checks the receiver's
+  declared interface, the helper's and the call's parameter types, named arguments (an external call's in its method's
+  order) and named fields. In the marketplace fixture's legacy convention, `publishJobPost` and `updateJobPost` are
+  refused (that route does not admit them); the kernel convention's route serves them. Test:
+  `RouteOnlyLoopCalls.test.ts`, `ForeignPointerTypes.test.ts`, and VM shapes in `RouteOnlyLoopGuard.test.ts`.
+  An eleventh review (2026-10-26) found two LOW gaps in `9ba15c3a0`, both fixed by `e73beccb2`. First, the entry-body
+  guard over-fired: its call-site predicate keyed off `isExternalCallSlotLoopNested`, which is also true for an
+  array-element loop (`IFoo(targets[i]).m(x)`, `loopArrayVar`) and an inline-dispatch loop (`targets[i].call(data[i])`,
+  `inlineLoopDispatch`). Those bind per row INLINE in the entry body (the epilogue's `emitArrayExternalCallLoop`, or the
+  per-iteration call, authenticates every reached element's target, selector, arguments, order and frame) and the
+  epilogue skips them before `noteCallBoundByRoute`, so they are never stamped `routeOnly`, yet the body still carried
+  the `OP_0 OP_VERIFY` guard: an honest direct spend that entered the loop was rejected at the VM though its callees were
+  co-spent. `isRouteBoundLoopedCall` now excludes `loopArrayVar` and `inlineLoopDispatch` slots, matching the epilogue;
+  a bus build of such a shape is byte-identical to its direct build and settles (VM). Second, the returned-pointer check
+  only covered `InlineForeignFunctionPointerReturns`' side-effect-free single-return helper candidates, so a
+  side-effecting or multi-statement helper returning a foreign member of another arity
+  (`function pick() internal returns (function(uint256) external) { this.n = this.n + 1; return IT(a).big; }`, then
+  `function(uint256) external f = pick(); f(v)`) compiled and lowered to a one-argument call that left the member's
+  second argument unbound. `DesugarExternalFunctionPointers` now checks every function's `return <foreign member>`
+  against its declared foreign-pointer return type (`fits`), leaving a returned pointer parameter or a non-member return
+  untouched. Tests: `RouteOnlyLoopArrayDirectSpend.test.ts` (new, VM), `ForeignPointerTypes.test.ts`.
+- **Received function-pointer table callee arity** (found 2026-10-16 Open, VM-confirmed and fixed 2026-10-26). A table
+  of received function pointers (`function(uint256) external[]`, the `reg(function(uint256) external p)` /
+  `registerExternalArray` shape) stores an `(address, selector)` pair whose selector is a run-time witness, so the
+  compile-time `fits` check never sees it. The direct-build epilogue `emitArrayExternalCallLoop` bound only the pointer
+  type's declared arguments (the last pushes before the redeem, `emitDirectCallArgumentPushes` admitting
+  `pushes >= count + 1`), so a stored selector naming a callee method of HIGHER arity than the table's type ran that
+  method with its extra argument(s) left spender-controlled while the caller's own state advanced. The SDK will not
+  auto-build such a co-spend (it derives the co-spend args from the call site's arity and validates them against the
+  method's, `StatefulContract.ts:6788`), but an attacker supplies the higher-arity callee unlocking as a witness; the
+  mem-cash VM accepted it. `9867d9a40` pins the co-spent callee's unlocking to exactly the table-type arity in
+  `emitArrayExternalCallLoop` (`emitRequireExactPushCount`): `count` argument pushes plus the redeem, plus the leading
+  selector push for a multi-method callee, refusing any method whose extra pushes the caller never binds. Emitted only
+  on the received-pointer path (`fnPtrCall && selectorArrayVar`), so no other contract changes bytes. Test:
+  `packages/solidcash/test/e2e/AuditReceivedPointerArity.test.ts` (the higher-arity splice is refused at the caller;
+  the honest 1-arg call settles; pre-fix the splice settled, VM-confirmed).
+- **Received single function-pointer callee arity** (found 2026-10-16 Open, VM-confirmed and fixed 2026-10-27). The
+  same run-time-selector arity hole in a SINGLE received pointer - held as a STORAGE field (`function(uint256)
+  external stored;`) or received as a PARAMETER (`function(uint256) external cb`) and called once, NOT a table/loop.
+  It takes the other codegen path: `emitExternalCallVerification`'s `slot.fnPtrCall` selector branch, which
+  `emitArrayExternalCallLoop`'s fix did not cover. That branch verified only the co-spent selector against the
+  run-time witness, never the push count, and `directCallArgumentBinding` returns undefined for a run-time selector
+  so no argument is bound; a stored/passed selector naming a callee method of HIGHER arity than the pointer type ran
+  that method with its extra argument(s) spender-controlled while the caller advanced its own state. VM-confirmed by
+  splicing the real 2-arg `incWide` unlocking (an attacker witness) onto the co-spent callee of an honest 1-arg call:
+  the mem-cash VM (BCH_2026_05) accepted it for BOTH the storage and the parameter shape. `55f260930` pins the
+  co-spent unlocking to exactly the pointer type's arity plus the redeem (the selector push split off first for a
+  multi-method callee) via `emitPinFnPtrPushCount`/`emitRequireExactPushCount`, the arity read from
+  `sourceCallNode.resolvedCallee.parameterTypes` (`fnPtrDeclaredPushCount`). It is emitted only for a run-time-selector
+  `fnPtrCall` and runtime-gated to the direct co-spend (anchor `< 0`); a genuine proxy/CREATE-anchor route binds its
+  arguments in its own envelope and an anchor-less storage pointer pins unconditionally, so no other contract changes
+  bytes. Test: `packages/solidcash/test/e2e/AuditReceivedSinglePointerArity.test.ts` (higher-arity splice refused,
+  honest 1-arg settles, both storage and parameter; pre-fix both splices settled, VM-confirmed). Argument-value
+  sub-case (VM-confirmed and fixed 2026-10-27, `1e0515e95`): the arity pin caps the push COUNT, not argument
+  VALUES. `directCallArgumentBinding` returns undefined for a run-time selector (its `calleeMethod` is unset too),
+  so a single received pointer's co-spent argument values were unbound and an EXACT-arity co-spend ran the named
+  method on spender-chosen values while the caller advanced its own state. VM-confirmed by splicing an `inc(10)`
+  unlocking onto an honest `inc(3)` co-spend: the mem-cash VM (BCH_2026_05) settled it (v'=10 != v=3) for BOTH the
+  storage and the parameter shape. `1e0515e95` binds the values at the call site, where the arguments are live,
+  not by lifting the shared `|| slot.runtimeSelector` guard: a new `singleReceivedPointerValueBinding` returns the
+  pointer type's declared argument types (from `sourceCallNode.resolvedCallee`, matching `fnPtrDeclaredPushCount`)
+  ONLY for a single received pointer, and the existing `emitDirectCallArgumentBinding` OP_EQUALVERIFYs each against
+  the co-spent unlocking's pushes - the same machinery and anchor gating (bind only when anchor `< 0`) the table
+  path already uses, so a genuine proxy/CREATE-anchor route still binds in its own envelope and the arity pin stays.
+  `directCallArgumentBinding` is unchanged, so the table, proxy, batch, loop and every fixed-method call keep their
+  bytes. Test (same file): the value-substituted co-spend is refused at the argument OP_EQUALVERIFY and the honest
+  value settles, both shapes; pre-fix both splices settled, VM-confirmed.
+
 ### Not changed, by decision
 
 - Direct-convention call model: presence-based `msg.sender` (F1), no sighash fence on ordinary entries (F2), view/static
-  calls in regular mode (kernel alignment). Typed calls binding only the selector, and the held callee-side return
-  binding `ce51b6f18`: superseded by call records (D50), below.
+  calls in regular mode (kernel alignment). Typed calls binding only the selector: superseded by call records (D50),
+  below, for calls whose record digests their arguments, and by the caller's argument binding for the others (Fixed,
+  above; its residuals are open, below). The held callee-side return binding `ce51b6f18`: superseded by D50.
 - DX-9 in the bus, model B, D48, the opt-in `initializeAs: 'hop'` (SDKFRAMED-2), X1 (D11): user decisions.
 - `unsafe` tiers and an authorized upgrade's new code: by design.
 
 ### Open
 
-- Direct looped returning writer (found 2026-10-24 while building direct call ordinals): in a direct compile, a
-  returning call to a fixed target inside a loop checked neither the callee nor the record's category, so its result
-  was unbound. `9323f7bae` closes it for state-preserving calls, which are now counted and check the callee, the
-  record's category and its carrier form on every iteration; a looped returning call that changes state still reads
-  unbound until direct multi-call frames take writes (phase 4).
+- Direct call argument binding, residuals (2026-10-25, `0b94c0f13`). A callee whose redeem drops a budget pad (a user
+  external library) and a forwarding proxy, whose frame names another input the caller cannot tie to the proxy, refuse
+  such calls instead of binding them (fail closed). A CREATE identity backed by a proxy (anchor witness `>= 0`) is
+  left to the compiler route it runs; a spender cannot take that branch for an ordinary target, whose anchor would
+  need the target's category at the target's lock. Repeated or grouped calls run as frames their records bind, and a
+  loop over a parameter array or computed targets binds each callee's method and arguments (`ca737ef32`); pointers,
+  self calls and `staticcall`/`call` modes are unchanged. Found beside it, method binding of a call no record digests
+  (not changed; beside presence-based `msg.sender`, F1, a spender can already make a callee run any method for a
+  co-spent caller): a single-function interface checks no selector, so a callee with more methods than its interface
+  runs any of them; a fallback runs where a short first push meets a multi-function callee, while the caller's
+  selector check skips such a push; with the anchor witness `>= 0` the selector compared is a witness. A void record
+  pinned by the callee (`digest || 0x01`, D50's form) would bind the method as well, at about 150-200 B on a contract
+  without returning entries. A void call in a loop over a state array binds its method (`ca737ef32`) and its
+  arguments (`6126221c0`; through a table of pointers since `fc5f4f09b`).
+  - VM-CONFIRMED EXPLOITABLE (1a), 2026-10-27, mem-cash `BCH_2026_05`, mocknet
+    (`packages/solidcash/test/e2e/AuditSingleInterfaceMethodBinding.test.ts`): a caller naming one method of a
+    single-function interface co-spends a three-method callee. The honest co-spend of the named method settles; a
+    spliced co-spend running a DIFFERENT same-arity method (its own 4-byte selector, trailing argument agreeing with
+    the bound value) also SETTLES while the caller advances its own state. `needsSelectorVerification` is false
+    (`SymbolTableTraversal.ts:9579`, `calleeFns.length > 1`), so no selector is checked; the argument binding pins
+    only the trailing push, not the method. A WIDER method is refused pre-fix (its extra leading push trips the
+    argument-count binding), so same-arity method confusion is the uncovered residual. The test marks the
+    same-arity case `it.fails` so it passes on today's code and turns red when a sound fix lands.
+  - FIX VERDICT (no code change here; STOP for coordinator review of the size/soundness tradeoff). Approach A, a
+    conditional `prefix == 0x04` selector check mirroring the fn-ptr path, is NOT sound: (i) 1b holds -- a callee
+    with a fallback routes a short (non-4-byte) first push to its fallback (`GenerateTargetTraversal.ts:7321-7349`
+    has no selector-size check, unlike the no-fallback arm's `emitEntrySelectorSizeCheck`), below the caller's
+    4-byte guard; and (ii) it false-refuses a single-method callee whose first argument encodes to 4 bytes (read as
+    a selector). Push-count disambiguation removes (ii) but leaves a narrower 1b residual. No unlocking-bytes
+    inspection can be sound, because a fallback decouples the first push from the method that runs; only callee
+    attestation binds it. Approach B (the void record, `digest || 0x01`) is sound but requires the co-spent callee
+    to emit that record: `currentContractSettlesCallRecords` is false for a callee without a returning entry
+    (`GenerateTargetTraversal.ts:5251`), and `voidCallRecord` is set only for grouped or looped direct frame calls
+    that run the callee's multi-call entry (`SymbolTableTraversal.ts:12136-12143`). Binding a single void call to an
+    ordinary (possibly pure-void) callee needs universal void-record emission plus an SDK carrier output -- a
+    cross-cutting protocol change at the stated ~150-200 B/call, scoped as a dedicated workstream, not this item.
+  - Decision (2026-10-27, superseded same day by measurement): an earlier note accepted this as a residual on the
+    estimate that B costs ~150-200 B/void-entry universally and risks the size walls. A branch prototype (B,
+    `40fe33feb` on `fix/pointer-arg-types`, NOT merged) then MEASURED it and the estimate was wrong: non-void
+    contracts change by +0 (correctly scoped); the realistic exploitable shape (multi-method stateful callees, which
+    are multi-entry/outlined or already record-settling) costs ~3-27 B/entry; the ~860-955 B hits are only tiny
+    single-entry pure-void contracts far from the wall. Wall-safe for realistic contracts. B is functionally verified
+    on mocknet (`AuditSingleInterfaceMethodBinding.test.ts` 3/3: honest settles, same-arity and wider co-spends
+    refused; `.fails` removed). B reuses the D50 call-record + returnEvent carrier machinery: a void entry attests
+    `digest || 0x01` at a reserved returnEvent carrier the SDK funder balances; a single-function-interface void
+    caller is marked hasReturnValues+voidCallRecord to read it. So the fix is viable. It is a RELEASE-LEVEL change:
+    it alters every void-entry contract's bytecode (but repin confirms the release-gate fixtures are UNAFFECTED:
+    identity/MarketplaceV1/UnicrowClaim pins all unchanged, so landing B does not disturb the release gate)
+    and changes settlement for every void call, so landing it safely needs broad settlement verification (the e2e
+    suites / release battery), which is user-gated. Landing B is therefore coupled to the release battery; "run the
+    battery" verifies B's broad settlement, updates the pins, and gates the release in one pass. Until then the
+    accept-residual stands as the status quo (documented, regression-marked), now a choice rather than a necessity.
+
+- A loop over a state array of function pointers reads a witness list of callee inputs (strictly increasing within
+  itself). acd85975b requires each element to differ from every single pointer call's witness, but the covenant does
+  not cross-check the list against the function's fixed-offset calls or a second loop over targets, and the fnPtrCall
+  branch of the loop has no `loopCalleeRegionEnd` bound (found 2026-10-25 beside the two call sites, source-traced).
+  Investigated at the VM 2026-10-26: the combined shape is FAIL-CLOSED, not exploitable. A received-pointer table
+  requires a state array, so the contract is stateful; with a table loop beside a fixed call to a coincident target,
+  or beside a second loop, NO honest spend of the combination settles -- every base/anchor/table-index witness
+  combination swept fails the caller's `OP_VERIFY` at preflight (the table-only and fixed-only entries each settle;
+  only the combination fails). With no settling spend, the aliasing double-count is unreachable: there is no run to
+  serve two sites. The code gap is real but inert; closing it defensively (mirror acd85975b: the table witness list
+  joins the claims x fixed-points check and the other-loop check, plus a `loopCalleeRegionEnd` bound) is left until a
+  settling honest spend exists to re-verify against -- the fix would otherwise be unprovable. Caveat: shown via
+  SDK-built transactions with primary-witness rewrites (mem-cash `createTxVerifier`), not a fully hand-built covenant
+  transaction; a definitive low-level verdict would need the latter.
+
+- A loop over a state array that calls only some of its elements is refused at the VM (`5311db02e`): its epilogue
+  would run the others. Supporting it needs the epilogue to check only the claimed elements and the SDK to co-spend
+  only those. The SDK co-spends every element's callee today, also for a loop that calls none, when the caller checks
+  none of them and they run on the SDK's arguments. A function writing the array inside such a loop, or on both sides
+  of it, does not compile in any mode (liveness). Assembly anywhere in such a function counts as a write of the array,
+  and a loop whose element callee is a forwarding proxy or drops a budget pad is refused, as a direct call into one
+  is (fail closed). Any state write a direct build makes through a function value (an internal pointer or a self
+  value `this.f`), a scalar as well as an array, fails at preflight (the invoked body reads a state frame the call
+  through the value never pushes: an invalid stack index or `OP_SPLIT` on an empty item), while the same call by name
+  settles; `StructFunctionValueCalls.test.ts` keeps it as an open gap. It is older than the loop fixes and fails
+  closed (open, liveness): supporting it needs a state frame shared by every function a value can name. (A received
+  pointer's selector naming a higher-arity callee method, whose extra parameters the caller never bound, was the
+  other half of this entry; it is FIXED below, "Received function-pointer table callee arity", 9867d9a40.)
+
+- A witness standing for a loop target computed from a parameter's elements (`pairFor(factory, path[i], path[i + 1])`,
+  `b6c2e106d`) replaces the computation, which in a port usually yields an EVM address rather than the callee's lock:
+  the caller may name any callee there, as for a parameter's element, not only one the computation can reach (noted
+  2026-10-26, source-traced).
+
+- One record read by two callers (found 2026-10-25, source-traced). A record names the call it answers (ordinal,
+  selector, arguments), not its caller, and each caller reads it at its own witness index. Two caller contracts in one
+  transaction that make the same returning call to one callee therefore both accept the callee's single run and
+  record; with a state-changing callee each caller takes an effect that ran once (two "withdrawals" credited for one
+  payment). It follows from the direct call edge being presence-based (F1, above): the callee does not bind which
+  caller it answers. Framed records and bus rows bind the caller. A fix needs the caller to bind the callee's call
+  edge, for example the callee's `msg.sender` witness, which reopens the F1 decision.
+
+- Direct call that leaves its arguments to the callee (2026-10-24, `173951f2e`): a call that passes fewer arguments
+  than the method declares (for example `getAndIncrement()` whose `pubkey`/`sig` are supplied at spend time) cannot
+  compute the D50 call digest, which made the compiler crash. Such a call now skips the digest check: its read is bound
+  by the record's category and the callee's single run, and by the selector only for a multi-function callee, which is
+  the pre-D50 binding. It cannot join a direct multi-call group, so a repeated callee with such a call stays refused.
+  The arguments it names are bound at the caller since `0b94c0f13` (Fixed, above).
+
+- A function an internal function pointer reaches cannot make an external call in any build (since `9ba15c3a0`,
+  liveness): binding one needs the pointer call lowered to a dispatch over the functions the pointer can name, each
+  inlined at its entry. A default build whose route does not serve a looped entry compiles direct, so its other
+  entries lose the route as well.
 
 - A forwarder with neither `delegateForwarding` nor a low-level call slot (artifacts from before 2026-09) still
   places a direct delegate after its full block, which the delegate now refuses (`c1883fb8e`): fail-closed.
@@ -1005,7 +1416,8 @@ Design: `docs/wip/call-records/DESIGN.md`.
 - An opaque read (`call`, Multicall-style loops) checks no digest, as its payload is opaque: its result is bound by
   the exact count and by D8's argument binding. A Multicall over arbitrary non-SolidCash targets stays
   caller-permissive (`loop-call.ts`).
-- R11's view witnesses in a loop stay caller-permissive, as before.
+- R11's view witnesses in a loop stay caller-permissive for a callee the caller chooses (an element of a
+  parameter); a callee the contract fixes runs its views as calls (`b6c2e106d`).
 - A callee spent once runs one call. A fixed callee repeated in a loop is refused by the direct builder; two calls with
   different arguments to one callee fail the count on a direct path. Both run through the atomic composer (message
   bus), which binds each row. Two master threads of one callee in one transaction are refused by the count.
@@ -1031,9 +1443,11 @@ contract's minting NFT can mint, so:
 - ORACLE-5's keeper baton is gone, since ORACLE-6 (`2f6f4df1d`). A pool's baton is a minting NFT of `P`, which no
   container takes for authority.
 - Still holding: ORACLE-1's flag inheritance (the body sub-traversals and the helper-use probe copy
-  `currentContractUsesBlockhash`, `currentContractUsesBlockOracle` and `currentContractReadsBlock`), and ORACLE-4's
-  rule that any `block.*` or `blockhash` read makes a contract stateful (`BlockReadStateful.test.ts`). GENESIS-1's
-  replay holds without its oracle: a child's masters carry their pool in their locks, which the replay checks.
+  `currentContractUsesBlockhash`, `currentContractUsesBlockOracle` and `currentContractReadsBlockhash`). ORACLE-4's
+  rule that any block read makes a contract stateful served the per-contract oracles and went with them when the two
+  lines merged: a `blockhash` reader stays stateful, a `block.*` reader need not be (`BlockReadStateful.test.ts`).
+  GENESIS-1's replay holds without its oracle: a child's masters carry their pool in their locks, which the replay
+  checks.
 - Not holding: ORACLE-3's event-pin arm. `55af13b07` (ORACLE-6) removed it when the pairs became mutable slots, which
   the census of immutable own-category NFTs does not count, and none is needed: a pool coin is of `P`, never the
   reader's category, so the event pin does not see it.
@@ -1202,13 +1616,16 @@ contract's minting NFT can mint, so:
 
 ## Oracle pools (2026-11-04)
 
-Branch `feat/oracle-pools-sushi` (`docs/wip/oracle-pools/SUSHI-PORT.md`) ports master's oracle pools
-(`feat/oracle-pools`, master's `docs/wip/oracle-pools/PLAN.md`) and replaces sushi-port-node's per-contract oracles
-with them: one token category `P` of block-info coins and blockhash ring slots that any contract may read, at three
-covenants in `packages/utils/src/oracle-pool.ts` (design: `packages/solidc/docs/block-and-transaction-properties.md`,
-sections 3, 4 and 11). Every `block.*` or `blockhash` reader stays stateful, by the user's rule. The ORACLE ids are
-this ledger's ("Block oracle hardening (2026-11-03)", whose 2026-11-04 note names what the pools supersede). Evidence
-is the BCH 2026 VM and mocknet; nothing ran on BCHN or a live network.
+Branch `feat/oracle-pools` (`docs/wip/oracle-pools/PLAN.md`) replaces master's single network block-info oracle,
+per-contract `(n -> hash)` pairs and keeper baton with oracle pools, and `feat/oracle-pools-sushi`
+(`docs/wip/oracle-pools/SUSHI-PORT.md`) replaces the framed line's per-contract oracles with them: one token category
+`P` of block-info coins and blockhash ring slots that any contract may read, at three covenants in
+`packages/utils/src/oracle-pool.ts` (design: `packages/solidc/docs/block-and-transaction-properties.md`, sections 3,
+4 and 11). A `blockhash` reader is stateful and a `block.*` reader need not be (section 8.1 there): when the two lines
+merged, this replaced the framed line's rule that every block read makes a contract stateful, which served the
+per-contract oracles (ORACLE-4). The ORACLE ids are this ledger's ("Block oracle hardening (2026-11-03)", whose
+2026-11-04 note names what the pools supersede). Evidence is the BCH 2026 VM and mocknet; nothing ran on BCHN or a
+live network, except the regtest run under "Open".
 
 ### Fixed
 
@@ -1217,7 +1634,7 @@ is the BCH 2026 VM and mocknet; nothing ran on BCHN or a live network.
   (`currentContractUsesBlockhash`, `currentContractUsesBlockOracle`). In a contract whose only stateful feature is
   `blockhash`, such a body compiled as stateless and carried no master covenant, so a call could move the contract's
   minting NFT to an anyone-can-spend lock. Both sub-traversals and the probe inherit both flags, and
-  `currentContractReadsBlock`, which carries the statefulness rule. Test: the ORACLE-1 cases of
+  `currentContractReadsBlockhash`, which carries the statefulness rule. Test: the ORACLE-1 cases of
   `packages/solidc/test/OraclePoolRead.test.ts` (a two-function blockhash-only contract keeps its master covenant in
   a body that reads nothing).
 - **ORACLE-2** (HIGH; gone with the per-contract oracles). A `blockhash(n)` reader trusted a coin of its own
@@ -1256,38 +1673,40 @@ module is master's as of `aed65ad16` (`b6fcf05bc`).
 - **A read is the exact recreation at its own index**: lock, category and capability, commitment, and at least the
   value. A spent mutable NFT may yield one NFT of its category, and the recreation uses that allowance up, so no
   read mints a look-alike beside itself. A read checks no lock, as every NFT of `P` sits at a pool lock.
-- **A sweep forbids any output of `P`** (master's `ced53f9c5`). A swept mutable coin frees its allowance, and the
-  baton an unlimited one, which could otherwise mint a readable forgery.
+- **A sweep forbids any output of `P`** (`ced53f9c5`). A swept mutable coin frees its allowance, and the baton an
+  unlimited one, which could otherwise mint a readable forgery.
 - **The baton's mint census.** Every baton path walks the outputs. An output of `P` carries no fungible amount; the
   one minting output is the baton's recreation at its own index; every other is the recreation of the pool coin
   co-spent at its index, or, on the mint only, a new coin: an exact copy of a co-spent live block-info coin at the
   info lock, or a slot with the kind bit set, the stop bit clear, the baton's owner and depth, and a CLTV-bound
-  height. The update mints nothing, and its new depth is 1 to 256 (master's `c90c7f864`). Tests: the baton cases (a
-  second minting output, an info copy unlike the co-spent coin, a slot with the wrong owner or depth, a fungible
-  amount, a mint inside an update or a sweep, a depth of 0 or 257).
+  height. The update mints nothing, and its new depth is 1 to 256 (`c90c7f864`). Tests: the baton cases (a second
+  minting output, an info copy unlike the co-spent coin, a slot with the wrong owner or depth, a fungible amount, a
+  mint inside an update or a sweep, a depth of 0 or 257).
 - **The kind bit.** Block-info coins and slots share `P` and the mutable capability, and flags bit 7 keeps them
   apart: a slot handed to a `block.*` read fails `flags == 0x00`, and a block-info coin handed to `blockhash` fails
-  `flags == 0x80`. Tests: `OraclePoolRead.test.ts` (a ring slot, a stopped coin and a coin of another category
-  refused as the block-info coin), `OraclePoolBlockhash.test.ts` (above).
+  `flags == 0x80`. Tests: `OraclePoolRead.test.ts` and `OraclePoolBlockInfo.test.ts` (a ring slot, a stopped coin
+  and a coin of another category refused as the block-info coin), `OraclePoolBlockhash.test.ts` (above).
 - **Owner paths** check `hash160(pubkey)` against the commitment's owner, then the signature. A height update raises
   `number` under CLTV and keeps `timestamp`, a time update raises `timestamp` under CLTV, neither rewinds, and a slot
   moves forward by a multiple of its depth to a CLTV-bound height. Tests: `AuditCrypto4KeeperAuthority.test.ts`
   (another key's write, update and rotation refused; a write past its locktime refused),
   `AuditCrypto5OracleRewind.test.ts` (rewinds refused).
-- **The message-bus refusal** (master's `ba5602b83`, here `a3396494e`). A function-pointer target takes `P` from a
-  helper the contract defines at run time from `__oraclePool`, which the detached verifier cannot carry. A verifier
-  body that invokes it, or makes an indirect call while the contract defines it, is refused as
-  `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`, so no verifier runs a pointer reader without its binding. Tested on the
-  verifier extraction alone (`OraclePoolBusVerifierRefusal.test.ts`); by reading, no source shape reaches it.
+- **The message-bus refusal** (`ba5602b83`). A function-pointer target takes `P` from a helper the contract defines
+  at run time from `__oraclePool`, which the detached verifier cannot carry. A verifier body that invokes it, or
+  makes an indirect call while the contract defines it, is refused as `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`, so no
+  verifier runs a pointer reader without its binding. Tested on the verifier extraction
+  (`OraclePoolBusVerifierRefusal.test.ts`); it catches `blockhash` pointer reads too.
 
 ### Open
 
 - Trust: the owner key writes every block field and hash unchecked, and can stop or sweep coins, which halts every
-  reader bound to the pool, as readers cannot change pools. An owner is a single key; multisig owners are open.
+  reader bound to the pool, as readers cannot change pools. An owner is a single key.
 - Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
   its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
   the genesis of a pool someone else made.
 - A framed child binds the pool its creator's constants were computed with, for every creation: moving such
   children to another pool takes a creator deployed with new constants.
-- The regtest pool code has not run, here or on master. `docs/framed/SPEC_FRAMED_TRANSACTION.md` and
-  `docs/framed/CREATE2_IDENTITY.md` still describe the validator's oracle admission and the replay's oracle.
+- The regtest, Electrum and MemCash pool code ran on BCHN regtest and the devnet (16a7cc23f), which found and
+  fixed two bugs: a young chain's ring lacked slots (208c8dd5a), and Electrum's concurrent requests failed
+  (d3fbbfea9). `docs/framed/SPEC_FRAMED_TRANSACTION.md` and `docs/framed/CREATE2_IDENTITY.md` still describe the
+  validator's oracle admission and the replay's oracle.

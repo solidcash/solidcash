@@ -225,7 +225,8 @@ export function materializeExternalCallOutputs(
       const nftHasUpdate = !nftIsImmutable
       && stateUpdatesTouchNft(group.stateLayout, bStateUpdates, nftIdx);
       const inputCommitment = nftUtxo.token?.nft?.commitment;
-      const commitment = (nftHasUpdate ? undefined
+      // A multi-call spend whose frames write leaves the records its probe settled.
+      const commitment = group.callBatch?.dataCommitments?.[i] ?? (nftHasUpdate ? undefined
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
       ?? (nftHasUpdate || !inputCommitment
         ? buildPushdataCommitment(
@@ -562,6 +563,24 @@ export function materializeExternalCallOutputs(
               commitment: binToHex(event.commitment.slice(0, 24)),
             })),
           });
+        }
+        // A multi-call spend holds one record per frame, each at its frame's record slot.
+        const batchFrame = slot?.kind === 'returnEvent' ? group.callBatch?.frames[slot.slotIndex ?? 0] : undefined;
+        if (batchFrame !== undefined) {
+          const identity = `external-call:${groupIndex}:${slot!.slotIndex ?? 0}`;
+          addReturnOutput(builder, identity, {
+            to: new Uint8Array([0x51]),
+            amount: BALANCED_SLOT_SATOSHIS,
+            token: {
+              amount: 0n,
+              category: group.categoryId,
+              nft: {
+                capability: 'none',
+                commitment: returnEventNftCommitment(batchFrame.result, host.callRecordDigest?.(identity)),
+              },
+            },
+          });
+          continue;
         }
         if (slot?.kind === 'returnEvent' && group.returnEventInBlock) {
           const returnIdentity = `external-call:${group.fusedReturnGroupIndex ?? groupIndex}`;

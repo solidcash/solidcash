@@ -37,9 +37,9 @@ describe('atomic verifier bytecode specialization', () => {
     // index, and the route pins its records past the block, skipping its verifier by the bound index.
     // +8 B composed once the route binds its participant's physical size and claims only that block.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 657,
+      direct: 767, // B+F1 void-record/edge overhead on the direct verifier
       composed: 1805,
-      frameworkTax: 1148,
+      frameworkTax: 1038,
     });
     expect(composed).toBeLessThanOrEqual(1900);
     expect(composed - direct).toBeLessThanOrEqual(1360);

@@ -11,6 +11,7 @@ import {
   encodePushdataValue,
   parseChunkCommitment,
   type AbiFunction,
+  type Artifact,
   type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -18,6 +19,9 @@ import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { calleeDeclaresNoReturnValue, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 import { createReadOnlyDynamicChunkUnlocker, getDynamicChunkAddress } from './covenant-helpers.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
@@ -68,6 +72,17 @@ import {
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
+
+/**
+ * A raw call into a function that returns nothing answers with no record (D50), so its group plans no carrier and
+ * the caller's return witness stays -1, as late expansion plans it.
+ */
+function directGroupEcSlot(ec: ExternalCallAbi, group: ExternalCallUtxoGroup | undefined): ExternalCallAbi {
+  if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.compilerRoute) return ec;
+  const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+  const selected = artifact?.abi.find((entry) => entry.name === (group.logicalFunctionName ?? group.functionName));
+  return selected !== undefined && (selected.outputs?.length ?? 0) === 0 ? { ...ec, hasReturnValues: false } : ec;
+}
 
 export type OrchestrateCreateBuilderExternalCallsHost = {
   readonly categoryId: string;
@@ -425,6 +440,31 @@ export async function orchestrateCreateBuilderExternalCalls(
   const loopIdxRanges = expandedExternal.loopIdxRanges;
   let callerStateSnapshot = expandedExternal.callerStateSnapshot;
   let resolvedExternalCalls = expandedExternal.resolvedExternalCalls as ExternalCallInfo[] | undefined;
+  // A direct caller's grouped calls run as frames of one multi-call spend of their callee, in execution order.
+  const directBatches = await planDirectCallBatches(
+    {
+      planExternalCallOccurrences: (call, frame) => host.callerContract._planExternalCallOccurrences(call, frame),
+      resolveExternalExpressionReturns: (sources, functionArgs, state, callerInputs, self, producerCalls) =>
+        host.callerContract._resolveExternalExpressionReturns(
+          sources, functionArgs, host.callerContract, state, callerInputs, self, producerCalls, false,
+        ),
+      evaluateExternalExpression: (...a: any[]) => host.callerContract._evaluateExternalExpression(...a),
+      hydrateExternalPredicateState: (...a: any[]) => host.callerContract._hydrateExternalPredicateState(...a),
+      getFullState: () => host.getFullState(),
+    },
+    {
+      abiFunction,
+      args,
+      artifact: host.inner.artifact,
+      externalCalls,
+      resolvedExternalCalls: resolvedExternalCalls as any,
+      callerState: callerStateSnapshot,
+      publicSelfAddress,
+    },
+  );
+  externalCalls = directBatches.externalCalls;
+  resolvedExternalCalls = directBatches.resolvedExternalCalls as ExternalCallInfo[] | undefined;
+  callerStateSnapshot = directBatches.callerState;
 
   // A published callsite that the planner reaches but cannot pin has no co-spendable callee. Building anyway
   // leaves its topology witnesses at their defaults (every master index 0), which the caller covenant rejects
@@ -755,6 +795,29 @@ export async function orchestrateCreateBuilderExternalCalls(
       }
     }
 
+    await consolidateDirectCallBatches({
+      deriveFrameResult: async (group, frameFunction, frameArgs) => {
+        const callee = group.externalContract;
+        const calleeArtifact = callee.inner.artifact;
+        const output = frameFunction.outputs?.length === 1 ? frameFunction.outputs[0]! : undefined;
+        if (output === undefined) {
+          throw new Error(`A multi-call frame of ${calleeArtifact.contractName}.${frameFunction.name}() must return `
+            + 'one value');
+        }
+        const value = await callee._deriveReturnValue(
+          frameFunction.name, [...frameArgs], undefined, frameFunction, undefined,
+          publicSelfAddress, host.categoryId, host.callerContract,
+        );
+        return encodeExternalReturnValue(
+          value, output.type, calleeArtifact.structs ?? calleeArtifact.stateLayout?.structs,
+          resolveExternalResultEncoding(
+            frameFunction.resultEncoding, calleeArtifact, [output.type], `function '${frameFunction.name}' result`,
+          ) === 'evm-abi-v1',
+          calleeArtifact.enums,
+        );
+      },
+    }, externalCallUtxoGroups);
+
     // Track per-group metadata (direct + transitive)
     const groupMetas: ExternalGroupMeta[] = [];
     const directGroupCount = externalCallUtxoGroups.length;
@@ -762,7 +825,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     // Build metadata for direct groups
     for (let i = 0; i < directGroupCount; i++) {
       groupMetas.push({
-        ecSlot: externalCalls[i],
+        ecSlot: directGroupEcSlot(externalCalls[i], externalCallUtxoGroups[i]),
         callerCategoryId: externalCallUtxoGroups[i].callerIdentity?.categoryId ?? host.categoryId,
         parentGroupIndex: -1,
       });
@@ -969,10 +1032,19 @@ export async function orchestrateCreateBuilderExternalCalls(
     if (externalCallOutputStart >= 0) {
       let cursor = externalCallOutputStart;
       let tailRank = 0;
+      // A multi-call unit reads its frame's record in the batch block of the unit spending the callee master.
+      const batchCursors = new Map<number, number>();
       for (let i = 0; i < externalCallUtxoGroups.length; i++) {
         const g = externalCallUtxoGroups[i];
         const offset = g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset;
-        if (groupMetas[i].ecSlot.hasReturnValues) {
+        if (g.callBatch !== undefined) batchCursors.set(i, cursor);
+        const batchUnit = g.callBatchUnit;
+        const batchPhysical = batchUnit?.physical === undefined ? undefined : externalCallUtxoGroups[batchUnit.physical];
+        if (batchUnit !== undefined && batchPhysical?.callBatch !== undefined
+          && batchCursors.has(batchUnit.physical!)) {
+          returnEventIndexMap.set(i, batchCursors.get(batchUnit.physical!)! + batchPhysical.callBatch.recordOffset
+            + batchUnit.witnessOffset);
+        } else if (groupMetas[i].ecSlot.hasReturnValues) {
           // A callee that declares no return value carries no record, even though a raw call's slot declares
           // `(bool, bytes)`. State the absent coordinate so the caller reads empty returndata; it must not claim
           // a tail slot another group's carrier occupies.
@@ -1079,6 +1151,24 @@ export async function orchestrateCreateBuilderExternalCalls(
     maxBhLocktime = Math.max(maxBhLocktime, outStateResult.maxBhLocktime);
   }
 
+
+  // F1: tag each co-spent call with its caller and the slot it occupies in that caller, so the builder pins each
+  // caller's edge in the caller's own category. A top-level call's slot is its group index (groups map 1:1 to the
+  // entry's external-call slots); a nested call's slot is its position among its parent's co-spent callees.
+  {
+    const siblingSlot = new Map<number, number>();
+    for (let i = 0; i < externalCallUtxoGroups.length; i++) {
+      const parent = allGroupParentIndices[i] ?? -1;
+      externalCallUtxoGroups[i].edgeParentIndex = parent;
+      if (parent < 0) {
+        externalCallUtxoGroups[i].edgeEcSlot = i;
+      } else {
+        const next = siblingSlot.get(parent) ?? 0;
+        externalCallUtxoGroups[i].edgeEcSlot = next;
+        siblingSlot.set(parent, next + 1);
+      }
+    }
+  }
 
   return {
     rootProducerPath,

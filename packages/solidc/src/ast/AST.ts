@@ -190,13 +190,13 @@ export class ContractNode extends Node implements Named {
   usesBlockOracle: boolean = false;
   // Set on a contract another one embeds: the pool coin kinds it and the bound contracts it creates read.
   poolTreeReads?: { readonly blockInfo?: true; readonly blockhash?: true };
-  // Set by SynthesizeBlockOracle when anything reads a block.* global or blockhash(n). Any such read makes the
-  // contract stateful.
-  readsBlockData: boolean = false;
+  // Set by SynthesizeBlockOracle when anything reads blockhash(n). The mark stays once set: a re-run on a split root
+  // sees forwarders, not the reads.
+  blockhashReadMarked: boolean = false;
 
-  /** Whether a block.* or blockhash read makes this contract stateful. */
-  get readsBlock(): boolean {
-    return this.readsBlockData || this.usesBlockhash || this.usesBlockOracle;
+  /** Whether a blockhash read makes this contract stateful. A block.* read slices a pool coin and does not. */
+  get readsBlockhash(): boolean {
+    return this.blockhashReadMarked || this.usesBlockhash;
   }
   // Set by SymbolTableTraversal once block layouts are known: any entry reserves the satoshi container slot, so an
   // in-place upgrade must migrate (or drain) that container. Read by the upgrade codegen.
@@ -508,6 +508,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
   declare hasContractInstantiation?: boolean;
+  // F1 (caller-attested call edges): a direct, non-framed, non-route stateful entry that reads a contract-caller
+  // msg.sender. Its codegen computes the entry's own call digest and the msg.sender minting path requires a
+  // co-spent caller-category edge record matching it, so a caller is bound by its call, not merely co-spent.
+  declare requiresCallerEdge?: boolean;
   // Set by EnsureFinalRequireTraversal on a direct entry point with no covenant of its own, whose early-return paths it
   // verifies. Only there does EarlyReturnTransformation seal an unguarded bare return (SEM-1).
   declare sealsUnguardedReturns?: boolean;
@@ -2990,6 +2994,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** The callee method this call runs: the overload its argument count selected, by its declared parameters. */
+  resolvedCallee?: { name: string; parameterTypes: Type[]; stateMutability?: string };
   /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
   resultArrayOutput?: number;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
@@ -3014,6 +3020,9 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
   // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
   discardedOpaqueReturn?: boolean;
+  // Expression form whose `data` the body never reads: a direct entry reads no record, so a void callee can answer
+  // it, and `data` is empty.
+  unreadOpaqueReturn?: boolean;
   // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
   // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
   rawValueTransferOnly?: boolean;
@@ -3161,6 +3170,8 @@ export interface ExternalCallSlot {
   // Carried so witness-param synthesis can back-link each `.definition` to the freshly created symbol (the nodes
   // are created in the collect phase, before the param symbol exists).
   loopWitnessArrayIds?: IdentifierNode[];
+  /** The declaration of a loop's receiver local (`name#k`, its k-th declaration of that name), its owner key. */
+  loopReceiver?: string;
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;
@@ -3188,11 +3199,15 @@ export interface ExternalCallSlot {
   /** A returning direct call's record: the callee method's selector and declared parameter types, for its digest. */
   callRecordSelector?: Uint8Array;
   callRecordParameterTypes?: Type[];
+  /** The declared parameter types of the fixed method a call names, for binding the call's arguments. */
+  calleeMethod?: { parameterTypes: Type[] };
   /**
    * A direct call to a callee this function calls several times: the ordinal its record digests, fixed at compile
    * time or counted at run time by the group's counter (docs/wip/call-records/DESIGN.md, section 4). Absent: 0.
    */
   callOrdinal?: ExternalCallOrdinalAbi;
+  /** A grouped void call: it reads its frame's record, `digest || 0x01`, through a return slot of its own. */
+  voidCallRecord?: boolean;
   // Same-address varying-method pointer: the RUNTIME selector expression (`cond ? a.selector : b.selector`).
   // The epilogue evaluates it and asserts the co-spent callee's selector == it, instead of the witness param.
   runtimeSelector?: ExpressionNode;
@@ -3603,6 +3618,8 @@ export class AddressSendExpressionNode extends ExpressionNode {
 export class FieldAccessNode extends ExpressionNode implements Named {
   structType?: StructType;
   enumType?: EnumType;
+  /** The parameter types naming one overload of a method member (a compiler-built `IFace.m.selector`). */
+  overloadParameterTypes?: Type[];
 
   constructor(
     public expression: ExpressionNode,

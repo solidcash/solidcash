@@ -60,7 +60,7 @@ export type {
 
 // Task system
 export {
-  task, subtask, runTask, getTask, getTasks, parseTaskArgs, clearTasks, TaskBuilder,
+  task, subtask, runTask, getTask, getTasks, parseTaskArgs, formatTaskHelp, clearTasks, TaskBuilder,
 } from './tasks.js';
 export type { TaskDefinition, TaskArguments, ActionFn } from './tasks.js';
 

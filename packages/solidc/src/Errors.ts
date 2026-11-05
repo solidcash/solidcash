@@ -80,6 +80,14 @@ export type SolidcDiagnosticCode =
   | 'RETURN_RESULT_UNBOUND'
   // A source function whose selector is the multi-call entry's reserved selector.
   | 'CALL_BATCH_RESERVED_SELECTOR_COLLISION'
+  // A loop calling through a state array its function writes inside that loop, or both before and after it.
+  | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
+  // An external call left in an invoked function body, where no entry point lays out or binds its callee.
+  | 'EXTERNAL_CALL_IN_SUBROUTINE'
+  // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
+  | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
+  // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.
+  | 'ROUTE_ONLY_ENTRY_UNSERVED'
   // A message-bus verifier that reaches a function-pointer target reading block.*, whose pool helper it cannot carry.
   | 'MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ'
   // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
@@ -250,6 +258,14 @@ export class AmbiguousOverrideError extends SolidCashError {
 export class ContractStorageTooLargeError extends SolidCashError {
   constructor(node: ContractNode) {
     super(node, 'Contract requires too much storage');
+  }
+}
+
+/** A typed call sends value to a function its interface does not declare payable, as solc refuses. */
+export class NonPayableCallValueError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, functionName: string) {
+    super(node, `Cannot set option "value" on a non-payable function type: '${interfaceName}.${functionName}' `
+      + 'is not declared payable');
   }
 }
 
@@ -1074,6 +1090,12 @@ export class FramedAliasedReadError extends SolidCashError {
 
 // A function-pointer ARRAY form the lowering passes cannot express (yet). Raised with a specific reason
 // instead of the misleading downstream "Undefined state variable '<name>'" once no pass claims the array.
+export class FunctionPointerTypeError extends SolidCashError {
+  constructor(node: Node, pointerName: string, member: string, type: string) {
+    super(node, `'${member}' does not name one method of function pointer '${pointerName}''s type ${type}`);
+  }
+}
+
 export class FnPtrArrayLoweringError extends SolidCashError {
   constructor(
     public node: Node,
@@ -1864,6 +1886,19 @@ export class ExternalReadTargetReassignedError extends SolidCashError {
     super(node, `External read '${interfaceName}(${target})' reads through '${target}', which this function assigns `
       + 'or declares again. A foreign read is pinned to the value its address holds at the end of the function, so '
       + `read '${interfaceName}' through an address this function neither assigns nor declares again`);
+  }
+}
+
+export class AmbiguousExternalOverloadError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, functionName: string, argumentCount: number) {
+    super(node, `'${interfaceName}.${functionName}' has no single overload taking ${argumentCount} argument(s): `
+      + 'a call to it runs the one overload its argument count selects');
+  }
+}
+
+export class AmbiguousSelectorError extends SolidCashError {
+  constructor(node: Node, ownerName: string, functionName: string) {
+    super(node, `'${ownerName}.${functionName}' is overloaded: its selector does not name one method`);
   }
 }
 

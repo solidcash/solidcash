@@ -8,13 +8,15 @@ import {
 } from '../../src/index.js';
 import { buildTypedLoopCallTransaction } from '../../src/loop-call.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
+import { trivialCallee } from '../trivial-callee.js';
 
 // R11 multi-use view+mutate: `IPair pair = IPair(pairFor(p[i], p[i+1])); int r = pair.getReserve(); pair.swap(r)`.
 // The compiler replaces the VIEW getReserve() with a caller-provided per-iteration witness `__internal__viewReturn0[i]`
-// and keeps swap as the single co-spend (loopTargets0). This VM-proves the covenant: it reads viewReturn0[i], co-spends
-// each swap target (identity + selector), and preserves it. Soundness is caller-permissive - a wrong witness feeds
-// wrong values into swap, whose co-spent covenant would reject (Router02 K-invariant); the trivial targets here have no
-// covenant, so this exercises the MECHANISM (witness read + co-spend + selector), not the downstream bound.
+// and keeps swap as the single co-spend (loopTargets0). This VM-proves the covenant: it reads viewReturn0[i],
+// co-spends each swap target (identity, selector and argument), and preserves it. Soundness is caller-permissive - a
+// wrong witness feeds wrong values into swap, whose co-spent covenant would reject (Router02 K-invariant); the trivial
+// targets here have no covenant, so this exercises the MECHANISM (witness read + co-spend + selector), not the
+// downstream bound.
 const SRC = `pragma solidcash >=0.8.0;
 interface IPair { function getReserve() external view returns (int); function swap(int a) external; }
 library L { function pairFor(address a, address b) internal pure returns (address) {
@@ -29,17 +31,16 @@ contract C() {
   }
 }`;
 
-// A trivial co-spend target: `OP_DROP OP_1` drops the selector its unlocking pushes and completes with 1 item.
-const TARGET = hexToBin('7551');
+// swap(int)'s selector, which the caller bakes in, taken from a callee that declares the method.
+const SEL = hexToBin(compileString('pragma solidcash >=0.8.0;\ncontract P() { function swap(int a) { require(a >= 0); } '
+  + 'function getReserve() { require(true); } }').abi.find((entry) => entry.name === 'swap')!.selector!);
 const OP_TRUE = hexToBin('51');
-const SEL = hexToBin('deadbeef'); // the swap selector we bind both the param and the co-spent unlocking to
 
-function mkUnlocker(sel: Uint8Array): never {
-  return {
-    generateLockingBytecode: (): Uint8Array => TARGET,
-    generateUnlockingBytecode: (): Uint8Array => new Uint8Array([0x04, ...sel]),
-  } as never;
-}
+// A trivial co-spend target that runs `swap(amount)` behind `sel`: the caller checks both against its unlocking.
+const swapCallee = (amount: bigint, sel: Uint8Array = SEL): ReturnType<typeof trivialCallee> =>
+  trivialCallee([amount], sel);
+// Every stand-in pushes three items, so all share one lock.
+const TARGET = swapCallee(0n).lock;
 
 async function buildTx(sels: [Uint8Array, Uint8Array]): Promise<TransactionBuilder> {
   const art = compileString(SRC);
@@ -58,8 +59,8 @@ async function buildTx(sels: [Uint8Array, Uint8Array]): Promise<TransactionBuild
 
   const tb = new TransactionBuilder({ provider });
   tb.addInput(callerUtxo, contract.unlock.run(p, viewReturn0, 1n, loopTargets, SEL) as never);
-  tb.addInput(t0, mkUnlocker(sels[0]));
-  tb.addInput(t1, mkUnlocker(sels[1]));
+  tb.addInput(t0, swapCallee(10n, sels[0]).unlocker);
+  tb.addInput(t1, swapCallee(20n, sels[1]).unlocker);
   tb.addInput(funder.utxo, funder.unlocker);
   tb.addOutput({ to: contract.address, amount: 100000n });
   tb.addOutput({ to: TARGET, amount: 1500n }); // preserved swap targets (bytecode + category)
@@ -106,8 +107,8 @@ describe('R11 multi-use view+mutate: view-witness read + swap co-spend (mechanis
     const tb = new TransactionBuilder({ provider });
     // run(p, viewReturn0, viewReturn1, viewReturn2, externalCallInputBase, loopTargets0, selector)
     tb.addInput(callerUtxo, contract.unlock.run(p, vr, vr, vr, 1n, loopTargets, SEL) as never);
-    tb.addInput(t0, mkUnlocker(SEL));
-    tb.addInput(t1, mkUnlocker(SEL));
+    tb.addInput(t0, swapCallee(20n).unlocker);
+    tb.addInput(t1, swapCallee(40n).unlocker);
     tb.addInput(funder.utxo, funder.unlocker);
     tb.addOutput({ to: contract.address, amount: 100000n });
     tb.addOutput({ to: TARGET, amount: 1500n });
@@ -139,7 +140,7 @@ describe('R11 multi-use view+mutate: view-witness read + swap co-spend (mechanis
       )],
       targets: [TARGET, TARGET],
       callerUtxo,
-      cospends: [{ utxo: t0, unlocker: mkUnlocker(SEL) }, { utxo: t1, unlocker: mkUnlocker(SEL) }],
+      cospends: [{ utxo: t0, unlocker: swapCallee(20n).unlocker }, { utxo: t1, unlocker: swapCallee(40n).unlocker }],
       funder,
       viewReturns: [[10n, 20n], [10n, 20n], [10n, 20n]], // reserve0/1/2 per iteration
       selector: SEL,

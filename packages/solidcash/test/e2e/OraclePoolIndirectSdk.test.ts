@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, decodeTransaction, hexToBin } from '@bitauth/libauth';
 import { ORACLE_POOL_PARAMETER, POOL_FLAG_SLOT, type Artifact } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
-import { Contract, Signer, type TransactionBuilder } from '../../src/index.js';
+import { Contract, Signer, TransactionBuilder } from '../../src/index.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { getContractFactory, StatefulContract, upgrades } from '../../src/stateful/index.js';
 import {
-  isPoolInfoInput, isPoolSlotInput, poolSlotCoin, readsPoolOnlyIndirectly, selectPoolSlot, type PoolBlockFields,
+  isPoolInfoInput, isPoolSlotInput, poolInfoUnlockable, poolSlotCoin, readsPoolOnlyIndirectly, selectPoolInfoCoin,
+  selectPoolSlot, type PoolBlockFields,
 } from '../../src/oracle/pool/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { addProvenUtxo, createTestProvider, mintTestOraclePool, setupStatefulUtxos } from '../test-util.js';
@@ -16,9 +17,8 @@ import { alicePriv } from '../fixture/vars.js';
  * A block.* or blockhash read reached only through a function pointer (oracle pools, phase 3). An indirect call hands
  * its target no coin index, so the target finds the first coin of the pool its contract binds that answers it, and
  * the entry publishes no index or slot, only `indirectPoolReads`. The SDK co-spends a coin of each kind for every
- * call of such an entry, at the root or in a nested or delegate callee, recreated at its own index, and the read
- * checks the coin's category and flags, not its lock. Every block.* reader is stateful on this branch, so each
- * reader here is deployed.
+ * call of such an entry, stateless or stateful, at the root or in a nested or delegate callee, recreated at its own
+ * index, and the read checks the coin's category and flags, not its lock.
  */
 
 const POINTER_READER = `
@@ -168,6 +168,32 @@ function freshPrivateKey(): Uint8Array {
 
 const artifact = compileString(POINTER_READER);
 
+/** Spend the reader once; unless `coins` are given, the builder co-spends a coin of its pool itself. */
+async function spend(
+  provider: MockNetworkProvider, reader: Contract, expected: bigint, live: boolean,
+  coins?: Parameters<typeof poolInfoUnlockable>[],
+): Promise<string> {
+  const utxo = await provider.addUtxo(reader.address, randomUtxo({ satoshis: 100_000n }));
+  const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: coins !== undefined })
+    .addInput(utxo, reader.unlock.check(expected, live))
+    .addOutput({ to: reader.address, amount: 90_000n });
+  for (const [coin, category] of coins ?? []) {
+    const { unlocker, ...utxoOf } = poolInfoUnlockable(coin, category);
+    builder.addInput(utxoOf, unlocker).addOutput({
+      to: unlocker.generateLockingBytecode(), amount: utxoOf.satoshis, token: utxoOf.token,
+    });
+  }
+  return (await builder.send()).txid;
+}
+
+/** The pool categories whose mutable NFT transaction `txid` recreates. */
+async function recreatedPools(provider: MockNetworkProvider, txid: string): Promise<string[]> {
+  const transaction = decodeTransaction(hexToBin(await provider.getRawTransaction(txid)));
+  if (typeof transaction === 'string') throw new Error(transaction);
+  return transaction.outputs.flatMap(({ token }) => (token?.nft?.capability === 'mutable'
+    ? [binToHex(token.category)] : []));
+}
+
 describe('oracle pool reads reached only through a function pointer', () => {
   it('compiles an entry that takes the pool binding and no coin index', () => {
     expect(artifact.usesBlockOracle).toBe(true);
@@ -177,6 +203,48 @@ describe('oracle pool reads reached only through a function pointer', () => {
     expect(check.usesBlockOracle).toBeUndefined();
     expect(check.indirectPoolReads).toEqual({ blockInfo: true });
     expect(readsPoolOnlyIndirectly(artifact)).toBe(true);
+  });
+
+  it('co-spends a coin of the bound pool for a call that reads through the pointer', async () => {
+    const provider = createTestProvider() as MockNetworkProvider;
+    const pool = await mintTestOraclePool(provider, POOL_TIP);
+    const reader = new Contract(artifact, [], { provider, oraclePool: pool });
+    expect(reader.oraclePool).toBe(pool);
+
+    const txid = await spend(provider, reader, POOL_TIP.timestamp, true);
+    expect(txid).toMatch(TXID);
+    expect(await recreatedPools(provider, txid)).toEqual([pool]);
+    // The target slices the coin it found: a timestamp the pool does not hold is refused.
+    await expect(spend(provider, reader, POOL_TIP.timestamp + 1n, true)).rejects.toThrow(SCRIPT_FAILURE);
+    // A call that takes the other arm reads nothing, and still co-spends a coin.
+    const zero = await spend(provider, reader, 0n, false);
+    expect(await recreatedPools(provider, zero)).toEqual([pool]);
+  });
+
+  it('reads the provider\'s pool by default, at the clock its keeper publishes', async () => {
+    const provider = createTestProvider() as MockNetworkProvider;
+    const reader = new Contract(artifact, [], { provider });
+    const category = provider.oraclePoolCategory!;
+    expect(reader.oraclePool).toBe(category);
+    const { fields } = (await selectPoolInfoCoin(provider, category))!;
+    const txid = await spend(provider, reader, fields.timestamp, true);
+    expect(await recreatedPools(provider, txid)).toEqual([category]);
+  });
+
+  it('finds the coin by its category: a coin of another pool is refused, one of the bound pool accepted', async () => {
+    const provider = createTestProvider() as MockNetworkProvider;
+    const pool = await mintTestOraclePool(provider, POOL_TIP);
+    const other = await mintTestOraclePool(provider, POOL_TIP);
+    const reader = new Contract(artifact, [], { provider, oraclePool: pool });
+    const coinOf = async (category: string): Promise<Parameters<typeof poolInfoUnlockable>> => (
+      [(await selectPoolInfoCoin(provider, category))!.utxo, category]);
+
+    // The only pool coin is another pool's, with the same fields at its own pool's lock: the walk passes the last input.
+    const refused = spend(provider, reader, POOL_TIP.timestamp, true, [await coinOf(other)]);
+    await expect(refused).rejects.toThrow(/UTXO index|OP_VERIFY|EQUALVERIFY|non-truthy/);
+    // The walk passes over it to the bound pool's coin.
+    const txid = await spend(provider, reader, POOL_TIP.timestamp, true, [await coinOf(other), await coinOf(pool)]);
+    expect(await recreatedPools(provider, txid)).toEqual([other, pool]);
   });
 
   it('a stateful call co-spends a coin past its block, and a mixed contract\'s pointer entry co-spends too', async () => {

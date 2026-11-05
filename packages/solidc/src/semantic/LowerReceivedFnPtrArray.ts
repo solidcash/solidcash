@@ -26,7 +26,6 @@ import {
   FunctionCallNode,
   FieldAccessNode,
   IdentifierNode,
-  IntLiteralNode,
   VariableDefinitionNode,
   ExpressionNode,
   BlockNode,
@@ -71,8 +70,8 @@ const ZERO_PUSH = 'a no-arg push appends a zero function pointer, whose selector
  *   its bytes4 selector into locals and emits ONE computed-receiver call with a runtime selector and an
  *   SDK-filled witness master index. Value-returning calls work here.
  * - `fns[i](args)` INSIDE a loop is the notify-all idiom -> the BROADCAST covenant (selectorArrayVar + the
- *   `__internal__extcallIdxList` witness); the source loop is harmless iteration and a broadcast cannot return
- *   a value (rejected).
+ *   `__internal__extcallIdxList` witness), which runs every element once after the loop, so each call claims the
+ *   element it indexes in turn. A broadcast cannot return a value (rejected).
  * Mutations (element assign / pop / element or whole delete) rewrite to lockstep two-statement blocks on both
  * arrays; each array's own length header is the table's length (the parser gives the table no `$len`).
  * A whole copy `b = a` between tables of this pass copies the selector array with it, so `b` holds exactly `a`'s
@@ -96,9 +95,9 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
   private localNames = new WeakMap<FunctionDefinitionNode, Set<string>>();
 
   /**
-   * `graphMode` only affects a broadcast (in-loop) receiver: a message-bus graph handler reconstructs one
-   * authoritative row per reached iteration and needs the live element plus its live selector, while the
-   * ordinary broadcast covenant verifies the whole table in its epilogue and must stay index-independent.
+   * `graphMode` only affects a broadcast (in-loop) call: a message-bus graph handler reconstructs one authoritative
+   * row per reached iteration and needs the live selector as well, while the ordinary broadcast covenant verifies
+   * every element against the whole selector array after the loop.
    */
   constructor(private readonly graphMode = false) {
     super();
@@ -389,13 +388,10 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
               'a broadcast call (inside a loop) cannot return a value; call a single element outside a loop');
           }
           const arrId = new IdentifierNode(name); arrId.location = node.location;
-          // The ordinary broadcast covenant verifies the whole table in its epilogue, so its receiver stays
-          // index-independent (fns[0]); the loop variable is not in scope where the receiver is hoisted. A
-          // graph handler executes this callsite once per reached iteration and must reconstruct that row's
-          // exact target and selector from state, so it keeps the live index.
-          const liveIndex = this.graphMode
-            ? this.visit(target.index) as ExpressionNode
-            : Object.assign(new IntLiteralNode(0n), { location: node.location });
+          // The broadcast covenant runs the whole table once after the loop, so each call here claims the element it
+          // indexes, the one after its loop's last claim (the receiver is not hoisted). A graph handler also
+          // reconstructs that row's exact target and selector from state.
+          const liveIndex = this.visit(target.index) as ExpressionNode;
           const elem = new ArrayAccessNode(arrId, cloneNode(liveIndex) as ExpressionNode);
           elem.location = node.location;
           const ifaceId = new IdentifierNode(info.iface); ifaceId.location = node.location;

@@ -19,12 +19,12 @@ import type { BlockSlotKind, FunctionBlockLayout } from '@solidcash/utils';
  * extent and every later block's two bases diverge.
  */
 export const OUTPUT_ONLY_BLOCK_SLOT_KINDS: ReadonlySet<BlockSlotKind> = new Set<BlockSlotKind>([
-  'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deploy',
+  'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deploy', 'callEdge',
 ]);
 
 /** Block slot kinds whose paired output carries an authenticated NFT commitment inside the block. */
 export const EVENT_BLOCK_SLOT_KINDS: ReadonlySet<BlockSlotKind> = new Set<BlockSlotKind>([
-  'event', 'returnEvent',
+  'event', 'returnEvent', 'callEdge',
 ]);
 
 /** Standard value for participant-local sidecar continuation outputs. */

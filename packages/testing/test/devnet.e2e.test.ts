@@ -64,7 +64,10 @@ function spawnCli(args: string[], cwd: string): ChildProcessWithoutNullStreams {
   return child;
 }
 
-function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+function waitForExit(
+  child: ChildProcessWithoutNullStreams,
+  timeoutMs: number,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       try {
@@ -361,33 +364,48 @@ describe('solidhat node end to end', () => {
   }, 60_000);
 
   it('runs a deploy script in a second process that exits by itself, and a third process reads its UTXOs', async () => {
-    const run = spawnCli(['run', 'scripts/deploy.ts', '--network', 'localhost', '--no-compile'], projectDir);
-    let stdout = '';
-    let stderr = '';
-    run.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
-    });
-    run.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
-    const exit = await waitForExit(run, 120_000);
-    expect(stderr).not.toMatch(/DEPLOY ERROR/);
-    expect(exit).toEqual({ code: 0, signal: null });
-    const match = /DEPLOYED (\S+)/.exec(stdout);
-    expect(match).not.toBeNull();
-    const address = match![1] as string;
+    const { deriveLogicalCreateAddress } = await import(
+      '@solidcash/solidcash/dist/stateful/logical-identity.js'
+    );
+    const accounts = await call<{ address: string }[]>(node, 'devnet.accounts', [0, 1]);
+    const deployer = accounts[0]!.address;
+
+    const runOnce = async (): Promise<{ nonce: number; predicted: string; address: string; stdout: string }> => {
+      const child = spawnCli(['run', 'scripts/deploy.ts', '--network', 'localhost', '--no-compile'], projectDir);
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf8');
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+      });
+      const exit = await waitForExit(child, 120_000);
+      expect(stderr).not.toMatch(/DEPLOY ERROR/);
+      expect(exit).toEqual({ code: 0, signal: null });
+      const nonce = Number(/NONCE (\d+)/.exec(stdout)?.[1]);
+      const predicted = /PREDICTED (\S+)/.exec(stdout)?.[1] as string;
+      const address = /DEPLOYED (\S+)/.exec(stdout)?.[1] as string;
+      expect(Number.isInteger(nonce)).toBe(true);
+      expect(predicted).toBeDefined();
+      expect(address).toBeDefined();
+      return { nonce, predicted, address, stdout };
+    };
+
+    // First process: CREATE nonce 0, and its own getNonce()+getCreateAddress prediction is exactly where it lands.
+    const first = await runOnce();
+    expect(first.nonce).toBe(0);
+    expect(first.address).toBe(deriveLogicalCreateAddress(deployer, 0));
+    expect(first.predicted).toBe(first.address);
 
     // Third process: a raw Electrum client reading the deployed contract's scripthash.
     const client = await rawClient(node);
     try {
-      const { lockingBytecodeToCashAddress } = await import('@bitauth/libauth/build/lib/address/locking-bytecode.js');
-      void lockingBytecodeToCashAddress;
       const scripthash = (await (async () => {
         const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
         const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
         const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-        // Electrum's scripthash is the lock's SHA-256 with its bytes reversed, as Fulcrum and the node serve it.
-        return binToHex(sha256.hash(addressToLockScript(address)).reverse());
+        return binToHex(sha256.hash(addressToLockScript(first.address)).reverse());
       })());
       const utxos = await client.request('blockchain.scripthash.listunspent', scripthash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
@@ -397,25 +415,21 @@ describe('solidhat node end to end', () => {
       await client.disconnect(false, false);
     }
 
-    // A second separate process deploys again: a distinct logical address at the next CREATE nonce.
-    const second = spawnCli(['run', 'scripts/deploy.ts', '--network', 'localhost', '--no-compile'], projectDir);
-    let secondOut = '';
-    second.stdout.on('data', (chunk: Buffer) => {
-      secondOut += chunk.toString('utf8');
-    });
-    const secondExit = await waitForExit(second, 120_000);
-    expect(secondExit).toEqual({ code: 0, signal: null });
-    const secondAddress = /DEPLOYED (\S+)/.exec(secondOut)?.[1];
-    expect(secondAddress).toBeDefined();
-    expect(secondAddress).not.toBe(address);
+    // A second separate process seeds from the chain and deploys at CREATE nonce 1.
+    const snapshotBeforeSecond = await call<{ id: string; height: number }>(node, 'devnet.snapshot');
+    const second = await runOnce();
+    expect(second.nonce).toBe(1);
+    expect(second.address).toBe(deriveLogicalCreateAddress(deployer, 1));
+    expect(second.predicted).toBe(second.address);
+    expect(second.address).not.toBe(first.address);
 
-    // The first contract still resolves.
+    // The first contract still resolves while the second exists.
     const clientAgain = await rawClient(node);
     try {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
       const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
       const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(address)).reverse());
+      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(first.address)).reverse());
       const utxos = await clientAgain.request(
         'blockchain.scripthash.listunspent',
         firstScriptHash,
@@ -425,7 +439,24 @@ describe('solidhat node end to end', () => {
     } finally {
       await clientAgain.disconnect(false, false);
     }
-  }, 240_000);
+
+    // Process B's deployment is reverted; a fresh process (A) redeploys into the freed nonce 1 slot.
+    expect(await call(node, 'devnet.revert', [snapshotBeforeSecond.id])).toBe(true);
+    const afterRevert = await runOnce();
+    expect(afterRevert.nonce).toBe(1);
+    expect(afterRevert.address).toBe(second.address);
+    const clientFinal = await rawClient(node);
+    try {
+      const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
+      const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+      const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+      const scriptHash = binToHex(sha256.hash(addressToLockScript(afterRevert.address)).reverse());
+      const utxos = await clientFinal.request('blockchain.scripthash.listunspent', scriptHash, 'include_tokens') as unknown[];
+      expect(utxos.length).toBeGreaterThan(0);
+    } finally {
+      await clientFinal.disconnect(false, false);
+    }
+  }, 360_000);
 
   it('drives the chain through devnet.* and restores state with snapshot/revert', async () => {
     const before = await call<{ height: number; medianTimePast: number }>(node, 'devnet.info');

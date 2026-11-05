@@ -262,7 +262,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     Op.OP_IF,
     // === Destroy path (flag=2): verify master only, no output preservation ===
     Op.OP_DROP, // drop original flag
-    // A second minting baton (the block-oracle keeper) must not burn this record.
+    // A second minting NFT of the category must not burn this record.
     ...bindAuthority,
     // Verify minting NFT at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
@@ -310,8 +310,8 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array, masterLock?: 
     // === Original two-path logic (flag=0 or flag=1) ===
     Op.OP_IF,
     // === Write path (flag=1): verify minting NFT at masterInputIndex ===
-    // The block-oracle keeper is a second minting NFT at its own short lock. Its unlocking is a few
-    // bytes; the contract master reveals its redeem. Require a P2SH32 lock and that long unlocking.
+    // A second minting NFT of the category sits at a short lock; the contract master reveals its redeem.
+    // Require a P2SH32 lock and that long unlocking.
     ...bindAuthority,
     // Part 1: verify minting NFT of expected category at masterInputIndex
     Op.OP_UTXOTOKENCATEGORY,
@@ -2599,7 +2599,7 @@ export function buildSatoshiContainerCovenantScript(
   return [
     // Stack: <masterInputIndex | mergeOutputIndex> <flag>
     Op.OP_IF,
-    // === Master path (flag=1): the contract's own locking bytecode, not a keeper baton ===
+    // === Master path (flag=1): the contract's own locking bytecode, not another minting NFT ===
     ...bindMintingAuthorityLock(masterLock),
     ...masterCategoryRead(retires),
     encodeInt(32n),

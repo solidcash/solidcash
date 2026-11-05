@@ -68,7 +68,10 @@ uint256 next = ICounter(counter).add(5);
 
 The compiler knows the interface, selector, argument types, return types, required callee state NFTs, and call
 mode. The SDK resolves the deployed instance and lays its UTXOs into the transaction. On chain, the caller and
-callee enforce the relationship rather than trusting that SDK resolution.
+callee enforce the relationship rather than trusting that SDK resolution. A call to an overloaded method runs the
+overload its argument count selects; a call that two overloads of the same arity could take does not compile, as
+its method and arguments could not be checked against one of them, and neither does `IFace.m.selector` of an
+overloaded `m`, as in Solidity.
 
 The explicit member forms remain available when choosing a mode without consuming a typed return:
 
@@ -90,7 +93,13 @@ For a stateful typed call, the generated covenants bind at least these propertie
 
 1. The callee master input's locking bytecode equals the target address.
 2. The callee master carries the required minting capability and self-pins its category.
-3. The selected function/selector and arguments agree with the co-spent callee's invocation.
+3. The selected function/selector and arguments agree with the co-spent callee's invocation. A call that returns
+   values is bound through its call record (below). A direct call that returns nothing, or names fewer arguments
+   than its function declares, checks each argument it names against the callee's unlocking, inside a loop over a
+   parameter array, computed targets or a state array (a table of function pointers too) as well. An interface that
+   declares a single function checks no selector there, so give such a callee an interface naming its other
+   functions when the function matters. Under `messageBus: false` a call into a forwarding proxy is refused when it
+   checks arguments, or in a loop a selector; the message bus binds it.
 4. The caller and callee replacement outputs obey their respective state covenants.
 5. A typed return comes from the callee's call record: a category-bound return-event output that names the call it
    answers, the only one of its kind the callee admits in the transaction.
@@ -291,11 +300,17 @@ await publisher.call.notify(from, to, amount).send();
 An `address` element is the target's full locking bytecode, not a 20-byte account identifier. The compiler reads
 and authenticates the state array (including every required chunk), checks each co-spent master against the decoded
 element, and preserves or advances each callee under its own covenant. A wrong order, skipped element or substituted
-contract fails validation.
+contract fails validation. Each element's callee runs once after the loop, so the loop must call every element once,
+in order, or none: one that calls only some of them (behind a condition, before an early `break`, through an index
+list naming fewer) fails validation. The array is checked as the loop saw it, so a function may write it before the
+loop or after it, but one that writes it inside the loop, or on both sides, does not compile.
 
 Function-pointer arrays use the same machinery. `fns[index](args)` outside a loop calls just that element and can
-return a value. `fns[i](args)` in the compiler-recognized loop form is a broadcast and must be void. For a varying-
-method table, pass the method names aligned with the instances:
+return a value. Each element's method must take the table type's parameters and return its results, as must the
+method a single external pointer names; a table or pointer holding another does not compile. `fns[i](args)` inside a
+loop is a broadcast and must be void, and follows the same rule: the loop calls the elements one by one from the first
+to the last, or none, and a spend that stops early, skips or repeats an element, or runs past the end fails
+validation. For a varying-method table, pass the method names aligned with the instances:
 
 ```ts
 router.registerExternalArray('IHandler', handlers, ['deposit', 'withdraw']);
@@ -370,7 +385,8 @@ possible.
 ## Call options and value
 
 `{value: amount}` creates an authenticated BCH transfer output to the target. It is not an in-memory balance
-transfer. `gas` is accepted for source compatibility but has no EVM meaning; BCH applies transaction and per-input
+transfer. In Solidity source, as with solc, a typed call sends value only to a function its interface declares
+`payable`. `gas` is accepted for source compatibility but has no EVM meaning; BCH applies transaction and per-input
 operation-density limits. Deployment `salt` belongs to contract-creation flows.
 
 ```solidity
@@ -400,6 +416,19 @@ Use [Atomic Calls with the Message Bus](/docs/guides/message-bus) for graph comp
 diagnostics. Direct calls remain the simpler path when every physical participant is used once. The framed
 convention (`composition: 'framed'`) is a separate, also experimental, composition model; see
 [Framed Composition](/docs/guides/framed-composition).
+
+Under `messageBus: false`, a function may call one fixed target several times, or in a loop, without the bus: the
+calls run as frames of the callee's multi-call entry, in one spend of its master, each bound to its own call record.
+The callee carries that entry when it is compiled with `callBatch: true`, or in a multi-contract compile whose caller
+repeats calls to it; simple contracts stay without it. A frame is a call to a function that writes at most fixed state
+fields and takes no value, events, token effects, mapping writes or calls of its own. Any other repeated or looped
+call to one target is refused there with `MESSAGE_BUS_REQUIRED`; the automatic mode routes it through the bus.
+
+A message-bus build binds a looped call to a fixed target only on its route, row by row, so it runs that entry only
+through the route: the ABI entry is `routeOnly`, and a direct spend of the entry's own selector runs only with an
+empty loop (no callee) - a direct run that enters the loop is rejected, since the entry body co-spends no callee.
+When the route does not serve the entry, the automatic mode compiles the contract direct instead, where the loop
+runs as frames or is refused, and `messageBus: true` refuses it with `ROUTE_ONLY_ENTRY_UNSERVED`.
 
 ## Practical limits
 

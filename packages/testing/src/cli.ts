@@ -5,8 +5,11 @@
  * solidcash.config.ts (via `task(...)` from '@solidcash/solidcash/hardhat') are loaded when the config is imported.
  */
 import './builtin-tasks.js';
+import { loadConfig } from './config.js';
 import { initHre } from './hre.js';
-import { getTask, getTasks, parseTaskArgs, runTask } from './tasks.js';
+import {
+  formatTaskHelp, getTask, getTasks, parseTaskArgs, runTask,
+} from './tasks.js';
 
 function printHelp(): void {
   console.log('Usage: solidcash <task> [--network <name>] [args...]\n');
@@ -32,7 +35,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const hre = await initHre(process.cwd(), networkName);
+  const wantsTaskHelp = rest.slice(1).some((token) => token === '--help' || token === '-h');
+  // Project configs register their tasks and may override a built-in, so the config loads before the task is
+  // resolved. `<task> --help` prints that task's own flag table and never starts a provider or a task action.
+  await loadConfig(process.cwd());
   const def = getTask(taskName);
   if (!def) {
     console.error(`Unknown task "${taskName}".\n`);
@@ -40,6 +46,12 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  if (wantsTaskHelp) {
+    console.log(formatTaskHelp(def, 'solidcash'));
+    return;
+  }
+
+  const hre = await initHre(process.cwd(), networkName);
   const args = parseTaskArgs(def, rest.slice(1));
   await runTask(taskName, args, hre);
 }

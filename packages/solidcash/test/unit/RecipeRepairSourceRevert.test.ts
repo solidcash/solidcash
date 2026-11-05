@@ -1,6 +1,6 @@
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { Op, type Artifact } from '@solidcash/utils';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type NetworkProvider from '../../src/network/NetworkProvider.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { gateWouldApplyDynamicChunkRepairsIfRecipe } from '../../src/message-bus/computed-dynamic-chunks.js';
@@ -68,6 +68,15 @@ const staleChunk = new Map([[0, Uint8Array.of(0x00, 0x01, 0xaa)]]);
 const gateDynamicChunk = (builder: TransactionBuilder): number => gateWouldApplyDynamicChunkRepairsIfRecipe(
   builder, staleChunk, (repair) => provenSourceRevertIndependentOfRepair(builder, repair),
 );
+
+
+// `--no-isolate` shares one module registry between test files, so a later file's `vi.mock` of the VM module
+// would otherwise be shadowed by whichever file imported it first. Release the mock after this file's tests so
+// the next file re-imports the module through its own factory.
+afterAll(() => {
+  vi.doUnmock('../../src/network/createVirtualMachine.js');
+  vi.resetModules();
+});
 
 describe('recipe repair gate surfaces a proven source revert', () => {
   const previous = getMaterializationMode();

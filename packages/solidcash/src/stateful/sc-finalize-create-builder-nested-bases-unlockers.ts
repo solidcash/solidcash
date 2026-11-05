@@ -10,6 +10,7 @@ import { usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { isPoolInfoInput } from '../oracle/pool/reader.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
+import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
@@ -502,6 +503,16 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       }
       group.refreshInternalArgs?.({});
     };
+    // A multi-call spend runs its frames through the callee's multi-call entry; its frames' witnesses follow
+    // the master's input, so the unlocker needs no refresh beyond rebuilding it.
+    if (group.callBatch !== undefined) {
+      applyMasterUnlocker(directCallBatchUnlocker(group));
+      group.refreshInternalArgs = (updates) => {
+        group.internalArgs = { ...group.internalArgs, ...updates };
+        applyMasterUnlocker(directCallBatchUnlocker(group));
+      };
+      group.refreshFunctionArgs = () => undefined;
+    }
 
     // Advance to next group. A full block occupies blockInputs.length slots (its output-only slots each
     // carry a paired funder), which is what the builder's input flattening emits.

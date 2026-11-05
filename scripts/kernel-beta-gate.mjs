@@ -61,12 +61,12 @@ const requiredTestCommands = [
   { id: 'build', argv: ['yarn', 'build'] },
   { id: 'generated-artifacts', argv: ['yarn', 'workspace', 'testing-suite', 'vitest', 'run', 'test/artifact-freshness.test.ts'] },
   { id: 'utils-source-maps', argv: ['yarn', 'workspace', '@solidcash/utils', 'vitest', 'run', 'test/script.test.ts'] },
-  { id: 'compiler-journal', argv: ['yarn', 'workspace', 'solidc', 'vitest', 'run', 'test/journal-message-bus'] },
-  { id: 'sdk-journal', argv: ['yarn', 'workspace', 'solidcash', 'vitest', 'run', 'test/journal-message-bus'] },
+  { id: 'compiler-journal', argv: ['yarn', 'workspace', '@solidcash/solidc', 'vitest', 'run', 'test/journal-message-bus'] },
+  { id: 'sdk-journal', argv: ['yarn', 'workspace', '@solidcash/solidcash', 'vitest', 'run', 'test/journal-message-bus'] },
   {
     id: 'sdk-regressions',
     argv: [
-      'yarn', 'workspace', 'solidcash', 'vitest', 'run',
+      'yarn', 'workspace', '@solidcash/solidcash', 'vitest', 'run',
       'test/unit/AssignPhysicalReturnIndices.test.ts', 'test/unit/DirectMappingReadPlan.test.ts',
       'test/unit/KernelJournalExecutionSchedule.test.ts',
       'test/unit/KernelDirtyCarrierResolution.test.ts',

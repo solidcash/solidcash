@@ -344,12 +344,17 @@ receive() external payable { require(tx.outputs[0].value >= 546); }  // warned: 
 - `public` and `external` functions are entry points chosen by a 4-byte selector (sha256-derived natively,
   keccak256 under evmCompat). Calling an `external` function internally is an error. Entry arguments are
   untrusted; bounded types, enums and `bool` are range-checked on entry by default.
+- A call to another contract's overloaded method runs the overload its argument count selects; two overloads of one
+  arity cannot be called, and `IFace.m.selector` of an overloaded `m` does not compile.
 - `pure` reads no state or environment; `view` only reads; neither may write state, create or make low-level calls.
 - Falling off the end returns the named values or type defaults. An entry point may declare returns, which a
   cross-contract caller receives through a return-event NFT.
 - Internal calls are real subroutines (`OP_DEFINE`/`OP_INVOKE`), so recursion works. Function pointers:
   `function(int, int) internal returns (int) op = useAdd ? add : mul;` then `op(a, b)`. Internal pointers work,
-  also in arrays and mappings; one external pointer works but a `function(..) external[]` array fails to lower.
+  also in arrays and mappings, but a function one reaches cannot make an external call (call it from the entry
+  point); one external pointer works but a `function(..) external[]` array fails to lower. A foreign external
+  pointer (`IFace(a).m`) must name a method of exactly its type, wherever it is held or passed, or it does not
+  compile.
 
 ### Modifiers
 
@@ -609,8 +614,6 @@ bytes32 blobhash(int i)        -- always zero
   is the only bound on their age. `blobbasefee`, `prevrandao`, `gaslimit` and `gasleft()` are compiler-warned shims;
   none of these values is randomness. For deadlines prefer `tx.time` / `this.age`, which need no oracle. For
   randomness use commit-reveal or a `checkDataSig` oracle.
-- Any `block.*` property, the shims included, or `blockhash(n)` makes the contract stateful; call it through
-  `StatefulContract`.
 - Block data comes from an oracle pool: one CashToken category of block-info coins and blockhash ring slots that any
   contract may read; no contract owns them. A read co-spends a live coin and recreates it unchanged at the same
   index; the SDK adds it. A reader checks the coin's category and kind, not its lock.
@@ -631,10 +634,10 @@ bytes32 blobhash(int i)        -- always zero
   `provider.oraclePoolOwnerKey` (mock, regtest); elsewhere pass `ownerKey`.
 - A reader trusts its pool's genesis and owner key: the owner writes every field and hash and can stop or sweep
   coins, but cannot over-report the height or time or rewind them.
-- `blockhash(n)` returns the hash a slot holds for n, zero when the slot of n's residue holds a block at least 256
-  newer, and fails for a block the pool has not written. Framed contracts do not serve it. A message-bus build
-  refuses a `block.*` read reached through a function pointer (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See
-  https://solidcash.org/docs/guides/block-oracles
+- `blockhash(n)` makes the contract stateful. It returns the hash a slot holds for n, zero when the slot of n's
+  residue holds a block at least 256 newer, and fails for a block the pool has not written. Framed contracts do not
+  serve it. A message-bus build refuses a `block.*` or `blockhash` read reached through a function pointer
+  (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
 
@@ -943,6 +946,14 @@ target.staticcall(payload);                           // low-level read-only; de
 - `messageBus: false` compiles direct-only and fails with `MESSAGE_BUS_REQUIRED` when the source needs a bus. The
   default convention is the kernel row loop (`artifact.messageBus.convention === 'kernel-row-loop'`);
   `messageBusKernel: false` (legacy unroll) is for compatibility tests only.
+- Under `messageBus: false`, repeated or looped calls to one fixed target run as frames of the callee's multi-call
+  entry (`artifact.callBatch`), one spend of its master with one call record per frame. Compile the callee with
+  `callBatch: true`, or in one `compileStringMulti` / `compileFileMulti` with its caller. A frame writes at most fixed
+  state fields: value, events, token effects, mapping writes and nested calls stay refused.
+- A message-bus build runs an entry that calls one fixed target in a loop only through its route: the ABI entry is
+  `routeOnly` and a direct spend of its own selector runs only with an empty loop (a run that enters the loop is
+  rejected). When the route does not serve that entry, the default build compiles the contract direct, and
+  `messageBus: true` refuses it with `ROUTE_ONLY_ENTRY_UNSERVED`.
 - Compose only when `artifact.messageBus.available` is true and each selected `artifact.messageBus.handlers` entry is
   `eligible`, and check `artifact.messageBus.deployability` (`assertDeployabilityCertificate` from
   `@solidcash/utils`) before broadcasting: a compiled route can exceed the 10,000-byte limit. Handlers using `split`,

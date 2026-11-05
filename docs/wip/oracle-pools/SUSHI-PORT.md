@@ -23,7 +23,8 @@ Status: done, 2026-11-04: utils, compiler, SDK, tests and docs, on `feat/oracle-
   Master's regtest file `test/regtest/OraclePoolProviders.test.ts` (16a7cc23f) is not ported: its Electrum case
   reads through a stateless reader, which this branch refuses. The provider code it ran is the same here.
 
-Every block.* reader stays stateful here, so master's stateless-reader test cases were dropped or made stateful.
+Every block.* reader stayed stateful on this branch, so master's stateless-reader test cases were dropped or made
+stateful. Landing the branch on master (2026-11-05) restored master's rule and those cases; `blockhash` stays stateful.
 `8edb89d0a` swapped the FRAMED_AHEAD escrow labels for the current validator template:
 `ESCROW_BELOW_BUYER = idOf('escrow 3')` and `ESCROW_ABOVE_BUYER = idOf('escrow 47')`; the file passes 6/6. The lists
 below record what the SDK item changed.
@@ -98,8 +99,8 @@ Done, 2026-11-04: master's text ported to `website/docs/guides/block-oracles.md`
 2026-11-04 note in "Block oracle hardening (2026-11-03)" and the section "Oracle pools (2026-11-04)"). Where this
 branch differs from master:
 
-- every `block.*` or `blockhash` reader is stateful, the shims included, so the guide's examples deploy readers
-  with `StatefulContract`;
+- every `block.*` or `blockhash` reader was stateful, the shims included, so the guide's examples deployed readers
+  with `StatefulContract` (master's rule replaced this on landing, 2026-11-05);
 - framed is the main composition: framed pool slots, constant-lock masters filled with the pool, and created
   children that carry the pool their creator's constants were computed with (no GENESIS-1 child oracle);
 - the validator template lost its oracle admission (`7c24b63b0`), so every framed address changed;

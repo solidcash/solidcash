@@ -60,13 +60,21 @@ describe('external call targeting msg.sender (IFoo(msg.sender).method())', () =>
     };
   }
 
-  it('co-spends the msg.sender contract and runs its method (counter 0 -> 1)', async () => {
+  // F1 (caller-attested call edges): `IFoo(msg.sender).ping()` trusts msg.sender as a contract caller. A top-level
+  // call simply DESIGNATES a co-spent contract as msg.sender; nothing proves that contract called callBack. That
+  // designation is the presence-forgery F1 closes: callBack resolves a contract msg.sender, so it requires a
+  // co-spent caller-category edge committing to its own run, which the designated (non-calling) scCallee does not
+  // provide. The covenant refuses it. The SOUND form of this convention - a genuine caller that attested calling
+  // callBack (an own-category edge), then callBack calling back - still settles; only the unattested top-level
+  // designation is refused.
+  it('refuses a designated msg.sender that never attested calling back (presence-forgery closed)', async () => {
     const { scCaller, scCallee } = await setup();
 
-    const tx = await scCaller.callBack().withExternalCall(scCallee, 'ping', []).send();
-    expect(tx.txid).toBeDefined();
+    await expect(scCaller.callBack().withExternalCall(scCallee, 'ping', []).send()).rejects.toThrow(
+      /preflight failed|OP_VERIFY|OP_EQUALVERIFY|mandatory-script-verify|VM failed/i,
+    );
 
-    expect((await scCallee.getState()).counter).toBe(1n);
-    expect((await scCaller.getState()).calls).toBe(1n);
+    expect((await scCallee.getState()).counter).toBe(0n);
+    expect((await scCaller.getState()).calls).toBe(0n);
   });
 });

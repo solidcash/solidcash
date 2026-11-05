@@ -63,6 +63,8 @@ export function reassertInBlockWriterReturns(
     (categoryId) => host.findMintingInputIndex(categoryId),
   );
   for (const [groupIdx, group] of host.externalCallUtxoGroups.entries()) {
+    // A multi-call spend lays each frame's record at its own slot from the frame's result.
+    if (group.callBatchUnit !== undefined) continue;
     if (!groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, groupIdx)) continue;
     const physical = host.externalCallUtxoGroups[group.sharedGroupIndex ?? groupIdx];
     const master = host.findMintingInputIndex(physical.categoryId);

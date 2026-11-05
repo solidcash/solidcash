@@ -53,6 +53,9 @@ function updateWitness(name: string): Uint8Array | undefined {
   if (/^__internal__vmapBatchPredOut_\d+$/.test(name)) return encodeIntegerValue(-1n);
   if (name === '__internal__vmapBatchTrailingCount' || name === '__internal__valueChunkOutputBase'
     || /^__internal__(valueWitness|leadingPushValue)_\d+$/.test(name)) return EMPTY;
+  // Fix B: an ordinary void entry carries a universal void call record at this witness; a standalone VM spend
+  // compacts it and names no output (witness -1).
+  if (name === '__internal__returnOutputIdx') return encodeIntegerValue(-1n);
   return undefined;
 }
 

@@ -319,8 +319,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // returns and runtime-selected escapes remain rolled.
     // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (message-bus route) mode.
     // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
-    // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
-    // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
+    // WHOLE table after the loop, and unrolling it into N single-element callsites changes the direct ABI
+    // (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     const hasMappingWrite = this.hasMappingWrite(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall

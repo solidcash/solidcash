@@ -938,6 +938,7 @@ function internalDefault(name: string): Uint8Array {
   if (name.includes('vmapBatchNext')) return ZERO32;
   if (name.includes('vmapBatchPredOut')) return num(-1n);
   if (name.includes('TrailingCount')) return num(0n);
+  if (name === '__internal__returnOutputIdx') return num(-1n);
   if (name.startsWith('__internal__')) return EMPTY;
   throw new Error(`scalar witness has no value for ${name}`);
 }
@@ -1253,7 +1254,7 @@ function tokenIterationSpend(
   for (const entry of fn.inputs) {
     if (values[entry.name] !== undefined) continue;
     if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
-    else if (entry.name.startsWith('__internal__')) values[entry.name] = EMPTY;
+    else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : EMPTY;
     else throw new Error(`unexpected input ${entry.name}`);
   }
   const sources: SourceOutputs = [
@@ -1279,8 +1280,12 @@ function tokenIterationSpend(
   for (let index = 0; index < chain.length; index += 1) {
     inputs.push(input(blockSize + index, pushesOf([num(0n), num(0n), entryRedeem])));
   }
-  if (sources.length !== blockSize + chain.length) {
-    throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+  // Entries are co-spent inputs after the INPUT block slots; fix B's output-only returnEvent is counted in
+  // blockSize but has no input, so the source count matches the input-slot count, not blockSize.
+  const outputOnlyKinds = ['returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer', 'deployDataNft'];
+  const inputSlots = (fn.blockLayout?.slots ?? []).filter((s) => !outputOnlyKinds.includes(s.kind)).length || 1;
+  if (sources.length !== inputSlots + chain.length) {
+    throw new Error(`inputSlots ${inputSlots} sources ${sources.length} chain ${chain.length}`);
   }
   return { sourceOutputs: sources, transaction: { version: 2, locktime: 0, inputs, outputs } };
 }
@@ -1319,7 +1324,7 @@ function iterationSpend(
   for (const entry of fn.inputs) {
     if (values[entry.name] !== undefined) continue;
     if (/^__internal__collectionIterCount_\d+$/.test(entry.name)) values[entry.name] = num(BigInt(chain.length));
-    else if (entry.name.startsWith('__internal__')) values[entry.name] = EMPTY;
+    else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : EMPTY;
     else throw new Error(`unexpected input ${entry.name}`);
   }
   const sources: SourceOutputs = [
@@ -1342,8 +1347,12 @@ function iterationSpend(
   for (let index = 0; index < chain.length; index += 1) {
     inputs.push(input(blockSize + index, pushesOf([num(0n), num(0n), entryRedeem])));
   }
-  if (sources.length !== blockSize + chain.length) {
-    throw new Error(`block ${blockSize} sources ${sources.length} chain ${chain.length}`);
+  // Entries are co-spent inputs after the INPUT block slots; fix B's output-only returnEvent is counted in
+  // blockSize but has no input, so the source count matches the input-slot count, not blockSize.
+  const outputOnlyKinds = ['returnEvent', 'event', 'eventChunk', 'transfer', 'tcTransfer', 'deployDataNft'];
+  const inputSlots = (fn.blockLayout?.slots ?? []).filter((s) => !outputOnlyKinds.includes(s.kind)).length || 1;
+  if (sources.length !== inputSlots + chain.length) {
+    throw new Error(`inputSlots ${inputSlots} sources ${sources.length} chain ${chain.length}`);
   }
   return { sourceOutputs: sources, transaction: { version: 2, locktime: 0, inputs, outputs } };
 }
@@ -1457,6 +1466,7 @@ function mappingWitness(name: string, slot: Uint8Array, predOut: bigint, key: Ui
   if (/^__internal__vmapBatchNext_\d+$/.test(name)) return ZERO32;
   if (/^__internal__vmapBatchPredOut_\d+$/.test(name)) return predOut === -2n ? Uint8Array.of(0x82) : num(predOut);
   if (name === '__internal__vmapBatchTrailingCount') return num(0n);
+  if (name === '__internal__returnOutputIdx') return num(-1n);
   if (name.startsWith('__internal__')) return EMPTY;
   return undefined;
 }

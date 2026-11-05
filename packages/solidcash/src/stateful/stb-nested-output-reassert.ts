@@ -474,6 +474,8 @@ export function reassertFixedStateOutputs(
     requiredDataNftIndices: readonly number[];
     rawCommitments: ReadonlyMap<number, string>;
     updates?: ReadonlyMap<string, StateValue>;
+    /** The commitments a multi-call spend's probe settled, by data record. */
+    settled?: ReadonlyMap<number, string>;
     preserveUntouched: boolean;
   };
   const groupOwner = (group: ExternalCallUtxoGroup): FixedStateOwner => ({
@@ -483,6 +485,11 @@ export function reassertFixedStateOutputs(
     requiredDataNftIndices: group.requiredDataNftIndices,
     rawCommitments: host.externalCallStateRawCommitments.get(group.categoryId) ?? new Map(),
     updates: host.externalCallStateUpdates.get(group.categoryId),
+    ...(group.callBatch?.dataCommitments && {
+      settled: new Map(group.callBatch.dataCommitments.map((commitment, ordinal) => [
+        group.requiredDataNftIndices[ordinal]!, commitment,
+      ])),
+    }),
     // Static/delegate implementation state is not written by the logical call; preserving its exact bytes is
     // both cheaper and avoids rebuilding compiler-owned registers which are intentionally absent from the ABI.
     preserveUntouched: true,
@@ -526,7 +533,8 @@ export function reassertFixedStateOutputs(
       if (nftIndex === undefined) continue;
       const inputCommitment = input.token.nft.commitment;
       const hasUpdate = stateUpdatesTouchNft(owner.stateLayout, owner.updates, nftIndex);
-      const exactCommitment = hasUpdate ? undefined : owner.rawCommitments.get(nftIndex);
+      const exactCommitment = owner.settled?.get(nftIndex)
+        ?? (hasUpdate ? undefined : owner.rawCommitments.get(nftIndex));
       const commitment = exactCommitment
         ?? (owner.preserveUntouched && !hasUpdate && inputCommitment
           ? inputCommitment

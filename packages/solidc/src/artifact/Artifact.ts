@@ -8,7 +8,7 @@ import {
   abiTypeString, type ChildDeploymentValueRecipe, type FixedBchTransferAbi, type ExternalResultConsumerAbi,
   canonicalSelectorType, isEvmNotationScalarType,
   type ComputeSideCarRecipesAbi,
-  ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
+  ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature, type ExternalCallOrdinalAbi,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { version } from '../version.js';
@@ -41,7 +41,7 @@ import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
 import { stateNftPackingLimit } from '../semantic/maxEncodedSize.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
-import { CALL_BATCH_SELECTOR_HEX } from '../semantic/CallBatch.js';
+import { CALL_BATCH_MAXIMUM_FRAMES, CALL_BATCH_SELECTOR_HEX } from '../semantic/CallBatch.js';
 import { takesOraclePool } from '../semantic/SynthesizeBlockOracle.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
@@ -1266,9 +1266,12 @@ const externalCallIterationDomainLists = (
           left: { kind: 'literal' as const, type: 'bigint', value: '0' }, right: serializedMagnitude,
         }
         : serializedMagnitude;
+      // A direct caller's counted call runs each reached occurrence as a frame of one multi-call spend.
+      const callOrdinal = (call as { callOrdinal?: ExternalCallOrdinalAbi }).callOrdinal;
       const maximumIterations = fixedForMaximum(counter, loop)
       ?? loop.compilerAuthenticatedMaximumIterations
-      ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined);
+      ?? (compilerOptions.messageBusKernel === true ? ATOMIC_MESSAGE_BUS_MAX_ROWS : undefined)
+      ?? (callOrdinal !== undefined && 'counted' in callOrdinal ? CALL_BATCH_MAXIMUM_FRAMES : undefined);
       if (!initialValue || !stepValue || !continueCondition || maximumIterations === undefined) break;
       // A serialized state read after any write in this handler would use the SDK's pre-call snapshot, not
       // necessarily the value reached by this loop. Direct, unconditional prefix writes above serialize to
@@ -4709,7 +4712,7 @@ export function generateArtifact(
 
   // Mirror the stateLayout gate below: writesState is only meaningful (and only emitted) for stateful contracts.
   const isStateful = contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.readsBlock || contract.deploysStatefulChild
+    || compilerOptions.forceStateful || contract.readsBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
@@ -4817,7 +4820,7 @@ export function generateArtifact(
   // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
   if (contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.readsBlock || contract.deploysStatefulChild
+    || compilerOptions.forceStateful || contract.readsBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))) {
     stateLayout = {

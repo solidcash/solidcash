@@ -320,9 +320,8 @@ read of `msg.sender` and `tx.origin`.
 ## Block properties
 
 Bitcoin Cash Script has no opcode for block metadata, so the oracle-backed `block.*` reads slice the NFT commitment
-of a **block-info coin of an oracle pool**, which the reader co-spends and only the pool's owner updates. Any
-`block.*` property, the shims included, or `blockhash(n)` makes the contract stateful. The compiler adds no state
-variable and no update function to the reader.
+of a **block-info coin of an oracle pool**, which the reader co-spends and only the pool's owner updates. The
+compiler adds no state and no update function to the reader.
 
 | Global | Type | Source | Notes |
 | --- | --- | --- | --- |

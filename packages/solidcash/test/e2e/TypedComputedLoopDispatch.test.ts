@@ -8,6 +8,7 @@ import {
   deriveTypedLoopCoSpends,
 } from '../../src/loop-call.js';
 import { createTestProvider, verifyTransaction, createFeeFunder } from '../test-util.js';
+import { trivialCallee } from '../trivial-callee.js';
 
 // A COMPUTED per-iteration external-call target `IFoo(pairFor(path[i], path[i+1])).m(x)` in a loop (the Router02
 // swap shape). SEAL cannot hoist the target (a leaf is loop-dependent), so the compiler rewrites it to read a
@@ -28,7 +29,10 @@ library L {
     }
 }`;
 
-const OP_TRUE = hexToBin('51');
+// The co-spent pairs run `m(7)` (SRC) or `swap(7, 7)` (PAIRLOCAL_SRC): the caller checks the arguments against each
+// pair's unlocking.
+const M_CALLEE = trivialCallee([7n]);
+const SWAP_CALLEE = trivialCallee([7n, 7n]);
 
 // 3 dummy path tokens -> path.length - 1 = 2 loop iterations -> 2 co-spent pairs. The path VALUES are irrelevant to
 // the covenant (the rewrite bypassed the on-chain pairFor); only path.length drives the loop bound.
@@ -57,7 +61,7 @@ library L {
 }`;
 
 async function buildTx(
-  witnessTargets: Uint8Array[], src: string = SRC,
+  witnessTargets: Uint8Array[], src: string = SRC, callee = M_CALLEE,
 ): Promise<ReturnType<typeof buildTypedLoopCallTransaction>> {
   const art = compileString(src);
   const provider = createTestProvider();
@@ -68,11 +72,6 @@ async function buildTx(
   const t1 = { txid: '02'.repeat(32), vout: 0, satoshis: 1500n };
   const funder = await createFeeFunder(provider, 10000n);
 
-  const trueUnlocker = {
-    generateLockingBytecode: (): Uint8Array => OP_TRUE,
-    generateUnlockingBytecode: (): Uint8Array => new Uint8Array([]),
-  } as never;
-
   return buildTypedLoopCallTransaction({
     provider,
     contract,
@@ -80,22 +79,22 @@ async function buildTx(
     userArgs: [encodePushdataValue(dummyPath(), 'address[]'), 7n],
     targets: witnessTargets, // fills the synthesized __internal__loopTargets0 witness
     callerUtxo,
-    cospends: [{ utxo: t0, unlocker: trueUnlocker }, { utxo: t1, unlocker: trueUnlocker }],
+    cospends: [{ utxo: t0, unlocker: callee.unlocker }, { utxo: t1, unlocker: callee.unlocker }],
     funder,
   });
 }
 
 describe('typed COMPUTED per-iteration external dispatch (IFoo(pairFor(path[i], path[i+1])).m(x))', () => {
   it('SDK fills the synthesized witness + co-spends the derived targets; covenant validates identity', async () => {
-    // The two co-spent inputs ARE OP_TRUE, so the witness must claim OP_TRUE for each - identity holds.
-    const tb = await buildTx([OP_TRUE, OP_TRUE]);
+    // The witness claims the co-spent pairs' own lock for each - identity holds.
+    const tb = await buildTx([M_CALLEE.lock, M_CALLEE.lock]);
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4); // caller + 2 pairs + funder
   });
 
   it('rejects when the witness claims a target whose co-spent input bytecode differs (identity binding)', async () => {
-    const wrong = hexToBin('5152'); // OP_1 OP_2 - not the co-spent OP_TRUE input at index 0
-    const tb = await buildTx([wrong, OP_TRUE]);
+    const wrong = hexToBin('5152'); // OP_1 OP_2 - not the co-spent pair at index 0
+    const tb = await buildTx([wrong, M_CALLEE.lock]);
     expect(() => verifyTransaction(tb)).toThrow();
   });
 });
@@ -139,13 +138,13 @@ library L { function pairFor(address a, address b) internal pure returns (addres
 
 describe('typed COMPUTED loop, single-use LOCAL receiver (IPair pair = IPair(pairFor(..)); pair.swap())', () => {
   it('rewrites the call + neutralizes the dead init to the same witness; co-spends + validates', async () => {
-    const tb = await buildTx([OP_TRUE, OP_TRUE], PAIRLOCAL_SRC);
+    const tb = await buildTx([SWAP_CALLEE.lock, SWAP_CALLEE.lock], PAIRLOCAL_SRC, SWAP_CALLEE);
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4);
   });
 
   it('rejects a mismatched witness target (identity binding holds through the local)', async () => {
-    const tb = await buildTx([hexToBin('5152'), OP_TRUE], PAIRLOCAL_SRC);
+    const tb = await buildTx([hexToBin('5152'), SWAP_CALLEE.lock], PAIRLOCAL_SRC, SWAP_CALLEE);
     expect(() => verifyTransaction(tb)).toThrow();
   });
 });
@@ -160,22 +159,18 @@ describe('typed computed loop autoderivation (deriveTypedLoopCoSpends from regis
     const t0 = { txid: '01'.repeat(32), vout: 0, satoshis: 1500n };
     const t1 = { txid: '02'.repeat(32), vout: 0, satoshis: 1500n };
     const funder = await createFeeFunder(provider, 10000n);
-    const trueUnlocker = {
-      generateLockingBytecode: (): Uint8Array => OP_TRUE,
-      generateUnlockingBytecode: (): Uint8Array => new Uint8Array([]),
-    };
-    // A registered co-spendable target contract (here an OP_TRUE pair) exposing a preserving co-spend fn.
+    // A registered co-spendable target contract (here a stand-in pair) exposing the method the loop calls.
     const mkTarget = (utxo: typeof t0): any => ({
-      address: 'op-true', lockingBytecode: binToHex(OP_TRUE),
-      unlock: { noop: () => trueUnlocker }, getUtxos: async () => [utxo],
+      address: 'stand-in', lockingBytecode: binToHex(M_CALLEE.lock),
+      unlock: { m: () => M_CALLEE.unlocker }, getUtxos: async () => [utxo],
     });
 
     // The autoderivation: witness targets + typed-void cospends fall out of the registered target instances.
     const { targets, cospends } = await deriveTypedLoopCoSpends([
-      { contract: mkTarget(t0), fn: 'noop', args: [] },
-      { contract: mkTarget(t1), fn: 'noop', args: [] },
+      { contract: mkTarget(t0), fn: 'm', args: [7n] },
+      { contract: mkTarget(t1), fn: 'm', args: [7n] },
     ]);
-    expect(targets.map(binToHex)).toEqual([binToHex(OP_TRUE), binToHex(OP_TRUE)]);
+    expect(targets.map(binToHex)).toEqual([binToHex(M_CALLEE.lock), binToHex(M_CALLEE.lock)]);
 
     const tb = buildTypedLoopCallTransaction({
       provider, contract, functionName: 'run',

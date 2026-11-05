@@ -161,6 +161,34 @@ contract Factory(pubkey deployer) {
     });
   });
 
+  it('folds the overload the call\'s argument count selects', () => {
+    // `set(int)` declared first: `c.set(5, 7)` still runs set(int, int), whose genesis is 5 + 7.
+    const artifact = compileString(`
+      contract Child() {
+        int v;
+        function set(int a) public { this.v = a; }
+        function set(int a, int b) public { this.v = a + b; }
+        function get() public { require(this.v >= 0); }
+      }
+      contract Parent(pubkey owner) {
+        function go(sig s) { require(checkSig(s, owner)); Child c = new Child(); c.set(5, 7); }
+      }`);
+    const [target] = artifact.abi.find((entry) => entry.name === 'go')!.deployTargets!;
+    expect(target!.genesisState).toMatchObject({ fields: [{ name: 'v', value: { kind: 'binary', operator: '+' } }] });
+  });
+
+  it('folds a call typed by an interface only into a function of the interface method\'s parameters', () => {
+    const source = (parameter: string): string => `
+      interface ISet { function set(${parameter} a); }
+      contract Child() { int v; function set(int a) public { this.v = a; } function get() public { require(this.v >= 0); } }
+      contract Parent(pubkey owner) {
+        function go(sig s) { require(checkSig(s, owner)); ISet c = ISet(new Child()); c.set(5); }
+      }`;
+    const [target] = compileString(source('int')).abi.find((entry) => entry.name === 'go')!.deployTargets!;
+    expect(target).toMatchObject({ hasFoldedChildCall: true });
+    expect(() => compileString(source('bytes'))).toThrow(/in the transaction that deploys it/);
+  });
+
   // The fold replays a straight-line body (including a conditional scalar write) into the child's genesis. A body
   // that writes a mapping entry, reads another contract, or emits is outside that replay, so the pair's first
   // `mint` cannot be folded into the pair genesis `UniswapV2Factory.createPair` mints: `mint` does all three

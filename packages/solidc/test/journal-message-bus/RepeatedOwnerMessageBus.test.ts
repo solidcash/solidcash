@@ -506,25 +506,35 @@ describe('inferred message-bus batching for repeated external callees', () => {
     }
   });
 
-  it('rejects explicit messageBus false when one UTXO owner must serve repeated calls', () => {
-    expect(() => compileString(SOURCE, { forceStateful: true, messageBus: false }))
+  // A repeated call that carries value runs as no frame of its callee's multi-call spend, so one UTXO owner
+  // serving it still needs the message bus.
+  const VALUED = SOURCE.replace('function add(int amount) external;', 'function add(int amount) external payable;')
+    .replaceAll('.add(', '.add{value: 1000}(');
+
+  it('rejects explicit messageBus false when one UTXO owner must serve repeated calls it cannot frame', () => {
+    expect(() => compileString(VALUED, { forceStateful: true, messageBus: false }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
+    // Plain repeated calls run as frames of the callee's one multi-call spend, each bound to its own record.
+    const direct = compileString(SOURCE, { forceStateful: true, messageBus: false });
+    expect(direct.abi.find((fn) => fn.name === 'run')?.externalCalls?.map((call) => call.callOrdinal))
+      .toEqual([{ group: 0, ordinal: 0 }, { group: 0, ordinal: 1 }]);
+    expect(direct.messageBus).toBeUndefined();
   });
 
   it('enforces the explicit opt-out rule in multi-artifact and split compilation', () => {
-    expect(() => compileStringMulti(SOURCE, { forceStateful: true, messageBus: false }))
+    expect(() => compileStringMulti(VALUED, { forceStateful: true, messageBus: false }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
-    expect(() => compileStringSplit(SOURCE, { forceStateful: true, messageBus: false }))
+    expect(() => compileStringSplit(VALUED, { forceStateful: true, messageBus: false }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
   });
 
   it('does not require message bus for an unreachable library call pair', () => {
     const source = `pragma solidity ^0.8.0;
-      interface ICounter { function add(int amount) external; }
+      interface ICounter { function add(int amount) external payable; }
       library Dormant {
         function twice(ICounter target, int amount) internal {
-          target.add(amount);
-          target.add(amount);
+          target.add{value: 1000}(amount);
+          target.add{value: 1000}(amount);
         }
       }
       contract Caller {
@@ -545,12 +555,12 @@ describe('inferred message-bus batching for repeated external callees', () => {
   });
 
   it('does not require message bus for an unreachable internal call pair', () => {
-    const source = `interface ICounter { function add(int amount) external; }
+    const source = `interface ICounter { function add(int amount) external payable; }
       contract Caller(address counter) {
         int value;
         function dormant(int amount) internal {
-          ICounter(counter).add(amount);
-          ICounter(counter).add(amount);
+          ICounter(counter).add{value: 1000}(amount);
+          ICounter(counter).add{value: 1000}(amount);
         }
         function set(int next) public { value = next; require(next >= 0); }
       }`;

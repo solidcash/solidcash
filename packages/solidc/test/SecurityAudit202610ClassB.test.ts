@@ -65,7 +65,8 @@ function redeemUnlock(
   fn: AbiFunction, redeem: Uint8Array, values: Record<string, Uint8Array>, dispatch: boolean,
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
-    const value = values[entry.name];
+    // Fix B: an ordinary void entry's universal void call record defaults to a standalone compact spend (-1).
+    const value = values[entry.name] ?? (entry.name === '__internal__returnOutputIdx' ? num(-1n) : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;
   }).reverse();
@@ -99,7 +100,7 @@ describe('October 2026 class B holes', () => {
       else if (entry.name.includes('vmapBatchNext')) values[entry.name] = new Uint8Array(32);
       else if (entry.name.includes('vmapBatchPredOut')) values[entry.name] = num(-1n);
       else if (entry.name.includes('TrailingCount')) values[entry.name] = num(0n);
-      else if (entry.name.startsWith('__internal__')) values[entry.name] = new Uint8Array();
+      else if (entry.name.startsWith('__internal__')) values[entry.name] = entry.name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
       else throw new Error(`unexpected touch input ${entry.name}`);
     }
     const dataUnlock = pushesOf([num(0n), num(1n), dataRedeem]);
@@ -413,7 +414,7 @@ describe('October 2026 class B holes', () => {
       else if (name.includes('vmapBatchPredOut')) values[name] = num(-1n);
       else if (name === '__internal__vmapBatchTrailingCount' || name === '__internal__valueChunkOutputBase') {
         values[name] = num(0n);
-      } else if (name.startsWith('__internal__')) values[name] = new Uint8Array();
+      } else if (name.startsWith('__internal__')) values[name] = name === '__internal__returnOutputIdx' ? num(-1n) : new Uint8Array();
       else throw new Error(`unexpected write input ${name}`);
     }
     const beforeA = encodeEntryCommitment(slotA, zero, encodeChunkableValueTail(Uint8Array.of(1)));

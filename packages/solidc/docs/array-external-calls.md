@@ -102,8 +102,14 @@ branch is load-bearing; a real `mapping(k=>address)` reaches it too and is rejec
 Codegen: `emitArrayExternalCallLoop` (GTT) reads the whole array to a blob (`emitReadStateArrayBlob`, which
 co-spends the array's chunks once), decodes the count, then loops `OP_BEGIN..OP_UNTIL` decoding each framed
 element and verifying `callee[externalCallInputBase + i*stride].master.LBC == arr[i]` plus master/category
-preservation and the selector. The source `for` loop is left as harmless iteration; this epilogue is the
-real check. Strict: count pinned to N, each callee verified against arr[i].
+preservation and the selector. Each call the source loop makes claims the element after the one claimed before it
+and binds the arguments it names (on a table of received pointers, at the callee input the next entry of its witness
+list names), and after the loop the last claim must be the last element: the loop calls every element once, in
+order, or none (then no callee is checked). Strict: count pinned to N, each callee verified against arr[i]. The array
+is read as the loop saw it: before the function's writes to it when they all follow the loop, after them when they
+all precede it; a function writing it inside the loop, or on both sides, is refused
+(`LOOP_ARRAY_WRITTEN_AROUND_CALLS`). A write inside a loop goes through the `__dlcache_` loop cache, whose writes
+count as the array's.
 
 SDK: `registerExternalArray(interfaceName, instances)` lists the callee instances (array order);
 `_createBuilder` expands the one loop slot into N concrete calls (`presetResolved`) so the existing
@@ -137,9 +143,14 @@ semantics:
   `address __fnelem = fns[idx];` (+ `bytes4 __fnelemsel = bytes4(__fnsel_fns[idx]);` as a runtime selector
   when per-element methods exist) and emits one computed-receiver external call. Value-returning calls work
   in this form.
-- **`fns[i](args)` inside a loop is the notify-all idiom** and maps to the broadcast covenant above (the
-  epilogue co-spends and verifies EVERY element; the source loop is harmless iteration). A broadcast cannot
-  return a value (compile error).
+- **`fns[i](args)` inside a loop is the notify-all idiom** and maps to the broadcast covenant above: the
+  epilogue co-spends and verifies EVERY element once, in order, so the loop's calls must take the elements in turn,
+  as over any state array (a spend that stops early, skips or repeats an element, or runs past the end fails). Any
+  index expression and loop form works. A broadcast cannot return a value (compile error).
+- Every element written into a fixed or varying table must name one method taking the table type's parameters
+  and returning its results (`FnPtrArrayLoweringError` otherwise): a call through the table binds those arguments
+  for whichever element it reaches. A received pointer's selector is a run-time value, so a received table cannot
+  check that the method it names takes no further parameters.
 - Mutations stay in lockstep with the selector array: element assign / `pop()` / `delete fns[i]` rewrite to
   two-statement blocks mutating both arrays.
 - An unclassifiable fn-ptr array (never written, or written an unsupported value form) is a specific
@@ -190,7 +201,10 @@ opaque MultiCall builder). Layout: input 0 = caller (preserved at output 0); inp
 Soundness: the witness is caller-chosen and identity-verified per iteration (`input[base+i].bytecode ==
 witness[i]`), so a mismatching claim is rejected by the covenant. This is caller-permissive - the same argument
 as `extcall-target-pinning.md` and the array-element form: the caller routes its own funds through targets it
-chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted.
+chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted: a witness
+stands for a target only when the target's per-iteration part reads elements of the function's parameters. A target
+read from a local or state array, a mapping or another contract's result keeps its on-chain value, which the
+witness must equal, and a multi-use receiver of such a target runs its views as calls instead of view witnesses.
 
 A loop-body LOCAL receiver `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()` (SEAL leaves the local
 un-hoisted - a loop-body local is not single-assign - and it is loop-consumed, so unreadable at the epilogue) is

@@ -40,11 +40,13 @@ describe('MinimalNativeToken bytecode budget', () => {
     // The C3 count-path record pin (each own-category record held at its own index) added 54 B (7374 -> 7428), and
     // BchNative's `_nativeAmount` scale hook, which wrap and unwrap share as one function, with the exact reserve
     // growth wrap checks, 17 B (7428 -> 7445). Call records (D50: each returning entry digests its call and pins
-    // its record, with one shared count of its carriers) added 154 B (7445 -> 7599).
-    // The call-record settlement shared as one helper, whose count also refuses a standalone run's carriers
-    // (18860c4fd), took 67 B off (7599 -> 7532), and the record lock a direct master rebuilds carries the data-record
-    // covenant's authority bind and category, each now defined once (590aca164): 2 B (7532 -> 7534).
-    expect(artifactBytes).toBe(7534);
+    // its record, with one shared count of its carriers) added 154 B (7445 -> 7599), and their shared settlement (one
+    // helper forms, pins and counts each record, and a standalone run's refusal is that count at zero, 18860c4fd)
+    // took 67 B off (7599 -> 7532). The dispatcher handing each entry its record prefix, the digest hashed in that
+    // settlement and the count reading each output's lock first took 18 B off (7532 -> 7514). One helper per
+    // collection reading the master's category with its entry address, shared bounded-bytes parameter checks and
+    // the take-32 helper in the record carrier check took 159 B off (7514 -> 7355).
+    expect(artifactBytes).toBe(7355);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

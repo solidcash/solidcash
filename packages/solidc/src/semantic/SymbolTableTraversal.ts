@@ -130,7 +130,7 @@ import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
-import { externalResultMayNeedPreimage } from './ExternalResultEncoding.js';
+import { externalResultMayNeedPreimage, namesCallRecordArguments } from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
 import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
@@ -197,6 +197,8 @@ import {
   ExternalReadTargetReassignedError,
   ExternalOutStateRecordCountError,
   UndefinedInterfaceFunctionError,
+  AmbiguousExternalOverloadError,
+  AmbiguousSelectorError,
   MethodCallNotSupportedError,
   StructFieldExternalCallError,
   DeployThenCallError,
@@ -226,6 +228,7 @@ import {
   AbiEncodeCallArgCountError,
   GraphEmissionEffectError,
   GraphHandlerShapeError,
+  NonPayableCallValueError,
   SolidcDiagnosticError,
   UpgradeStrandsBoundStateError,
 } from '../Errors.js';
@@ -547,6 +550,15 @@ const BODY_WALK_SKIP_KEYS = new Set([
   'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable', 'referencedContract',
   'stateVariable', 'collection', 'sourceCallNode', 'sourceActivationConditions',
 ]);
+
+/**
+ * True when a node under `root` may read the local `name`: one carries it in a field, or assembly reads the stack by
+ * position. A conservative test.
+ */
+function mayReadLocal(root: Node, name: string): boolean {
+  return bodyHolds(root, (node) => node instanceof AssemblyStatementNode
+    || Object.values(node).some((value) => value === name));
+}
 
 /** True when `root` is, or holds, a node `matches` accepts. */
 function bodyHolds(root: Node | undefined, matches: (node: Node) => boolean, seen = new Set<Node>()): boolean {
@@ -1630,7 +1642,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // contract has none, so the covenant that enforces the destruction actually exists.
       || node.functions.some((func) => func.impliedSelfdestruct)
       || (this.compilerOptions.forceStateful ?? false)
-      || node.readsBlock;
+      || node.readsBlockhash;
     if (directlyStateful) {
       this.isStatefulContract = true;
     } else if (this.contractStatefulnessHint && !this.contractStatefulnessHint.hasContractInstantiation) {
@@ -2528,16 +2540,26 @@ export default class SymbolTableTraversal extends AstTraversal {
       return literal(this.computeAbiSelector(signature), 4);
     };
 
+    // The one function of a name; an overloaded name has no one selector, as in Solidity.
+    const onlyNamed = <T extends { name: string }>(
+      functions: readonly T[] | undefined, owner: string, name: string,
+    ): T | undefined => {
+      const named = (functions ?? []).filter((fn) => fn.name === name);
+      if (named.length > 1) throw new AmbiguousSelectorError(expr, owner, name);
+      return named[0];
+    };
+    const ownName = this.currentContract?.name ?? 'this';
+
     // `this.f.selector` and bare `f.selector`.
     if (expr.expression instanceof StateAccessNode) {
       const functionName = expr.expression.name;
-      const own = this.currentContract?.functions.find((fn) => fn.name === functionName);
+      const own = onlyNamed(this.currentContract?.functions, ownName, functionName);
       const folded = selectorForFunction(own);
       if (folded) return folded;
     }
     if (expr.expression instanceof IdentifierNode) {
       const name = expr.expression.name;
-      const own = this.currentContract?.functions.find((fn) => fn.name === name);
+      const own = onlyNamed(this.currentContract?.functions, ownName, name);
       const folded = selectorForFunction(own);
       if (folded) return folded;
 
@@ -2565,7 +2587,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const holder = qualifier === 'super' || qualifier === this.currentContract?.name
         ? this.currentContract
         : this.contractMap.get(qualifier) ?? this.interfaceMap.get(qualifier);
-      const folded = selectorForFunction(holder?.functions.find((fn) => fn.name === name));
+      const holderFunctions: readonly { name: string; parameters: ParameterNode[] }[] | undefined = holder instanceof
+        InterfaceNode ? this.getAllInterfaceFunctions(holder) : holder?.functions;
+      const folded = selectorForFunction(onlyNamed(holderFunctions, qualifier, name));
       if (folded) return folded;
 
       const libraryErrorTypes = this.libraryErrorSignatures.get(`${qualifier}.${name}`);
@@ -3630,6 +3654,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   ): false | { returnValue?: ExpressionNode, wrote?: boolean, unconditionalWrite?: boolean } {
     const body = foo.body as BlockNode | undefined;
     if (!body) return false;
+    // The arguments map to the parameters by position: another arity is another method.
+    if (foo.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).length !== parentArgs.length) {
+      return false;
+    }
     const statements = body.statements ?? [];
     // An implemented empty function has no effects and returns the ABI default for an unnamed single return.
     // Treat it as a real fold, not as an abstract/unavailable body. ABI return-size probes rely on precisely
@@ -4382,14 +4410,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? this.collectLoopNestedExternalCalls(node.body) : new Set();
       if (hasExternalCalls) this.collectExternalCalls(node.body, externalCallSlots);
       for (const slot of externalCallSlots) {
-        const iface = this.interfaceMap.get(slot.interfaceName);
-        const matches = iface && this.getAllInterfaceFunctions(iface)
-          .filter((candidate) => candidate.name === slot.functionName);
-        const target = matches?.length === 1 ? matches[0] : undefined;
+        // The method the call runs: the overload it selected.
+        const target = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+        // Solidity sends value only to a function its interface declares payable (as for function pointers).
+        if (this.compilerOptions.evmCompat && target && target.stateMutability !== 'payable'
+          && !slot.interfaceName.startsWith('__')
+          && slot.sourceCallNode && hasEffectiveCallValue(slot.sourceCallNode.callOptions?.value)) {
+          throw new NonPayableCallValueError(slot.sourceCallNode, slot.interfaceName, slot.functionName);
+        }
         if (target && (target.stateMutability === 'view' || target.stateMutability === 'pure')
           && !slot.runtimeSelector && !slot.batchInvocations) {
           slot.readonlyReturnSelector = this.computeAbiSelector(this.selectorSignatureFor(
-            slot.functionName, target.parameters.map((parameter) => parameter.type),
+            slot.functionName, target.parameterTypes,
           ));
         }
       }
@@ -4523,19 +4555,18 @@ export default class SymbolTableTraversal extends AstTraversal {
             // the original direct selector. Infer it without mutating the slot:
             // discovery must leave every ordinary/unselected call byte-identical.
             if (!slot.compileTimeSelector) {
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
-                .find((fn) => fn.name === slot.functionName);
+              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
-                const signature = this.selectorSignatureFor(
-                  slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type),
-                );
+                const signature = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameterTypes);
                 inferredSelectors.set(slot, this.computeAbiSelector(signature));
               }
             }
-            const identity = slot.addressParam ? `param:${slot.addressParam}`
+            // A loop over targets calls a callee per iteration through its receiver declaration: two loops may
+            // each declare `pair` for callees of their own.
+            const fixedIdentity = slot.addressParam ? `param:${slot.addressParam}`
               : slot.addressStateVar ? `state:${slot.addressStateVar}`
                 : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+            const identity = slot.loopArrayVar ? (slot.loopReceiver ? `loop:${slot.loopReceiver}` : '') : fixedIdentity;
             if (identity !== '') {
               const ownerKey = `${identity}|${slot.interfaceName}`;
               const allGroup = allByTarget.get(ownerKey) ?? [];
@@ -4568,8 +4599,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           // The direct convention runs repeated calls to one callee in one spend of its master, through the
           // callee's multi-call entry, each call reading the record of its own frame; it never builds a bus batch.
           const directConvention = messageBusExplicitlyDisabled && this.compilerOptions.composition !== 'framed';
+          // A loop repeats its call while a callee master is spent once. Only a per-iteration target (an array
+          // element or witness, checked where it runs) or a frame of the callee's multi-call spend runs once per
+          // iteration; any other looped call would take results and effects of runs its callee never made.
+          const inLoop = (slot: ExternalCallSlot): boolean => slot.sourceCallNode !== undefined
+            && (this.loopNestedExternalCalls.has(slot.sourceCallNode) || callOccursInLoop(slot.sourceCallNode));
+          const groupedSlots = new Set(knownRepeated.flat());
+          const loopedCalls = directConvention ? logicalCallSlots.filter((slot) => !groupedSlots.has(slot)
+            && !slot.loopArrayVar && inLoop(slot)).map((slot) => [slot]) : [];
+          if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values(), inLoop);
+          // An entry's repeated or looped call reads its own record only as a numbered frame.
           const refusedRepeated = directConvention
-            ? knownRepeated.filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)))
+            ? [...knownRepeated, ...loopedCalls].filter((group) => !group.every((slot) => this.isDirectFrameCall(slot)
+              && (!node.isEntryPoint || slot.callOrdinal !== undefined)))
             : knownRepeated;
           // Retained but unreachable helpers are still typechecked. Their hypothetical transactions do not make
           // the selected contract require a graph route; enforce the opt-out on reachable functions only.
@@ -4583,8 +4625,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
               + (directConvention
                 ? 'A UTXO master can be spent only once, and the direct convention runs several calls in one spend '
-                  + 'only through the callee\'s multi-call entry, whose calls are view or pure, return values and '
-                  + 'name a fixed method of a fixed target; this transaction cannot be built with '
+                  + 'only through the callee\'s multi-call entry, whose calls are regular and value-free, name a '
+                  + 'fixed method of a fixed target and pass every argument their records digest; this transaction '
+                  + 'cannot be built with '
                 : 'A UTXO master can be spent only once, so this transaction cannot be built with ')
               + (messageBusAutoNarrowed
                 ? 'the automatic direct path: the automatic selection did not read the repeated call as a '
@@ -4594,7 +4637,6 @@ export default class SymbolTableTraversal extends AstTraversal {
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }
-          if (directConvention && node.isEntryPoint) this.assignDirectCallOrdinals(allByTarget.values());
           // V1 permits exactly one repeated callee group in a root invocation. A framed master carries one call
           // record per call and gives each call its own frame, so it has nothing to collapse: its sites are the
           // calls themselves and each binds its own descriptor.
@@ -4608,16 +4650,14 @@ export default class SymbolTableTraversal extends AstTraversal {
               slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
               const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)!;
               slot.compileTimeSelector = selector;
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
-                .find((fn) => fn.name === slot.functionName);
+              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               const occurrence = callOccursInLoop(slot.sourceCallNode)
                 ? 'loop' as const
                 : slot.condition ? 'conditional' as const : 'once' as const;
               return {
                 selector,
                 parameters: slot.sourceCallNode!.parameters,
-                parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
+                parameterTypes: ifaceFunc?.parameterTypes
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
                 sourceCallsiteId: slot.slotIndex,
@@ -4636,6 +4676,42 @@ export default class SymbolTableTraversal extends AstTraversal {
             const grouped = new Set(group.slice(1));
             externalCallSlots.splice(0, externalCallSlots.length,
               ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
+          }
+        }
+        // Approach B (single-interface method binding): a void call through an interface naming exactly one
+        // function verifies no co-spent selector (a one-method callee has no selector prefix), so a multi-method
+        // co-spent callee could run a different same-arity method while the caller advances its state. Bind the
+        // method by reading the callee's attested void record: mark the slot to carry a record. Its callee emits
+        // `digest || 0x01` universally, so the caller can always read one.
+        // The exploit this closes exists for every ungrouped single-interface void call, not only an explicit
+        // messageBus:false opt-out. An inferred (auto) compile direct-lowers a call it does not route - `messageBus`
+        // is folded to true for auto, so the mode, not that flag, says whether lowering is direct. Bind for disabled
+        // and auto; an explicitly enabled (or verifier-required) bus authenticates co-spent methods itself. Grouped
+        // slots are already removed above, and this block only runs off-route, so it reaches only direct calls.
+        const busMode = (this.compilerOptions as CompilerOptions
+          & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
+        const directConventionVoidBinding = (busMode === 'disabled' || busMode === 'auto')
+          && this.compilerOptions.composition !== 'framed';
+        if (directConventionVoidBinding && node.isEntryPoint) {
+          for (const slot of externalCallSlots) {
+            if (slot.hasReturnValues || slot.voidCallRecord || slot.opaqueReturn) continue;
+            if (slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector || slot.selectorArrayVar) continue;
+            if (slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf) continue;
+            if (slot.callValueEffect) continue;
+            if ((slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) continue;
+            if (slot.needsSelectorVerification) continue;
+            const calleeFns = this.getCalleeFunctions(slot.interfaceName);
+            if (!calleeFns || calleeFns.length !== 1) continue;
+            const recordMethod = this.slotCalleeMethod(slot);
+            if (!this.interfaceMap.has(slot.interfaceName) || !recordMethod) continue;
+            // The void record is read by the digest of this method's selector and arguments; set it here so the
+            // read always has one, including where the generic returning-slot pass does not reach this slot
+            // (e.g. a callee dispatched through its own multi-call entry).
+            slot.callRecordSelector = this.computeAbiSelector(
+              this.selectorSignatureFor(slot.functionName, recordMethod.parameterTypes));
+            slot.callRecordParameterTypes = recordMethod.parameterTypes;
+            slot.hasReturnValues = true;
+            slot.voidCallRecord = true;
           }
         }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
@@ -4898,10 +4974,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
             // selector (bound to `cond`).
             if (!slot.runtimeSelector && !slot.batchInvocations) {
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
+              const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
-                const sig = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameters.map((p) => p.type));
+                const sig = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameterTypes);
                 slot.compileTimeSelector = this.computeAbiSelector(sig);
               }
             }
@@ -5090,17 +5165,45 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(returnOutputIdxParam);
     }
 
+    // B-side (approach B, single-interface method binding): an ordinary void entry of a direct stateful contract
+    // attests the method it ran via a void call record so a single-function-interface caller can bind the co-spent
+    // method. It needs the carrier output index its caller pins the record at. Lifecycle and unsafe entries keep
+    // their own covenant settlement, and the multi-call candidate path below injects this witness itself.
+    const voidRecordLifecycleOrUnsafe = node.modifiers.some((modifier) =>
+      modifier === FunctionModifier.UPGRADE || modifier === FunctionModifier.DEPLOY
+      || modifier === FunctionModifier.SELFDESTRUCT || modifier === FunctionModifier.SPLIT
+      || modifier === FunctionModifier.MERGE || modifier === FunctionModifier.MIGRATE_RECORDS
+      || modifier === FunctionModifier.UNSAFE || modifier === FunctionModifier.DELEGATE);
+    // An entry that makes a returning external storage read (readOnlyDataNft co-spend) leaves the target's lock on
+    // the stack through to the epilogue; adding the void record's own settlement there collides with it (its
+    // returnOutputIdx pick is thrown off). Such entries keep their pre-fix-B settlement, so no void record is
+    // injected. All three pieces (this witness, the reserved returnEvent slot, and the GTT settlement) derive from
+    // this injection, so gating it here keeps them consistent.
+    const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
+    if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
+      && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
+      && !readsExternalStorage
+      && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
+      && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
+      const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
+      voidRecordIdxParam.location = node.location;
+      voidRecordIdxParam.syntheticallyUsed = true;
+      node.parameters.push(voidRecordIdxParam);
+      this.symbolTables[0].set(Symbol.variable(voidRecordIdxParam));
+      this.symbolTables[0].get('__internal__returnOutputIdx')
+        ?.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
+      this.pushToStack(voidRecordIdxParam);
+    }
+
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
     if (node.externalCalls && !node.graphEmissionHandler) {
       const returningSlots = node.externalCalls.filter((ec) => ec.hasReturnValues);
       for (const slot of returningSlots) {
         // The record a direct call reads is the digest of this method's selector and arguments; a method chosen at run
         // time (a varying pointer, a selector table) has no constant one.
-        const recordIface = this.interfaceMap.get(slot.interfaceName);
-        const recordMethods = recordIface ? this.getAllInterfaceFunctions(recordIface)
-          .filter((candidate) => candidate.name === slot.functionName) : [];
-        if (recordMethods.length === 1 && !slot.runtimeSelector && !slot.selectorArrayVar) {
-          const parameterTypes = recordMethods[0]!.parameters.map((parameter) => parameter.type);
+        const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
+        if (recordMethod && !slot.runtimeSelector && !slot.selectorArrayVar) {
+          const parameterTypes = recordMethod.parameterTypes;
           slot.callRecordSelector = this.computeAbiSelector(this.selectorSignatureFor(slot.functionName, parameterTypes));
           slot.callRecordParameterTypes = parameterTypes;
         }
@@ -5133,6 +5236,43 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           this.pushToStack(preimageParam);
         }
+      }
+      // The method a call to a fixed method runs, whose arguments a direct caller binds where no record digests them.
+      // A table of pointers names one of its methods: they vary by element, their parameters do not.
+      for (const slot of node.externalCalls) {
+        if (slot.runtimeSelector) continue;
+        const method = this.slotCalleeMethod(slot);
+        if (method) slot.calleeMethod = { parameterTypes: method.parameterTypes };
+        // F1 caller edge: a void fixed-method call needs the same digest a returning one carries, so its caller can
+        // attest the call. The returning-slot loop above set it for returning slots; set it for the rest here.
+        if (method && slot.callRecordSelector === undefined && !slot.selectorArrayVar
+          && this.interfaceMap.has(slot.interfaceName)) {
+          slot.callRecordSelector = this.computeAbiSelector(
+            this.selectorSignatureFor(slot.functionName, method.parameterTypes),
+          );
+          slot.callRecordParameterTypes = method.parameterTypes;
+        }
+      }
+      // F1: a per-slot witness output index where the caller pins its attested call-edge record. The edge is an
+      // appended output (not a fixed block slot), so a witnessed index keeps it clear of the callee's block and the
+      // caller's own block/record layout; the SDK fills it and the census admits exactly it.
+      // A function that also delegatecalls decodes a variable-length low-level `input` in its prologue; appending
+      // an edge witness perturbs that decode. No call made in such a function carries an edge. This is a liveness
+      // residual only: were a co-spent callee here to read a contract msg.sender, its edge requirement would fail
+      // closed (no forgery), consistent with the other unbound shapes. lowLevelCalls is not populated yet, so scan
+      // the body for the mode directly.
+      const functionDelegatecalls = describeFunctionLowLevelCallsites(node).some((s) => s.callMode === 'delegatecall');
+      for (let i = 0; !functionDelegatecalls && i < node.externalCalls.length; i++) {
+        const slot = node.externalCalls[i];
+        if (!this.externalCallSlotCarriesEdge(node, slot)) continue;
+        const edgeIdxName = `__internal__callEdgeOutputIdx${slot.slotIndex}`;
+        const edgeIdxParam = new ParameterNode(PrimitiveType.BIGINT, edgeIdxName);
+        edgeIdxParam.location = node.location;
+        edgeIdxParam.syntheticallyUsed = true;
+        node.parameters.push(edgeIdxParam);
+        this.symbolTables[0].set(Symbol.variable(edgeIdxParam));
+        this.symbolTables[0].get(edgeIdxName)?.references.push({ name: edgeIdxName } as IdentifierNode);
+        this.pushToStack(edgeIdxParam);
       }
     }
 
@@ -5505,11 +5645,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.blockLayout = this.computeBlockLayout(node);
     }
 
-    // A direct entry that preserves all state may run as a frame of the multi-call entry. One that reads fixed
-    // entries takes their shift past its layout, so frames reading two keys of one mapping read two inputs.
+    // F1: an entry reading a contract-caller msg.sender binds its caller to the call (codegen computes the entry's
+    // own call digest and the minting path requires a matching caller-category edge record).
+    if (this.entryRequiresCallerEdge(node)) node.requiresCallerEdge = true;
+
+    // A direct entry that writes at most fixed state fields may run as a frame of the multi-call entry. A void one
+    // takes the record witness a frame pins its call's record at; one that reads fixed entries takes their shift
+    // past its layout, so frames reading two keys of one mapping read two inputs.
     if (this.isStatefulContract && node.isEntryPoint && this.callBatchCompile()
-      && isCallBatchFrameCandidate(node, () => this.hasStateWrite(node.body))) {
+      && isCallBatchFrameCandidate(node, () => this.writesBeyondFixedScalarState(node.body))) {
       node.callBatchCandidate = true;
+      if (!node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
+        const record = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
+        record.location = node.location;
+        record.syntheticallyUsed = true;
+        node.parameters.push(record);
+        this.symbolTables[0].set(Symbol.variable(record));
+        this.symbolTables[0].get(record.name)?.references.push({ name: record.name } as IdentifierNode);
+        this.pushToStack(record);
+      }
       if ((node.entryAccesses?.length ?? 0) > 0) {
         const shift = new ParameterNode(PrimitiveType.BIGINT, CALL_BATCH_ROW_SHIFT);
         shift.location = node.location;
@@ -6378,7 +6532,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || contract.emitsEvent
       || contract.functions.some((func) => func.impliedSelfdestruct)
       || contract.deploysWithValue
-      || contract.readsBlock
+      || contract.readsBlockhash
       || (this.compilerOptions.forceStateful ?? false);
     if (mods.includes(FunctionModifier.UNSAFE) && !isStatefulContract) {
       throw new InvalidModifierCombinationError(node, "'unsafe' is only valid in stateful contracts");
@@ -8499,8 +8653,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     gather(body, new Set());
     for (const [localName, calls] of byLocal) {
-      if (calls.length < 2
-        || (!this.findLocalInit(body, localName) && !this.findAssignmentValue(body, localName))) continue;
+      // A witness may stand only for a view of a callee the caller chooses: one the contract fixes keeps its calls.
+      // A receiver name defined more than once groups calls on several locals and keeps them too.
+      const receiver = this.localDefinitionCount(body, localName) === 1
+        ? this.findLocalInit(body, localName) ?? this.findAssignmentValue(body, localName) : undefined;
+      if (calls.length < 2 || !receiver || !this.loopTargetIsCallerChosen(receiver, fn)) continue;
       // Classify by return: a VOID call is the state-changing mutate (the co-spend); a RETURNING call is a view
       // whose result becomes a caller witness. (The interface AST does not track `view`; hasReturnValues is the
       // sound proxy - the one void mutate's covenant bounds a wrong witness, and a misclassified returning-mutate
@@ -8753,6 +8910,192 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     walk(expr);
     return best?.index;
+  }
+
+  /**
+   * True when a per-iteration loop target reads its varying part only from elements of `fn`'s parameters, so the
+   * caller chooses it (`IPair(pairFor(factory, path[i], path[i + 1]))`) and a caller-supplied witness may stand for
+   * it. A target read from a local or state array, a mapping or another contract's result is the contract's own:
+   * its witness must equal the value computed on chain. A local the body defines more than once, or one that shadows
+   * a parameter, is not followed: the definition in force at the call cannot be told by its name.
+   */
+  private loopTargetIsCallerChosen(expr: Node, fn: FunctionDefinitionNode | undefined): boolean {
+    const body = fn?.body;
+    const parameters = new Set(fn?.parameters.map((parameter) => parameter.name) ?? []);
+    const seen = new Set<string>();
+    let elements = 0;
+    let chosen = true;
+    const walk = (n: unknown): void => {
+      if (!chosen || !n || typeof n !== 'object') return;
+      if (n instanceof MappingAccessNode || n instanceof ExternalFunctionCallNode) {
+        chosen = false;
+        return;
+      }
+      if (n instanceof ArrayAccessNode) {
+        // Follow bare-identifier aliases of the array (`address[] memory ps = path`, an inlined helper's parameter)
+        // to a parameter, each defined once. Any element of a parameter array is the caller's choice, so its index
+        // decides nothing here.
+        let array = n.array instanceof IdentifierNode ? n.array.name : undefined;
+        const aliases = new Set<string>();
+        while (array !== undefined && !(parameters.has(array) && this.parameterArrayUnwritten(body, array))
+          && !aliases.has(array)) {
+          aliases.add(array);
+          const init = this.localDefinitionCount(body, array) === 1 ? this.findLocalInit(body, array) : undefined;
+          array = init instanceof IdentifierNode ? init.name : undefined;
+        }
+        if (array === undefined || aliases.has(array)) {
+          chosen = false;
+          return;
+        }
+        elements += 1;
+        return;
+      }
+      if (n instanceof IdentifierNode && !seen.has(n.name)) {
+        seen.add(n.name);
+        const definitions = this.localDefinitionCount(body, n.name);
+        if (definitions > 1) {
+          chosen = false;
+          return;
+        }
+        const init = definitions === 1 ? this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name)
+          ?? this.findAssignmentValue(body, n.name) : undefined;
+        if (init) walk(init);
+        return;
+      }
+      for (const k of Object.keys(n as Record<string, unknown>)) {
+        if (RESOLVED_BACKREF_KEYS.has(k) || BODY_WALK_SKIP_KEYS.has(k) || k === 'references') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) v.forEach(walk); else if (v instanceof Node) walk(v);
+      }
+    };
+    walk(expr);
+    return chosen && elements > 0;
+  }
+
+  /**
+   * True when `body` writes neither parameter array `name` nor a local that holds it (an element write, push, pop,
+   * delete, reassignment or a local of the same name) and runs no assembly: its elements are then the caller's.
+   */
+  private parameterArrayUnwritten(body: Node | undefined, name: string): boolean {
+    const walk = (visit: (node: Node) => void): void => {
+      const seen = new Set<Node>();
+      const step = (node: Node | undefined): void => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+        visit(node);
+        for (const [key, value] of Object.entries(node)) {
+          if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+          if (value instanceof Node) step(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) step(item);
+        }
+      };
+      step(body);
+    };
+    // The locals that hold the array: those initialized or assigned from it, transitively.
+    const holders = new Set([name]);
+    for (let grew = true; grew;) {
+      grew = false;
+      walk((node) => {
+        const [holder, source] = node instanceof VariableDefinitionNode ? [node.name, node.expression]
+          : node instanceof AssignNode ? [node.identifier.name, node.expression] : [undefined, undefined];
+        if (holder !== undefined && !holders.has(holder) && source instanceof IdentifierNode
+          && holders.has(this.resolveInlineAliasName(source.name, body))) {
+          holders.add(holder);
+          grew = true;
+        }
+      });
+    }
+    let written = false;
+    walk((node) => {
+      if (node instanceof AssemblyStatementNode
+        || ((node instanceof ArrayPushNode || node instanceof ArrayPopNode || node instanceof ArrayAssignNode
+          || node instanceof ArrayDeleteNode) && holders.has(node.name))
+        || (node instanceof DeleteLocalNode && holders.has(node.identifier.name))
+        || (node instanceof AssignNode && node.identifier.name === name)
+        || (node instanceof VariableDefinitionNode && node.name === name)
+        || (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name !== undefined
+          && holders.has(element.name)))) {
+        written = true;
+      }
+    });
+    return !written;
+  }
+
+  /** How many statements of `body` define local `name`: declarations, tuple binds, assignments and deletes. */
+  private localDefinitionCount(body: Node | undefined, name: string): number {
+    let count = 0;
+    const seen = new Set<Node>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === name) count += 1;
+      if (node instanceof TupleAssignmentNode) {
+        count += node.elements.filter((element) => element.name === name && !element.skip).length;
+      }
+      if (node instanceof AssignNode && node.identifier.name === name) count += 1;
+      if (node instanceof DeleteLocalNode && node.identifier.name === name) count += 1;
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
+    return count;
+  }
+
+  /**
+   * The declaration of local `name` in force at `at`: the last one a block enclosing `at` makes before it, so two
+   * loops that each declare a receiver of one name resolve to their own.
+   */
+  private findLocalDeclarationAt(body: Node | undefined, name: string, at: Node): VariableDefinitionNode | undefined {
+    let result: VariableDefinitionNode | undefined;
+    let found = false;
+    const seen = new Set<Node>();
+    const visit = (node: Node | undefined, scope: (VariableDefinitionNode | undefined)[]): void => {
+      if (found || !node || seen.has(node)) return;
+      seen.add(node);
+      if (node === at) {
+        result = [...scope].reverse().find((declaration) => declaration !== undefined);
+        found = true;
+        return;
+      }
+      if (node instanceof BlockNode) {
+        const frame = [...scope, undefined];
+        for (const statement of node.statements ?? []) {
+          visit(statement, frame);
+          if (found) return;
+          if (statement instanceof VariableDefinitionNode && statement.name === name) frame[frame.length - 1] = statement;
+        }
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+        if (value instanceof Node) visit(value, scope);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, scope);
+        if (found) return;
+      }
+    };
+    visit(body, []);
+    return result;
+  }
+
+  /** The declarations of local `name` in `body`, in source order. */
+  private localDeclarations(body: Node | undefined, name: string): VariableDefinitionNode[] {
+    const declarations: VariableDefinitionNode[] = [];
+    const seen = new Set<Node>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === name) declarations.push(node);
+      for (const [key, value] of Object.entries(node)) {
+        if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
+    return declarations;
   }
 
   private findAssignmentValue(node: Node | undefined, name: string,
@@ -9334,8 +9677,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       // the target to the array element itself so the existing loop-array dispatch co-spends each element (identical
       // to writing `IToken(path[i]).m()` directly). Guard: init is `<ident>[<ident>]` (an array indexed by a bare
       // loop counter); a param/literal-indexed or non-array init is left as a fixed target.
+      // Only a local defined once holds its initializer's element at the call: a reassigned local, or one of two
+      // loops' locals of one name, keeps its own value, which the bound witness below checks.
       if (addressParam && !addressStateVar && this.loopDeclaredLocals.has(addressParam)
-        && node.addressExpression instanceof IdentifierNode) {
+        && node.addressExpression instanceof IdentifierNode
+        && this.localDefinitionCount(this.currentFunction?.body, addressParam) === 1) {
         const aliasInit = this.findLocalInit(this.currentFunction?.body, addressParam)
           ?? this.findTupleInit(this.currentFunction?.body, addressParam);
         const localArrayElement = aliasInit instanceof ArrayAccessNode
@@ -9357,6 +9703,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       let loopArrayElemStructType: StructType | undefined;
       let loopArrayElemFieldName: string | undefined;
       let loopWitnessArrayIds: IdentifierNode[] = [];
+      let loopReceiver: string | undefined;
       // A loop-body LOCAL receiver holding a per-iteration computed target
       // `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()`: addressParam is the raw local (SEAL left it
       // un-hoisted - a loop-body local is not single-assign), which the co-spend epilogue cannot read (the local
@@ -9369,7 +9716,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       const framedLoopTargets = this.compilerOptions.composition === 'framed';
       if (!framedLoopTargets && addressParam && !addressStateVar
         && directAddressIdentifier(node.addressExpression)?.name === addressParam) {
-        const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
+        // Two loops may each declare a receiver of one name: take the declaration in force at this call.
+        const receiverDefinitions = this.localDefinitionCount(this.currentFunction?.body, addressParam);
+        const receiverDeclaration = this.findLocalDeclarationAt(this.currentFunction?.body, addressParam, node);
+        const initExpr = receiverDefinitions > 1 ? receiverDeclaration?.expression
+          : this.findLocalInit(this.currentFunction?.body, addressParam);
+        if (receiverDeclaration) {
+          loopReceiver = `${addressParam}#${this.localDeclarations(this.currentFunction?.body, addressParam)
+            .indexOf(receiverDeclaration)}`;
+        }
         let resolvedInit = initExpr;
         const resolvedNames = new Set<string>();
         while (resolvedInit instanceof IdentifierNode && !resolvedNames.has(resolvedInit.name)) {
@@ -9379,11 +9734,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const legacyInterfaceCast = initExpr instanceof FunctionCallNode && initExpr.parameters.length === 1
           && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
-        const canNeutralize = initExpr instanceof CastNode || legacyInterfaceCast
-          || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0);
-        // A loop may receive its per-iteration callee from another contract or decode it from the current action
-        // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
-        // binds that witness to the live runtime local before verifying the co-spent callee.
+        // Only a target the caller chooses, held by a receiver defined once, may be replaced by its witness.
+        const canNeutralize = receiverDefinitions === 1 && (initExpr instanceof CastNode || legacyInterfaceCast
+          || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0))
+          && resolvedInit !== undefined && this.loopTargetIsCallerChosen(resolvedInit, this.currentFunction);
+        // A loop may receive its per-iteration callee from another contract, decode it from the current action
+        // payload or read it from the contract's own values. The local cannot survive to the epilogue, so give it a
+        // per-iteration witness; inline dispatch binds that witness to the live runtime local before verifying the
+        // co-spent callee.
         if (resolvedInit && this.loopDeclaredLocals.has(addressParam) && !canNeutralize) {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
@@ -9496,9 +9854,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           // to read the callee address from a synthesized witness array `__internal__loopTargets<n>[i]` (the SDK
           // derives it from the loop array via the computed expression at build time), so the typed inline-loop
           // dispatch co-spends each. The loop index is the bare-identifier index of an array access in the target
-          // (path[i]); a target with none (no per-iteration leaf) is left unmatched and fails closed downstream.
+          // (path[i]); a target with none (no per-iteration leaf), or one the caller does not choose, is left
+          // unmatched and fails closed downstream.
           const loopIdx = this.findLoopIndexInComputedTarget(ae, this.currentFunction?.body);
-          if (loopIdx) {
+          if (loopIdx && this.loopTargetIsCallerChosen(ae, this.currentFunction)) {
             this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
@@ -11645,6 +12004,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         loopArrayVar,
         ...(loopIndexExpression && { loopIndexExpression }),
         ...(loopWitnessArrayIds.length > 0 && { loopWitnessArrayIds }),
+        ...(loopArrayVar !== undefined && loopReceiver !== undefined && { loopReceiver }),
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral !== undefined && { addressLiteral }),
@@ -12337,39 +12697,56 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * True when a direct call can run as a frame of its callee's multi-call entry: a fixed method of a fixed target,
-   * declared view or pure, whose result its record binds.
+   * True when a direct call can run as a frame of its callee's multi-call entry: a regular, value-free call to one
+   * fixed method of a fixed target, whose record binds it by the arguments the call names.
    */
   private isDirectFrameCall(slot: ExternalCallSlot): boolean {
-    if (!slot.hasReturnValues || slot.opaqueReturn || slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector
+    if (slot.opaqueReturn || slot.loopArrayVar || slot.fnPtrCall || slot.runtimeSelector
       || slot.selectorArrayVar || slot.runtimeTernaryAddress || slot.addressIsMsgSender || slot.addressIsSelf
       || slot.callValueEffect || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return false;
     const iface = this.interfaceMap.get(slot.interfaceName);
     const methods = iface ? this.getAllInterfaceFunctions(iface).filter((fn) => fn.name === slot.functionName) : [];
-    return methods.length === 1 && (methods[0].stateMutability === 'view' || methods[0].stateMutability === 'pure');
+    if (methods.length !== 1) return false;
+    // Frames are told apart by their records' digests: a call leaving its arguments to the callee digests none.
+    return slot.sourceCallNode === undefined || namesCallRecordArguments(
+      methods[0].parameters.map((parameter) => parameter.type), slot.sourceCallNode.parameters.length,
+    );
   }
 
   /**
    * Gives each call of an entry to a callee it calls several times the ordinal of its frame in the callee's one
-   * spend. Straight-line calls take 0, 1, .. in source order; a group with a looped or conditional call counts at
-   * run time instead. A zero-argument readonly alias shares the first one's run, record and ordinal.
+   * spend. Straight-line calls take 0, 1, .. in execution order (`sourceEffectOrdinal`); a group with a looped or
+   * conditional call counts at run time instead. A zero-argument readonly alias shares the first one's run, record
+   * and ordinal unless a call that may write runs between them. A void call of a group reads its frame's record,
+   * `digest || 0x01`, through a return slot.
    */
-  private assignDirectCallOrdinals(groups: Iterable<ExternalCallSlot[]>): void {
+  private assignDirectCallOrdinals(
+    groups: Iterable<ExternalCallSlot[]>, inLoop: (slot: ExternalCallSlot) => boolean,
+  ): void {
     let group = 0;
     for (const calls of groups) {
       if (!calls.every((slot) => this.isDirectFrameCall(slot))) continue;
-      const looped = calls.some((slot) => slot.sourceCallNode !== undefined
-        && this.loopNestedExternalCalls.has(slot.sourceCallNode));
+      const looped = calls.some(inLoop);
       if (calls.length < 2 && !looped) continue;
       // Its record binds each call's method: the callee's input may run the multi-call entry, whose selector is no
       // method's, so the call checks no selector there.
-      for (const slot of calls) slot.needsSelectorVerification = false;
+      for (const slot of calls) {
+        slot.needsSelectorVerification = false;
+        if (!slot.hasReturnValues) {
+          slot.hasReturnValues = true;
+          slot.voidCallRecord = true;
+        }
+      }
       if (looped || calls.some((slot) => slot.condition !== undefined)) {
         for (const slot of calls) slot.callOrdinal = { group, counted: true };
       } else {
         const aliases = new Map<string, number>();
         let next = 0;
-        for (const slot of calls) {
+        const executed = calls.every((slot) => slot.sourceEffectOrdinal !== undefined)
+          ? [...calls].sort((left, right) => left.sourceEffectOrdinal! - right.sourceEffectOrdinal!) : calls;
+        for (const slot of executed) {
+          // A frame that may write leaves a later read another state than the record before it.
+          if (slot.readonlyReturnSelector === undefined) aliases.clear();
           const alias = slot.readonlyReturnSelector !== undefined && slot.sourceCallNode?.parameters.length === 0
             ? binToHex(slot.readonlyReturnSelector) : undefined;
           const shared = alias === undefined ? undefined : aliases.get(alias);
@@ -12379,6 +12756,27 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       group += 1;
     }
+  }
+
+  /** Whether this subtree writes contract state other than a fixed (non-dynamic) state field. Cycle-safe. */
+  private writesBeyondFixedScalarState(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if ((node instanceof StateAssignNode || node instanceof DeleteStateNode)
+      && (node.stateVariable === undefined || node.stateVariable.isDynamic)) return true;
+    if (node instanceof MappingAssignNode || node instanceof StateArrayAssignNode
+      || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode
+      || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+      || node instanceof StateArrayDeleteNode) return true;
+    for (const key in node) {
+      const v = node[key as keyof Node];
+      if (v instanceof Node) {
+        if (this.writesBeyondFixedScalarState(v, seen)) return true;
+      } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.writesBeyondFixedScalarState(e, seen)) return true;
+      }
+    }
+    return false;
   }
 
   // C1/B: does this subtree write contract state (state-var / mapping / state-array assign or delete)? A
@@ -13666,6 +14064,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     );
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
+    this.markUnreadOpaqueReturns(unusedSymbols, node);
     for (const unused of unusedSymbols) {
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
@@ -13676,6 +14075,21 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     this.symbolTables.shift();
     return node;
+  }
+
+  /** A `data` binding of an opaque call that nothing in its scope may read leaves its call no record to read. */
+  private markUnreadOpaqueReturns(unused: readonly Symbol[], scope: Node): void {
+    for (const symbol of unused) {
+      const projection = symbol.definition instanceof VariableDefinitionNode ? symbol.definition.expression : undefined;
+      if (!(projection instanceof TupleIndexOpNode) || projection.index !== 1) continue;
+      if (!mayReadLocal(scope, symbol.name)) this.markUnreadOpaqueReturn(projection.tuple);
+    }
+  }
+
+  private markUnreadOpaqueReturn(call: Node | undefined): void {
+    if (call instanceof ExternalFunctionCallNode && call.opaqueReturn && !call.discardedOpaqueReturn) {
+      call.unreadOpaqueReturn = true;
+    }
   }
 
   visitVariableDefinition(node: VariableDefinitionNode): Node {
@@ -14420,6 +14834,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e) as ExpressionNode);
     } else {
       node.tuple = this.visit(node.tuple);
+      if (node.elements[1]?.skip) this.markUnreadOpaqueReturn(node.tuple);
     }
 
     // The symbols above are installed before visiting the RHS so references in later statements can bind, but
@@ -14739,7 +15154,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
           const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
           if (calleeName && calleeFns) {
-            const ifaceFunc = calleeFns.find((f) => f.name === methodName);
+            const ifaceFunc = this.resolveCalleeMethod(
+              node, calleeName, calleeFns, methodName, node.fieldNames?.length ?? node.parameters.length,
+            );
             if (ifaceFunc) {
               this.validateExternalCallMutability(ifaceFunc);
               if (node.fieldNames) {
@@ -14753,7 +15170,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 this.refuseFramedDeployThenCall();
                 const deployNode = this.deployResultLocals.get(varName)!;
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
-                const realFoo = deployNode.referencedContract?.functions.find((f) => f.name === methodName);
+                const realFoo = this.deployFoldTarget(node, deployNode, ifaceFunc, methodName, parameters.length);
                 if (realFoo && this.calleeCannotComplete(realFoo)) {
                   // The callee cannot complete: the deploy-then-call is that failure, nothing to fold.
                   const failed = new ExternalFunctionCallNode(calleeName, visitedVar, methodName, parameters);
@@ -14816,6 +15233,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 functionName: methodName,
                 externalCallSlotIndex: -1,
               };
+              callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(ifaceFunc);
               if (ifaceFunc.returnTypes.length > 0) {
                 callNode.type = ifaceFunc.returnTypes.length === 1
                   ? ifaceFunc.returnTypes[0]
@@ -15872,6 +16290,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.tryBlock.statements = this.visitOptionalList(node.tryBlock.statements) as StatementNode[];
 
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
+    this.markUnreadOpaqueReturns(unusedSymbols, node.tryBlock);
     for (const unused of unusedSymbols) {
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
         .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
@@ -16295,6 +16714,71 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Callable functions for an external-call target name: an interface's functions, or - treating a contract
   // as its own interface - a contract's functions. The callee's own covenant arbiters which are callable, so
   // exposing all is safe. Returns undefined if the name is neither an interface nor a contract.
+  /**
+   * The method among `functions` a call of `name` with `count` arguments runs: the only one so named, or the one
+   * overload of that arity. A call naming several overloads of its arity, or none, is refused: it would bind none.
+   */
+  private resolveCalleeMethod<T extends InterfaceFunctionNode | FunctionDefinitionNode>(
+    node: Node, interfaceName: string, functions: readonly T[], name: string, count: number,
+  ): T | undefined {
+    const named = functions.filter((fn) => fn.name === name && SymbolTableTraversal.callable(fn));
+    if (named.length <= 1) return named[0];
+    const sized = named.filter((fn) => SymbolTableTraversal.calleeSignature(fn).parameterTypes.length === count);
+    if (sized.length !== 1) throw new AmbiguousExternalOverloadError(node, interfaceName, name, count);
+    return sized[0];
+  }
+
+  /**
+   * The deployed contract's function a deploy-then-call folds: the overload the call's argument count selects, when it
+   * takes the parameters of the method the call was typed against.
+   */
+  private deployFoldTarget(
+    node: Node, deployNode: InstantiationNode, typed: InterfaceFunctionNode | FunctionDefinitionNode | undefined,
+    name: string, count: number,
+  ): FunctionDefinitionNode | undefined {
+    const contract = deployNode.referencedContract;
+    if (!contract) return undefined;
+    const target = this.resolveCalleeMethod(node, contract.name, contract.functions, name, count);
+    if (!target || !typed) return target;
+    const parameters = (fn: InterfaceFunctionNode | FunctionDefinitionNode): string => SymbolTableTraversal
+      .calleeSignature(fn).parameterTypes.map((type) => type.toString()).join(',');
+    return parameters(target) === parameters(typed) ? target : undefined;
+  }
+
+  /** A callee method's name, declared parameter types past any compiler-internal one, and an interface's mutability. */
+  private static calleeSignature(
+    fn: InterfaceFunctionNode | FunctionDefinitionNode,
+  ): { name: string; parameterTypes: Type[]; stateMutability?: string } {
+    return {
+      name: fn.name,
+      parameterTypes: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+        .map((parameter) => parameter.type),
+      ...(fn instanceof InterfaceFunctionNode && { stateMutability: fn.stateMutability }),
+    };
+  }
+
+  /** Whether another contract can call `fn`: any interface method, or a contract's public or external function. */
+  private static callable(fn: InterfaceFunctionNode | FunctionDefinitionNode): boolean {
+    return fn instanceof InterfaceFunctionNode || fn.isEntryPoint;
+  }
+
+  /**
+   * The method a slot's call runs: the overload the call selected, or the one method of its name. An overloaded name
+   * the call did not resolve is refused.
+   */
+  private slotCalleeMethod(
+    slot: ExternalCallSlot,
+  ): { name: string; parameterTypes: Type[]; stateMutability?: string } | undefined {
+    if (slot.sourceCallNode?.resolvedCallee) return slot.sourceCallNode.resolvedCallee;
+    const named = (this.getCalleeFunctions(slot.interfaceName) ?? [])
+      .filter((fn) => fn.name === slot.functionName && SymbolTableTraversal.callable(fn));
+    if (named.length > 1) {
+      throw new AmbiguousExternalOverloadError(slot.sourceCallNode ?? this.currentFunction!, slot.interfaceName,
+        slot.functionName, slot.sourceCallNode?.parameters.length ?? 0);
+    }
+    return named[0] && SymbolTableTraversal.calleeSignature(named[0]);
+  }
+
   private getCalleeFunctions(name: string): (InterfaceFunctionNode | FunctionDefinitionNode)[] | undefined {
     const iface = this.interfaceMap.get(name);
     if (iface) return this.getAllInterfaceFunctions(iface);
@@ -16868,10 +17352,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       && node.expression.expression instanceof IdentifierNode) {
       const fa = node.expression;
       const baseName = (fa.expression as IdentifierNode).name;
+      // One method of the name, or the overload a compiler-built member names by its parameter types.
       const params = (name: string): ParameterNode[] | undefined => {
-        const im = this.interfaceMap.get(name)?.functions.find((f) => f.name === fa.name);
-        if (im) return im.parameters;
-        return this.contractMap.get(name)?.functions.find((f) => f.name === fa.name)?.parameters;
+        const iface = this.interfaceMap.get(name);
+        let named: (InterfaceFunctionNode | FunctionDefinitionNode)[] = (iface ? this.getAllInterfaceFunctions(iface)
+          : this.contractMap.get(name)?.functions ?? []).filter((f) => f.name === fa.name);
+        const wanted = fa.overloadParameterTypes;
+        if (wanted) {
+          named = named.filter((f) => f.parameters.length === wanted.length
+            && f.parameters.every((parameter, at) => parameter.type.toString() === wanted[at]!.toString()));
+        }
+        if (named.length > 1) throw new AmbiguousSelectorError(node, name, fa.name);
+        return named[0]?.parameters;
       };
       // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
       // just 'address'); look it up in the scope chain, then the state vars.
@@ -18035,7 +18527,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Validate: interface has function with the field access name
         const allFunctions = this.getAllInterfaceFunctions(iface);
-        const ifaceFunc = allFunctions.find((f) => f.name === functionName);
+        const ifaceFunc = this.resolveCalleeMethod(
+          node, iface.name, allFunctions, functionName, node.fieldNames?.length ?? node.parameters.length,
+        );
         if (!ifaceFunc) {
           throw new UndefinedInterfaceFunctionError(node, iface.name, functionName);
         }
@@ -18079,6 +18573,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           externalCallSlotIndex: -1,
           callMode,
         };
+        callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(ifaceFunc);
 
         // If the interface function has return types, this is a value-producing expression
         if (ifaceFunc.returnTypes.length > 0) {
@@ -18138,7 +18633,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         // Validate: interface has function with this name
         const allFunctions = this.getAllInterfaceFunctions(iface);
-        const ifaceFunc = allFunctions.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
+        const declaredFunc = this.resolveCalleeMethod(
+          node, iface.name, allFunctions, node.methodName, node.fieldNames?.length ?? node.parameters.length,
+        );
+        const ifaceFunc = declaredFunc ?? routedFallbackFunction(node);
         if (!ifaceFunc) {
           throw new UndefinedInterfaceFunctionError(node, iface.name, node.methodName);
         }
@@ -18171,7 +18669,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (deployAlias instanceof InstantiationNode) {
             throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
           }
-          const realFunction = deployNode.referencedContract?.functions.find((f) => f.name === node.methodName);
+          const realFunction = this.deployFoldTarget(node, deployNode, ifaceFunc, node.methodName, parameters.length);
           const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
           if (!fold) {
             throw new DeployThenCallError(
@@ -18230,6 +18728,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           functionName: node.methodName,
           externalCallSlotIndex: -1, // assigned later by pre-scan
         };
+        if (declaredFunc) callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(declaredFunc);
 
         // If the interface function has return types, this is a value-producing expression
         if (ifaceFunc.returnTypes.length > 0) {
@@ -18343,7 +18842,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         ?? this.stateVariableMap.get(varName)?.type;
       const calleeName = varType instanceof AddressType ? varType.interfaceName : undefined;
       const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
-      const ifaceFunc = calleeFns?.find((f) => f.name === node.methodName) ?? routedFallbackFunction(node);
+      const declaredFunc = calleeName && calleeFns ? this.resolveCalleeMethod(
+        node, calleeName, calleeFns, node.methodName, node.fieldNames?.length ?? node.parameters.length,
+      ) : undefined;
+      const ifaceFunc = declaredFunc ?? routedFallbackFunction(node);
       if (calleeName && ifaceFunc) {
         if (this.deployResultLocals.has(varName)) {
           // A contract-typed local arrives here as a METHOD call: the parse namespaces only the receivers it
@@ -18382,6 +18884,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
+        if (declaredFunc) callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(declaredFunc);
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.sourceActivationConditions = node.sourceActivationConditions;
@@ -18431,9 +18934,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       || isStateElemFieldReceiver) {
       const recvType = this.resolveLowLevelReceiverType(node.object);
       const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
-      const ifaceFunc = calleeName
-        ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName)
-        : undefined;
+      const calleeFns = calleeName ? this.getCalleeFunctions(calleeName) : undefined;
+      const ifaceFunc = calleeName && calleeFns ? this.resolveCalleeMethod(
+        node, calleeName, calleeFns, node.methodName, node.fieldNames?.length ?? node.parameters.length,
+      ) : undefined;
       if (calleeName && ifaceFunc) {
         if (node.fieldNames) {
           node.parameters = this.reorderNamedArgsByParams(
@@ -18444,6 +18948,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const addressExpr = this.visit(node.object) as ExpressionNode;
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
+        callNode.resolvedCallee = SymbolTableTraversal.calleeSignature(ifaceFunc);
         callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.sourceActivationConditions = node.sourceActivationConditions;
@@ -19404,6 +19909,42 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Compute the 1:1 block layout for a stateful function.
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
+  /**
+   * F1: this entry is a callee that reads a contract-caller msg.sender, so it must bind which contract called it.
+   * A direct, non-framed, non-route stateful entry whose body uses msg.sender; the message bus binds its callers
+   * through the route instead, and framed through its call records.
+   */
+  private entryRequiresCallerEdge(node: FunctionDefinitionNode): boolean {
+    return this.isStatefulContract && node.isEntryPoint && node.usesMsgSender === true
+      && !node.graphEmissionHandler && !node.messageBusRoute && node.name !== '__construct'
+      && this.compilerOptions.composition !== 'framed';
+  }
+
+  /**
+   * F1: this outgoing external call carries a caller-attested edge record - a straight-line, unconditional, direct
+   * call to a fixed method of a known interface. The caller pins an own-category edge record committing to the
+   * call's digest at this slot's `callEdge` output, so the callee can bind the caller to the call. Loop, conditional,
+   * pointer, runtime-selector, opaque, self, msg.sender-target and raw calls do not (fail closed: a callee that
+   * requires the edge refuses such a caller).
+   */
+  private externalCallSlotCarriesEdge(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
+    // The edge is pinned in the caller's own minting category; a non-stateful contract has no such category, and
+    // the presence-based msg.sender forgery F1 closes is a stateful-category construct. Non-stateful callers carry
+    // no edge.
+    return this.isStatefulContract
+      && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
+      && slot.callRecordSelector !== undefined && this.interfaceMap.has(slot.interfaceName)
+      && slot.calleeMethod !== undefined && !slot.runtimeSelector && !slot.selectorArrayVar && !slot.opaqueReturn
+      && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations
+      && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender
+      && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
+      // The caller can only attest a call whose arguments it names (and so digests). A call that leaves arguments
+      // to the callee's witness (fewer than the method declares) cannot compute the edge digest, so it carries no
+      // edge; a callee requiring one then fails closed (liveness), consistent with the other unbound shapes.
+      && slot.sourceCallNode !== undefined
+      && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], slot.sourceCallNode.parameters.length);
+  }
+
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
     // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
     // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
@@ -19517,8 +20058,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
     }
 
-    // Return event (output-only)
-    if (node.returnTypes.length > 0) {
+    // Return event (output-only). A void entry that attests a universal void call record (approach B) also pins a
+    // record carrier at its `__internal__returnOutputIdx`, so it reserves the same output-only slot; the SDK funds
+    // it through the existing returnEvent funder and compacts it when the run is standalone (witness -1).
+    if (node.returnTypes.length > 0
+      || (node.returnTypes.length === 0
+        && node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx'))) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
       // The message-bus route commits its complete result vector here. Atomic graph derivation extracts each
       // logical invocation's typed result from that authenticated vector; no per-row return NFT is consumed or

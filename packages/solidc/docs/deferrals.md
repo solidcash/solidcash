@@ -3291,3 +3291,19 @@ framed will be retired after tre too, so leave op_returns for it in place. but m
   and BCMR's publication output are not fillers.
 
 **Revisit if:** framed outlives TRE's release, or BCHN's single-`OP_RETURN` relay rule bites a framed transaction.
+
+## A message-bus handler whose entry calls an internal function reading a constructor parameter (2026-11-04)
+
+**What:** a stateful contract compiled with `messageBus: true` fails to compile when a public entry calls an internal
+function that reads a constructor parameter: "Expected variable '<parameter>' does not exist on the stack". It fails
+the same way before and after the subroutine-use probe fix (`2b9a65c18`). The likely cause, not yet confirmed, is
+that a handler clone captures the constructor parameters its own body reads but not those of the functions it calls.
+
+**Why deferred:** found while measuring the probe fix; it fails at compile time, predates the oracle pools, and lies
+outside the pool landing.
+
+**What it'd take:** make a handler clone's captures cover the internal functions it calls, then compile the failing
+shape and run its test once.
+
+**Revisit if:** a message-bus port calls internal functions that read immutables or constructor arguments.
+

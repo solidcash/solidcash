@@ -3,9 +3,8 @@
  *
  * A direct contract that reads `block.*` or `blockhash`, or creates a contract that takes the binding, takes the
  * hidden bytes32 parameter `__oraclePool`. A read checks the co-spent input's category against it, with the mutable
- * capability, and the commitment's flags byte against 0x00; it checks no lock. Any such read makes the contract
- * stateful, so each reader spends its master. Each VM case runs the whole transaction on the BCH 2026 VM, and every
- * refused one is valid but for the reader.
+ * capability, and the commitment's flags byte against 0x00; it checks no lock. Each VM case runs the whole
+ * transaction on the BCH 2026 VM, and every refused one is valid but for the reader.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -40,7 +39,6 @@ const READER = `${P} contract R { function read(int t, int n) { require(block.ti
 // A field makes it stateful, so its two reads share one pool check helper.
 const STATEFUL_READER = `${P} contract T { int seen; function read(int t, int n) { `
   + 'require(block.timestamp == t); require(block.number == n); } }';
-// The child is stateful by its read, yet declares no state, so `new Child()` stays a stateless deployment.
 const CHILD = 'contract Child { function read(int t) { require(block.timestamp == t); } }';
 const MAKER = `${P} ${CHILD} contract Maker { function make() { require(tx.outputs[0].lockingBytecode == new Child()); } }`;
 const STATEFUL_MAKER = `${P} contract Child() { int y; function ping(int t) { require(block.timestamp == t); } }`

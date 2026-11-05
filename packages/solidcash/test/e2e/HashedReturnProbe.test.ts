@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { callRecordCommitment, callRecordDigest } from '../../src/stateful/call-record.js';
 import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';

@@ -90,33 +90,33 @@ contract TimeVault(pubkey owner, uint64 unlockTime) {
 }
 ```
 
-The compiler makes the contract stateful and adds no state variable and no update function. A contract that reads
-`block.*` or `blockhash`, or creates a contract that does, takes a hidden last constructor input, `__oraclePool`: the
-pool every read checks a coin against. The SDK fills it, so callers leave it out:
+The compiler adds no state and no update function. A contract that reads `block.*` or `blockhash`, or creates a
+contract that does, takes a hidden last constructor input, `__oraclePool`: the pool every read checks a coin
+against. The SDK fills it, so callers leave it out:
 
-- with the `oraclePool` option, a category in display byte order, on `StatefulContract.deploy`, `ContractFactory`
-  deployments and `new Contract(...)`, framed deployments included;
+- with the `oraclePool` option, a category in display byte order, on `new Contract(...)`, `ContractFactory`
+  deployments and `StatefulContract.deploy`, framed deployments included;
 - else with the provider's pool, `provider.oraclePoolCategory`.
 
 ```ts
-import { SignatureTemplate } from '@solidcash/solidcash';
+import { Contract, SignatureTemplate, TransactionBuilder } from '@solidcash/solidcash';
 import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
-import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 const provider = new ElectrumNetworkProvider('mainnet', { oraclePoolCategory: poolCategory });
-const { contract: vault } = await StatefulContract.deploy(timeVaultArtifact, [ownerPublicKey, unlockTime], {
-  provider, fundingUtxo, funder: new SignatureTemplate(deployerPrivateKey).unlockP2PKH(), changeAddress,
-});
-// vault.inner.oraclePool === poolCategory; oraclePool: otherPool in the options binds another pool
+const vault = new Contract(timeVaultArtifact, [ownerPublicKey, unlockTime], { provider });
+// vault.oraclePool === poolCategory; { provider, oraclePool: otherPool } binds another pool
 
-await vault.withdraw(new SignatureTemplate(ownerPrivateKey)); // co-spends a live block-info coin of the pool
+await new TransactionBuilder({ provider })
+  .addInput(vaultUtxo, vault.unlock.withdraw(new SignatureTemplate(ownerPrivateKey)))
+  .addOutput({ to: ownerAddress, amount: vaultUtxo.satoshis - 2_000n })
+  .send(); // adds a live block-info coin of the pool, its recreation and the hidden index
 ```
 
 The binding is part of the bytecode, so a reader's address depends on its pool, and a deployed reader keeps it.
 Building a reader with neither an `oraclePool` nor a provider pool fails. A framed master carries the pool in its
 bytecode rather than as an input, and its deployment writes it in.
 
-The SDK co-spends the coins on every call path: `StatefulContract` calls,
+The SDK co-spends the coins on every call path: a `Contract` with `TransactionBuilder`, `StatefulContract` calls,
 [framed entries](/docs/guides/framed-composition) and [framed proxies](/docs/guides/framed-composition#proxies)
 (experimental), delegate calls, and [message-bus routes](/docs/guides/message-bus) (experimental), where the readers
 of one pool share one coin. A direct function that reads `block.*` takes the coin's input index from its caller as a
@@ -124,11 +124,12 @@ hidden argument. A call that cannot forward it is refused at compile time with `
 read `block.*` in the caller as well, or pass the value in as an argument. A framed body takes no index: it reads the
 first block-info coin of its pool among the inputs.
 
-A body reached through a function pointer takes no index either: it reads the first block-info coin of its pool
-among the inputs, or the first slot that answers a `blockhash` read there. The artifact marks each entry that may
-reach such a body (`indirectPoolReads`), and the SDK co-spends what the body reads on every call of that entry. A
-message-bus route cannot carry such a body, so a message-bus build that reaches one is refused with
-`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`. Call the reader directly.
+A body reached through a function pointer takes no index: it reads the first block-info coin of its pool among the
+inputs, and for `blockhash(n)` the first slot there that answers n, with the hash or the zero a direct read gives.
+The artifact marks each entry that may reach such a body (`indirectPoolReads`), and the SDK co-spends what the body
+reads on every call of that entry. A call of it from another contract, a delegate call included, gets the
+block-info coin but no slot. A message-bus route cannot carry such a body, so a message-bus build that reaches one
+is refused with `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`. Call the reader directly.
 
 ### A reader another contract creates
 
@@ -201,7 +202,7 @@ The pool's shape follows what the contract and the contracts it creates read. Th
 reads in the creator's artifact as `createdPoolReads`.
 
 - Block-info coins are minted only if something in the tree reads `block.*`: `infoCoins` of them, by default one
-  per master of the deployment, or one for a stateless creator.
+  per master of the deployment, or one for a stateless contract.
 - Ring slots are minted only if something reads `blockhash`: `slotReplicas` per block (default 1) for the last
   `ringDepth` blocks (default 256, or 1 for `'now'`).
 - The baton holds `ringDepth`.
@@ -290,7 +291,7 @@ too old. The hash is in display byte order, as a node's `getblockhash` prints it
 
 A read also requires `tx.time >= n`, which the SDK meets by raising the transaction's height locktime. Each
 distinct `n` in a function co-spends its own slot, and a computed `n` such as `block.number - 1` is found by the
-SDK's probe of the covenant. Call a `blockhash` reader through `StatefulContract`; framed contracts do not serve it.
+SDK's probe of the covenant. Reading `blockhash` makes a contract stateful, and framed contracts do not serve it.
 
 ## Stop and sweep
 
@@ -327,10 +328,9 @@ A test that needs chosen fields mints a pool of its own and binds a reader to it
 
 ```ts
 import { hexToBin } from '@bitauth/libauth';
-import { randomUtxo } from '@solidcash/solidcash';
+import { Contract, randomUtxo } from '@solidcash/solidcash';
 import { MockNetworkProvider } from '@solidcash/solidcash/network/mock';
 import { PoolKeeper, createOraclePool } from '@solidcash/solidcash/oracle';
-import { StatefulContract } from '@solidcash/solidcash/stateful';
 
 const provider = new MockNetworkProvider();
 await provider.addUtxo(ownerAddress, randomUtxo({ satoshis: 10_000_000n })); // the owner key's P2PKH address
@@ -341,9 +341,7 @@ const pool = await createOraclePool(provider, {
     coinbase: hexToBin(`76a914${'11'.repeat(20)}88ac`),
   },
 });
-const { contract: vault } = await StatefulContract.deploy(timeVaultArtifact, [ownerPublicKey, unlockTime], {
-  provider, fundingUtxo, funder, changeAddress, oraclePool: pool.category,
-});
+const vault = new Contract(timeVaultArtifact, [ownerPublicKey, unlockTime], { provider, oraclePool: pool.category });
 const keeper = new PoolKeeper({ provider, category: pool.category, ownerKey }); // moves only when called
 ```
 

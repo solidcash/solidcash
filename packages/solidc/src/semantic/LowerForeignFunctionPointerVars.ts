@@ -19,6 +19,8 @@ import {
 import { FunctionType, AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { FunctionPointerTypeError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 /**
  * FOREIGN external function-pointer STATE VARIABLES that hold a fixed method on a runtime address.
@@ -37,6 +39,7 @@ import { cloneNode } from '../ast/clone.js';
  * (`x = y`) leaves it unclassified (its existing behavior is unchanged). v1: state variables only.
  */
 export default class LowerForeignFunctionPointerVars extends AstTraversal {
+  private members?: ForeignMemberTypes;
   private typeNames = new Set<string>();
   // state var name -> the fixed (interfaceName, methodName) it always points at
   private lowered = new Map<string, { iface: string; method: string }>();
@@ -46,6 +49,7 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
   private sameFnFold = new Map<string, { local: string; method: string }>();
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.members = new ForeignMemberTypes(node);
     this.typeNames = new Set();
     for (const iface of node.interfaceDefinitions as InterfaceNode[]) this.typeNames.add(iface.name);
     for (const c of node.importedContracts as ContractNode[]) this.typeNames.add(c.name);
@@ -75,6 +79,10 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
           hasAssign = true;
           const m = this.foreignMember(rhs);
           if (!m) { ok = false; return; }
+          // A call through the var binds its type's arguments: the member must take exactly them.
+          if (!this.members!.fits(m, sv.type as FunctionType)) {
+            throw new FunctionPointerTypeError(rhs, sv.name, `${m.iface}.${m.method}`, sv.type.toString());
+          }
           if (!target) target = m;
           else if (target.iface !== m.iface || target.method !== m.method) ok = false;
         });

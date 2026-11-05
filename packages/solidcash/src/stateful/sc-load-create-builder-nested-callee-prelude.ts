@@ -13,11 +13,13 @@ import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, parseChunkCommitment } from '@solidc
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
+import { callBatchFrameLayout } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   selectGraphBlockhashReads,
 } from './sc-batch-raw.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
+import { isDirectConventionArtifact } from './sc-expand-resolve-create-builder-external-calls.js';
 import type { OnChainState } from './StateReader.js';
 import {
   deriveValueChunkProducerChildPath,
@@ -102,7 +104,8 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // Resolve external category ID from the resolved external contract (address model: A's args
   // bake the callee address, so its category comes from the registered external instance).
   const externalCategoryId = callInfo.externalContract.categoryId;
-  const compilerRoute = host.buildRepeatedExternalBatch(
+  // A direct caller never builds a bus batch: its repeated calls run as frames of a multi-call spend.
+  const compilerRoute = isDirectConventionArtifact(artifact) ? undefined : host.buildRepeatedExternalBatch(
     ec, args, callInfo.externalContract,
     artifact, callerStateSnapshot, undefined, abiFunction?.inputs,
     false, publicSelfAddress, undefined, publicSelfIdentity,
@@ -177,7 +180,7 @@ export async function loadCreateBuilderNestedCalleePrelude(
   // Build B's full block inputs when B's function has entries/events/transfers
   const bSc = callInfo.externalContract;
   const bAbiFunc = compilerRoute?.abiFunction ?? selectedConcreteAbi;
-  const bBlockLayout = bAbiFunc?.blockLayout;
+  const bBlockLayout = callBatchFrameLayout(bAbiFunc?.blockLayout, ec);
   const directDynamicWrites = new Set(compilerRoute ? [] : bAbiFunc?.dynamicWrites ?? []);
   const bDynamicChunkInputs = bStatelayout.variables
     .filter((variable) => variable.dynamic && directDynamicWrites.has(variable.name))

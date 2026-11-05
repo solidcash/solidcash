@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _createBuilder extract — push one direct nested external-call UTXO group.
  */
 
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type {
   AbiFunction,
   Artifact,
@@ -12,6 +12,8 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import { createDataNftUnlocker } from './covenant-helpers.js';
+import type { DirectCallBatchCall } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { encodeExternalReturnValue, encodeExternalReturnValues } from './external-return-encoding.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
@@ -64,7 +66,7 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bCompilerInternalArgs: Record<string, FunctionArgument>;
   bPlannedEntryInserts: NonNullable<ExternalCallUtxoGroup['plannedEntryInserts']>;
   bRelativeOutputInternalArgs: Set<string>;
-  bState: { masterUtxo: Utxo };
+  bState: { masterUtxo: Utxo; dataNftUtxos?: readonly Utxo[] };
   bStatelayout: StateLayout;
   bDataNfts: UnlockableUtxo[];
   bRequiredNftIndices: number[];
@@ -158,6 +160,15 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     );
   }
 
+  // F1: a callee that reads a contract-caller msg.sender sees THIS call's caller - the contract making the call.
+  // Wire its __internal__msgSenderCategory to the caller's category (reversed, as the entry early-args path
+  // encodes it) unless already set, so emitMsgSender resolves the co-spent caller master rather than tx.origin.
+  // The caller's own covenant then pins a matching edge record beside its outgoing call (F1 caller side).
+  if (bAbiFunc?.inputs?.some((inp) => inp.name === '__internal__msgSenderCategory')
+    && !Object.prototype.hasOwnProperty.call(bCompilerInternalArgs, '__internal__msgSenderCategory')) {
+    bCompilerInternalArgs.__internal__msgSenderCategory = hexToBin(host.callerCategoryId).reverse();
+  }
+
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
     console.error('external-route-vmap-args', callInfo.functionName, bAbiFunc?.name,
       bAbiFunc?.sortedBatchInfo, bCompilerInternalArgs);
@@ -173,11 +184,13 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   );
   const sharedPhysical = directSharedGroupIndex < 0
     ? undefined : externalCallUtxoGroups[directSharedGroupIndex];
+  // A unit of a direct multi-call runs as one frame of its callee's multi-call spend (direct-call-batch.ts).
+  const directBatch = (ec as DirectCallBatchCall).directBatch;
   // A direct caller can share a physical block with a view/writer pair, but two distinct returning methods
   // cannot both execute from its one master input unless the compiler published one authenticated batch route.
   // Without that route the second return output is only a placeholder, and deriving it would turn an invalid
   // transaction into a late VM failure (or, for some schemas, an ambiguous provisional result).
-  if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical
+  if (!returnProbeOnly && ec.hasReturnValues && sharedPhysical && !directBatch
     && sharedPhysical.functionName !== callInfo.functionName
     && !compilerRoute && !sharedPhysical.compilerRoute) {
     const priorAbi = (sharedPhysical.externalContract?.inner?.artifact?.abi as readonly AbiFunction[] | undefined)
@@ -296,7 +309,9 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   }
   // A return probe admits a repeated typed loop only because this group resolves each occurrence's result;
   // without that resolver every row of the result array would decode iteration 0's value.
-  if (returnProbeOnly === true && isRepeatedTypedLoopCallsite(ec) && resolveLoopReturnCommitment === undefined) {
+  // A direct grouped call is one reached occurrence already (direct-call-batch.ts).
+  if (returnProbeOnly === true && isRepeatedTypedLoopCallsite(ec) && resolveLoopReturnCommitment === undefined
+    && ec.callOrdinal === undefined) {
     throw repeatedTypedLoopRefusal(ec);
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -358,6 +373,22 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       // this logical alias while retaining the callsite's own ABI/layout metadata.
       blockInputs: [] as UnlockableUtxo[],
     }),
+    ...(directBatch && {
+      callBatchUnit: { ...directBatch },
+      ...(bBlockInputs && bBlockLayout && {
+        callBatchFrameBlock: {
+          inputs: [...bBlockInputs],
+          layout: bBlockLayout,
+          returnEventInBlock: bReturnEventInBlock,
+          dataNftUtxos: [...bDataNfts],
+          requiredDataNftIndices: [...bRequiredNftIndices],
+          // Placeholder unlockers, re-created at the batch master's index as every data record's are.
+          dataRecords: (bState.dataNftUtxos ?? []).map((utxo) => ({
+            ...utxo, unlocker: createDataNftUnlocker(callInfo.externalContract.inner, 0, externalCategoryId),
+          })),
+        },
+      }),
+    }),
     ...(bReturnEventInBlock && { returnEventInBlock: true }),
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
@@ -401,7 +432,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   // denser writer block must therefore replace the shape an earlier callsite contributed - otherwise the
   // physical block keeps the narrower layout, the writer's planned inserts name block offsets that do not
   // exist, and derivation aborts before any participant state is resolved.
-  if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined) {
+  if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined && !directBatch) {
     const physicalOwner = externalCallUtxoGroups[directSharedGroupIndex];
     if (physicalOwner !== undefined
       && bBlockLayout.slots.length > (physicalOwner.blockLayout?.slots.length ?? 0)) {

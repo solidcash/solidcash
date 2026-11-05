@@ -99,10 +99,14 @@ async function oracleClock(network: MockNetworkProvider): Promise<bigint> {
 /** The clock the pool publishes for the chain's tip: the second before it. */
 const tipClock = (network: MockNetworkProvider): bigint => BigInt(network.getBlockTime()) - 1n;
 
-/** Calls the direct reader's `gated(started)`; the call co-spends a coin of the pool it binds. */
-async function gated(direct: StatefulContract, started: bigint): Promise<string> {
-  const call = direct.call as unknown as { gated: (from: bigint) => { send: () => Promise<{ txid: string }> } };
-  return (await call.gated(started).send()).txid;
+/** Spends the direct reader's `gated(started)`; the builder co-spends a coin of the pool it binds. */
+async function gated(network: MockNetworkProvider, direct: Contract, started: bigint): Promise<string> {
+  const coin = await network.addUtxo(direct.address, randomUtxo({ satoshis: 100_000n }));
+  const tx = await new TransactionBuilder({ provider: network })
+    .addInput(coin, direct.unlock.gated(started))
+    .addOutput({ to: direct.address, amount: 90_000n })
+    .send();
+  return tx.txid;
 }
 
 /** One proxied deployment and what a hop through it is entered with. */
@@ -255,10 +259,10 @@ describe('the mock chain\'s clock in a plain framed contract, with a direct one 
     const plain = await new ContractFactory(clock, signer).deploy() as unknown as StatefulContract;
     const plainState = (): Promise<Record<string, unknown>> => stateOf(network, plain.categoryId, clock.stateLayout!);
     expect(clock.stateLayout!.variables.map((variable) => variable.name)).not.toContain('__block_timestamp');
-    // The direct reader is stateful with no state of its own, and binds the pool the framed entries co-spend.
-    const direct = await new ContractFactory(timed, signer).deploy() as unknown as StatefulContract;
-    expect(timed.stateLayout?.variables).toStrictEqual([]);
-    expect(direct.inner.oraclePool).toBe(network.oraclePoolCategory);
+    // The direct reader keeps no state and binds the pool whose coins the framed entries co-spend.
+    const direct = new Contract(timed, [], { provider: network });
+    expect(timed.stateLayout?.variables ?? []).toStrictEqual([]);
+    expect(direct.oraclePool).toBe(network.oraclePoolCategory);
 
     await network.send('evm_mine', []);
     const now = tipClock(network);
@@ -268,13 +272,13 @@ describe('the mock chain\'s clock in a plain framed contract, with a direct one 
     await calls.mark();
     expect((await plainState()).stamp).toBe(now);
     await expect(calls.later()).rejects.toThrow(/a day has not passed/);
-    // The reader's require, or the network's raw verdict on it.
-    await expect(gated(direct, now)).rejects.toThrow(/a day has not passed|OP_VERIFY|non-truthy/);
+    // The pool co-spend is a custom unlocker, which `send()` does not debug, so the network's verdict is raw.
+    await expect(gated(network, direct, now)).rejects.toThrow(/OP_VERIFY|non-truthy/);
 
     await network.send('evm_increaseTime', [Number(DAY)]);
     await network.send('evm_mine', []);
     expect(await oracleClock(network)).toBe(tipClock(network));
-    await expect(gated(direct, now)).resolves.toMatch(/^[0-9a-f]{64}$/);
+    await expect(gated(network, direct, now)).resolves.toMatch(/^[0-9a-f]{64}$/);
     await calls.later();
     expect((await plainState()).count).toBe(1n);
   }, 900_000);

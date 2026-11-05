@@ -11,6 +11,7 @@ import type {
   ValueChunkProducerResourceClaim,
 } from './ValueChunkProducerIdentity.js';
 import type { ValueChunkWriteDescriptor } from './value-chunk-persist.js';
+import type { DirectCallBatch, DirectCallBatchFrameBlock, DirectCallBatchUnit } from './direct-call-batch.js';
 
 export interface EntryNftInfo {
   slotIndex: number;
@@ -256,6 +257,18 @@ export interface ExternalCallUtxoGroup {
   delegateEmbeddedInBlock?: boolean;
   /** Reuses another group's single master/data input/output block for repeated calls to one UTXO contract. */
   sharedGroupIndex?: number;
+  /** F1: the caller of this co-spent call. -1 (or undefined) = the top-level entry; otherwise the index of the
+   * parent group whose contract makes this call. Its contract pins this call's edge record (in its own category). */
+  edgeParentIndex?: number;
+  /** F1: the external-call slot index, within the caller named by edgeParentIndex, that this call occupies - i.e.
+   * which `__internal__callEdgeOutputIdx<slot>` witness on the caller the edge for this call is pinned at. */
+  edgeEcSlot?: number;
+  /** One reached call of a direct multi-call (direct-call-batch.ts): the frame its record answers. */
+  callBatchUnit?: DirectCallBatchUnit;
+  /** The unit spending the callee master through its multi-call entry: the frames that spend runs. */
+  callBatch?: DirectCallBatch;
+  /** The block this unit's own call assembled, the source of its frame's entries and record funder. */
+  callBatchFrameBlock?: DirectCallBatchFrameBlock;
   /** Honest SDK probe result for a read fused into another call sharing this master input. */
   precomputedReturnCommitment?: Uint8Array;
   /** Consecutive return-event commitments for a rolled loop (meceTags(tags_[i])). */

@@ -231,7 +231,15 @@ describe('kernel complete nested-mapping tuple pool', () => {
     );
     const driver = StatefulContract.withCategory(driverInner, driverSetup.categoryId).connect(signer);
     driver._registerResolvedExternal('ILedger', ledger);
-    await expect(driver.call.runLimited(1n).build()).rejects.toThrow(/requires atomic composition/);
+    // With a signer connected, build() of this message-bus compile plans the loop's row as the composition send()
+    // broadcasts, so every input of the transaction it returns passes the VM.
+    const built = await driver.call.runLimited(1n).build();
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const builtTransaction = built.buildLibauthTransaction();
+    const builtSourceOutputs = generateLibauthSourceOutputs(built.inputs);
+    expect(builtTransaction.inputs.map((_input, inputIndex) => vm.stateSuccess(vm.evaluate({
+      inputIndex, sourceOutputs: builtSourceOutputs, transaction: builtTransaction,
+    })))).toEqual(builtTransaction.inputs.map(() => true));
     await expect(driver.call.runLimited(0n).send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });

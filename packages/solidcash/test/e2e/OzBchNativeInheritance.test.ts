@@ -1,7 +1,9 @@
 import {
   beforeAll, describe, expect, it,
 } from 'vitest';
-import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+} from '@bitauth/libauth';
 import { compileFile, compileFileSplit } from '@solidcash/solidc';
 import { asmToScript, buildChunkCommitment, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import type { Utxo } from '../../src/interfaces.js';
@@ -47,7 +49,9 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     // mints (security NAMED-MINT-1) added 88 B (10_656). Laying always-run sorted writes out unconditionally, with
     // the direct outside-layout walk shared, took it to 9_258, under the single-input limit again. The containers'
     // destroy arm added 50 B (9_308), and the forged-log pin, which an event declared in IERC20 now gets as a
-    // contract-level one does (SEC-10), 70 B (9_378). This budget guards further growth.
+    // contract-level one does (SEC-10), 70 B (9_378). Call records (D50) left it at 9_517, over this budget; one
+    // helper per collection reading the master's category with its entry address, and shared bounded-bytes
+    // parameter checks, took it to 9_350. This budget guards further growth.
     expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_450);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
@@ -131,7 +135,13 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(2n);
 
     await fund(alice);
-    await token.connect(alice).call.transferFrom(bobLedger, aliceLedger, 2n).send();
+    const masters = new Set((await provider.getUtxos(token.address)).map((utxo) => `${utxo.txid}:${utxo.vout}`));
+    const spend = await token.connect(alice).call.transferFrom(bobLedger, aliceLedger, 2n).send();
+    // Mocknet admits 1,000,000-byte inputs; the honest spend's master input must fit the 10,000-byte limit.
+    const masterInputs = decodeTransactionUnsafe(hexToBin(spend.hex)).inputs
+      .filter((input) => masters.has(`${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`));
+    expect(masterInputs).toHaveLength(1);
+    expect(masterInputs[0]!.unlockingBytecode.length).toBeLessThan(10_000);
     expect(await token.state._balances(bobLedger)).toBe(2n);
     expect(await token.state._balances(aliceLedger)).toBe(3n);
     expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(0n);
@@ -144,6 +154,56 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       .filter((utxo) => utxo.token?.category === NATIVE_TEST_CATEGORY)
       .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n);
     expect(bearerBalance).toBe(2n);
+  });
+
+  it('spends an 8-byte allowance to a P2SH32 lock within the 10,000-byte master input', async () => {
+    const provider = createTestProvider();
+    const alice = new Signer(alicePriv, provider);
+    const bob = new Signer(bobPriv, provider);
+    const inner = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
+      _totalSupply: 0n,
+      _name: '',
+      _symbol: '',
+      _nativeCategory: hexToBin(NATIVE_TEST_CATEGORY),
+    }, { saltContract: true });
+    // Wrapped CashToken amounts reach 2^63 - 1, so the realistic worst-case value is an 8-byte number.
+    const amount = 4_500_000_000_000_000_000n;
+    const native = await seedNativeToken(
+      provider as MockNetworkProvider, inner.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+      { reserve: 1_000n, holders: [{ address: bob.getAddress(), amount }] },
+    );
+    const token = StatefulContract.withCategory(inner, setup.categoryId);
+    let nonce = 0xe0;
+    const fund = async (signer: Signer): Promise<void> => {
+      nonce += 1;
+      await provider.addUtxo(signer.getAddress(), {
+        txid: nonce.toString(16).padStart(64, 'e'), vout: 0, satoshis: 500_000n,
+      });
+    };
+    await fund(bob);
+    await token.connect(bob).call.wrap(amount)
+      .addInput(native.holders[0] as Utxo, new SignatureTemplate(bobPriv).unlockP2PKH())
+      .tokenContainerDeposit(NATIVE_TEST_CATEGORY, amount)
+      .send();
+    const aliceLedger = addressToLockScript(aliceAddress);
+    const bobLedger = addressToLockScript(bob.getAddress());
+    await fund(bob);
+    await token.connect(bob).call.approve(aliceLedger, amount).send();
+
+    // A 35-byte P2SH32 lock, ten bytes longer than a P2PKH one, as `to`.
+    const vault = hexToBin(`aa20${'5c'.repeat(32)}87`);
+    await fund(alice);
+    const masters = new Set((await provider.getUtxos(token.address)).map((utxo) => `${utxo.txid}:${utxo.vout}`));
+    const spend = await token.connect(alice).call.transferFrom(bobLedger, vault, amount).send();
+    // Mocknet admits 1,000,000-byte inputs; the honest spend's master input must fit the 10,000-byte limit.
+    const masterInputs = decodeTransactionUnsafe(hexToBin(spend.hex)).inputs
+      .filter((input) => masters.has(`${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`));
+    expect(masterInputs).toHaveLength(1);
+    expect(masterInputs[0]!.unlockingBytecode.length).toBeLessThan(10_000);
+    expect(await token.state._balances(bobLedger)).toBe(0n);
+    expect(await token.state._balances(vault)).toBe(amount);
+    expect(await token.state._allowances(bobLedger, aliceLedger)).toBe(0n);
   });
 
   it('wraps on the root, unwraps and inserts a transfer balance through split facets within 9 KB shards', async () => {

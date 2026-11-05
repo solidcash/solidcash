@@ -21,6 +21,7 @@ export type InBlockReturnGroup = {
   compilerRoute?: { abiFunction?: AbiFunction };
   externalContract?: { inner?: { artifact?: Artifact } };
   loopReturnCommitments?: Uint8Array[];
+  callBatchUnit?: { readonly physical?: number };
 };
 
 export function groupOwnsInBlockReturnEvent(
@@ -38,6 +39,8 @@ export function groupOwnsInBlockReturnEvent(
   // single physical returnEvent cannot represent a multi-part result family.
   const logicalOwner = groups[child.fusedReturnGroupIndex ?? groupIdx] ?? child;
   if ((logicalOwner.loopReturnCommitments?.length ?? 0) > 1) return false;
+  // Each frame of a multi-call spend reads its own record slot: only the spending unit stands for frame 0's.
+  if (child.callBatchUnit !== undefined) return groupIdx === physicalIdx;
   const writesState = (group: InBlockReturnGroup): boolean => {
     // A fused group's logical name can describe a later writer, while this group's own function is a view.
     // Use the source ABI of this callsite first; `__forward` is only a proxy dispatcher, not its effect.
@@ -142,6 +145,8 @@ export function selectMaterializedTailReturnEvents(
 
   for (const [groupIndex, group] of groups.entries()) {
     if (groupOwnsInBlockReturnEvent(groups, groupIndex)) continue;
+    // A multi-call unit reads its frame's record in the block of the unit spending the callee master.
+    if (group.callBatchUnit?.physical !== undefined && group.callBatchUnit.physical !== groupIndex) continue;
     const candidates = parsed.filter((entry) => entry.groupIndex === groupIndex);
     // Authoritative precomputed / rolled-loop commitments must materialize even when pending was
     // cleared between seedPrecomputedReturnEvents and build.

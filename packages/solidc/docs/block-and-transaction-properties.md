@@ -3,14 +3,12 @@
 Solidity's "Block and Transaction Properties" - the `block.*` and `tx.*` globals - mapped onto the BCH UTXO
 substrate. The transaction-local ones (`tx.gasprice`, `block.prevrandao`) and the gas/blob shims are pure
 introspection or constants. The block-level values that have no VM source are served by **oracle pools**: one
-token category of block-info coins and blockhash ring slots that any contract may read (sections 3-8 and 11). Any
-`block.*` or `blockhash` read makes the contract stateful, the shims included (the user's rule of 2026-11-03,
-section 8.1).
+token category of block-info coins and blockhash ring slots that any contract may read (sections 3-8 and 11).
 
-Status: **IMPLEMENTED (compiler + SDK e2e on mocknet).** Oracle pools replaced sushi-port-node's per-contract
-oracles on `feat/oracle-pools-sushi` (`docs/wip/oracle-pools/SUSHI-PORT.md`): each reader's own block-info oracle
-(ORACLE-4), its blockhash ring (ORACLE-6) and the oracle a created child's genesis minted (GENESIS-1). The design and
-master's commits are in master's `docs/wip/oracle-pools/PLAN.md`.
+Status: **IMPLEMENTED (compiler + SDK e2e on mocknet).** Oracle pools replaced the single network block-info
+oracle, the per-contract `(n -> hash)` pairs and the keeper baton on `feat/oracle-pools`
+(`docs/wip/oracle-pools/PLAN.md`), and the framed line's per-contract oracles and ring on `feat/oracle-pools-sushi`
+(`docs/wip/oracle-pools/SUSHI-PORT.md`).
 - `block.chainid` - baked single-byte network constant.
 - Pool reads `block.{number,timestamp,difficulty,size,totalFees,basefee,coinbase}`; `block.blobbasefee`
   aliases `block.basefee` (no EIP-4844 blobs on BCH; compiler warns). `block.gaslimit` + `gasleft()` are
@@ -28,18 +26,18 @@ master's commits are in master's `docs/wip/oracle-pools/PLAN.md`.
 Implementation notes: `SynthesizeBlockOracle` injects no state. A `block.*` read stays a nullary (`basefee` lowers
 to `Floor(1000 * totalFees / size)`) and marks its function `usesBlockOracle`; `bindOraclePool` gives a direct
 contract its hidden `__oraclePool` parameter, and a framed master carries the pool in pool slots (section 8).
-Codegen checks a co-spent coin's category and flags and slices the field out of its commitment. The pool holds the
-data, yet every `block.*` or `blockhash` reader is stateful (section 8.1). `block.timestamp` reads the pool in every
-mode, `evmCompat` included. Tests:
+Codegen checks a co-spent coin's category and flags and slices the field out of its commitment, so a `block.*`
+reader stays stateless unless something else makes it stateful; a `blockhash` reader is stateful (section 8.1).
+`block.timestamp` reads the pool in every mode, `evmCompat` included. Tests:
 - `packages/utils/test/oracle-pool.test.ts`: codecs and every covenant path on the BCH 2026 VM, redeem sizes pinned;
 - `packages/solidc/test/OraclePoolRead.test.ts`, `OraclePoolIndirectRead.test.ts`: reader checks, framed pool slots,
   creators, function-pointer targets and ORACLE-1, on the VM; `OraclePoolBusVerifierRefusal.test.ts` (the
-  message-bus refusal) and `BlockReadStateful.test.ts` (the statefulness rule);
+  message-bus refusal, section 8.3) and `BlockReadStateful.test.ts` (the statefulness rule);
 - `packages/solidcash/test/e2e/OraclePoolCore.test.ts` (genesis, keeper, selection, mock refresh),
-  `OraclePoolBlockInfo.test.ts`, `OraclePoolBlockhash.test.ts`, `OraclePoolIndirectSdk.test.ts`,
-  `OraclePoolDeployGenesis.test.ts` (deployment-minted pools, the keeper loop), `BlockOracle.test.ts`, and
-  `AuditCrypto4KeeperAuthority.test.ts` / `AuditCrypto5OracleRewind.test.ts` (the owner rule and the write bounds),
-  on mocknet;
+  `OraclePoolBlockInfo.test.ts`, `OraclePoolBlockhash.test.ts`, `OraclePoolIndirectSdk.test.ts` (function-pointer
+  readers, stateless and stateful), `OraclePoolDeployGenesis.test.ts` (deployment-minted pools, `PoolKeeper.start`
+  and `setDepth`), `BlockOracle.test.ts`, and `AuditCrypto4KeeperAuthority.test.ts` /
+  `AuditCrypto5OracleRewind.test.ts` (the owner rule and the write bounds), on mocknet;
 - framed, on mocknet: `packages/solidcash/test/framed/time/block-clock.test.ts` (the pool's clock in plain and
   proxied framed contracts) and `framed/deploy/child-genesis-replay.test.ts` (a created child's masters carry its
   pool).
@@ -97,8 +95,8 @@ for v1 and lifted later by split/merge.
 ## 3. The model: oracle pools
 
 The design is TRE rev. 39 decision 47 (branch `tre`, `analysis/tre/tre-rev39-addendum.md`, section 6c), settled
-by the user on 2026-11-04, backported to master by master's `docs/wip/oracle-pools/PLAN.md` and ported to this
-branch by `docs/wip/oracle-pools/SUSHI-PORT.md`.
+by the user on 2026-11-04, backported to master by `docs/wip/oracle-pools/PLAN.md` and to the framed line by
+`docs/wip/oracle-pools/SUSHI-PORT.md`.
 
 - **A pool is one category `P`** of mutable NFTs that any contract may read. Oracle coins belong to no contract: a
   reader binds `P` (section 8) and reads any live coin of it. A genesis binds a pool and mints none of its coins;
@@ -368,12 +366,13 @@ only. The baton has no flags: its minting capability is its kind.
   whose only clock read sits in one reads no pool. The artifact carries `usesBlockOracle` on the function and the
   artifact, `usesBlockhash`, `abi.blockhashReads`, a framed reader's `oraclePoolSlots`, a creator's
   `createdPoolReads` and an entry's `indirectPoolReads` (section 8.2).
-- **Statefulness** (the user's rule, 2026-11-03). `SynthesizeBlockOracle` sets `ContractNode.readsBlockData` for
-  every `block.*` nullary, oracle-backed or not (`block.chainid`, `block.gaslimit` and `block.prevrandao`
-  included), and for `blockhash`. `readsBlock` (that, `usesBlockhash` or `usesBlockOracle`) makes the contract
-  stateful in the compiler, the symbol table, the artifact and codegen (`currentContractReadsBlock`, which the body
-  sub-traversals and the helper-use probe inherit beside ORACLE-1's flags). `gasleft()`, `blobhash` and
-  `tx.gasprice` do not. Test: `BlockReadStateful.test.ts`.
+- **Statefulness.** A `block.*` read slices a pool coin, so it needs no state: a reader with nothing else stateful is
+  a plain contract that co-spends the coin. A `blockhash(n)` read makes the contract stateful:
+  `SynthesizeBlockOracle` sets `ContractNode.blockhashReadMarked`, which a re-run on a split root keeps, and
+  `readsBlockhash` (that or `usesBlockhash`) feeds the compiler, the symbol table, the artifact and codegen
+  (`currentContractReadsBlockhash`, which the body sub-traversals and the helper-use probe inherit beside ORACLE-1's
+  flags). The framed line's rule of 2026-11-03, that any block read makes a contract stateful, served per-contract
+  oracles and went with them (TRE rev. 39 decision 47). Test: `BlockReadStateful.test.ts`.
 - `block.chainid` lowers to a pushed constant (per `--network`); no pool, no co-spend.
 
 ### 8.2 Function-pointer targets: the binding helper and the input walk
@@ -389,15 +388,17 @@ the pool and that a function reference names (`indirectPoolBodyIds`), a free one
   The id is `ORACLE_POOL_BINDING_SUBROUTINE_ID` (-127), moved below any id a library load defines;
 - a `block.*` read walks to the first block-info coin of `P` (`emitOraclePoolCoinSearch`, section 3.2);
 - a `blockhash(n)` read walks to the first input that is a live slot of `P` answering `n`, one holding `n` or a
-  block of `n`'s residue at least 256 newer, and gives the direct read's answer (`emitOraclePoolSlotSearch`, then
-  `emitPoolSlotAnswer`; master's `617b8fb81`, after master's docs commit);
+  block of `n`'s residue at least 256 newer, and gives the direct read's answer, the hash or zero
+  (`emitOraclePoolSlotSearch`, then `emitPoolSlotAnswer`; `617b8fb81`). Its category read sees `[n, i, i]`, as a
+  direct read's does, so the SDK's probe finds `n` in the trace;
 - a direct call the target makes hands its callee `P` and that coin's index the same way, and a creation in it
   passes the helper's `P`.
 
-Each entry that may enter such a target publishes `indirectPoolReads` (`blockInfo`, `blockhash`; master's
-`8e5ebe10e`), which the SDK reads (section 8.4). A contract with no such target emits no helper, and direct reads
-keep the parameter and the caller's index. A framed master refuses function pointers, so this is the direct and
-message-bus conventions' path.
+Each entry that reaches an indirect call, in its body or in a body it calls by name, while such a target exists
+publishes `indirectPoolReads: { blockInfo?, blockhash? }`, the kinds those targets read (`markIndirectPoolReaders`,
+`8e5ebe10e`; bytecode unchanged). The SDK co-spends from it (section 8.4). A contract with no such target emits no
+helper, and direct reads keep the parameter and the caller's index. A framed master refuses function pointers, so
+this is the direct and message-bus conventions' path.
 
 ### 8.3 Message-bus refusal of pointer readers
 
@@ -405,7 +406,7 @@ The detached verifier carries the bodies its closure invokes by a literal id, re
 binding helper is defined at run time from `__oraclePool`, so the verifier can carry neither it nor a target that
 takes `P` from it (`ba5602b83`). `extractMessageBusVerifierProgram` refuses a verifier body that invokes the
 helper, or that makes an indirect call while the contract defines one, as `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`;
-a default build falls back to the direct artifact. `OraclePoolBusVerifierRefusal.test.ts` tests the refusal on the
+a default build falls back to the direct artifact. `OraclePoolBusVerifierRefusal.test.ts` (`2393c541a`) tests the refusal on the
 verifier extraction alone. By reading, no source shape reaches it: a kernel build's verifier is compiled from its
 own host source, and a legacy build's closure takes compiler helpers and the verifier only.
 
@@ -427,8 +428,7 @@ own host source, and a legacy build's closure takes compiler helpers and the ver
 - **Placement.** A coin is spent by its read path (`poolInfoReadUnlocking`, `poolSlotReadUnlocking`) and recreated
   at its own index. An index argument is found among the spent outputs by category and flags, never by lock.
   - Stateless: `TransactionBuilder.addRequiredBlockOracleCoSpends` / `addRequiredBlockhashCoSpends` on `send()`,
-    padding the outputs with 1,000-sat `OP_1` outputs up to the coin's index; `Contract` fills the index. The
-    statefulness rule keeps every compiled reader off this path.
+    padding the outputs with 1,000-sat `OP_1` outputs up to the coin's index; `Contract` fills the index.
   - Stateful: the `blockInfoOracle` and `blockhashOracle` block-layout slots, nested callee blocks, nested compose
     slots and the blockhash probe.
   - Framed: the root entry, a callee frame and a proxy hop co-spend a live block-info coin after the master's
@@ -436,13 +436,20 @@ own host source, and a legacy build's closure takes compiler helpers and the ver
     category and flags.
   - Message bus: each participant block carries its own copy of a coin of its pool. The composer keeps the first
     coin of each pool, pads the later copies, and repoints every reader of that pool to the kept input.
-- **Function-pointer readers.** A call of an entry whose `indirectPoolReads` names `blockInfo` co-spends one live
-  block-info coin of the pool past its block, unless one is placed already (`resolveUnslottedPoolInfoCoins`); one
-  naming `blockhash` co-spends, for each `n` the probe rounds find, a slot answering it
-  (`resolveIndirectBlockhashCoSpends`, at most 8 reads per call). A stateful call does both for its own entry, and
-  adds the info coin for its nested callees' entries (master's `3d5e9ea0d`, `651f0f025`).
-  `indirectPoolReads(artifact, fn)` falls back, for an artifact that publishes the field on no entry, to
-  `readsPoolOnlyIndirectly` (every call co-spends an info coin, `abba1a162`). Test: `OraclePoolIndirectSdk.test.ts`.
+- **Function-pointer readers** (`3d5e9ea0d`, `651f0f025`), keyed on the entry's `indirectPoolReads` (8.2):
+  - `blockInfo`: one live block-info coin of the pool per call, unless one is placed already. The stateless builder
+    adds it as for a direct reader (`addRequiredBlockOracleCoSpends`). A stateful call co-spends it for its own
+    entry and for each nested or low-level callee's, delegates included (`resolveUnslottedPoolInfoCoins`), as the
+    last input, recreated at its own index past every block (`appendUnslottedPoolCoSpends`);
+  - `blockhash`: a stateful call of the entry probes it until no walk runs past the last input
+    (`unansweredBlockhashWalk`), co-spends a slot answering each `n` a walk names (`resolveIndirectBlockhashCoSpends`,
+    at most 8 reads per call) and raises the locktime to the largest. A nested or low-level callee's walk gets no
+    slot: it reads one only if the transaction already spends a slot that answers it;
+  - an artifact that publishes the field on no entry predates it: there the stateless builder and framed entries
+    co-spend an info coin on every call when it reads `block.*` only indirectly (`readsPoolOnlyIndirectly`,
+    `abba1a162`), and the stateful builders co-spend nothing for it.
+
+  Test: `OraclePoolIndirectSdk.test.ts` (stateless, stateful and mixed readers, and a pointer target's hash and zero).
 - Stored-value recipes read the co-spent coin's timestamp (`readPoolTimestamp`).
 
 ## 9. Deferred / future
@@ -455,8 +462,7 @@ own host source, and a legacy build's closure takes compiler helpers and the ver
   commitment, so a new authority policy (a keeper datasig any relayer can push, or a copy from another
   canonical oracle) is a new covenant beside these, not a reader change. Both would ride the section-5
   bounds.
-- **Multisig owners (open):** the owner hash is the seam to a committee / m-of-n later (a key commitment
-  instead of a single key's hash). The covenants check one key today.
+- **Multisig owners:** out of scope for now; every pool covenant checks one owner key hash.
 - `prevrandao` has no BCH analogue (no randomness beacon); not planned.
 
 ## 10. Decisions
@@ -478,10 +484,9 @@ Still open:
 ## 11. blockhash(n) and blobhash(i)
 
 Status: **IMPLEMENTED.** `blobhash(i) == bytes32(0)`. `blockhash(n)` reads a ring slot of the bound pool
-(master's `b2ec3b973`, `e0c815f3b`; here `a3396494e`, `aca6fae8a`). Using `blockhash`, as any `block.*` read,
-**forces the contract stateful** (`ContractNode.readsBlock` -> `isStateful` + a `stateLayout`, section 8.1): the
-statefulness rule did not change with the pools. A framed master refuses every entry of a contract that reads it,
-as the master head locates no co-spent slot.
+(`b2ec3b973`, `e0c815f3b`). Using `blockhash` still **forces the contract stateful** (`ContractNode.readsBlockhash`
+-> `isStateful` + a `stateLayout`, section 8.1): the statefulness rules did not change with the pools. A framed master refuses
+every entry of a contract that reads it, as the master head locates no co-spent slot.
 
 These are **functions** (runtime argument), not the 0-param `block.*` properties, so they lower as
 `GlobalFunction`s (the keccak256 path is the template), not nullary oracle reads.
@@ -515,8 +520,8 @@ holds only its last `d` blocks and refuses the older ones until their residue's 
 **A zero is not forgeable by omission.** The SDK errors when no live slot answers `n` ("no live slot that answers
 block n"), and the script answers zero only from a real slot of `P` whose block is at least 256 newer, a block CLTV
 kept at or below the chain tip when it was written. Omitting the co-spend fails the read; it never reads zero. (The
-per-contract ring this replaces, ORACLE-6 and -7, answered zero only from a ring 256 deep; a pool's ring of any
-depth answers it once the residue's slot is 256 blocks newer.)
+per-pair design this replaces errored on every absent read for the same reason, and left the EVM's "too old"
+branch to the contract.)
 
 **Multiple and computed reads.** Each distinct `n` in a function rides its own consecutive `blockhashOracle` slot
 (`input[base + k]`, `blockhashSlotCount` driving the allocation; a direct-identifier `n` read twice shares one
@@ -559,10 +564,11 @@ alternative (a baton co-spent in every read) is not built.
 - Stateless path: `TransactionBuilder.addRequiredBlockhashCoSpends` co-spends one slot per read of a reader without
   a block layout and raises the locktime, and `Contract` fills `__internal__blockhashInputIndex` with the first slot
   of its pool among the spent outputs. A computed `n` needs its slot spent by the caller, and two such readers of one
-  pool cannot share a transaction. The statefulness rule keeps every compiled reader off this path.
-- A `blockhash` read in a function-pointer target (8.2) takes no index: the stateful call finds each `n` by probe
-  rounds and co-spends a slot answering it (section 8.4). `OraclePoolIndirectSdk.test.ts` reads both answers, a
-  hash and the zero for a block 256 older than its residue's slot.
+  pool cannot share a transaction. The statefulness rule keeps every compiled reader off this path today.
+- A `blockhash` read in a function-pointer target (8.2) takes no index and answers as a direct read does. A
+  stateful call of its entry finds each `n` by probe rounds and co-spends a slot answering it (section 8.4).
+  `OraclePoolIndirectSdk.test.ts` reads both answers, a hash and the zero for a block 256 older than the newest slot
+  of its residue.
 
 ## 12. tx.gasprice - the current transaction's fee rate
 
@@ -666,7 +672,7 @@ is a single byte; and `difficulty` stays the real PoW difficulty rather than ali
 - `NetworkProvider.oraclePoolCategory` (display order) names a provider's default pool. `ElectrumNetworkProvider`
   takes it as the `oraclePoolCategory` option (64 hex characters, lowercased); `MemCashNetworkProvider` takes it as
   an option or from the node's advertised `devnet.oracle_pool`, which `solidhat node` mints, keeps current and
-  advertises (master's `f02a4812a`, here `1a8ade1ad`; `packages/testing/src/oracle-pool.ts`).
+  advertises (`f02a4812a`, `packages/testing/src/oracle-pool.ts`).
 - `NetworkProvider.oraclePoolOwnerKey` (mock, regtest) names the key a provider's own pools use; the devnet client
   has none. `NetworkProvider.keepOraclePool(category)` (mock) keeps a further pool owned by that key current after
   each block, as the provider keeps its own; `createOraclePool` calls it for every pool that key owns.
@@ -706,6 +712,10 @@ is a single byte; and `difficulty` stays the real PoW difficulty rather than ali
   pending transactions first, and a restore rewinds the slot height. Not run.
 - The mock's rewrite of legacy `__block_*` registers (`oracle/legacy-block-registers.ts`) stays for vendored
   artifacts compiled before the oracle covenant; the compiler emits none.
+- Gone with the old mechanism: `blockOracleLock` and `blockOracleCategory` on providers and contracts,
+  `setBlockOracleFields`, `BlockOracleUpdater` with its rpc helpers and pair keeper, the `blockhashKeeperPublicKey`
+  and `blockhashKeeperAmount` deploy options, and the testing package's devnet oracle runtime and
+  `--no-block-oracle` flag.
 - Gone with the per-contract model (`3148c0cac`, `a3396494e`, `aca6fae8a`, `1a8ade1ad`, `1a7850973`):
   - providers' `blockOracleOwnerPublicKey` and `blockOracleFields()`, and the mock's `blockOracleOwnerKey`,
     `setBlockOracleFields` and `refreshBlockOracle`;

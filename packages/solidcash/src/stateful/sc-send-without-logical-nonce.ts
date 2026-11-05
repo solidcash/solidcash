@@ -3,9 +3,9 @@
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import type { StateValue } from '@solidcash/utils';
+import type { AbiFunction, StateValue } from '@solidcash/utils';
 import type { TransactionDetails, Utxo } from '../interfaces.js';
-import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import type { AtomicMessageBusComposition, PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { discoverInitialCallTopology } from '../message-bus/compose-result-topology.js';
 import { rebuildPreparedInvocation } from '../message-bus/compose-prepared-invocation.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -15,6 +15,7 @@ import {
   softOracleRate,
 } from './soft-state-overlays.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { isBusCompiledEntry, plansRepeatedBusRows } from './sc-expand-resolve-create-builder-external-calls.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulContract } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
@@ -38,6 +39,11 @@ export interface SendWithoutLogicalNonceHost {
   retireSignerUtxos(signer: Signer, utxos: readonly Utxo[]): void;
 }
 
+/** What bus planning reads from a prepared call: its contract, signer, wallet snapshot and root descriptor. */
+export type BusRowCompositionHost = Pick<SendWithoutLogicalNonceHost,
+'functionName' | 'parentContract' | 'preparedRootCall' | 'invalidateSignerUtxos' | 'signerUtxoSnapshot'
+| 'retireSignerUtxos'>;
+
 /** Local VM diagnostics may model the caller, but this outpoint must never reach a send. */
 function diagnosticFeeInput(signer: Signer): {
   txid: string; vout: number; satoshis: bigint; unlocker: ReturnType<Signer['unlockP2PKH']>;
@@ -50,8 +56,9 @@ function diagnosticFeeInput(signer: Signer): {
 
 /** Close compiler-described typed edges before the legacy builder duplicates an owner or meets a proxy route. */
 async function prepareTypedCallbackGraph(
-  host: SendWithoutLogicalNonceHost,
-): Promise<PreparedAtomicMessageBusCall[] | undefined> {
+  host: Pick<SendWithoutLogicalNonceHost, 'parentContract' | 'preparedRootCall'>,
+  admit: (entry: AbiFunction, calls: readonly PreparedAtomicMessageBusCall[]) => boolean = () => true,
+): Promise<{ entry: AbiFunction; calls: PreparedAtomicMessageBusCall[] } | undefined> {
   const contract = host.parentContract;
   const signer = contract?._logicalNonceSigner ?? contract?._signer;
   if (!contract || !signer) return undefined;
@@ -66,10 +73,8 @@ async function prepareTypedCallbackGraph(
   const entry = artifact.abi.find((candidate) => root.selector !== undefined
     ? candidate.selector?.toLowerCase() === root.selector.toLowerCase()
     : candidate.name === root.functionName);
-  if (!entry?.externalCalls?.length || artifact.messageBus?.handlers.some((handler) =>
-    handler.selector.toLowerCase() === entry.selector?.toLowerCase() && handler.eligible) !== true) {
-    return undefined;
-  }
+  // A direct compile is never promoted to the bus: it publishes no eligible route handler.
+  if (!entry?.externalCalls?.length || !isBusCompiledEntry(artifact, entry.selector)) return undefined;
   // A callback needs an onward edge, while a source loop or two edges to one owner can repeat that owner's
   // master without ever returning to the root. Most ordinary single calls still use the legacy builder.
   // An unregistered/dynamic target is unknown, not proof of a leaf, so it still enters exact discovery.
@@ -205,6 +210,7 @@ async function prepareTypedCallbackGraph(
   if (!registeredCallback && !deferredResultDomain && !requiresAtomicLoop && !requiresProxyRoute
     && !prunedByPreCallRequire && !calls.some((call) => call.executor !== undefined)
     && ![...ownerCounts.values()].some((count) => count > 1)) return undefined;
+  if (!admit(entry, calls)) return undefined;
 
   // A later write on a repeated participant can abort its aggregate route before an earlier getter publishes
   // its result. Seed that earlier read from the exact on-chain getter, then let the completed graph VM either
@@ -250,7 +256,87 @@ async function prepareTypedCallbackGraph(
     seededCalls.push(seeded);
     if (fn?.writesState !== false) writtenOwners.add(owner);
   }
-  return seededCalls;
+  return { entry, calls: seededCalls };
+}
+
+/** The composition of `calls`, funded by the caller's largest token-free coin, which it reserves. */
+async function fundedComposition(
+  host: BusRowCompositionHost,
+  calls: readonly PreparedAtomicMessageBusCall[],
+): Promise<AtomicMessageBusComposition> {
+  // The fee input is the transaction's first P2PKH input, and the platform derives `tx.origin` - and with
+  // it `msg.sender` for a direct call - from that input. Funding a composed transaction from the signing
+  // key alone silently renames the caller whenever the signer is not the caller (for example a contract
+  // funder account), so every `msg.sender`-keyed state read then misses. Prefer the logical-nonce signer,
+  // which `connect(caller)` binds to the account that initiated this call.
+  const signer = host.parentContract?._logicalNonceSigner ?? host.parentContract?._signer;
+  if (!signer) {
+    throw new Error('messageBus: transparent atomic promotion requires a connected signer');
+  }
+  // The ordinary derivation builder may have reserved wallet UTXOs while discovering the graph. Refresh
+  // once, reserve the fee tail first, and let each atomic participant draw from the remaining shared
+  // snapshot. This prevents a participant probe and the canonical fee tail from selecting one outpoint.
+  host.invalidateSignerUtxos(signer);
+  const available = (await host.signerUtxoSnapshot(signer))
+    .filter((utxo) => utxo.token === undefined)
+    .sort((left, right) => Number(right.satoshis - left.satoshis));
+  const feeUtxo = available[0];
+  if (!feeUtxo) {
+    // Without a real fee input, the call cannot be sent. A local composition can still execute an
+    // earlier source require against the correct tx.origin and report its exact VM failure.
+    const { compose } = await import('../message-bus/compose.js');
+    await compose({
+      preparedCalls: calls,
+      funder: diagnosticFeeInput(signer),
+      changeAddress: signer.getAddress(),
+    }).build();
+    throw new Error('messageBus: transparent atomic promotion requires one token-free fee UTXO');
+  }
+  // The fee input is this transaction's first P2PKH input, and the platform derives `tx.origin` - and
+  // with it `msg.sender` for a direct call - from it. Report the funded account beside that coordinate so a
+  // caller/funder mismatch is visible without re-deriving it from the built transaction.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_FUNDER_PLAN === '1') {
+    console.error('composed-funder-plan', JSON.stringify({
+      functionName: host.functionName,
+      callerLock: binToHex(signer.getLockingBytecode()),
+      feeOutpoint: `${feeUtxo.txid.slice(0, 12)}:${feeUtxo.vout}`,
+      feeSatoshis: String(feeUtxo.satoshis),
+      logicalMatchesPhysical:
+        (host.parentContract?._logicalNonceSigner ?? null) === (host.parentContract?._signer ?? null),
+      calls: calls.map((call) => {
+        const described = call as unknown as {
+          functionName?: string; logicalFunctionName?: string; selectorHex?: string;
+        };
+        return described.logicalFunctionName ?? described.functionName
+          ?? described.selectorHex ?? '?';
+      }),
+    }));
+  }
+  host.retireSignerUtxos(signer, [feeUtxo]);
+  const { composeDiscoveredGraph } = await import('../message-bus/compose.js');
+  return composeDiscoveredGraph({
+    preparedCalls: calls,
+    funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
+    changeAddress: signer.getAddress(),
+  });
+}
+
+/**
+ * `.build()` of a bus-compiled call whose graph runs as bus rows (plansRepeatedBusRows): the composition its send
+ * broadcasts, built without broadcasting it. Undefined keeps the direct builder: a call it settles in one callee
+ * run, or a graph discovery cannot close, which the direct builder then refuses with its own diagnostics.
+ */
+export async function buildBusRowComposition(
+  host: BusRowCompositionHost,
+): Promise<TransactionBuilder | undefined> {
+  let prepared: Awaited<ReturnType<typeof prepareTypedCallbackGraph>>;
+  try {
+    prepared = await prepareTypedCallbackGraph(host, plansRepeatedBusRows);
+  } catch {
+    return undefined;
+  }
+  return prepared && (await fundedComposition(host, prepared.calls)).build();
 }
 
 export async function sendWithoutLogicalNonce(
@@ -269,7 +355,7 @@ export async function sendWithoutLogicalNonce(
   // should implement their own locking or sequencing.
   const maxRetries = 3;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const typedCallbackCalls = await prepareTypedCallbackGraph(host);
+    const typedCallbackCalls = (await prepareTypedCallbackGraph(host))?.calls;
     const stb = typedCallbackCalls ? undefined : await host.applyOverrides();
     if (host.locktimeOverride !== undefined) stb?.setLocktime(host.locktimeOverride);
     try {
@@ -278,62 +364,7 @@ export async function sendWithoutLogicalNonce(
       } | undefined)?.__preparedAtomicCalls;
       let receipt: TransactionDetails;
       if (preparedAtomicCalls) {
-        // The fee input is the transaction's first P2PKH input, and the platform derives `tx.origin` - and with
-        // it `msg.sender` for a direct call - from that input. Funding a composed transaction from the signing
-        // key alone silently renames the caller whenever the signer is not the caller (for example a contract
-        // funder account), so every `msg.sender`-keyed state read then misses. Prefer the logical-nonce signer,
-        // which `connect(caller)` binds to the account that initiated this call.
-        const signer = host.parentContract?._logicalNonceSigner ?? host.parentContract?._signer;
-        if (!signer) {
-          throw new Error('messageBus: transparent atomic promotion requires a connected signer');
-        }
-        // The ordinary derivation builder may have reserved wallet UTXOs while discovering the graph. Refresh
-        // once, reserve the fee tail first, and let each atomic participant draw from the remaining shared
-        // snapshot. This prevents a participant probe and the canonical fee tail from selecting one outpoint.
-        host.invalidateSignerUtxos(signer);
-        const available = (await host.signerUtxoSnapshot(signer))
-          .filter((utxo) => utxo.token === undefined)
-          .sort((left, right) => Number(right.satoshis - left.satoshis));
-        const feeUtxo = available[0];
-        if (!feeUtxo) {
-          // Without a real fee input, the call cannot be sent. A local composition can still execute an
-          // earlier source require against the correct tx.origin and report its exact VM failure.
-          const { compose } = await import('../message-bus/compose.js');
-          await compose({
-            preparedCalls: preparedAtomicCalls,
-            funder: diagnosticFeeInput(signer),
-            changeAddress: signer.getAddress(),
-          }).build();
-          throw new Error('messageBus: transparent atomic promotion requires one token-free fee UTXO');
-        }
-        // The fee input is this transaction's first P2PKH input, and the platform derives `tx.origin` - and
-        // with it `msg.sender` for a direct call - from it. Report the funded account beside that coordinate so a
-        // caller/funder mismatch is visible without re-deriving it from the built transaction.
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_FUNDER_PLAN === '1') {
-          console.error('composed-funder-plan', JSON.stringify({
-            functionName: host.functionName,
-            callerLock: binToHex(signer.getLockingBytecode()),
-            feeOutpoint: `${feeUtxo.txid.slice(0, 12)}:${feeUtxo.vout}`,
-            feeSatoshis: String(feeUtxo.satoshis),
-            logicalMatchesPhysical:
-              (host.parentContract?._logicalNonceSigner ?? null) === (host.parentContract?._signer ?? null),
-            calls: preparedAtomicCalls.map((call) => {
-              const described = call as unknown as {
-                functionName?: string; logicalFunctionName?: string; selectorHex?: string;
-              };
-              return described.logicalFunctionName ?? described.functionName
-                ?? described.selectorHex ?? '?';
-            }),
-          }));
-        }
-        host.retireSignerUtxos(signer, [feeUtxo]);
-        const { composeDiscoveredGraph } = await import('../message-bus/compose.js');
-        receipt = await composeDiscoveredGraph({
-          preparedCalls: preparedAtomicCalls,
-          funder: { ...feeUtxo, unlocker: signer.unlockP2PKH() },
-          changeAddress: signer.getAddress(),
-        }).send();
+        receipt = await (await fundedComposition(host, preparedAtomicCalls)).send();
       } else {
         if (host.requiresRecursivePreflight()) stb!.enableStrictVmPreflight();
         const signer = host.parentContract?._logicalNonceSigner ?? host.parentContract?._signer;

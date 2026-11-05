@@ -393,7 +393,7 @@ export function buildInputs(
           else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
         }
-        case 'transfer': case 'tcTransfer': case 'event': case 'eventChunk': case 'returnEvent': {
+        case 'transfer': case 'tcTransfer': case 'event': case 'eventChunk': case 'returnEvent': case 'callEdge': {
           // An output-only slot never evicts an input already placed there, such as a delegate band's own data NFT.
           if (positioned[slot.offset] !== undefined) break;
           const f = funderPool.shift();

@@ -1,4 +1,4 @@
-import { FunctionType } from '@solidcash/utils';
+import { AddressType, FunctionType, Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -19,10 +19,13 @@ import {
   FieldAccessNode,
   IdentifierNode,
   StateAccessNode,
+  ReturnNode,
   ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { FunctionPointerTypeError } from '../Errors.js';
+import ForeignMemberTypes from './ForeignMemberTypes.js';
 
 /**
  * FOREIGN external function pointers. A `function(...) external f = IFoo(addr).method` targets ANOTHER contract,
@@ -44,11 +47,17 @@ import { cloneNode } from '../ast/clone.js';
 export default class DesugarExternalFunctionPointers extends AstTraversal {
   private aliases = new Map<string, ExpressionNode>();
   private aliasTypes = new Map<string, FunctionType>();
+  private members?: ForeignMemberTypes;
+  // The interface a name declared with one (a contract's state variable or constructor parameter, a function's
+  // parameter or local) holds: a receiver `t` of `t.m` names a member of it.
+  private contractDeclarations = new Map<string, Type>();
+  private functionDeclarations = new Map<string, Type>();
   private synthIfaces: InterfaceNode[] = [];
   private usedInterfaceNames = new Set<string>();
   private synthCounter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.members = new ForeignMemberTypes(node);
     this.synthIfaces = [];
     this.usedInterfaceNames = new Set(node.interfaceDefinitions.map((iface) => iface.name));
     this.synthCounter = 0;
@@ -60,6 +69,10 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.contractDeclarations = new Map([
+      ...node.stateVariables.map((variable) => [variable.name, variable.type] as const),
+      ...node.parameters.map((parameter) => [parameter.name, parameter.type] as const),
+    ]);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     return node;
@@ -71,7 +84,9 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     this.aliases = new Map();
     this.aliasTypes = new Map();
     if (node.body) {
+      this.functionDeclarations = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type] as const));
       this.collectAliases(node.body);
+      this.refuseReturnedMemberMisfits(node);
       // This pass runs once before branch normalization and again after pointer-specific lowerings. Preserve
       // aliases captured by the early run: it may erase their declaration after rewriting high-level calls,
       // while LowerInlineAssembly still needs the original member to lower `fp.address`/`fp.selector` in Yul.
@@ -90,8 +105,21 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   private collectAliases(node: Node): void {
     const seen = new Set<string>();
     const walk = (n: Node): void => {
+      if (n instanceof VariableDefinitionNode && !(n.type instanceof FunctionType)) {
+        this.functionDeclarations.set(n.name, n.type);
+      }
       if (n instanceof VariableDefinitionNode && n.type instanceof FunctionType && n.type.isExternal
           && n.expression && this.isRewritableAlias(n.expression)) {
+        // A call through the alias binds its type's arguments: each member it can hold must take exactly them.
+        const arms = n.expression instanceof TernaryOpNode ? [n.expression.ifTrue, n.expression.ifFalse] : [n.expression];
+        for (const arm of arms) {
+          const iface = arm instanceof FieldAccessNode
+            ? this.castInterfaceName(arm.expression) ?? this.declaredInterface(arm.expression) : undefined;
+          if (arm instanceof FieldAccessNode && iface !== undefined && this.members!.knows(iface)
+            && !this.members!.fits({ iface, method: arm.name }, n.type)) {
+            throw new FunctionPointerTypeError(arm, n.name, `${iface}.${arm.name}`, n.type.toString());
+          }
+        }
         if (seen.has(n.name)) this.aliases.delete(n.name);
         else {
           this.aliases.set(n.name, n.expression);
@@ -106,6 +134,34 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
       }
     };
     walk(node);
+  }
+
+  // A function whose declared return type is a foreign external function pointer and that returns a foreign member
+  // `IFace(a).m` (or `t.m` for an interface-typed receiver) must name one method of exactly that type: a call through
+  // the returned pointer binds the return type's arguments, so any other signature leaves some unbound. Checked for
+  // EVERY function here, not only the side-effect-free single-return helpers InlineForeignFunctionPointerReturns
+  // inlines, so a side-effecting or multi-statement helper cannot slip a mistyped member past the check.
+  private refuseReturnedMemberMisfits(fn: FunctionDefinitionNode): void {
+    const walk = (n: Node): void => {
+      if (n instanceof ReturnNode) {
+        n.expressions.forEach((expr, index) => {
+          const declared = fn.returnTypes[index];
+          if (!(declared instanceof FunctionType) || !declared.isExternal || !(expr instanceof FieldAccessNode)) return;
+          const iface = this.castInterfaceName(expr.expression) ?? this.declaredInterface(expr.expression);
+          if (iface !== undefined && this.members!.knows(iface)
+            && !this.members!.fits({ iface, method: expr.name }, declared)) {
+            throw new FunctionPointerTypeError(expr, fn.name, `${iface}.${expr.name}`, declared.toString());
+          }
+        });
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const val = (n as unknown as Record<string, unknown>)[key];
+        if (val instanceof Node) walk(val);
+        else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) walk(v);
+      }
+    };
+    if (fn.body) walk(fn.body);
   }
 
   // A rewritable alias RHS is a foreign interface member `IFoo(addr).method` (FIXED), or a ternary of two
@@ -130,6 +186,14 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
 
   private isStableValue(expr: ExpressionNode): boolean {
     return expr instanceof IdentifierNode;
+  }
+
+  // The interface a receiver variable `t` (or `this.t`) is declared with, if any.
+  private declaredInterface(expr: ExpressionNode): string | undefined {
+    const name = expr instanceof IdentifierNode || expr instanceof StateAccessNode ? expr.name : undefined;
+    const type = name === undefined ? undefined
+      : this.functionDeclarations.get(name) ?? this.contractDeclarations.get(name);
+    return type instanceof AddressType ? type.interfaceName : undefined;
   }
 
   // The interface name of an `IFace(addr)` cast receiver, or undefined if not a plain interface cast.

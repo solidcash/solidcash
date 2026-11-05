@@ -1,8 +1,9 @@
-import { FunctionDefinitionNode, FunctionModifier } from '../ast/AST.js';
+import { FunctionDefinitionNode, FunctionModifier, Node, StateAccessNode } from '../ast/AST.js';
 
 /**
- * A direct callee's multi-call entry: one spend of its master runs several state-preserving calls, each frame
- * settling its own call record under its ordinal (docs/wip/call-records/DESIGN.md, section 3).
+ * A direct callee's multi-call entry: one spend of its master runs several calls, each frame settling its own call
+ * record under its ordinal and running on the data records the frames before it left (docs/wip/call-records/
+ * DESIGN.md, section 3).
  */
 
 /** The multi-call entry's reserved dispatch selector, 0x53434442. */
@@ -17,6 +18,13 @@ export const CALL_BATCH_ROW_SHIFT = '__internal__rowEntryShift';
 export const CALL_BATCH_CONTEXT = '__internal__callContext';
 
 /**
+ * The most frames one multi-call spend can run: each holds at least its selector, ordinal and item count on the
+ * alternate stack, within the VM's 1,000-item stack limit. A looped call of a direct caller's counted group
+ * publishes it as its iteration ceiling, so the SDK resolves the frames a spend runs before building it.
+ */
+export const CALL_BATCH_MAXIMUM_FRAMES = Math.floor(1000 / 3);
+
+/**
  * The share of the per-input limit a contract leaves its spends when it carries the entry. A multi-call spend
  * pushes every frame's arguments, and a script grown to the limit leaves its other spends no room for theirs.
  */
@@ -29,13 +37,30 @@ const FRAME_MODIFIERS = new Set<FunctionModifier>([
 
 const FRAME_SLOT_KINDS = new Set(['master', 'dataNft', 'entry', 'returnEvent']);
 
+/** True when `node` reads `this.outState`: the transaction's outputs, which a frame of a batch does not settle. */
+function readsOwnOutputState(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+  if (!node || seen.has(node)) return false;
+  seen.add(node);
+  if (node instanceof StateAccessNode && node.name === 'outState') return true;
+  for (const key in node) {
+    const value = node[key as keyof Node];
+    if (value instanceof Node) {
+      if (readsOwnOutputState(value, seen)) return true;
+    } else if (Array.isArray(value)) {
+      for (const item of value) if (item instanceof Node && readsOwnOutputState(item, seen)) return true;
+    }
+  }
+  return false;
+}
+
 /**
- * True when `fn` can run as a frame of the multi-call entry: a returning direct entry that preserves all state,
- * whose block holds only its master, data records, fixed read-only entries and its return carrier, and which takes
- * no value, delegate, external read or call, event, transfer, deploy, side-car or runtime-located input.
+ * True when `fn` can run as a frame of the multi-call entry: a direct entry, void or returning, that writes at
+ * most fixed state fields, whose block holds only its master, data records, fixed read-only entries and its return
+ * carrier, and which takes no value, delegate, external read or call, event, transfer, deploy, side-car, output
+ * state read or runtime-located input. `writesBeyondFixedState` is whether its body writes anything else.
  */
-export function isCallBatchFrameCandidate(fn: FunctionDefinitionNode, writesState: () => boolean): boolean {
-  if (!fn.isEntryPoint || fn.returnTypes.length === 0 || fn.isFallback || fn.isReceive) return false;
+export function isCallBatchFrameCandidate(fn: FunctionDefinitionNode, writesBeyondFixedState: () => boolean): boolean {
+  if (!fn.isEntryPoint || fn.isFallback || fn.isReceive) return false;
   if (fn.graphEmissionHandler || fn.messageBusRoute === true || fn.name.startsWith('__')) return false;
   if (!fn.modifiers.every((modifier) => FRAME_MODIFIERS.has(modifier))) return false;
   if ((fn.externalCalls?.length ?? 0) > 0 || (fn.externalReads?.length ?? 0) > 0
@@ -50,5 +75,6 @@ export function isCallBatchFrameCandidate(fn: FunctionDefinitionNode, writesStat
   if (fn.parameters.some((parameter) => parameter.name.startsWith('__internal__')
     && parameter.name !== '__internal__returnOutputIdx')) return false;
   return fn.blockLayout !== undefined
-    && fn.blockLayout.slots.every((slot) => FRAME_SLOT_KINDS.has(slot.kind)) && !writesState();
+    && fn.blockLayout.slots.every((slot) => FRAME_SLOT_KINDS.has(slot.kind))
+    && !readsOwnOutputState(fn.body) && !writesBeyondFixedState();
 }

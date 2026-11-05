@@ -217,8 +217,8 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
       'contract D { bool flag; function registered(address a) public returns (bool) { return this.flag; } }',
       { suppressWarnings: true },
     );
-    expect(callee.bytecode).toContain('OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP OP_OUTPUTTOKENCATEGORY OP_3'
-      + ' OP_PICK OP_EQUAL OP_OVER OP_OUTPUTBYTECODE 51 OP_EQUAL OP_BOOLAND OP_ROT OP_ADD OP_SWAP OP_DUP OP_NOT'
+    expect(callee.bytecode).toContain('OP_0 OP_TXOUTPUTCOUNT OP_BEGIN OP_1SUB OP_DUP OP_OUTPUTBYTECODE 51 OP_EQUAL'
+      + ' OP_OVER OP_OUTPUTTOKENCATEGORY OP_4 OP_PICK OP_EQUAL OP_BOOLAND OP_ROT OP_ADD OP_SWAP OP_DUP OP_NOT'
       + ' OP_UNTIL OP_DROP OP_NIP OP_NUMEQUALVERIFY');
     expect(unique.bytecode).toContain('1f OP_SPLIT OP_SWAP OP_ROT OP_EQUALVERIFY');
   });
@@ -729,18 +729,23 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   });
 
   it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
-    const src = 'interface P { function swap(uint x) external; }'
-      + ' interface F { function pair(address a) external returns (P); }'
+    const src = (mutability: string): string => 'interface P { function swap(uint x) external; }'
+      + ` interface F { function pair(address a) external${mutability} returns (P); }`
       + ' contract C(F factory) { uint total;'
       + ' function step(address a, uint n) internal returns (uint result) {'
       + ' P p = factory.pair(a); p.swap(n);'
       + ' if (n == 0) result = n; else result = step(a, n - 1); }'
       + ' function run(address a, uint n) public {'
       + ' total = step(a, n); require(true); } }';
-    const artifact = compileString(src, { evmCompat: true, messageBus: false });
+    const artifact = compileString(src(' view'), { evmCompat: true, messageBus: false });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
     expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+    // The lowered loop repeats the lookup on one callee: a state-changing one runs as counted frames of the factory's
+    // multi-call spend, each iteration bound to its own frame's record.
+    const writer = compileString(src(''), { evmCompat: true, messageBus: false });
+    expect(writer.abi.find((entry) => entry.name === 'run')?.externalCalls?.[0]?.callOrdinal)
+      .toEqual({ group: 0, counted: true });
   });
 
   it('rewrites a cast receiver introduced by nested helpers inside a lowered tail loop', () => {

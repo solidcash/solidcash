@@ -3,9 +3,8 @@
  *
  * An indirect call pushes a body's declared arguments only, so a function-pointer target holds no pool binding and
  * no coin index its caller could hand it. It takes P from a helper the contract level defines from its own
- * `__oraclePool` parameter, and finds the first block-info coin of P itself. A direct read keeps the parameter. Any
- * block.* read makes the contract stateful, so each reader spends its master. Each VM case runs the whole transaction
- * on the BCH 2026 VM, and every refused one is valid but for the reader.
+ * `__oraclePool` parameter, and finds the first block-info coin of P itself. A direct read keeps the parameter. Each
+ * VM case runs the whole transaction on the BCH 2026 VM, and every refused one is valid but for the reader.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -47,7 +46,6 @@ const BINDING_DEFINE = /OP_CAT \S+ OP_DEFINE/;
 
 const POOL = Uint8Array.from({ length: 32 }, (_, i) => (0x37 + i * 11) & 0xff);
 const OTHER_POOL = Uint8Array.from({ length: 32 }, (_, i) => (0x91 + i * 7) & 0xff);
-const MASTER_CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x15 + i * 13) & 0xff);
 const OWNER = new Uint8Array(20).fill(0x31);
 const EMPTY = new Uint8Array(0);
 const FUNDER_LOCK = Uint8Array.of(0x51);
@@ -119,29 +117,11 @@ function infoCoin(category: Uint8Array): Coin {
 }
 
 /**
- * The reader at input 0, bound to `bound`, and the pool coin at input 1, which its read path recreates at output 1.
- * A stateful reader is its master, recreated at output 0, and a funder at input 2 pays. `values` are the reader's
- * arguments, which its caller chooses.
+ * The stateless reader at input 0, bound to `bound`, and the pool coin at input 1, which its read path recreates at
+ * output 1. `values` are the reader's arguments, which its caller chooses.
  */
 function readSpend(artifact: Artifact, bound: Uint8Array, coin: Coin, values: Record<string, Uint8Array>): Spend {
   const redeem = redeemOf(artifact, bound);
-  if (artifact.stateLayout !== undefined) {
-    const master: VmOutput = {
-      lockingBytecode: p2sh32(redeem), valueSatoshis: 20_000n,
-      token: { category: MASTER_CATEGORY, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } },
-    };
-    return {
-      sourceOutputs: [master, coin.utxo, { lockingBytecode: FUNDER_LOCK, valueSatoshis: 100_000n }],
-      transaction: {
-        version: 2, locktime: 0,
-        inputs: [
-          input(0, unlock(artifact, redeem, 'read', { __internal__returnOutputIdx: num(-1n), ...values })),
-          input(1, coin.unlocking), input(2, EMPTY),
-        ],
-        outputs: [master, coin.utxo, { lockingBytecode: FUNDER_LOCK, valueSatoshis: 90_000n }],
-      },
-    };
-  }
   return {
     sourceOutputs: [{ lockingBytecode: p2sh32(redeem), valueSatoshis: 10_000n }, coin.utxo],
     transaction: {
@@ -161,7 +141,6 @@ describe('a block.* read in a function-pointer target', () => {
 
   it('compiles, and no input its caller fills carries a binding or a coin index', () => {
     expect(artifact.usesBlockOracle).toBe(true);
-    expect(artifact.stateLayout).toBeDefined();
     expect(fnOf(artifact, 'read').indirectPoolReads).toEqual({ blockInfo: true });
     expect(artifact.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
     expect(fnOf(artifact, 'read').inputs.map((entry) => entry.name))
@@ -197,6 +176,7 @@ describe('an ordinary reader', () => {
     expect(fnOf(artifact, 'read').inputs.map((entry) => entry.name)).toContain('__internal__blockOracleInputIndex');
     expect(artifact.bytecode).not.toMatch(BINDING_DEFINE);
     expect(artifact.abi.every((fn) => fn.indirectPoolReads === undefined)).toBe(true);
+    expect(artifact.bytecode).not.toContain('OP_BEGIN');
   });
 
   it('still reads the coin at the index its caller names', () => {

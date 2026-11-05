@@ -98,6 +98,25 @@ export function repeatedTypedLoopRefusal(call: ExternalCallAbi): Error {
     + 'connect a signer before sending');
 }
 
+/**
+ * Whether a bus-compiled root's discovered graph runs as bus rows: it reaches one state owner more than once, or
+ * the root loops over a fixed callee and reaches any callee. A direct callee run settles one call (D50).
+ */
+export function plansRepeatedBusRows(
+  entry: Pick<AbiFunction, 'externalCalls'>,
+  calls: readonly { contract: { categoryId: string; inner: { lockingBytecode: string } } }[],
+): boolean {
+  if (calls.length < 2) return false;
+  if (entry.externalCalls?.some(isRepeatedTypedLoopCallsite)) return true;
+  const owners = new Set<string>();
+  return calls.some(({ contract }) => {
+    const owner = `${contract.categoryId.toLowerCase()}:${contract.inner.lockingBytecode.toLowerCase()}`;
+    if (owners.has(owner)) return true;
+    owners.add(owner);
+    return false;
+  });
+}
+
 /** Counter names of compiler `loopIndex` sources nested in a published callsite. */
 function collectLoopCounters(value: unknown, seen = new Set<object>(), out = new Set<string>()): Set<string> {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return out;
@@ -141,7 +160,23 @@ function zeroTripSharedArrayLoop(
   return Array.isArray(value) && value.length === 0;
 }
 
-function containsReturningExpression(value: unknown, seen = new Set<object>()): boolean {
+/**
+ * The bus-compile predicate: `selector` names an eligible message-bus route handler of `artifact`. A direct
+ * compile publishes none, so its calls never reach the composer, the bus-row planner or the send-time promotion.
+ */
+export function isBusCompiledEntry(
+  artifact: Pick<Artifact, 'messageBus'>, selector: string | undefined,
+): boolean {
+  return selector !== undefined && artifact.messageBus?.handlers.some((handler) => handler.eligible
+    && handler.selector.toLowerCase() === selector.toLowerCase()) === true;
+}
+
+/** A direct compile: `messageBus: false` stated, and not framed. Its repeated calls stay in the direct convention. */
+export function isDirectConventionArtifact(artifact: Pick<Artifact, 'compiler' | 'composition'>): boolean {
+  return artifact.compiler?.options?.messageBus === false && artifact.composition?.convention !== 'framed';
+}
+
+export function containsReturningExpression(value: unknown, seen = new Set<object>()): boolean {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
   seen.add(value as object);
   if (['producerResult', 'externalCall'].includes((value as { kind?: string }).kind ?? '')) return true;
@@ -320,8 +355,9 @@ export async function expandResolveCreateBuilderExternalCalls(
   // A domain that resolves to a single occurrence is one callee block, same as a call that is not a loop.
   // A return probe broadcasts nothing: when the loop's results form a published result array, it keeps the one
   // callee block and resolves every occurrence's value separately (pushCreateBuilderDirectExternalCallGroup).
+  // A direct compile's grouped loop runs its reached calls as frames of the callee's multi-call spend.
   const repeatedLoop = externalCalls?.find((call) => {
-    if (!isRepeatedTypedLoopCallsite(call)) return false;
+    if (!isRepeatedTypedLoopCallsite(call) || call.callOrdinal !== undefined) return false;
     if (returnProbeOnly && call.resultArrayOutput !== undefined) return false;
     if ((call.maximumOccurrences ?? 0) > 1) return true;
     const domain = call.iterationDomain;

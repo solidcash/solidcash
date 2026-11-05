@@ -158,8 +158,8 @@ export function bindOraclePool(
  * The block data lives in the commitment of a block-info coin of the contract's oracle pool, not in this
  * contract. A read stays a `block.*` nullary; codegen checks the coin's category and flags and slices that
  * commitment. The owner update is the pool covenant's own spend and is never added to this contract.
- * Any block.* or blockhash read makes the contract stateful. `block.basefee` is Floor(1000 * totalFees / size)
- * over two of those slices. `block.chainid` is a separate baked constant.
+ * `block.basefee` is Floor(1000 * totalFees / size) over two of those slices. `block.chainid` is a separate
+ * baked constant.
  *
  * The owner's bounds live in that covenant (utils/oracle-pool.ts): a height update raises `number`, CLTVs it and
  * keeps `timestamp`; a timestamp update runs under a time-type locktime, raises it, CLTVs it and keeps the other
@@ -178,8 +178,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // Per-function counter for computed-n blockhash reads (each is its own slot).
   private fnComputedBlockhashCount = 0;
   private fnUsesOracle = false;
-  // Any block.* global or blockhash(n) read in the contract, oracle-backed or not.
-  private readsBlockData = false;
+  // Any blockhash(n) read in the contract.
+  private blockhashRead = false;
   // Names declared in the contract (state vars) and current function (params + locals), so a bare `now` that is
   // actually a declared variable is NOT aliased to block.timestamp (Solidity <0.7 global; a plain var in >=0.7).
   private stateVarNames = new Set<string>();
@@ -215,7 +215,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     }
     if (node.identifier.name === GlobalFunction.BLOCKHASH) {
       this.usesBlockhash = true;
-      this.readsBlockData = true;
+      this.blockhashRead = true;
       this.fnUsesBlockhash = true;
       // Each distinct n gets its own consecutive oracle slot. A direct-identifier n keys on the param name (the
       // SDK reads the arg; same param -> one slot). ANY computed n (block.number - K, arbitrary arithmetic)
@@ -310,17 +310,15 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
     if (node.receiveDef) node.receiveDef = this.visit(node.receiveDef) as FunctionDefinitionNode;
 
-    // Any block.* or blockhash read makes the contract stateful. The mark stays once set: a re-run on a split root
-    // sees forwarders, not the reads.
+    // A blockhash(n) reader is stateful. The mark stays once set: a re-run on a split root sees forwarders, not the reads.
     const bodies = [node.functions, node.constructorDef, node.fallbackDef, node.receiveDef].flat();
     node.usesBlockhash = bodies.some((fn) => fn?.usesBlockhash);
     node.usesBlockOracle = bodies.some((fn) => fn?.usesBlockOracle);
-    node.readsBlockData = node.readsBlockData || this.readsBlockData;
+    node.blockhashReadMarked = node.blockhashReadMarked || this.blockhashRead;
     return node;
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
-    if (String(node.operator).startsWith('block.')) this.readsBlockData = true;
     if (ORACLE_FIELDS.has(node.operator)) {
       this.fnUsesOracle = true;
       if (node.operator === NullaryOperator.BLOCK_TIMESTAMP) {

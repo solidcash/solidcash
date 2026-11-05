@@ -49,20 +49,30 @@ A direct return carrier becomes a call record (as built):
   keys on.
 - One spend, several calls: the callee side is built (semantic/CallBatch.ts, test `CallBatch.test.ts`). It is off
   unless the contract is compiled with `callBatch: true`, so simple contracts stay lean (user, 2026-10-24); phase 2
-  also turns it on for a callee whose caller in the same compilation repeats calls to it. A direct,
-  unsplit callee with an entry that returns values and preserves all state (no value, delegate, msg.data, external
-  read or call, event, side-car or hidden witness but its return index) carries a multi-call entry under the reserved
-  selector `0x53434442`, published as `callBatch: { selector }` with `callBatchRow: true` on its frame entries.
-  Unlocking: `<sel> [frame K-1]..[frame 0] <K>`, a frame being the entry's standalone pushes, then its selector. The
-  entry moves the frames to the alternate stack with a copy of the constructor parameters each, then runs frame k on
-  a stack holding that frame alone, its context k on the alternate stack. A frame digests ordinal `max(k, 0)`, takes
-  its fixed entries `__internal__rowEntryShift` inputs past their slots, skips the collection and data-record counts
-  and the record count, and hands back `pinned - 2`; the entry requires -1 from each frame, then counts K records and
-  holds every other own-category mutable input in place. Ordinary dispatch pushes context -1, which keeps a standalone
-  run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch: false`, when the contract
-  with it would not leave a tenth of the per-input limit (at most 10,000 bytes). Message-bus compiles carry none: the
-  bus runs repeated calls as rows, and the conventions stay separate: a direct caller is never turned into a bus
-  composition. Callers that lay ordinals other than 0: section 4.
+  also turns it on for a callee whose caller in the same compilation repeats calls to it. A direct, unsplit callee
+  with an entry, void or returning, that writes at most fixed state fields (no mapping or dynamic write, value,
+  delegate, msg.data, external read or call, event, transfer, deploy, side-car, `this.outState`, invoked body that
+  reads state, or hidden witness but its record index) carries a multi-call entry under the reserved selector
+  `0x53434442`, published as `callBatch: { selector }` with `callBatchRow: true` on its frame entries; a void frame
+  takes `__internal__returnOutputIdx` too. Unlocking: `<sel> [frame 0]..[frame K-1] <K>`, a frame being the entry's
+  standalone pushes, then its selector. The entry moves the frames to the alternate stack with a copy of the
+  constructor parameters each, reads the record vector (data record j's commitment, input master + 1 + j, for every
+  j < D), then runs the frames from frame 0 up to a sentinel, frame k on a stack holding that frame alone, the vector
+  and its context k under it on the alternate stack. A frame digests ordinal `max(k, 0)`, takes its fixed entries
+  `__internal__rowEntryShift` inputs past their slots, and, when it touches records, holds the vector as views (in a
+  batch the items, standalone its records' commitments and 0 for the rest): its reads decode them, a rebuilt record
+  replaces its view, and its input pins run at master + 1 + j in a batch. In a batch it skips its record outputs, the
+  collection, data-record and C3 counts and the outside-block pins, then hands back the views and `pinned - 2`, a void
+  frame pinning `digest || 0x01`; standalone it settles its records as before and a void run pins none. The entry
+  requires -1 from each frame, pins the vector's final items at outputs master + 1 + j, counts K records and holds the
+  own-category mutable outputs to the inputs: each sits at such an input's index, and every such input comes back at
+  its own index unchanged, a record of the band with its item (before 2026-10-24 it walked the inputs only, so an extra
+  data record or mapping node beside a batch of entry readers passed). Ordinary dispatch pushes context -1, which keeps
+  a standalone run as it was (its shift must be 0). The entry is left out, with a warning and `callBatch:
+  false`, when the contract with it would not leave a tenth of the per-input limit (at most 10,000 bytes). Message-bus
+  compiles carry none: the bus runs repeated calls as rows, and the conventions stay separate: a direct caller is
+  never turned into a bus composition. Callers that lay ordinals other than 0, their void and state-changing calls
+  among them: section 4.
 
 ## 4. The caller
 
@@ -80,21 +90,33 @@ A direct return carrier becomes a call record (as built):
 - Conditional calls: an untaken call reads nothing. A taken one is bound like any other.
 - Identical readonly reads share the one run and its one record; the SDK lays one carrier for both.
 - Arguments are digested from copies of the call's argument expressions, so no final use is consumed.
+- A call naming fewer arguments than its method digests (`IFoo(a).f()` for `f(pubkey, sig)`) leaves them to the
+  callee's own witness: it reads its record with no digest check, bound by the carrier's category and the callee's
+  run, and is no frame of a multi-call spend (before 2026-10-24 its compile threw in `cloneNode`). The arguments it
+  names are checked against the callee's unlocking pushes, as are a void call's (`0b94c0f13`, security ledger).
 - Repeated calls (phase 2, as built, direct compiles only): an entry that calls one fixed target (a parameter, a state
   variable or a literal, keyed with the interface) several times, or once in a loop, gives each call the ordinal of
-  its frame in that callee's one multi-call spend, published as `callOrdinal: { group, ordinal }` on the external call.
-  Straight-line calls take 0, 1, .. in source order; a group with a looped or conditional call is
-  `{ group, counted: true }`: a counter starts at 0 at entry, a call digests its value once its arguments have run (a
-  call an argument makes takes the earlier ordinal) and advances it after its read. A zero-argument readonly alias
-  takes the first one's ordinal and record (constant groups only). Each call of a group checks no selector on the
-  callee's input (`needsSelectorVerification: false`): its record's digest binds the method, and that input runs the
-  multi-call entry. A counted call in a loop, which has no epilogue, checks its callee's identity at its master index
-  and its record's carrier form where it runs, and reads the record at its return index plus its ordinal. Only calls
-  declared view or pure, returning values, regular, value-free and to a fixed method form groups; any other repeated
-  callee stays refused (`MESSAGE_BUS_REQUIRED`, worded after the multi-call entry's limits). A multi-contract compile
-  (`compileStringMulti`, `compileFileMulti`) gives a contract implementing a grouped call's interface (named as a base,
-  or declaring its methods) the multi-call entry unless `callBatch` is stated. Computed, array and pointer targets keep
-  ordinal 0. Test: `packages/solidc/test/DirectCallOrdinals.test.ts`.
+  its frame in that callee's one multi-call spend, published as `callOrdinal: { group, ordinal }` on the external
+  call. Straight-line calls take 0, 1, .. in execution order (`sourceEffectOrdinal`); a group with a looped or
+  conditional call is `{ group, counted: true }`: a counter starts at 0 at entry, a call digests its value once its
+  arguments have run (a call an argument makes takes the earlier ordinal) and advances it after its read. A
+  zero-argument readonly alias takes the first one's ordinal and record (constant groups only). Each call of a group
+  checks no selector on the callee's input (`needsSelectorVerification: false`): its record's digest binds the method,
+  and that input runs the multi-call entry. A counted call in a loop, which has no epilogue, checks its callee's
+  identity at its master index and its record's carrier form where it runs, and reads the record at its return index
+  plus its ordinal. Calls that are regular, value-free, to one fixed method and name every argument their records
+  digest form groups, readonly or state-changing, returning or void (phase 4). A void call of a group takes a return
+  witness of its own and requires its record to be `digest || 0x01`, the inline form of an empty result; in a loop it
+  checks the callee and the carrier where it runs, otherwise the epilogue checks the carrier. A lone void call outside
+  a loop keeps its standalone spend and its bytes. Any other repeated callee stays refused (`MESSAGE_BUS_REQUIRED`,
+  worded after the multi-call entry's limits). A looped call to a fixed target repeats its callee too, so it is a
+  counted group of one; a looped call that reads a result and gets no ordinal, because it can be no frame or its target
+  is computed, is refused (`76d31b1ce`, `08d816ded`; before, it compiled, and every iteration after the first read a
+  record its callee never pinned). A looped void call compiled unbound before phase 4 (1,206 B for one `add(i)` loop);
+  it reads its frames' records now (1,424 B).
+  A multi-contract compile (`compileStringMulti`, `compileFileMulti`) gives a contract implementing a grouped call's
+  interface (named as a base, or declaring its methods) the multi-call entry unless `callBatch` is stated.
+  Computed, array and pointer targets keep ordinal 0. Test: `packages/solidc/test/DirectCallOrdinals.test.ts`.
 
 ## 5. Delegatecall, proxies and split facets
 
@@ -110,8 +132,8 @@ A direct return carrier becomes a call record (as built):
 - Framed: unchanged. It already binds `argsHash` and `result`.
 - Bus: unchanged. A route keeps its aggregate result carrier and pins no record; graph handlers read rows as before.
   Repeated returning calls go through the composer, which binds them per row.
-- With `messageBus: false` stated explicitly, repeated readonly calls run through the callee's multi-call entry
-  (section 4) and never build a bus batch; a repeated state-changing callee stays refused (`MESSAGE_BUS_REQUIRED`).
+- With `messageBus: false` stated explicitly, repeated calls run through the callee's multi-call entry (section 4)
+  and never build a bus batch; a repeated callee whose calls can be no frame stays refused (`MESSAGE_BUS_REQUIRED`).
   The automatic mode turns the bus on for such a function, as before.
 
 ## 7. SDK
@@ -122,6 +144,31 @@ A direct return carrier becomes a call record (as built):
 - Probes still yield the pinned commitment; `rawOfReturnRecord` unwraps it to the raw result, a hashed one by finding
   its preimage on the probe's recorded stacks (the sparse trace keeps no SHA256 step).
 - Readonly aliases resolve to the record of the physical call they share (`returnRecordGroupIndex`).
+- Direct multi-call (phase 3, as built, `src/stateful/direct-call-batch.ts`, test `DirectMultiCall.test.ts`): a direct
+  caller's `callOrdinal` group is expanded into its reached calls in execution order before the callee blocks are
+  assembled. A fixed group keeps its calls; a counted group resolves each loop's reached occurrences, their arguments
+  and its conditions from the published iteration domain (`_planExternalCallOccurrences`, with producer results
+  resolved first), and numbers them as the caller's counter does: by (anchor, iteration, `sourceEffectOrdinal`), a
+  looped call's anchor the first of the group's calls in its loop (`iterationDomain.sourceLoopId`), so two calls of
+  one loop body interleave. A call in nested loops (`nestedIterationDomains`) is refused for now, as are two looped
+  calls whose loops are not published. A group reaching two or more frames spends the callee master once: the first
+  call's group carries the batch block `[master, every data record, each frame's entries in frame order, one record
+  slot per frame]` and `Contract.createCallBatchUnlocker` with the frames in ordinal order, each frame's
+  `__internal__returnOutputIdx` its master input plus its record slot and its `__internal__rowEntryShift` its entries'
+  distance past their slots; a frame reading entries an earlier frame reads shares their inputs. Every other call of
+  the group is a member: it names the same master and reads its frame's record at the batch's first record plus its
+  ordinal (0 in a loop, which adds the counter), and lays no record. Frame k's record is `callRecordCommitment(result,
+  digest(fn, args, k))`. While every frame preserves state, the result comes from the frame's own probe. Once one
+  writes, frame k runs on the records the frames before it left, so the SDK runs the spend itself as a probe, its
+  master alone at input 0: each pin it fails names the value it expects, so it learns every frame's record, then the
+  records the entry leaves, which the batch block's data-record outputs carry (`DirectCallBatch.dataCommitments`). A
+  void frame's record is `digest || 0x01`; its entry's layout has no record slot, so its unit takes one past the
+  layout (`callBatchFrameLayout`). A group reaching a void call always runs as a multi-call spend, since a standalone
+  void run pins no record; a group reaching one returning call keeps the standalone spend with that call's own
+  arguments. In a group whose calls change state, a loop bound, condition or argument that reads one of the group's
+  own results is refused, since the frames are planned from standalone results. A callee without the entry is
+  refused, naming `callBatch: true` and the multi-contract compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
+  builds a bus batch (`buildRepeatedExternalBatch`), never reads through the composer, and is never promoted at send.
 
 ## 8. Cost and compatibility
 
@@ -130,6 +177,13 @@ A direct return carrier becomes a call record (as built):
 - Bytes: a digest and a compare per call site, the digest per callee run, and the completeness walk (a shared helper).
   The marketplace ladder is the size gate; contracts near the 10,000-byte limit, such as UniswapV2Factory, are the
   risk.
+- Compact layout (direct compiles, not `messageBus: true`): a selector dispatcher hands each entry `0 || selector`
+  on top, which a returning entry extends with its arguments (one shared append helper) and every other entry's
+  cleanup drops; the shared settlement hashes that preimage; the count reads each output's lock before its category.
+  A contract with the multi-call entry, a sole inlined entry or a fallback or receive dispatcher keeps the pushed
+  prefix, and a frame keeps the digest it takes at entry.
+  OZ BchNative (OzBchNativeInheritance) 9,623 -> 9,517 B, its honest `transferFrom` master input 10,093 -> 9,987 B;
+  message-bus compiles are byte-identical.
 - A result over 96 bytes takes the hashed form (it used to past 128).
 
 ## 9. Phases

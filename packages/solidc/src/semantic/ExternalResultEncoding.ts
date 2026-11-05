@@ -113,6 +113,13 @@ export const CALL_RECORD_DIGEST_BYTES = 31;
 export const CALL_RECORD_INLINE_RESULT_BYTES = 128 - CALL_RECORD_DIGEST_BYTES - 1;
 
 /**
+ * True when a call names every argument its method's record digests (all but a `sig`). A call naming fewer, such
+ * as `IFoo(addr).f()` for `f(pubkey, sig)`, leaves them to the callee's own witness, so it has no digest to check.
+ */
+export const namesCallRecordArguments = (parameterTypes: readonly Type[], argumentCount: number): boolean =>
+  parameterTypes.every((type, index) => type === PrimitiveType.SIG || index < argumentCount);
+
+/**
  * A result a call record may carry only as its SHA256, so the caller takes the bytes from a preimage witness: one
  * whose encoding may exceed the record's inline capacity.
  */

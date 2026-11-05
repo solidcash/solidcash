@@ -14,7 +14,7 @@ import type { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { createSighashPreimage, randomUtxo } from '../../src/utils.js';
 import {
   createBareP2pkhFeeFunder, createFeeFunder, createTestProvider, expectScriptRejection, mintTestOraclePool,
-  setupStatefulUtxos, TEST_ORACLE_POOL_KEY,
+  TEST_ORACLE_POOL_KEY,
 } from '../test-util.js';
 import { bobAddress } from '../fixture/vars.js';
 
@@ -123,10 +123,13 @@ describe('a pool info coin keeps its value', () => {
   it('an SDK read recreates the coin at its full value', async () => {
     const o = await owned();
     const value = (await liveCoin(o)).utxo.satoshis;
-    // Every block.* reader is stateful, so the read is a call on its deployed state.
-    const { categoryId } = await setupStatefulUtxos(o.provider, o.contract, o.contract.artifact.stateLayout!, {});
-    const reader = StatefulContract.withCategory(o.contract, categoryId);
-    const tx = await (reader as any).readBack(o.n0, T0).send();
+    const utxo = await o.provider.addUtxo(o.contract.address, randomUtxo({ satoshis: 100_000n }));
+    const feeFunder = await createFeeFunder(o.provider, 20_000n);
+    const tx = await new TransactionBuilder({ provider: o.provider })
+      .addInput(utxo, o.contract.unlock.readBack(o.n0, T0))
+      .addInput(feeFunder.utxo, feeFunder.unlocker)
+      .addOutput({ to: o.contract.address, amount: 110_000n })
+      .send();
     const after = await liveCoin(o);
     expect(after.utxo.txid).toBe(tx.txid);
     expect(after.utxo.satoshis).toBe(value);

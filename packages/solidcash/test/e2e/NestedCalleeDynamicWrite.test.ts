@@ -207,15 +207,12 @@ describe('a callee that writes dynamic state', () => {
     expect((await root.sc.getState()).last).toBe(7n);
   });
 
-  it('places the run past a block that updates an entry', async () => {
+  it('refuses by name a run beside a block that updates an entry', async () => {
     const provider = createTestProvider();
     const writer = await deploy(provider, ENTRY_WRITER, [], { message: '' });
     const root = await deploy(provider, ENTRY_ROOT, [writer.lock], { runs: 0n }, { IWriter: writer.sc });
     await writer.sc.set(text(60), alicePkh, 1n).send();
 
-    await root.sc.run(text(121), alicePkh, 2n).send();
-
-    expect((await writer.sc.getState()).message).toBe(text(121));
-    expect((await root.sc.getState()).runs).toBe(1n);
+    await expect(root.sc.run(text(121), alicePkh, 2n).send()).rejects.toThrow(/beside the entry slot/);
   });
 });

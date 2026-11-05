@@ -80,13 +80,13 @@ export interface MaterializeExternalCallOutputsHost {
 
 /** Slots a direct callee's dynamic run can follow: its covenant places the run past the fixed block. */
 const RUN_FOLLOWS_SLOT_KINDS: ReadonlySet<string> = new Set([
-  'master', 'dataNft', 'entry', 'event', 'eventChunk', 'returnEvent',
+  'master', 'dataNft', 'event', 'eventChunk', 'returnEvent',
 ]);
 
 /** What keeps a direct callee's dynamic run from following its block; nothing when the run can follow it. */
 function directRunBlocker(group: ExternalCallUtxoGroup, layout: FunctionBlockLayout): string | undefined {
   const slot = layout.slots.find(({ kind }) => !RUN_FOLLOWS_SLOT_KINDS.has(kind));
-  if (slot !== undefined) return `a ${slot.kind} slot`;
+  if (slot !== undefined) return `the ${slot.kind} slot`;
   if ((group.plannedEntryInserts?.length ?? 0) > 0) return "a sorted insert's trailing outputs";
   return (group.valueChunkOutputCount ?? 0) > 0 ? 'mapping value chunks' : undefined;
 }

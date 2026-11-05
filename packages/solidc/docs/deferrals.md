@@ -3363,3 +3363,18 @@ callee's digest over its calldata to match; edge tags in the nested-proxy and la
 return probe's transaction.
 
 **Revisit if:** a port's raw call into a `msg.sender` reader is refused at the callee's edge check.
+
+## A direct callee's dynamic write beside an entry update (2026-11-05)
+
+**Deferred:** a direct callee whose run updates a mapping entry and writes dynamic state is refused by name (`... beside
+the entry slot`), as are one with a sorted insert and one with mapping value chunks. A leaf writer whose run grows,
+followed by another callee block, is refused at its caller's record pin, and sorted inserts in a callee beside a dynamic
+write are untested. All of them fail closed.
+
+**Why deferred:** a run can follow the block, as it does past events and records, but with an entry beside it the caller's
+input fails on its call record: the trial placed the callee's learned data commitment on the record slot.
+
+**What it'd take:** the trace-learned outputs of such a callee sited past its entry slot, then a loop of input pads for a
+run that outgrows the inputs behind it.
+
+**Revisit if:** a port's callee writes a mapping and a string in one call and meets this refusal.

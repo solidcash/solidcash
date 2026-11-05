@@ -98,29 +98,31 @@ interface CapacityReading {
 // route argument and binder, and 580 units on its verifier.
 // Again when the call-record settlement became one shared helper (18860c4fd): the sink's input is 28 B (kernel) and
 // 20 B (legacy) smaller and about 1,500-1,900 units cheaper.
+// Again on the 2026-11-05 landing: filler locks, void records and compat edges add 191 B (kernel) and 189 B (legacy)
+// and about 2,000 units across the two participant inputs. Every budget still holds.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_144, callManifestBytes: 294,
+    transactionBytes: 24_335, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      420_568, 385_860, 695, 957_089, 817_981, 27_321,
+      421_783, 386_612, 695, 957_089, 817_981, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_416_000, 1_892_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_512_800, 1_948_000, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_635, callManifestBytes: 294,
+    transactionBytes: 24_824, callManifestBytes: 294,
     worstOperationCost: 2_373_927, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.3281442828707287,
     inputOperationCosts: [
-      413_098, 410_617, 695, 2_373_927, 1_864_134, 27_321,
+      414_309, 411_369, 695, 2_373_927, 1_864_134, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_348_800, 2_352_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_444_000, 2_408_000, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

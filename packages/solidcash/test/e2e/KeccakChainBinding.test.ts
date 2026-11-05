@@ -273,9 +273,10 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
         require(keccak256(x) == h);
     }
 }`, {});
-    // sha256(bytecode) of this tree without KCHAIN-1 (at 94e27413c, the C3 pin folded into the count).
-    expect(sha(fixed.bytecode)).toBe('e568a8a8faa78187bf8b82b028a6aae15fb616e3fdd290c05869eac8ff3aed45');
-    expect(sha(stateless.bytecode)).toBe('7f8057ef1e74a7ce3791b7d522fe3542c50240b292197ae7fabe47d57b98e85e');
+    // sha256(bytecode) of this tree without KCHAIN-1 (the C3 pin folded into the count), re-pinned on the 2026-11-05
+    // landing: void records and the missing side-car guard (66fb63b0f) moved both, KCHAIN-1 neither.
+    expect(sha(fixed.bytecode)).toBe('e30609d8af94229a691e7d010579adf16c59f7259eca44b1e1415fbf4b4dc291');
+    expect(sha(stateless.bytecode)).toBe('e30a54a5970cdcaea7418be514a369be94327face98780ba8d69a95ebc7d04c7');
     expect(ARTIFACT.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(true);
   });
 });

@@ -159,7 +159,8 @@ export async function allocateCreateBuilderFunders(
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
       || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
-      || dynamicChunkInputs.length > 0
+      // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
+      || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true

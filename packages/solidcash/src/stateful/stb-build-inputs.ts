@@ -50,6 +50,8 @@ export interface BuildInputsHost {
   lowLevelCallInputBase?: number;
   compilerRouteDelegateBlock: boolean;
   preserveBlockLayoutWidth: boolean;
+  /** A void entry whose call names no record: its returnEvent slot holds nothing, not even a spare funder. */
+  voidRecordSlotCompacted: boolean;
   externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   logicalIdentityUtxo?: UnlockableUtxo;
   loopEntriesBeforeDynamicChunks: boolean;
@@ -396,6 +398,7 @@ export function buildInputs(
         case 'transfer': case 'tcTransfer': case 'event': case 'eventChunk': case 'returnEvent': case 'callEdge': {
           // An output-only slot never evicts an input already placed there, such as a delegate band's own data NFT.
           if (positioned[slot.offset] !== undefined) break;
+          if (slot.kind === 'returnEvent' && host.voidRecordSlotCompacted) break;
           const f = funderPool.shift();
           if (f) positioned[slot.offset] = f;
           break;

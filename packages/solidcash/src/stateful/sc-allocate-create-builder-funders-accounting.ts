@@ -165,6 +165,11 @@ export async function allocateCreateBuilderFunders(
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
+    // Pre-record geometry: a funder this slot would take for another reason shifts every block behind it.
+    const entryFunction = abiFunction as AbiFunction | undefined;
+    builder.setVoidRecordSlotCompacted((entryFunction?.outputs?.length ?? 0) === 0
+      && entryFunction?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true
+      && returnEmitOutputIndex < 0 && !trailingGeometryNeedsReturnSlot && !overrides?.omitLocalFeeTail);
     let neededFunders = effectiveBlockLayout.slots.filter(
       (s) => outputOnlyKinds.has(s.kind)
         // An atomic participant is assembled against its published fixed-width block. Even when this

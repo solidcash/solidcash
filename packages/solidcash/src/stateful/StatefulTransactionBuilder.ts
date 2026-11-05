@@ -897,6 +897,7 @@ export class StatefulTransactionBuilder {
   private lowLevelCallInputBase?: number;
   private compilerRouteDelegateBlock: boolean;
   private preserveBlockLayoutWidth: boolean;
+  private voidRecordSlotCompacted = false;
   private loopEntriesBeforeDynamicChunks: boolean;
   private iterationEntryInputs: UnlockableUtxo[];
   private iterationEntriesPlacedAtDelegateBase = false;
@@ -2916,6 +2917,7 @@ export class StatefulTransactionBuilder {
       get lowLevelCallInputBase() { return self.lowLevelCallInputBase; },
       get compilerRouteDelegateBlock() { return self.compilerRouteDelegateBlock; },
       get preserveBlockLayoutWidth() { return self.preserveBlockLayoutWidth; },
+      get voidRecordSlotCompacted() { return self.voidRecordSlotCompacted; },
       get externalIdentityAnchorUtxos() { return self.externalIdentityAnchorUtxos; },
       get logicalIdentityUtxo() { return self.logicalIdentityUtxo; },
       get loopEntriesBeforeDynamicChunks() { return self.loopEntriesBeforeDynamicChunks; },
@@ -3850,6 +3852,11 @@ export class StatefulTransactionBuilder {
   /** Keep async-planned disposable inputs out of layout until a dynamic band actually needs them. */
   setRelocationFunderUtxos(funders: UnlockableUtxo[]): void {
     this.relocationFunderUtxos = [...funders];
+  }
+
+  /** A void entry's call names no record: input assembly leaves its returnEvent slot empty. */
+  setVoidRecordSlotCompacted(compacted: boolean): void {
+    this.voidRecordSlotCompacted = compacted;
   }
 
   /** Neutral pads the legacy delegate insert band can take; see `insertBandPadDemand`. */

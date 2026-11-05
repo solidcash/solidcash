@@ -150,6 +150,12 @@ describe('cross-contract msg.sender-keyed vmap mapping (callee bal[msg.sender], 
     expect(callerA.lockingBytecode).not.toBe(callerB.lockingBytecode);
     forged.inputs[inputA] = donor.inputs[inputB];
     forged.outputs[outputA] = donor.outputs[outputB];
+    // The caller's edge record is minted under its master, so the swap carries it too: a leftover A record is refused
+    // by the token rules before any script runs.
+    const edgeOf = (transaction: typeof forged): number => transaction.outputs.findIndex((output) =>
+      binToHex(output.lockingBytecode) === '5161');
+    expect(edgeOf(forged)).toBeGreaterThanOrEqual(0);
+    forged.outputs[edgeOf(forged)] = donor.outputs[edgeOf(donor)];
     expect(encodeTransaction(forged).length).toBe(hexToBin(rawA).length);
 
     // The mock reports the verbose form naming the failing input and opcode; BCHN reports a short form naming

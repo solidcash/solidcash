@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import {
   getContractFactory,
@@ -65,9 +66,8 @@ describe('nested approve insert', () => {
       logicalCaller,
       logicalCaller,
     )).toBe((1n << 256n) - 1n);
-    expect(await token.state.allowance(
-      caller.proxy.inner.lockingBytecode,
-      caller.proxy.inner.lockingBytecode,
-    )).toBe(0n);
+    // Bytes name this exact key: the getter reads a hex string through the deployment's address aliases.
+    const physicalCaller = hexToBin(caller.proxy.inner.lockingBytecode);
+    expect(await token.state.allowance(physicalCaller, physicalCaller)).toBe(0n);
   }, 180_000);
 });

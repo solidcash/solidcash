@@ -24,7 +24,11 @@ import { addressToLockScript, calculateDust, scriptToLockingBytecode } from '../
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { selectBalancedEntryOutputIdentity } from './collection-lock-strip.js';
 import { stateUpdatesTouchNft } from './early-value-chunk-helpers.js';
-import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import {
+  calleeWitnessesDynamicRun,
+  type EntryNftInfo,
+  type ExternalCallUtxoGroup,
+} from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { cloneToken } from './stb-output-utils.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
@@ -54,6 +58,7 @@ export interface MaterializeExternalCallOutputsHost {
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly pendingReturnEventOutputs: readonly PendingReturnEventLike[];
   readonly categoryId: string;
+  readonly composedParticipant: boolean;
   readonly builderOptions: TransactionBuilderOptions;
   readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
@@ -84,6 +89,7 @@ export function materializeExternalCallOutputs(
   addReturnOutput: (builder: TransactionBuilder, identity: string, output: Output) => void,
   appendDelegateGroupOutputs: (groupIndex: number) => void,
   deferredDelegateReturnEvents: PendingReturnEventLike[],
+  deferredCalleeDynamicChunks: Output[],
   debugOwnMutableOutputs: (stage: string) => void,
 ): Set<number> {
 // Create external call outputs (B's master preserved + B's data NFTs with updated state)
@@ -209,6 +215,10 @@ export function materializeExternalCallOutputs(
         output.amount = BigInt(Math.max(1200, calculateDust(output)));
         externalDynamicChunks.push(output);
       }
+    }
+    // A witnessed run goes past every input-bound output, so a following block keeps its master's coordinate.
+    if (!host.composedParticipant && calleeWitnessesDynamicRun(group)) {
+      deferredCalleeDynamicChunks.push(...externalDynamicChunks.splice(0));
     }
 
     const displacedRouteStateOutputs: Output[] = [];

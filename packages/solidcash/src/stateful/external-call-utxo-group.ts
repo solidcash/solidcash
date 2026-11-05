@@ -440,6 +440,22 @@ export interface ExternalCallUtxoGroup {
 }
 
 /**
+ * Whether an ordinary callee's unlocker publishes its dynamic run's output coordinate. The covenant then follows the
+ * witness, so the run need not follow the callee's block.
+ */
+export function calleeWitnessesDynamicRun(group: ExternalCallUtxoGroup): boolean {
+  return group.compilerRoute === undefined && group.callBatch === undefined
+    && group.delegateCallGroupIndex === undefined
+    && group.internalArgNames?.includes('__internal__dynamicChunkOutputBase') === true;
+}
+
+/** Outputs a callee block spans up to the next one, whose master keeps its input index past the old chunks. */
+export function calleeOutputSpan(group: ExternalCallUtxoGroup): number {
+  return (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
+    + (group.ordinaryDynamicChunkInputs?.length ?? 0);
+}
+
+/**
  * A callee's loop entry inputs. Each is replaced in the run the callee's covenant pins, which a compacted record
  * moves off its input coordinate, so none is ever mirrored at its own index.
  */

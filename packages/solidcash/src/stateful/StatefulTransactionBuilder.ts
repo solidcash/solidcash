@@ -763,6 +763,7 @@ import {
   type RuntimeLoopTransferOutput,
   type ExternalCallUtxoGroup,
   calleeLoopEntryInputs,
+  calleeOutputSpan,
   calleePinsNoRecord,
 } from './external-call-utxo-group.js';
 
@@ -1915,6 +1916,7 @@ export class StatefulTransactionBuilder {
       derivedChunkOutputs: this.derivedChunkOutputs,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       categoryId: this.categoryId,
+      composedParticipant: this.composedParticipant,
       builderOptions: this.builderOptions,
       messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
@@ -6542,8 +6544,7 @@ export class StatefulTransactionBuilder {
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
       if (g.sharedGroupIndex !== undefined) continue;
-      // Use full block size when available
-      base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      base += calleeOutputSpan(g);
       // A proxied participant's implementation output follows that participant block in both the legacy and
       // compiler-route layouts. Compiler routes move the implementation INPUT into a leading band, but their
       // outputs remain interleaved; omitting it makes every later participant output base one slot too low.

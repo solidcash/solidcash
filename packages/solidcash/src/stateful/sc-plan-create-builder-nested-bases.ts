@@ -5,7 +5,7 @@
 import type { AbiFunction, FunctionBlockLayout } from '@solidcash/utils';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleeOutputSpan, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 
 export type PlanCreateBuilderNestedBasesResult = {
@@ -148,9 +148,8 @@ export function planCreateBuilderNestedBases(params: {
       ...utxo,
       unlocker: createDataNftUnlocker(child.externalContract.inner, childMasterIndex, child.categoryId),
     }));
-    const childBlockInputCount = child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
-    nestedInputBase += childBlockInputCount + (child.ordinaryDynamicChunkInputs?.length ?? 0);
-    nestedOutputBase += childBlockInputCount;
+    nestedInputBase += calleeOutputSpan(child);
+    nestedOutputBase += calleeOutputSpan(child);
     // Legacy layouts interleave each proxy's implementation. A compiler route has already included the
     // complete implementation band in nestedInputBase, while outputs remain interleaved.
     if (child.delegateCallGroupIndex !== undefined && !child.delegateEmbeddedInBlock) {
@@ -175,8 +174,7 @@ export function planCreateBuilderNestedBases(params: {
   // after the real 0x51 / tag-string returns.
   const delegatedCallerReturnCount = (legacyRouteDelegateFn?.outputs?.length ?? 0) > 0 ? 1 : 0;
   const externalGroupOutputCount = externalCallUtxoGroups.reduce(
-    (sum, g) => g.sharedGroupIndex === undefined
-      ? sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length) : sum, 0,
+    (sum, g) => g.sharedGroupIndex === undefined ? sum + calleeOutputSpan(g) : sum, 0,
   );
   const associatedDelegateGroups = new Set(externalCallUtxoGroups
     .map((group) => group.delegateCallGroupIndex)

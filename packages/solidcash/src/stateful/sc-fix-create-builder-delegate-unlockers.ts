@@ -858,7 +858,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           return -1n;
         }
         // F1: -1 names no edge; appendCallerEdges fills the index on the final builder.
-        if (/^__internal__callEdgeOutputIdx\d+$/.test(inp.name)) return -1n;
+        if (/^__internal__(?:lowLevelC|c)allEdgeOutputIdx\d+$/.test(inp.name)) return -1n;
         throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
       });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

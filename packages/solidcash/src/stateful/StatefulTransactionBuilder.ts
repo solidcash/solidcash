@@ -6743,6 +6743,7 @@ export class StatefulTransactionBuilder {
     appendCallerEdges({
       categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, result);
     return result;
@@ -7434,6 +7435,7 @@ export class StatefulTransactionBuilder {
     appendCallerEdges({
       categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, finalBuilder);
 

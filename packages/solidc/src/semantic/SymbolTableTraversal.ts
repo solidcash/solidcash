@@ -5308,6 +5308,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
       && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
       && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
+      && this.compilerOptions.messageBusDirectParticipant !== true
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       voidRecordIdxParam.location = node.location;
@@ -5542,6 +5543,24 @@ export default class SymbolTableTraversal extends AstTraversal {
         // emitLowLevelCallVerification). Publish that target and the payload so the SDK can name the callee.
         if (this.compilerOptions.evmCompat && this.compilerOptions.composition !== 'framed') {
           this.publishLowLevelCallSources(node);
+        }
+
+        // F1: a compat call attests the call its pin binds. Held before the call-index witness, which stays last.
+        const attestsCalls = this.compilerOptions.evmCompat === true && this.isStatefulContract && node.isEntryPoint
+          && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
+          && this.compilerOptions.messageBusDirectParticipant !== true
+          && !node.lowLevelCalls.some((call) => call.callMode === 'delegatecall');
+        const silentCalls = this.lowLevelCallsWithEmptyPayload(node);
+        for (let i = 0; attestsCalls && i < lowLevelCallCount; i++) {
+          if (node.lowLevelCalls[i].occurrence !== 'once' || silentCalls.has(i)) continue;
+          const paramName = `__internal__lowLevelCallEdgeOutputIdx${i}`;
+          const param = new ParameterNode(PrimitiveType.BIGINT, paramName);
+          param.location = node.location;
+          param.syntheticallyUsed = true;
+          node.parameters.push(param);
+          this.symbolTables[0].set(Symbol.variable(param));
+          this.symbolTables[0].get(paramName)?.references.push({ name: paramName } as IdentifierNode);
+          this.pushToStack(param);
         }
 
         // Inject _callInputIndex for every non-delegatecall low-level call.
@@ -6464,6 +6483,26 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.elseBlock) count += this.countLowLevelCalls(node.elseBlock);
     }
     return count;
+  }
+
+  /** The call indices of the low-level sites that pass a literal empty payload: no callee runs at them. */
+  private lowLevelCallsWithEmptyPayload(node: FunctionDefinitionNode): Set<number> {
+    const silent = new Set<number>();
+    const walk = (value: unknown, seen: Set<object>): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if ((value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode)
+        && (value.data instanceof StringLiteralNode || value.data instanceof HexLiteralNode)
+        && value.data.value.length === 0) silent.add(value.callIndex);
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'type', 'definition', 'symbolTable', 'resolvedFunction', 'functionReference',
+          'referencedContract', 'sourceCallNode', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node) walk(child, seen);
+        else if (Array.isArray(child)) for (const item of child) walk(item, seen);
+      }
+    };
+    walk(node.body, new Set());
+    return silent;
   }
 
   /**
@@ -20059,26 +20098,31 @@ export default class SymbolTableTraversal extends AstTraversal {
   /**
    * F1: this outgoing external call carries a caller-attested edge record - a straight-line, unconditional, direct
    * call to a fixed method of a known interface. The caller pins an own-category edge record committing to the
-   * call's digest at this slot's `callEdge` output, so the callee can bind the caller to the call. Loop, conditional,
-   * pointer, runtime-selector, opaque, self, msg.sender-target and raw calls do not (fail closed: a callee that
-   * requires the edge refuses such a caller).
+   * call's digest at this slot's `callEdge` output, so the callee can bind the caller to the call. A raw call whose
+   * payload names its method attests too. Loop, conditional, pointer, runtime-selector, self, msg.sender-target and
+   * opaque-payload calls do not (fail closed: a callee that requires the edge refuses such a caller).
    */
   private externalCallSlotCarriesEdge(node: FunctionDefinitionNode, slot: ExternalCallSlot): boolean {
     // The edge is pinned in the caller's own minting category; a non-stateful contract has no such category, and
     // the presence-based msg.sender forgery F1 closes is a stateful-category construct. Non-stateful callers carry
     // no edge.
-    return this.isStatefulContract
-      && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
-      && slot.callRecordSelector !== undefined && this.interfaceMap.has(slot.interfaceName)
-      && slot.calleeMethod !== undefined && !slot.runtimeSelector && !slot.selectorArrayVar && !slot.opaqueReturn
-      && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations
-      && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender
-      && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
+    const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
+    // A raw call whose payload names its method attests through the callee pushes its compat binding reads.
+    const attestsRawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__' && node.isEntryPoint
+      && slot.rawSelector !== undefined && this.compilerOptions.messageBusDirectParticipant !== true
+      && (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL);
+    const attestsTypedCall = slot.callRecordSelector !== undefined && this.interfaceMap.has(slot.interfaceName)
+      && slot.calleeMethod !== undefined && !slot.opaqueReturn && callMode === ExternalCallMode.REGULAR
       // The caller can only attest a call whose arguments it names (and so digests). A call that leaves arguments
       // to the callee's witness (fewer than the method declares) cannot compute the edge digest, so it carries no
       // edge; a callee requiring one then fails closed (liveness), consistent with the other unbound shapes.
       && slot.sourceCallNode !== undefined
       && namesCallRecordArguments(slot.callRecordParameterTypes ?? [], slot.sourceCallNode.parameters.length);
+    return this.isStatefulContract && (attestsRawCall || attestsTypedCall)
+      && this.compilerOptions.composition !== 'framed' && !node.graphEmissionHandler && !node.messageBusRoute
+      && !slot.runtimeSelector && !slot.selectorArrayVar
+      && !slot.fnPtrCall && !slot.loopArrayVar && slot.loopIndexExpression === undefined && !slot.batchInvocations
+      && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender;
   }
 
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {

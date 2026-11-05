@@ -432,7 +432,7 @@ const CONDITIONAL_DELETE_ACTIVITY = '(conditional delete)';
  */
 type CompatWordKind = { kind: 'uint' | 'int' | 'address' | 'dynamic' } | { kind: 'bytes'; size: number };
 /** A Solidity-compat call payload's arguments: EVM words, or one SolidCash push per argument. */
-type CompatCallArguments = { format: 'evm'; words: CompatWordKind[] } | { format: 'pushdata'; count: number };
+type CompatCallArguments = { format: 'evm'; words: CompatWordKind[] } | { format: 'pushdata'; numeric: boolean[] };
 
 /** The secp256k1 group order; the EVM's `ecrecover` refuses an `r` or `s` outside [1, n). */
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
@@ -26816,6 +26816,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // callee is absent and the binding below is skipped.
       const data = node.parameters[0];
       const binding = this.compatCallArguments(data, locationData);
+      const edge = this.compatCallEdgeWitness(data, `__internal__callEdgeOutputIdx${physicalSlot.slotIndex}`);
       this.visit(data);
       this.popFromStack();                                   // [.., payload] (untracked)
       // The binding reads the co-spent callee's script and unlocking bytecode. A negative master index states a
@@ -26826,7 +26827,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
       this.emit(Op.OP_IF, locationData);                     // [.., payload]
       this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., payload, idx]
-      this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [.., payload, idx] -> [..]
+      this.emitCompatCalleeSelectorAndArgs(binding, edge, locationData); // [.., payload, idx] -> [..]
       this.emit(Op.OP_ELSE, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.emit(Op.OP_ENDIF, locationData);
@@ -26846,6 +26847,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // STT injected this slot's edge witness (externalCallSlotCarriesEdge), keeping STT and GTT in lockstep. A
     // delegate function's own-category outputs belong to the proxy block and are not edge carriers.
     if (batchRow === undefined && physicalSlot && node.callInfo && !this.functionHasDelegatecall
+      && physicalSlot.interfaceName !== '__raw__'
       && this.getStackIndex(`__internal__callEdgeOutputIdx${node.callInfo.externalCallSlotIndex}`, true) >= 0) {
       this.emitCallerEdgeRecord(node, physicalSlot, locationData);
     }
@@ -28464,7 +28466,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
     if (this.compilerOptions.evmCompat && target !== undefined && !this.framedMaster
       && !this.isEmptyLiteralPayload(data) && this.getStackIndex(callInputParam, true) >= 0) {
-      this.emitCompatLowLevelCallPin(data, target, callInputParam, locationData);
+      this.emitCompatLowLevelCallPin(data, target, callInputParam, callIndex, locationData);
       return;
     }
     // Visit the target and the payload FIRST while the tracked stack is in a known
@@ -28565,9 +28567,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     data: ExpressionNode,
     target: ExpressionNode,
     callInputParam: string,
+    callIndex: number,
     locationData: SingleLocationData,
   ): void {
     const binding = this.compatCallArguments(data, locationData);
+    const edge = this.compatCallEdgeWitness(data, `__internal__lowLevelCallEdgeOutputIdx${callIndex}`);
     // Evaluate both expressions while the tracked stack is exact, then leave them untracked on the real stack.
     this.visit(data);
     this.visit(target);
@@ -28581,15 +28585,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROT, locationData);                      // [data, idx, lbc, target]
     this.emitCompatTargetIdentity(locationData);             // [data, idx]
     // 2+3. Function and arguments against the co-spent callee at idx.
-    this.emitCompatCalleeSelectorAndArgs(binding, locationData); // [data, idx] -> []
+    this.emitCompatCalleeSelectorAndArgs(binding, edge, locationData); // [data, idx] -> []
     this.emit(Op.OP_0, locationData);                        // dummy remainder
+  }
+
+  /** The witness of the edge a compat call attests: a payload it can read names the method its pushes digest. */
+  private compatCallEdgeWitness(data: ExpressionNode, witness: string): string | undefined {
+    return this.isVisibleCompatEncodePayload(data) && this.getStackIndex(witness, true) >= 0 ? witness : undefined;
   }
 
   /**
    * [.., data, idx] -> [..]: a push4-led callee unlocking at input `idx` must dispatch the payload's selector, then
    * emitCompatCallArgumentBinding binds the visible arguments.
    */
-  private emitCompatCalleeSelectorAndArgs(binding: CompatCallArguments | undefined, loc: SingleLocationData): void {
+  private emitCompatCalleeSelectorAndArgs(
+    binding: CompatCallArguments | undefined, edge: string | undefined, loc: SingleLocationData,
+  ): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_INPUTBYTECODE, loc);                     // [data, idx, ubc]
     this.emit(encodeInt(1n), loc);
@@ -28611,11 +28622,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);                              // [data, idx]
     this.emit(Op.OP_ENDIF, loc);
     if (binding) {
-      this.emitCompatCallArgumentBinding(binding, loc);      // [data, idx] -> [data]
+      this.emitCompatCallArgumentBinding(binding, edge, loc); // [data, idx] -> [data]
       this.emit(Op.OP_DROP, loc);                            // [..]
     } else {
+      if (edge !== undefined) this.emitCompatCallEdge(1, [], edge, loc);
       this.emit(Op.OP_2DROP, loc);                           // [..]
     }
+  }
+
+  /**
+   * F1 for a compat call: pins this contract's edge record over the method `data` names and the callee's bound pushes,
+   * as the callee digests its own run. `data` sits `dataDepth` from the top, argument i at i. Stack-neutral.
+   */
+  private emitCompatCallEdge(
+    dataDepth: number, numeric: readonly boolean[], edge: string, loc: SingleLocationData,
+  ): void {
+    this.emit(encodeInt(BigInt(dataDepth)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                              // [.., selector]
+    this.emit(new Uint8Array(2), loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_CAT, loc);                               // [.., preimage]
+    numeric.forEach((isNumeric, index) => {
+      this.emit(encodeInt(BigInt(index + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      if (isNumeric) this.emit(Op.OP_BIN2NUM, loc);
+      this.emitCallRecordArgumentInline(loc);                // [.., preimage']
+    });
+    this.emitCallRecordDigestOfPreimage(loc);
+    this.emit(new Uint8Array([CALL_EDGE_FORM]), loc);
+    this.emit(Op.OP_CAT, loc);                               // [.., record]
+    this.emitPickTrackedFromBottom(edge, loc);
+    this.emitEdgeCarrierPin(loc);                            // [..]
   }
 
   /**
@@ -28668,7 +28708,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           refuse(`argument ${index} ('${type}') is encoded without a push frame, so it is no single unlocking push`);
         }
       });
-      return { format: 'pushdata', count: payload.parameters.length };
+      return {
+        format: 'pushdata', numeric: payload.parameters.map((parameter) => this.isNumericCallRecordType(parameter.type)),
+      };
     }
     return {
       format: 'evm',
@@ -28751,8 +28793,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * decodes to exactly the callee's push, a string/bytes offset word to the value of the tail it names; a pushdata
    * argument matches it byte for byte. [data, idx] -> [data]
    */
-  private emitCompatCallArgumentBinding(binding: CompatCallArguments, loc: SingleLocationData): void {
-    const count = binding.format === 'evm' ? binding.words.length : binding.count;
+  private emitCompatCallArgumentBinding(
+    binding: CompatCallArguments, edge: string | undefined, loc: SingleLocationData,
+  ): void {
+    const count = binding.format === 'evm' ? binding.words.length : binding.numeric.length;
     // [.., word] -> [.., n]: a big-endian word as a minimal unsigned VM number.
     const wordToUint = (): void => {
       this.emit(Op.OP_REVERSEBYTES, loc);
@@ -28791,6 +28835,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_DROP, loc);                              // [data, a(n-1) .. a0, redeem]
     this.emitRedeemPadRefusal(loc);                          // [data, a(n-1) .. a0]
+    if (edge !== undefined) {
+      this.emitCompatCallEdge(count, binding.format === 'pushdata' ? binding.numeric
+        : binding.words.map((word) => word.kind === 'uint' || word.kind === 'int'), edge, loc);
+    }
     this.emit(encodeInt(BigInt(count)), loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(encodeInt(4n), loc);
@@ -54508,7 +54556,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...node.parameters.map((parameter) => parameter.name)
         // F1 caller-edge records are own-category immutable NFTs the caller pins at a witnessed appended index, so
         // the census admits exactly that index just as it admits a witnessed return carrier.
-        .filter((name) => /^__internal__(externalReturnOutputIdx|callEdgeOutputIdx)\d*$/.test(name)),
+        .filter((name) => /^__internal__(externalReturnOutputIdx|callEdgeOutputIdx|lowLevelCallEdgeOutputIdx)\d*$/
+          .test(name)),
     ].filter((name, index, all) => all.indexOf(name) === index
       && this.getStackIndex(name, true) >= 0);
     for (const returnWitness of returnWitnesses) {

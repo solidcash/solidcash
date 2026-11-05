@@ -136,6 +136,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     functionArgs: callInfo.compilerRoute?.args ?? callInfo.args,
     externalContract: callInfo.contract,
     callMode,
+    ...(callMode !== 'delegatecall' && { edgeLowLevelCallIndex: callIndex }),
     ...(callInfo.compilerRoute && { compilerRoute: callInfo.compilerRoute }),
     ...((callInfo.compilerRoute?.abiFunction.blockLayout
     ?? (callInfo.contract.inner.artifact.abi as readonly AbiFunction[])

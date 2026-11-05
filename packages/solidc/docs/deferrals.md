@@ -3345,3 +3345,21 @@ it from the info coin the transaction co-spends. The evaluator is synchronous an
 belongs in the caller state snapshot taken before the arguments resolve.
 
 **Revisit if:** a port's call argument reads the chain; `MasterChefDeposit` pins the refusal and flips when this lands.
+
+
+## A compat call that cannot attest its edge (2026-11-05)
+
+**Deferred:** a callee reading a contract `msg.sender` requires its caller's edge record (F1). A Solidity-compat call
+attests one only when it runs straight-line from an entry and its payload is a visible `abi.encode*` the covenant reads.
+An opaque `bytes` payload, a call in a loop or a branch, and a call a helper keeps behind `OP_INVOKE` carry none, so such
+a caller is refused at the callee's edge check. A nested proxy's delegated call and a late-discovered transitive call
+carry none either: the SDK tags only the root delegate's calls. A return probe of a raw call into a returning callee that
+reads `msg.sender` runs without the edge, so it reads as a failed call. All of them fail closed.
+
+**Why deferred:** the digest needs the method and the callee's argument pushes, which only the visible forms give.
+
+**What it'd take:** a per-iteration edge index for loops; a caller-side digest of an opaque payload's own bytes, with the
+callee's digest over its calldata to match; edge tags in the nested-proxy and late-transitive planners, and an edge in the
+return probe's transaction.
+
+**Revisit if:** a port's raw call into a `msg.sender` reader is refused at the callee's edge check.

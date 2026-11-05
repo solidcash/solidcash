@@ -263,6 +263,10 @@ export interface ExternalCallUtxoGroup {
   /** F1: the external-call slot index, within the caller named by edgeParentIndex, that this call occupies - i.e.
    * which `__internal__callEdgeOutputIdx<slot>` witness on the caller the edge for this call is pinned at. */
   edgeEcSlot?: number;
+  /** F1: the low-level group whose delegated implementation makes this call and so holds its edge witness. */
+  edgeDelegateGroupIndex?: number;
+  /** F1: this low-level group answers call `i` of the entry, whose `__internal__lowLevelCallEdgeOutputIdx<i>` it fills. */
+  edgeLowLevelCallIndex?: number;
   /** One reached call of a direct multi-call (direct-call-batch.ts): the frame its record answers. */
   callBatchUnit?: DirectCallBatchUnit;
   /** The unit spending the callee master through its multi-call entry: the frames that spend runs. */
@@ -441,7 +445,9 @@ export interface ExternalCallUtxoGroup {
  */
 export function calleeLoopEntryInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
   return group.entryLoopStart === undefined ? [] : group.blockInputs?.slice(group.entryLoopStart) ?? [];
+}
 
+/**
  * A void callee settles the universal record only for a caller that reads one: any other run names none (witness -1),
  * so no carrier is planned and its reserved slot stays a balancing pad.
  */

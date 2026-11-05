@@ -15,7 +15,7 @@ import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust, scriptToLockingBytecode } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleeLoopEntryInputs, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
 import { cloneToken } from './stb-output-utils.js';
 import { permitsLegacyDelegateEventRepair } from './chunkable-value-write-selection.js';
@@ -171,14 +171,16 @@ export function repairNestedCalleeOutputs(
   const nestedCategories = new Set(
     host.externalCallUtxoGroups.map((group) => group.categoryId).filter((id): id is string => !!id),
   );
-  const consumedDynamicChunks = new Set(host.externalCallUtxoGroups.flatMap((group) => (
-    group.ordinaryDynamicChunkInputs ?? []
-  ).map((chunk) => `${chunk.utxo.txid.toLowerCase()}:${chunk.utxo.vout}`)));
+  const consumedResources = new Set(host.externalCallUtxoGroups.flatMap((group) => [
+    ...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo),
+    ...calleeLoopEntryInputs(group),
+  ]).map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
   for (let index = 0; index < host.allInputs.length; index++) {
     const input = host.allInputs[index];
-    // Dynamic writes consume the old chunk run and replace it with a potentially shorter new run. Mirroring
-    // an unmatched old chunk here creates an unauthenticated extra output at the same collection address.
-    if (consumedDynamicChunks.has(`${input.txid.toLowerCase()}:${input.vout}`)) continue;
+    // Dynamic writes consume the old chunk run and replace it with a potentially shorter new run, and a callee
+    // loop's entries are replaced in their own run. Mirroring an unmatched one here creates an unauthenticated
+    // extra output at the same collection address.
+    if (consumedResources.has(`${input.txid.toLowerCase()}:${input.vout}`)) continue;
     const category = input.token?.category;
     if (!category || input.token?.nft?.capability !== 'mutable' || !nestedCategories.has(category)) continue;
     const existing = builder.outputs[index];

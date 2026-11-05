@@ -436,6 +436,14 @@ export interface ExternalCallUtxoGroup {
 }
 
 /**
+ * A callee's loop entry inputs. Each is replaced in the run the callee's covenant pins, which a compacted record
+ * moves off its input coordinate, so none is ever mirrored at its own index.
+ */
+export function calleeLoopEntryInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
+  return group.entryLoopStart === undefined ? [] : group.blockInputs?.slice(group.entryLoopStart) ?? [];
+}
+
+/**
  * Whether the group's logical callee pins no call record. A raw low-level call's slot always declares returndata
  * (`bool success, bytes data`), so the *callee* ABI decides whether a record for it can exist. A void entry that
  * takes `__internal__returnOutputIdx` settles the universal void record (fix B); any other void entry pins no

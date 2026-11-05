@@ -762,6 +762,7 @@ import {
   type TokenContainerTransferNftData,
   type RuntimeLoopTransferOutput,
   type ExternalCallUtxoGroup,
+  calleeLoopEntryInputs,
   calleePinsNoRecord,
 } from './external-call-utxo-group.js';
 
@@ -1269,8 +1270,10 @@ export class StatefulTransactionBuilder {
   private _padOutputsToIndex(builder: TransactionBuilder, index: number): void {
     // A consumed storage input (a written value's old chunk, a reclaimed continuation chunk) is not copied: its
     // replacement goes in the trailing band, and a copy here is a second chunk the covenant's count refuses.
-    const consumed = new Set([...this.dynamicChunkInputs, ...this.trailingDisposalInputs]
-      .map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
+    const consumed = new Set([
+      ...this.dynamicChunkInputs, ...this.trailingDisposalInputs,
+      ...this.externalCallUtxoGroups.flatMap(calleeLoopEntryInputs),
+    ].map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
     while (builder.outputs.length < index) {
       const occupant = this.allInputs[builder.outputs.length];
       if (occupant?.unlocker && !consumed.has(`${occupant.txid.toLowerCase()}:${occupant.vout}`)) {

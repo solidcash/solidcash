@@ -650,7 +650,8 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         if (!namesNoRecord && ctx.bBlockInputs.length === physicalFixedSize && bReturnFunderOffset === reOffset
           && layoutDataSlots === bRequiredNftIndices.length) {
           ctx.bReturnEventInBlock = true;
-        } else {
+        } else if (!namesNoRecord || !bHasLoop) {
+          // Only outputs compact: a loop's entry inputs stay past the whole block, so its funder stays too.
           ctx.bBlockInputs.splice(bReturnFunderOffset, 1);
           if (!hadFullBlockKinds && !bHasLoop) ctx.bBlockInputs = undefined;
         }

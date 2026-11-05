@@ -631,6 +631,9 @@ export function materializeExternalCallOutputs(
           continue;
         }
 
+        // A record no one reads compacts: the slot's funder holds the loop entries' input coordinate only.
+        if (slot?.kind === 'returnEvent' && group.entryLoopStart !== undefined) continue;
+
         // Event slots: use auto-derived event NFT output or placeholder
         if (slot?.kind === 'event') {
           const eo = group.eventOutputs?.[eventIdx];

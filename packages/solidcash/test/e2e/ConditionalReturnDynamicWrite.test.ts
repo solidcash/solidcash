@@ -157,6 +157,7 @@ describe('dynamic write after a conditional returning call', () => {
       __internal__extcallMasterIdx1: -1n,
       __internal__extcallAnchorIdx0: -1n,
       __internal__extcallAnchorIdx1: -1n,
+      __internal__returnOutputIdx: -1n,
       __internal__externalReturnOutputIdx0: BigInt(firstReturn),
       __internal__externalReturnOutputIdx1: -1n,
       __internal__dynamicChunkOutputBase: BigInt(firstReturn + 1),

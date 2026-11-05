@@ -5841,7 +5841,7 @@ export class StatefulTransactionBuilder {
     // inactive slot and the padding pass below materializes it before the effect stream.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
     if (this.blockLayout?.trailingBase === undefined
-      && hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0
+      && hasReturnEventSlot && (this.pendingReturnEventOutputs.length === 0 || this._voidRecordSlotIsAbsent())
       && this.runtimeLoopEventOutputs.length === 0 && this.runtimeLoopTransferOutputs.length === 0) base -= 1;
     // build() preserves low-level-call UTXOs before the trailing dynamic region.
     // Delegate bytecode likewise anchors trailing storage after its own co-spent
@@ -5892,6 +5892,21 @@ export class StatefulTransactionBuilder {
       + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
       + this.runtimeLoopEventOutputs.length
       + this.runtimeLoopTransferOutputs.length;
+  }
+
+  /**
+   * Whether a direct void entry's return slot, its call record, is absent beside its callees' pending records: no
+   * record of its own runs and no funder holds the coordinate, so the first callee block starts there.
+   */
+  private _voidRecordSlotIsAbsent(): boolean {
+    const master = this.masterUtxo.unlocker;
+    if (!isContractUnlocker(master) || (master.abiFunction.outputs?.length ?? 0) > 0
+      || this.lowLevelCallUtxoGroups.length > 0 || this.externalOutStateUtxoGroups.length > 0) return false;
+    if ((returnOutputIdxFromUnlocker(master) ?? -1) >= 0
+      || this.pendingReturnEventOutputs.some(({ identity }) => !identity.startsWith('external-call:'))) return false;
+    const offset = this.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
+    const holder = offset === undefined ? undefined : this.allInputs[offset];
+    return !this.funderUtxos.some((funder) => funder.txid === holder?.txid && funder.vout === holder?.vout);
   }
 
   private _dynamicChunkOutputCount(): number {

@@ -98,12 +98,12 @@ compiler are:
 
 | script | artifact bytes | role |
 | --- | --: | --- |
-| `nusdt.scash` | 9,504 | master, token container, first-touch rows |
+| `nusdt.scash` | 9,508 | master, token container, first-touch rows |
 | `nusdt_facet.scash` | 9,286 | initialize, administration and deposit claims |
 | `nusdt_transfer_facet.scash` | 7,941 | transfer and transferFrom |
 | `nusdt_supply_facet.scash` | 8,984 | issue, redeem, destroyBlackFunds, blacklist and freeze |
 
-The four artifacts sum to **35,715 B**. The monolith remains above 10,000 B and unspendable.
+The four artifacts sum to **35,719 B**. The monolith remains above 10,000 B and unspendable.
 
 The master has no constructor: a constructor body ships in every spend of the script, so the one-shot `initialize`
 runs in `UsdtFacet` for the `initialOwner` the master pins. State order is a size decision too: the fields the reserve
@@ -140,7 +140,7 @@ this SDK preflight diagnostic:
 > compiler's script-size check passes can still be unspendable`
 
 Each additional facet costs the master one constructor argument, so the artifact figure alone is not a
-spendability proof. The current master is 9,504 B before those links. The mock admits larger inputs than mainnet, so
+spendability proof. The current master is 9,508 B before those links. The mock admits larger inputs than mainnet, so
 `NativeUsdt.test.ts` holds every spend it makes to the 10,000 B limit; the widest, `openSelf`, stands at about 9,930 B.
 
 The port's own size test asserts the artifact figure, which is the number that rots quietly. What actually

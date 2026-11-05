@@ -67,7 +67,9 @@ Fix: the record count takes in both carrier locks, and a run expects what it pin
 stack, so a skipped call adds nothing. Two pins may not name one output, since that would free a carrier for a forgery.
 A void run that settles no record counts at zero, a proxy path that reached no delegate does too, a delegate refuses an
 edge of its own category, a route refuses any edge of its category, and the callee reads an edge only under its lock.
-`AuditCallerEdgeForgery.test.ts` runs each shape on the VM.
+A route refuses in its output pass, which reaches each token through a short test: a count of its own priced a whole walk
+on each of the 500-odd pads a kernel block keeps, which put a one-row NFT transfer over the operation density limit.
+`AuditCallerEdgeForgery.test.ts` and `AuditCallerEdgeRoute.test.ts` run each shape on the VM.
 
 Residual: a proxy that does not pin its delegate co-spend keeps this hole with the rest of its state (C1). A framed
 master takes no such count: framed callers attest through their own records and pin no F1 edge, so a direct callee that

@@ -711,6 +711,8 @@ const needsOraclePool = (fn: FunctionDefinitionNode): boolean =>
   fn.usesBlockOracle === true || fn.usesBlockhash === true || fn.passesOraclePool === true;
 /** F1 caller-edge record form byte, appended to the call digest so the edge is distinct from a result record. */
 const CALL_EDGE_FORM = 0x03;
+/** The first byte of both call carrier locks: OP_1. */
+const CALL_CARRIER_LOCK_OPENING = 0x51n;
 /** F1 caller-edge carrier lock: OP_1 OP_NOP - anyone-can-spend but distinct from OP_TRUE. The record count takes in
  * both locks, each run expecting what it pinned; the callee reads an edge only under this one. */
 const CALL_EDGE_CARRIER_LOCK = new Uint8Array([0x51, 0x61]);
@@ -11278,9 +11280,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.mintCountPending = false;
       const mintBound = this.routeMintBoundFrame;
       this.routeMintBoundFrame = undefined;
-      this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable, scansMints,
-        { location: node.body.location, positionHint: PositionHint.END }, mintBound);
-      if (this.framedMaster && this.currentContractHoldsTokens) this.emitFramedForeignTokenKeep(node);
       // SEC-10/SEC-11: an own-category IMMUTABLE (0x00) NFT output - what an event NFT is - may only sit at an
       // event block-layout offset (or the witnessed return-event index). Without this any spender mints forged
       // logs at any other index. Scoped to contracts that declare an event or emit one declared in any scope (file
@@ -11321,12 +11320,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && node.pinsDelegateCoSpend === true && !hasEventEmits && !hasRuntimeLoopEvents;
       // A framed master every spend of which names a validator never takes the census: the validator settles its
       // contract and admits an own-category immutable output only at an event a frame in its context lists (V7).
-      if (node.name !== '__construct' && isStatefulContract && !this.framedRequiresValidator
+      const takesEventCensus = node.name !== '__construct' && isStatefulContract && !this.framedRequiresValidator
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
-        && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
+        && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent);
+      // A route settles no record, so no count answers for the edges of its category. Its output pass reaches each
+      // token through a short test; a count of its own would price a whole walk on every pad a kernel block keeps.
+      const routeRefusesEdges = !takesEventCensus && this.isCompilerMessageBusRoute(node) && isStatefulContract
+        && !this.framedMaster;
+      const scanRefusesEdges = routeRefusesEdges && (scansSatoshi || scansMutable || scansMints);
+      this.emitSlotScans(scansSatoshi, scansForeign ? admitAnchor : undefined, scansMutable, scansMints,
+        { location: node.body.location, positionHint: PositionHint.END }, mintBound, scanRefusesEdges);
+      if (this.framedMaster && this.currentContractHoldsTokens) this.emitFramedForeignTokenKeep(node);
+      if (takesEventCensus) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
-      } else if (this.isCompilerMessageBusRoute(node) && isStatefulContract && !this.framedMaster) {
-        // A route settles no record, so no count answers for the edges of its category.
+      } else if (routeRefusesEdges && !scanRefusesEdges) {
         const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
         this.emit(Op.OP_0, loc);
         this.emitSharedOwnEdgeCount(loc);
@@ -51800,12 +51807,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     else this.emitCallRecordCountBody(loc);
   }
 
-  /** `[.., lock]` -> `[.., isCarrier]`: both carrier locks are under three bytes, and so is no lock a contract keeps. */
+  /**
+   * `[.., lock]` -> `[.., isCarrier]`: both carrier locks open with OP_1, and no key, script or identity lock does. A
+   * lock that only opens alike is counted, which refuses the spend. Read as a number, the low byte is the first, and
+   * the empty lock, `address(0)`, is zero: a split would fail a contract that pays it.
+   */
   private emitIsCallCarrierLock(loc: SingleLocationData): void {
-    this.emit(Op.OP_SIZE, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_3, loc);
-    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(256n), loc);
+    this.emit(Op.OP_MOD, loc);
+    this.emit(encodeInt(CALL_CARRIER_LOCK_OPENING), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
   }
 
   /** This entry's edge witnesses, one per call that can pin an edge. */
@@ -51816,6 +51828,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** A pinned edge is counted where the call pinned it, so a witness a skipped call names admits no carrier. */
   private emitCountPinnedEdge(witness: string, node: Node, loc: SingleLocationData): void {
+    // A helper's own definition takes a witness and no tally: only the copies inlined into an entry run.
+    if (this.getStackIndex(EDGES_PINNED, true) < 0) return;
     this.emitPickAt(this.getStackIndex(EDGES_PINNED), loc);
     this.pushToStack('(edges)');
     this.emitPickAt(this.getStackIndex(witness), loc);
@@ -55761,14 +55775,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSlotScans(
     sat: boolean, admitAnchor: boolean | undefined, mutable: boolean, mint: boolean, loc: SingleLocationData,
-    mintBound?: GraphEffectFrame,
+    mintBound?: GraphEffectFrame, refusesEdges = false,
   ): void {
     const inputs = sat || admitAnchor !== undefined || mint;
     const outputs = sat || mutable || mint;
     const residue = inputs && outputs ? slotScanResidue(sat, admitAnchor !== undefined, mint) : [];
     if (inputs) this.emitInputSlotScan(sat, admitAnchor, mint, outputs, loc);
     const bound = mintBound === undefined ? undefined : this.emitRouteMintBoundItems(mintBound, loc);
-    if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc, bound);
+    if (outputs) this.emitOutputSlotScan(sat, mutable, mint, residue, loc, bound, refusesEdges);
     else if (bound !== undefined) this.emitRouteMintBoundScan(bound, loc);
     // Without an output pass, the bound's own pass leaves its operands.
     if (bound !== undefined && !outputs) this.emitKeepScanItems(ROUTE_MINT_LO, [], loc);
@@ -57264,7 +57278,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitOutputSlotScan(
     sat: boolean, mutable: boolean, mint: boolean, residue: readonly string[], loc: SingleLocationData,
-    bound?: RouteMintBound,
+    bound?: RouteMintBound, refusesEdges = false,
   ): void {
     const signatures = mutable
       ? this.collectionDefinitions.map((collection) => this.vmapCollectionSignature(collection.name))
@@ -57275,10 +57289,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const boundKey = bound === undefined ? '' : `:mintBound:${bound.slots}:${bound.span}`;
     if ((!mutable || this.getStackIndex(VALUE_CHUNK_LOCK_LIST, true) < 0)
       && this.invokeSharedEntryCheck(
-        `outputScans:${sat}:${signatures?.join(',') ?? '-'}:${mint}:${residue.join(',')}${boundKey}`,
+        `outputScans:${sat}:${signatures?.join(',') ?? '-'}:${mint}:${residue.join(',')}${boundKey}:${refusesEdges}`,
         (t, l) => {
           for (const name of [...residue, ...boundNames]) t.pushToStack(name);
-          t.emitOutputSlotScanBody(sat, signatures, mint, l, bound);
+          t.emitOutputSlotScanBody(sat, signatures, mint, l, bound, refusesEdges);
         },
         loc,
       )) {
@@ -57289,18 +57303,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
-    this.emitOutputSlotScanBody(sat, signatures, mint, loc, bound);
+    this.emitOutputSlotScanBody(sat, signatures, mint, loc, bound, refusesEdges);
   }
 
   /**
    * The outputs at the container lock are summed, and with `mint` those holding the master's token category may not
    * outnumber such inputs. With `signatures` (each collection's address signature, undefined for none), every
    * own-category mutable output must sit at a mutable input's lock or at a lock this contract is allowed to mint (a
-   * collection, its data record, or a dynamic chunk). The categories and container lock come from the input pass.
+   * collection, its data record, or a dynamic chunk). With `refusesEdges` no output is an edge carrier of this
+   * contract's category. The categories and container lock come from the input pass.
    */
   private emitOutputSlotScanBody(
     sat: boolean, signatures: readonly (string | undefined)[] | undefined, mint: boolean, loc: SingleLocationData,
-    bound?: RouteMintBound,
+    bound?: RouteMintBound, refusesEdges = false,
   ): void {
     const base = '(__mutable_base)';
     const fromInputs = this.getStackIndex(SCAN_CATEGORY, true) >= 0;
@@ -57332,8 +57347,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.emit(Op.OP_BEGIN, loc);
-    // A mint bound stops at every output with a token: its category is any its containers mint.
-    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, mint, loc, bound !== undefined);
+    // A mint bound stops at every output with a token: its category is any its containers mint. An edge is a token.
+    this.emitSkipToScannedSlot(true, sat, signatures !== undefined, mint, loc, bound !== undefined || refusesEdges);
     if (sat) this.emitAddScannedValue(true, SCAN_OUT_SUM, loc);
     if (mint) this.emitCountScannedMint(true, SCAN_OUT_MINTS, loc);
     if (signatures !== undefined) {
@@ -57347,6 +57362,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     if (bound !== undefined) this.emitRouteMintBoundCheck(bound, loc);
+    if (refusesEdges) this.emitRefuseScannedEdge(fromInputs ? SCAN_CATEGORY : base, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_NOT, loc);
     this.emit(Op.OP_UNTIL, loc);
@@ -57367,6 +57383,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A mint bound's operands sit above the input pass's residue, and below the base a pass without one builds.
     const bottom = !fromInputs ? (bound !== undefined ? ROUTE_MINT_LO : base) : mint ? SCAN_MINT_CATEGORY : SCAN_CATEGORY;
     this.emitKeepScanItems(bottom, sat ? [SCAN_IN_SUM, SCAN_OUT_SUM] : [], loc);
+  }
+
+  /** `[.., i]` stays: output i is not an edge carrier of the tracked 32-byte `category`. */
+  private emitRefuseScannedEdge(category: string, loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(CALL_EDGE_CARRIER_LOCK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(category) + 3)), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_VERIFY, loc);
   }
 
   /** `[base]` -> `[base, locks]`: each lock this contract may mint a record at, 35 bytes apiece. */

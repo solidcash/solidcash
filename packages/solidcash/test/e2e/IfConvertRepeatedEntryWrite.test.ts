@@ -68,11 +68,11 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
     // alike.
     const before: Record<string, string> = {
       'k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }':
-        '4b50015e011c2c24229db96b426cf542b61cfc283e386a144814416ee12bf6f9',
+        '2c01f1ff7cf256a9ded66cc4b701078460cfdf5e833a1917dd878198edbb6fad',
       'if (c) { m[k] = a; } else { n[k] = 5; }':
-        '7f7450edec39c361c7681d75e491254514260f6da8fb37d13d64002a9bef1f1a',
+        '05f639980f015a2070aa5185137c8124c7b228c73d2fc23323f70b33d7ad24b6',
       'k = k + 1; if (c) { m[k] = a; n[k] = 1; } else { m[k] = 5; }':
-        'c3ce3caca031617f8a42f51b2c52fb190760cbe02ec93e82172d9953f2f80e85',
+        '09d9095801bb5232baba78f7dbfb994fcb988ce3c40d414936aca462d377b5e9',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
@@ -115,13 +115,13 @@ describe('if entry writes: the condition runs once, each arm in its own order', 
     // these alike.
     const before: Record<string, string> = {
       // The condition reads no mapping, or only the one the last write mutates.
-      'if (c) { m[k] = a; n[k] = 1; }': '6f80ebd1cac3301d48f6299545294d8c1f7066fab6fba61d1d5d54a51982cd33',
-      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': '1a7aefecd105cc8c1f7e8451fca4b705dec4e010c188a83f89f85c1d164ad4dc',
+      'if (c) { m[k] = a; n[k] = 1; }': '5ad0a5c594f2d123fdce971c6b7cf457743c833895bba03606cdefcc847395e6',
+      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'a5e7cf2990578e93906531cb2b08e516fb2814b96dd41b1f11f5a4fc3727ce22',
       // The merge runs n[k] ahead of the else arm's m[k]; neither write observes the other.
       'k = k + 1; if (c) { n[k] = 3; } else { m[k] = 1; n[k] = 2; }':
-        '50d2059c40e5199f711072474707d39531fad69fd44e5c01f711f77d4916cc1b',
+        'a3a35f9f5954030bc36fba4b5c1bda94ff069dfd4299b8f978ed9fbed9098039',
       'k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }':
-        '3c7d0f35d2cc91ecd8a14f75dc4e3fd04fc9b87d16352bde7cbf8d45c7829201',
+        '120c4324cd3618dc647388a59e2f6b5640df1a2b0339fceee43aa3558ccacc58',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);

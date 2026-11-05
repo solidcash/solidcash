@@ -58,6 +58,13 @@ contract Caller() {
   fallback() external { require(this.calls == 0); }
 }`;
 
+const COUNTER = `pragma solidcash >=0.8.0;
+contract Counter() {
+  bigint calls;
+  function poke() { this.calls = this.calls + 1; }
+  function next() returns (bigint) { this.calls = this.calls + 1; return this.calls; }
+}`;
+
 type Provider = ReturnType<typeof createTestProvider>;
 type Tx = ReturnType<typeof decodeTransactionUnsafe>;
 
@@ -110,6 +117,22 @@ async function callerAndVault(source: string): Promise<{
   const vault = await deploy(provider, artifacts.Vault, [caller.lock], { paid: 0n });
   return { provider, caller, vault };
 }
+
+describe('an output no carrier lock names', () => {
+  // A contract may pay a caller's `to`, and `address(0)` is the empty lock: the count reads past it.
+  it.each([
+    ['the compact count', {}, 'poke'],
+    ['the message-bus count', { messageBus: true }, 'next'],
+  ])('settles at the empty lock beside %s', async (_, options, entry) => {
+    const provider = createTestProvider();
+    const counter = await deploy(provider, compileString(COUNTER, options), [], { calls: 0n });
+    const { tx, broadcast } = await captured(provider, () => counter.sc[entry]().send());
+    tx.outputs.push({ lockingBytecode: new Uint8Array(), valueSatoshis: 0n });
+
+    await expect(broadcast(tx)).resolves.toBeTypeOf('string');
+    expect((await counter.sc.getState()).calls).toBe(1n);
+  }, 120_000);
+});
 
 describe('a caller edge a run did not pin', () => {
   it('is refused beside an entry that makes no call, so a spender cannot act as the contract', async () => {

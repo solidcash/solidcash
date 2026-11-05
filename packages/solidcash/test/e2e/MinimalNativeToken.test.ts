@@ -49,8 +49,8 @@ describe('MinimalNativeToken bytecode budget', () => {
     // landed after it: fixes B and F1 and the oracle pools (7355 -> 7553). The record lock a direct master rebuilds
     // carries the data-record covenant's authority bind and category, each now defined once (590aca164), and with it
     // the helpers that rebuild it: 64 B (7553 -> 7617). The record count takes in the edge lock, and a callee reading
-    // a contract msg.sender reads that lock too: 8 B (7617 -> 7625).
-    expect(artifactBytes).toBe(7625);
+    // a contract msg.sender reads that lock too: 12 B (7617 -> 7629).
+    expect(artifactBytes).toBe(7629);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

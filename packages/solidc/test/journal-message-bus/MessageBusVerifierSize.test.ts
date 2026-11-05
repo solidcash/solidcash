@@ -36,14 +36,16 @@ describe('atomic verifier bytecode specialization', () => {
     // +35 B direct / +97 B composed for the C3 record pin: the own-category count holds each record at its own
     // index, and the route pins its records past the block, skipping its verifier by the bound index.
     // +8 B composed once the route binds its participant's physical size and claims only that block.
+    // +5 B direct / +85 B composed for CALLER-EDGE-1: the record count takes in the edge lock, a direct run with no
+    // record counts edges alone, and the route refuses them in its output pass.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       // B+F1 void-record/edge overhead on the direct verifier, then 70 B on both for the record lock a master rebuilds,
       // which carries the data-record covenant's authority bind and category, each now defined once (590aca164).
-      direct: 837,
-      composed: 1875,
-      frameworkTax: 1038,
+      direct: 842,
+      composed: 1960,
+      frameworkTax: 1118,
     });
-    expect(composed).toBeLessThanOrEqual(1900);
+    expect(composed).toBeLessThanOrEqual(1985);
     expect(composed - direct).toBeLessThanOrEqual(1360);
     expect(sidecar).toBeLessThanOrEqual(10_000);
   });

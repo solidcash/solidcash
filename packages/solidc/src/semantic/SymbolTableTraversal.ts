@@ -3803,6 +3803,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       seen.add(expression);
       if (expression instanceof IdentifierNode) {
         const initializer = this.findLocalInit(this.currentFunction?.body, expression.name)
+          ?? this.findTupleInit(this.currentFunction?.body, expression.name)
           ?? this.findAssignmentValue(this.currentFunction?.body, expression.name);
         if (initializer) {
           if ((globalThis as any).process?.env?.SOLIDC_DEBUG_GENESIS_RECIPE === '1') {
@@ -9225,7 +9226,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node || seen.has(node)) return undefined;
     seen.add(node);
     if (node instanceof AssignNode && node.identifier.name === name) return node.expression;
-    for (const value of Object.values(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
       if (value instanceof Node) {
         const found = this.findAssignmentValue(value, name, seen);
         if (found) return found;

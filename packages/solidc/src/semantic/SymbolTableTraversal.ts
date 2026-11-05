@@ -133,7 +133,9 @@ import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './extern
 import { externalResultMayNeedPreimage, namesCallRecordArguments } from './ExternalResultEncoding.js';
 import { byteElementValue } from './byteElementValue.js';
 import { cloneNode } from '../ast/clone.js';
-import { computeExpressionSiteKey, generatedOriginOf, sourceFileOf } from '../ast/Location.js';
+import {
+  type Location, computeExpressionSiteKey, generatedOriginOf, sourceFileOf,
+} from '../ast/Location.js';
 import {
   computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
 } from './branchOps.js';
@@ -231,7 +233,9 @@ import {
   NonPayableCallValueError,
   SolidcDiagnosticError,
   UpgradeStrandsBoundStateError,
+  ChildGenesisFoldError,
 } from '../Errors.js';
+import { type ChainRead, childChainReadFinder } from './SynthesizeBlockOracle.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
 import {
   getEventChunkCount, getMaxPushdataEncodedSizeForType, getMaxStateFieldBytes, stateNftPackingLimit,
@@ -505,6 +509,55 @@ function isInertExpressionStatement(expression: ExpressionNode): boolean {
   };
   walk(expression);
   return !effectful;
+}
+
+/** A literal or a plain read: an expression statement of one cannot fail. */
+function isPlainRead(expression: ExpressionNode): boolean {
+  if (expression instanceof LiteralNode || expression instanceof IdentifierNode
+    || expression instanceof NullaryOpNode || expression instanceof StateAccessNode) return true;
+  return expression instanceof FieldAccessNode && isPlainRead(expression.expression);
+}
+
+/** Whether two locations span the same source text: a lowered initializer keeps its declaration's span. */
+function sameSourceSpan(left: Location | undefined, right: Location | undefined): boolean {
+  return left !== undefined && right !== undefined && left.sourceFileId === right.sourceFileId
+    && left.start.line === right.start.line && left.start.column === right.start.column
+    && left.end.line === right.end.line && left.end.column === right.end.column;
+}
+
+/** `block.timestamp`, or `block.timestamp through "now_"` when a helper or free function makes the read. */
+function chainReadText(found: ChainRead): string {
+  return found.through === undefined ? found.read : `${found.read} through "${found.through}"`;
+}
+
+/** How a refusal names a constructor statement the fold drops, and the base constructor it comes from. */
+function droppedStatementText(statement: StatementNode): string {
+  const kind = droppedStatementKind(statement);
+  return statement.baseConstructorOf === undefined ? kind
+    : `${kind} (from the constructor of "${statement.baseConstructorOf}")`;
+}
+
+function droppedStatementKind(statement: StatementNode): string {
+  const modifier = statement instanceof BlockNode ? statement.pendingConstructorModifiers?.invocations[0] : undefined;
+  if (modifier) return `modifier "${modifier.name}"`;
+  if (statement instanceof RequireNode) return 'require';
+  if (statement instanceof AssertNode) return 'assert';
+  if (statement instanceof RevertNode) return 'revert';
+  if (statement instanceof BranchNode) return 'if statement';
+  if (statement instanceof StateAssignNode || statement instanceof MappingAssignNode
+    || statement instanceof ArrayAssignNode) return `write to "${statement.name}"`;
+  if (statement instanceof AssignNode && statement.identifier instanceof IdentifierNode) {
+    return `write to "${statement.identifier.name}"`;
+  }
+  if (statement instanceof VariableDefinitionNode) return `local "${statement.name}"`;
+  if (statement instanceof FunctionCallStatementNode) return `call to "${statement.call.identifier.name}"`;
+  if (statement instanceof EmitStatementNode) return `emit of "${statement.eventName}"`;
+  if (statement instanceof WhileNode || statement instanceof DoWhileNode
+    || statement instanceof CollectionIterationNode) return 'loop';
+  if (statement instanceof AddressTransferStatementNode || statement instanceof TransferStatementNode) {
+    return 'transfer';
+  }
+  return 'statement';
 }
 
 function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
@@ -2766,6 +2819,64 @@ export default class SymbolTableTraversal extends AstTraversal {
     );
   }
 
+  private childChainReadFinders = new WeakMap<ContractNode, (root: Node | undefined) => ChainRead | undefined>();
+
+  /** The chain-read finder over a created child's code and this source's free functions. */
+  private childChainReads(child: ContractNode): (root: Node | undefined) => ChainRead | undefined {
+    let finder = this.childChainReadFinders.get(child);
+    if (!finder) {
+      finder = childChainReadFinder(child, this.sourceFile?.freeFunctions ?? []);
+      this.childChainReadFinders.set(child, finder);
+    }
+    return finder;
+  }
+
+  /**
+   * A direct creator folds the genesis of the child it creates, and the fold carries no chain read, so it refuses by
+   * name one reached from the child's constructor, its state-variable initializers among the constructor's
+   * statements. Framed replays its child's genesis in the creating frame.
+   */
+  private refuseChildConstructorChainRead(child: ContractNode): void {
+    if (this.compilerOptions.composition === 'framed') return;
+    const find = this.childChainReads(child);
+    for (const statement of child.constructorDef?.body?.statements ?? []) {
+      const found = find(statement);
+      if (!found) continue;
+      const state = statement instanceof StateAssignNode ? child.stateVariables.find((candidate) =>
+        candidate.name === statement.name && sameSourceSpan(candidate.location, statement.location)) : undefined;
+      throw new ChildGenesisFoldError(found.node, child.name, `${state
+        ? `the initializer of its state variable "${state.name}"` : 'its constructor'} reads ${chainReadText(found)}`
+        + ', which the fold does not carry into the creating call');
+    }
+  }
+
+  /** As refuseChildConstructorChainRead, for a call the creating transaction makes on the child it creates. */
+  private refuseChildCallChainRead(deployNode: InstantiationNode, callee: FunctionDefinitionNode): void {
+    const child = deployNode.referencedContract;
+    if (!child || this.compilerOptions.composition === 'framed') return;
+    const found = this.childChainReads(child)(callee.body);
+    if (!found) return;
+    throw new ChildGenesisFoldError(found.node, child.name, `its "${callee.name}" call in the creating transaction `
+      + `reads ${chainReadText(found)}, which the fold does not carry into the creating call`);
+  }
+
+  /**
+   * A direct creator refuses by name a constructor statement its fold drops, as framed refuses a constructor it cannot
+   * fold (child-genesis-replay.ts), and a constructor modifier, whose body the fold never sees.
+   */
+  private refuseDroppedChildStatement(child: ContractNode, dropped: StatementNode | undefined): void {
+    if (this.compilerOptions.composition === 'framed') return;
+    const ctor = child.constructorDef;
+    const modifier = ctor?.customModifiers[0];
+    if (ctor && modifier) {
+      throw new ChildGenesisFoldError(ctor, child.name, `its constructor's modifier "${modifier.name}" does not fold `
+        + 'into state or a check the creator can compute');
+    }
+    if (!dropped) return;
+    throw new ChildGenesisFoldError(dropped, child.name, `its constructor's ${droppedStatementText(dropped)} does `
+      + 'not fold into state or a check the creator can compute');
+  }
+
   // Fold one expression into a parent-context genesis expression, or null if not foldable. The child starts
   // at default (zero) state, so a `this.<field>` read resolves to the field's value WRITTEN EARLIER in foo
   // (fieldExprs) or its type default. Identifiers resolve to a forwarded arg or an earlier local (subs).
@@ -3424,6 +3535,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         current.coalescedPartial = true;
       } else if (stmt instanceof AddressTransferStatementNode
         && isOwnAddressExpression(stmt.addressExpression)) {
+        // A constructor's transfer to itself still fails when the child cannot afford it, a guard no predicate carries.
+        if (constructorPredicates) return false;
         discarded += 1;
         // A transfer the folded callee makes to its OWN address moves nothing: the child's container is both the
         // source and the destination, so the state transition is the identity. The call replay already does not
@@ -3433,6 +3546,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       } else if (stmt instanceof ExpressionStatementNode && isInertExpressionStatement(stmt.expression)) {
         // A bare expression statement has no effect, so the replay skips it rather than refusing the whole
         // transition for it: `this.balance;` (a pureness-warning suppressor) must not block the fold.
+        // A constructor skips only one that cannot fail either: an operator can, on a zero divisor.
+        if (constructorPredicates && !isPlainRead(stmt.expression)) return false;
+        discarded += 1;
+        continue;
+      } else if (stmt instanceof ConsoleStatementNode && constructorPredicates) {
+        // A console statement emits no bytecode, so the child's own compile drops it too.
         discarded += 1;
         continue;
       } else if (isLast && stmt instanceof ReturnNode && stmt.expressions.length === 1) {
@@ -3462,15 +3581,16 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // Fold the child constructor's writes into the deploy genesis, so the covenant verifies the TRUE initial
   // state instead of type defaults. All-or-nothing: an unfoldable ctor (control flow, msg.sender, external
-  // reads, ...) leaves the default-genesis behavior unchanged. Runs once per `new C(...)` site.
+  // reads, ...) leaves the default-genesis behavior unchanged. Runs once per `new C(...)` site. Returns the first
+  // statement it drops, which a direct creator refuses (refuseDroppedChildStatement).
   public tryFoldChildConstructor(
     deployNode: InstantiationNode,
     additionalHelperFunctions: readonly FunctionDefinitionNode[] = [],
-  ): void {
+  ): StatementNode | undefined {
     const contract = deployNode.referencedContract;
     const ctor = contract?.constructorDef;
     const statements = (ctor?.body as BlockNode | undefined)?.statements ?? [];
-    if (!contract) return;
+    if (!contract) return undefined;
     deployNode.foldedCollectionEntries = undefined;
     deployNode.deployedEntryNftCount = 0;
     // An implicit or implemented empty constructor is a complete zero-write transition. Mark it explicitly:
@@ -3478,7 +3598,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!ctor || statements.length === 0) {
       deployNode.ctorFoldFailed = false;
       deployNode.constructorStateFoldComplete = true;
-      return;
+      return undefined;
     }
     const fieldType = (name: string): Type | undefined => contract.stateVariables
       .find((sv) => sv.name === name)?.type;
@@ -3497,7 +3617,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // DOMAIN_SEPARATOR) before a later independent `factory = msg.sender`. Retain every safely foldable prefix/
     // suffix statement while remembering that reads of all other fields remain unknown. The substitutions map is
     // shared, so straight-line locals still feed later foldable writes.
-    let failed = false;
+    let dropped: StatementNode | undefined;
     const priorHelperContract = this.genesisHelperContract;
     const priorAdditionalHelpers = this.genesisAdditionalHelperFunctions;
     const priorHelperStack = this.genesisHelperStack;
@@ -3564,7 +3684,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const keyType = fixedScalarArray ? PrimitiveType.BIGINT : scalarMappingType?.keyType;
           const valueType = fixedScalarArray ? fixedArrayType?.elementType : scalarMappingType?.valueType;
           if (!collection || (!fixedScalarArray && !scalarMappingType) || !keyType || !valueType) {
-            failed = true;
+            dropped ??= statement;
             continue;
           }
           const key = statement.keys.length === 1
@@ -3578,7 +3698,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const literalIndex = statement.keys[0] instanceof IntLiteralNode ? statement.keys[0].value : -1n;
           if (!key || !value
             || (fixedScalarArray && (literalIndex < 0n || literalIndex >= exactArrayLength(fixedArrayType!)!))) {
-            failed = true;
+            dropped ??= statement;
             continue;
           }
           const entries: NonNullable<InstantiationNode['foldedCollectionEntries']> =
@@ -3598,7 +3718,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             && (!keyIdentity
               || priorKeyIdentities.some((identity) => identity === undefined)
               || (hasRuntimeKey && !repeatsReplayableKey))) {
-            failed = true;
+            dropped ??= statement;
             continue;
           }
           const prior = entries.findIndex((entry) => entry.collection === collection
@@ -3615,7 +3735,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (!this.foldStatementList(
           [statement], subs, fieldExprs, fieldType, fieldType, constructorPredicates,
-        )) failed = true;
+        )) dropped ??= statement;
       }
     } finally {
       this.genesisHelperContract = priorHelperContract;
@@ -3624,6 +3744,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.genesisDeployValue = priorDeployValue;
       this.genesisChildBalance = priorChildBalance;
     }
+    const failed = dropped !== undefined;
     deployNode.ctorFoldFailed = failed;
     deployNode.constructorStateFoldComplete = !failed && statements.every((statement) =>
       statement instanceof VariableDefinitionNode
@@ -3636,11 +3757,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       deployNode.foldedConstructorPredicates = constructorPredicates;
       this.protectFoldedExprVars(constructorPredicates);
     }
-    if (fieldExprs.size === 0) return;
+    if (fieldExprs.size === 0) return dropped;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
     for (const [k, v] of fieldExprs) init.set(k, v);
     deployNode.foldedStateInit = init;
     this.protectFoldedExprVars(init.values());
+    return dropped;
   }
 
   // Try to fold a same-tx `deployLocal.foo(args)` into the deploy genesis. Handles a foo whose body is a
@@ -15188,6 +15310,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                     || realFoo.returnTypes.some((t, i) => t.toString() !== ifaceFunc.returnTypes[i].toString()))) {
                   throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name, true);
                 }
+                if (realFoo) this.refuseChildCallChainRead(deployNode, realFoo);
                 const foldRes = realFoo ? this.tryFoldDeployCall(deployNode, realFoo, parameters) : false;
                 if (!foldRes) {
                   throw new DeployThenCallError(node, varName, methodName, deployNode.identifier.name,
@@ -15785,8 +15908,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       // Fold the child ctor's writes into the genesis: the deploy covenant otherwise verifies TYPE
       // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later
-      // deploy-then-call folds so their `this.field` reads see the true genesis value.
-      this.tryFoldChildConstructor(node);
+      // deploy-then-call folds so their `this.field` reads see the true genesis value. A direct creator refuses by
+      // name what the fold cannot express: a chain read or a dropped statement.
+      this.refuseChildConstructorChainRead(contract);
+      this.refuseDroppedChildStatement(contract, this.tryFoldChildConstructor(node));
 
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
       // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,
@@ -18670,6 +18795,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             throw new DeployThenCallError(node, receiverName, node.methodName, iface.name, true);
           }
           const realFunction = this.deployFoldTarget(node, deployNode, ifaceFunc, node.methodName, parameters.length);
+          if (realFunction) this.refuseChildCallChainRead(deployNode, realFunction);
           const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
           if (!fold) {
             throw new DeployThenCallError(

@@ -43,6 +43,40 @@ export function readsBlockOracle(fn: FunctionDefinitionNode): boolean {
   return found;
 }
 
+/** A contract's bodies, with the free functions they can call. */
+function contractBodies(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+): FunctionDefinitionNode[] {
+  return [
+    ...contract.functions, ...freeFunctions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
+  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+}
+
+/** For each body whose named-call closure, itself included, reaches a reader: the first reader it reaches. */
+function readersReached(
+  bodies: readonly FunctionDefinitionNode[], isReader: (fn: FunctionDefinitionNode) => boolean,
+): Map<FunctionDefinitionNode, FunctionDefinitionNode> {
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  const readers = new Map<string, FunctionDefinitionNode>();
+  for (const fn of bodies) {
+    byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
+    if (!readers.has(fn.name) && isReader(fn)) readers.set(fn.name, fn);
+  }
+  const reached = new Map<FunctionDefinitionNode, FunctionDefinitionNode>();
+  if (readers.size === 0) return reached;
+  const directCalls = new WeakMap<FunctionDefinitionNode, Set<string>>();
+  for (const fn of bodies) {
+    for (const name of collectNamedFunctionClosure(fn, byName, directCalls)) {
+      const reader = readers.get(name);
+      if (reader) {
+        reached.set(fn, reader);
+        break;
+      }
+    }
+  }
+  return reached;
+}
+
 /**
  * A reader takes the oracle index as a hidden parameter, so every caller has to carry it to forward it.
  * Mark the named-call closure of each reader, which also reaches a generated message-bus route through its
@@ -51,22 +85,9 @@ export function readsBlockOracle(fn: FunctionDefinitionNode): boolean {
 export function markBlockOracleCallers(
   contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
 ): void {
-  const bodies = [
-    ...contract.functions, ...freeFunctions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
-  ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
-  const byName = new Map<string, FunctionDefinitionNode[]>();
-  const readers = new Set<string>();
-  for (const fn of bodies) {
-    byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
-    if (readsBlockOracle(fn)) readers.add(fn.name);
-  }
-  if (readers.size === 0) return;
-  const directCalls = new WeakMap<FunctionDefinitionNode, Set<string>>();
-  for (const fn of bodies) {
-    if ([...collectNamedFunctionClosure(fn, byName, directCalls)].some((name) => readers.has(name))) {
-      fn.usesBlockOracle = true;
-    }
-  }
+  const reached = readersReached(contractBodies(contract, freeFunctions), readsBlockOracle);
+  if (reached.size === 0) return;
+  for (const fn of reached.keys()) fn.usesBlockOracle = true;
   contract.usesBlockOracle = true;
 }
 
@@ -150,6 +171,55 @@ export function bindOraclePool(
   }
   setOraclePoolBinding(contract, !framed
     && (contract.usesBlockOracle || contract.usesBlockhash || creators.size > 0));
+}
+
+/** A chain read: its spelling (`block.timestamp`, `blockhash`), its node, and the helper making it, if not the root. */
+export interface ChainRead {
+  readonly read: string;
+  readonly node: Node;
+  readonly through?: string;
+}
+
+/** The first chain read made under `root` itself: a block.* field the oracle serves, or a `blockhash` call. */
+function ownChainRead(root: Node | undefined): ChainRead | undefined {
+  let found: ChainRead | undefined;
+  walkInvocationAst(root, (node) => {
+    if (found !== undefined) return;
+    if (node instanceof NullaryOpNode && (ORACLE_FIELDS.has(node.operator)
+      || node.operator === NullaryOperator.BLOCK_BASEFEE || node.operator === NullaryOperator.BLOCK_BLOBBASEFEE)) {
+      found = { read: node.operator, node };
+    } else if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.BLOCKHASH) {
+      found = { read: GlobalFunction.BLOCKHASH, node };
+    }
+  });
+  return found;
+}
+
+/**
+ * The walk of `markBlockOracleCallers`, widened to `blockhash`, over a contract another contract creates: the first
+ * chain read reached from a subtree of its code, made there or in a helper or free function it calls by name. The
+ * creator's compile runs it over each child it folds, as the fold carries no chain read.
+ */
+export function childChainReadFinder(
+  contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
+): (root: Node | undefined) => ChainRead | undefined {
+  const bodies = contractBodies(contract, freeFunctions);
+  const ownReads = new Map(bodies.map((fn) => [fn, ownChainRead(fn.body)] as const));
+  const reached = readersReached(bodies, (fn) => ownReads.get(fn) !== undefined);
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of bodies) byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
+  return (root) => {
+    const own = ownChainRead(root);
+    if (own) return own;
+    let found: ChainRead | undefined;
+    walkInvocationAst(root, (node) => {
+      if (found !== undefined || !(node instanceof FunctionCallNode)) return;
+      const reader = (byName.get(node.identifier.name) ?? []).map((fn) => reached.get(fn))
+        .find((fn) => fn !== undefined);
+      if (reader) found = { ...ownReads.get(reader)!, through: reader.name };
+    });
+    return found;
+  };
 }
 
 /**

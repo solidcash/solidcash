@@ -288,6 +288,7 @@ import {
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
   UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
+  ChildGenesisFoldError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -2205,6 +2206,8 @@ function admittedHandlerCount(artifact: Artifact): number {
 /** A source-owned refusal whose outcome cannot depend on which optional message-bus handlers are admitted. */
 function isAdmissionIndependentSourceError(error: unknown): boolean {
   return error instanceof CounterLoopReadWriteConflictError
+    // A child genesis the direct creator cannot fold fails its direct entry too.
+    || error instanceof ChildGenesisFoldError
     || (error instanceof UnsupportedInlineAssemblyError && !generatedOriginOf(error.node.location));
 }
 

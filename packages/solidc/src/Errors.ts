@@ -1940,6 +1940,17 @@ export class DeployThenCallError extends SolidCashError {
   }
 }
 
+/**
+ * A direct creator folds the genesis of a child it creates (its constructor, state-variable initializers included,
+ * and a call made on it in the creating transaction) into its own check, and refuses by name what that fold cannot
+ * express rather than drop it.
+ */
+export class ChildGenesisFoldError extends SolidCashError {
+  constructor(node: Node, childName: string, detail: string) {
+    super(node, `A direct creator folds the genesis of the "${childName}" it creates, and ${detail}`);
+  }
+}
+
 export class UsingForUndefinedLibraryError extends SolidCashError {
   constructor(node: Node, libraryName: string) {
     super(node, `Library '${libraryName}' referenced in 'using for' directive is not defined or imported`);

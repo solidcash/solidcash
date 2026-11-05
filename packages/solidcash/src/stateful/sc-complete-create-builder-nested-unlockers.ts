@@ -486,6 +486,8 @@ export async function completeCreateBuilderNestedUnlockers(
         });
         return -1n; // patched once the builder materializes input positions
       }
+      // F1: -1 names no edge; appendCallerEdges fills the index on the final builder.
+      if (/^__internal__callEdgeOutputIdx\d+$/.test(input.name)) return -1n;
       throw new Error(
         `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
       );

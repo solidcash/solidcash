@@ -99,6 +99,25 @@ contract Caller(bytes bankAddr) {
     expect(await balOf(bank.inner, catBank, 7n)).toBe(88n);
   });
 
+  it('a one-method interface: the caller reads the void record and the loop entries follow it', async () => {
+    const ICREDIT = 'interface ICredit { function credit(int[] ks, int[] vs); }';
+    const ONE_METHOD_CALLER = `pragma solidcash >=0.8.0;
+${ICREDIT}
+contract OneMethodCaller(bytes bankAddr) {
+  bigint calls;
+  function poke(int[] ks, int[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); ICredit(bankAddr).credit(ks, vs); this.calls = this.calls + 1; }
+}`;
+    const { bank, catBank } = await setup();
+    const bankAddr = bank.inner.withCategory(hexToBin(catBank)).lockingBytecode;
+    const { contract: caller } = await deploy(compileString(ONE_METHOD_CALLER, { forceStateful: true }), [bankAddr]);
+    await fund(caller.address);
+    const tx = await caller.poke([3n, 7n], [5n, 15n], alicePub, sig).withExternalCall(bank, 'credit', [[3n, 7n], [5n, 15n]]).send();
+    expect(tx.txid).toBeDefined();
+    expect(await balOf(bank.inner, catBank, 3n)).toBe(15n); // 10 + 5
+    expect(await balOf(bank.inner, catBank, 7n)).toBe(35n); // 20 + 15
+    expect(await balOf(bank.inner, catBank, 5n)).toBe(100n); // untouched
+  });
+
   it('callee loop that ALSO writes other state (blockSize>1) fails closed cleanly', async () => {
     // Boundary: the cross-contract loop supports a callee whose loop function touches ONLY the looped mapping.
     // A callee that also updates a scalar (data NFT) needs interleaved data-NFT derivation - fail closed for now.

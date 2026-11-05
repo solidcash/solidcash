@@ -224,10 +224,10 @@ describe('Contract Composability', () => {
       const fn = art.abi.find((f) => f.name === 'call');
       expect(fn!.blockLayout).toBeDefined();
 
-      // Verify returnEvent is NOT in blockLayout for the caller side
-      // (returnEvent is for B-side contracts that return values)
-      // Caller's block: master + dataNft = 2 slots
-      expect(fn!.blockLayout!.blockSize).toBe(2);
+      // The caller's block holds no slot for the callee's return. Its one returnEvent slot is the record of its own
+      // void entry: master + dataNft + record = 3 slots.
+      expect(fn!.blockLayout!.slots.map((slot) => slot.kind)).toEqual(['master', 'dataNft', 'returnEvent']);
+      expect(fn!.blockLayout!.blockSize).toBe(3);
     });
 
     it('blockSize matches slot count', () => {

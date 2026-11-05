@@ -2296,6 +2296,15 @@ export function evalComputedKey(
                 ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
       }
+      // An address comparison orders the bytes as an unsigned big-endian number, as the covenant does.
+      const unsigned = (value: Uint8Array): bigint => (value.length === 0 ? 0n : BigInt(`0x${binToHex(value)}`));
+      if (left instanceof Uint8Array && right instanceof Uint8Array) {
+        if (m[1] === '<') return unsigned(left) < unsigned(right);
+        if (m[1] === '<=') return unsigned(left) <= unsigned(right);
+        if (m[1] === '>') return unsigned(left) > unsigned(right);
+        if (m[1] === '>=') return unsigned(left) >= unsigned(right);
+        return undefined;
+      }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
       if (m[1] === '-') return left - right;

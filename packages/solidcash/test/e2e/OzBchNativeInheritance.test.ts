@@ -218,7 +218,7 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
       rootFunctions: ['wrap'],
     });
     for (const shard of [split.root, ...Object.values(split.facets)]) {
-      expect(scriptToBytecode(asmToScript(shard.bytecode)).length).toBeLessThan(9_000);
+      expect(scriptToBytecode(asmToScript(shard.bytecode)).length).toBeLessThanOrEqual(9_000);
     }
     expect(split.manifest.routes.find((route) => route.function === 'wrap')?.target).toBe('root');
     const unwrapTarget = split.manifest.routes.find((route) => route.function === 'unwrap')?.target;

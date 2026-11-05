@@ -51800,15 +51800,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     else this.emitCallRecordCountBody(loc);
   }
 
-  /** `[.., lock]` -> `[.., isCarrier]`. */
+  /** `[.., lock]` -> `[.., isCarrier]`: both carrier locks are under three bytes, and so is no lock a contract keeps. */
   private emitIsCallCarrierLock(loc: SingleLocationData): void {
-    this.emit(Op.OP_DUP, loc);
-    this.emit(hexToBin('51'), loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(CALL_EDGE_CARRIER_LOCK, loc);
-    this.emit(Op.OP_EQUAL, loc);
-    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_3, loc);
+    this.emit(Op.OP_LESSTHAN, loc);
   }
 
   /** This entry's edge witnesses, one per call that can pin an edge. */

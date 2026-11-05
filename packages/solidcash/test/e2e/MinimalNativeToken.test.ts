@@ -48,8 +48,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     // the take-32 helper in the record carrier check took 159 B off (7514 -> 7355). The pin was not moved for what
     // landed after it: fixes B and F1 and the oracle pools (7355 -> 7553). The record lock a direct master rebuilds
     // carries the data-record covenant's authority bind and category, each now defined once (590aca164), and with it
-    // the helpers that rebuild it: 64 B (7553 -> 7617).
-    expect(artifactBytes).toBe(7617);
+    // the helpers that rebuild it: 64 B (7553 -> 7617). The record count takes in the edge lock, and a callee reading
+    // a contract msg.sender reads that lock too: 8 B (7617 -> 7625).
+    expect(artifactBytes).toBe(7625);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

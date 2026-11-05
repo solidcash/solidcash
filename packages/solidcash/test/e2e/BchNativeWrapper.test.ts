@@ -80,8 +80,9 @@ describe('BchNativeWrapper', () => {
     // and the take-32 helper in the record carrier check took 159 B off (7580 -> 7421). The pin was not moved for
     // what landed after it: fixes B and F1 and the oracle pools (7421 -> 7617). The record lock a direct master
     // rebuilds carries the data-record covenant's authority bind and category, each now defined once (590aca164),
-    // and with it the helpers that rebuild it: 66 B (7617 -> 7683).
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7683);
+    // and with it the helpers that rebuild it: 66 B (7617 -> 7683). The record count takes in the edge lock, and a
+    // callee reading a contract msg.sender reads that lock too: 8 B (7683 -> 7691).
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7691);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

@@ -1412,6 +1412,7 @@ async function callInShape(
     args,
     stateLayout,
     records: records.map((record) => record.utxo),
+    ...(artifact.creationArguments === undefined ? {} : { creationArguments: artifact.creationArguments }),
   });
   const tokenDeposits = options.tokenDeposits ?? [];
   for (const deposit of tokenDeposits) {

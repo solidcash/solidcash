@@ -2040,6 +2040,8 @@ async function composeRead(options: {
       provider, entry: abi, categoryId: frame.categoryId, args: frame.args,
       stateLayout: frame.artifact.stateLayout ?? { variables: [], dataNftCount: 0 } as unknown as StateLayout,
       records: options.deployments.get(frame.categoryId)?.records ?? [],
+      ...(frame.artifact.creationArguments === undefined
+        ? {} : { creationArguments: frame.artifact.creationArguments }),
     });
     const masterIndex = participant(layout, frame.master).index;
     for (const access of accesses) {

@@ -2274,12 +2274,24 @@ export interface PublishedFramedLifecycle {
   readonly merge?: PublishedLifecycleEntry;
 }
 
+/**
+ * A contract creation argument a framed deployment baked into the program: the value is no longer readable from
+ * `constructorInputs`, but a runtime view may name it (for example a token-container key).
+ */
+export interface CreationArgumentBinding {
+  readonly name: string;
+  readonly type: string;
+  readonly value: string | bigint | boolean | Uint8Array;
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
   abi: readonly AbiFunction[];
   bytecode: string;
   source: string;
+  /** Set by a framed deployment that baked its creation arguments into `bytecode`. */
+  creationArguments?: readonly CreationArgumentBinding[];
   debug?: DebugInformation;
   functionBodies?: Record<string, string>; // selector hex -> hex-encoded function body bytecode
   fingerprint?: string; // SHA256 of the normalized bytecode pattern (BCH bytecode fingerprinting standard)

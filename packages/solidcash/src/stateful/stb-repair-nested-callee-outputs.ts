@@ -15,7 +15,7 @@ import { sameIndexScidIdentityInputIndices } from './same-index-scid.js';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust, scriptToLockingBytecode } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
-import { calleeLoopEntryInputs, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleeConsumedInputs, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
 import { cloneToken } from './stb-output-utils.js';
 import { permitsLegacyDelegateEventRepair } from './chunkable-value-write-selection.js';
@@ -171,10 +171,8 @@ export function repairNestedCalleeOutputs(
   const nestedCategories = new Set(
     host.externalCallUtxoGroups.map((group) => group.categoryId).filter((id): id is string => !!id),
   );
-  const consumedResources = new Set(host.externalCallUtxoGroups.flatMap((group) => [
-    ...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo),
-    ...calleeLoopEntryInputs(group),
-  ]).map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
+  const consumedResources = new Set(host.externalCallUtxoGroups.flatMap(calleeConsumedInputs)
+    .map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
   for (let index = 0; index < host.allInputs.length; index++) {
     const input = host.allInputs[index];
     // Dynamic writes consume the old chunk run and replace it with a potentially shorter new run, and a callee

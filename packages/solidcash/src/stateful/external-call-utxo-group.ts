@@ -459,7 +459,7 @@ export function calleeOutputSpan(group: ExternalCallUtxoGroup): number {
  * A callee's loop entry inputs. Each is replaced in the run the callee's covenant pins, which a compacted record
  * moves off its input coordinate, so none is ever mirrored at its own index.
  */
-export function calleeLoopEntryInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
+function calleeLoopEntryInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
   return group.entryLoopStart === undefined ? [] : group.blockInputs?.slice(group.entryLoopStart) ?? [];
 }
 
@@ -473,6 +473,11 @@ export function voidRecordUnread(
 ): boolean {
   return call.hasReturnValues !== true && (callee?.outputs?.length ?? 0) === 0
     && callee?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true;
+}
+
+/** A callee's inputs no output mirrors: the old chunks its write consumes and its loop entries. */
+export function calleeConsumedInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
+  return [...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo), ...calleeLoopEntryInputs(group)];
 }
 
 /**

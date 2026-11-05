@@ -7,6 +7,7 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
@@ -68,7 +69,7 @@ const directory = artifacts.Directory!;
 const store = artifacts.Store!;
 
 /** One live UTXO as the provider holds it: a token of the category, with the commitment it carries. */
-function utxo(txid: string, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array, vout = 0) {
+function utxo(txid: string, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array, vout = 0): Utxo {
   return {
     txid, vout, satoshis: 20_000n,
     token: { category, amount: 0n, nft: { capability, commitment: bytesToHex(commitment) } },

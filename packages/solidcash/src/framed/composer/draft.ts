@@ -37,7 +37,6 @@ import {
   bytesEqual,
   bytesToHex,
   encodeArgumentList,
-  encodeMinimalDataPush,
   hash256,
   mintedRef,
   sha256,
@@ -1221,7 +1220,6 @@ export function bindRecordChainStarts(
       if (spent === undefined || spent.commitment === undefined || bound.has(spent.id)) continue;
       bound.add(spent.id);
       if (bytesEqual(entry.viewIn, spent.commitment)) continue;
-      // eslint-disable-next-line no-param-reassign, functional/immutable-data
       (segment as RecordEntry[])[at] = { ...entry, viewIn: spent.commitment };
       if ((globalThis as unknown as { process?: { env: Record<string, string | undefined> } })
         .process?.env?.FRAMED_VIEW_DEBUG !== undefined) {

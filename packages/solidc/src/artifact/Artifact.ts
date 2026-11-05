@@ -1286,8 +1286,8 @@ const externalCallIterationDomainLists = (
         : ((): ExternalCallExpression | null => {
           const turn = clone(state);
           // The statements before the one that makes the target, descending into the block or arm holding it.
-          const replayTurn = (block: BlockNode): boolean => {
-            for (const statement of block.statements ?? []) {
+          const replayTurn = (turnBlock: BlockNode): boolean => {
+            for (const statement of turnBlock.statements ?? []) {
               if (!contains(statement, target)) {
                 if (!processBlock(new BlockNode([statement]), turn) || !turn.reachable) return false;
                 continue;
@@ -3033,6 +3033,7 @@ function publishComputedLoopCounters(
     const byCounter = new Map((iterationDomains.get(slot.slotIndex) ?? []).map((domain) => [domain.counterName, domain]));
     if (byCounter.size === 0) continue;
     const seen = new Set<object>();
+    // eslint-disable-next-line @typescript-eslint/no-loop-func
     const visit = (value: unknown): void => {
       if (value === null || typeof value !== 'object' || seen.has(value)) return;
       seen.add(value);

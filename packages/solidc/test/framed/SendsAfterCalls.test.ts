@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { PublishedEntryStopSites } from '@solidcash/utils';
 import { compileStringMulti } from '../../src/compiler.js';
 
 /**
@@ -20,7 +21,7 @@ const SOURCE = 'pragma solidity ^0.8.0;'
   + '     for (uint256 i = 0; i < xs.length; i++) { sink.add(xs[i]); } } }';
 
 const payer = compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true } as never).Payer!;
-const published = (name: string) => payer.composition!.stopSites!.entries
+const published = (name: string): PublishedEntryStopSites => payer.composition!.stopSites!.entries
   .find((entry) => entry.functionName === `Payer.${name}()`)!;
 
 describe('a send the entry makes no call after', () => {

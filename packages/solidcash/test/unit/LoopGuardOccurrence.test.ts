@@ -13,12 +13,12 @@ import { occurrenceCountOf } from '../../src/framed/proxy/external-calls.js';
  */
 
 const len = { kind: 'unary', operator: '.length', expression: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } } };
-const literal = (value: string) => ({ kind: 'literal', type: 'bigint', value });
-const not = (expression: unknown) => ({ kind: 'unary', operator: '!', expression });
+const literal = (value: string): Record<string, unknown> => ({ kind: 'literal', type: 'bigint', value });
+const not = (expression: unknown): Record<string, unknown> => ({ kind: 'unary', operator: '!', expression });
 const loopIndex = {
   kind: 'source', source: { kind: 'loopIndex', counterName: '__inl13_i', initialValue: '0', stepValue: '1' },
 };
-const pathAt = (offset: string) => ({
+const pathAt = (offset: string): Record<string, unknown> => ({
   kind: 'expression',
   expression: {
     kind: 'arrayAccess',

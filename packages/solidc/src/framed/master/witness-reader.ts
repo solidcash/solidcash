@@ -106,7 +106,8 @@ export function takeRecordFieldsScript(): Uint8Array {
     ...encodeDataPush(minimalNumber(2)), Opcodes.OP_SPLIT, // [rest8, in, out, inLen, outLen]
     Opcodes.OP_DUP, ...encodeDataPush(KEPT_VIEW_LENGTH_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK,
     ...recordViewLengths(), // [rest8, in, out, inLen, total]
-    ...encodeDataPush(minimalNumber(4)), Opcodes.OP_ROLL, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, // [in, out, inLen, views, rest']
+    ...encodeDataPush(minimalNumber(4)), Opcodes.OP_ROLL,
+    Opcodes.OP_SWAP, Opcodes.OP_SPLIT, // [in, out, inLen, views, rest']
     Opcodes.OP_TOALTSTACK, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, // [in, out, viewIn, viewOut or nothing]
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, // [.., rest', kept]
     Opcodes.OP_IF, Opcodes.OP_NIP, Opcodes.OP_OVER, Opcodes.OP_SWAP, Opcodes.OP_ENDIF,

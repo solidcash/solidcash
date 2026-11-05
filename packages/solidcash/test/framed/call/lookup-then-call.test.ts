@@ -60,7 +60,7 @@ const nextCoin = (satoshis: bigint): Utxo => {
 describe('a plan that calls the address an earlier call returned', () => {
   it('resolves the second call\u2019s target from the first call result and settles its write', async () => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const deploy = async (name: string, args: unknown[] = []) => {
+    const deploy = async (name: string, args: unknown[] = []): ReturnType<typeof deployStatefulContract> => {
       const funding = nextCoin(900_000n);
       await provider.addUtxo(binToHex(callerLock), funding);
       const deployed = await deployStatefulContract(ARTIFACTS[name]!, args as never, {

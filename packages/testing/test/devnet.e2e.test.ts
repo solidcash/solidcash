@@ -16,6 +16,7 @@ import { ripemd160, secp256k1, sha1, sha256 } from '@bitauth/libauth/build/lib/c
 import { binToHex, flattenBinArray, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import type { TransactionCommon } from '@bitauth/libauth/build/lib/message/transaction-types.js';
 import { measureOperationCost } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-consensus.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
@@ -403,9 +404,9 @@ describe('solidhat node end to end', () => {
     try {
       const scripthash = (await (async () => {
         const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-        const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-        const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-        return binToHex(sha256.hash(addressToLockScript(first.address)).reverse());
+        const { sha256: localSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+        const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+        return localBinToHex(localSha256.hash(addressToLockScript(first.address)).reverse());
       })());
       const utxos = await client.request('blockchain.scripthash.listunspent', scripthash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
@@ -427,9 +428,9 @@ describe('solidhat node end to end', () => {
     const clientAgain = await rawClient(node);
     try {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-      const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-      const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(first.address)).reverse());
+      const { sha256: localSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+      const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+      const firstScriptHash = localBinToHex(localSha256.hash(addressToLockScript(first.address)).reverse());
       const utxos = await clientAgain.request(
         'blockchain.scripthash.listunspent',
         firstScriptHash,
@@ -448,9 +449,9 @@ describe('solidhat node end to end', () => {
     const clientFinal = await rawClient(node);
     try {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-      const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-      const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const scriptHash = binToHex(sha256.hash(addressToLockScript(afterRevert.address)).reverse());
+      const { sha256: localSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+      const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+      const scriptHash = localBinToHex(localSha256.hash(addressToLockScript(afterRevert.address)).reverse());
       const utxos = await clientFinal.request('blockchain.scripthash.listunspent', scriptHash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
     } finally {
@@ -676,7 +677,7 @@ describe('solidhat node --consensus production', () => {
   /** 2,000 turns cost about 800,000 units of operation cost, which mainnet funds with an input of about 1,000 bytes. */
   const turns = 2_000n;
   const coin = { txid: 'c0'.repeat(32), vout: 0, satoshis: 100_000n };
-  const spend = (padding: number) => ({
+  const spend = (padding: number): TransactionCommon => ({
     version: 2,
     locktime: 0,
     inputs: [{
@@ -749,9 +750,11 @@ describe('solidhat node --consensus production', () => {
       await call(node, 'devnet.injectUtxo', [
         binToHex(countdownLock), { txid: coin.txid, vout: coin.vout, satoshis: String(coin.satoshis) },
       ]);
-      const broadcast = (transaction: ReturnType<typeof spend>) => rpc(node, 'blockchain.transaction.broadcast', [
-        binToHex(encodeTransaction(transaction)),
-      ]);
+      const broadcast = (transaction: ReturnType<typeof spend>): Promise<Rpc> => rpc(
+        node,
+        'blockchain.transaction.broadcast',
+        [binToHex(encodeTransaction(transaction))],
+      );
       const unpadded = await broadcast(spend(0));
       expect(unpadded.error?.message).toMatch(/operation cost/);
       const padded = spendPaddedTo(devnet.consensus.operation_cost_budget_per_byte!);

@@ -343,6 +343,7 @@ describe('an entry that pays a contract through its receive()', () => {
       functionName: 'pay',
       args: [addressOf(payments.Vault!, '49'.repeat(32)), 7_000n],
     })).rejects.toThrow(
+      // eslint-disable-next-line max-len
       /entry "pay" sends to the contract at [0-9a-f]+, which neither the call's externals nor the provider's registrations name/,
     );
   });

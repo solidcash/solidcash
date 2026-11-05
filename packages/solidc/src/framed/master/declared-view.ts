@@ -156,7 +156,6 @@ export function declaredSegmentRecordCountScript(options: DeclaredViewCounts): U
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
   // The segment index, taken as the walk reaches it.
   walkToSegments(bytes, options, options.runtimeCounts === true ? 1 : 0, op, raw, num);
@@ -320,7 +319,6 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
   // The coordinate is parked for the walk and recovered once the record is found; a walk over the running
   // execution's own counts parks the segment index beside it, because the block's call count is read as the walk
@@ -748,7 +746,6 @@ export function declaredRecordFirstViewByNameScript(options: DeclaredViewCounts)
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
   walkToSegments(bytes, options, options.runtimeCounts === true ? 2 : 1, op, raw, num);
   stepDeclaredSegments(options, op, raw, num);

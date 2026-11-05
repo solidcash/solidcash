@@ -112,7 +112,10 @@ function layout(options: Options): { caller: number; state: number; validator: n
   // The record sits right after its master by default, and last when a case moves it away from the master that reads
   // it.
   return options.recordLast === true
-    ? { caller: 0, validator: 1, user: 1 + VALIDATOR_INPUT_SPAN, callee: 2 + VALIDATOR_INPUT_SPAN, state: 3 + VALIDATOR_INPUT_SPAN }
+    ? {
+      caller: 0, validator: 1, user: 1 + VALIDATOR_INPUT_SPAN,
+      callee: 2 + VALIDATOR_INPUT_SPAN, state: 3 + VALIDATOR_INPUT_SPAN,
+    }
     : { caller: 0, state: 1, validator: 2, user: 2 + VALIDATOR_INPUT_SPAN, callee: 3 + VALIDATOR_INPUT_SPAN };
 }
 

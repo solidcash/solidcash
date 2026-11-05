@@ -28,7 +28,6 @@ import {
   splitFirstPushScript,
   takeFixedWidthField,
   takeLengthPrefixedField,
-  takeLengthPrefixedField32,
   takeRecordFieldsScript,
   unsignedLength,
 } from '../master/witness-reader.js';
@@ -1632,9 +1631,9 @@ function emitIndexOf32(e: Emitter): void {
  * The function takes `[m, kIn, block]` and leaves nothing: `m` is the master's id, an input index or
  * `mintedRef(output)` for a minted master, `kIn` the settle index of the contract its caller runs on (or -1), and
  * `block` its witness block. It holds the block to the codec's layout (V2) and requires that it names this validator
- * (V3). For a frame on a settled contract it adds the frame's records, events, sends and value to the accumulators. Between segment `j`
- * and segment `j + 1` it visits the callee of call `j`, which is the order V6 derives. The call tree is a forest that
- * reaches every covered master once, as the facet's walk requires, so the recursion ends.
+ * (V3). For a frame on a settled contract it adds the frame's records, events, sends and value to the accumulators.
+ * Between segment `j` and segment `j + 1` it visits the callee of call `j`, which is the order V6 derives. The call
+ * tree is a forest that reaches every covered master once, as the facet's walk requires, so the recursion ends.
  */
 function emitDefineSettleWalk(e: Emitter): void {
   const O = Opcodes;
@@ -2066,32 +2065,32 @@ function emitRequireRecordEnds(s: NamedStack): void {
       s.roll('k').emit(1, ['k'], (em) => em.unsignedByteOnTop());
       s.pick('key', 'out');
       s.pick('state', 'st').push(new Uint8Array([0x00]), 'zero').op(2, ['unused'], O.OP_EQUAL).op(1, ['used'], O.OP_NOT);
-      s.branch(() => s.call((s) => {
+      s.branch(() => s.call((fs) => {
       // A live record ends at an output that carries its view and is a mutable NFT of its contract.
-        s.pick('state', 'st').push(Uint8Array.from([SLOT_LIVE]), 'live').op(2, ['l'], O.OP_AND)
+        fs.pick('state', 'st').push(Uint8Array.from([SLOT_LIVE]), 'live').op(2, ['l'], O.OP_AND)
           .push(Uint8Array.from([SLOT_LIVE]), 'live').op(2, ['isLive'], O.OP_EQUAL).branch(() => {
-            s.pick('out', 'o').op(1, [], O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
-            s.pick('out', 'o').op(1, ['commitment'], O.OP_OUTPUTTOKENCOMMITMENT, O.OP_HASH160).pick('view', 'v')
+            fs.pick('out', 'o').op(1, [], O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+            fs.pick('out', 'o').op(1, ['commitment'], O.OP_OUTPUTTOKENCOMMITMENT, O.OP_HASH160).pick('view', 'v')
               .op(2, [], O.OP_EQUALVERIFY);
-            s.pick('out', 'o').op(1, ['pin'], O.OP_OUTPUTTOKENCATEGORY);
-            s.pickBottom(SETTLE_DECLARED_POSITION, 'declared').pick('k', 'kk').emit(2, ['category'], emitDeclaredAt);
-            s.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
-            s.op(2, [], O.OP_EQUALVERIFY);
+            fs.pick('out', 'o').op(1, ['pin'], O.OP_OUTPUTTOKENCATEGORY);
+            fs.pickBottom(SETTLE_DECLARED_POSITION, 'declared').pick('k', 'kk').emit(2, ['category'], emitDeclaredAt);
+            fs.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
+            fs.op(2, [], O.OP_EQUALVERIFY);
           });
         // A record read at an input is a listed state UTXO of its contract, or a record listed as created for it.
-        s.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['t'], O.OP_AND)
+        fs.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['t'], O.OP_AND)
           .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['isTouched'], O.OP_EQUAL).branch(() => {
-            s.pick('key', 'kk').op(1, ['isInput'], O.OP_TXINPUTCOUNT, O.OP_LESSTHAN).branch(() => {
-              s.pick('listed', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
+            fs.pick('key', 'kk').op(1, ['isInput'], O.OP_TXINPUTCOUNT, O.OP_LESSTHAN).branch(() => {
+              fs.pick('listed', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
                 .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
                 .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isListed'], O.OP_EQUAL);
             }, () => {
-              s.count(0, 'isListed');
+              fs.count(0, 'isListed');
             });
-            s.pick('created', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
+            fs.pick('created', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
               .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
               .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isCreated'], O.OP_EQUAL);
-            s.op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
+            fs.op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
           });
       }));
       for (const name of ['state', 'k', 'out', 'view']) s.remove(name);
@@ -2345,7 +2344,10 @@ function emitRequireContractValues(s: NamedStack): void {
         // `[lock, total]`: inputs at the lock take their value away.
         em.count(0).op(O.OP_BEGIN);
         em.op(O.OP_DUP, O.OP_UTXOBYTECODE).count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_OVER, O.OP_UTXOVALUE, O.OP_MUL);
-        em.op(O.OP_ROT, O.OP_SWAP, O.OP_SUB, O.OP_SWAP, O.OP_1ADD, O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+        em.op(
+          O.OP_ROT, O.OP_SWAP, O.OP_SUB, O.OP_SWAP, O.OP_1ADD, O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL,
+          O.OP_UNTIL,
+        );
         em.op(O.OP_DROP);
       });
       // Outputs only add, so they are summed only when the inputs leave the total below zero.

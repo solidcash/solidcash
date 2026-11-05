@@ -331,7 +331,7 @@ import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafe
 import {
   externalResultEncoding, externalResultMayNeedPreimage,
   CALL_RECORD_DIGEST_BYTES, CALL_RECORD_INLINE_RESULT_BYTES, namesCallRecordArguments,
-  isEvmAbiWordType, isEvmExternalResultSchemaDecodable, usesEvmResultWords,
+  isEvmAbiWordType, usesEvmResultWords,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, emitsAnyEvent, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -375,7 +375,7 @@ import {
   buildBatchTargetsDerivationScript,
 } from '../framed/master/batch-witness-derivation.js';
 import {
-  UNDECIDED_WRITE_ACTIVATION, isAlwaysActive, framedEmitActivation, framedStateWrites, framedWriteActivation,
+  isAlwaysActive, framedEmitActivation, framedStateWrites, framedWriteActivation,
 } from '../framed/master/write-activation.js';
 import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../framed/master/frame-tail.js';
 import {

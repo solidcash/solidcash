@@ -10,7 +10,6 @@ import {
   Node,
   NullaryOpNode,
   TypeIntrospectionNode,
-  UnaryOpNode,
   VariableDefinitionNode,
   BlockNode,
   ContractNode,

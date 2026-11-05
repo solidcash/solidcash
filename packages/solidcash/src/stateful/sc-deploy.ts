@@ -108,12 +108,16 @@ export async function deployStatefulContract<T extends Artifact>(
     : addressToLockScript(getTokenContainerAddress(
       // A framed container's covenant is the artifact's own: only the creation args are part of the program, and
       // they are needed here to build a valid handle (the constructor-block args are not).
-      new Contract(artifact, (framed ? constructorArgs.slice(0, artifact.constructorInputs.length) : constructorArgs) as any, {
-        provider: options.provider,
-        addressType: options.addressType,
-        category: hexToBin(options.fundingUtxo.txid),
-        salt: options.salt,
-      }),
+      new Contract(
+        artifact,
+        (framed ? constructorArgs.slice(0, artifact.constructorInputs.length) : constructorArgs) as any,
+        {
+          provider: options.provider,
+          addressType: options.addressType,
+          category: hexToBin(options.fundingUtxo.txid),
+          salt: options.salt,
+        },
+      ),
       options.fundingUtxo.txid.toLowerCase(),
       tokenCategory,
     ));

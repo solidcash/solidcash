@@ -147,7 +147,9 @@ export async function deployFramedStatefulContract<T extends Artifact>(
         ...placeholders,
         categoryOffset: placeholders.categoryOffset + prefixLength,
         addressOffset: placeholders.addressOffset + prefixLength,
-        ...(placeholders.templateHashOffset === undefined ? {} : { templateHashOffset: placeholders.templateHashOffset + prefixLength }),
+        ...(placeholders.templateHashOffset === undefined
+          ? {}
+          : { templateHashOffset: placeholders.templateHashOffset + prefixLength }),
         ...(placeholders.identityOffset === undefined ? {} : { identityOffset: placeholders.identityOffset + prefixLength }),
       };
     framedArtifact = {

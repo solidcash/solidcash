@@ -75,7 +75,7 @@ describe('the address a creating body computes', () => {
 
   it('is addrV of the caller coin the transaction carries, and it moves with the coin', async () => {
     /** A creator deployed on its own chain with its child's constants, and the coin its `make` call will carry. */
-    const deployCreator = async () => {
+    const deployCreator = async (): Promise<{ provider: MockNetworkProvider; categoryId: string; caller: Utxo }> => {
       const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
       const funding = nextCoin(900_000n);
       await provider.addUtxo(binToHex(callerLock), funding);
@@ -91,7 +91,9 @@ describe('the address a creating body computes', () => {
     };
 
     /** Calls `make`, and answers the address it returned and the coin it carried. */
-    const make = async (deployment: { provider: MockNetworkProvider; categoryId: string; caller: Utxo }) => {
+    const make = async (
+      deployment: { provider: MockNetworkProvider; categoryId: string; caller: Utxo },
+    ): Promise<{ computed: Uint8Array; caller: Utxo }> => {
       const result = await callFramedEntry({
         provider: deployment.provider, artifact: creator.logical, categoryId: deployment.categoryId,
         functionName: 'make', args: [new Uint8Array(32)],
@@ -114,7 +116,7 @@ describe('the address a creating body computes', () => {
      * A Solidity `address` return is the 20-byte identity of the lock it names (DECISIONS D13). A creating call states
      * the display order the node's wire carries, so `K` is the txid's bytes as written (`AtomicPairCreatePair` too).
      */
-    const identityOf = (txid: string) => hash160(validatorAddress(hexToBin(txid), VALIDATOR));
+    const identityOf = (txid: string): Uint8Array => hash160(validatorAddress(hexToBin(txid), VALIDATOR));
 
     const first = await make(await deployCreator());
     expect(binToHex(first.computed)).toBe(binToHex(identityOf(first.caller.txid)));

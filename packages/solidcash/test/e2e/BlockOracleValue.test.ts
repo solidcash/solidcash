@@ -5,7 +5,6 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
-import { StatefulContract } from '../../src/stateful/index.js';
 import {
   PoolKeeper, poolInfoUnlockable, type PoolBlockFields, type PoolCoin,
 } from '../../src/oracle/pool/index.js';

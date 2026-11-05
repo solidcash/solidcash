@@ -12,7 +12,8 @@ import { ripemd160, secp256k1, sha1, sha256 } from '@bitauth/libauth/build/lib/c
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { createVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
+import { createVirtualMachine, type AuthenticationVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
+import type { ResolvedTransactionCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { bytesEqual } from '@solidcash/utils';
 
 type InstructionSet = ReturnType<typeof createInstructionSetBch2026>;
@@ -20,6 +21,8 @@ type MachineState = ReturnType<InstructionSet['evaluate']>;
 
 /** The program a head runs: its input of the transaction, with the outputs every input spends. */
 export type ValidatorHeadProgram = Parameters<InstructionSet['evaluate']>[0];
+
+type HeadMachine = AuthenticationVirtualMachine<ResolvedTransactionCommon, ValidatorHeadProgram, MachineState>;
 
 /**
  * The run that reads the close: every budget and size ceiling lifted, so the head reaches it whatever its input pays
@@ -37,7 +40,7 @@ const LIFTED_CONSENSUS = {
 };
 
 /** The instruction set and machine the head's run is stepped on. */
-function liftedMachine() {
+function liftedMachine(): { set: InstructionSet; machine: HeadMachine } {
   const set = createInstructionSetBch2026(false, { consensus: LIFTED_CONSENSUS, ripemd160, secp256k1, sha1, sha256 });
   return { set, machine: createVirtualMachine(set) };
 }

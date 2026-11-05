@@ -2,7 +2,7 @@ import { binToHex } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { buildSharedMethodExternalBatch } from '../../src/stateful/sc-build-shared-method-external-batch.js';
 
-const address = (byte: string) => Uint8Array.from({ length: 20 }, () => Number.parseInt(byte, 16));
+const address = (byte: string): Uint8Array => Uint8Array.from({ length: 20 }, () => Number.parseInt(byte, 16));
 
 const tokenArtifact = (eligible = true): any => ({
   contractName: 'TestERC20',
@@ -49,7 +49,9 @@ const caller = {
   inputs: [],
 };
 
-const run = (shared: any, next: any, artifact: any) => {
+const run = (
+  shared: any, next: any, artifact: any,
+): { route: ReturnType<typeof buildSharedMethodExternalBatch>; captured: any[] | undefined } => {
   let captured: any[] | undefined;
   const sentinel = { abiFunction: { name: '__message_bus1' } } as any;
   const route = buildSharedMethodExternalBatch(

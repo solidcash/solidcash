@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
+import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256, type Input } from '@bitauth/libauth';
 import {
   KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK,
   Op,
@@ -54,7 +54,7 @@ function accepted(body: Script, others: readonly OtherInput[] = []): string | tr
   ]);
   const lock = p2sh32(redeem);
   const vm = compositionMachine();
-  const input = (index: number, unlockingBytecode: Uint8Array) => ({
+  const input = (index: number, unlockingBytecode: Uint8Array): Input => ({
     outpointIndex: 0,
     outpointTransactionHash: new Uint8Array(32).fill(index),
     sequenceNumber: 0xffffffff,

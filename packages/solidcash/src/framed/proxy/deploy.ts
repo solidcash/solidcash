@@ -3553,7 +3553,7 @@ function hopEmits(
 ): readonly (NonNullable<Artifact['abi'][number]['emits']>[number] & { readonly chunk: number })[] {
   const rows = artifact.abi.find((candidate) => candidate.name === functionName)?.emits ?? [];
   // A wide emit lists one output per chunk of its payload (`EmitAbi.chunks`).
-  const chunked = (row: NonNullable<Artifact['abi'][number]['emits']>[number]) =>
+  const chunked = (row: NonNullable<Artifact['abi'][number]['emits']>[number]): ReturnType<typeof hopEmits>[number][] =>
     Array.from({ length: row.chunks ?? 1 }, (_unused, chunk) => ({ ...row, chunk }));
   if (emits === undefined) {
     if (publishedLoopEffects(artifact, functionName)?.events !== undefined) {

@@ -10464,10 +10464,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         // initializer's read only up to that assignment, so the read stands where the call is, past the writes.
         const assigns = (statement: StatementNode): boolean => {
           let assigned = false;
-          walkInvocationAst(statement, (node) => {
-            if ((node instanceof AssignNode && node.identifier.name === identifier.name)
-              || (node instanceof TupleAssignmentNode
-                && node.elements.some((element) => element.name === identifier.name && element.existing === true))) {
+          walkInvocationAst(statement, (astNode) => {
+            if ((astNode instanceof AssignNode && astNode.identifier.name === identifier.name)
+              || (astNode instanceof TupleAssignmentNode
+                && astNode.elements.some((element) => element.name === identifier.name && element.existing === true))) {
               assigned = true;
             }
           });
@@ -10478,14 +10478,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         const writes = (collection: string): boolean => {
           const visited = new Set<FunctionDefinitionNode>();
           let written = false;
-          const visit = (node: Node): void => {
+          const visit = (astNode: Node): void => {
             if (written) return;
-            if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
-              || node instanceof MappingDeleteNode) && node.name === collection) {
+            if ((astNode instanceof MappingAssignNode || astNode instanceof MappingFieldAssignNode
+              || astNode instanceof MappingDeleteNode) && astNode.name === collection) {
               written = true;
               return;
             }
-            const callee = node instanceof FunctionCallNode ? node.resolvedFunction : undefined;
+            const callee = astNode instanceof FunctionCallNode ? astNode.resolvedFunction : undefined;
             if (callee?.body !== undefined && !visited.has(callee)) {
               visited.add(callee);
               walkInvocationAst(callee.body, visit);
@@ -11545,19 +11545,19 @@ export default class SymbolTableTraversal extends AstTraversal {
                   if (!declares && names.some((name) => name !== null && !localNames.has(name))) {
                     return undefined;
                   }
-                  const slots = statement.tupleExpressions
+                  const tupleSlots = statement.tupleExpressions
                     ? statement.tupleExpressions.map((item) => serializeExpression(item))
                     : undefined;
-                  const tuple = slots === undefined && statement.tuple
+                  const tuple = tupleSlots === undefined && statement.tuple
                     ? serializeExpression(statement.tuple) : undefined;
-                  if (slots !== undefined ? slots.some((slot) => slot === undefined)
+                  if (tupleSlots !== undefined ? tupleSlots.some((slot) => slot === undefined)
                     : tuple === undefined) {
                     return undefined;
                   }
-                  serialized.push(slots !== undefined
+                  serialized.push(tupleSlots !== undefined
                     ? {
                       kind: 'tupleAssign', names, types,
-                      args: slots as ExternalCallExpression[],
+                      args: tupleSlots as ExternalCallExpression[],
                     }
                     : { kind: 'tupleAssign', names, types, expression: tuple });
                   for (const name of names) if (name !== null) localNames.add(name);
@@ -11575,11 +11575,11 @@ export default class SymbolTableTraversal extends AstTraversal {
                     kind: 'branch', condition, statements: ifBody, elseStatements: elseBody,
                   });
                 } else if (statement instanceof ReturnNode && statement.expressions.length > 0) {
-                  const values = statement.expressions.map((item) => serializeExpression(item));
-                  if (values.some((value) => value === undefined)) return undefined;
-                  const value = values.length === 1
-                    ? values[0]
-                    : { kind: 'tuple', args: values as ExternalCallExpression[] };
+                  const returnValues = statement.expressions.map((item) => serializeExpression(item));
+                  if (returnValues.some((value) => value === undefined)) return undefined;
+                  const value = returnValues.length === 1
+                    ? returnValues[0]
+                    : { kind: 'tuple', args: returnValues as ExternalCallExpression[] };
                   serialized.push({ kind: 'return', expression: value });
                 } else if (statement instanceof ExpressionStatementNode) {
                   const value = serializeExpression(statement.expression);

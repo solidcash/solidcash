@@ -343,9 +343,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }));
   }
 
-  // The returned handle uses the same self-pinned address as the first deployed genesis.
-  const childContract = childContractUnsalted;
-
   const childLayout = childArtifact.stateLayout!;
 
   if (deployTarget?.childLayoutDigest
@@ -1766,7 +1763,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const tx = await builder.send();
 
   // Connect the child with its categoryId. The compiler's `new C(...)` codegen now self-pins the child by
-  // category (matching the SDK), so childContract's self-pinned address equals the deployed genesis address.
+  // category (matching the SDK), so each child's self-pinned address equals the deployed genesis address.
   // See docs/external-contract-calls.md.
   const { StatefulContract: SC } = await import('./StatefulContract.js');
   const statefulChildren = childContracts.map((child, index) => new SC(

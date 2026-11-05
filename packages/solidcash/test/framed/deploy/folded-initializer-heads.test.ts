@@ -5,7 +5,7 @@ import { framedValidator } from '@solidcash/solidc/runtime';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringSplit } from '../../../../solidc/src/compiler.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deriveFramedGenesis, FramedGenesisError } from '../../../src/framed/deploy/genesis.js';
+import { deriveFramedGenesis, FramedGenesisError, type FramedGenesis } from '../../../src/framed/deploy/genesis.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 
 const FRAMED = { composition: 'framed' as const, evmCompat: true, suppressWarnings: true, split: 'func' as const };
@@ -29,7 +29,7 @@ contract Child {
 const childArtifact = (source: string): Artifact =>
   (compileStringSplit(source, { ...FRAMED, primaryContractName: 'Child' }) as FunctionSplitBundle).logical;
 
-const fold = (artifact: Artifact) => deriveFramedGenesis({
+const fold = (artifact: Artifact): FramedGenesis => deriveFramedGenesis({
   artifact,
   category: new Uint8Array(32).fill(9),
   validatorProgram: VALIDATOR,

@@ -387,6 +387,7 @@ function closureWeight(fn: FunctionDefinitionNode, byName: Map<string, FunctionD
   for (const name of inlineClosureNames(fn, byName)) {
     for (const candidate of byName.get(name) ?? []) {
       if (candidate !== fn && candidate.isEntryPoint) continue;
+      // eslint-disable-next-line @typescript-eslint/no-loop-func
       walkInvocationAst(candidate.body, () => { weight += 1; }, seen);
     }
   }

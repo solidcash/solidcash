@@ -2857,6 +2857,7 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     let foldedDeployCall = false;
     for (const body of [contract.constructorDef, ...input.contract.functions]) {
       if (!body) continue;
+      // eslint-disable-next-line @typescript-eslint/no-loop-func
       walkInvocationAst(body.body, (node) => {
         if (node instanceof InstantiationNode && node.hasFoldedChildCall === true) foldedDeployCall = true;
       });

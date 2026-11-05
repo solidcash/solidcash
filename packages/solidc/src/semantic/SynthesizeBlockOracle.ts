@@ -132,6 +132,7 @@ export function createdPoolReads(
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
   ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
   for (const fn of bodies) {
+    // eslint-disable-next-line @typescript-eslint/no-loop-func
     walkInvocationAst(fn.body, (node) => {
       if (!(node instanceof InstantiationNode || node instanceof ContractReferenceNode)) return;
       const child = node.referencedContract;

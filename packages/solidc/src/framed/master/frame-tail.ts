@@ -917,9 +917,6 @@ export function countMastersScript(): Uint8Array {
   ]);
 }
 
-/** The frame kinds of the calls that run on the caller's records, `DELEGATE` and `INTERNAL`, as `[low, high)`. */
-const CONTEXT_CALL_KINDS = [3, 5] as const;
-
 /**
  * Consumes a validator input index on top and requires it to name a validator for the hash in the reserved slot.
  *
@@ -1071,7 +1068,9 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     emit(Opcodes.OP_DROP, ...unsignedLength(), Opcodes.OP_SPLIT, Opcodes.OP_DROP);
     emit(Opcodes.OP_ELSE);
     emit(...unsignedLength(), Opcodes.OP_SWAP, ...unsignedLength());
-    emit(Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    emit(
+      Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    );
     emit(Opcodes.OP_ENDIF);
     emit(Opcodes.OP_ENDIF);
   };

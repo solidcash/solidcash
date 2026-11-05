@@ -37,7 +37,10 @@ const SOURCE = 'pragma solidity ^0.8.0;\n'
   + '  function set(uint112 a, uint112 b) public { reserve0 = a; reserve1 = b; owner = msg.sender; }\n'
   + '}\n';
 
-function compile(): { abi: Map<string, { directStateReturn?: { variables: readonly (string | null)[] } }>; warnings: string[] } {
+function compile(): {
+  abi: Map<string, { directStateReturn?: { variables: readonly (string | null)[] } }>;
+  warnings: string[];
+} {
   const warnings: string[] = [];
   const artifact = withWarningListener(({ message }) => { warnings.push(message); },
     () => compileStringMulti(SOURCE, { composition: 'framed', evmCompat: true }).Pair!);

@@ -49629,7 +49629,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (fnPtrPushCount !== undefined) {
             this.emit(Op.OP_SWAP, locationData);         // [idx, remainder, selector]
             emitSelectorCompare();                       // [idx, remainder]
-            this.emitPinFnPtrPushCount(fnPtrPushCount + 1, anchorParamIdx, locationData); // [idx] args + redeem
+            this.emitPinFnPtrPushCount(fnPtrPushCount, slot, anchorParamIdx, locationData); // [idx]
           } else {
             this.emit(Op.OP_DROP, locationData);         // [idx, selector]
             emitSelectorCompare();                       // [idx]
@@ -49639,7 +49639,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_DROP, locationData);         // [idx]
             this.emit(Op.OP_DUP, locationData);          // [idx, idx]
             this.emit(Op.OP_INPUTBYTECODE, locationData); // [idx, ubc] (single-method callee: no selector push)
-            this.emitPinFnPtrPushCount(fnPtrPushCount + 1, anchorParamIdx, locationData); // [idx] args + redeem
+            this.emitPinFnPtrPushCount(fnPtrPushCount, slot, anchorParamIdx, locationData); // [idx]
           } else {
             this.emit(Op.OP_DROP, locationData);         // [idx]
           }
@@ -50128,9 +50128,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // caller binds only the declared arguments (the last pushes before the redeem), so pin the co-spent unlocking
       // to exactly that arity + redeem (+ a leading selector push for a multi-method callee): a method with extra
       // parameters, whose values the caller never binds, is refused here rather than run on spender-chosen data.
-      const fnPtrArgCount = slot.sourceCallNode
-        ? this.directCallArgumentBinding(slot.sourceCallNode, slot, true, true)?.types.length
-        : undefined;
+      const fnPtrArgCount = slot.sourceCallNode && slot.calleeMethod
+        && this.directCallArgumentBinding(slot.sourceCallNode, slot, true, true)
+        ? this.declaredArgumentPushes(slot.calleeMethod.parameterTypes) : undefined;
       this.emit(encodeInt(BigInt(this.getStackIndex('(aec_sel_rem)') + 2)), loc); // +2: elem, idx
       this.emit(Op.OP_PICK, loc);                        // [elem, idx, selrem copy]
       this.emitPushdataDecode(new BytesType(), loc);     // [elem, idx, sel_i, newrem]
@@ -50150,7 +50150,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(2n), loc);
         this.emit(Op.OP_ROLL, loc);                      // [elem, idx, remainder, cosel, sel_i]
         this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx, remainder]  (cosel == sel_i)
-        this.emitRequireExactPushCount(fnPtrArgCount + 1, loc); // [elem, idx]  args + redeem, no extra pushes
+        this.emitRequirePointerCalleePushes(fnPtrArgCount, slot, loc); // [elem, idx]
       } else {
         this.emit(Op.OP_DROP, loc);                      // [elem, idx, sel_i, cosel]
         this.emit(Op.OP_EQUALVERIFY, loc);               // [elem, idx]
@@ -50160,7 +50160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_2DROP, loc);                     // [elem, idx]
         this.emit(Op.OP_DUP, loc);                       // [elem, idx, idx]
         this.emit(Op.OP_INPUTBYTECODE, loc);             // [elem, idx, ubc] (single-method callee: no selector push)
-        this.emitRequireExactPushCount(fnPtrArgCount + 1, loc); // [elem, idx]  args + redeem, no extra pushes
+        this.emitRequirePointerCalleePushes(fnPtrArgCount, slot, loc); // [elem, idx]
       } else {
         this.emit(Op.OP_DROP, loc);
         this.emit(Op.OP_DROP, loc);                      // [elem, idx]
@@ -50230,12 +50230,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[.., blob] -> [..]`: OP_VERIFY that `blob` decodes to exactly `expected` pushdata items. Pins a received
-   * function pointer's co-spent callee to the arity of the table's declared type, so a runtime selector that names a
-   * higher-arity callee method (whose extra parameters the caller never binds) is refused. Untracked working values
-   * only; the blob must hold at least one push (the callee's redeem), which every co-spent unlocking does.
+   * `[.., blob] -> [.., count]`: the number of pushdata items `blob` decodes to. Untracked working values only; the
+   * blob must hold at least one push (the callee's redeem), which every co-spent unlocking does.
    */
-  private emitRequireExactPushCount(expected: number, loc: SingleLocationData): void {
+  private emitCountPushes(loc: SingleLocationData): void {
     this.emit(encodeInt(0n), loc);                        // [.., blob, 0]
     this.emit(Op.OP_SWAP, loc);                           // [.., 0, blob]
     this.emit(Op.OP_BEGIN, loc);
@@ -50249,20 +50247,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);                          // [.., n+1, rest, len==0]
     this.emit(Op.OP_UNTIL, loc);                          // [.., count, rest(empty)]
     this.emit(Op.OP_DROP, loc);                           // [.., count]
-    this.emit(encodeInt(BigInt(expected)), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);                 // [..]
   }
 
   /**
-   * `[.., blob] -> [..]`: pin a received function pointer's co-spent unlocking to `expected` pushes, but ONLY for
-   * a direct co-spend. When an anchor witness exists (anchorParamIdx >= 0) the runtime anchor decides: < 0 is the
+   * `[.., blob] -> [..]`: pins a received pointer's co-spent pushes (selector split off) to its `args` declared
+   * arguments and the redeem, so a run-time selector naming a wider method, whose extra parameters the caller never
+   * binds, is refused. A returning pointer's callee also takes its record witness: a method without one settles no
+   * record for the caller to read. A void pointer reads no record, so that witness, the first push, must name none
+   * (OP_1NEGATE), and a callee taking no witness pushes just the arguments. A method with one extra parameter and no
+   * witness then runs on that constant, never on a spender-chosen value.
+   */
+  private emitRequirePointerCalleePushes(args: number, slot: ExternalCallSlot, loc: SingleLocationData): void {
+    if (slot.hasReturnValues) {
+      this.emitCountPushes(loc);                          // [.., count]
+      this.emit(encodeInt(BigInt(args + 2)), loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);               // [..]
+      return;
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(1n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                           // [.., blob, first]
+    this.emit(Op.OP_SWAP, loc);                           // [.., first, blob]
+    this.emitCountPushes(loc);                            // [.., first, count]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(BigInt(args + 2)), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);                       // [.., first, count, witnessed]
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);                           // [.., first]
+    this.emit(Uint8Array.of(Op.OP_1NEGATE), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);                    // [..]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_NIP, loc);                            // [.., count]
+    this.emit(encodeInt(BigInt(args + 1)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);                 // [..]
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * `[.., blob] -> [..]`: pin a received function pointer's co-spent unlocking (emitRequirePointerCalleePushes), but
+   * ONLY for a direct co-spend. When an anchor witness exists (anchorParamIdx >= 0) the runtime anchor decides: < 0 is the
    * direct call (pin it); >= 0 is a genuine proxy/CREATE-anchor route whose own frame binds the arguments, so the
    * raw push count must not be constrained (drop the blob unpinned). With no anchor witness the co-spend is always
    * direct, so pin unconditionally. The anchor sits on the alt stack here (pushed per slot), so read a copy back.
    */
-  private emitPinFnPtrPushCount(expected: number, anchorParamIdx: number, loc: SingleLocationData): void {
+  private emitPinFnPtrPushCount(
+    args: number, slot: ExternalCallSlot, anchorParamIdx: number, loc: SingleLocationData,
+  ): void {
     if (anchorParamIdx < 0) {
-      this.emitRequireExactPushCount(expected, loc);
+      this.emitRequirePointerCalleePushes(args, slot, loc);
       return;
     }
     this.emit(Op.OP_FROMALTSTACK, loc);                   // [.., blob, anchor]
@@ -50271,30 +50304,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_LESSTHAN, loc);                       // [.., blob, anchor < 0]
     this.emit(Op.OP_IF, loc);                             // [.., blob]
-    this.emitRequireExactPushCount(expected, loc);        // [..]
+    this.emitRequirePointerCalleePushes(args, slot, loc); // [..]
     this.emit(Op.OP_ELSE, loc);                           // [.., blob]
     this.emit(Op.OP_DROP, loc);                           // [..]
     this.emit(Op.OP_ENDIF, loc);                          // [..]
   }
 
   /**
-   * Declared argument-push count of a RECEIVED single function pointer's co-spent callee: the pointer type's
-   * parameters, an external function-pointer parameter counting as two pushes (address + selector), matching
-   * directCallArgumentBinding. A runtime selector may name a wider callee method, so the single-call path pins
-   * the co-spent unlocking to this count plus the redeem (emitPinFnPtrPushCount): a method whose extra pushes
-   * the caller never binds is refused. undefined for a fixed-method pointer (its method is arity-checked at
-   * compile time) or when the declared signature is unavailable, leaving that call's bytecode unchanged.
+   * Declared argument-push count of a RECEIVED single function pointer's co-spent callee. A runtime selector may
+   * name a wider callee method, so the single-call path pins the co-spent unlocking to this count
+   * (emitPinFnPtrPushCount): a method whose extra pushes the caller never binds is refused. undefined for a
+   * fixed-method pointer (its method is arity-checked at compile time) or when the declared signature is
+   * unavailable, leaving that call's bytecode unchanged.
    */
   private fnPtrDeclaredPushCount(slot: ExternalCallSlot): number | undefined {
     if (!slot.fnPtrCall || !slot.runtimeSelector) return undefined;
     const parameterTypes = slot.sourceCallNode?.resolvedCallee?.parameterTypes;
-    if (parameterTypes === undefined) return undefined;
-    let count = 0;
-    for (const type of parameterTypes) {
-      if (type === PrimitiveType.SIG) continue;
-      count += type instanceof FunctionType && type.isExternal ? 2 : 1;
-    }
-    return count;
+    return parameterTypes === undefined ? undefined : this.declaredArgumentPushes(parameterTypes);
+  }
+
+  /** The pushes a callee's unlocking takes for these parameters: an external function pointer is two, its address
+   * and selector (SplitExternalCallFnPtrArgs), and a signature is a push like any other. */
+  private declaredArgumentPushes(parameterTypes: readonly Type[]): number {
+    return parameterTypes.reduce<number>(
+      (count, type) => count + (type instanceof FunctionType && type.isExternal ? 2 : 1), 0,
+    );
   }
 
   /**
@@ -51153,7 +51187,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): boolean {
     const selector = node.opaqueReturn ? undefined : slot.callRecordSelector;
     if (selector === undefined) return false;
-    const declared = slot.callRecordParameterTypes ?? [];
+    // A function value passes as its address and selector, as the callee's lowered parameters take it.
+    const declared = (slot.callRecordParameterTypes ?? []).flatMap((type) => (type instanceof FunctionType
+      && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]));
     // Arguments left to the callee's witness: the read is bound by the record's category and the callee's run.
     if (!namesCallRecordArguments(declared, node.parameters.length)) return false;
     const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));

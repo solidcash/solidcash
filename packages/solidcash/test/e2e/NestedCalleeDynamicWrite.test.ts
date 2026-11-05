@@ -8,17 +8,23 @@ import { compileString } from '../direct-compile.js';
 
 const PRAGMA = 'pragma solidcash >=0.8.0;';
 
-const COUNTER = `${PRAGMA}
-contract Counter() { int count;
+// A second method makes an interface select its callee by selector, so the caller reads no void call record.
+const SECOND_METHOD = ' function reset() { require(true); }';
+const SECOND_DECLARATION = ' function reset();';
+
+const counterSource = (method = ''): string => `${PRAGMA}
+contract Counter() { int count;${method}
   function poke() { this.count = this.count + 1; require(this.count > 0); } }`;
+
+const COUNTER = counterSource();
 
 const ADDER = `${PRAGMA}
 contract Adder() { int total;
   function add(int v) returns (int) { this.total = this.total + v; require(v >= 0); return this.total; } }`;
 
-const CHAINED_WRITER = `${PRAGMA}
-interface ICounter { function poke(); }
-contract ChainedWriter(bytes counter) { string message;
+const chainedWriterSource = (method = '', declaration = ''): string => `${PRAGMA}
+interface ICounter { function poke();${declaration} }
+contract ChainedWriter(bytes counter) { string message;${method}
   function set(string next) {
     this.message = next;
     ICounter(counter).poke();
@@ -34,14 +40,16 @@ contract ReadingWriter(bytes adder) { string message; int last;
     require(this.last >= 0);
   } }`;
 
-const ROOT = `${PRAGMA}
-interface IWriter { function set(string next); }
+const rootSource = (declaration = ''): string => `${PRAGMA}
+interface IWriter { function set(string next);${declaration} }
 contract Root(bytes writer) { int runs;
   function run(string next) {
     IWriter(writer).set(next);
     this.runs = this.runs + 1;
     require(next.length >= 0);
   } }`;
+
+const ROOT = rootSource();
 
 const READING_ROOT = `${PRAGMA}
 interface IWriter { function set(string next, int v); }
@@ -93,9 +101,25 @@ contract EntryRoot(bytes writer) { int runs;
     require(value >= 0);
   } }`;
 
+const RETURNING_WRITER = `${PRAGMA}
+contract ReturningWriter() { string message;
+  function set(string next, int v) returns (int) {
+    require(v >= 0);
+    this.message = next;
+    return v + 1;
+  } }`;
+
+const RETURN_READING_ROOT = `${PRAGMA}
+interface IWriter { function set(string next, int v) returns (int); }
+contract ReturnReadingRoot(bytes writer) { int last;
+  function run(string next, int v) {
+    this.last = IWriter(writer).set(next, v);
+    require(this.last > 0);
+  } }`;
+
 const text = (length: number): string => 'x'.repeat(length);
 
-describe('a callee that writes dynamic state and calls on', () => {
+describe('a callee that writes dynamic state', () => {
   const deploy = async (
     provider: any, source: string, args: unknown[], state: Record<string, unknown>, externals?: Record<string, any>,
   ): Promise<any> => {
@@ -110,11 +134,17 @@ describe('a callee that writes dynamic state and calls on', () => {
     };
   };
 
-  it('settles a first write, a growth and a shrink past the block it calls', async () => {
+  it.each([
+    ['reads', COUNTER, chainedWriterSource(), ROOT],
+    ['does not read', counterSource(SECOND_METHOD), chainedWriterSource(SECOND_METHOD, SECOND_DECLARATION),
+      rootSource(SECOND_DECLARATION)],
+  ])('settles every run size past the block it calls when its caller %s the record', async (
+    _reading, counterCode, writerCode, rootCode,
+  ) => {
     const provider = createTestProvider();
-    const counter = await deploy(provider, COUNTER, [], { count: 0n });
-    const writer = await deploy(provider, CHAINED_WRITER, [counter.lock], { message: '' }, { ICounter: counter.sc });
-    const root = await deploy(provider, ROOT, [writer.lock], { runs: 0n }, { IWriter: writer.sc });
+    const counter = await deploy(provider, counterCode, [], { count: 0n });
+    const writer = await deploy(provider, writerCode, [counter.lock], { message: '' }, { ICounter: counter.sc });
+    const root = await deploy(provider, rootCode, [writer.lock], { runs: 0n }, { IWriter: writer.sc });
 
     const lengths = [60, 241, 121, 1];
     for (const length of lengths) await root.sc.run(text(length)).send();
@@ -163,6 +193,18 @@ describe('a callee that writes dynamic state and calls on', () => {
     await root.sc.run(text(241)).send();
 
     expect((await writer.sc.getState()).message).toBe(text(241));
+  });
+
+  it('places the run past the return record its caller reads', async () => {
+    const provider = createTestProvider();
+    const writer = await deploy(provider, RETURNING_WRITER, [], { message: '' });
+    const root = await deploy(provider, RETURN_READING_ROOT, [writer.lock], { last: 0n }, { IWriter: writer.sc });
+
+    await root.sc.run(text(60), 1n).send();
+    await root.sc.run(text(241), 6n).send();
+
+    expect((await writer.sc.getState()).message).toBe(text(241));
+    expect((await root.sc.getState()).last).toBe(7n);
   });
 
   it('places the run past a block that updates an entry', async () => {

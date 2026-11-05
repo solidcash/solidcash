@@ -441,6 +441,16 @@ export interface ExternalCallUtxoGroup {
  */
 export function calleeLoopEntryInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
   return group.entryLoopStart === undefined ? [] : group.blockInputs?.slice(group.entryLoopStart) ?? [];
+
+ * A void callee settles the universal record only for a caller that reads one: any other run names none (witness -1),
+ * so no carrier is planned and its reserved slot stays a balancing pad.
+ */
+export function voidRecordUnread(
+  call: { hasReturnValues?: boolean },
+  callee: { inputs: readonly { name: string }[]; outputs?: readonly unknown[] } | undefined,
+): boolean {
+  return call.hasReturnValues !== true && (callee?.outputs?.length ?? 0) === 0
+    && callee?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true;
 }
 
 /**

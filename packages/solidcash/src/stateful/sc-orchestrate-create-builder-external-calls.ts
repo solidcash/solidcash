@@ -11,7 +11,6 @@ import {
   encodePushdataValue,
   parseChunkCommitment,
   type AbiFunction,
-  type Artifact,
   type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -74,14 +73,12 @@ const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYT
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
 
 /**
- * A raw call into a function that returns nothing answers with no record (D50), so its group plans no carrier and
- * the caller's return witness stays -1, as late expansion plans it.
+ * A raw call into a function that pins no record (D50) plans no carrier, so the caller's return witness stays -1,
+ * as late expansion plans it.
  */
 function directGroupEcSlot(ec: ExternalCallAbi, group: ExternalCallUtxoGroup | undefined): ExternalCallAbi {
   if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.compilerRoute) return ec;
-  const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
-  const selected = artifact?.abi.find((entry) => entry.name === (group.logicalFunctionName ?? group.functionName));
-  return selected !== undefined && (selected.outputs?.length ?? 0) === 0 ? { ...ec, hasReturnValues: false } : ec;
+  return calleePinsNoRecord(group) ? { ...ec, hasReturnValues: false } : ec;
 }
 
 export type OrchestrateCreateBuilderExternalCallsHost = {
@@ -1010,8 +1007,11 @@ export async function orchestrateCreateBuilderExternalCalls(
       // side-car recreation, an ecrecover side-car, and the caller's own return event. The master + data-NFT
       // prefix below does not count them, so a caller that hashes before its external calls used to place the
       // callee blocks - and the planned return-event index - early enough to collide with a callee's data NFT.
+      // A void entry's returnEvent slot is its call record, which a plain send compacts.
+      const returnsValues = (abiFunction?.outputs?.length ?? 0) > 0;
       const fixedExtraBlockSlotCount = (abiFunction?.blockLayout?.slots ?? []).filter((slot) => (
-        slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar' || slot.kind === 'returnEvent'
+        slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
+        || (slot.kind === 'returnEvent' && returnsValues)
       )).length;
       const baseOutputOffset = 1 + requiredNftIndices.length
       + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount

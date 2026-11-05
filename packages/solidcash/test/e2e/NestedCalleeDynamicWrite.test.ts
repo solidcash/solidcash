@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { Contract } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { alicePkh } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { compileString } from '../direct-compile.js';
 
@@ -66,6 +67,32 @@ contract SiblingRoot(bytes writer, bytes counter) { int runs;
     require(next.length >= 0);
   } }`;
 
+const EVENT_WRITER = `${PRAGMA}
+contract EventWriter() { string message;
+  event Noted(bigint value);
+  function set(string next) {
+    this.message = next;
+    emit Noted(7);
+    require(next.length >= 0);
+  } }`;
+
+const ENTRY_WRITER = `${PRAGMA}
+contract EntryWriter() { string message; mapping(bytes20 => int) balances;
+  function set(string next, bytes20 holder, int value) {
+    this.message = next;
+    this.balances[holder] = value;
+    require(value >= 0);
+  } }`;
+
+const ENTRY_ROOT = `${PRAGMA}
+interface IWriter { function set(string next, bytes20 holder, int value); }
+contract EntryRoot(bytes writer) { int runs;
+  function run(string next, bytes20 holder, int value) {
+    IWriter(writer).set(next, holder, value);
+    this.runs = this.runs + 1;
+    require(value >= 0);
+  } }`;
+
 const text = (length: number): string => 'x'.repeat(length);
 
 describe('a callee that writes dynamic state and calls on', () => {
@@ -125,5 +152,28 @@ describe('a callee that writes dynamic state and calls on', () => {
 
     expect((await writer.sc.getState()).message).toBe(text(121));
     expect((await counter.sc.getState()).count).toBe(1n);
+  });
+
+  it('places the run past a block that emits', async () => {
+    const provider = createTestProvider();
+    const writer = await deploy(provider, EVENT_WRITER, [], { message: '' });
+    const root = await deploy(provider, ROOT, [writer.lock], { runs: 0n }, { IWriter: writer.sc });
+
+    await root.sc.run(text(60)).send();
+    await root.sc.run(text(241)).send();
+
+    expect((await writer.sc.getState()).message).toBe(text(241));
+  });
+
+  it('places the run past a block that updates an entry', async () => {
+    const provider = createTestProvider();
+    const writer = await deploy(provider, ENTRY_WRITER, [], { message: '' });
+    const root = await deploy(provider, ENTRY_ROOT, [writer.lock], { runs: 0n }, { IWriter: writer.sc });
+    await writer.sc.set(text(60), alicePkh, 1n).send();
+
+    await root.sc.run(text(121), alicePkh, 2n).send();
+
+    expect((await writer.sc.getState()).message).toBe(text(121));
+    expect((await root.sc.getState()).runs).toBe(1n);
   });
 });

@@ -211,6 +211,10 @@ is why generated SolidHat projects use EVM ABI encoding until you remove the opt
 unless marked (native) or (evmCompat). Solidity shapes the parser accepts beyond the documented subset are
 (experimental): https://solidcash.org/docs/basics/solidity-parity
 
+Compile contracts that call each other in one mode: a `.sol` source is always evmCompat and a `.scash` source follows
+the config. A selector is hashed by its compile's mode (`int` is `int256` in both), so a fixed-method call between the
+modes never matches its callee, and the SDK refuses it by name (`MixedCompileModeCallError`).
+
 ### Source File Structure
 
 ```solidity

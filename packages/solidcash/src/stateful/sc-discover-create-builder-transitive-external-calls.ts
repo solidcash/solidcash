@@ -7,6 +7,7 @@ import type { AbiFunction, Artifact, ExternalCallAbi, StateLayout, StateValue } 
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { assertCallSelectorScheme } from './call-record.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import { findDeploymentByAddressValue } from './deployment-registry.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -173,6 +174,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
       }
 
       const cContract = cRegistered as TransitiveExternalContract;
+      assertCallSelectorScheme(bEc, bContract.inner.artifact, cContract.inner.artifact);
 
       // Detect circular calls (B->A): the transitive target is the primary contract
       if (cContract.categoryId === primaryCategoryId) {

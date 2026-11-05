@@ -17,6 +17,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import { assertCallSelectorScheme } from './call-record.js';
 import { calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
@@ -524,6 +525,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
       const ec = externalCalls[slotIndex];
       const callInfo = resolvedExternalCalls[slotIndex];
+      if (callInfo) assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {

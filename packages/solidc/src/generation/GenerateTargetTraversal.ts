@@ -15992,8 +15992,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // above the borrowed value. Both leave a negative coordinate: read no side-car, consume the preimage argument,
     // and produce a digest no real lock matches, so a reached use fails closed while an earlier require still
     // reverts with its own message. Only the single straight-line read has the [arg, ordinal, index] frame this
-    // guard consumes.
-    const guardMissingSidecar = !this.keccakLoopActive && !chainEligible;
+    // guard consumes. A count-relative read takes no guard: a spender sets the input count, so a one-input spend
+    // would pick the zero digest and two different preimages would hash equal. Reading input -1 refuses it.
+    const absoluteForward = this.framedMaster || fn.blockLayout != null || this.keccakLoopActive
+      || basisSlot !== undefined || threadedKeccakSlot;
+    const guardMissingSidecar = absoluteForward && !this.keccakLoopActive && !chainEligible;
     if (guardMissingSidecar) {
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(0n), loc);
@@ -16059,8 +16062,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
     // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
-    const absoluteForward = this.framedMaster || fn.blockLayout != null || this.keccakLoopActive
-      || basisSlot !== undefined || threadedKeccakSlot;
     if (this.keccakLoopActive) {
       // Dynamic loop: compare the revealed covenant bytes. Hashing the covenant each iteration blows the
       // per-input hash budget. The revealed redeem is what the side-car lock commits to, including a

@@ -18,7 +18,7 @@ import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { assertCallSelectorScheme } from './call-record.js';
-import { calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleeOutputSpan, calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
@@ -965,9 +965,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     // Where the co-spent callees' own output blocks begin (X13: a callee's return event lives inside its block).
     let externalCallOutputStart = -1;
     if (allReturningGroupIndices.length > 0) {
-      const externalCallOutputCount = externalCallUtxoGroups.reduce(
-        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
-      );
+      const externalCallOutputCount = externalCallUtxoGroups.reduce((sum, g) => sum + calleeOutputSpan(g), 0);
 
       // Pre-compute low-level call output count (LLC outputs sit between external calls and entries)
       const llcCalls = abiFunction?.lowLevelCalls;
@@ -1058,7 +1056,7 @@ export async function orchestrateCreateBuilderExternalCalls(
               : returnEventOutputBase + tailRank++);
           }
         }
-        cursor += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+        cursor += calleeOutputSpan(g);
       }
     }
 

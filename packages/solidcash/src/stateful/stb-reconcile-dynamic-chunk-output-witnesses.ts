@@ -1,11 +1,11 @@
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { parseChunkCommitment, type AbiFunction, type StateLayout } from '@solidcash/utils';
 import type { Contract } from '../Contract.js';
-import type { Output } from '../interfaces.js';
+import { isContractUnlocker, type Output, type UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import { getDynamicChunkAddress } from './covenant-helpers.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleeWitnessesDynamicRun, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 
 /** Returns -1 only when every compiler-written direct dynamic variable has zero output chunks. */
 export function resolveMaterializedDynamicWriteOutputBase(params: {
@@ -105,6 +105,13 @@ export function resolveMaterializedDynamicWriteOutputBase(params: {
   return orderedIndices[0] ?? -1;
 }
 
+/** The frame an ordinary witnessed callee's unlocker runs. */
+function ordinaryCalleeFrame(group: ExternalCallUtxoGroup): AbiFunction | undefined {
+  if (!calleeWitnessesDynamicRun(group)) return undefined;
+  const { unlocker } = group.masterUtxo as UnlockableUtxo;
+  return isContractUnlocker(unlocker) ? unlocker.abiFunction : undefined;
+}
+
 /**
  * Bind a route's dynamic-write output base to its materialized chunk NFTs. Input-side trailing geometry
  * cannot establish this coordinate: output-only predecessors may be elsewhere in the same block.
@@ -125,7 +132,7 @@ export function reconcileDynamicChunkOutputWitnesses(
     const carrier = outputOwner.delegateCallGroupIndex === undefined
       ? outputOwner : lowLevelGroups[outputOwner.delegateCallGroupIndex];
     if (!carrier?.refreshInternalArgs) continue;
-    const route = carrier.compilerRoute?.abiFunction;
+    const route = carrier.compilerRoute?.abiFunction ?? ordinaryCalleeFrame(carrier);
     if (!route?.inputs.some((input) => input.name === '__internal__dynamicChunkOutputBase')) continue;
     const next = BigInt(resolveMaterializedDynamicWriteOutputBase({
       route,

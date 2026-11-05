@@ -49,6 +49,7 @@ export function runBuildMidLateThroughTail(
     debugAtomicOutputStage,
     debugOwnMutableOutputs,
     deferredDelegateReturnEvents,
+    deferredCalleeDynamicChunks,
     relocatedDelegateOutputBases,
     associatedDelegateOutputs,
     appendDelegateGroupOutputs,
@@ -73,6 +74,7 @@ export function runBuildMidLateThroughTail(
     builder,
     associatedDelegateOutputs,
     appendDelegateGroupOutputs,
+    deferredCalleeDynamicChunks,
     debugOwnMutableOutputs,
     debugAtomicOutputStage,
   );

@@ -5298,7 +5298,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // the stack through to the epilogue; adding the void record's own settlement there collides with it (its
     // returnOutputIdx pick is thrown off). Such entries keep their pre-fix-B settlement, so no void record is
     // injected. All three pieces (this witness, the reserved returnEvent slot, and the GTT settlement) derive from
-    // this injection, so gating it here keeps them consistent.
+    // this injection, so gating it here keeps them consistent. A kernel direct participant's frame is the V5 proof
+    // profile: its verifier binds the selector, so the record has no reader there and the profile admits no witness.
     const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
     // An entry that delegatecalls settles no record of its own: its delegate's answers the call.
     const delegatecalls = describeFunctionLowLevelCallsites(node).some((site) => site.callMode === 'delegatecall');

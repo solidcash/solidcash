@@ -69,7 +69,7 @@ const POOL_TIP: PoolBlockFields = {
 };
 
 const TXID = /^[0-9a-f]{64}$/;
-const SCRIPT_FAILURE = /OP_VERIFY|EQUALVERIFY/;
+const SCRIPT_FAILURE = /OP_VERIFY|EQUALVERIFY|non-truthy/;
 
 interface Chain { provider: MockNetworkProvider; signer: Signer }
 

@@ -77,8 +77,11 @@ describe('BchNativeWrapper', () => {
     // 18860c4fd) took 47 B off (7690 -> 7643). The dispatcher handing each entry its record prefix, the digest hashed
     // in that settlement and the count reading each output's lock first took 63 B off (7643 -> 7580). One helper
     // per collection reading the master's category with its entry address, shared bounded-bytes parameter checks
-    // and the take-32 helper in the record carrier check took 159 B off (7580 -> 7421).
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7421);
+    // and the take-32 helper in the record carrier check took 159 B off (7580 -> 7421). The pin was not moved for
+    // what landed after it: fixes B and F1 and the oracle pools (7421 -> 7617). The record lock a direct master
+    // rebuilds carries the data-record covenant's authority bind and category, each now defined once (590aca164),
+    // and with it the helpers that rebuild it: 66 B (7617 -> 7683).
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7683);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

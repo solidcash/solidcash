@@ -7,6 +7,7 @@ import {
   Contract,
   SignatureTemplate,
   Signer,
+  TransactionBuilder,
 } from '../../../src/index.js';
 import { ContractFactory } from '../../../src/stateful/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
@@ -18,6 +19,7 @@ import {
   type FramedProxyCallResult,
 } from '../../../src/framed/proxy/index.js';
 import type { Unlocker, Utxo } from '../../../src/interfaces.js';
+import { randomUtxo } from '../../../src/utils.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { fundShippedFacets } from '../shapes/harness.js';

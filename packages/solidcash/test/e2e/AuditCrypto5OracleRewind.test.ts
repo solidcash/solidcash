@@ -103,55 +103,14 @@ async function writeSlot(o: Owned, n: bigint, locktime: bigint): Promise<string>
     (pubkey, signature) => poolSlotWriteUnlocking(category, pubkey, signature, n, H));
 }
 
-// Broadcast the owner's spend of `coin` that recreates it with `commitment`; a funder pays the fee.
-async function ownerSpend(
-  o: Owned, coin: Utxo, redeem: Uint8Array, commitment: Uint8Array, locktime: number,
-  unlocking: (pubkey: Uint8Array, signature: Uint8Array) => Uint8Array,
-): Promise<string> {
-  const template = new SignatureTemplate(TEST_ORACLE_POOL_KEY);
-  const unlocker: Unlocker = {
-    generateLockingBytecode: (): Uint8Array => coin.lockingBytecode!,
-    generateUnlockingBytecode: ({ transaction, sourceOutputs, inputIndex }): Uint8Array => unlocking(
-      template.publicKey, template.generateSignature(hash256(createSighashPreimage(
-        transaction, sourceOutputs, inputIndex, redeem, template.sighashType,
-      ))),
-    ),
-  };
-  const funder = await createBareP2pkhFeeFunder(o.provider, 20_000n);
-  const builder = new TransactionBuilder({ provider: o.provider })
-    .addInput(coin, unlocker)
-    .addOutput({
-      to: coin.lockingBytecode!, amount: coin.satoshis,
-      token: { ...coin.token!, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
-    })
-    .addInput(funder.utxo, funder.unlocker)
-    .addOutput({ to: bobAddress, amount: 19_000n })
-    .setLocktime(locktime);
-  const hex = binToHex(encodeTransaction(builder.buildLibauthTransaction(true)));
-  return o.provider.sendRawTransaction(hex).then(() => 'ACCEPTED').catch((error: Error) => error.message);
-}
-
-async function update(o: Owned, number: bigint, timestamp: bigint, locktime: bigint): Promise<string> {
-  const coin = await only(o.keeper.infoCoins());
-  const commitment = encodePoolInfoCommitment({ ...coin.fields, number, timestamp });
-  const category = hexToBin(o.category);
-  return ownerSpend(o, coin.utxo, poolInfoRedeemScript(category), commitment, Number(locktime),
-    (pubkey, signature) => poolInfoUpdateUnlocking(category, pubkey, signature, commitment, Number(locktime)));
-}
-
-async function writeSlot(o: Owned, n: bigint, locktime: bigint): Promise<string> {
-  const slot = await only(o.keeper.slots());
-  const commitment = encodePoolSlotCommitment({ ...slot.fields, flags: POOL_FLAG_SLOT, n, hash: H });
-  const category = hexToBin(o.category);
-  return ownerSpend(o, slot.utxo, poolSlotRedeemScript(category), commitment, Number(locktime),
-    (pubkey, signature) => poolSlotWriteUnlocking(category, pubkey, signature, n, H));
-}
-
-/** A read of the pool through the reader, which is stateful as every block.* reader is: a call on its state. */
 async function readBack(o: Owned, number: bigint, timestamp: bigint): Promise<string> {
-  const { categoryId } = await setupStatefulUtxos(o.provider, o.contract, o.contract.artifact.stateLayout!, {});
-  const reader = StatefulContract.withCategory(o.contract, categoryId);
-  const tx = await (reader as any).readBack(number, timestamp).send();
+  const utxo = await o.provider.addUtxo(o.contract.address, randomUtxo({ satoshis: 100000n }));
+  const feeFunder = await createFeeFunder(o.provider, 20000n);
+  const tx = await new TransactionBuilder({ provider: o.provider })
+    .addInput(utxo, o.contract.unlock.readBack(number, timestamp))
+    .addInput(feeFunder.utxo, feeFunder.unlocker)
+    .addOutput({ to: o.contract.address, amount: 110000n })
+    .send();
   return tx.txid;
 }
 

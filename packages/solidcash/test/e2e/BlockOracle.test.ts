@@ -321,7 +321,7 @@ describe('blobhash / blockhash', () => {
     expect(gl.bytecode).toContain('40420f'); // 1000000 little-endian
     expect(gf.bytecode).toContain('40420f');
     expect(gl.usesBlockOracle).toBeUndefined(); // pure constant - not oracle-backed
-    expect(gl.stateLayout).toBeDefined(); // a block.* read - stateful by rule
+    expect(gl.stateLayout).toBeUndefined(); // not oracle-backed, no state
     expect(gf.stateLayout).toBeUndefined();
   });
 
@@ -332,7 +332,7 @@ describe('blobhash / blockhash', () => {
     const p = compileString('contract A(){ function f(uint256 e){ require(block.prevrandao % 6 == e); } }');
     expect(p.bytecode).toContain('OP_0 OP_OUTPOINTTXHASH OP_SHA256 OP_BIN2NUM OP_ABS');
     expect(p.usesBlockOracle).toBeUndefined(); // transaction-local - no oracle co-spend
-    expect(p.stateLayout).toBeDefined(); // a block.* read - stateful by rule
+    expect(p.stateLayout).toBeUndefined(); // no oracle register
   });
 
   it('blobhash rejects a non-zero expectation', async () => {

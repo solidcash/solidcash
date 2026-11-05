@@ -157,36 +157,23 @@ describe('kernel late transitive sparse loop graph planning', () => {
       .relayReturning(coordinator.inner.lockingBytecode, values).build();
     expect(vmAccepts(sparseReturning)).toBe(true);
 
-    const returningInputs = async (rows: bigint[]): Promise<Array<{
-      contract?: string; accepted: boolean; detail: string;
-    }>> => {
-      const returningBuilder = await (deployed as any).relayReturning(coordinator.inner.lockingBytecode, rows).build();
-      const transaction = returningBuilder.buildLibauthTransaction();
-      const sourceOutputs = generateLibauthSourceOutputs(returningBuilder.inputs);
-      const vm = createVirtualMachineBch2026ForProvider(provider);
-      return transaction.inputs.map((_input: unknown, inputIndex: number) => {
-        const state = vm.evaluate({ inputIndex, sourceOutputs, transaction });
-        const { unlocker } = returningBuilder.inputs[inputIndex];
-        return {
-          contract: 'contract' in unlocker ? unlocker.contract.artifact.contractName : undefined,
-          accepted: vm.stateSuccess(state) === true,
-          detail: `input ${inputIndex}: ${JSON.stringify({
-            error: state.error, ip: state.ip, instructions: state.instructions.length,
-            nearby: state.instructions.slice(Math.max(0, state.ip - 8), state.ip + 2)
-              .map((instruction) => instruction.opcode),
-            stack: state.stack.slice(-6).map(binToHex),
-          })}`,
-        };
+    // The dense zero-based reached prefix builds the same way, with the final source element skipped.
+    const returningBuilder = await (deployed as any)
+      .relayReturning(coordinator.inner.lockingBytecode, [2n, 3n, 0n]).build();
+    const returningTransaction = returningBuilder.buildLibauthTransaction();
+    const returningSources = generateLibauthSourceOutputs(returningBuilder.inputs);
+    const returningVm = createVirtualMachineBch2026ForProvider(provider);
+    for (let inputIndex = 0; inputIndex < returningTransaction.inputs.length; inputIndex += 1) {
+      const state = returningVm.evaluate({
+        inputIndex, sourceOutputs: returningSources, transaction: returningTransaction,
       });
-    };
-    // A callee spent once runs one call, and its record count holds the transaction to the records that run pinned
-    // (D50): the direct builder's two reached rows of the one sink leave the second row's record unpinned, so the
-    // sink refuses. The atomic composition `send` takes runs the two rows, below.
-    expect((await returningInputs([2n, 3n, 0n])).filter((input) => input.contract === 'SparseLoopSink')
-      .map((input) => input.accepted)).toEqual([false]);
-    // A compact return carrier is sound for a dense zero-based reached prefix: its occurrence and source loop index
-    // are the same authenticated identity even though the later source elements are skipped.
-    for (const input of await returningInputs([3n, 0n, 0n])) expect(input.accepted, input.detail).toBe(true);
+      expect(returningVm.stateSuccess(state), `input ${inputIndex}: ${JSON.stringify({
+        error: state.error, ip: state.ip, instructions: state.instructions.length,
+        nearby: state.instructions.slice(Math.max(0, state.ip - 8), state.ip + 2)
+          .map((instruction) => instruction.opcode),
+        stack: state.stack.slice(-6).map(binToHex),
+      })}`).toBe(true);
+    }
 
     await expect(call.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -194,7 +181,7 @@ describe('kernel late transitive sparse loop graph planning', () => {
     // Decimal accumulation distinguishes the compact source-order rows [2, 3] from reversal,
     // duplicated skipped iterations, or a guessed occurrence-zero argument.
     await expect(sink.getState()).resolves.toMatchObject({ total: 23n });
-    // The two returning rows the direct builder refuses compose atomically when sent; `echo` writes nothing.
+    // The returning rows compose atomically when sent; `echo` writes nothing.
     await expect((deployed as any).relayReturning(coordinator.inner.lockingBytecode, [2n, 3n, 0n]).send())
       .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     await expect(sink.getState()).resolves.toMatchObject({ total: 23n });

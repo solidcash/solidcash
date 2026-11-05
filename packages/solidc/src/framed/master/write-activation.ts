@@ -575,6 +575,7 @@ class DirectLabelSerializer {
   private readonly producers = new Map<string, {
     callsiteId?: number; sourceEffectOrdinal?: number; resultIndex: number; functionName?: string;
   }>();
+
   private readonly definitions = new Map<string, VariableDefinitionNode>();
   private readonly assignments = new Map<string, AssignNode[]>();
   // `(uint112 r0, uint112 r1,) = getReserves()` binds a local to one component of an internal call's result.

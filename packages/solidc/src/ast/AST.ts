@@ -198,6 +198,7 @@ export class ContractNode extends Node implements Named {
   get readsBlockhash(): boolean {
     return this.blockhashReadMarked || this.usesBlockhash;
   }
+
   // Set by SymbolTableTraversal once block layouts are known: any entry reserves the satoshi container slot, so an
   // in-place upgrade must migrate (or drain) that container. Read by the upgrade codegen.
   keepsSatoshiContainer: boolean = false;

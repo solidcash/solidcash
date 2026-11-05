@@ -322,7 +322,7 @@ function invokedBodyOf(
   artifact: Artifact, running: readonly AuthenticationInstruction[],
 ): { readonly requires: readonly RequireStatement[] } | undefined {
   const bodies = (artifact.debug as { invokeDebug?: Record<string, { bytecode?: string; requires?: RequireStatement[] }> }
-    | undefined)?.invokeDebug;
+  | undefined)?.invokeDebug;
   if (bodies === undefined) return undefined;
   const bytecode = binToHex(encodeAuthenticationInstructions([...running]));
   const matches = Object.values(bodies).filter((candidate) => candidate.bytecode === bytecode);

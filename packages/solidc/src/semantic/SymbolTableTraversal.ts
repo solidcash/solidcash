@@ -4812,7 +4812,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // and auto; an explicitly enabled (or verifier-required) bus authenticates co-spent methods itself. Grouped
         // slots are already removed above, and this block only runs off-route, so it reaches only direct calls.
         const busMode = (this.compilerOptions as CompilerOptions
-          & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
+        & { __messageBusMode?: 'disabled' | 'auto' | 'enabled' | 'required' }).__messageBusMode;
         const directConventionVoidBinding = (busMode === 'disabled' || busMode === 'auto')
           && this.compilerOptions.composition !== 'framed';
         if (directConventionVoidBinding && node.isEntryPoint) {

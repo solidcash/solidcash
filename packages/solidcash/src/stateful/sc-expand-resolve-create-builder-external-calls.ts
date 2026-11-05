@@ -69,7 +69,7 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
    * covenant/require failure: an unsupported probe shape is not evidence that the call reverts.
    */
   probeRawCallee?(contract: unknown, functionName: string, args: FunctionArgument[]): Promise<
-    { ok: true } | { ok: false; error: unknown; executionFailure: boolean }
+  { ok: true } | { ok: false; error: unknown; executionFailure: boolean }
   >;
 }
 

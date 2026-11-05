@@ -145,11 +145,11 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
   }
   const tls = tlsEnabled
     ? {
-        ...(tlsCertPath !== undefined && tlsKeyPath !== undefined
-          ? { cert: readFileSync(tlsCertPath, 'utf8'), key: readFileSync(tlsKeyPath, 'utf8') }
-          : selfSignedCertificate()),
-        port: numberArg(args, 'tls-port') ?? (port === 0 ? 0 : port + 1),
-      }
+      ...(tlsCertPath !== undefined && tlsKeyPath !== undefined
+        ? { cert: readFileSync(tlsCertPath, 'utf8'), key: readFileSync(tlsKeyPath, 'utf8') }
+        : selfSignedCertificate()),
+      port: numberArg(args, 'tls-port') ?? (port === 0 ? 0 : port + 1),
+    }
     : undefined;
   const mining = enumArg(args, 'mining', ['auto', 'manual', 'interval'] as const)
     ?? devnetCfg.mining ?? 'auto';

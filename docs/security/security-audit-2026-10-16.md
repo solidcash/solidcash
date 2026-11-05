@@ -46,22 +46,30 @@ precondition that is common), MEDIUM (needs an uncommon shape or privileged part
 
 ## Findings
 
-### CALLER-EDGE-1 (HIGH, VM-confirmed 2026-11-05; OPEN; direct convention) An entry that makes no call can forge a caller edge
+### CALLER-EDGE-1 (HIGH, VM-confirmed 2026-11-05; FIXED on the sushi landing; direct convention and bus routes) A caller edge did not have to name a call its run made
 
 F1 binds a callee's contract `msg.sender` to an own-category immutable NFT carrying the call's digest, so a contract
-has to have made the call rather than merely be co-spent. Only the own-category census refuses a forged one, and
-e01859f89 moved edges from a `callEdge` block slot to a witnessed output while `declaresEvents` in
-GenerateTargetTraversal still tests `slot.kind === 'callEdge'`. Nothing generates that slot. An entry of a contract
-with no events, void or lacking a returnEvent slot, therefore takes no census.
+has to have made the call rather than merely be co-spent. Nothing tied that NFT to a call the run made:
+
+- e01859f89 moved edges from a `callEdge` block slot to a witnessed output, and `declaresEvents` in
+  GenerateTargetTraversal kept testing `slot.kind === 'callEdge'`, a slot nothing generates. An entry of a contract with
+  no events took no census, so any public entry could carry a forged edge. Master has the same line.
+- The census admits an output because a witness names it, and a witness says nothing about the call. An early return
+  that skips a call still names its edge, so `if (skip) { return; } IVault(vault).pay();` forged the edge in a contract
+  with events too.
+- The callee matched category and commitment, never the carrier lock, so a carrier the count does not take in served.
+- A message-bus route took neither the census, without events, nor the record count.
 
 Attack: anyone able to run any public entry of A co-spends A's master, appends `digest || 0x03` in A's category, and
-runs a callee that trusts A. `AuditCallerEdgeForgery.test.ts` proves it on the VM: `Caller.poke()`, which calls nothing,
-carries the edge and `Vault.pay()`, gated on `msg.sender == trusted`, settles. That test is `it.fails` until this
-closes. Master has the same line.
+runs a callee that trusts A. An old edge under its anyone-can-spend lock replays the same way.
 
-Closing it needs the census, or a narrower refusal of own-category `5161` carriers outside the entry's witnessed edges,
-in every entry of a direct stateful contract: bytes in every contract, and a contract placing own-category immutable
-NFTs of its own would lose that. A cost decision for the user, so not fixed in the landing.
+Fix: the record count takes in both carrier locks, and a run expects what it pinned: each pin adds to a tally on the
+stack, so a skipped call adds nothing. Two pins may not name one output, since that would free a carrier for a forgery.
+A void run that settles no record counts at zero, a proxy path that reached no delegate does too, a delegate refuses an
+edge of its own category, a route refuses any edge of its category, and the callee reads an edge only under its lock.
+`AuditCallerEdgeForgery.test.ts` runs each shape on the VM.
+
+Residual: a proxy that does not pin its delegate co-spend keeps this hole with the rest of its state (C1).
 
 ### DYN-1 (CRITICAL, source-traced; direct and route builds) A dynamic write skips all chunk verification when the spender passes a base below -1
 

@@ -50,6 +50,7 @@ export function appendCallerEdges(
   host: AppendCallerEdgesHost, builder: { outputs: Output[]; inputs: ReadonlyArray<TxInput> },
 ): void {
   const groups = host.externalCallUtxoGroups;
+  const claimed = new Set<number>();
   // The caller's co-spent master input, keyed -1 for the top-level entry or a parent group index. A visible-args
   // -only unlocker is skipped (its encoding uses visibleInputs, so a synthetic witness index would overrun it).
   const unlockerOf = (utxo: EdgeGroup['masterUtxo']): ReturnType<typeof contractUnlockerOrUndefined> => {
@@ -73,14 +74,17 @@ export function appendCallerEdges(
       return;
     }
     const commitHex = binToHex(commitment);
-    // Idempotent: reuse an edge already laid for this call (build-tail then send-phase re-assert), else append.
-    const existing = builder.outputs.findIndex((output) => {
+    // Idempotent: reuse an edge already laid for this call (build-tail then send-phase re-assert), else append. Two
+    // calls with one digest take an edge each, since the caller counts one carrier per edge it pinned.
+    const existing = builder.outputs.findIndex((output, index) => {
       const lock = output.to;
-      return lock instanceof Uint8Array && lock.length === 2 && lock[0] === 0x51 && lock[1] === 0x61
-        && output.token?.category === callerCategory
+      return !claimed.has(index) && lock instanceof Uint8Array && lock.length === 2 && lock[0] === 0x51
+        && lock[1] === 0x61 && output.token?.category === callerCategory
         && String(output.token?.nft?.commitment ?? '') === commitHex;
     });
-    unlocker.params[paramIndex] = BigInt(existing >= 0 ? existing : builder.outputs.length);
+    const edgeIndex = existing >= 0 ? existing : builder.outputs.length;
+    claimed.add(edgeIndex);
+    unlocker.params[paramIndex] = BigInt(edgeIndex);
     if (existing < 0) {
       builder.outputs.push({
         to: CALL_EDGE_CARRIER_LOCK,

@@ -46,13 +46,33 @@ contract Table() {
   }
 }`;
 
+// The same with a table of zero-argument pointers: the pin counts an arity of none as well.
+const HANDLER0 = `pragma solidcash >=0.8.0;
+interface IH0 { public bigint counter; function tick(); function tickWide(uint256 a); }
+contract Handler0() is IH0 {
+  bigint counter;
+  function tick() { require(this.counter >= 0); }
+  function tickWide(uint256 a) { require(int(a) >= 0 && this.counter >= 0); }
+}`;
+
+const TABLE0 = `pragma solidcash >=0.8.0;
+contract Table0() {
+  function() external[] fns;
+  bigint bumps;
+  function reg(function() external p) { this.fns.push(p); this.bumps = this.bumps + 1; }
+  function fireN(uint256 n) {
+    for (uint256 i = 0; i < n; i = i + 1) { fns[i](); }
+    this.bumps = this.bumps + 1;
+  }
+}`;
+
 type Provider = ReturnType<typeof createTestProvider>;
 const verifier = createTxVerifier({ vmVersion: 'BCH_2026_05', standard: true, skipFeePolicy: true });
-const sel = (name: string): Uint8Array =>
-  hexToBin(compileString(HANDLER2).abi.find((e: any) => e.name === name)!.selector!);
+const sel = (name: string, source = HANDLER2): Uint8Array =>
+  hexToBin(compileString(source).abi.find((e: any) => e.name === name)!.selector!);
 
-async function handler(provider: Provider): Promise<{ lock: string; sc: any }> {
-  const art = compileString(HANDLER2);
+async function handler(provider: Provider, source = HANDLER2): Promise<{ lock: string; sc: any }> {
+  const art = compileString(source);
   const base = new Contract(art, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, base, art.stateLayout!, { counter: 0n }, { saltContract: true },
@@ -61,8 +81,8 @@ async function handler(provider: Provider): Promise<{ lock: string; sc: any }> {
     sc: StatefulContract.withCategory(base, categoryId) as any };
 }
 
-async function table(provider: Provider): Promise<{ sc: any; pointer: string }> {
-  const artifact = compileString(TABLE);
+async function table(provider: Provider, source = TABLE): Promise<{ sc: any; pointer: string }> {
+  const artifact = compileString(source);
   const base = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, base, artifact.stateLayout!, { fns: [], __fnsel_fns: [], bumps: 0n }, { saltContract: true },
@@ -128,6 +148,42 @@ describe('a received pointer whose runtime selector names a higher-arity callee 
   it('still settles an honest 1-arg call through the table', async () => {
     // Stored selector is inc's and the co-spent callee runs inc(3): the arity matches, so the fix admits it.
     const r = runVm(await build('inc', 3n));
+    expect(r.error ?? 'ok').not.toContain('OP_VERIFY');
+    expect(r.success).toBe(true);
+  }, 300_000);
+});
+
+describe('a received zero-argument pointer whose runtime selector names a wider callee method (VM)', () => {
+  async function build(storeSel: string, splice?: bigint): Promise<any> {
+    const provider = createTestProvider();
+    const bb = await handler(provider, HANDLER0);
+    const t = await table(provider, TABLE0);
+    await t.sc.reg(hexToBin(bb.lock), sel(storeSel, HANDLER0)).send();
+
+    t.sc.registerExternalArray(t.pointer, [bb.sc], ['tick']);
+    const fireN = await t.sc.fireN(1n).build();
+    if (splice === undefined) return fireN;
+
+    const target = selectorInput(fireN, sel('tick', HANDLER0));
+    const wide = await bb.sc.tickWide(splice).build();
+    const unlocking = wide.buildLibauthTransaction()
+      .inputs[selectorInput(wide, sel('tickWide', HANDLER0))].unlockingBytecode as Uint8Array;
+    const original = fireN.inputs[target].unlocker;
+    fireN.inputs[target].unlocker = {
+      generateLockingBytecode: (): Uint8Array => original.generateLockingBytecode(),
+      generateUnlockingBytecode: (): Uint8Array => unlocking,
+    };
+    return fireN;
+  }
+
+  it('refuses a co-spent callee running a wider method through the table', async () => {
+    const r = runVm(await build('tickWide', 10n));
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toMatch(/OP_VERIFY|OP_EQUALVERIFY|failed/i);
+  }, 300_000);
+
+  it('still settles an honest zero-argument call through the table', async () => {
+    const r = runVm(await build('tick'));
     expect(r.error ?? 'ok').not.toContain('OP_VERIFY');
     expect(r.success).toBe(true);
   }, 300_000);

@@ -711,9 +711,13 @@ const needsOraclePool = (fn: FunctionDefinitionNode): boolean =>
   fn.usesBlockOracle === true || fn.usesBlockhash === true || fn.passesOraclePool === true;
 /** F1 caller-edge record form byte, appended to the call digest so the edge is distinct from a result record. */
 const CALL_EDGE_FORM = 0x03;
-/** F1 caller-edge carrier lock: OP_1 OP_NOP - anyone-can-spend but distinct from OP_TRUE, so the call-record
- * count (which matches the OP_TRUE carrier) never counts an edge as a result record. */
+/** F1 caller-edge carrier lock: OP_1 OP_NOP - anyone-can-spend but distinct from OP_TRUE. The record count takes in
+ * both locks, each run expecting what it pinned; the callee reads an edge only under this one. */
 const CALL_EDGE_CARRIER_LOCK = new Uint8Array([0x51, 0x61]);
+/** The edges a run has pinned: a witness alone proves nothing, since a skipped call can name one too. */
+const EDGES_PINNED = '__internal__edgesPinned';
+/** A call's witness of the output its caller-edge record sits at. */
+const isEdgeWitness = (name: string): boolean => /^__internal__(callEdgeOutputIdx|lowLevelCallEdgeOutputIdx)\d+$/.test(name);
 /** The block size a shared outside-layout walk takes as its argument. */
 const OUTSIDE_LAYOUT_BLOCK_SIZE = '(__outside_layout_block_size)';
 /** The input index the parked outside-layout pin skips, -1 for none. */
@@ -10610,6 +10614,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(digestIdx);
       }
     }
+    if (!this.isDefineSubTraversal && node.isEntryPoint && this.edgeWitnesses(node).length > 0) {
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(EDGES_PINNED);
+    }
     // A callee called in a loop or a branch counts its calls from 0: each call takes the next ordinal.
     const callOrdinalCounters = this.isDefineSubTraversal || !node.isEntryPoint ? [] : this.countedCallOrdinalGroups();
     for (const group of callOrdinalCounters) {
@@ -11112,12 +11120,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else if (!this.isDefineSubTraversal && this.settlesUniversalVoidRecord(node)) {
           // Approach B: a void entry attests the method it ran as `digest || 0x01` at its carrier witness.
           this.emitUniversalVoidCallRecordSettlement({ location: node.location, positionHint: PositionHint.END });
-        } else if (!this.isDefineSubTraversal && this.contractSettlesCallRecords()
-          && !this.isCompilerMessageBusRoute(node)) {
-          // A void run of a contract whose entries return values leaves no record of its category.
+        } else if (!this.isDefineSubTraversal && !this.isCompilerMessageBusRoute(node)) {
           const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
-          this.emit(Op.OP_0, loc);
-          this.emitCallRecordCount(loc);
+          if (this.contractSettlesCallRecords()) {
+            // A void run of a contract whose entries return values leaves no record of its category.
+            this.emit(Op.OP_0, loc);
+            this.emitAddPinnedEdges(1, loc);
+            this.emitCallRecordCount(loc);
+          } else if (isStatefulContract && !this.framedMaster && node.name !== '__construct' && unsafeTier !== 0) {
+            // Any other run that settles no record leaves no edge it did not pin.
+            this.emit(Op.OP_0, loc);
+            this.emitAddPinnedEdges(1, loc);
+            this.emitSharedOwnEdgeCount(loc);
+          }
         }
       }
       // A body whose calls repeat pins the number it made against the count the block declares, here, where the
@@ -11282,9 +11297,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is a carrier (OP_TRUE lock) protected by its own settlement (emitCallRecordPin/count), not an event - so a
       // void function's returnEvent slot must NOT trigger the event census, or it wrongly forbids legitimate
       // co-spent own-category outputs (e.g. a blockhash oracle sharing the category). Returning <=> returnTypes > 0.
+      // A caller edge is not this census's: its carrier is counted with the records, so every run refuses one it did
+      // not pin, and a contract with no events keeps the immutable NFTs it places itself.
       const declaresEvents = this.currentContractHasEvents
-        || ((node.blockLayout?.slots ?? []).some((slot) =>
-          (slot.kind === 'returnEvent' && node.returnTypes.length > 0) || slot.kind === 'callEdge')
+        || ((node.blockLayout?.slots ?? []).some((slot) => slot.kind === 'returnEvent' && node.returnTypes.length > 0)
           && !this.isForwardingFallbackBody(node));
       const proxyCanAdmitDelegateEvent = this.functionHasDelegatecall
         && (this.getStackIndex('__internal__callInputIndex', true) >= 0
@@ -11309,6 +11325,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !splitDelegateOwnsImmutableEvents && !delegateOwnsAllEvents
         && (declaresEvents || this.currentFunctionIsDelegate || proxyCanAdmitDelegateEvent)) {
         this.emitOwnCategoryImmutableNftOutputPin(node);
+      } else if (this.isCompilerMessageBusRoute(node) && isStatefulContract && !this.framedMaster) {
+        // A route settles no record, so no count answers for the edges of its category.
+        const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+        this.emit(Op.OP_0, loc);
+        this.emitSharedOwnEdgeCount(loc);
       }
       // Value preservation: satoshi and fungible token amounts
       // Selfdestruct functions skip - all NFTs and containers are being destroyed
@@ -15989,11 +16010,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A helper body borrows its caller's side-car slot through a hidden frame item, and the SDK binds that item to
     // -1 when the call that would consume this hash has been pruned (a pre-call require that cannot run for this
     // spend, so no compute side-car is co-spent). The same slot can also be mis-picked when untracked operands sit
-    // above the borrowed value. Both leave a negative coordinate: read no side-car, consume the preimage argument,
-    // and produce a digest no real lock matches, so a reached use fails closed while an earlier require still
-    // reverts with its own message. Only the single straight-line read has the [arg, ordinal, index] frame this
-    // guard consumes. A count-relative read takes no guard: a spender sets the input count, so a one-input spend
-    // would pick the zero digest and two different preimages would hash equal. Reading input -1 refuses it.
+    // above the borrowed value. Both leave a negative coordinate: read no side-car and take the preimage's SHA256, a
+    // digest no real lock matches and two different preimages never share, so a reached use fails closed while an
+    // earlier require still reverts with its own message. Only the single straight-line read has the
+    // [arg, ordinal, index] frame this guard consumes. A count-relative read takes no guard: a spender sets the input
+    // count, so a one-input spend could choose this arm. Reading input -1 refuses it.
     const absoluteForward = this.framedMaster || fn.blockLayout != null || this.keccakLoopActive
       || basisSlot !== undefined || threadedKeccakSlot;
     const guardMissingSidecar = absoluteForward && !this.keccakLoopActive && !chainEligible;
@@ -16004,8 +16025,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
       this.emit(Op.OP_DROP, loc);              // index
       this.emit(Op.OP_DROP, loc);              // ordinal
-      this.emit(Op.OP_DROP, loc);              // arg
-      this.emit(new Uint8Array(32), loc);      // no side-car -> a digest no address projection matches
+      this.emit(Op.OP_SHA256, loc);            // arg -> no side-car, a digest no address projection matches
       this.emit(Op.OP_ELSE, loc);
     }
     // Save the side-car index. The loop used to read only the unlocking, so a bare lock could carry the real
@@ -26829,6 +26849,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, locationData);                     // [.., payload]
       this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., payload, idx]
       this.emitCompatCalleeSelectorAndArgs(binding, edge, locationData); // [.., payload, idx] -> [..]
+      if (edge !== undefined) this.emitCountPinnedEdge(edge, node, locationData);
       this.emit(Op.OP_ELSE, locationData);
       this.emit(Op.OP_DROP, locationData);
       this.emit(Op.OP_ENDIF, locationData);
@@ -26851,6 +26872,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && physicalSlot.interfaceName !== '__raw__'
       && this.getStackIndex(`__internal__callEdgeOutputIdx${node.callInfo.externalCallSlotIndex}`, true) >= 0) {
       this.emitCallerEdgeRecord(node, physicalSlot, locationData);
+      this.emitCountPinnedEdge(`__internal__callEdgeOutputIdx${node.callInfo.externalCallSlotIndex}`, node, locationData);
     }
 
     // Handle {value: X} call option - emit a transfer to the callee's address
@@ -28587,6 +28609,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCompatTargetIdentity(locationData);             // [data, idx]
     // 2+3. Function and arguments against the co-spent callee at idx.
     this.emitCompatCalleeSelectorAndArgs(binding, edge, locationData); // [data, idx] -> []
+    if (edge !== undefined) this.emitCountPinnedEdge(edge, data, locationData);
     this.emit(Op.OP_0, locationData);                        // dummy remainder
   }
 
@@ -28934,6 +28957,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private directCallArgumentBinding(
     node: ExternalFunctionCallNode, slot: ExternalCallSlot, inLoop = false, tableElement = false,
   ): { types: (Type | undefined)[] } | undefined {
+    const types = this.directCallArgumentTypes(node, slot, inLoop, tableElement);
+    return types !== undefined && types.length > 0 ? { types } : undefined;
+  }
+
+  /** directCallArgumentBinding's types, an empty list for a call that names no arguments to bind. */
+  private directCallArgumentTypes(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, inLoop = false, tableElement = false,
+  ): (Type | undefined)[] | undefined {
     const method = slot.calleeMethod;
     if (method === undefined || !this.directConvention || node.opaqueReturn || slot.interfaceName === '__raw__'
       || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
@@ -28952,7 +28983,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type])).slice(0, node.parameters.length)
       .map((type) => (type === PrimitiveType.SIG ? undefined : type));
     while (types.length > 0 && types[types.length - 1] === undefined) types.pop();
-    return types.length > 0 ? { types } : undefined;
+    return types;
   }
 
   /**
@@ -50178,7 +50209,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // to exactly that arity + redeem (+ a leading selector push for a multi-method callee): a method with extra
       // parameters, whose values the caller never binds, is refused here rather than run on spender-chosen data.
       const fnPtrArgCount = slot.sourceCallNode && slot.calleeMethod
-        && this.directCallArgumentBinding(slot.sourceCallNode, slot, true, true)
+        && this.directCallArgumentTypes(slot.sourceCallNode, slot, true, true)
         ? this.declaredArgumentPushes(slot.calleeMethod.parameterTypes) : undefined;
       this.emit(encodeInt(BigInt(this.getStackIndex('(aec_sel_rem)') + 2)), loc); // +2: elem, idx
       this.emit(Op.OP_PICK, loc);                        // [elem, idx, selrem copy]
@@ -51046,8 +51077,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(new Uint8Array(), loc);
     this.pushToStack('(void_result_blob)');
     // Stack: [.., preimage, blob]
+    this.emitCallRecordSettlementTail(loc);
+  }
+
+  /** `[.., digest or its preimage, blob]` -> `[..]`, both tracked: pins the record and counts the run's carriers. */
+  private emitCallRecordSettlementTail(loc: SingleLocationData): void {
     this.registerCallRecordCount();
-    const settle = this.sharedEntryCheckId('callRecordSettle', (t, l) => t.emitCallRecordSettleBody(l));
+    const pinsEdges = this.getStackIndex(EDGES_PINNED, true) >= 0;
+    const settle = pinsEdges ? undefined
+      : this.sharedEntryCheckId('callRecordSettle', (t, l) => t.emitCallRecordSettleBody(l));
     if (settle !== undefined && this.subroutineDefined.get(settle)) {
       this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
       this.invokeSubroutineIfDefined(settle, loc);
@@ -51065,6 +51103,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     // Stack: [.., record, idx] (2 untracked)
     this.emitCallRecordPin(loc);
+    this.emitAddPinnedEdges(1, loc);
     this.emitCallRecordCount(loc);
   }
 
@@ -51621,25 +51660,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitCallBatchHandBack(loc);
       return;
     }
-    const settle = this.sharedEntryCheckId('callRecordSettle', (t, l) => t.emitCallRecordSettleBody(l));
-    if (settle !== undefined && this.subroutineDefined.get(settle)) {
-      this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
-      this.invokeSubroutineIfDefined(settle, loc);
-      this.popFromStack(2);
-      return;
-    }
-    if (this.settlesOwnCallPreimage()) {
-      this.emit(Op.OP_SWAP, loc);
-      this.emitCallRecordDigestOfPreimage(loc);
-      this.emit(Op.OP_SWAP, loc);
-    }
-    this.emitCallRecordForm(loc);
-    this.removeFromStack(1);
-    this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc);
-    this.popFromStack();
-    // Stack: [.., record, idx] (2 untracked)
-    this.emitCallRecordPin(loc);
-    this.emitCallRecordCount(loc);
+    this.emitCallRecordSettlementTail(loc);
   }
 
   /**
@@ -51769,14 +51790,64 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * `[.., expected]` -> `[..]`: the transaction holds exactly `expected` return carriers of this contract's category
-   * (no capability, `OP_TRUE` lock), so no record this run did not pin can stand beside it. A token-less input has no
-   * category, and so no carrier.
+   * `[.., expected]` -> `[..]`: the transaction holds exactly `expected` carriers of this contract's category (no
+   * capability, a record's `OP_TRUE` lock or an edge's own), so no record or edge this run did not pin can stand beside
+   * it. A token-less input has no category, and so no carrier.
    */
   private emitCallRecordCount(loc: SingleLocationData): void {
     const id = this.definedCallRecordCountId();
     if (id !== undefined) this.invokeSubroutineIfDefined(id, loc);
     else this.emitCallRecordCountBody(loc);
+  }
+
+  /** `[.., lock]` -> `[.., isCarrier]`. */
+  private emitIsCallCarrierLock(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emit(hexToBin('51'), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(CALL_EDGE_CARRIER_LOCK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+  }
+
+  /** This entry's edge witnesses, one per call that can pin an edge. */
+  private edgeWitnesses(node: FunctionDefinitionNode): string[] {
+    return node.parameters.map((parameter) => parameter.name)
+      .filter((name) => isEdgeWitness(name) && this.getStackIndex(name, true) >= 0);
+  }
+
+  /** A pinned edge is counted where the call pinned it, so a witness a skipped call names admits no carrier. */
+  private emitCountPinnedEdge(witness: string, node: Node, loc: SingleLocationData): void {
+    this.emitPickAt(this.getStackIndex(EDGES_PINNED), loc);
+    this.pushToStack('(edges)');
+    this.emitPickAt(this.getStackIndex(witness), loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emitReplace(this.getStackIndex(EDGES_PINNED), node);
+    this.popFromStack();
+  }
+
+  /**
+   * `[.., expected]` -> `[.., expected + edges]`, with `untracked` items on top of the tracked frame. Two pins may
+   * name one output only when their digests match, and the count would then leave room for a forged edge.
+   */
+  private emitAddPinnedEdges(untracked: number, loc: SingleLocationData): void {
+    if (this.getStackIndex(EDGES_PINNED, true) < 0) return;
+    this.emitPickAt(this.getStackIndex(EDGES_PINNED) + untracked, loc);
+    this.emit(Op.OP_ADD, loc);
+    const witnesses = this.edgeWitnesses(this.currentFunction);
+    witnesses.forEach((witness, index) => witnesses.slice(index + 1).forEach((other) => {
+      this.emitPickAt(this.getStackIndex(witness) + untracked, loc);
+      this.emitPickAt(this.getStackIndex(other) + untracked + 1, loc);
+      this.emit(Op.OP_NUMNOTEQUAL, loc);
+      this.emitPickAt(this.getStackIndex(witness) + untracked + 1, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_BOOLOR, loc);
+      this.emit(Op.OP_VERIFY, loc);
+    }));
   }
 
   private emitCallRecordCountBody(loc: SingleLocationData): void {
@@ -51794,8 +51865,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // outliner then splits that scan's shared helper.
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_OUTPUTBYTECODE, loc);
-      this.emit(hexToBin('51'), loc);
-      this.emit(Op.OP_EQUAL, loc);
+      this.emitIsCallCarrierLock(loc);
       this.emit(Op.OP_OVER, loc);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
       this.emit(encodeInt(4n), loc);
@@ -51809,8 +51879,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_OVER, loc);
       this.emit(Op.OP_OUTPUTBYTECODE, loc);
-      this.emit(hexToBin('51'), loc);
-      this.emit(Op.OP_EQUAL, loc);
+      this.emitIsCallCarrierLock(loc);
     }
     this.emit(Op.OP_BOOLAND, loc);               // [expected, cat, count, j, carrier]
     this.emit(Op.OP_ROT, loc);
@@ -53171,6 +53240,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_VERIFY, locationData);
     this.popFromStack();
+
+    // A delegate runs on its proxy's records and pins no edge of its own category, so none may stand as one.
+    this.emit(Op.OP_0, locationData);
+    this.emitSharedOwnEdgeCount(locationData);
+  }
+
+  private emitSharedOwnEdgeCount(loc: SingleLocationData): void {
+    if (!this.invokeSharedStackHelper('ownEdgeCount', (t, l) => t.emitOwnEdgeCount(l), loc)) {
+      this.emitOwnEdgeCount(loc);
+    }
+  }
+
+  /**
+   * `[.., expected]` -> `[..]`: exactly `expected` outputs under the edge carrier lock hold the executing input's
+   * category. Records and the immutable NFTs a contract places itself stay outside this count. A token-less input has
+   * no category, and so no edge.
+   */
+  private emitOwnEdgeCount(loc: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emitTakeFirst32Inline(loc);             // [expected, cat]
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_TXOUTPUTCOUNT, loc);         // [expected, cat, count, j]
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(CALL_EDGE_CARRIER_LOCK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.emit(encodeInt(4n), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLAND, loc);               // [expected, cat, count, j, edge]
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_SWAP, loc);                  // [expected, cat, count', j]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_NOT, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_NIP, loc);                   // [expected, count]
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -54689,6 +54807,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (dp_cat_mutable)
+
+    // No delegate ran to take the census, so this path answers for the carriers of its own category.
+    if (this.framedMaster) return;
+    this.emitPickAt(this.getStackIndex(GenerateTargetTraversalWithLocation.DELEGATE_TAKEN), loc);
+    this.emit(Op.OP_NOTIF, loc);
+    this.emit(Op.OP_0, loc);
+    this.emitSharedOwnEdgeCount(loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   private emitMergeOwnerInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
@@ -58252,10 +58378,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * F1 (callee side): when msg.sender resolves to a contract (a non-zero caller category witness), require a co-spent
-   * output of that caller's category whose commitment is this entry's own call digest followed by the edge form byte.
-   * The caller pins exactly that record (emitCallerEdgeRecord) only for a call it genuinely makes, and its own
-   * covenant admits no other own-category immutable NFT, so a spender who co-spends the caller but runs a function
-   * that makes no such call finds no matching edge and the spend is refused. A direct EOA call (zero category) binds
+   * output of that caller's category, under the edge carrier lock, whose commitment is this entry's own call digest
+   * followed by the edge form byte. The caller pins exactly that record (emitCallerEdgeRecord) only for a call it
+   * genuinely makes, and its record count admits no other carrier under that lock, so a spender who co-spends the
+   * caller but runs a function that makes no such call finds no matching edge. A direct EOA call (zero category) binds
    * nothing here - its identity is a signed input, governed separately.
    */
   private emitCallerEdgeRequirement(node: FunctionDefinitionNode): void {
@@ -58298,6 +58424,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(5n), loc);
     this.emit(Op.OP_PICK, loc);                      // pick C_A (32-byte immutable category)
     this.emit(Op.OP_EQUAL, loc);                     // [.., commitMatch, catMatch]
+    this.emit(Op.OP_BOOLAND, loc);
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.emit(CALL_EDGE_CARRIER_LOCK, loc);
+    this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLAND, loc);                   // [C_A, expected, found, j, isEdge]
     this.emit(Op.OP_ROT, loc);                       // [C_A, expected, j, isEdge, found]
     this.emit(Op.OP_BOOLOR, loc);                    // found' = found | isEdge

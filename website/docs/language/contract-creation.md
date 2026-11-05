@@ -167,6 +167,19 @@ guard in the factory before `new`/the folded call, as in the example. The initia
 verified by the factory covenant.
 :::
 
+### A child's constructor
+
+A factory does not run its child's constructor. It folds the constructor, state-variable initializers included, into
+its own covenant, which then verifies the child's first state. Constructor arguments, straight-line locals and writes
+fold, and so does a `require` over them, which the creating call enforces.
+
+A statement the fold cannot express is refused with `ChildGenesisFoldError`, naming the child and the statement, so a
+guard or a write is never dropped. That covers a write or `require` that reads `tx.*`, `msg.value`, the child's own
+state or a signature, a branch the fold cannot join, an `emit`, a transfer, a nested `new`, and any `block.*` or
+`blockhash` read. Compute the value in the factory and pass it as an argument, or set it in a later transaction. A
+child that reads block data in its own later calls is unaffected. Framed creation replays a child's genesis under its
+own rules.
+
 ### Reading a child's bytecode
 
 `type(C).creationCode` returns the child contract's compiled redeem script, which lets a factory build a

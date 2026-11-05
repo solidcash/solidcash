@@ -804,6 +804,10 @@ bytes code = type(Child).creationCode;         // redeem script (runtimeCode ali
 - `new` of a stateful child works only in a stateful contract's function. The child is an output, so the same
   transaction cannot call it beyond a folded initializer (`DeployThenCallError`), and a `require` inside that
   initializer does not run. Deploy sites in branches or loops must create the same child (`ConditionalDeployError`).
+- A direct creator folds a child's constructor, state-variable initializers included, into its own check instead of
+  running it. Arguments, straight-line locals, writes and a `require` over them fold. Anything else is refused by name
+  (`ChildGenesisFoldError`): reads of `tx.*`, `msg.value`, child state, signatures, `block.*` or `blockhash`, a nested
+  `new`, an `emit`, a transfer, or a branch the fold cannot join. Pass the value in as an argument, or set it later.
 - SDK: `await factory.call.create(sig)` deploys with the connected signer; `.deploy({ fundingUtxo, funder,
   changeAddress })` funds it explicitly (the vout-0 funding UTXO becomes the child's category); `.send()` takes the
   non-deploying path. `StatefulContract.deployFrom({...})` is the static form.

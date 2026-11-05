@@ -18,7 +18,7 @@ import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import { calleeDeclaresNoReturnValue, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
@@ -1045,10 +1045,10 @@ export async function orchestrateCreateBuilderExternalCalls(
           returnEventIndexMap.set(i, batchCursors.get(batchUnit.physical!)! + batchPhysical.callBatch.recordOffset
             + batchUnit.witnessOffset);
         } else if (groupMetas[i].ecSlot.hasReturnValues) {
-          // A callee that declares no return value carries no record, even though a raw call's slot declares
+          // A callee that pins no record carries none, even though a raw call's slot declares
           // `(bool, bytes)`. State the absent coordinate so the caller reads empty returndata; it must not claim
           // a tail slot another group's carrier occupies.
-          if (calleeDeclaresNoReturnValue(g)) returnEventIndexMap.set(i, -1);
+          if (calleePinsNoRecord(g)) returnEventIndexMap.set(i, -1);
           else {
             returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
               ? cursor + offset

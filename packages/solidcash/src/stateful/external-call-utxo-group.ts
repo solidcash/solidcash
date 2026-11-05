@@ -436,15 +436,17 @@ export interface ExternalCallUtxoGroup {
 }
 
 /**
- * Whether the group's logical callee declares no return value. A raw low-level call's slot always declares
- * returndata (`bool success, bytes data`), so the *callee* ABI decides whether a record for it can exist. Such a
- * callee pins no carrier, and the caller reads its (empty) returndata from the absence of one.
+ * Whether the group's logical callee pins no call record. A raw low-level call's slot always declares returndata
+ * (`bool success, bytes data`), so the *callee* ABI decides whether a record for it can exist. A void entry that
+ * takes `__internal__returnOutputIdx` settles the universal void record (fix B); any other void entry pins no
+ * carrier, and the caller reads its (empty) returndata from the absence of one.
  */
-export function calleeDeclaresNoReturnValue(group: ExternalCallUtxoGroup): boolean {
+export function calleePinsNoRecord(group: ExternalCallUtxoGroup): boolean {
   const artifact = (group.logicalArtifact
     ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
   if (artifact === undefined) return false;
   const functionName = group.logicalFunctionName ?? group.functionName;
   return artifact.abi.some((candidate) => candidate.name === functionName
-    && (candidate.outputs?.length ?? 0) === 0);
+    && (candidate.outputs?.length ?? 0) === 0
+    && !candidate.inputs.some((input) => input.name === '__internal__returnOutputIdx'));
 }

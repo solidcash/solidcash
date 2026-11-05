@@ -762,7 +762,7 @@ import {
   type TokenContainerTransferNftData,
   type RuntimeLoopTransferOutput,
   type ExternalCallUtxoGroup,
-  calleeDeclaresNoReturnValue,
+  calleePinsNoRecord,
 } from './external-call-utxo-group.js';
 
 export {
@@ -5435,11 +5435,11 @@ export class StatefulTransactionBuilder {
         return undefined;
       }
     };
-    // A raw low-level call reads the callee's `bytes` returndata, and a function that declares no outputs
-    // returns none: the caller reads that from the record's absence. Seeding a placeholder carrier would both
+    // A raw low-level call reads the callee's `bytes` returndata, and a void function with no record
+    // returns none: the caller reads that from the absence of one. Seeding a placeholder carrier would both
     // give it a byte to ABI-decode and make the callee refuse an unpinned record of its own category.
     const emptyReturn = (group: ExternalCallUtxoGroup, identity?: string): Uint8Array => {
-      if (!calleeDeclaresNoReturnValue(group)) return new Uint8Array([0]);
+      if (!calleePinsNoRecord(group)) return new Uint8Array([0]);
       // The direct reader always strips a 31-byte call-record digest (it only skips the comparison for a raw
       // selector), so a void callee's empty returndata is carried as a record whose field is empty. A zero digest
       // is never compared; a real one (when the callee pins a record) is re-wrapped on materialization.
@@ -5451,8 +5451,8 @@ export class StatefulTransactionBuilder {
       const returns = returning[groupIdx]?.hasReturnValues === true
         || group.precomputedReturnCommitment !== undefined
         || (group.loopReturnCommitments?.length ?? 0) > 0;
-      // A callee that declares no return value pins no record, whatever its caller's slot declares.
-      if (!returns || calleeDeclaresNoReturnValue(group) || isCallBatchMember(group, groupIdx)) continue;
+      // A callee that pins no record gets none, whatever its caller's slot declares.
+      if (!returns || calleePinsNoRecord(group) || isCallBatchMember(group, groupIdx)) continue;
       const physicalGroupIdx = group.sharedGroupIndex ?? groupIdx;
       if (initialized.has(physicalGroupIdx)) continue;
       initialized.add(physicalGroupIdx);
@@ -5468,7 +5468,7 @@ export class StatefulTransactionBuilder {
       const physical = this.externalCallUtxoGroups[physicalGroupIdx];
       const complete = family.every(({ candidate }) => candidate.precomputedReturnCommitment !== undefined);
       const emptyReturn = (group: ExternalCallUtxoGroup, identity?: string): Uint8Array => {
-        if (!calleeDeclaresNoReturnValue(group)) return new Uint8Array([0]);
+        if (!calleePinsNoRecord(group)) return new Uint8Array([0]);
         // The direct reader always strips a 31-byte call-record digest (it only skips the comparison for a raw
         // selector), so a void callee's empty returndata is carried as a record whose field is empty. A zero digest
         // is never compared; a real one (when the callee pins a record) is re-wrapped on materialization.
@@ -5515,7 +5515,7 @@ export class StatefulTransactionBuilder {
             // A void callee's empty returndata is exact, not a provisional guess.
             candidate.precomputedReturnCommitment === undefined
               && !(candidate.loopReturnCommitments?.length)
-              && !calleeDeclaresNoReturnValue(candidate),
+              && !calleePinsNoRecord(candidate),
           );
         }
       }

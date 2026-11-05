@@ -152,7 +152,7 @@ describe('dynamic write after a conditional returning call', () => {
     expect([firstMaster, firstReturn]).toEqual([3, 5]);
     // The second call is stated as not made, and the chunk run follows the first call's return event.
     const witnesses: Record<string, bigint> = {
-      __internal__externalCallInputBase: 2n,
+      __internal__externalCallInputBase: BigInt(firstMaster),
       __internal__extcallMasterIdx0: BigInt(firstMaster),
       __internal__extcallMasterIdx1: -1n,
       __internal__extcallAnchorIdx0: -1n,

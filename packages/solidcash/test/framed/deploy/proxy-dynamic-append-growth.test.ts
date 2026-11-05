@@ -284,9 +284,9 @@ describe('a proxied entry that appends an element the artifact does not state', 
 
     const { deployment, network, layout, funding } = await deploy(FIXTURE_SHAPED_SOURCE, []);
     expect(deployment.initialize.accepted).toBe(true);
-    // The mock chain writes each block's time into the oracle the entry co-spends, so the clock field is the time
-    // of the last block.
-    const clock = BigInt(network.getBlockTime());
+    // The mock chain writes each block's time into the oracle the entry co-spends, so the clock field is the second
+    // before the tip, as every refresh publishes it.
+    const clock = BigInt(network.getBlockTime()) - 1n;
 
     const result = await callFramedProxyEntry({
       provider: network,

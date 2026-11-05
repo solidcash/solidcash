@@ -25,7 +25,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * GAP because the repair needed a hunk in `libauth-template/LibauthTemplate.ts`. Both halves are landed now,
  * together: an optional parameter nobody supplies would read as provider-aware while behaving bare.
  *
- * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.10 (re-measured there on 2026-10-11, all green) and row 0 asserts
+ * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.11 (re-measured there on 2026-11-05, all green) and row 0 asserts
  * it, for the reason X121 row 0 gives: at 0.0.7
  * `TxVerifierConfig` has no `consensus` field, the published overrides are silently dropped, and every verdict
  * here inverts.
@@ -172,15 +172,15 @@ async function p2pkhSpend(provider: MockNetworkProvider): Promise<TransactionBui
 }
 
 describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.10)', () => {
-  it('0. VERSION GATE: the installed decider is 0.0.10, which every row below is pinned to', () => {
+  it('0. VERSION GATE: the installed decider is 0.0.11, which every row below is pinned to', () => {
     expect(
       MEM_CASH_VALIDATION_VERSION,
-      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.10 - the version `
-      + 'packages/solidcash/package.json declares (^0.0.10 means exactly 0.0.10 for a 0.0.x range) and yarn.lock '
+      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.11 - the version `
+      + 'packages/solidcash/package.json declares (^0.0.11 means exactly 0.0.11 for a 0.0.x range) and yarn.lock '
       + 'resolves. At 0.0.7 TxVerifierConfig has no `consensus` field, MockNetworkProvider consensusLimits are '
       + 'silently dropped, and every verdict below is inverted. Reinstall the workspace rather than relaxing '
       + 'a row.',
-    ).toBe('0.0.10');
+    ).toBe('0.0.11');
   });
 
   it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 30 x density, and so does the decider', async () => {

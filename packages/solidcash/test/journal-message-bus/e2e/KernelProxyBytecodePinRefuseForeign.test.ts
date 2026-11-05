@@ -137,7 +137,7 @@ describe('kernel proxy bytecode-pin refuses foreign implementation', () => {
       categoryId: proxy.categoryId,
       masterUtxo: {
         ...proxy.master,
-        unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), -1n, 2n),
+        unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), 2n),
       },
       dataNftUtxos: proxy.dataNfts.map((nft) => ({
         ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
@@ -162,7 +162,7 @@ describe('kernel proxy bytecode-pin refuses foreign implementation', () => {
       categoryId: proxy.categoryId,
       masterUtxo: {
         ...proxy.master,
-        unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), -1n, 2n),
+        unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), 2n),
       },
       dataNftUtxos: proxy.dataNfts.map((nft) => ({
         ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),

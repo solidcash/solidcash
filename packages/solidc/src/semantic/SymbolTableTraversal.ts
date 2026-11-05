@@ -5303,10 +5303,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // injected. All three pieces (this witness, the reserved returnEvent slot, and the GTT settlement) derive from
     // this injection, so gating it here keeps them consistent.
     const readsExternalStorage = (node.externalReads?.length ?? 0) > 0;
+    // An entry that delegatecalls settles no record of its own: its delegate's answers the call.
+    const delegatecalls = describeFunctionLowLevelCallsites(node).some((site) => site.callMode === 'delegatecall');
     // A fallback or receive entry publishes no inputs, so no caller could supply the witness.
     if (node.returnTypes.length === 0 && node.isEntryPoint && !node.graphEmissionHandler
       && this.isStatefulContract && !voidRecordLifecycleOrUnsafe && node.name !== '__construct'
-      && !readsExternalStorage && !node.isFallback && !node.isReceive
+      && !readsExternalStorage && !delegatecalls && !node.isFallback && !node.isReceive
       && this.compilerOptions.messageBus !== true && this.compilerOptions.composition !== 'framed'
       && !node.parameters.some((parameter) => parameter.name === '__internal__returnOutputIdx')) {
       const voidRecordIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');

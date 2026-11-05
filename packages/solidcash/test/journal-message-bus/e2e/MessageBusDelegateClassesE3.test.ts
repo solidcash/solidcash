@@ -335,7 +335,7 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
         masterUtxo: {
           ...proxy.master,
           unlocker: (proxy.contract.unlock as any).up(
-            selectorOf(implArtifact, 'increment'), -1n, BigInt(implementationInputIndex),
+            selectorOf(implArtifact, 'increment'), BigInt(implementationInputIndex),
           ),
         },
         dataNftUtxos: proxy.dataNfts.map((nft) => ({
@@ -454,7 +454,6 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
             selectorOf(implArtifact, 'increment'),
             addressToLockScript(co.contract.address),
             signature,
-            -1n,
             2n,
           ),
         },
@@ -539,7 +538,6 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
           unlocker: (proxy.contract.unlock as any).up(
             selectorOf(foreignArtifact, 'increment'),
             addressToLockScript(foreign.contract.address),
-            -1n,
             2n,
           ),
         },
@@ -615,7 +613,7 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
         masterUtxo: {
           ...proxy.master,
           unlocker: (proxy.contract.unlock as any).up(
-            selectorOf(implArtifact, 'increment'), ...extraArguments, -1n, 2n,
+            selectorOf(implArtifact, 'increment'), ...extraArguments, 2n,
           ),
         },
         dataNftUtxos: proxy.dataNfts.map((nft) => ({
@@ -721,7 +719,7 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
 
       const send = new TransactionBuilder({ provider, allowImplicitNftBurn: true })
         .addInput(proxy.master, (proxy.contract.unlock as any).up(
-          selectorOf(implArtifact, 'increment'), false, -1n, 3n,
+          selectorOf(implArtifact, 'increment'), false, 3n,
         ))
         .addInput(decoy.utxo, decoy.unlocker)
         .addInput(proxy.dataNfts[0], createDataNftUnlocker(proxy.contract, 0, proxy.categoryId))
@@ -918,7 +916,7 @@ contract E3KeylessProxy() {
           categoryId: proxy.categoryId,
           masterUtxo: {
             ...proxy.master,
-            unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), pinnedLbc, -1n, 2n),
+            unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), pinnedLbc, 2n),
           },
           dataNftUtxos: proxy.dataNfts.map((nft) => ({
             ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),

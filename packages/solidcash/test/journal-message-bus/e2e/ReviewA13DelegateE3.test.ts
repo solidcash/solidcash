@@ -269,7 +269,7 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
       masterUtxo: {
         ...proxy.master,
         unlocker: (proxy.contract.unlock as any).up(
-          selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), -1n, 2n,
+          selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), 2n,
         ),
       },
       dataNftUtxos: proxy.dataNfts.map((nft) => ({
@@ -293,7 +293,7 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
       categoryId: proxy.categoryId,
       masterUtxo: {
         ...proxy.master,
-        unlocker: (proxy.contract.unlock as any).up(selectorOf(foreignArtifact, 'increment'), -1n, 2n),
+        unlocker: (proxy.contract.unlock as any).up(selectorOf(foreignArtifact, 'increment'), 2n),
       },
       dataNftUtxos: proxy.dataNfts.map((nft) => ({
         ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
@@ -357,7 +357,6 @@ describe('A13 review of E3: caller-authorized authority', () => {
           addressToLockScript(foreign.contract.address),
           bobPub,
           new SignatureTemplate(bobPriv),
-          -1n,
           2n,
         ),
       },
@@ -383,7 +382,6 @@ describe('A13 review of E3: caller-authorized authority', () => {
           selectorOf(foreignArtifact, 'increment'),
           addressToLockScript(foreign.contract.address),
           new SignatureTemplate(bobPriv),
-          -1n,
           2n,
         ),
       },
@@ -440,7 +438,7 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
       masterUtxo: {
         ...proxy.master,
         unlocker: (proxy.contract.unlock as any).up(
-          selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), -1n, 2n,
+          selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), 2n,
         ),
       },
       dataNftUtxos: proxy.dataNfts.map((nft) => ({
@@ -463,7 +461,7 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
         categoryId: proxy.categoryId,
         masterUtxo: {
           ...proxy.master,
-          unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), honestLbc, -1n, 2n),
+          unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), honestLbc, 2n),
         },
         dataNftUtxos: proxy.dataNfts.map((nft) => ({
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
@@ -485,7 +483,7 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
         masterUtxo: {
           ...hostileProxy.master,
           unlocker: (hostileProxy.contract.unlock as any).up(
-            selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), -1n, 2n,
+            selectorOf(foreignArtifact, 'increment'), addressToLockScript(foreign.contract.address), 2n,
           ),
         },
         dataNftUtxos: hostileProxy.dataNfts.map((nft) => ({

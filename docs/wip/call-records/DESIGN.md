@@ -167,7 +167,9 @@ A direct return carrier becomes a call record (as built):
   void run pins no record; a group reaching one returning call keeps the standalone spend with that call's own
   arguments. In a group whose calls change state, a loop bound, condition or argument that reads one of the group's
   own results is refused, since the frames are planned from standalone results. A callee without the entry is
-  refused, naming `callBatch: true` and the multi-contract compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
+  refused, naming `callBatch: true` and the multi-contract compile. A unit of a multi-call spend names no caller edge
+  (F1, witness -1, which pins nothing): a frame takes no `msg.sender`, so no callee reads one for it. Bus gates
+  (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
   builds a bus batch (`buildRepeatedExternalBatch`), never reads through the composer, and is never promoted at send.
 
 ## 8. Cost and compatibility

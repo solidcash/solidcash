@@ -6,6 +6,7 @@
  * (emitCallerEdgeRequirement in the compiler). Edges are appended past every block (never a fixed block slot), so
  * they shift no callee block and interact with no record layout; their dust value is covered by the fee funding.
  * Runs once on the final build result, after all other outputs are placed. Idempotent across build/send phases.
+ * A frame of a multi-call spend takes no msg.sender, so no callee reads an edge for it: its call names none (-1).
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -30,6 +31,7 @@ interface EdgeGroup {
   readonly masterUtxo?: { readonly txid: string; readonly vout: number };
   readonly edgeParentIndex?: number;
   readonly edgeEcSlot?: number;
+  readonly callBatchUnit?: unknown;
 }
 
 export interface AppendCallerEdgesHost {
@@ -54,7 +56,7 @@ export function appendCallerEdges(
   };
   for (const group of groups) {
     const slot = group.edgeEcSlot;
-    if (slot === undefined) continue;
+    if (slot === undefined || group.callBatchUnit !== undefined) continue;
     const parent = group.edgeParentIndex ?? -1;
     const unlocker = callerUnlockerFor(parent);
     if (unlocker === undefined) continue;

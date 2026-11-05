@@ -163,6 +163,21 @@ const TALLY = `${PRAGMA}interface ICounter {
     }
   }`;
 
+const MIXED = `${PRAGMA}interface ICounter { function inc() external returns (uint256); }
+  interface ISink { function echo(uint16 value) external view returns (uint16); }
+  interface IEcho { function echo(uint16 value) external view returns (uint16); }
+  contract Mixed(address counter, address first, address second) {
+    uint256 public total;
+    function run(uint256 n) public {
+      uint256 acc = 0;
+      for (uint256 i = 0; i < n; i = i + 1) { acc = acc + ICounter(counter).inc(); }
+      uint256 low = ISink(first).echo(2);
+      uint256 high = IEcho(second).echo(5);
+      total = acc * 100 + high * 10 + low;
+      require(true);
+    }
+  }`;
+
 type Provider = ReturnType<typeof createTestProvider>;
 type LibauthTransaction = ReturnType<TransactionBuilder['buildLibauthTransaction']>;
 
@@ -214,6 +229,11 @@ const recordCommitments = (builder: TransactionBuilder, categoryId: string): Uin
 /** The call records of `categoryId` the transaction carries. */
 const records = (builder: TransactionBuilder, categoryId: string): number => recordCommitments(builder, categoryId)
   .length;
+
+/** The caller edges of `categoryId` the transaction carries: an `OP_1 OP_NOP` lock. */
+const edges = (builder: TransactionBuilder, categoryId: string): number => builder.buildLibauthTransaction().outputs
+  .filter((output) => output.token !== undefined && binToHex(output.token.category) === categoryId
+    && binToHex(output.lockingBytecode) === '5161').length;
 
 /** (f) Inputs running a message-bus route: none, in every transaction here. */
 const busInputs = (builder: TransactionBuilder): string[] => builder.inputs.flatMap((input) => (
@@ -463,5 +483,28 @@ describe('direct multi-call', () => {
     await tally.call.around(5n).send();
     expect((await tally.getState()).total).toBe(55n);
     expect((await counter.getState()).count).toBe(5n);
+  }, 300_000);
+
+  it('(l) pins the edges of the calls beside a multi-call spend, whose frames name none', async () => {
+    const provider = createTestProvider();
+    const counter = await deploy(provider, compileString(COUNTER, CALLEE), [], { count: 0n });
+    const sinkArtifact = compileString(SINK, DIRECT);
+    const first = await deploy(provider, sinkArtifact, [], { total: 0n });
+    const second = await deploy(provider, sinkArtifact, [], { total: 0n });
+    const mixed = await deploy(
+      provider, compileString(MIXED, DIRECT), [lockOf(counter), lockOf(first), lockOf(second)], { total: 0n },
+      { ICounter: counter, ISink: first, IEcho: second },
+    );
+
+    // inc() and inc() are frames of one spend; echo(2) and echo(5) follow at callsites 1 and 2, as groups 2 and 3.
+    const builder = await mixed.call.run(2n).build() as TransactionBuilder;
+    expect(masterSpends(builder, 'Counter')).toEqual(['callBatch']);
+    expect(edges(builder, mixed.categoryId)).toBe(2);
+    expect(busInputs(builder)).toEqual([]);
+    expect(vmAccepts(builder)).toBe(true);
+
+    await mixed.call.run(2n).send();
+    expect((await mixed.getState()).total).toBe(352n);
+    expect((await counter.getState()).count).toBe(2n);
   }, 300_000);
 });

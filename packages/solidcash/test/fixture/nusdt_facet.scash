@@ -21,33 +21,46 @@ library UsdtFacet {
     event Pause();
     event Unpause();
     event Deprecate(address newAddress);
-    event RemovedBlackList(address indexed user);
-    event Unfrozen(address indexed user);
     event QuarantineParams(int blocks);
 
     event DepositClaimed(address indexed to, int value);
 
     // ---- shared state layout (see nusdt_state.inc) ----
+    bool backingSet;
+    bytes32 backingCategory;
+    bool paused;
+    bool deprecated;
+    int backedSupply;
+    int containerSeen;
     address owner;
+    int quarantineBlocks;
+    int clock;
+    address upgradedAddress;
+    bool initialized;
+    uint8 decimals;
+    bytes32 name;
+    bytes32 symbol;
     int totalSupply;
     mapping(address => int) balances;
     mapping(address => mapping(address => uint256)) allowed;
-    bool paused;
     mapping(address => bool) isBlackListed;
-    bytes32 name;
-    bytes32 symbol;
-    uint8 decimals;
-    bool deprecated;
-    address upgradedAddress;
     mapping(address => bool) frozen;
     mapping(address => int) pendingAmount;
     mapping(address => int) pendingUnlockAt;
-    int quarantineBlocks;
-    bytes32 backingCategory;
-    bool backingSet;
-    int containerSeen;
-    int backedSupply;
-    int clock;
+
+    function initialize(
+        address firstOwner, bytes32 tokenName, bytes32 tokenSymbol, uint8 tokenDecimals, int quarantine
+    ) public {
+        require(!this.initialized);
+        require(msg.sender == firstOwner);
+        this.initialized = true;
+        this.owner = firstOwner;
+        this.upgradedAddress = firstOwner;
+        this.name = tokenName;
+        this.symbol = tokenSymbol;
+        this.decimals = tokenDecimals;
+        this.quarantineBlocks = quarantine;
+    }
 
     function transferOwnership(address newOwner) public {
         require(msg.sender == this.owner);
@@ -67,18 +80,6 @@ library UsdtFacet {
         require(this.paused);
         this.paused = false;
         emit Unpause();
-    }
-
-    function removeBlackList(address clearedUser) public {
-        require(msg.sender == this.owner);
-        this.isBlackListed[clearedUser] = false;
-        emit RemovedBlackList(clearedUser);
-    }
-
-    function unfreeze(address user) public {
-        require(msg.sender == this.owner);
-        this.frozen[user] = false;
-        emit Unfrozen(user);
     }
 
     function deprecate(address newAddress) public {

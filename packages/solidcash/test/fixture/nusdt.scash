@@ -84,26 +84,27 @@ contract NativeUsdt(address initialOwner) {
     event DepositQuarantined(address indexed to, int value, int unlockAt);
 
     // ---- shared state layout (see nusdt_state.inc) ----
+    bool backingSet;
+    bytes32 backingCategory;
+    bool paused;
+    bool deprecated;
+    int backedSupply;
+    int containerSeen;
     address owner;
+    int quarantineBlocks;
+    int clock;
+    address upgradedAddress;
+    bool initialized;
+    uint8 decimals;
+    bytes32 name;
+    bytes32 symbol;
     int totalSupply;
     mapping(address => int) balances;
     mapping(address => mapping(address => uint256)) allowed;
-    bool paused;
     mapping(address => bool) isBlackListed;
-    bytes32 name;
-    bytes32 symbol;
-    uint8 decimals;
-    bool deprecated;
-    address upgradedAddress;
     mapping(address => bool) frozen;
     mapping(address => int) pendingAmount;
     mapping(address => int) pendingUnlockAt;
-    int quarantineBlocks;
-    bytes32 backingCategory;
-    bool backingSet;
-    int containerSeen;
-    int backedSupply;
-    int clock;
 
     modifier onlyOwner() {
         require(msg.sender == this.owner);
@@ -114,21 +115,16 @@ contract NativeUsdt(address initialOwner) {
     // starts empty and `issue` (facet) releases premint into circulation. This is
     // the only sound supply model on BCH - fungible amounts of a category can
     // never be created after that category's genesis transaction.
-    constructor(bytes32 tokenName, bytes32 tokenSymbol, uint8 tokenDecimals, int quarantine) {
-        this.name = tokenName;
-        this.symbol = tokenSymbol;
-        this.decimals = tokenDecimals;
-        this.owner = initialOwner;
-        this.paused = false;
-        this.deprecated = false;
-        this.totalSupply = 0;
-        this.containerSeen = 0;
-        this.backedSupply = 0;
-        this.quarantineBlocks = quarantine;
-        this.clock = 0;
-        this.backingSet = false;
-        this.upgradedAddress = initialOwner;
-        this.backingCategory = 0x0000000000000000000000000000000000000000000000000000000000000000;
+    //
+    // WHY THIS IS NOT A CONSTRUCTOR. A constructor body ships in every spend of this
+    // script, and spends of this master run to the per-input limit: script, contract
+    // parameters and witnesses together. So the facet sets the deployment state, once,
+    // for `initialOwner`, a contract parameter the master's own address commits to.
+    function initialize(
+        address firstOwner, bytes32 tokenName, bytes32 tokenSymbol, uint8 tokenDecimals, int quarantine
+    ) {
+        require(firstOwner == initialOwner);
+        UsdtFacet.initialize(firstOwner, tokenName, tokenSymbol, tokenDecimals, quarantine);
     }
 
     // Pin the backing FT category, once. `containerSeen` is read from the
@@ -197,8 +193,8 @@ contract NativeUsdt(address initialOwner) {
     function transferOwnership(address newOwner) { UsdtFacet.transferOwnership(newOwner); }
     function pause() { UsdtFacet.pause(); }
     function unpause() { UsdtFacet.unpause(); }
-    function removeBlackList(address clearedUser) { UsdtFacet.removeBlackList(clearedUser); }
-    function unfreeze(address user) { UsdtFacet.unfreeze(user); }
+    function removeBlackList(address clearedUser) { UsdtSupplyFacet.removeBlackList(clearedUser); }
+    function unfreeze(address user) { UsdtSupplyFacet.unfreeze(user); }
     function deprecate(address newAddress) { UsdtFacet.deprecate(newAddress); }
     function setQuarantineBlocks(int blocks) { UsdtFacet.setQuarantineBlocks(blocks); }
     function tick(int nowHeight) { UsdtFacet.tick(nowHeight); }

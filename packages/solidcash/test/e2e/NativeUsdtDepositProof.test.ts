@@ -122,6 +122,7 @@ async function deploy(): Promise<Deployed> {
     decimals: DECIMALS,
     deprecated: false,
     upgradedAddress: ownerAddr,
+    initialized: true,
     quarantineBlocks: 0n,
     backingCategory: new Uint8Array(32),
     backingSet: false,

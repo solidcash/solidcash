@@ -23,7 +23,8 @@ import type { Artifact } from '@solidcash/utils';
 // =============================================================================
 
 const fx = (n: string): URL => new URL(`../fixture/${n}`, import.meta.url);
-const MECHANISM_ONLY = new Set(['__construct']);
+// The hand split's master has no constructor body to carry: `initialize` is that constructor.
+const MECHANISM_ONLY = new Set(['__construct', 'initialize']);
 
 const surfaceOf = (artifacts: Artifact[]): string[] => {
   const names = new Set<string>();

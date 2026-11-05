@@ -7841,6 +7841,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     walk(root);
   }
 
+  private isContractCreationKey(key: IdentifierNode): boolean {
+    const parameter = this.currentContract?.parameters.find((candidate) => candidate.name === key.name);
+    return parameter?.type instanceof BytesType && parameter.type.bound === 32;
+  }
+
   private isOwnCategoryKey(key: IdentifierNode): boolean {
     const definition = key.definition?.definition;
     return definition instanceof VariableDefinitionNode
@@ -15446,7 +15451,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const key of node.keys) {
         if (!(key instanceof IdentifierNode)
           || (!this.currentFunction.parameters.some((p) => p.name === key.name)
-            && !this.isOwnCategoryKey(key) && this.stateCategoryKeyVariable(key) === undefined)) {
+            && !this.isOwnCategoryKey(key) && this.stateCategoryKeyVariable(key) === undefined
+            && !this.isContractCreationKey(key))) {
           throw new TokenContainerKeyMustBeParameterError(node);
         }
       }
@@ -15587,7 +15593,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const keyExpr = node.tokenContainerKeyExpression;
     if (!(keyExpr instanceof IdentifierNode)
       || (!this.currentFunction.parameters.some((p) => p.name === keyExpr.name)
-        && !this.isOwnCategoryKey(keyExpr) && this.stateCategoryKeyVariable(keyExpr) === undefined)) {
+        && !this.isOwnCategoryKey(keyExpr) && this.stateCategoryKeyVariable(keyExpr) === undefined
+        && !this.isContractCreationKey(keyExpr))) {
       throw new TokenContainerKeyMustBeParameterError(node);
     }
 

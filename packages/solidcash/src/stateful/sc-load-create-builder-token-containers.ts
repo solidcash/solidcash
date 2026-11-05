@@ -20,6 +20,9 @@ export type LoadCreateBuilderTokenContainersHost = {
   readonly inner: {
     addressType: any;
     provider: { getUtxos(address: string): Promise<Utxo[]> };
+    /** The direct contract's creation parameters and the values its handle was built with. */
+    artifact: { readonly constructorInputs: readonly { readonly name: string }[] };
+    constructorArgs: readonly unknown[];
   };
 };
 
@@ -72,13 +75,19 @@ export async function loadCreateBuilderTokenContainers(
     for (let slotIndex = 0; slotIndex < tokenContainerAccesses.length; slotIndex++) {
       const access = tokenContainerAccesses[slotIndex];
       const keyParamIndex = abiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
-      if (keyParamIndex < 0 && access.keySource !== 'own' && access.keySource !== 'state') {
+      // A key the contract declares at creation time is not a function input; its value is in the handle.
+      const creationIndex = keyParamIndex < 0 && access.keySource !== 'own' && access.keySource !== 'state'
+        ? host.inner.artifact.constructorInputs.findIndex((input) => input.name === access.keyParam)
+        : -1;
+      if (keyParamIndex < 0 && creationIndex < 0
+        && access.keySource !== 'own' && access.keySource !== 'state') {
         throw new Error(
-          `Token container key parameter '${access.keyParam}' not found in function inputs`,
+          `Token container key parameter '${access.keyParam}' not found in function inputs or contract creation inputs`,
         );
       }
-      const tokenContainerCategoryValue = tokenContainerKeyValue(access, host.categoryId, args, keyParamIndex,
-        params.stateValues);
+      const tokenContainerCategoryValue = creationIndex >= 0
+        ? host.inner.constructorArgs[creationIndex]
+        : tokenContainerKeyValue(access, host.categoryId, args, keyParamIndex, params.stateValues);
       const tokenContainerCategoryId = tokenContainerCategoryValue instanceof Uint8Array
         ? binToHex(tokenContainerCategoryValue) : String(tokenContainerCategoryValue);
 

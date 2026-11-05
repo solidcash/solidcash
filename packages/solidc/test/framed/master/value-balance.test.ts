@@ -178,6 +178,31 @@ describe('address(this).balance, compiled framed', () => {
   });
 });
 
+const OUT_STATE_SOURCE = 'pragma solidcash ^0.14.0;'
+  + ' contract OutState {'
+  + '   constructor() { }'
+  + '   function check(int expected) { require(this.outState.balance == expected); }'
+  + ' }';
+
+describe('this.outState.balance, compiled framed', () => {
+  it('sums the contract\'s own output container and is not refused as another address\'s balance', () => {
+    const outState = compileString(OUT_STATE_SOURCE, { composition: 'framed' });
+    expect(outState.composition!.refusedEntries).toBeUndefined();
+    // It reads outputs, so the builder need not spend the contract's containers for it.
+    expect(outState.composition!.balanceReaders).toBeUndefined();
+    expect(verdict({
+      artifact: outState, entry: 'check', args: [int(50_000n)], containersIn: [], trailing: [container(50_000n)],
+    })).toStrictEqual({ accepted: true });
+    expect(verdict({
+      artifact: outState, entry: 'check', args: [int(49_999n)], containersIn: [], trailing: [container(50_000n)],
+    }).accepted).toBe(false);
+    // A spent container is not an output: the read sees only what the transaction pays to it.
+    expect(verdict({
+      artifact: outState, entry: 'check', args: [int(50_000n)], containersIn: [50_000n], trailing: [],
+    }).accepted).toBe(false);
+  });
+});
+
 /**
  * A constructor's balance read (spec 4b): the constructor runs only at its genesis, and no genesis shows a balance.
  * Another address's balance shows only in the inputs a transaction spends, and the contract's own is the

@@ -28,7 +28,7 @@ import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { framedValidator } from '@solidcash/solidc/runtime';
-import { bytesEqual, validatorAddress, type Artifact } from '@solidcash/utils';
+import { asmToScript, bytecodeToAsm, bytesEqual, scriptToBytecode, validatorAddress, type Artifact } from '@solidcash/utils';
 import type { TransactionDetails } from '../../interfaces.js';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
@@ -126,6 +126,47 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + '(`childPool`) and its collection hashes (`childCollections`)',
     );
   }
+  // Contract creation arguments are encoded into the redeem program, not into the constructor frame. The
+  // constructor block's own arguments are `options.initArgs` (or the tail after the creation args for callers
+  // that pass one list). Split them before deriving genesis, and bake the creation args into the program.
+  const creationCount = artifact.constructorInputs.length;
+  const creationValues = constructorArgs.slice(0, creationCount);
+  const constructorValues = options.initArgs ?? constructorArgs.slice(creationCount);
+  let framedArtifact = artifact as Artifact;
+  if (creationValues.length > 0) {
+    const templateContract = new Contract(artifact as never, creationValues as never, { provider: options.provider });
+    const fullScript = hexToBin(templateContract.bytecode);
+    const codeLength = scriptToBytecode(asmToScript(artifact.bytecode)).length;
+    const prefixLength = fullScript.length - codeLength;
+    const placeholders = artifact.composition?.placeholders;
+    // A constant-lock program names no category or address slot, so there is no offset to move.
+    const shifted = placeholders === undefined || placeholders.constantLock !== undefined
+      ? placeholders
+      : {
+        ...placeholders,
+        categoryOffset: placeholders.categoryOffset + prefixLength,
+        addressOffset: placeholders.addressOffset + prefixLength,
+        ...(placeholders.templateHashOffset === undefined ? {} : { templateHashOffset: placeholders.templateHashOffset + prefixLength }),
+        ...(placeholders.identityOffset === undefined ? {} : { identityOffset: placeholders.identityOffset + prefixLength }),
+      };
+    framedArtifact = {
+      ...artifact,
+      bytecode: bytecodeToAsm(fullScript),
+      constructorInputs: [],
+      // The handle reads these when a view names a creation argument (such as a token-container key); the program
+      // already carries them, so they are never encoded again.
+      creationArguments: artifact.constructorInputs.map((input, index) => ({
+        name: input.name, type: input.type, value: creationValues[index]!,
+      })) as Artifact['creationArguments'],
+      stateLayout: artifact.stateLayout === undefined ? undefined : {
+        ...artifact.stateLayout, constructorInputs: [],
+      },
+      composition: artifact.composition === undefined ? undefined : {
+        ...artifact.composition,
+        ...(shifted === placeholders ? {} : { placeholders: shifted! }),
+      },
+    } as Artifact;
+  }
   const withChildSlots = (target: Artifact): Artifact => {
     if (childGenesisReservation(target).replays) return patchChildGenesisSlots(target, replaySlots!);
     // A creator compiled before the replay reserves its child's master locks and output count instead.
@@ -137,7 +178,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   };
   const patchesChild = (childLocks !== undefined && childLocks.length > 0)
     || childOutputCount !== undefined || options.childCollections !== undefined;
-  const shippedArtifact = withChildSlots(artifact) as typeof artifact;
+  const shippedArtifact = withChildSlots(framedArtifact) as typeof artifact;
   const split = !patchesChild
     ? options.functionSplit
     : options.functionSplit === undefined ? undefined : {
@@ -201,10 +242,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
   // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
   const framedCallEngine = loadFramedCallHandle();
-  // A framed artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
-  // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
-  // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
-  const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
   // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries
   // the head that plan relinked, and the genesis filters that one out; a caller that names extra collections (a
@@ -439,7 +476,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
 
   // A framed artifact bakes its constructor arguments into the filled program the genesis published rather than
   // into the handle's redeem script, so the handle is built without repeating them.
-  const contract = new Contract(artifact, [] as never, {
+  const contract = new Contract(framedArtifact as T, [] as never, {
     provider: options.provider,
     ...(options.addressType === undefined ? {} : { addressType: options.addressType }),
     category,

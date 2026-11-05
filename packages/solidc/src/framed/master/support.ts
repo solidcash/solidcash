@@ -2731,6 +2731,13 @@ export function isOwnAddress(expression: ExpressionNode): boolean {
     && current.expression instanceof NullaryOpNode && current.expression.operator === NullaryOperator.INPUT_INDEX;
 }
 
+/** True for `this.outState`, the contract's own output-side satoshi container. */
+function isOwnOutState(expression: ExpressionNode): boolean {
+  let current: ExpressionNode = expression;
+  while (current instanceof CastNode) current = current.expression;
+  return current instanceof StateAccessNode && current.name === 'outState' && current.stateVariable === undefined;
+}
+
 /** Whether a body reads its own contract's balance, and whether it reads another address's. */
 function balanceReads(body: BlockNode | undefined): { readonly own: boolean; readonly other: boolean } {
   let own = false;
@@ -2739,7 +2746,9 @@ function balanceReads(body: BlockNode | undefined): { readonly own: boolean; rea
     if (node instanceof StateAccessNode && node.name === 'balance' && node.stateVariable === undefined) own = true;
     if (node instanceof FieldAccessNode && node.name === 'balance' && node.expression.type instanceof AddressType) {
       if (isOwnAddress(node.expression)) own = true;
-      else other = true;
+      // `this.outState.balance` sums the outputs at the contract's own satoshi container. It reads no foreign
+      // input, so it is neither another address's balance nor a reason to spend the contract's containers.
+      else if (!isOwnOutState(node.expression)) other = true;
     }
   });
   return { own, other };

@@ -131,7 +131,8 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // that pass one list). Split them before deriving genesis, and bake the creation args into the program.
   const creationCount = artifact.constructorInputs.length;
   const creationValues = constructorArgs.slice(0, creationCount);
-  const constructorValues = options.initArgs ?? constructorArgs.slice(creationCount);
+  const constructorTail = constructorArgs.slice(creationCount);
+  const constructorValues = constructorTail.length > 0 ? constructorTail : (options.initArgs ?? []);
   let framedArtifact = artifact as Artifact;
   if (creationValues.length > 0) {
     const templateContract = new Contract(artifact as never, creationValues as never, { provider: options.provider });

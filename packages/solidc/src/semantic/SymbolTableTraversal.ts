@@ -4680,8 +4680,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (!slot.compileTimeSelector) {
               const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
-                const signature = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameterTypes);
-                inferredSelectors.set(slot, this.computeAbiSelector(signature));
+                inferredSelectors.set(slot, this.calleeMethodSelector(slot.functionName, ifaceFunc.parameterTypes));
               }
             }
             // A loop over targets calls a callee per iteration through its receiver declaration: two loops may
@@ -4830,8 +4829,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             // The void record is read by the digest of this method's selector and arguments; set it here so the
             // read always has one, including where the generic returning-slot pass does not reach this slot
             // (e.g. a callee dispatched through its own multi-call entry).
-            slot.callRecordSelector = this.computeAbiSelector(
-              this.selectorSignatureFor(slot.functionName, recordMethod.parameterTypes));
+            slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, recordMethod.parameterTypes);
             slot.callRecordParameterTypes = recordMethod.parameterTypes;
             slot.hasReturnValues = true;
             slot.voidCallRecord = true;
@@ -5003,9 +5001,9 @@ export default class SymbolTableTraversal extends AstTraversal {
                 node, `Graph handler '${node.name}' has an unresolved target method`,
               );
             }
-            slot.compileTimeSelector = this.computeAbiSelector(this.selectorSignatureFor(
+            slot.compileTimeSelector = this.calleeMethodSelector(
               slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type),
-            ));
+            );
           }
         } else {
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
@@ -5099,8 +5097,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (!slot.runtimeSelector && !slot.batchInvocations) {
               const ifaceFunc = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
               if (ifaceFunc) {
-                const sig = this.selectorSignatureFor(slot.functionName, ifaceFunc.parameterTypes);
-                slot.compileTimeSelector = this.computeAbiSelector(sig);
+                slot.compileTimeSelector = this.calleeMethodSelector(slot.functionName, ifaceFunc.parameterTypes);
               }
             }
             // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
@@ -5330,7 +5327,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const recordMethod = this.interfaceMap.has(slot.interfaceName) ? this.slotCalleeMethod(slot) : undefined;
         if (recordMethod && !slot.runtimeSelector && !slot.selectorArrayVar) {
           const parameterTypes = recordMethod.parameterTypes;
-          slot.callRecordSelector = this.computeAbiSelector(this.selectorSignatureFor(slot.functionName, parameterTypes));
+          slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, parameterTypes);
           slot.callRecordParameterTypes = parameterTypes;
         }
         // Backward compat: single returning slot uses '__internal__externalReturnOutputIdx', multiple use indexed names
@@ -5373,9 +5370,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // attest the call. The returning-slot loop above set it for returning slots; set it for the rest here.
         if (method && slot.callRecordSelector === undefined && !slot.selectorArrayVar
           && this.interfaceMap.has(slot.interfaceName)) {
-          slot.callRecordSelector = this.computeAbiSelector(
-            this.selectorSignatureFor(slot.functionName, method.parameterTypes),
-          );
+          slot.callRecordSelector = this.calleeMethodSelector(slot.functionName, method.parameterTypes);
           slot.callRecordParameterTypes = method.parameterTypes;
         }
       }
@@ -16713,6 +16708,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     return this.compilerOptions.evmCompat
       ? canonicalSelectorSignature(name, paramTypes)
       : computeFunctionSignature(name, paramTypes.map((type) => type.toString().replace(/address payable/g, 'address')));
+  }
+
+  /** The selector of a method a call names: its callee lowers a function value to an address and a selector. */
+  private calleeMethodSelector(name: string, parameterTypes: readonly Type[]): Uint8Array {
+    return this.computeAbiSelector(this.selectorSignatureFor(name, parameterTypes.flatMap((type) => (
+      type instanceof FunctionType && type.isExternal ? [new AddressType(false), new BytesType(4)] : [type]))));
   }
 
   visitAbiEncodeWithSignature(node: AbiEncodeWithSignatureNode): Node {

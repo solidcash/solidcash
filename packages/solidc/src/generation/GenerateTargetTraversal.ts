@@ -52933,8 +52933,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A message-bus route and its outlined graph handlers execute against the route's published fixed trailing
     // band. Their working layout can still carry a direct-call returnEvent slot, but compacting it would move a
     // runtime mapping output one coordinate before the route ABI's authoritative trailingBase.
+    // Keccak side-cars recreate at their input coordinates, so the block they follow keeps its return slot.
     const hasUnmaterializedReturnSlot = trailingBase === undefined
       && this.currentFunction.blockLayout?.trailingBase === undefined
+      && this.currentFunction.keccakInLoop !== true && this.currentFunction.keccakChainReads !== true
       && (this.currentFunction.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent') ?? false);
     if (hasUnmaterializedReturnSlot) {
       const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);

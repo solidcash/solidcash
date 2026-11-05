@@ -916,8 +916,7 @@ export class StatefulTransactionBuilder {
     const abiFunction = (this.masterUtxo?.unlocker as {
       abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
     })?.abiFunction;
-    return this.keccakLoopSideCars.length > 0
-      && (abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true);
+    return abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true;
   }
 
   private blockLayout?: FunctionBlockLayout;
@@ -5840,7 +5839,7 @@ export class StatefulTransactionBuilder {
     // different: their authenticated trailing indices begin after the complete fixed block, so they keep the
     // inactive slot and the padding pass below materializes it before the effect stream.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
-    if (this.blockLayout?.trailingBase === undefined
+    if (this.blockLayout?.trailingBase === undefined && !this.keccakSideCarsFollowBlock
       && hasReturnEventSlot && (this.pendingReturnEventOutputs.length === 0 || this._voidRecordSlotIsAbsent())
       && this.runtimeLoopEventOutputs.length === 0 && this.runtimeLoopTransferOutputs.length === 0) base -= 1;
     // build() preserves low-level-call UTXOs before the trailing dynamic region.
@@ -6340,7 +6339,7 @@ export class StatefulTransactionBuilder {
         // recreations occupy those compacted coordinates, matching the delegate path's mapPredToCompactedOutput.
         const returnEventOffset = this.blockLayout?.slots
           .find((slot) => slot.kind === 'returnEvent')?.offset;
-        const compact = this._unmaterializedReturnEventCompact(this.blockLayout);
+        const compact = this.keccakSideCarsFollowBlock ? 0 : this._unmaterializedReturnEventCompact(this.blockLayout);
         const base = firstPredecessor - writtenChunksBefore;
         return compact > 0 && base > (returnEventOffset ?? 0) ? base - compact : base;
       }

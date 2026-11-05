@@ -46,6 +46,23 @@ precondition that is common), MEDIUM (needs an uncommon shape or privileged part
 
 ## Findings
 
+### CALLER-EDGE-1 (HIGH, VM-confirmed 2026-11-05; OPEN; direct convention) An entry that makes no call can forge a caller edge
+
+F1 binds a callee's contract `msg.sender` to an own-category immutable NFT carrying the call's digest, so a contract
+has to have made the call rather than merely be co-spent. Only the own-category census refuses a forged one, and
+e01859f89 moved edges from a `callEdge` block slot to a witnessed output while `declaresEvents` in
+GenerateTargetTraversal still tests `slot.kind === 'callEdge'`. Nothing generates that slot. An entry of a contract
+with no events, void or lacking a returnEvent slot, therefore takes no census.
+
+Attack: anyone able to run any public entry of A co-spends A's master, appends `digest || 0x03` in A's category, and
+runs a callee that trusts A. `AuditCallerEdgeForgery.test.ts` proves it on the VM: `Caller.poke()`, which calls nothing,
+carries the edge and `Vault.pay()`, gated on `msg.sender == trusted`, settles. That test is `it.fails` until this
+closes. Master has the same line.
+
+Closing it needs the census, or a narrower refusal of own-category `5161` carriers outside the entry's witnessed edges,
+in every entry of a direct stateful contract: bytes in every contract, and a contract placing own-category immutable
+NFTs of its own would lose that. A cost decision for the user, so not fixed in the landing.
+
 ### DYN-1 (CRITICAL, source-traced; direct and route builds) A dynamic write skips all chunk verification when the spender passes a base below -1
 
 Attacker: anyone who may call a direct (non-route) function that writes a dynamic state variable (`string`, `bytes`,

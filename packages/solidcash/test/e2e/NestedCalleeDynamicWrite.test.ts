@@ -51,6 +51,21 @@ contract ReadingRoot(bytes writer) { int runs;
     require(v >= 0);
   } }`;
 
+const LEAF_WRITER = `${PRAGMA}
+contract LeafWriter() { string message;
+  function set(string next) { this.message = next; require(next.length >= 0); } }`;
+
+const SIBLING_ROOT = `${PRAGMA}
+interface IWriter { function set(string next); }
+interface ICounter { function poke(); }
+contract SiblingRoot(bytes writer, bytes counter) { int runs;
+  function run(string next) {
+    IWriter(writer).set(next);
+    ICounter(counter).poke();
+    this.runs = this.runs + 1;
+    require(next.length >= 0);
+  } }`;
+
 const text = (length: number): string => 'x'.repeat(length);
 
 describe('a callee that writes dynamic state and calls on', () => {
@@ -93,5 +108,22 @@ describe('a callee that writes dynamic state and calls on', () => {
 
     expect(await writer.sc.getState()).toEqual(expect.objectContaining({ message: text(241), last: 5n }));
     expect((await adder.sc.getState()).total).toBe(5n);
+  });
+
+  // The run's own count is pinned, so a copy of a chunk the write consumed is refused rather than left behind.
+  it('pads a consumed chunk between a shrinking callee and the block after it', async () => {
+    const provider = createTestProvider();
+    const counter = await deploy(provider, COUNTER, [], { count: 0n });
+    const writer = await deploy(provider, LEAF_WRITER, [], { message: '' });
+    const root = await deploy(
+      provider, SIBLING_ROOT, [writer.lock, counter.lock], { runs: 0n },
+      { IWriter: writer.sc, ICounter: counter.sc },
+    );
+    await writer.sc.set(text(241)).send();
+
+    await root.sc.run(text(121)).send();
+
+    expect((await writer.sc.getState()).message).toBe(text(121));
+    expect((await counter.sc.getState()).count).toBe(1n);
   });
 });

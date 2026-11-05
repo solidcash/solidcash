@@ -69,7 +69,9 @@ A void run that settles no record counts at zero, a proxy path that reached no d
 edge of its own category, a route refuses any edge of its category, and the callee reads an edge only under its lock.
 `AuditCallerEdgeForgery.test.ts` runs each shape on the VM.
 
-Residual: a proxy that does not pin its delegate co-spend keeps this hole with the rest of its state (C1).
+Residual: a proxy that does not pin its delegate co-spend keeps this hole with the rest of its state (C1). A framed
+master takes no such count: framed callers attest through their own records and pin no F1 edge, so a direct callee that
+trusts a framed contract has no honest path.
 
 ### DYN-1 (CRITICAL, source-traced; direct and route builds) A dynamic write skips all chunk verification when the spender passes a base below -1
 

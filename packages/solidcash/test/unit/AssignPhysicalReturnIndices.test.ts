@@ -1829,6 +1829,24 @@ describe('assignPhysicalReturnIndices', () => {
     }))).toBe(4);
   });
 
+  it('counts no coordinate for a record a compacted block does not carry', () => {
+    const compacted = {
+      categoryId: 'void-emitter',
+      dataNftUtxos: { length: 1 },
+      blockInputs: { length: 3 },
+      blockLayout: {
+        blockSize: 4,
+        slots: [
+          { kind: 'master' as const, offset: 0 }, { kind: 'dataNft' as const, offset: 1 },
+          { kind: 'event' as const, offset: 2 }, { kind: 'returnEvent' as const, offset: 3 },
+        ],
+      },
+    };
+    expect(physicalParticipantWidth(group(compacted))).toBe(3);
+    expect(physicalParticipantWidth(group({ ...compacted, returnEventInBlock: true }))).toBe(4);
+    expect(physicalParticipantWidth(group({ ...compacted, blockInputs: { length: 4 } }))).toBe(4);
+  });
+
   it('detects a lane collision in output-only participant coordinates', () => {
     expect(participantSpanOverlapsLane(18, 9, { start: 26, endExclusive: 28 })).toBe(true);
     expect(participantSpanOverlapsLane(18, 5, { start: 26, endExclusive: 28 })).toBe(false);

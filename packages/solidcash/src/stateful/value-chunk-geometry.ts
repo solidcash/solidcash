@@ -407,19 +407,29 @@ export function liveChunkWidthForGroup(
   return liveChunkSlotsByOwner(groups, ownerConvention).get(owner) ?? 0;
 }
 
+/** A direct block that stops at its last slot, a record it does not carry: no input or output holds that slot. */
+function compactsRecordSlot(group: PhysicalReturnGroup, layout: FunctionBlockLayout | undefined): boolean {
+  if (group.compilerRoute !== undefined || group.returnEventInBlock === true || layout === undefined) return false;
+  const slot = layout.slots.find(({ kind }) => kind === 'returnEvent');
+  return slot?.offset === layout.blockSize - 1 && group.blockInputs?.length === slot.offset;
+}
+
 /** Complete coordinate span reserved by a participant, including output-only slots. */
 export function physicalParticipantWidth(group: PhysicalReturnGroup): number {
   const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
+  const stateWidth = 1 + (group.dataNftUtxos?.length ?? 0);
+  const assembledWidth = group.blockInputs?.length ?? 0;
+  if (compactsRecordSlot(group, layout)) return Math.max(stateWidth, assembledWidth);
   const declaredSpan = layout?.slots.reduce(
     (width, slot) => Math.max(width, slot.offset + 1),
     0,
   ) ?? 0;
   return Math.max(
     1,
-    1 + (group.dataNftUtxos?.length ?? 0),
+    stateWidth,
     layout?.blockSize ?? 0,
     declaredSpan,
-    group.blockInputs?.length ?? 0,
+    assembledWidth,
   );
 }
 

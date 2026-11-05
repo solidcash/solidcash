@@ -256,7 +256,11 @@ export function materializeExternalCallOutputs(
 
     // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
     if (group.blockInputs && group.blockLayout) {
-      if (externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
+      // A block of state and a call record alone reserves no band: its covenant places the run past the block.
+      const chunksFollowBlock = group.compilerRoute === undefined
+        && group.blockLayout.slots.every((slot) => slot.kind === 'master' || slot.kind === 'dataNft'
+          || slot.kind === 'returnEvent');
+      if (!chunksFollowBlock && externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
         throw new Error(
           'External dynamic state exceeds balanced trailing capacity '
         + `(${externalDynamicChunks.length} > ${group.blockLayout.trailingCapacity ?? 0})`,
@@ -725,6 +729,7 @@ export function materializeExternalCallOutputs(
           });
         }
       }
+      if (chunksFollowBlock) for (const output of externalDynamicChunks) builder.addOutput(output);
     } else {
     // Legacy/unbalanced external calls place their runtime chunk run immediately after the fixed
     // master+data group. The callee covenant derives the same master-relative base.

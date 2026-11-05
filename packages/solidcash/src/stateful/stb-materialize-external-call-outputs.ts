@@ -78,6 +78,19 @@ export interface MaterializeExternalCallOutputsHost {
   callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
+/** Slots a direct callee's dynamic run can follow: its covenant places the run past the fixed block. */
+const RUN_FOLLOWS_SLOT_KINDS: ReadonlySet<string> = new Set([
+  'master', 'dataNft', 'entry', 'event', 'eventChunk', 'returnEvent',
+]);
+
+/** What keeps a direct callee's dynamic run from following its block; nothing when the run can follow it. */
+function directRunBlocker(group: ExternalCallUtxoGroup, layout: FunctionBlockLayout): string | undefined {
+  const slot = layout.slots.find(({ kind }) => !RUN_FOLLOWS_SLOT_KINDS.has(kind));
+  if (slot !== undefined) return `a ${slot.kind} slot`;
+  if ((group.plannedEntryInserts?.length ?? 0) > 0) return "a sorted insert's trailing outputs";
+  return (group.valueChunkOutputCount ?? 0) > 0 ? 'mapping value chunks' : undefined;
+}
+
 /**
  * Materialize external-call participant output blocks (master/data/entries/events/returns)
  * and any deferred delegate-adjacent external return channels. Returns the set of owner
@@ -266,11 +279,17 @@ export function materializeExternalCallOutputs(
 
     // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
     if (group.blockInputs && group.blockLayout) {
-      // A block of state and a call record alone reserves no band: its covenant places the run past the block.
-      const chunksFollowBlock = group.compilerRoute === undefined
-        && group.blockLayout.slots.every((slot) => slot.kind === 'master' || slot.kind === 'dataNft'
-          || slot.kind === 'returnEvent');
-      if (!chunksFollowBlock && externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
+      // Only a compiler route reserves a trailing band, so only a route can run out of capacity.
+      const runBlocker = group.compilerRoute === undefined ? directRunBlocker(group, group.blockLayout) : undefined;
+      const chunksFollowBlock = group.compilerRoute === undefined && runBlocker === undefined;
+      if (runBlocker !== undefined && externalDynamicChunks.length > 0) {
+        throw new Error(
+          `External dynamic state of '${group.functionName}' has no output coordinate: `
+        + `a direct callee's run follows its block, and the SDK cannot place one beside ${runBlocker}`,
+        );
+      }
+      if (group.compilerRoute !== undefined
+        && externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
         throw new Error(
           'External dynamic state exceeds balanced trailing capacity '
         + `(${externalDynamicChunks.length} > ${group.blockLayout.trailingCapacity ?? 0})`,

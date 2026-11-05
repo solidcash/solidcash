@@ -25,8 +25,10 @@ acceptnonstdtxn
 accross
 Accs
 activationheight
+addext
 addmany
 addmod
+ADDN
 Addres
 addrslot
 adoc
@@ -153,6 +155,7 @@ chacha
 chaincall
 chainid
 Chainlink
+chainread
 chalenge
 checkpointed
 checkpointing
@@ -253,6 +256,8 @@ desynchronization
 desyncing
 desyncs
 devaddr
+devnet
+devnets
 Devos
 dfsjo
 Disambig
@@ -453,6 +458,7 @@ inliners
 inlv
 INPUTBYTECODEOP
 inputidx
+inputvalues
 inputwitnesses
 INSCOPE
 insn
@@ -498,6 +504,7 @@ keccaks
 kext
 keydata
 keyhex
+keyout
 khce
 kimp
 kneg
@@ -634,6 +641,7 @@ modif
 modinv
 modmul
 modmuls
+MODN
 modneg
 modsqrt
 modsub
@@ -750,8 +758,10 @@ overridding
 Overwritable
 Ownr
 PADB
+padder
 padpush
 PAIRCODEHASH
+Pairish
 PAIRLOCAL
 parame
 parameterisation
@@ -809,6 +819,7 @@ Preflighted
 prefund
 Prefunded
 prefunding
+prehash
 Preinstalling
 Prelowered
 premint
@@ -904,6 +915,7 @@ reminting
 reorderable
 reparent
 replayable
+replayer
 repr
 repros
 requalification
@@ -936,6 +948,7 @@ Rmws
 rollup
 rollup's
 ROUNDTRIPS
+ROUTERISH
 rowkey
 rowlen
 rparen
@@ -1047,7 +1060,9 @@ subcall
 subcalls
 subexpression
 submitblock
+SUBN
 SUBOP
+SUBP
 subpaths
 subroutined
 subsquid
@@ -1134,6 +1149,7 @@ unaccessed
 unaddressable
 unadmitted
 unalias
+unassumed
 unauditable
 unbindable
 unbroadcast
@@ -1234,6 +1250,7 @@ unshardable
 unshift
 unshifts
 unskipped
+unslotted
 unspaced
 unsplittable
 Unstampable
@@ -1302,6 +1319,7 @@ wtype
 xchacha
 xcontext
 xdescribe
+xdoesnotexist
 xfer
 xffff
 xfold

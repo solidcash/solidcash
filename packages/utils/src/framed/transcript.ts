@@ -15,7 +15,9 @@
  *
  * `padding` is zero bytes nothing reads: a builder lengthens the validator input's unlocking bytecode with it, which
  * is what the machine's operation-cost budget is measured over. Its length comes last, so a reader cuts the padding
- * off the end before it reads anything else, and the copies of the transcript it works on carry none of it. A settled contract names the state UTXOs the transaction spends and the records the transaction creates. A
+ * off the end before it reads anything else, and the copies of the transcript it works on carry none of it.
+ *
+ * A settled contract names the state UTXOs the transaction spends and the records the transaction creates. A
  * created record has no input to name, so its commitment lives at a trailing output index, and the frames that
  * write it address it by that index; the list is what tells the validator that such an index is a created record
  * rather than an input. The transcript does not list segments: the order is derived from the call tree, so a

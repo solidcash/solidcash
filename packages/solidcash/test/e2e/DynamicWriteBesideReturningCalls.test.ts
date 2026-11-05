@@ -139,11 +139,10 @@ describe('a dynamic array written beside returning external calls', () => {
       };
 
       // Both calls run: the old chunk is spent ahead of the callees, and the one chunk follows the return events.
-      // The callees' records keep the caller's own record slot reserved, so its padding sits before the chunk.
       const ran = await capture(provider, () => pools.sc.refresh(1n, 5n)
         .withExternalCall(second.sc).withExternalCall(sink.sc).send());
       const ranChunks = chunkOutputs(ran.hex);
-      expect(ranChunks).toEqual([lastReturnEvent(ran.hex) + 2]);
+      expect(ranChunks).toEqual([lastReturnEvent(ran.hex) + 1]);
       await refusesDuplicatedChunk(ran, ranChunks[0]);
       await refusesMovedChunk(ran, ranChunks[0]);
       await expect(ran.send(ran.hex)).resolves.toBeTypeOf('string');

@@ -98,6 +98,8 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   slotIndex: number;
   loopIdxRanges: readonly { start: number; count: number }[];
   publicSelfIdentity: { categoryId: string; lockingBytecode: string };
+  /** The caller's slot reads this call's record. */
+  callerReadsRecord: boolean;
 }
 
 /**
@@ -643,7 +645,9 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         // The builder emits B's outputs as master + one per requiredDataNftIndices + one per remaining
         // block input, so the two extents only line up when the layout declares exactly those data slots.
         const layoutDataSlots = bBlockLayout.slots.filter((s) => s.kind === 'dataNft').length;
-        if (ctx.bBlockInputs.length === physicalFixedSize && bReturnFunderOffset === reOffset
+        // A void callee whose caller reads no record names none: its slot compacts, as in a standalone run.
+        const namesNoRecord = !ctx.callerReadsRecord && (bAbiFunc?.outputs?.length ?? 0) === 0;
+        if (!namesNoRecord && ctx.bBlockInputs.length === physicalFixedSize && bReturnFunderOffset === reOffset
           && layoutDataSlots === bRequiredNftIndices.length) {
           ctx.bReturnEventInBlock = true;
         } else {

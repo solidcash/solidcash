@@ -579,6 +579,7 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       if (bBlockLayout && callInfo) {
         const nestedBlockCtx = {
+          callerReadsRecord: ec.hasReturnValues === true,
           bBlockInputs,
           bStreamedEventPlan,
           bReturnEventInBlock,

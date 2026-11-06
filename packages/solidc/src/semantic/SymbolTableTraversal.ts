@@ -36,6 +36,7 @@ import {
   type EmitInfo,
   type TransferInfo,
   TransferStatementNode,
+  MinerFeeStatementNode,
   TokenContainerMethodStatementNode,
   BranchNode,
   DoWhileNode,
@@ -228,6 +229,8 @@ import {
   GraphHandlerShapeError,
   SolidcDiagnosticError,
   UpgradeStrandsBoundStateError,
+  MinerFeeStatementError,
+  SingleContainersError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
 import {
@@ -1599,6 +1602,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && node.functions.length === 0 && node.stateVariables.length === 0;
     if (!shadowedInterface) this.contractMap.set(node.name, node);
     this.currentContract = node;
+    if (node.singleContainers) this.validateSingleContainers(node);
 
     // Types declared by an inherited interface are members of the contract scope. A file-level/library enum with
     // the same short name must not win merely because it was registered earlier (`contract C is I`, where both
@@ -15606,6 +15610,42 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * `this.payMinerFee(amount)`. Framed conservation has no such term: its validator weighs only sends and calls, so
+   * value leaves a framed contract only as a send (spec 4b). The statement is a top-level one, and one per entry, so
+   * every run of the entry authorizes exactly the amount its source names, and its layout can read it from the body.
+   */
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    const fn = this.currentFunction;
+    if (this.compilerOptions.composition === 'framed') {
+      throw new MinerFeeStatementError(node, 'is not available in the framed composition: value leaves a framed '
+        + 'contract only as a send');
+    }
+    if (!fn?.isEntryPoint) throw new MinerFeeStatementError(node, 'must be in a public entry point');
+    if (fn.modifiers.includes(FunctionModifier.VIEW) || fn.modifiers.includes(FunctionModifier.PURE)) {
+      throw new MinerFeeStatementError(node, 'cannot be in a view or pure function');
+    }
+    if (!fn.body.statements?.includes(node)) {
+      throw new MinerFeeStatementError(node, 'must be a top-level statement of the function, not in a branch or loop');
+    }
+    if (fn.body.statements.filter((statement) => statement instanceof MinerFeeStatementNode).length > 1) {
+      throw new MinerFeeStatementError(node, 'can appear once in a function');
+    }
+    this.minerFeeAmount(node);
+    node.amount = this.visit(node.amount);
+    return node;
+  }
+
+  /** The satoshis a `this.payMinerFee` names: a positive integer literal, or a constant that holds one. */
+  private minerFeeAmount(node: MinerFeeStatementNode): bigint {
+    const expression = node.amount instanceof IdentifierNode
+      ? this.constantMap.get(node.amount.name)?.expression : node.amount;
+    if (!(expression instanceof IntLiteralNode) || expression.value <= 0n) {
+      throw new MinerFeeStatementError(node, 'needs a positive compile-time amount');
+    }
+    return expression.value;
+  }
+
+  /**
    * Solidity lexical lookup of a bare event name: the enclosing library (in a library function) or contract, then
    * file-level events (library events share that list, marked by declaringLibraryName). Falls back to the contract,
    * then to every registered event (imported, interface or compiler-synthesized declarations).
@@ -19400,6 +19440,21 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Compute the 1:1 block layout for a stateful function.
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
+  /**
+   * `pragma containers single` keeps one coin at each container's lock, which a framed contract, whose frames settle
+   * its containers, a message-bus route and an upgrade, which moves them to a new lock, cannot promise.
+   */
+  private validateSingleContainers(node: ContractNode): void {
+    if (this.compilerOptions.composition === 'framed') {
+      throw new SingleContainersError(node, 'is not available to a framed contract');
+    }
+    if (this.compilerOptions.messageBus) {
+      throw new SingleContainersError(node, 'is not available to a message-bus contract');
+    }
+    const upgrade = node.functions.find((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
+    if (upgrade) throw new SingleContainersError(upgrade, `cannot keep its containers through '${upgrade.name}'`);
+  }
+
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
     // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
     // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
@@ -19452,9 +19507,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Satoshi container (if function has transfers - its own, or a graph handler's frames)
+    // Satoshi container (if function has transfers - its own, or a graph handler's frames - or pays the miner fee,
+    // which the container funds)
+    const minerFeeStatement = node.body?.statements?.find(
+      (statement): statement is MinerFeeStatementNode => statement instanceof MinerFeeStatementNode,
+    );
+    // Under `pragma containers single` a payable call adds to the one coin, so it spends it.
+    const singleContainers = this.currentContract?.singleContainers === true;
     if ((node.transferInfos && node.transferInfos.length > 0)
-      || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0) {
+      || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0 || minerFeeStatement
+      || (singleContainers && node.modifiers.includes(FunctionModifier.PAYABLE))) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -19668,7 +19730,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // argument's length. A reserved band only made the SDK fund its unused slots.
     const needsTrailingRegion = node.name === '__message_bus1'
       && (needsWideTrailingRegion || collectionRouteCapacity > 0);
-    if (!needsTrailingRegion) return { blockSize: offset, slots };
+    const published = {
+      ...(minerFeeStatement ? { minerFee: this.minerFeeAmount(minerFeeStatement).toString() } : {}),
+      ...(singleContainers ? { singleContainers: true } : {}),
+    };
+    if (!needsTrailingRegion) return { blockSize: offset, slots, ...published };
 
     const trailingBase = offset;
     // Each counter loop has an independent 64-iteration proof, so reserve its complete resource capacity rather
@@ -19687,6 +19753,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots,
       trailingBase,
       trailingCapacity,
+      ...published,
     };
   }
 

@@ -103,15 +103,26 @@ export async function loadCreateBuilderTokenContainers(
       );
       let containerUtxo: Utxo | undefined;
       try {
-        const containerUtxos = await host.inner.provider.getUtxos(containerAddress);
-        containerUtxo = containerUtxos.find(
-          (u) => u.token?.category === tokenContainerCategoryId,
-        );
+        const containerUtxos = (await host.inner.provider.getUtxos(containerAddress))
+          .filter((u) => u.token?.category === tokenContainerCategoryId);
+        // Anyone can pay a small coin to this address, so a contract keeping one coin takes the largest.
+        containerUtxo = abiFunction?.blockLayout?.singleContainers === true
+          ? containerUtxos.reduce<Utxo | undefined>(
+            (largest, u) => (largest === undefined || u.token!.amount > largest.token!.amount ? u : largest),
+            undefined,
+          )
+          : containerUtxos[0];
       } catch {
         // Container doesn't exist yet
       }
 
       const exists = !!containerUtxo;
+      if (!exists && abiFunction?.blockLayout?.singleContainers === true) {
+        throw new Error(
+          `Token container for ${tokenContainerCategoryId} not found. Under pragma containers single a call cannot `
+          + 'open one: deploy the contract with tokenContainers.',
+        );
+      }
       const tokenContainerUnlocker = createTokenContainerUnlocker(
         host.inner as any, overrides?.blockBase ?? 0, host.categoryId, tokenContainerCategoryId,
       );

@@ -130,6 +130,10 @@ export async function allocateCreateBuilderFunders(
     builder.setInsertBandPadUtxos(pads);
   }
 
+  // An entry that pays the miner from the contract's balance takes nobody's coin, even when that fee falls short: a
+  // withdrawal must not link the connected wallet to it.
+  if (host.signer && effectiveBlockLayout?.minerFee === undefined) builder.setFeeSigner(host.signer);
+
   // Auto-fund block-layout slots that need funder inputs (output-only slots
   // like transfers/events, non-existing entries/TCs). These are WITHIN the
   // block range - the covenant requires them at specific positions.
@@ -161,8 +165,11 @@ export async function allocateCreateBuilderFunders(
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
+    // An entry that pays the miner fee from the contract's balance funds its own output-only slots out of that fee,
+    // so it takes nobody's coin: a withdrawal from a pool needs no BCH of its own.
+    const paysOwnFee = effectiveBlockLayout.minerFee !== undefined;
     let neededFunders = effectiveBlockLayout.slots.filter(
-      (s) => outputOnlyKinds.has(s.kind)
+      (s) => outputOnlyKinds.has(s.kind) && !paysOwnFee
         // An atomic participant is assembled against its published fixed-width block. Even when this
         // invocation emits no return blob, retain the return-event input as an inactive balanced slot so
         // executor/identity inputs following the route cannot shift left. The composition replaces all local

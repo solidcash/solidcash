@@ -426,6 +426,10 @@ export interface BlockLayoutSlot {
 /** 1:1 input/output block layout for a stateful function. */
 export interface FunctionBlockLayout {
   blockSize: number;         // total number of slots in this contract's block
+  /** The satoshis `this.payMinerFee` lets the container lose with no output, as a decimal string. */
+  minerFee?: string;
+  /** `pragma containers single`: a call keeps one coin per container and opens no other. */
+  singleContainers?: boolean;
   slots: readonly BlockLayoutSlot[];
   /** First local slot of the bounded runtime-variable resource region. */
   trailingBase?: number;

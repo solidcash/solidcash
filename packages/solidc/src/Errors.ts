@@ -1260,6 +1260,19 @@ export class TransferArgumentTypeError extends TypeError {
   }
 }
 
+/** A `this.payMinerFee` the compiler cannot honour, named by what is wrong with it. */
+export class MinerFeeStatementError extends SolidCashError {
+  constructor(node: Node, reason: string) {
+    super(node, `this.payMinerFee() ${reason}`);
+  }
+}
+
+export class SingleContainersError extends SolidCashError {
+  constructor(node: Node, reason: string) {
+    super(node, `pragma containers single ${reason}`);
+  }
+}
+
 export class TokenContainerKeyMustBeParameterError extends SolidCashError {
   constructor(node: Node) {
     super(node, 'Token container key for \'this.tokens\' must be a function parameter, the contract\'s own category, '

@@ -18,7 +18,8 @@ import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/bala
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import { matchesProbeOpcodeSequence } from '../stateful/probe-instruction-sequence.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { isContractUnlocker } from '../interfaces.js';
+import { isContractUnlocker, type Unlocker } from '../interfaces.js';
+import { isExternallySignedUnlocker } from '../external-signing.js';
 import { getMessageBusEnvelopeTransport } from '../stateful/covenant-helpers.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
 import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
@@ -1396,6 +1397,10 @@ const evaluateEveryInput = (
 
   transaction.inputs.forEach((_input, inputIndex) => {
     if (narrowPreflight && inputIndex !== debugOnlyInput) return;
+    // A wallet's input holds a placeholder until the wallet signs it at broadcast. Its size and sighash byte are what
+    // the signature's will be, so every covenant above judged the final transaction, but the placeholder itself
+    // cannot verify. The signature is the wallet's to make and the node's to judge.
+    if (isExternallySignedUnlocker((builder.inputs[inputIndex] as { unlocker?: Unlocker } | undefined)?.unlocker)) return;
     const startedAt = debugTiming ? Date.now() : 0;
     const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
     const objection = vm.stateSuccess(evaluated);
@@ -2628,7 +2633,9 @@ const evaluateEveryInput = (
       });
     }
   });
-  if (!narrowPreflight) {
+  // A receipt says every input of these exact bytes passed, which a wallet's placeholder did not.
+  const walletSigns = builder.inputs.some((input) => isExternallySignedUnlocker((input as { unlocker?: Unlocker }).unlocker));
+  if (!narrowPreflight && !walletSigns) {
     rememberPreparedCovenantValidation(builder.provider, transaction, sourceOutputs);
   }
 };

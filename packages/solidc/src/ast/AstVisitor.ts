@@ -72,6 +72,7 @@ import {
   ErrorDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   ReturnNode,
@@ -187,6 +188,7 @@ export default abstract class AstVisitor<T> {
   abstract visitRevert(node: RevertNode): T;
   abstract visitAssert(node: AssertNode): T;
   abstract visitTransferStatement(node: TransferStatementNode): T;
+  abstract visitMinerFeeStatement(node: MinerFeeStatementNode): T;
   abstract visitSelfdestructStatement(node: SelfdestructStatementNode): T;
   abstract visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): T;
   abstract visitReturn(node: ReturnNode): T;

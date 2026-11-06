@@ -237,10 +237,23 @@ export async function deployStatefulContract<T extends Artifact>(
   });
   const leading = leadingOutputs(identity, prepared);
   const leadingTotal = leading.reduce((sum, output) => sum + output.amount, 0n);
-  const genesisInputs = prepared.nativeInput === undefined ? [] : [prepared.nativeInput];
+  const tokenContainerCoins = options.tokenContainers ?? [];
+  for (const { utxo } of tokenContainerCoins) {
+    if (utxo.token === undefined || utxo.token.amount <= 0n || utxo.token.nft !== undefined) {
+      throw new Error(`Token container coin ${utxo.txid}:${utxo.vout} must hold fungible tokens and no NFT.`);
+    }
+  }
+  const genesisInputs = [...(prepared.nativeInput === undefined ? [] : [prepared.nativeInput]), ...tokenContainerCoins];
   const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
 
   const initialBalance = options.initialBalance ?? 0n;
+  // A call under `pragma containers single` cannot open a container, so the deployment has to.
+  const needsSatoshiContainer = artifact.abi.some((fn) => fn.blockLayout?.singleContainers === true
+    && fn.blockLayout.slots.some((slot) => slot.kind === 'satoshiContainer'));
+  if (needsSatoshiContainer && initialBalance <= 0n) {
+    throw new Error('Under pragma containers single a call cannot open the satoshi container: pass initialBalance.');
+  }
+  const tokenContainerTotal = tokenContainerCoins.reduce((sum, { utxo }) => sum + utxo.satoshis, 0n);
   const totalMaster = masterAmount * BigInt(threadCount);
   const totalDataNft = delegateOnly ? 0n : dataNftAmount * BigInt(stateLayout.dataNftCount);
   const totalEntryNft = dataNftAmount * BigInt(entryOutputCount + trailingEntryOutputCount);
@@ -264,7 +277,8 @@ export async function deployStatefulContract<T extends Artifact>(
   const totalRequired = totalBlockhashRing + (blockOracle?.amount ?? 0n) * BigInt(blockOracleCount)
     + totalMaster + totalDataNft
     + totalEntryNft + totalEventNft + totalDynamicNft
-    + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
+    + totalMessageBusVerifiers + totalIdentity + initialBalance + tokenContainerTotal + leadingTotal + totalReserve
+    + estimatedFee;
   const changeAmount = inputTotal - totalRequired;
 
   if (changeAmount < 0n) {
@@ -531,6 +545,15 @@ export async function deployStatefulContract<T extends Artifact>(
   if (initialBalance > 0n) {
     const satoshiContainerAddress = getSatoshiContainerAddress(contract, categoryId);
     builder.addOutput({ to: satoshiContainerAddress, amount: initialBalance });
+  }
+
+  // A token coin moves whole into its container, so the genesis opens both containers.
+  for (const { utxo } of tokenContainerCoins) {
+    addFunded({
+      to: getTokenContainerAddress(contract, categoryId, utxo.token!.category),
+      amount: utxo.satoshis,
+      token: { category: utxo.token!.category, amount: utxo.token!.amount },
+    });
   }
 
   // The premint: the token's fungible amount, which only a genesis can create, held in the contract's token

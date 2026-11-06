@@ -77,6 +77,7 @@ import {
   EventDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   TokenContainerMethodStatementNode,
   BlockNode,
   StatementNode,
@@ -635,6 +636,14 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
     }
 
+    return node;
+  }
+
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    node.amount = this.visit(node.amount);
+    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.BIGINT)) {
+      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
+    }
     return node;
   }
 

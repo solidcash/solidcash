@@ -17,6 +17,9 @@ pragma solidcash ^0.14.0;
 pragma solidcash >=0.14.0 <0.15.0;
 ```
 
+`pragma containers single;` is the other pragma SolidCash reads. It keeps one coin per container for every contract in
+the file; see [Keeping one coin per container](/docs/language/stateful-contracts#keeping-one-coin-per-container).
+
 ## Declarations and ordering
 A source file may hold several contracts, plus file-level structs, enums, value types, errors, events, constants,
 free functions, libraries, interfaces and `using` directives. Imports must come before all other declarations;

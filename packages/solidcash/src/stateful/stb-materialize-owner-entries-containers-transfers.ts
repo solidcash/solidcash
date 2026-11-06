@@ -170,12 +170,14 @@ export function materializeOwnerEntriesContainersTransfers(
   // Create satoshi container preservation output (after entries, before transfers)
   // Skip when fully drained (all satoshis transferred out)
   if (host.satoshiContainerUtxo) {
+    // The miner fee leaves the container with no output: it is what the container does not keep.
     const totalTransferAmount = host.pendingTransfers
       .filter((t) => t.lockingBytecode.length > 0)
       .reduce((sum, t) => sum + t.amount, 0n)
       + host.runtimeLoopTransferOutputs
         .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
-        .reduce((sum, transfer) => sum + transfer.amount, 0n);
+        .reduce((sum, transfer) => sum + transfer.amount, 0n)
+      + BigInt(host.blockLayout?.minerFee ?? 0);
     if (totalTransferAmount > host.satoshiContainerUtxo.satoshis + host.containerDepositAmount) {
       throw new Error(
         `Total transfer amount (${totalTransferAmount}) exceeds satoshi container balance `

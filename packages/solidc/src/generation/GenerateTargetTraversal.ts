@@ -33,6 +33,7 @@ import {
   BLOCKHASH_MAX_DEPTH,
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
+  containerKeepsTokenless,
   buildTokenContainerCovenantScript,
   containerMasterRetires,
   VALUE_CHUNK_DOMAIN_TAG,
@@ -217,6 +218,7 @@ import {
   EmitStatementNode,
   type EmitInfo,
   TransferStatementNode,
+  MinerFeeStatementNode,
   SelfdestructStatementNode,
   type TransferInfo,
   ReturnNode,
@@ -325,6 +327,7 @@ import {
   importedFileCaveat,
   UncheckedFunctionIdParameterError,
   UncheckedFunctionIdValueError,
+  SingleContainersError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -3872,6 +3875,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       blockSize: offset,
       slots,
       ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
+      ...(node.blockLayout.minerFee !== undefined && { minerFee: node.blockLayout.minerFee }),
+      ...(node.blockLayout.singleContainers && { singleContainers: true }),
     };
   }
 
@@ -9402,6 +9407,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         blockSize: blOffset,
         slots,
         ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
+        ...(node.blockLayout.minerFee !== undefined && { minerFee: node.blockLayout.minerFee }),
+        ...(node.blockLayout.singleContainers && { singleContainers: true }),
       };
     }
 
@@ -10442,7 +10449,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasEntryAccess = this.entrySlots.length > 0;
     const hasEntryWrites = this.pendingEntryWrites.size > 0;
     const hasEntryDeletes = this.pendingEntryDeletes.size > 0;
-    const hasTransfers = this.pendingTransfers.length > 0;
+    const hasTransfers = this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined;
+    if (node.blockLayout?.singleContainers
+      && (this.functionHasDelegatecall || this.functionContainsRuntimeLoopBchTransfer(node))) {
+      throw new SingleContainersError(node, `cannot keep its containers through '${node.name}'`);
+    }
     const hasEventEmits = this.pendingEmits.length > 0;
     const hasRuntimeLoopEvents = this.functionContainsRuntimeLoopEvent(node);
     const hasRuntimeLoopTransfers = this.functionContainsRuntimeLoopTransfer(node);
@@ -10636,6 +10647,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
           this.emitTokenContainerIdentityVerification(node);
+          if (node.blockLayout?.singleContainers && !isSelfdestruct) this.emitSingleTokenContainers(node);
         }
         if (!this.functionHasDelegatecall && hasTokenContainerTransfers) {
           this.emitTokenContainerTransferCovenantVerification(node);
@@ -21593,6 +21605,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.emit(Op.OP_VERIFY, locationData);
     this.popFromStack();                                  // (sd_insum)
+  }
+
+  /** Emits nothing here: its amount is a constant, and `emitValuePreservation` weighs it against the container. */
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    return node;
   }
 
   visitTransferStatement(node: TransferStatementNode): Node {
@@ -53927,9 +53944,62 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
+    // The miner fee the source names is the one amount that leaves with no output. A constant, so a call loses at
+    // most its transfers and this, however many container coins a composer co-spends.
+    const minerFee = this.currentFunction.blockLayout?.minerFee;
+    if (minerFee !== undefined) {
+      this.emit(encodeInt(BigInt(minerFee)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.popFromStack(2);
+  }
+
+  /** This function spends the satoshi container that `pragma containers single` keeps as one coin. */
+  private hasSingleSatoshiContainer(): boolean {
+    const layout = this.currentFunction.blockLayout;
+    return layout?.singleContainers === true && layout.slots.some((slot) => slot.kind === 'satoshiContainer');
+  }
+
+  /**
+   * `pragma containers single`: the input at a container's slot is identified as the container, so its lock is the
+   * container's. The output at the slot stays at that lock and no other output is at it, so a call recreates the one
+   * coin and opens no second: a filler, a new coin beside it or one made with nothing spent are all refused. Nothing
+   * runs when a coin is paid to the lock from outside, and such a coin holds nothing of the contract's. Stack neutral.
+   */
+  private emitContainerStaysSingle(
+    kind: 'satoshiContainer' | 'tokenContainer', slot: number | undefined, loc: SingleLocationData,
+  ): void {
+    this.emitBlockSlotIndex(kind, slot, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.pushToStack('(__container_lock)');
+    this.emitBlockSlotIndex(kind, slot, loc);
+    this.emit([Op.OP_OUTPUTBYTECODE, Op.OP_OVER, Op.OP_EQUALVERIFY], loc);
+    // [lock] -> [lock, outputsAtLock, 0]
+    this.emit([
+      Op.OP_0, Op.OP_TXOUTPUTCOUNT,
+      Op.OP_BEGIN,
+      Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP,
+      Op.OP_DUP, Op.OP_NOT,
+      Op.OP_UNTIL,
+      Op.OP_DROP, Op.OP_1, Op.OP_NUMEQUALVERIFY, Op.OP_DROP,
+    ], loc);
+    this.popFromStack();
+  }
+
+  /**
+   * A token container's identity is checked only when its slot holds a token, since a first deposit may fill the slot
+   * with a pad. Under `pragma containers single` the deployment made it, so the slot must hold it.
+   */
+  private emitSingleTokenContainers(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    for (let i = 0; i < this.tokenContainerSlots.length; i++) {
+      this.emitBlockSlotIndex('tokenContainer', i, loc);
+      this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_VERIFY], loc);
+      this.emitContainerStaysSingle('tokenContainer', i, loc);
+    }
   }
 
   /** `[]` -> slotScanResidue with `keep`, else `[]`: the input pass of emitSlotScans. */
@@ -55852,14 +55922,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // GRAPH_TRANSFER_REACHED below is the occurrence aggregate for precisely this route shape.
     // A framed master has no satoshi container: its value sends are the witness block's listed sends, and the
     // value accounting for them is the records' own floor rather than a co-spent container's balance.
-    if (!this.framedMaster && this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
-      && !this.graphTransferFlagActive) {
+    const minerFee = this.currentFunction.blockLayout?.minerFee;
+    const singleContainer = this.hasSingleSatoshiContainer();
+    const spendsContainer = minerFee !== undefined || singleContainer;
+    if (!this.framedMaster && (this.pendingTransfers.length > 0 || spendsContainer)
+      && this.currentFunction.blockLayout && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
-      // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot.
-      this.emitPendingTransferValueGuard(locationData);
+      // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot. A function
+      // that pays the miner fee, or holds the one container of `pragma containers single`, always spends it.
+      if (!spendsContainer) this.emitPendingTransferValueGuard(locationData);
       this.emitSatoshiContainerIdentity(locationData);
+      if (singleContainer) this.emitContainerStaysSingle('satoshiContainer', undefined, locationData);
 
-      // containerInputSats <= containerOutputSats + sum(transferValues)
+      // containerInputSats <= containerOutputSats + sum(transferValues) + minerFee
       // Read satoshi container input value
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
@@ -55893,12 +55968,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, locationData);
       }
 
+      // The miner fee has no output: this constant is the whole of what lets it leave the container.
+      if (minerFee !== undefined) {
+        this.emit(encodeInt(BigInt(minerFee)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+
       this.emit(Op.OP_LESSTHANOREQUAL, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
       this.emit(Op.OP_VERIFY, locationData);
       this.popFromStack();
-      this.emit(Op.OP_ENDIF, locationData);
+      if (!spendsContainer) this.emit(Op.OP_ENDIF, locationData);
     }
 
     // Graph handlers authenticate each transfer output inside their occurrence-specific subroutine frame. Sum
@@ -56988,9 +57069,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * The bound container covenants' destroy arm, read off the entries this contract's ABI publishes as the SDK reads
    * it (`containerMasterRetires`). Every lock this program binds takes the same form: a delegate and its proxy both
-   * keep the plain pin, and the SDK refuses an upgrade whose replacement takes the other form.
+   * keep the plain pin, and the SDK refuses an upgrade whose replacement takes the other form. The same goes for the
+   * tokenless pin of `pragma containers single` (`containerKeepsTokenless`).
    */
-  private boundContainerOptions(): { masterRetires: boolean } {
+  private boundContainerOptions(): { masterRetires: boolean; keepsTokenless: boolean } {
     const contract = this.sourcePrimaryContract;
     if (contract === undefined) throw new Error('A bound container covenant needs the contract it is compiled for');
     const entries = [
@@ -57000,7 +57082,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ].map((fn) => ({ modifiers: fn.modifiers.map(String), lowLevelCalls: fn.lowLevelCalls }));
     // The ABI publishes a receive function as `payable` only.
     if (contract.receiveDef) entries.push({ modifiers: ['payable'], lowLevelCalls: contract.receiveDef.lowLevelCalls });
-    return { masterRetires: containerMasterRetires(entries) };
+    return {
+      masterRetires: containerMasterRetires(entries),
+      keepsTokenless: containerKeepsTokenless([{ blockLayout: { singleContainers: contract.singleContainers } }]),
+    };
   }
 
   /** `[encLock, encCategory]` -> the satoshi container P2SH32 bound to that lock. */

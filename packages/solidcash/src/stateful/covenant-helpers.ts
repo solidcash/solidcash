@@ -11,6 +11,7 @@ import {
   buildDataNftCovenantScript,
   buildTokenContainerCovenantScript,
   buildSatoshiContainerCovenantScript,
+  containerKeepsTokenless,
   containerMasterRetires,
   buildEntryNftCovenantScript,
   buildValueChunkCovenantScript,
@@ -289,10 +290,14 @@ export function directConventionMasterLock(contract: Contract<any, any>): Uint8A
   return contractMasterLock(contract);
 }
 
-/** A direct contract's bound container covenants carry the destroy arm when its master can retire. */
-export function directContainerOptions(contract: Contract<any, any>): { masterRetires: boolean } {
-  // An artifact without an ABI states no selfdestruct entry, so its containers take the plain pin.
-  return { masterRetires: containerMasterRetires(contract.artifact?.abi ?? []) };
+/**
+ * A direct contract's bound container covenants carry the destroy arm when its master can retire, and the tokenless
+ * pin under `pragma containers single`.
+ */
+export function directContainerOptions(contract: Contract<any, any>): { masterRetires: boolean; keepsTokenless: boolean } {
+  // An artifact without an ABI states neither, so its containers take the plain pin.
+  const abi = contract.artifact?.abi ?? [];
+  return { masterRetires: containerMasterRetires(abi), keepsTokenless: containerKeepsTokenless(abi) };
 }
 
 export function getDataNftAddress(contract: Contract<any, any>, categoryId: string): string {

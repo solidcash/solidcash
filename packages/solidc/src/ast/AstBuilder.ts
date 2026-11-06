@@ -81,6 +81,7 @@ import {
   EventDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   FunctionModifier,
@@ -875,8 +876,15 @@ export default class AstBuilder
     }
     let selectedAbiCoder: { version: 'v1' | 'v2'; legacy: boolean } | undefined;
     const experimentalFeatures = new Set<string>();
+    let singleContainers = false;
     for (const pragma of ctx.pragmaDirective_list()) {
       const text = pragma.getText();
+      if (text.startsWith('pragmacontainers')) {
+        if (text !== 'pragmacontainerssingle;') {
+          throw new ParseError('Expected "pragma containers single"', Location.fromCtx(pragma));
+        }
+        singleContainers = true;
+      }
       if (this.evmCompat && text.startsWith('pragmaexperimental')) {
         const feature = text.slice('pragmaexperimental'.length, -1);
         const supported = new Set(['ABIEncoderV2', 'SMTChecker', 'solidity', '__test']);
@@ -1559,6 +1567,8 @@ export default class AstBuilder
     sourceFileNode.libraryErrorDefinitions = libraryErrorDefinitions;
     sourceFileNode.libraryModifierDefinitions = libraryModifierDefinitions;
     sourceFileNode.abiCoderVersion = selectedAbiCoder?.version;
+    sourceFileNode.singleContainers = singleContainers;
+    for (const contract of contracts) contract.singleContainers = singleContainers;
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }
@@ -1633,7 +1643,7 @@ export default class AstBuilder
     if (this.evmCompat) {
       if (!ctx.pragmaName()) {
         const name = ctx.Identifier(0)?.getText();
-        if (name !== 'abicoder' && name !== 'experimental') {
+        if (name !== 'abicoder' && name !== 'experimental' && name !== 'containers') {
           throw new ParseError(`Unknown pragma '${name}'`, Location.fromCtx(ctx));
         }
       }
@@ -1644,7 +1654,7 @@ export default class AstBuilder
     // directives (abicoder / experimental); reject any other bare-identifier pragma as unsupported/typo'd.
     if (!ctx.pragmaName()) {
       const name = ctx.Identifier(0)?.getText();
-      if (name === 'abicoder' || name === 'experimental') return;
+      if (name === 'abicoder' || name === 'experimental' || name === 'containers') return;
       throw new ParseError(
         `Unsupported pragma '${name}'. Only 'solidcash' is supported; `
         + 'enable evmCompat to accept \'solidity\'.',
@@ -10719,6 +10729,11 @@ export default class AstBuilder
       if (method === 'transfer' && args.length !== 2) throw new ParseError('this.tokens[...].transfer() expects 2 arguments (to, amount)', loc);
       if (method === 'transferNft' && args.length !== 3) throw new ParseError('this.tokens[...].transferNft() expects 3 arguments (to, commitment, capability)', loc);
       const node = new TokenContainerMethodStatementNode(keyExpr, method, args); node.location = loc; return node;
+    }
+    if (method === 'payMinerFee' && recvCtx.getText() === 'this' && !this.currentContractFunctionNames.has(method)) {
+      if (callArgs.length !== 1) throw new ParseError('this.payMinerFee() expects 1 argument (amount)', loc);
+      const node = new MinerFeeStatementNode(callArgs[0]);
+      node.location = loc; return node;
     }
     if (method === 'transfer') {
       if (recvCtx.getText() === 'this' && !this.currentContractFunctionNames.has(method)) {

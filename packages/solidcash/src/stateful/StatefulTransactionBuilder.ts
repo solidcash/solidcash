@@ -574,6 +574,7 @@ import {
   getLoopEntryOutputIndex as getLoopEntryOutputIndexImpl,
   type GetLoopEntryOutputIndexHost,
 } from './stb-get-loop-entry-output-index.js';
+import type Signer from '../Signer.js';
 import { measureAndFundCovenantFee, type MeasureAndFundCovenantFeeHost } from './stb-measure-and-fund-covenant-fee.js';
 import { type ReassertSendFinalBuilderHost } from './stb-reassert-send-final-builder.js';
 import { type PlaceSendChangeAndSidecarHost } from './stb-place-send-change-and-sidecar.js';
@@ -848,6 +849,7 @@ export class StatefulTransactionBuilder {
   private satoshiContainerUtxo?: UnlockableUtxo;
   private satoshiContainerLockingBytecode?: Uint8Array;
   private containerDepositAmount: bigint = 0n;
+  private feeSigner?: Signer;
   private pendingTokenContainerDeposits: Map<string, bigint> = new Map();
   private pendingTokenContainerTransfers: TokenContainerTransferData[] = [];
   private pendingTokenContainerTransferNfts: TokenContainerTransferNftData[] = [];
@@ -1279,6 +1281,11 @@ export class StatefulTransactionBuilder {
   }
 
   /** Set the change address for funder excess (returned after fee deduction). */
+  /** The signer that pays the fee and any `.withValue()` amount when the provider cannot mint a funder. */
+  setFeeSigner(signer: Signer): void {
+    this.feeSigner = signer;
+  }
+
   setFunderChangeAddress(address: Uint8Array): void {
     this.funderChangeAddress = address;
   }
@@ -2281,6 +2288,7 @@ export class StatefulTransactionBuilder {
       sidecarUtxo: this.sidecarUtxo,
       lateValueChunkOutputs: this.lateValueChunkOutputs,
       checkMinRelayFee: this._checkMinRelayFee,
+      feeSigner: this.feeSigner,
       accountingFunderUtxos: () => this._accountingFunderUtxos(),
       computeMinFee: (size) => this.computeMinFee(size),
     };
@@ -6788,7 +6796,8 @@ export class StatefulTransactionBuilder {
       .reduce((sum, t) => sum + t.amount, 0n)
       + this.runtimeLoopTransferOutputs
         .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
-        .reduce((sum, transfer) => sum + transfer.amount, 0n);
+        .reduce((sum, transfer) => sum + transfer.amount, 0n)
+      + BigInt(this.blockLayout?.minerFee ?? 0);
     return total >= this.satoshiContainerUtxo.satoshis + this.containerDepositAmount;
   }
 

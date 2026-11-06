@@ -966,6 +966,8 @@ export interface DeployOptions {
   /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
+  /** Fungible token coins the genesis moves whole into their containers, one coin per category. */
+  tokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
   /**
@@ -14817,8 +14819,8 @@ export class StatefulFunctionCall {
 
   /**
    * Deposit satoshis into the satoshi container (positive msg.value).
-   * Used with payable functions to increase the container balance.
-   * The extra sats are sourced from the fee funder.
+   * Used with payable functions to increase the container balance. An entry that spends no container coin adds a
+   * new one. The extra sats are sourced from the fee funder.
    */
   withValue(amount: bigint): this {
     if (amount < 0n) throw new Error('Call value cannot be negative.');

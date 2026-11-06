@@ -6,9 +6,12 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { getDustThreshold } from '../network/dust-threshold.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { isP2PKHUnlocker } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import type Signer from '../Signer.js';
+import { addressToLockScript } from '../utils.js';
 
 export interface MeasureAndFundCovenantFeeHost {
   allInputs: UnlockableUtxo[];
@@ -17,6 +20,8 @@ export interface MeasureAndFundCovenantFeeHost {
   readonly sidecarUtxo?: UnlockableUtxo;
   readonly lateValueChunkOutputs: readonly unknown[];
   readonly checkMinRelayFee: boolean;
+  /** The signer that pays when the provider cannot mint a funder, as a live network cannot. */
+  readonly feeSigner?: Signer;
   accountingFunderUtxos(): readonly UnlockableUtxo[];
   computeMinFee(size: bigint): bigint;
 }
@@ -32,9 +37,33 @@ export type MeasureAndFundCovenantFeeResult = {
 let mockFeeFunderNonce = 0n;
 
 /**
- * Measure the covenant-only transaction size, estimate fee overhead for one funder + change,
- * and when underfunded register a P2SH32 OP_TRUE dummy funder on mock providers.
+ * Measure the covenant-only transaction size, estimate fee overhead for one funder + change, and when underfunded
+ * add a fee funder: a P2SH32 OP_TRUE dummy on a provider that can mint one, the connected signer's coins otherwise.
  */
+async function addSignerFeeFunders(host: MeasureAndFundCovenantFeeHost, signer: Signer, amount: bigint): Promise<void> {
+  const outpoint = (coin: { txid: string; vout: number }): string => `${coin.txid.toLowerCase()}:${coin.vout}`;
+  const spent = new Set(host.allInputs.map(outpoint));
+  const coins = (await signerFundingCoins(signer))
+    .filter((coin) => !coin.token && !spent.has(outpoint(coin)))
+    .sort((left, right) => (left.satoshis < right.satoshis ? 1 : left.satoshis > right.satoshis ? -1 : 0));
+  const available = coins.reduce((sum, coin) => sum + coin.satoshis, 0n);
+  if (available < amount) {
+    throw new Error(
+      `The call needs ${amount} satoshis from the signer, which has ${available} available. `
+      + `Fund the signer address: ${signer.getAddress()}`,
+    );
+  }
+  let missing = amount;
+  for (const coin of coins) {
+    if (missing <= 0n) break;
+    const funder: UnlockableUtxo = { ...coin, unlocker: signer.unlockP2PKH() };
+    host.funderUtxos.push(funder);
+    host.allInputs.push(funder);
+    missing -= coin.satoshis;
+  }
+  host.funderChangeAddress ??= addressToLockScript(signer.getAddress());
+}
+
 export async function measureAndFundCovenantFee(
   host: MeasureAndFundCovenantFeeHost,
   covenantBuilder: TransactionBuilder,
@@ -50,6 +79,8 @@ export async function measureAndFundCovenantFee(
   // For P2PKH sig: unlocking ~ 107 bytes -> input overhead = 32+4+1+107+4 = 148
   // Change output: 8 (value) + 1 (scriptLen varint) + scriptLen
   const accountingFundersAtMeasurement = host.accountingFunderUtxos();
+  const canMintFunder = !!(provider as { addUtxo?: unknown }).addUtxo;
+  const signerPaysFee = !canMintFunder && host.feeSigner !== undefined;
   const funderUnlockSize = accountingFundersAtMeasurement.length > 0
     // A native P2PKH funder (msg.sender / tx.origin sender input) signs over the source outputs, which are not
     // assembled yet at this fee-estimation point, so use the fixed sig+pubkey size (~107 B) instead of signing.
@@ -58,7 +89,7 @@ export async function measureAndFundCovenantFee(
       : accountingFundersAtMeasurement[0].unlocker.generateUnlockingBytecode(
         { transaction: covenantTx, sourceOutputs: [], inputIndex: 0 },
       ).length)
-    : 2; // P2SH32 OP_TRUE default for mocknet
+    : signerPaysFee ? 107 : 2; // A signer's P2PKH, or the P2SH32 OP_TRUE default for mocknet
   const feeInputOverhead = 32 + 4 + 1 + funderUnlockSize + 4;
   const changeLockingSize = host.funderChangeAddress?.length ?? 35; // P2SH32 default
   const changeOutputOverhead = 8 + (changeLockingSize < 253 ? 1 : 3) + changeLockingSize;
@@ -99,6 +130,10 @@ export async function measureAndFundCovenantFee(
     // the deficit in addition to the fee and change dust.
     const outputDeficit = existingFee < 0n ? -existingFee : 0n;
     const funderSats = neededFee + DUST_MINIMUM + outputDeficit; // fee + change + deficit
+    if (signerPaysFee) {
+      await addSignerFeeFunders(host, host.feeSigner!, funderSats);
+      return { neededFee, dustMinimum: DUST_MINIMUM };
+    }
     if (mockFeeFunderNonce >= 0xffff_ffff_ffff_ffffn) {
       throw new Error('Mock fee-funder outpoint space exhausted');
     }

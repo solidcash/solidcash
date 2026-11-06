@@ -69,8 +69,9 @@ function outpoint(utxo: Utxo): string {
 /**
  * The master one entry spends.
  *
- * `taken` lists outpoints an earlier frame of this call already claimed. An empty remainder names the
- * function and does not fall through to another entry's lock.
+ * The first of `masters` that serves: a call hands them over in its own order (`PoolOrder`). `taken` lists outpoints
+ * an earlier frame of this call already claimed. An empty remainder names the function and does not fall through to
+ * another entry's lock.
  */
 export function masterForEntry(options: {
   readonly masters: readonly Utxo[];

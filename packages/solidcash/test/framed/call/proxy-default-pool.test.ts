@@ -155,6 +155,38 @@ describe('the pool a framed deployment funds', () => {
     expect(new Set(callData).size).toBe(callData.length);
   });
 
+  it('settles a hop on whichever UTXOs of the pools the call draws', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signer = await fundedSigner(network, 0x72);
+    const pair = await deployPair(network, signer);
+    const outerProxy = buildProxyArtifact(outer);
+    const innerProxy = buildProxyArtifact(inner);
+    const outerPools = await readFramedDeployment(
+      network, pair.outer.proxyDeployment.proxy.categoryId, outerProxy.stateLayout!);
+    const innerPools = await readFramedDeployment(
+      network, pair.inner.proxyDeployment.proxy.categoryId, innerProxy.stateLayout!);
+
+    // Ranks that fall as they are drawn turn every pool around, so the hop spends the end of each.
+    let rank = 1;
+    network.poolRandom = () => {
+      rank -= 1e-6;
+      return rank;
+    };
+    const result = await callRun(pair, network, signer);
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+
+    const spent = new Set(result.broadcast!.inputs.map((input) =>
+      `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`));
+    const isSpent = ({ txid, vout }: { readonly txid: string; readonly vout: number }): boolean =>
+      spent.has(`${txid}:${vout}`);
+    expect(isSpent(outerPools.masters[0]!)).toBe(false);
+    expect(isSpent(outerPools.masters.at(-1)!)).toBe(true);
+    expect(isSpent(outerPools.validators.at(-1)!)).toBe(true);
+    // Each of the four reaches took a master of its own from the end of the callee's pool.
+    expect(innerPools.masters.slice(-4).every(isSpent)).toBe(true);
+  });
+
   it('funds exactly the pool a caller names, and the planner refuses a reach past it', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signer = await fundedSigner(network, 0x73);

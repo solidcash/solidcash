@@ -86,6 +86,12 @@ export default interface NetworkProvider {
   readonly simulator?: boolean;
 
   /**
+   * Optional: the source each framed call orders a deployment's pools with (`PoolOrder`), of `Math.random`'s shape.
+   * Omitted providers use `Math.random`, so independent callers rarely spend the same master, validator or facet.
+   */
+  poolRandom?: () => number;
+
+  /**
    * Retrieve all UTXOs (confirmed and unconfirmed) for a given address.
    * @param address The CashAddress for which we wish to retrieve UTXOs.
    * @returns List of UTXOs spendable by the provided address.

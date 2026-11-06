@@ -23,6 +23,7 @@ import {
   type RecoveryAbiFunction,
   type RecoverySideCars,
 } from '../composer/index.js';
+import type { PoolOrder } from '../deploy/pool-order.js';
 import { FramedLoopTurnsError } from './loop-turns.js';
 
 /**
@@ -70,6 +71,8 @@ export interface EntrySideCarOptions {
    * shared covenant lock, and one transaction spends each UTXO once, so this frame's side-cars are taken past them.
    */
   readonly taken?: ReadonlySet<string>;
+  /** The order the call takes pools in. A frame with none takes a side-car pool as listed. */
+  readonly poolOrder?: PoolOrder;
 }
 
 /** The side-cars one frame co-spends, over live UTXOs, in the order its body reads them. */
@@ -96,9 +99,12 @@ export async function entrySideCars(options: EntrySideCarOptions): Promise<Recov
   // The EVM projections' side-cars and the keccak256 calls' side-cars share the stateful keccak covenant's lock.
   const taken = options.taken ?? new Set<string>();
   const [v, keccak] = await Promise.all([
-    livePool(provider, ecrecoverComputeLockingBytecode(salt, 'V'), calls.length, 'recovery side-car', taken),
+    livePool(
+      provider, ecrecoverComputeLockingBytecode(salt, 'V'), calls.length, 'recovery side-car', taken, options.poolOrder,
+    ),
     livePool(
       provider, keccakComputeLockingBytecode(salt, true), projections + preimages.length, 'keccak256 side-car', taken,
+      options.poolOrder,
     ),
   ]);
   const recovery = buildRecoverySideCars(master, calls, salt, { v, k: keccak.slice(0, projections) });
@@ -112,8 +118,8 @@ export async function entrySideCars(options: EntrySideCarOptions): Promise<Recov
 }
 
 /**
- * The first `count` mutable UTXOs at a side-car covenant's lock that no other frame of the transaction spends
- * (`taken`), minting stand-ins on a provider that can.
+ * The first `count` mutable UTXOs at a side-car covenant's lock, in the call's order, that no other frame of the
+ * transaction spends (`taken`), minting stand-ins on a provider that can.
  */
 async function livePool(
   provider: NetworkProvider,
@@ -121,6 +127,7 @@ async function livePool(
   count: number,
   name: string,
   taken: ReadonlySet<string> = new Set(),
+  poolOrder?: PoolOrder,
 ): Promise<readonly Utxo[]> {
   if (count === 0) return [];
   // The lock is public, so anyone can pay a token to it. A coin whose commitment holds no result is no side-car and
@@ -157,5 +164,5 @@ async function livePool(
       `the entry co-spends ${count} ${name}(s) at the shared covenant lock, and the network holds ${utxos.length}`,
     );
   }
-  return utxos.slice(0, count);
+  return (poolOrder?.arrange(utxos) ?? utxos).slice(0, count);
 }

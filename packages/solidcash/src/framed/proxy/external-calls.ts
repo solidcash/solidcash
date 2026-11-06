@@ -88,6 +88,7 @@ import {
   deploymentBlockId, mappingBatchRepeatsSlot, readPublishedStopSites, type PublishedEntryStopSites,
 } from '../composer/index.js';
 import { masterForEntry, prepareFunctionSplitDeployment, requireFunctionSplitShard } from '../deploy/entry-pool.js';
+import { inPoolOrder, type PoolOrder } from '../deploy/pool-order.js';
 import { functionSplitFor } from '../deploy/split-registry.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import { framedCreate2TemplateOf } from '../deploy/create2-child.js';
@@ -1375,6 +1376,8 @@ interface PlanContext {
   readonly blocks: Map<string, string>;
   /** The live deployments already read, keyed by category id. */
   readonly deployments: Map<string, FramedDeploymentSet>;
+  /** The order the call takes pools in. A plan with none takes them as listed. */
+  readonly poolOrder?: PoolOrder;
   /**
    * The state each category's placed frames leave, as their entries' own published writes state it
    * (`AbiFunction.stateWrites`): a later reach of the contract in the same transaction reads its records as those
@@ -2324,9 +2327,11 @@ async function deploymentOf(
   ctx: PlanContext, categoryId: string, layout: StateLayout, masterLocks: readonly Uint8Array[],
 ): Promise<FramedDeploymentSet> {
   const cached = ctx.deployments.get(categoryId);
-  const read = cached === undefined
+  const live = cached === undefined
     ? await readFramedDeployment(ctx.provider, categoryId, layout, { masterLocks, validatorProgram: ctx.validatorProgram })
     : await withMastersAt(ctx.provider, categoryId, cached, masterLocks);
+  // A read that adds masters lists the pool afresh, and each UTXO keeps its rank, so the order holds.
+  const read = ctx.poolOrder === undefined ? live : inPoolOrder(live, ctx.poolOrder);
   ctx.deployments.set(categoryId, read);
   return read;
 }
@@ -2656,6 +2661,7 @@ async function calleeSideCars(
   const computed = hashes || recovers ? await entrySideCars({
     provider: ctx.provider, master, abiFunction, argumentPushes, leadingPushes: 1,
     taken: new Set([...ctx.utxos.values()].map((utxo) => `${utxo.txid}:${utxo.vout}`)),
+    ...(ctx.poolOrder === undefined ? {} : { poolOrder: ctx.poolOrder }),
   }) : undefined;
   const oracle = entryReadsBlockOracle(artifact, entryName)
     ? await unplacedBlockOracle(ctx, artifact, entryName) : undefined;
@@ -2983,7 +2989,7 @@ function reachDecidedSends(
  * Places one master per reach of a direct callee, all of them in the callee deployment's one block.
  *
  * Each reach carries its own call data, so each takes a master of its own from the deployment's live pool: the
- * pool's masters are ordered by outpoint, and the hop's running count of the masters it has taken from the category
+ * pool's masters are in the call's order, and the hop's running count of the masters it has taken from the category
  * is the slot the next reach takes. A pool that cannot hold every reach is refused by name before any frame is
  * placed, so a plan is never half-stated for a pool that cannot serve it.
  */
@@ -3862,6 +3868,8 @@ export interface HopExternalPlanOptions {
   readonly splitCategoryId?: string;
   /** Outpoints already claimed before this plan, keyed by category. */
   readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The order the call takes pools in, which `entryDeployment` is already in. */
+  readonly poolOrder?: PoolOrder;
   /**
    * Plans a callee frame's send to a contract as the call into the contract's value entry the body makes where it
    * sends (spec 4b): a deferred call record carrying the amount, which no stop site names, and the value entry's frame
@@ -3938,6 +3946,7 @@ export async function planHopExternalCalls(
     masterSlots: new Map(),
     blocks: new Map(),
     deployments: new Map(),
+    ...(options.poolOrder === undefined ? {} : { poolOrder: options.poolOrder }),
     reachedState: new Map(),
     records: new Map(),
     writtenNodes: new Map(),

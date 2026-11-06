@@ -11,6 +11,9 @@ Revision 18, 2026-10-26. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 ### Since revision 18 (2026-10-27)
 
 Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the chain's own limits.
+- **Contention** (sections 20, 21). A call takes a deployment's pools in a random order of its own, and a frame that
+  only counts a data record leaves it unspent, so two independent calls share a UTXO only where their code touches
+  the same record, or by chance. No program changes.
 - **The validator settles every covered master's contract** (R4, N1, S, V8). A covered master settles nothing itself:
   V8 needs the contract of every master the transaction spends and covers settled, so the head's settlement holds each
   one, and a master's head keeps S only on its standalone arm. A per-entry shard has no standalone arm. This removes
@@ -2197,7 +2200,10 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 - **Which records a frame declares.**
   - First, the data records its entry's block layout names, in that order: its code reads each at its place past the
     first record the frame declares.
-  - An entry that writes a verified mapping then declares every other data record, kept.
+  - An entry that writes a verified mapping then declares a kept record in the slot of every other data record. Its
+    code counts those slots and reads nothing in them. In a frame of one segment whose code addresses nothing past
+    its first declaration, the SDK fills them with a node the frame spends anyway, so those data records are not spent
+    (`leavesUnnamedRecordsUnspent`). Any other frame declares the data records themselves.
   - Then one node, kept, for each mapping key the entry only reads, in the order the layout lists the entry's slots:
     its code reads each at its place past the records before it. A node the batch also spends, such as the node a
     key the batch splices in relinks, cannot be declared twice, so that call is refused.
@@ -2285,7 +2291,12 @@ since each needs a master.
   - On chain there is nothing to check: a transaction cannot spend masters that do not exist.
   - The margin is small: `arbitrate` uses 9 of Unicrow's 12. A dedicated test fills a pool exactly, then asks for
     one more (plan E12).
-- **Contention.** The tests run sequentially, so pools only need the per-transaction maxima.
+- **Contention.** The tests run sequentially, so pools only need the per-transaction maxima. Independent callers
+  are not sequential: each call takes the masters, the validator, the facets and the compute side-cars in a random
+  order of its own, the same one for all of its plans (`PoolOrder` in `solidcash/src/framed/deploy/pool-order.ts`).
+  Two calls then usually spend different UTXOs of a pool, and the chance that they meet is about one in the pool's
+  size. This is no lease, and a record two frames must both spend stays one UTXO. A facet's pool is every UTXO at its
+  lock, so it grows with each deployment, and anyone can widen it by paying that lock.
 - **Scale.** The largest transaction is `arbitrate`: about 24 masters, their state UTXOs, one validator and the
   funder.
 

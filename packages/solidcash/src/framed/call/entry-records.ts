@@ -96,7 +96,8 @@ export function namedDataRecordIndices(artifact: Artifact, functionName: string)
 /**
  * The data-NFT indices of the records a frame running an entry declares, in the order its code reads them: the ones
  * its published block layout names. An entry that writes a verified mapping declares every other record after them,
- * because its batch's groups follow every data record. An entry that publishes no layout declares every record.
+ * because its batch's groups follow every data record, unless the frame fills those slots itself
+ * (`leavesUnnamedRecordsUnspent`). An entry that publishes no layout declares every record.
  */
 export function frameDataRecordIndices(artifact: Artifact, functionName: string): number[] {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
@@ -104,6 +105,47 @@ export function frameDataRecordIndices(artifact: Artifact, functionName: string)
   if (entry?.blockLayout?.slots === undefined || (entry.sortedBatchInfo ?? []).length === 0) return named;
   const all = Array.from({ length: artifact.stateLayout?.dataNftCount ?? 0 }, (_unused, nftIndex) => nftIndex);
   return [...named, ...all.filter((nftIndex) => !named.includes(nftIndex))];
+}
+
+/**
+ * True when a frame can leave the data records its entry does not name unspent.
+ *
+ * A compiled batch counts every data record ahead of its groups (`frameDataRecordIndices`), but its code only steps
+ * over the slots of the records its entry does not name. A frame has to declare a record in each slot, kept, and any
+ * record it spends anyway serves (`unnamedSlotDeclarations`), so those data records stay out of the transaction and
+ * another caller's transaction does not have to wait for this one over them.
+ *
+ * That takes a frame of one segment, where a declaration of a node a batch writes holds one view. It also takes code
+ * that addresses nothing past its first declaration: a key read beside the batch and a dynamic run are both found
+ * there, a value that chunks is a run too, and a run-time loop's records follow its own count of them.
+ */
+export function leavesUnnamedRecordsUnspent(artifact: Artifact, functionName: string, segments: number): boolean {
+  const entry = artifact.abi.find((candidate) => candidate.name === functionName);
+  if (entry === undefined || segments !== 1) return false;
+  if (frameDataRecordIndices(artifact, functionName).length === namedDataRecordIndices(artifact, functionName).length) {
+    return false;
+  }
+  const batches = entry.sortedBatchInfo ?? [];
+  const batched = new Set(batches.flatMap((batch) => batch.slotIndices));
+  return [entry.dynamicReads, entry.dynamicWrites, entry.entryLoopWrites, entry.sortedInsertLoops,
+    entry.sortedUpsertLoopInfo, entry.collectionIterations].every((list) => (list ?? []).length === 0)
+    && !batches.some((batch) => collectionChunksValue(artifact, batch.collection))
+    && (entry.entryAccesses ?? []).every((access) => access.slotIndex !== undefined && batched.has(access.slotIndex));
+}
+
+/**
+ * The kept declarations that fill `slots` slots of a frame that leaves its unnamed data records unspent: each restates
+ * the first node `entries` spend and recreates in place, at the view it starts from. A batch already declares a node
+ * once per group that names it, so the validator chains these into the node's other declarations.
+ */
+export function unnamedSlotDeclarations(slots: number, entries: readonly DraftRecordEntry[]): readonly DraftRecordEntry[] {
+  if (slots === 0) return [];
+  const spent = entries.find((entry) => entry.in !== INDEX_NONE && entry.out === entry.in);
+  if (spent === undefined || !(spent.viewIn instanceof Uint8Array)) {
+    throw new FramedCallRecordError('a frame that leaves a data record unspent spends no node to declare in its slot');
+  }
+  const kept: DraftRecordEntry = { in: spent.in, out: spent.in, viewIn: spent.viewIn, viewOut: spent.viewIn };
+  return Array.from({ length: slots }, () => kept);
 }
 
 /**

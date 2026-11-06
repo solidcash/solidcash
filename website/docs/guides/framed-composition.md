@@ -547,8 +547,15 @@ The chain's limits apply to every input of a framed transaction:
   how many compositions can start at it at once. A transaction that needs more is refused with
   `FRAMED_POOL_EXHAUSTED`.
 - **Providers.** Calls and reads find a deployment's masters, validators and records by listing its category's
-  UTXOs, which needs a provider that implements `getUtxosByTokenCategory`. The mock and regtest providers do. The
-  Electrum provider does not, so framed contracts cannot be called or read through it yet.
+  UTXOs where the provider implements `getUtxosByTokenCategory`, as the mock and regtest providers do. An Electrum
+  server has no index by category, so there each is listed at the lock it derives: validators at the contract's
+  address, records, nodes and chunks at their covenants, and masters at the lock of each entry a call runs. One lock
+  holds every coin of its kind: all the holders of a mapping, and all the children of a creator for each entry of a
+  constant-lock master. A read of one of them lists them all, and Fulcrum refuses a listing past its `max_history`
+  (125,000 coins by default).
+- **Side-cars.** An entry that hashes through `keccak256` co-spends a side-car, a mutable NFT at a shared covenant
+  lock. The mock and a devnet mint them when a call asks; a real network holds what a deployment left, so run
+  `framedDeploy.deployComputeSideCarPool` once on it.
 - **Mock limits.** A green run on the mock under relaxed limits does not prove a framed transaction is valid on chain.
   Test under the real limits; see [BCH Script & Transaction Limits](/docs/compiler/script-limits).
 

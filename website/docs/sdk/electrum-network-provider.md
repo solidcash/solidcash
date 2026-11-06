@@ -43,11 +43,15 @@ type Options = OptionsBase | CustomHostNameOptions | CustomElectrumOptions;
 
 interface OptionsBase {
   manualConnectionManagement?: boolean;
+  indexWaitMilliseconds?: number;
+  listingCacheMilliseconds?: number;
   oraclePoolCategory?: string; // 64 hex characters, display byte order
 }
 
 interface CustomHostNameOptions extends OptionsBase {
   hostname: string;
+  port?: number; // 50004 by default
+  encrypted?: boolean; // false for a plain ws:// server, such as a local Fulcrum
 }
 
 interface CustomElectrumOptions extends OptionsBase {
@@ -62,6 +66,14 @@ import { ElectrumNetworkProvider } from '@solidcash/solidcash/network/electrum';
 const hostname = 'chipnet.bch.ninja';
 const provider = new ElectrumNetworkProvider('chipnet', { hostname });
 ```
+
+A server takes its node's mempool on a poll, every two seconds by default, so a listing right after a broadcast still
+shows the coins it spent. `sendRawTransaction` therefore returns once the server's index holds the transaction, or
+after `indexWaitMilliseconds` (15 seconds by default), since the transaction is accepted either way.
+
+A framed call plans in passes that list the same locks several times over a few seconds, so a listing serves repeat
+reads for `listingCacheMilliseconds` (2.5 seconds by default, 0 turns it off), and a broadcast through the provider
+drops it. Raw transactions are kept by id, since an id always names the same bytes.
 
 `oraclePoolCategory` sets the provider's default oracle pool. A contract that reads `block.*` values or
 `blockhash(n)` binds that pool, unless its own `oraclePool` option names another, and co-spends the pool's coins;

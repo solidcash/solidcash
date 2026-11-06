@@ -15,12 +15,14 @@ const listsByCategory = walk(join(root, 'test/framed'))
   .filter((file) => readFileSync(file, 'utf8').includes('getUtxosByTokenCategory'));
 // Stands its contracts up by hand and reads their masters itself, naming no entry lock and registering none.
 const namesNoEntry = join(root, 'test/framed/shapes/deployment-circle.test.ts');
+// Their harness compares a whole category before and after a refusal, to show nothing was broadcast.
+const comparesCategories = 'test/framed/edges/**';
 
 export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/framed/**/*.test.ts'],
-    exclude: ['**/node_modules/**', ...listsByCategory, namesNoEntry],
+    exclude: ['**/node_modules/**', ...listsByCategory, namesNoEntry, comparesCategories],
     setupFiles: ['./test/framed/by-lock-setup.ts'],
     globals: true,
     isolate: false,

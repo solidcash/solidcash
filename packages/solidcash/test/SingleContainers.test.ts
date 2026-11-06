@@ -419,6 +419,43 @@ describe('the token container of pragma containers single', () => {
     expect(verdict).toBe('accepted');
   });
 
+  /** Pays a coin of `amount` tokens and `satoshis` to the container's lock, as anyone can. */
+  const payIn = async ({ provider, alice, lock, tokenCoin }: Awaited<ReturnType<typeof tokenPool>>, amount: bigint, satoshis: bigint) => {
+    const coin = await tokenCoin(amount);
+    const funding = (await alice.getUtxos()).filter((candidate) => !candidate.token)
+      .sort((left, right) => Number(right.satoshis - left.satoshis))[0]!;
+    await new TransactionBuilder({ provider })
+      .addInput(coin, alice.unlockP2PKH())
+      .addInput(funding, alice.unlockP2PKH())
+      .addOutput({ to: lock, amount: satoshis, token: { category: ASSET, amount } })
+      .addOutput({ to: alice.getAddress(), amount: funding.satoshis - 2_000n })
+      .send();
+  };
+
+  it('is not stopped by a larger coin paid in at its dust floor', async () => {
+    const pool = await tokenPool(0);
+    await payIn(pool, 2n, 681n);
+    await pool.deposit();
+    expect(await pool.coins()).toEqual([2n, 1n + TOKENS]);
+  });
+
+  it('is not stopped by a larger coin a miner took below the dust floor', async () => {
+    const pool = await tokenPool(1);
+    await pool.provider.seedUtxo(pool.address, {
+      txid: 'ee'.repeat(32), vout: 0, satoshis: 600n, token: { category: ASSET, amount: 5n * TOKENS },
+    });
+    await pool.pool.call.take(pool.bob.getLockingBytecode()).send();
+    await pool.deposit();
+    expect(await pool.coins()).toEqual([1n + TOKENS, 5n * TOKENS]);
+  });
+
+  it('takes a larger coin that can be recreated', async () => {
+    const pool = await tokenPool(0);
+    await payIn(pool, 2n, 1_200n);
+    await pool.deposit();
+    expect(await pool.coins()).toEqual([1n, 2n + TOKENS]);
+  });
+
   it('refuses an NFT a script can see hung on a coin in a call that does not name it', async () => {
     const attempt = async ({ provider, pool, alice, address, tokenCoin }: Awaited<ReturnType<typeof tokenPool>>, nft: object) => {
       const held = (await provider.getUtxos(address)).find((coin) => coin.token)!;
@@ -443,6 +480,32 @@ describe('the token container of pragma containers single', () => {
     for (const nft of [{ capability: 'none', commitment: 'ab' }, { capability: 'mutable', commitment: '' }, { capability: 'minting', commitment: '' }]) {
       await expect(attempt(await tokenPool(1), nft)).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
     }
+  });
+
+  it('passes over a coin holding an NFT a script can see, whatever it holds', async () => {
+    const context = await tokenPool(1);
+    for (const [index, nft] of [{ capability: 'minting', commitment: '' }, { capability: 'mutable', commitment: '' }, { capability: 'none', commitment: 'ab' }].entries()) {
+      await context.provider.seedUtxo(context.address, {
+        txid: `${index + 1}`.padStart(64, 'e'), vout: 0, satoshis: SEED, token: { category: ASSET, amount: 5n * TOKENS, nft },
+      } as never);
+    }
+    await context.pool.call.take(context.bob.getLockingBytecode()).send();
+    await context.deposit();
+    expect((await context.coins()).filter((amount) => amount === 1n + TOKENS).length).toBe(1);
+  });
+
+  it('carries an NFT with an empty commitment, which no script can see', async () => {
+    const context = await tokenPool(0, { seeded: false, pragma: true }).catch(() => undefined);
+    expect(context).toBeDefined();
+    const { provider, address, pool, bob } = context!;
+    await provider.seedUtxo(address, {
+      txid: 'f'.repeat(64), vout: 0, satoshis: SEED, token: { category: ASSET, amount: 1n, nft: { capability: 'none', commitment: '' } },
+    } as never);
+    await context!.deposit();
+    const held = (await provider.getUtxos(address)).find((coin) => coin.token)!;
+    expect(held.token?.nft).toEqual({ capability: 'none', commitment: '' });
+    await pool.call.take(bob.getLockingBytecode()).send();
+    expect((await provider.getUtxos(address)).find((coin) => coin.token)!.token?.nft).toEqual({ capability: 'none', commitment: '' });
   });
 
   it('changes no other lock: only a token coin under the pragma reads its own value', () => {

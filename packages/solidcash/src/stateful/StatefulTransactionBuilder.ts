@@ -3374,6 +3374,8 @@ export class StatefulTransactionBuilder {
 
   private _tagEmptyP2sh32ImmutablesAsScid(builder: TransactionBuilder): void {
     const eventDests = new Set(this._emitDestinationIndices());
+    // A token container keeps what it holds: an empty immutable NFT on one is a coin's, not an anchor.
+    const containerLocks = new Set([...this.tokenContainerLockingBytecodes.values()].map((lock) => binToHex(lock)));
     for (const [index, output] of builder.outputs.entries()) {
       if (eventDests.has(index)) continue;
       if (output.token?.nft?.capability !== 'none') continue;
@@ -3384,6 +3386,7 @@ export class StatefulTransactionBuilder {
         ? output.to
         : addressToLockScript(output.to);
       if (lock.length < 2 || lock[0] !== 0xaa || lock[1] !== 0x20) continue;
+      if (containerLocks.has(binToHex(lock))) continue;
       output.token = {
         ...output.token,
         nft: { capability: 'none', commitment: '53434944' },

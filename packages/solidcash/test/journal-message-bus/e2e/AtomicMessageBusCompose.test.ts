@@ -1321,7 +1321,6 @@ describe('messageBus.compose atomic transaction', () => {
       mapping(bool => bool) earlier;
       mapping(bigint => FeeRecord) fees;
       mapping(uint256 => bigint[]) items;
-      function readEarlier(bool key) public returns (bool) { return this.earlier[key]; }
       function readFee(bigint key) public returns (bigint) { return this.fees[key].fee; }
       function itemsLength(uint256 key) public returns (uint256) { return this.items[key].length; }
       function append(uint256 key) public {
@@ -1412,7 +1411,6 @@ describe('messageBus.compose atomic transaction', () => {
     const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
     const callerArtifact = compileString(`
       interface IComposePooledArrayCallee {
-        function readEarlier(bool key) external returns (bool);
         function readFee(bigint key) external returns (bigint);
         function itemsLength(uint256 key) external returns (uint256);
         function append(uint256 key) external;

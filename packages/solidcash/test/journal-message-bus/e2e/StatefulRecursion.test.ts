@@ -150,10 +150,11 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * not measured a budget since X130 made `debug()` provider-faithful: `MOCK_CONSENSUS_LIMITS` publishes
    * `operationCostBudgetPerByte: 10_000_000`, 12,500x the stock value, so on the default profile no depth this
    * handler survives can exceed the budget. Measured on this branch with the denser `SELF_DENSE` handler (SELF
-   * fits the stock density budget at every depth the control stack allows): depth 29 fits the stock density
-   * budget by 15,443 units, depth 30 is the smallest depth that reaches a concrete density refusal (23,571 over,
-   * about 39,000 per frame), and depth 49 exceeds the VM's 100-entry control stack even at the relaxed budget -
-   * so depths 30 to 48 BUILD relaxed and REFUSE stock, and this row pins the smallest.
+   * fits the stock density budget at every depth the control stack allows): depth 31 fits the stock density
+   * budget, depth 32 is the smallest depth that reaches a concrete density refusal (about 39,000 units per frame;
+   * it was depth 30 until a drained container's filler made the contract, and so its budget, larger: c2d8ed7ea),
+   * and depth 49 exceeds the VM's 100-entry control stack even at the relaxed budget - so depths 32 to 48 BUILD
+   * relaxed and REFUSE stock, and this row pins the smallest.
    * The old assertion matched only the SDK's wrapper sentence, so it could not tell the two apart.
    *
    * REPAIRED BY PINNING THE CEILING TO A PUBLISHED PROFILE. The subject runs against the STOCK BCH-2026
@@ -169,7 +170,7 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * This row stages its own `MockNetworkProvider` rather than `createTestProvider()` because its subject is
    * the SDK's preflight decider - a pure VM decision on published consensus limits, with no node in it.
    */
-  const OVER_BUDGET_DEPTH = 30n;
+  const OVER_BUDGET_DEPTH = 32n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
   // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
   // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair

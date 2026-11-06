@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { bytesEqual, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringSplit } from '../../../../solidc/src/compiler.js';
 import { SignatureTemplate } from '../../../src/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
@@ -69,7 +69,7 @@ describe('a creator\'s list of the child\'s genesis outputs', () => {
     });
 
     const live = await provider.getUtxosByTokenCategory(categoryId);
-    const atLock = (lock: Uint8Array) =>
+    const atLock = (lock: Uint8Array): Promise<Utxo[]> =>
       (provider as unknown as { getUtxosForLockingBytecode: (lock: Uint8Array) => Promise<Utxo[]> })
         .getUtxosForLockingBytecode(lock);
     let matched = 0;
@@ -82,10 +82,12 @@ describe('a creator\'s list of the child\'s genesis outputs', () => {
         expect(at.length, 'facet output').toBeGreaterThan(0);
         continue;
       }
-      const utxo = live.find((candidate) => bytesEqual(candidate.lockingBytecode ?? new Uint8Array(), output.to as Uint8Array)
+      const utxo = live.find((candidate) => (
+        bytesEqual(candidate.lockingBytecode ?? new Uint8Array(), output.to as Uint8Array)
         && candidate.token?.category.toLowerCase() === categoryId
         && candidate.token.nft?.capability === output.token!.nft?.capability
-        && (candidate.token.nft?.commitment ?? '').toLowerCase() === (output.token!.nft?.commitment ?? '').toLowerCase());
+        && (candidate.token.nft?.commitment ?? '').toLowerCase() === (output.token!.nft?.commitment ?? '').toLowerCase()
+      ));
       expect(utxo, `output ${binToHex(output.to as Uint8Array).slice(0, 16)} matches a live UTXO`).toBeDefined();
       matched += 1;
     }

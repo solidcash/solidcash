@@ -112,6 +112,7 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     operationCostBudgetPerByte: 800,
     hashDigestIterationsPerByte: 1,
   };
+
   policy: NetworkPolicy = { enforceDust: true };
   readonly simulator = true;
   /** Informational mirror of `server.features.devnet.evm_rpc`; `send()` never branches on it. */

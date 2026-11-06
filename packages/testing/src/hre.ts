@@ -6,38 +6,18 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
-import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
-import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { SigningKey as EthersSigningKey } from 'ethers/crypto';
-import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
-import { getBytes as getEthersBytes } from 'ethers/utils';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
 import { asmToBytecode } from '@solidcash/utils';
-import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
-import type {
-  ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
-  DeployedContract, DeployContractOptions,
-} from '@solidcash/solidcash/stateful';
-import { listDeployments } from '@solidcash/solidcash/stateful';
-import { framedDeploy } from '@solidcash/solidcash/framed';
+import type { Network, NetworkProvider, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
+import type { ContractRunner } from '@solidcash/solidcash/stateful';
 import { Network as Networks } from '@solidcash/solidcash/dist/interfaces.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
 import ElectrumNetworkProvider from '@solidcash/solidcash/dist/network/ElectrumNetworkProvider.js';
 import BitcoinRpcNetworkProvider from '@solidcash/solidcash/dist/network/BitcoinRpcNetworkProvider.js';
 import MemCashNetworkProvider from '@solidcash/solidcash/dist/network/MemCashNetworkProvider.js';
-import Signer from '@solidcash/solidcash/dist/Signer.js';
-import { HDSigner, signersFromMnemonic } from '@solidcash/solidcash/hdsigner';
-import {
-  ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract, fanOutPlainUtxos,
-} from '@solidcash/solidcash/dist/stateful/ContractFactory.js';
-import type { SplitContractBundle } from '@solidcash/solidcash/dist/stateful/SplitContractBundle.js';
-import { randomUtxo } from '@solidcash/solidcash/dist/utils.js';
 
-import * as ethersUtils from './ethers-utils.js';
-import { getCreateAddressForComposition } from './ethers-shim.js';
 import * as nh from './network-helpers.js';
 import { setActiveProvider } from './network-helpers.js';
 import {
@@ -49,7 +29,7 @@ import {
 import { solidcashArtifactsPath } from './artifact-paths.js';
 import {
   buildEthers, loadStatefulContract, DEFAULT_MNEMONIC, HARDHAT_ACCOUNT_BRANCH, PRODUCTION_MAXIMUM_INPUT_BYTES,
-  type ArtifactSource, type EthersOptions, type SolidcashEthers, type HardhatSplitContractFactory,
+  type ArtifactSource, type EthersOptions, type SolidcashEthers,
 } from './ethers-runtime.js';
 
 export type {

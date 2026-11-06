@@ -1,4 +1,3 @@
-/* global hre */
 const runtime = (globalThis as { hre?: any }).hre;
 console.error('SCRIPT START', runtime?.network?.name, runtime?.network?.config?.type);
 try {

@@ -22,7 +22,8 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './val
  * master's head requires the counts the entry fixes, steps over each segment by its length, checks that each
  * listed event output carries the contract's category with no capability, leaves each listed send's output index
  * for the body that computed the send, and requires nothing to follow the padding. A record entry's shape is held
- * where the records are settled: by the validator of a covered frame, and by a standalone frame's own walk. This file drives a compiled
+ * where the records are settled: by the validator of a covered frame, and by a standalone frame's own walk.
+ * This file drives a compiled
  * head through the BCH-2026 virtual machine so the machine's own verdict is the assertion, and pairs every refusal
  * with the shape it does not touch, so the refusal is the check under test rather than a malformed block.
  *

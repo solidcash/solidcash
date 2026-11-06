@@ -6,7 +6,7 @@ import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import { bigIntToVmNumber, decodeAuthenticationInstructions, encodeAuthenticationInstructions, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { scriptToBytecode, type Artifact } from '@solidcash/utils';
+import { scriptToBytecode } from '@solidcash/utils';
 import { matchesExecutedBody } from '../oracle/pool/program.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';

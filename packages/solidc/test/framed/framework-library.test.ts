@@ -54,7 +54,12 @@ function accepted(body: Script, others: readonly OtherInput[] = []): string | tr
   ]);
   const lock = p2sh32(redeem);
   const vm = compositionMachine();
-  const input = (index: number, unlockingBytecode: Uint8Array) => ({
+  const input = (index: number, unlockingBytecode: Uint8Array): {
+    outpointIndex: number;
+    outpointTransactionHash: Uint8Array;
+    sequenceNumber: number;
+    unlockingBytecode: Uint8Array;
+  } => ({
     outpointIndex: 0,
     outpointTransactionHash: new Uint8Array(32).fill(index),
     sequenceNumber: 0xffffffff,

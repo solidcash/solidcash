@@ -13,7 +13,8 @@
 
 import { FramedCompositionRefusedError } from '../composer/refusal.js';
 
-const TRANSPORT_FAILURE = /timed out|timeout|connection lost|disconnected|not connected|socket|ECONN|ETIMEDOUT|EPIPE|EAI_AGAIN/i;
+const TRANSPORT_FAILURE =
+  /timed out|timeout|connection lost|disconnected|not connected|socket|ECONN|ETIMEDOUT|EPIPE|EAI_AGAIN/i;
 const NODE_REFUSAL = /rejected by network rules/i;
 
 export function endsPlanSearch(error: unknown): boolean {

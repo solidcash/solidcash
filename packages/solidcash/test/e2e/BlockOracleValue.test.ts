@@ -11,9 +11,9 @@ import {
 } from '../../src/oracle/pool/index.js';
 import type { Unlocker } from '../../src/interfaces.js';
 import type { MockNetworkProvider } from '../../src/network/mock/index.js';
-import { createSighashPreimage, randomUtxo } from '../../src/utils.js';
+import { createSighashPreimage } from '../../src/utils.js';
 import {
-  createBareP2pkhFeeFunder, createFeeFunder, createTestProvider, expectScriptRejection, mintTestOraclePool,
+  createBareP2pkhFeeFunder, createTestProvider, expectScriptRejection, mintTestOraclePool,
   setupStatefulUtxos, TEST_ORACLE_POOL_KEY,
 } from '../test-util.js';
 import { bobAddress } from '../fixture/vars.js';

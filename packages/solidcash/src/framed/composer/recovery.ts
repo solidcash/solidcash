@@ -170,8 +170,10 @@ function recoverySideCarsOver(
     [placed.v.id]: { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) },
   };
   if (placed.k !== undefined) {
-    const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, placed.k.utxo, true);
-    settled[placed.k.id] = { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
+    const { unlocker: keccakUnlocker, recreate: keccakRecreate } = buildKeccakComputeSidecar(
+      witness.uncompressedPubkey, salt, placed.k.utxo, true,
+    );
+    settled[placed.k.id] = { unlockingBytecode: unlockingOf(keccakUnlocker), output: sideCarRecreation(keccakRecreate) };
   }
   return settled;
 }

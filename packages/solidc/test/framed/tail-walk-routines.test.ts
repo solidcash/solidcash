@@ -30,8 +30,12 @@ function run(pushes: readonly Uint8Array[], locking: readonly number[], outputs:
     sourceOutputs: [{ lockingBytecode: Uint8Array.from(locking), valueSatoshis: 1_000n, token: token(CATEGORY) }],
     transaction: {
       version: 2, locktime: 0,
-      inputs: [{ outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0, unlockingBytecode }],
-      outputs: outputs.map((category) => ({ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000n, token: token(category) })),
+      inputs: [{
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0, unlockingBytecode,
+      }],
+      outputs: outputs.map((category) => ({
+        lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000n, token: token(category),
+      })),
     },
   } as never);
   // A walk leaves its region on the stacks, which a locking script's clean-stack rule refuses once it completes.
@@ -86,7 +90,9 @@ describe('the library\'s counted tail walks', () => {
     for (const slots of [1, 2, 3]) {
       for (let count = 0; count <= values.length; count += 1) {
         const listed = values.slice(0, count);
-        const tail = Uint8Array.from([...u16(count), ...listed.flatMap((value) => [...u32(value.length), ...value]), ...REST]);
+        const tail = Uint8Array.from([
+          ...u16(count), ...listed.flatMap((value) => [...u32(value.length), ...value]), ...REST,
+        ]);
         const unrolled = run([tail], valueSection(slots), OUTPUTS);
         expect(run([tail], viaRoutine(walks.values, slots), OUTPUTS), `slots ${slots}, count ${count}`).toBe(unrolled);
       }

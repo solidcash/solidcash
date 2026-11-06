@@ -110,19 +110,18 @@ export function createdPoolReads(
   const bodies = [
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
   ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
-  for (const fn of bodies) {
-    walkInvocationAst(fn.body, (node) => {
-      if (!(node instanceof InstantiationNode || node instanceof ContractReferenceNode)) return;
-      const child = node.referencedContract;
-      if (child === undefined || !takesOraclePool(child)) return;
-      const reads = child.poolTreeReads ?? {
-        ...(child.usesBlockOracle && { blockInfo: true as const }),
-        ...(child.usesBlockhash && { blockhash: true as const }),
-      };
-      if (reads.blockInfo === true) blockInfo = true;
-      if (reads.blockhash === true) blockhash = true;
-    });
-  }
+  const notePoolReads = (node: Node): void => {
+    if (!(node instanceof InstantiationNode || node instanceof ContractReferenceNode)) return;
+    const child = node.referencedContract;
+    if (child === undefined || !takesOraclePool(child)) return;
+    const reads = child.poolTreeReads ?? {
+      ...(child.usesBlockOracle && { blockInfo: true as const }),
+      ...(child.usesBlockhash && { blockhash: true as const }),
+    };
+    if (reads.blockInfo === true) blockInfo = true;
+    if (reads.blockhash === true) blockhash = true;
+  };
+  for (const fn of bodies) walkInvocationAst(fn.body, notePoolReads);
   if (!blockInfo && !blockhash) return undefined;
   return { ...(blockInfo ? { blockInfo: true as const } : {}), ...(blockhash ? { blockhash: true as const } : {}) };
 }

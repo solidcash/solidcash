@@ -100,8 +100,12 @@ export function reconcileMaterializedReturnWitnesses(
         inBlock: groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, i),
         witnessGroups: g.returnWitnessGroups, commitmentLen: g.precomputedReturnCommitment?.length,
       })),
-      pending: host.pendingReturnEventOutputs.map((e) => ({ id: e.identity, len: e.commitment.length, cat: e.categoryId.slice(0, 10) })),
-      tailExpectations: tailExpectations.map((t) => ({ g: t.groupIndex, cur: t.currentIndex, built: t.builtIndex, cat: t.categoryId.slice(0, 10) })),
+      pending: host.pendingReturnEventOutputs.map((e) => ({
+        id: e.identity, len: e.commitment.length, cat: e.categoryId.slice(0, 10),
+      })),
+      tailExpectations: tailExpectations.map((t) => ({
+        g: t.groupIndex, cur: t.currentIndex, built: t.builtIndex, cat: t.categoryId.slice(0, 10),
+      })),
       resolved: [...resolved.entries()],
     }));
   }

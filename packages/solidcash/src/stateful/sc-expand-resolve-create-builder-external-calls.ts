@@ -69,7 +69,7 @@ export interface ExpandResolveCreateBuilderExternalCallsHost {
    * covenant/require failure: an unsupported probe shape is not evidence that the call reverts.
    */
   probeRawCallee?(contract: unknown, functionName: string, args: FunctionArgument[]): Promise<
-    { ok: true } | { ok: false; error: unknown; executionFailure: boolean }
+  { ok: true } | { ok: false; error: unknown; executionFailure: boolean }
   >;
 }
 
@@ -580,7 +580,9 @@ export async function expandResolveCreateBuilderExternalCalls(
     if (canAutoResolve && autoResolved.length === externalCalls.length) {
       // An absent raw callee keeps its published ABI slot (the covenant's witness names it) but co-spends no
       // participant, so it plans like an omitted callsite rather than a group.
-      const participates = (call: CreateBuilderResolvedExternalCall | undefined): call is CreateBuilderResolvedExternalCall =>
+      const participates = (
+        call: CreateBuilderResolvedExternalCall | undefined,
+      ): call is CreateBuilderResolvedExternalCall =>
         call !== undefined && call.absentCallee === undefined;
       const kept = autoResolved.filter(participates);
       if (kept.length !== autoResolved.length) {

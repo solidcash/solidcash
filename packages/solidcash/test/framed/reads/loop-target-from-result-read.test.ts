@@ -68,7 +68,12 @@ const directory = artifacts.Directory!;
 const store = artifacts.Store!;
 
 /** One live UTXO as the provider holds it: a token of the category, with the commitment it carries. */
-function utxo(txid: string, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array, vout = 0) {
+function utxo(txid: string, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array, vout = 0): {
+  txid: string;
+  vout: number;
+  satoshis: bigint;
+  token: { category: string; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: string } };
+} {
   return {
     txid, vout, satoshis: 20_000n,
     token: { category, amount: 0n, nft: { capability, commitment: bytesToHex(commitment) } },

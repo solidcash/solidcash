@@ -383,11 +383,12 @@ function legalCutFunctions(
 /** How many AST nodes a helper's body holds, with the bodies of the helpers its bare calls reach, each once. */
 function closureWeight(fn: FunctionDefinitionNode, byName: Map<string, FunctionDefinitionNode[]>): number {
   let weight = 0;
+  const countNode = (): void => { weight += 1; };
   const seen = new Set<object>();
   for (const name of inlineClosureNames(fn, byName)) {
     for (const candidate of byName.get(name) ?? []) {
       if (candidate !== fn && candidate.isEntryPoint) continue;
-      walkInvocationAst(candidate.body, () => { weight += 1; }, seen);
+      walkInvocationAst(candidate.body, countNode, seen);
     }
   }
   return weight;

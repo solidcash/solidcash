@@ -133,7 +133,9 @@ const CAROL = signer(carolPkh, carolPriv);
 /** How a members list keys an account, and the gate its role and account, each address by its 20-byte identity. */
 const MEMBER_KEYS = members.stateLayout!.collections!.find((collection) => collection.name === 'members')!;
 const ROLE_MEMBER_KEYS = gate.stateLayout!.collections!.find((collection) => collection.name === '_roles__members')!;
-const slotOf = (...keys: Uint8Array[]): Uint8Array => keyToSlotMulti(keys, keys.length === 2 ? ROLE_MEMBER_KEYS : MEMBER_KEYS);
+const slotOf = (...keys: Uint8Array[]): Uint8Array => keyToSlotMulti(
+  keys, keys.length === 2 ? ROLE_MEMBER_KEYS : MEMBER_KEYS,
+);
 const slotHex = (...keys: Uint8Array[]): string => bytesToHex(slotOf(...keys));
 /** Where the node of `keys` sits in its list, which is ordered by slot. */
 const at = (...keys: Uint8Array[]): bigint => bytesToSlotValue(slotOf(...keys));

@@ -2846,11 +2846,12 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     // convention has no CREATE frame, and the child's entry cannot run in a spent master of its own, so name both
     // facts: the entry point the caller wanted is the part a witness-check patch alone would not supply.
     let foldedDeployCall = false;
+    const noteFoldedDeployCall = (node: Node): void => {
+      if (node instanceof InstantiationNode && node.hasFoldedChildCall === true) foldedDeployCall = true;
+    };
     for (const body of [contract.constructorDef, ...input.contract.functions]) {
       if (!body) continue;
-      walkInvocationAst(body.body, (node) => {
-        if (node instanceof InstantiationNode && node.hasFoldedChildCall === true) foldedDeployCall = true;
-      });
+      walkInvocationAst(body.body, noteFoldedDeployCall);
     }
     return refuse(foldedDeployCall
       ? 'contract creation needs the witness `CREATE` checks, which are not emitted yet; a call on the new '

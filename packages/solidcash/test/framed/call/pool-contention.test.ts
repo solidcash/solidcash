@@ -128,7 +128,12 @@ class ComposingProvider extends MockNetworkProvider {
 type Handle = {
   connect(signer: Signer): Record<string, (...args: unknown[]) => { send(): Promise<unknown> }>;
 };
-interface Deployed { readonly name: string; readonly categoryId: string; readonly lock: Uint8Array; readonly contract: Handle }
+interface Deployed {
+  readonly name: string;
+  readonly categoryId: string;
+  readonly lock: Uint8Array;
+  readonly contract: Handle;
+}
 
 interface Chain {
   readonly provider: ComposingProvider;

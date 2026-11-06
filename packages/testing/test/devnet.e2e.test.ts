@@ -64,7 +64,9 @@ function spawnCli(args: string[], cwd: string): ChildProcessWithoutNullStreams {
   return child;
 }
 
-function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+function waitForExit(
+  child: ChildProcessWithoutNullStreams, timeoutMs: number,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       try {
@@ -384,10 +386,10 @@ describe('solidhat node end to end', () => {
       void lockingBytecodeToCashAddress;
       const scripthash = (await (async () => {
         const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-        const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-        const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+        const { sha256: lockSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+        const { binToHex: toHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
         // Electrum's scripthash is the lock's SHA-256 with its bytes reversed, as Fulcrum and the node serve it.
-        return binToHex(sha256.hash(addressToLockScript(address)).reverse());
+        return toHex(lockSha256.hash(addressToLockScript(address)).reverse());
       })());
       const utxos = await client.request('blockchain.scripthash.listunspent', scripthash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
@@ -413,9 +415,9 @@ describe('solidhat node end to end', () => {
     const clientAgain = await rawClient(node);
     try {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-      const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-      const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(address)).reverse());
+      const { sha256: lockSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+      const { binToHex: toHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+      const firstScriptHash = toHex(lockSha256.hash(addressToLockScript(address)).reverse());
       const utxos = await clientAgain.request(
         'blockchain.scripthash.listunspent',
         firstScriptHash,
@@ -645,7 +647,17 @@ describe('solidhat node --consensus production', () => {
   /** 2,000 turns cost about 800,000 units of operation cost, which mainnet funds with an input of about 1,000 bytes. */
   const turns = 2_000n;
   const coin = { txid: 'c0'.repeat(32), vout: 0, satoshis: 100_000n };
-  const spend = (padding: number) => ({
+  const spend = (padding: number): {
+    version: number;
+    locktime: number;
+    inputs: {
+      outpointTransactionHash: Uint8Array;
+      outpointIndex: number;
+      sequenceNumber: number;
+      unlockingBytecode: Uint8Array;
+    }[];
+    outputs: { lockingBytecode: Uint8Array; valueSatoshis: bigint }[];
+  } => ({
     version: 2,
     locktime: 0,
     inputs: [{
@@ -718,9 +730,9 @@ describe('solidhat node --consensus production', () => {
       await call(node, 'devnet.injectUtxo', [
         binToHex(countdownLock), { txid: coin.txid, vout: coin.vout, satoshis: String(coin.satoshis) },
       ]);
-      const broadcast = (transaction: ReturnType<typeof spend>) => rpc(node, 'blockchain.transaction.broadcast', [
-        binToHex(encodeTransaction(transaction)),
-      ]);
+      const broadcast = (transaction: ReturnType<typeof spend>): Promise<Rpc> => rpc(
+        node, 'blockchain.transaction.broadcast', [binToHex(encodeTransaction(transaction))],
+      );
       const unpadded = await broadcast(spend(0));
       expect(unpadded.error?.message).toMatch(/operation cost/);
       const padded = spendPaddedTo(devnet.consensus.operation_cost_budget_per_byte!);

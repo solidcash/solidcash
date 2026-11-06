@@ -343,9 +343,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }));
   }
 
-  // The returned handle uses the same self-pinned address as the first deployed genesis.
-  const childContract = childContractUnsalted;
-
   const childLayout = childArtifact.stateLayout!;
 
   if (deployTarget?.childLayoutDigest

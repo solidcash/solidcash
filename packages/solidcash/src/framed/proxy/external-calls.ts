@@ -43,7 +43,6 @@
  * the running execution holds, a loop width the caller's facts do not fix — is refused by name.
  */
 
-import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { binToUtf8 } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
@@ -91,7 +90,6 @@ import { masterForEntry, prepareFunctionSplitDeployment, requireFunctionSplitSha
 import { inPoolOrder, type PoolOrder } from '../deploy/pool-order.js';
 import { functionSplitFor } from '../deploy/split-registry.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
-import { framedCreate2TemplateOf } from '../deploy/create2-child.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../utils.js';
 import {
   chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode, withMastersAt,
@@ -1272,78 +1270,6 @@ export function reachedIdentity(scope: ReachableScope, identity: Uint8Array): Ui
   return undefined;
 }
 
-/**
- * The child a call reaches at an identity no deployment holds: one the caller's own creation names
- * (`composition.creates`), or one its target computes as a CREATE2 address over a code hash a template names
- * (`registerFramedCreate2Template`) — `keccak256(0xff ++ creator ++ salt ++ codeHash)`, whose creator the target
- * names as well. Absent when neither describes the call.
- */
-function createdChildOf(
-  provider: NetworkProvider, caller: HopCallInputs, row: ExternalCallAbi,
-): { readonly contractName: string; readonly creatorSelf: Uint8Array | undefined } | undefined {
-  const creates = caller.artifact.composition?.creates ?? [];
-  if (creates.length > 0) {
-    const named = creates.length === 1 ? creates[0]
-      : creates.find((site) => site.contractName === row.interfaceName.replace(/^I/, ''));
-    if (named === undefined) return undefined;
-    return {
-      contractName: named.contractName ?? createdFromCode(provider, caller, row, named.codeStateVariable),
-      creatorSelf: caller.selfAddress,
-    };
-  }
-  const fields = create2TargetFields(row);
-  if (fields === undefined) return undefined;
-  const resolver = makeCallResolver(caller);
-  const codeHash = resolver.evaluate(fields.codeHash, 0);
-  const creator = resolver.evaluate(fields.creator, 0);
-  if (!(codeHash instanceof Uint8Array) || codeHash.length !== 32 || !(creator instanceof Uint8Array)) return undefined;
-  const contractName = framedCreate2TemplateOf(provider, codeHash);
-  return contractName === undefined ? undefined : { contractName, creatorSelf: creator };
-}
-
-/** The creator and code hash of a target the routing computes as a CREATE2 address, or absent for any other. */
-function create2TargetFields(
-  row: ExternalCallAbi,
-): { readonly creator: ExternalCallExpression; readonly codeHash: ExternalCallExpression } | undefined {
-  const source = row.addressSource;
-  if (source?.kind !== 'expression') return undefined;
-  let expression: ExternalCallExpression | undefined = source.expression;
-  while (expression?.kind === 'cast') expression = expression.expression;
-  if (expression?.kind !== 'call' || expression.name !== 'keccak256' || expression.args?.length !== 1) return undefined;
-  const packed = expression.args[0];
-  if (packed?.kind !== 'abiEncodePacked' || packed.args?.length !== 4) return undefined;
-  const [prefix, creator, , codeHash] = packed.args;
-  if (prefix?.kind !== 'literal' || String(prefix.value).toLowerCase() !== 'ff' || creator === undefined
-    || codeHash === undefined) return undefined;
-  return { creator, codeHash };
-}
-
-/**
- * The contract a creation from the code the creator holds stands up: the template registered for the code's
- * keccak256, which is the hash the child's identity commits to (`registerFramedCreate2Template`).
- */
-function createdFromCode(
-  provider: NetworkProvider, caller: HopCallInputs, row: ExternalCallAbi, codeStateVariable: string | undefined,
-): string {
-  const where = `the call to "${row.interfaceName}.${row.functionName}"`;
-  const code = codeStateVariable === undefined ? undefined : caller.stateValues[codeStateVariable];
-  if (!(code instanceof Uint8Array)) {
-    throw new FramedProxyDeployError(
-      `${where} reaches a child "${caller.artifact.contractName}" creates from code it holds in `
-      + `"${codeStateVariable ?? '<unnamed>'}", which its state does not carry as bytes`,
-    );
-  }
-  const codeHash = Uint8Array.from(keccak_256(code));
-  const contractName = framedCreate2TemplateOf(provider, codeHash);
-  if (contractName === undefined) {
-    throw new FramedProxyDeployError(
-      `${where} reaches a child "${caller.artifact.contractName}" creates from code whose keccak256 is `
-      + `${binToHex(codeHash)}, which no CREATE2 template names (registerFramedCreate2Template)`,
-    );
-  }
-  return contractName;
-}
-
 /** The successor a reach left one node of a collection with. */
 interface ReachedLink {
   readonly collection: string;
@@ -2027,20 +1953,20 @@ async function planEntryCalls(
         ? undefined : ctx.hashedArguments?.get(hashedArgumentsKey(path, row.callsiteId, turn));
       if (hashed === undefined && row.callsiteId !== undefined && (path === '' || ctx.calleeSiteRefusals === true)
         && unresolvedCallArguments(effective, siteResolver, turn).length > 0) {
-        let refusal: Error | undefined;
+        let siteRefusal: Error | undefined;
         if (path !== '') {
           try {
             resolvePublishedCall(effective, external.artifact, siteCaller, siteResolver, turn, lockOf);
           } catch (error) {
             if (!(error instanceof FramedProxyDeployError)) throw error;
-            refusal = error;
+            siteRefusal = error;
           }
         }
         ownStop = {
           path, where, reads: 'computed', producers: [],
           computed: computedStop(row, entryRowOf(external.artifact, row.functionName), siteResolver, turn,
             hashedArgumentsKey(path, row.callsiteId, turn)),
-          ...(refusal === undefined ? {} : { refusal }),
+          ...(siteRefusal === undefined ? {} : { refusal: siteRefusal }),
         };
         break;
       }

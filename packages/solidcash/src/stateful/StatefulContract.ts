@@ -4223,7 +4223,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // The bare dispatch value is the SDK call builder, so give it the same callable shape; a trailing ethers
     // overrides object (`{ value }`) is split from the ABI arguments and applied to the call.
     const ethersStyleFunctions = new Map<string, unknown>();
-    const abiFunction = (name: string) => this.inner.artifact.abi.find((entry) => entry.name === name);
+    const abiFunction = (name: string): AbiFunction | undefined => this.inner.artifact.abi
+      .find((entry) => entry.name === name);
     const ethersStyleFunction = (raw: (...args: any[]) => any, name: string): unknown => {
       const cached = ethersStyleFunctions.get(name);
       if (cached !== undefined) return cached;
@@ -6945,16 +6946,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     // A caller normally supplies the compact visible frame. Contract.createUnlocker also accepts a complete
     // physical frame, so retain exact ABI indices when that form is used; internal parameters need not be a
-    // suffix. External-target exclusions are keyed by ABI names to remain correct in either representation.
+    // suffix.
     const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs
       : args.length === implicitCallerInputs?.length ? implicitCallerInputs : visibleInputs;
-    const externalTargetNames = new Set((abiFunction.externalCalls ?? []).flatMap((call) => {
-      if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
-        const input = visibleInputs[call.addressSource.paramIndex];
-        return input ? [input.name] : [];
-      }
-      return call.addressParam ? [call.addressParam] : [];
-    }));
     const normalized = args.map((arg, index) => {
       // Imported Solidity callers may pass a native signer address where an EVM caller supplied its
       // hexadecimal identity as bytes. Normalize that identity before validation and retain the result

@@ -12,7 +12,6 @@ import { createHardhatRuntimeEnvironment } from '../src/hre.js';
 import { resolveConfig } from '../src/config.js';
 import type { HardhatRuntimeEnvironment } from '../src/hre.js';
 
-const MOCK_MNEMONIC = 'test test test test test test test test test test test junk';
 const OTHER_MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 const COUNTER_SOURCE = `contract MemCashCounter() {
@@ -47,7 +46,10 @@ async function disconnectAll(): Promise<void> {
   }
 }
 
-async function deployCounter(hre: HardhatRuntimeEnvironment): Promise<{ address: string; contract: { call: Record<string, (...args: unknown[]) => { send(): Promise<unknown> }> } }> {
+async function deployCounter(hre: HardhatRuntimeEnvironment): Promise<{
+  address: string;
+  contract: { call: Record<string, (...args: unknown[]) => { send(): Promise<unknown> }> };
+}> {
   const [signer] = await hre.ethers.getSigners(1);
   const artifact = compileString(COUNTER_SOURCE, { composition: 'direct' });
   const deployed = await hre.ethers.getContractFactory(artifact, signer).deploy();

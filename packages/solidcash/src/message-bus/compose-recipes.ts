@@ -112,7 +112,8 @@ const compareUnsignedBigEndian = (left: Uint8Array, right: Uint8Array): number =
   return 0;
 };
 
-const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): bigint => {  if (typeof value === 'bigint') return value;
+const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): bigint => {
+  if (typeof value === 'bigint') return value;
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   if (typeof value === 'boolean') return value ? 1n : 0n;
   if (typeof value === 'string' && /^(?:-?\d+|0x[0-9a-f]+)$/i.test(value)) return BigInt(value);

@@ -84,7 +84,7 @@ async function enter(
   c: Chain, functionName: string, args: readonly FunctionArgument[], value?: bigint,
 ): Promise<FramedCallResult> {
   const callerUtxo = await c.world.userCoin();
-  const deployment = (name: keyof Chain & string) => {
+  const deployment = (name: keyof Chain & string): Pick<PlainDeployment, 'artifact' | 'categoryId'> => {
     const deployed = c[name] as PlainDeployment;
     return { artifact: deployed.artifact, categoryId: deployed.categoryId };
   };

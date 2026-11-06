@@ -8,7 +8,7 @@ import { SignatureTemplate } from '../../../src/index.js';
 import type { Output, Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { callFramedEntry } from '../../../src/framed/call/index.js';
+import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import { stateRecordLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { deployMaster } from '../../../src/framed/deploy/material.js';
 import { MasterPoolDeployment } from '../../../src/framed/deploy/pool.js';
@@ -70,7 +70,7 @@ describe('a child created with create2 in one transaction', () => {
   const foreignLock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x11), 0x87]);
 
   /** The entry locks the child's masters deploy at, for a category of no consequence (constant shard locks). */
-  const childLocksOf = (provider: MockNetworkProvider): readonly Uint8Array[] => {
+  const childLocksOf = (_provider: MockNetworkProvider): readonly Uint8Array[] => {
     // A child that reads block.* pins its own category's oracle, so its locks follow the category it is given.
     return MasterPoolDeployment.createFunctionSplit({
       bundle: child, category: new Uint8Array(32).fill(7), validatorProgram: VALIDATOR, size: pool,
@@ -78,7 +78,9 @@ describe('a child created with create2 in one transaction', () => {
   };
 
   /** Plans `make` on a creator whose sentinels the deployment filled, with any outputs after the genesis. */
-  const plan = async (extra?: (caller: Utxo) => readonly Output[]) => {
+  const plan = async (extra?: (caller: Utxo) => readonly Output[]): Promise<{
+    provider: MockNetworkProvider; caller: Utxo; result: FramedCallResult;
+  }> => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = nextCoin(1_500_000n);
     await provider.addUtxo(binToHex(callerLock), funding);

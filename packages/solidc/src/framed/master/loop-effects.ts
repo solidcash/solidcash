@@ -212,7 +212,7 @@ export function bodyLoopEffects(fn: FunctionDefinitionNode, compilerOptions: Com
     predicates.set(targets.size - 1, effect.predicates);
   }
   const domains = externalCallIterationDomains(fn, compilerOptions, targets, predicates);
-  const domainOf = (effect: FoundEffect) => {
+  const domainOf = (effect: FoundEffect): ReturnType<typeof domains.get> => {
     const key = targets.get(effect.anchor);
     return key === undefined ? undefined : domains.get(key);
   };

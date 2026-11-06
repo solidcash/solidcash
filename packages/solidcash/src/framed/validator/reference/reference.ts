@@ -896,14 +896,14 @@ function readBlock(payload: Uint8Array): WitnessBlock {
   // `viewOut` is its `viewIn`, which the wire does not repeat.
   const segments = reader.readCounted16((inner): RecordEntry[] => {
     const segment = new ByteReader(inner.readLp16());
-    const entries = segment.readCounted16((entries): RecordEntry => {
-      const index = { in: entries.readUint16(), out: entries.readUint16() };
-      const inLength = entries.readUint16();
-      const outLength = entries.readUint16();
+    const entries = segment.readCounted16((recordReader): RecordEntry => {
+      const index = { in: recordReader.readUint16(), out: recordReader.readUint16() };
+      const inLength = recordReader.readUint16();
+      const outLength = recordReader.readUint16();
       if (inLength === KEPT_VIEW_LENGTH) throw new FramedEncodingError('a record view is the kept sentinel long');
-      const viewIn = entries.readBytes(inLength);
+      const viewIn = recordReader.readBytes(inLength);
       const entry: RecordEntry = {
-        ...index, viewIn, viewOut: outLength === KEPT_VIEW_LENGTH ? viewIn : entries.readBytes(outLength),
+        ...index, viewIn, viewOut: outLength === KEPT_VIEW_LENGTH ? viewIn : recordReader.readBytes(outLength),
       };
       assertRecordEntry(entry);
       return entry;

@@ -375,7 +375,7 @@ import {
   buildBatchTargetsDerivationScript,
 } from '../framed/master/batch-witness-derivation.js';
 import {
-  UNDECIDED_WRITE_ACTIVATION, isAlwaysActive, framedEmitActivation, framedStateWrites, framedWriteActivation,
+  isAlwaysActive, framedEmitActivation, framedStateWrites, framedWriteActivation,
 } from '../framed/master/write-activation.js';
 import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../framed/master/frame-tail.js';
 import {

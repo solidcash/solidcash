@@ -180,7 +180,7 @@ describe('a framed deployment read by lock', () => {
 
   it('refuses a foreign token at every lock it lists', async () => {
     const live = await deployLive();
-    const foreign = (commitment: string, capability: 'mutable' | 'minting' | 'none') => ({
+    const foreign = (commitment: string, capability: 'mutable' | 'minting' | 'none'): Utxo => ({
       ...freshCoin(1_000n),
       token: { category: 'ff'.repeat(32), amount: 0n, nft: { capability, commitment } },
     });
@@ -221,7 +221,9 @@ describe('a framed deployment read by lock', () => {
     const state = await readFramedState(live.provider, live.categoryId, layout);
     const total = state.byNft.flatMap((values) => (values.total === undefined ? [] : [values.total]));
     expect(total).toStrictEqual([12n]);
-    const storage = await readFramedStorage({ provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId });
+    const storage = await readFramedStorage({
+      provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId,
+    });
     expect(await storage.read('total')).toStrictEqual([12n]);
     expect(await storage.read('title')).toBeDefined();
     expect(await storage.read('balanceOf', [who])).toStrictEqual([12n]);
@@ -251,7 +253,9 @@ describe('a framed deployment read by lock', () => {
 
   it('takes a storage snapshot past a foreign coin at a record lock', async () => {
     const live = await deployLive();
-    const before = await readFramedStorage({ provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId });
+    const before = await readFramedStorage({
+      provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId,
+    });
     const forged = {
       ...freshCoin(1_000n),
       token: {
@@ -260,7 +264,9 @@ describe('a framed deployment read by lock', () => {
       },
     };
     await live.chain.addUtxo(binToHex(stateRecordLockingBytecode(live.categoryId)), forged);
-    const after = await readFramedStorage({ provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId });
+    const after = await readFramedStorage({
+      provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId,
+    });
     expect(after.records.map((coin) => coin.txid)).toStrictEqual(before.records.map((coin) => coin.txid));
   });
 });

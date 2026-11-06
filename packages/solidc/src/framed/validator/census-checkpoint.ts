@@ -12,7 +12,8 @@ import { ripemd160, secp256k1, sha1, sha256 } from '@bitauth/libauth/build/lib/c
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { createVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
+import { createVirtualMachine, type AuthenticationVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
+import type { ResolvedTransactionCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
 import { bytesEqual } from '@solidcash/utils';
 
 type InstructionSet = ReturnType<typeof createInstructionSetBch2026>;
@@ -37,7 +38,10 @@ const LIFTED_CONSENSUS = {
 };
 
 /** The instruction set and machine the head's run is stepped on. */
-function liftedMachine() {
+function liftedMachine(): {
+  set: InstructionSet;
+  machine: AuthenticationVirtualMachine<ResolvedTransactionCommon, ValidatorHeadProgram, MachineState>;
+} {
   const set = createInstructionSetBch2026(false, { consensus: LIFTED_CONSENSUS, ripemd160, secp256k1, sha1, sha256 });
   return { set, machine: createVirtualMachine(set) };
 }

@@ -5463,14 +5463,6 @@ export class StatefulTransactionBuilder {
         ));
       const physical = this.externalCallUtxoGroups[physicalGroupIdx];
       const complete = family.every(({ candidate }) => candidate.precomputedReturnCommitment !== undefined);
-      const emptyReturn = (group: ExternalCallUtxoGroup, identity?: string): Uint8Array => {
-        if (!calleeDeclaresNoReturnValue(group)) return new Uint8Array([0]);
-        // The direct reader always strips a 31-byte call-record digest (it only skips the comparison for a raw
-        // selector), so a void callee's empty returndata is carried as a record whose field is empty. A zero digest
-        // is never compared; a real one (when the callee pins a record) is re-wrapped on materialization.
-        return callRecordCommitment(new Uint8Array(),
-          this.callRecordDigestFor(identity ?? '') ?? new Uint8Array(CALL_RECORD_DIGEST_BYTES));
-      };
       const fallback = physical.precomputedReturnCommitment
         ?? typedArrayPlaceholder(physical) ?? emptyReturn(physical, `external-call:${physicalGroupIdx}`);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

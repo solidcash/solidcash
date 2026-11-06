@@ -284,6 +284,9 @@ const PAYMENTS_SOURCE = 'pragma solidcash ^0.14.0;'
 const payments = compileStringMulti(PAYMENTS_SOURCE, { composition: 'framed' });
 const deployedPayer = sharedDeployment(payments.Payer!);
 
+const UNNAMED_RECIPIENT =
+  /entry "pay" sends to the contract at [0-9a-f]+, which neither the call's externals nor the provider's registrations name/;
+
 describe('an entry that pays a contract through its receive()', () => {
   it('runs the recipient\'s receive() with the value, paid from the payer\'s containers', async () => {
     const deployed = await deployedPayer();
@@ -342,9 +345,7 @@ describe('an entry that pays a contract through its receive()', () => {
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(payments.Vault!, '49'.repeat(32)), 7_000n],
-    })).rejects.toThrow(
-      /entry "pay" sends to the contract at [0-9a-f]+, which neither the call's externals nor the provider's registrations name/,
-    );
+    })).rejects.toThrow(UNNAMED_RECIPIENT);
   });
 });
 

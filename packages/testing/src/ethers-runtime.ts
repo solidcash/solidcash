@@ -11,8 +11,8 @@ import { SigningKey as EthersSigningKey } from 'ethers/crypto';
 import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
 import { getBytes as getEthersBytes } from 'ethers/utils';
 import type { Artifact, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
-import { asmToBytecode, decodedSolidityAddressIdentity } from '@solidcash/utils';
-import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
+import { decodedSolidityAddressIdentity } from '@solidcash/utils';
+import type { NetworkProvider, ConstructorArgument, Utxo } from '@solidcash/solidcash';
 import type {
   ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
   DeployedContract, DeployContractOptions,
@@ -20,11 +20,8 @@ import type {
 import { listDeployments } from '@solidcash/solidcash/stateful';
 import { framedDeploy } from '@solidcash/solidcash/framed';
 import { Network as Networks } from '@solidcash/solidcash/dist/interfaces.js';
-import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
+import MockNetworkProvider from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
-import ElectrumNetworkProvider from '@solidcash/solidcash/dist/network/ElectrumNetworkProvider.js';
-import BitcoinRpcNetworkProvider from '@solidcash/solidcash/dist/network/BitcoinRpcNetworkProvider.js';
-import MemCashNetworkProvider from '@solidcash/solidcash/dist/network/MemCashNetworkProvider.js';
 import Signer from '@solidcash/solidcash/dist/Signer.js';
 import { HDSigner, signersFromMnemonic } from '@solidcash/solidcash/hdsigner';
 import {
@@ -34,9 +31,6 @@ import type { SplitContractBundle } from '@solidcash/solidcash/dist/stateful/Spl
 import { randomUtxo } from '@solidcash/solidcash/dist/utils.js';
 import * as ethersUtils from './ethers-utils.js';
 import { getCreateAddressForComposition } from './ethers-shim.js';
-import * as nh from './network-helpers.js';
-import { setActiveProvider } from './network-helpers.js';
-import type { ResolvedConfig, NetworkConfig } from './config.js';
 
 /** Where the runtime reads compiled artifacts by contract name. */
 export interface ArtifactSource {
@@ -528,7 +522,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       const SC = await loadStatefulContract();
       // A factory-created child's address commits to its category, which only the creating frame knows. Reuse
       // the registered handle so `getContractAt` reads the state this session actually deployed.
-      const { findDeploymentByAddress, listDeployments } = await import('@solidcash/solidcash/stateful');
+      const { findDeploymentByAddress, listDeployments: listRegistered } = await import('@solidcash/solidcash/stateful');
       let registered = typeof addressOrCategory === 'string'
         ? findDeploymentByAddress(provider as never, addressOrCategory) : undefined;
       // A getter's decoded `address` is the 20-byte Solidity identity of the child's physical lock, or under
@@ -539,7 +533,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
         ? (rawAddress.length === 20 ? rawAddress : decodedSolidityAddressIdentity(rawAddress)) : undefined;
       if (registered === undefined && rawIdentity !== undefined) {
         const wanted = binToHex(rawIdentity);
-        registered = [...listDeployments(provider as never)].reverse().find((entry) => (
+        registered = [...listRegistered(provider as never)].reverse().find((entry) => (
           entry.lockingBytecode !== undefined
           && binToHex(hash160(hexToBin(entry.lockingBytecode))) === wanted
         ));
@@ -567,12 +561,12 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
         // ethers parity: `getContractAt` connects the default signer just like `.at()` does. Without it the
         // builder provisions no native P2PKH input, and a covenant reading msg.sender/tx.origin (emitTxOrigin
         // scans for exactly that input) refuses the transaction with an empty origin.
-        const runner = defaultRunner() as unknown as {
+        const signingRunner = defaultRunner() as unknown as {
           unlockP2PKH?: unknown; getAddress?: unknown; _logicalNonceSigner?: unknown;
         };
-        if (typeof runner?.unlockP2PKH === 'function' && typeof runner.getAddress === 'function') {
-          (child as unknown as { _signer?: unknown })._signer = runner;
-          (child as unknown as { _logicalNonceSigner?: unknown })._logicalNonceSigner = runner;
+        if (typeof signingRunner?.unlockP2PKH === 'function' && typeof signingRunner.getAddress === 'function') {
+          (child as unknown as { _signer?: unknown })._signer = signingRunner;
+          (child as unknown as { _logicalNonceSigner?: unknown })._logicalNonceSigner = signingRunner;
         }
         return presentAddresses(preferAbiMethods(child as object, loaded), loaded) as typeof child;
       }

@@ -108,6 +108,7 @@ import { childGenesisOutputs } from '../deploy/genesis-outputs.js';
 import { traceBroadcast } from '../../tx-trace.js';
 import { labelNextBroadcast, surveyOn } from '../../tx-survey.js';
 import {
+  deployFunctionSplitShard,
   deployMaster,
   masterForEntry,
   prepareFunctionSplitDeployment,
@@ -1806,7 +1807,18 @@ async function callInShape(
           + 'path does not plan for a paid contract yet');
       }
       const recipientCategory = hexToBin(external.categoryId);
-      const set = await readFramedDeployment(provider, external.categoryId, layout);
+      // The send runs its body on the recipient's master, or on the shard of it a per-entry bundle publishes.
+      const recipientSplit = functionSplitFor(provider, external.categoryId);
+      const recipientShard = recipientSplit?.shards.find((shard) => shard.function === body.name);
+      const set = await readFramedDeployment(provider, external.categoryId, layout, {
+        masterLocks: [
+          deployMaster(external.artifact, recipientCategory, validatorProgram).lockingBytecode,
+          ...(recipientShard === undefined ? [] : [
+            deployFunctionSplitShard(recipientShard, recipientCategory, validatorProgram, recipientSplit).lockingBytecode,
+          ]),
+        ],
+        validatorProgram,
+      });
       // The frames the entry's calls run on the same contract: its masters are theirs to run, so the payment takes
       // one they leave, and its records are theirs.
       const shared = calleePlan?.callees.filter((callee) => callee.categoryId === external.categoryId) ?? [];

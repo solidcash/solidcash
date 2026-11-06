@@ -38,7 +38,7 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import { decodeEntryCommitment } from '../../stateful/SortedList.js';
 import { getDataNftLockingBytecode, toTokenAwareAddress } from '../../stateful/covenant-helpers.js';
 import {
-  addressToLockScript, createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode,
+  createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode, tryCashAddressToLockScript,
 } from '../../utils.js';
 import { listDeployments } from '../../stateful/deployment-registry.js';
 import { mappingValueChunkLock } from '../composer/mapping-plan.js';
@@ -555,7 +555,9 @@ export async function framedCategoryAt(
   address: string,
   validatorProgram: Uint8Array = framedValidator.buildValidatorProgram(),
 ): Promise<string | undefined> {
-  const lock = bytesToHex(addressToLockScript(address));
+  const lockingBytecode = tryCashAddressToLockScript(address);
+  if (lockingBytecode === undefined) return undefined;
+  const lock = bytesToHex(lockingBytecode);
   const coins = await provider.getUtxos(toTokenAwareAddress(address));
   const categories = new Set(coins.flatMap((utxo) => (utxo.token === undefined ? [] : [utxo.token.category])));
   return [...categories].find((category) => bytesToHex(validatorAddress(hexToBin(category), validatorProgram)) === lock);

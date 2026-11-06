@@ -11,6 +11,7 @@ import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { StatefulContract } from '../../../src/stateful/StatefulContract.js';
 import {
   categoryCoinsAtLocks,
   chunkRecordLockingBytecode,
@@ -262,6 +263,20 @@ describe('the category a framed address names', () => {
     } as unknown as NetworkProvider;
     expect((await provider.getUtxos(address))[0]?.txid).toBe(dust.txid);
     await expect(framedCategoryAt(provider, address)).resolves.toBe(live.categoryId);
+  });
+
+  it('attaches a handle past a coin that imitates an identity record', async () => {
+    const live = await deployLive();
+    const address = addressOf(live.categoryId);
+    await live.chain.addUtxo(address, {
+      txid: '00'.repeat(32), vout: 9, satoshis: 1_000n,
+      token: {
+        category: 'dd'.repeat(32), amount: 0n,
+        nft: { capability: 'none', commitment: `53434944${'00'.repeat(40)}` },
+      },
+    });
+    const handle = await StatefulContract.at(address, bundle.logical, live.provider);
+    expect((handle as unknown as { categoryId: string }).categoryId).toBe(live.categoryId);
   });
 
   it('is nothing when no coin there derives it', async () => {

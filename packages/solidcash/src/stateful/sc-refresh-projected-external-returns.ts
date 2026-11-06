@@ -127,9 +127,12 @@ export async function refreshProjectedExternalReturns(
       getUtxos: async (address) => projectedAt(address) ?? baseProvider.getUtxos(address),
       getUtxosForLockingBytecode: async (lockingBytecode) => projectedAt(lockingBytecode)
         ?? baseProvider.getUtxosForLockingBytecode(lockingBytecode),
-      getUtxosByTokenCategory: async (categoryId) => categoryId === group.categoryId
-        ? [...projectedCategoryUtxos]
-        : baseProvider.getUtxosByTokenCategory?.(categoryId) ?? [],
+      // The view claims no capability its provider lacks: a reader that would take an empty category for an empty
+      // deployment falls back to the locks it derives, which `projectedAt` answers for the group's own category.
+      ...(baseProvider.getUtxosByTokenCategory && {
+        getUtxosByTokenCategory: async (categoryId) => (categoryId === group.categoryId
+          ? [...projectedCategoryUtxos] : baseProvider.getUtxosByTokenCategory!(categoryId)),
+      }),
       getBlockHeight: () => baseProvider.getBlockHeight(),
       getRawTransaction: (txid) => baseProvider.getRawTransaction(txid),
       sendRawTransaction: (txHex) => baseProvider.sendRawTransaction(txHex),

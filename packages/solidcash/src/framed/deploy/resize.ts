@@ -174,19 +174,23 @@ export async function resizeFramedPool(
   }
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   let deployed = deployMaster(artifact, hexToBin(categoryId), validatorProgram);
-  const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout);
-  let pool = masters;
+  let shard;
   if (options.selector !== undefined || options.split !== undefined) {
     if (options.selector === undefined || options.split === undefined) {
       throw new FramedResizeError('a function split or merge names the entry selector and the split bundle');
     }
-    let shard;
     try {
       shard = requireFunctionSplitShardBySelector(options.split, options.selector);
     } catch (error) {
       throw new FramedResizeError((error as Error).message);
     }
     deployed = deployMaster(shard.artifact, hexToBin(categoryId), validatorProgram);
+  }
+  const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout, {
+    masterLocks: [deployed.lockingBytecode], validatorProgram,
+  });
+  let pool = masters;
+  if (shard !== undefined) {
     try {
       pool = mastersForEntry(masters, deployed.lockingBytecode, shard.function);
     } catch (error) {

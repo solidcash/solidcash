@@ -101,6 +101,7 @@ import { framedTokenAccesses, framedTokenContainerUnlockingBytecode } from '../c
 import { FramedLoopTurnsError, entryLoopTurns } from '../call/loop-turns.js';
 import { FramedSideCarPoolError, entrySideCars } from '../call/side-cars.js';
 import {
+  POOL_OUTPUT_SATOSHIS,
   chunkRecordLockingBytecode,
   deployMaster,
   entryRecordReadUnlock,
@@ -109,6 +110,7 @@ import {
   readSatoshiContainers,
   satoshiContainerLockingBytecode,
   satoshiContainerUnlockingBytecode,
+  withMastersAt,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
   type DeclarationReading,
@@ -915,18 +917,22 @@ async function planReadFrames(options: {
   return { frames, root, waits };
 }
 
-/** A category's live deployment, read once for every pass of the read and kept in `deployments`. */
+/**
+ * A category's live deployment, read once for every pass of the read and kept in `deployments`, with the masters at
+ * `masterLocks`, which a provider that lists by lock is asked for as each frame names its entry.
+ */
 async function readDeployment(
   provider: NetworkProvider,
   deployments: Map<string, FramedDeploymentSet>,
   categoryId: string,
   layout: StateLayout,
+  masterLocks: readonly Uint8Array[] = [],
 ): Promise<FramedDeploymentSet> {
-  let deployment = deployments.get(categoryId);
-  if (deployment === undefined) {
-    deployment = await readFramedDeployment(provider, categoryId, layout);
-    deployments.set(categoryId, deployment);
-  }
+  const known = deployments.get(categoryId);
+  const deployment = known === undefined
+    ? await readFramedDeployment(provider, categoryId, layout, { masterLocks })
+    : await withMastersAt(provider, categoryId, known, masterLocks);
+  deployments.set(categoryId, deployment);
   return deployment;
 }
 
@@ -946,12 +952,13 @@ async function readFrameDeployments(
 ): Promise<void> {
   const mastersTaken = new Map<string, Set<string>>();
   const byMaster = new Map(frames.map((frame) => [frame.master, frame]));
-  const deploymentFor = (categoryId: string, layout: StateLayout): Promise<FramedDeploymentSet> =>
-    readDeployment(provider, deployments, categoryId, layout);
+  const deploymentFor = (
+    categoryId: string, layout: StateLayout, masterLocks?: readonly Uint8Array[],
+  ): Promise<FramedDeploymentSet> => readDeployment(provider, deployments, categoryId, layout, masterLocks);
   for (const frame of frames) {
     // A contract that keeps no state variable publishes no layout and mints no record; it is classified against an
     // empty one, so its category still yields the master the frame runs on.
-    const deployment = await deploymentFor(frame.categoryId, recordLayoutOf(frame));
+    const deployment = await deploymentFor(frame.categoryId, recordLayoutOf(frame), [frame.deployed.lockingBytecode]);
     // Each frame runs on a master of its own, so a contract two calls reach takes the next master of its pool
     // rather than the one the frame before it already spends.
     // A category deployed from a per-entry bundle keeps a pool per entry, so the frame takes one at its shard's lock.
@@ -960,15 +967,20 @@ async function readFrameDeployments(
     const master = deployment.masters.find((utxo) => !taken.has(`${utxo.txid}:${utxo.vout}`)
       && (!split || (utxo.lockingBytecode !== undefined
         && bytesEqual(utxo.lockingBytecode, frame.deployed.lockingBytecode))));
-    if (master === undefined) {
+    // A read spends nothing, so the master only states the value its frame's input holds. An implementation's entry
+    // read under its proxy's category has no master at the lock its own program fills, and a provider that lists by
+    // lock has no other master of the category to take that value from, so the frame states a pool coin's. A category
+    // with no validator holds no deployment at all, which stays a refusal.
+    const listsByLock = typeof provider.getUtxosByTokenCategory !== 'function';
+    if (master === undefined && (split || !listsByLock || deployment.validators.length === 0)) {
       throw new FramedReadError(
         `category ${frame.categoryId} holds ${deployment.masters.length} master(s), and the read runs `
         + `${taken.size + 1} frame(s) over ${split ? `the pool of "${frame.entry.name}"` : 'it'}`,
       );
     }
-    taken.add(`${master.txid}:${master.vout}`);
+    if (master !== undefined) taken.add(`${master.txid}:${master.vout}`);
     mastersTaken.set(frame.categoryId, taken);
-    frame.masterSatoshis = master.satoshis;
+    frame.masterSatoshis = master?.satoshis ?? POOL_OUTPUT_SATOSHIS;
     if (frame.master === READ_MASTER) {
       const validator = deployment.validators[0];
       if (validator === undefined) {

@@ -222,9 +222,9 @@ SolidHat selects a named entry from `networks` with `--network`. When it is omit
 | Field | Used by | Meaning |
 | --- | --- | --- |
 | `type` | all | `mock`, `regtest`, `electrum` or `bitcoin-rpc`. Default `mock` (`regtest` for an entry named `regtest`). |
-| `network` | `electrum`, `bitcoin-rpc` | `mainnet`, `testnet3`, `testnet4` or `chipnet`. Inferred when the entry's name is one of these. |
+| `network` | `electrum`, `bitcoin-rpc` | `mainnet`, `testnet3`, `testnet4`, `chipnet` or `regtest`. Inferred when the entry's name is one of these. |
 | `rpc` | `regtest`, `bitcoin-rpc` | `{ url, user, password }`. |
-| `electrum` | `electrum` | `{ host }` for a custom server on its standard port. A custom `port` is refused. |
+| `electrum` | `electrum` | `{ host, port, encrypted, manualConnectionManagement }` for a custom server. `port` defaults to 50004, `encrypted: false` reaches a plain `ws://` server such as a local Fulcrum, and `manualConnectionManagement: true` keeps one socket for the run. A `regtest` network must name its `host`. |
 | `consensus` | `mock` | Overrides of the mock's consensus limits. A `regtest` entry accepts them too, but they change only SolidHat's own checks, not the node. |
 | `policy` | `mock` | `{ enforceDust }`: apply the node's dust and standardness rules on the mock. |
 | `mnemonic` | all | Signing phrase for this network. |

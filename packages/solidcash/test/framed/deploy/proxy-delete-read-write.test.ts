@@ -172,7 +172,9 @@ describe('a proxied delete of a sorted-mapping key', () => {
     expect(deployment.initialize.accepted).toBe(true);
 
     // The value the live node the key names carries, read back through the shipped decoders.
-    const classification = buildProxyArtifact(artifacts.Impl!).stateLayout!;
+    const classification = {
+      ...buildProxyArtifact(artifacts.Impl!).stateLayout!, collections: artifacts.Impl!.stateLayout!.collections,
+    };
     const slot = keyToSlotMulti([encoder.encode(key)]);
     const heldValue = async (): Promise<string | undefined> => {
       const pools = await readFramedDeployment(network, deployment.proxy.categoryId, classification);

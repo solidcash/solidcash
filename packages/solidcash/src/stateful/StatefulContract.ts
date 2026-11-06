@@ -4088,6 +4088,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async _ensureResolved(): Promise<void> {
     if (this._resolved) return;
     const pendingAddress = this._pendingAddress!;
+    // A framed contract's address derives from its category, which proves the category whatever else anyone paid to
+    // the address, a token that imitates an identity record included. A logical address derives from no category.
+    if (isFramedArtifact(this._inner.artifact)) {
+      const { framedCategoryAt } = await import('../framed/deploy/records.js');
+      const proven = await framedCategoryAt(this._inner.provider, pendingAddress);
+      if (proven !== undefined) {
+        this._categoryId = proven;
+        this._inner = this._inner.withCategory(hexToBin(proven));
+        this._resolved = true;
+        return;
+      }
+    }
     try {
       const identity = await resolveLogicalIdentity(this._inner.provider, pendingAddress);
       this._categoryId = identity.categoryId;

@@ -31,6 +31,9 @@ export interface MasterPoolSize {
  */
 export const DEFAULT_MASTER_POOL_SIZE: MasterPoolSize = { masters: 12, validators: 4 };
 
+/** What a deployment mints each master and validator with. */
+export const POOL_OUTPUT_SATOSHIS = 1200n;
+
 /**
  * The pool a deployment funds: the caller's override per count, the default for whichever it leaves unstated.
  *
@@ -58,7 +61,7 @@ export function resolveMasterPoolSize(override: Partial<MasterPoolSize> = {}): M
  * funded and a larger pool is not quietly truncated.
  */
 export function poolGenesisSatoshis(
-  size: MasterPoolSize, outputAmount = 1200n, entryCount = 1,
+  size: MasterPoolSize, outputAmount = POOL_OUTPUT_SATOSHIS, entryCount = 1,
 ): bigint {
   const entries = BigInt(entryCount);
   const facets = BigInt(framedValidator.buildValidatorFacets().length);

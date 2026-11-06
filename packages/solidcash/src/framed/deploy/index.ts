@@ -20,3 +20,4 @@ export * from './child-constants.js';
 export * from './records.js';
 export * from './reload.js';
 export * from './resize.js';
+export * from './side-car-pool.js';

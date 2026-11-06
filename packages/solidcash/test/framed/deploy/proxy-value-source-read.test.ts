@@ -83,7 +83,8 @@ async function heldValue(
   structs: ReturnType<typeof compileStringMulti>[string]['structs'],
   source = SOURCE,
 ): Promise<Record<string, unknown> | undefined> {
-  const layout = buildProxyArtifact(compileStringMulti(source, { composition: 'framed' }).Impl!).stateLayout!;
+  const implementation = compileStringMulti(source, { composition: 'framed' }).Impl!;
+  const layout = { ...buildProxyArtifact(implementation).stateLayout!, collections: implementation.stateLayout!.collections };
   const pools = await readFramedDeployment(network, categoryId, layout);
   const slot = bytesToHex(keyToSlotMulti([key]));
   const node = pools.collectionNodes.find((candidate) => {

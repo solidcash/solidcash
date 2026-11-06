@@ -561,7 +561,9 @@ export default class MockNetworkProvider implements NetworkProvider {
       simulator: true,
       getUtxos: (address) => this.getUtxos(address),
       getUtxosForLockingBytecode: (lockingBytecode) => this.getUtxosForLockingBytecode(lockingBytecode),
-      getUtxosByTokenCategory: (categoryId) => this.getUtxosByTokenCategory(categoryId),
+      ...(this.getUtxosByTokenCategory === undefined ? {} : {
+        getUtxosByTokenCategory: (categoryId: string) => this.getUtxosByTokenCategory(categoryId),
+      }),
       getBlockHeight: () => this.getBlockHeight(),
       getRawTransaction: (txid) => this.getRawTransaction(txid),
       sendRawTransaction: async (txHex) => this.publishOraclePoolTransaction(txHex),

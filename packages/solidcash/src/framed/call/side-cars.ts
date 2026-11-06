@@ -25,6 +25,12 @@ import {
 } from '../composer/index.js';
 import { FramedLoopTurnsError } from './loop-turns.js';
 
+/**
+ * What each side-car holds. The covenant recreates it at this value, with up to three 32-byte results: it has to clear
+ * the dust a 96-byte commitment's output pays, and it stays a side-car's, spent by no one.
+ */
+export const SIDE_CAR_SATOSHIS = 2_000n;
+
 /** Raised when the network holds fewer side-car UTXOs than an entry co-spends. */
 export class FramedSideCarPoolError extends Error {
   public readonly name = 'FramedSideCarPoolError';
@@ -117,8 +123,12 @@ async function livePool(
   taken: ReadonlySet<string> = new Set(),
 ): Promise<readonly Utxo[]> {
   if (count === 0) return [];
+  // The lock is public, so anyone can pay a token to it. A coin whose commitment holds no result is no side-car and
+  // would abort the covenant that splits one off it, and one worth too little could not take the results it recreates
+  // with past the dust limit.
   const mutable = async (): Promise<Utxo[]> => (await provider.getUtxosForLockingBytecode(lock))
-    .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && !taken.has(`${utxo.txid}:${utxo.vout}`));
+    .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && utxo.token.nft.commitment.length >= 64
+      && utxo.satoshis >= SIDE_CAR_SATOSHIS && !taken.has(`${utxo.txid}:${utxo.vout}`));
   let utxos = await mutable();
   const addUtxo = (provider as { addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
   if (utxos.length < count && typeof addUtxo === 'function') {

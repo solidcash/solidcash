@@ -93,7 +93,7 @@ import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import { framedCreate2TemplateOf } from '../deploy/create2-child.js';
 import { lockingBytecodeToSolidityAddressPayload } from '../../utils.js';
 import {
-  chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode,
+  chunkRecordLockingBytecode, readFramedDeployment, stateRecordLockingBytecode, withMastersAt,
   type FramedDeploymentSet,
 } from '../deploy/records.js';
 import {
@@ -2316,13 +2316,17 @@ function recordReachedState(
   ctx.reachedState.set(categoryId, left);
 }
 
-/** The live deployment a category names, read once however many sites reach it. */
+/**
+ * The live deployment a category names, read once however many sites reach it, with the masters at `masterLocks`: the
+ * entries the sites reach, which a provider that lists by lock is asked for as they turn up.
+ */
 async function deploymentOf(
-  ctx: PlanContext, categoryId: string, layout: StateLayout,
+  ctx: PlanContext, categoryId: string, layout: StateLayout, masterLocks: readonly Uint8Array[],
 ): Promise<FramedDeploymentSet> {
   const cached = ctx.deployments.get(categoryId);
-  if (cached !== undefined) return cached;
-  const read = await readFramedDeployment(ctx.provider, categoryId, layout);
+  const read = cached === undefined
+    ? await readFramedDeployment(ctx.provider, categoryId, layout, { masterLocks, validatorProgram: ctx.validatorProgram })
+    : await withMastersAt(ctx.provider, categoryId, cached, masterLocks);
   ctx.deployments.set(categoryId, read);
   return read;
 }
@@ -2997,7 +3001,9 @@ async function placeCalleeMasters(
   const contract = external.artifact.contractName;
   const categoryId = external.categoryId;
   const layout = external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
-  const deployment = await deploymentOf(ctx, categoryId, layout);
+  framedOraclePool(ctx.provider, external.artifact);
+  const deployed = deployMaster(external.artifact, hexToBin(categoryId), ctx.validatorProgram);
+  const deployment = await deploymentOf(ctx, categoryId, layout, [deployed.lockingBytecode]);
   // The masters claimed before this plan, the root's own on a call back into its deployment, are no reach's: the
   // reaches take the pool's other masters, in slot order.
   const calleeSplit = splitOf(ctx, categoryId);
@@ -3030,8 +3036,6 @@ async function placeCalleeMasters(
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
     const path = calleePath(reach.callerPath, reach.site, occurrence);
-    framedOraclePool(ctx.provider, external.artifact);
-    const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
     let masterUtxo = pool[base + position];
     if (calleeSplit !== undefined) {
       const taken = ctx.takenMasters.get(categoryId) ?? new Set<string>();
@@ -3192,8 +3196,12 @@ async function placeProxiedCallee(
     ...proxyLayout,
     ...(implementationLayout.collections === undefined ? {} : { collections: implementationLayout.collections }),
   };
-  const proxyDeployment = await deploymentOf(ctx, external.categoryId, proxyReadLayout);
-  const implementationDeployment = await deploymentOf(ctx, implementationCategoryId, implementationLayout);
+  const proxyDeployment = await deploymentOf(ctx, external.categoryId, proxyReadLayout, [
+    deployMaster(proxyArtifact, hexToBin(external.categoryId), ctx.validatorProgram).lockingBytecode,
+  ]);
+  const implementationDeployment = await deploymentOf(ctx, implementationCategoryId, implementationLayout, [
+    deployMaster(external.artifact, hexToBin(implementationCategoryId), ctx.validatorProgram).lockingBytecode,
+  ]);
   const proxyBase = ctx.masterSlots.get(external.categoryId) ?? 0;
   const implementationBase = ctx.masterSlots.get(implementationCategoryId) ?? 0;
   const needed = resolved.length;

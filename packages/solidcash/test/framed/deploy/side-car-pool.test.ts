@@ -3,9 +3,9 @@ import { binToHex } from '@bitauth/libauth';
 import { SHARED_LIBRARY_SALT, keccakComputeLockingBytecode } from '@solidcash/utils';
 import { HDSigner } from '../../../src/HDSigner.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { FramedSideCarPoolError, entrySideCars } from '../../../src/framed/call/side-cars.js';
+import { FramedSideCarPoolError, SIDE_CAR_SATOSHIS, entrySideCars } from '../../../src/framed/call/side-cars.js';
 import {
-  DEFAULT_KECCAK_SIDE_CARS, FramedSideCarDeployError, SIDE_CAR_SATOSHIS, deployComputeSideCarPool,
+  DEFAULT_KECCAK_SIDE_CARS, FramedSideCarDeployError, deployComputeSideCarPool,
 } from '../../../src/framed/deploy/index.js';
 import { byLockOnly } from '../by-lock-only.js';
 
@@ -56,15 +56,19 @@ describe('the compute side-car pool', () => {
       .toBeInstanceOf(FramedSideCarDeployError);
   });
 
-  it('takes no coin whose commitment holds no result, which anyone can pay to the public lock', async () => {
+  it('takes no coin without a result or the value to carry one, which anyone can pay to the public lock', async () => {
     const { provider, signer } = await funded();
     await deployComputeSideCarPool({ provider, signer, keccak: 1 });
     await provider.addUtxo(binToHex(LOCK), {
       txid: '00'.repeat(32), vout: 9, satoshis: 2_000n,
       token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
     });
+    await provider.addUtxo(binToHex(LOCK), {
+      txid: '00'.repeat(32), vout: 10, satoshis: 800n,
+      token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: 'ff'.repeat(32) } },
+    });
     const coins = await provider.getUtxosForLockingBytecode(LOCK);
-    expect(coins).toHaveLength(2);
+    expect(coins).toHaveLength(3);
     // No provider of this view mints a stand-in, so what the call takes is what the lock holds.
     const lockOnly = { network: provider.network, getUtxosForLockingBytecode: async () => coins } as never;
     const { utxos } = await entrySideCars({

@@ -16,6 +16,7 @@ import type { Output, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
 import { TransactionBuilder } from '../../TransactionBuilder.js';
+import { SIDE_CAR_SATOSHIS } from '../call/side-cars.js';
 import { signerFundingCoins } from './own-coin.js';
 
 /** Raised when a side-car pool cannot be deployed. */
@@ -29,12 +30,6 @@ export class FramedSideCarDeployError extends Error {
 
 /** A side-car's covenant splits a result off its commitment, so a new one holds a zero result. */
 const EMPTY_RESULT = '00'.repeat(32);
-
-/**
- * What each side-car holds. The covenant recreates it at this value, with up to three 32-byte results: it has to clear
- * the dust a 96-byte commitment's output pays, and it stays a side-car's, spent by no one.
- */
-export const SIDE_CAR_SATOSHIS = 2_000n;
 
 /** A pool of this many serves the entries that hash most, and that many transactions in one block's time. */
 export const DEFAULT_KECCAK_SIDE_CARS = 8;

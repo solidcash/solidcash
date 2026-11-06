@@ -436,6 +436,23 @@ class ReferenceRun {
       seen.add(keyOf(settled.category));
       this.settleOne(settled.category, settled.stateInputs);
     }
+    this.checkOutputOwners();
+  }
+
+  /** A record's output, an event or a send belongs to one contract: two contracts' frames cannot both name it. */
+  private checkOutputOwners(): void {
+    const owners = new Map<number, string>();
+    for (const settled of this.transcript!.settles) {
+      const owner = keyOf(settled.category);
+      for (const master of this.framesFor(settled.category)) {
+        const block = this.master(master);
+        const records = block.segments.flat().map((entry) => entry.out).filter((output) => output !== INDEX_NONE);
+        for (const output of [...records, ...block.events, ...block.sends]) {
+          if ((owners.get(output) ?? owner) !== owner) this.reject('V7', 'AN_OUTPUT_BELONGS_TO_TWO_CONTRACTS', output);
+          owners.set(output, owner);
+        }
+      }
+    }
   }
 
   private settleOne(category: Uint8Array, listedStateInputs: readonly number[]): void {

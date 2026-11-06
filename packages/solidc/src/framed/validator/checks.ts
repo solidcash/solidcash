@@ -483,6 +483,27 @@ export function checkV7(state: DerivationState): void {
     seenCategories.add(key);
     checkSettlement(state, settled);
   }
+  checkOutputOwners(state);
+}
+
+/**
+ * An output a frame names is one contract's. A record's output, an event or a send that two settled contracts' frames
+ * both named would count towards each, so the program marks an output for the contract that names it first and refuses
+ * a second. The per-contract rules above cannot see this.
+ */
+function checkOutputOwners(state: DerivationState): void {
+  const owners = new Map<number, string>();
+  for (const settled of transcriptOf(state).settles) {
+    const owner = categoryKey(settled.category);
+    for (const master of framesOn(state, settled.category)) {
+      const block = blockOf(state, master);
+      const records = block.segments.flat().map((entry) => entry.out).filter((output) => output !== INDEX_NONE);
+      for (const output of [...records, ...block.events, ...block.sends]) {
+        if ((owners.get(output) ?? owner) !== owner) check('V7', 'V7_OUTPUT_OF_TWO_CONTRACTS', output);
+        owners.set(output, owner);
+      }
+    }
+  }
 }
 
 function checkSettlement(state: DerivationState, settled: SettledContract): void {

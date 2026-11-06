@@ -1042,6 +1042,22 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(verdict.objection).toMatch(/control stack/);
   });
 
+  test('refuses an output that two contracts\' frames both name', () => {
+    // Either contract's own rules pass: each lists the output once. The program marks an output for the contract that
+    // names it first, so the second contract's frame stops there, and both models say so.
+    const composition = laidOut(widePlan(2, 2));
+    const index = composition.validatorIndex;
+    const output = composition.outputs.length - 1;
+    expect(accepted(materialise(composition), index)).toBe(true);
+    composition.blocks.get('W0.root')!.sends = [output];
+    expect(accepted(materialise(composition), index)).toBe(true);
+    composition.blocks.get('W1.root')!.sends = [output];
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V7_OUTPUT_OF_TWO_CONTRACTS');
+    expect(decideReference(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: index }).accepted).toBe(false);
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a read-only frame that pays an output', () => {
     const composition = laidOut(singleContractPlan());
     const index = composition.validatorIndex;

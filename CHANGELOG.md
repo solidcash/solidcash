@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.50.0
+
+SolidCash's version numbers now depart from CashScript's: 0.50.0 follows 0.14.0-beta.1 and tracks no CashScript release.
+Source files need `pragma solidcash ^0.50.0`, and all six packages move together.
+
+- The framed validator is 4,906 bytes. Every framed address differs from an earlier build's, so deploy a new category.
+- A facet recreates itself, so a stranger cannot sweep the coins every composition of a build shares.
+- A record is named by its input if it is spent, and by its output, or kept at its index, if it is created.
+- An internal helper must be of the caller's context category.
+- A call takes a deployment's pools in an order of its own, and a frame leaves unspent the data records it only counts.
+- A slow server or a node's refusal ends a call's plan search with that error, rather than another plan's refusal.
+
 ## 0.14.0-beta.1
 
 Release-candidate notes: see [`docs/release/0.14.0/RELEASE_NOTES_0.14.0.md`](docs/release/0.14.0/RELEASE_NOTES_0.14.0.md).

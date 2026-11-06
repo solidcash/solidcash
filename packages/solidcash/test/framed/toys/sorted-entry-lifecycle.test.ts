@@ -54,7 +54,7 @@ const USER_INDEX = 9;
 const ZERO_SLOT = new Uint8Array(32);
 const VALUE_TAIL_BYTES = 64;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ILedger {'
   + '   function insert(int key, int value);'
   + '   function update(int key, int value);'

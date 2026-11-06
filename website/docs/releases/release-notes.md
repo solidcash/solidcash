@@ -2,6 +2,12 @@
 title: Release Notes
 ---
 
+## v0.50.0
+
+SolidCash's version numbers now depart from CashScript's: 0.50.0 follows 0.14.0-beta.1 and tracks no CashScript release.
+The framed validator changed, so every framed address differs from an earlier build's. Please refer to the
+[migration notes](/docs/releases/migration-notes#v014-to-v050).
+
 ## v0.14.0-beta.1
 
 SolidCash 0.14.0-beta.1 adds a Solidity-syntax language and workflow layer for Bitcoin Cash contracts. The release covers

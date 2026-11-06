@@ -17,7 +17,15 @@ export interface NetworkConfig {
   type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc' | 'mem-cash';
   /** BCH network used by live providers. Inferred from the config key when omitted. */
   network?: 'mainnet' | 'testnet3' | 'testnet4' | 'chipnet' | 'regtest';
-  electrum?: { host: string; port?: number };
+  electrum?: {
+    host: string;
+    /** The server's WebSocket port; the protocol's 50004 by default. */
+    port?: number;
+    /** False for a plain `ws://` server, which a local Fulcrum serves; encrypted by default. */
+    encrypted?: boolean;
+    /** Keeps one socket for the run, which the caller opens with the provider's `connect()`. */
+    manualConnectionManagement?: boolean;
+  };
   rpc?: { url: string; user?: string; password?: string };
   /** Client settings for `type: "mem-cash"`. */
   memCash?: {

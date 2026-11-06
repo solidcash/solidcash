@@ -2406,9 +2406,14 @@ about 24 masters. So a validator may span several inputs, and since `dc4c1bdc6` 
 **Binding, in the head.**
 - For each `k`, the input at `head + k` is locked by `P2SH32(F_k)`. `V_TEMPLATE` carries each `F_k`'s hash, so
   `addrV` commits to every facet's code (D9), and no facet can be replaced without changing every address.
-- The output at `head + k` recreates the facet in place with at least its value, as V1 does for the head, so a
-  facet pool cannot run out inside a transaction (section 21).
-- Facets do not carry the head's hash, so the two hashes are not circular.
+- Facets do not carry the head's hash, so the two hashes are not circular. That also means a facet cannot tell a real
+  head from any other input below it.
+
+**Recreation, in each facet.** The output at the facet's own index keeps its lock, keeps at least its value, and takes
+no token it did not hold, as V1 does for the head, so a facet pool cannot run out inside a transaction (section 21). The
+rule is the facet's and not the head's, because the facets' coins are shared and tokenless: left to the head, a
+transaction with a stranger's script in the head's place spends one and keeps its value, and every composition then
+fails for want of a facet.
 
 **Census checkpoint.**
 - The census weighs what the walk gathered: the settle list `listed`, the record table, the output

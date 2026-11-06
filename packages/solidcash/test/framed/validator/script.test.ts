@@ -38,6 +38,7 @@ import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
+  validatorFacetUnlockingBytecode,
   type FramedTransaction as ModelledTransaction,
   type TokenShape,
 } from '../../../../solidc/src/framed/validator/index.js';
@@ -1729,5 +1730,61 @@ describe('how a transaction names its records', () => {
       expect(decided.program).toBe(false);
       expect(decided.derivation).toBe('V7_CHAIN_START_MISMATCH');
     }
+  });
+});
+
+describe('a facet recreates itself', () => {
+  /**
+   * A stranger's spend of the facet at `head + k`, with an empty transcript in the head's place. A facet cannot tell a
+   * head from any other input, so what protects its coin is that it recreates it, whatever stands below it. `outputs`
+   * is what the transaction leaves at the facet's own index.
+   */
+  function strangerSpend(k: number, recreation: VmSourceOutput | undefined): { accepted: boolean; objection?: string } {
+    const code = FACETS[k - 1]!;
+    const lock = encodeLockingBytecodeP2sh32(hash256(code));
+    const transcript = Uint8Array.from([0x50, 0x43, 0x37, 0x02, 0, 0, 0, 0, 0]);
+    const redeem = new Uint8Array([0x28, ...new Uint8Array(40).fill(0xcd), 0x6d, 0x51]);
+    const stranger = encodeLockingBytecodeP2sh32(hash256(redeem));
+    const coin = (lockingBytecode: Uint8Array): VmSourceOutput => ({ lockingBytecode, valueSatoshis: 10_000n });
+    const fillers = k - 1;
+    const sourceOutputs = [coin(stranger), ...Array.from({ length: fillers }, () => coin(stranger)), coin(lock)];
+    const headUnlocking = Uint8Array.from([...encodeDataPush(transcript), ...encodeDataPush(redeem)]);
+    const inputCount = sourceOutputs.length;
+    const outputCount = recreation === undefined ? 1 : inputCount;
+    const checkpoint = new Uint8Array(inputCount + Math.max(inputCount, outputCount) * 22 + outputCount);
+    const inputs = sourceOutputs.map((_source, at) => ({
+      outpointIndex: 0,
+      outpointTransactionHash: seedBytes(`facet-spend:${at}`, 32),
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: at === 0 ? headUnlocking
+        : at === k ? validatorFacetUnlockingBytecode(k, code, 0, checkpoint) : headUnlocking,
+    }));
+    const paid = { lockingBytecode: stranger, valueSatoshis: 546n };
+    const outputs = recreation === undefined ? [paid]
+      : [...Array.from({ length: k }, () => paid), recreation];
+    const vm = relaxedMachine();
+    const state = vm.evaluate({ inputIndex: k, sourceOutputs, transaction: { version: 2, locktime: 0, inputs, outputs } });
+    return vm.stateSuccess(state) === true ? { accepted: true }
+      : { accepted: false, objection: String((state as { error?: unknown }).error) };
+  }
+
+  const LOCK_OF = (k: number): Uint8Array => encodeLockingBytecodeP2sh32(hash256(FACETS[k - 1]!));
+
+  test.each([[1], [2]])('refuses a spend of facet %i that does not recreate it', (k) => {
+    // The control: the same spend, recreating the coin, passes this rule, so a refusal below is the rule.
+    expect(strangerSpend(k, { lockingBytecode: LOCK_OF(k), valueSatoshis: 10_000n }).accepted).toBe(true);
+
+    // Kept by the spender: the coin's value leaves with no output at the facet's index.
+    expect(strangerSpend(k, undefined).accepted).toBe(false);
+    // Recreated at another lock.
+    expect(strangerSpend(k, { lockingBytecode: userLockOf('facet-sweeper'), valueSatoshis: 10_000n }).accepted).toBe(false);
+    // Recreated for less.
+    expect(strangerSpend(k, { lockingBytecode: LOCK_OF(k), valueSatoshis: 9_999n }).accepted).toBe(false);
+    // Recreated holding a token, which takes it out of the tokenless pool a composition draws from.
+    expect(strangerSpend(k, {
+      lockingBytecode: LOCK_OF(k),
+      valueSatoshis: 10_000n,
+      token: { category: categoryOf('facet-token'), amount: 1n },
+    }).accepted).toBe(false);
   });
 });

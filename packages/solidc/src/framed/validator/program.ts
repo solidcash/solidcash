@@ -202,13 +202,13 @@ const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
  *
  * Facet `k` is the input at `head + k`, locked by `P2SH32(F_k)` and carrying no token. It reads `M` from the first
  * push of the unlocking bytecode of the input `k` places below its own, which is the head: a facet reads the
- * transcript once, from the head, so no check reads a master's input twice. A facet decides nothing about itself —
- * the head holds it in place.
+ * transcript once, from the head, so no check reads a master's input twice. A facet's only rule about itself is that
+ * it recreates itself; the head holds it in place.
  *
- * The head carries every facet's lock as a constant and requires the input and the output at `head + k` to be that
- * lock, the output worth at least the input. A position holds one lock and a facet's lock is not a head's, so a
- * facet cannot be left out, moved, replaced or shared by two heads. Because those constants are part of the head,
- * the address every master presents commits to every facet's code.
+ * The head carries every facet's lock as a constant and requires the input at `head + k` to be that lock, and each
+ * facet recreates itself in place. A position holds one lock and a facet's lock is not a head's, so a facet cannot be
+ * left out, moved, replaced or shared by two heads. Because those constants are part of the head, the address every
+ * master presents commits to every facet's code.
  *
  * The machine charges an instruction it steps over whether or not it executes it, so each part keeps its loops'
  * bodies short and moves what a pass rarely runs into functions ({@link NamedStack.call}), and each part reads every
@@ -225,7 +225,7 @@ const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
  * 5. the settlement on `[M]` ({@link emitSettlement}): one walk over the call tree in the order V6 derives, which
  *    holds each master's block to the codec (V2) and to this validator (V3) and gathers what V7 weighs, then the
  *    census checkpoint: the census facet's leading push is what the walk gathered;
- * 6. the facets: each input at `head + k` is the facet's lock and recreates it.
+ * 6. the facets: each input at `head + k` is the facet's lock, and each facet recreates itself.
  *
  * The first facet's sequence, on the same `[M]`:
  *
@@ -411,6 +411,13 @@ function emitFacetEntry(e: Emitter, k: number): void {
   const O = Opcodes;
   // The head holds the census facet to its first push, so nothing else may stand beside it and the padding.
   if (k === CENSUS_FACET) e.op(O.OP_DEPTH).count(2).op(O.OP_NUMEQUALVERIFY);
+  // A facet recreates itself, in place: the same lock, at least its value, and no token it did not hold. Nothing a facet
+  // can read proves the input below it is a head, since it cannot carry the head's hash, so this rule has to be its own:
+  // left to the head, a stranger's script in the head's place kept the coin, and the coins are what every composition
+  // spends.
+  e.op(O.OP_INPUTINDEX, O.OP_UTXOBYTECODE, O.OP_INPUTINDEX, O.OP_OUTPUTBYTECODE, O.OP_EQUALVERIFY);
+  e.op(O.OP_INPUTINDEX, O.OP_OUTPUTVALUE, O.OP_INPUTINDEX, O.OP_UTXOVALUE, O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+  e.op(O.OP_INPUTINDEX, O.OP_OUTPUTTOKENCATEGORY, O.OP_INPUTINDEX, O.OP_UTXOTOKENCATEGORY, O.OP_EQUALVERIFY);
   // The facet's own padding, the push its unlocking bytecode carries just before its code.
   e.op(O.OP_DROP);
   e.op(O.OP_INPUTINDEX).count(k).op(O.OP_SUB);
@@ -455,24 +462,13 @@ function emitSplitDataPush(e: Emitter): void {
   e.op(O.OP_ENDIF, O.OP_ENDIF);
 }
 
-/** Entry `[M]`, exit `[M]`. Every facet input is at `head + k`, locked by its own code, and recreated in place. */
+/** Entry `[M]`, exit `[M]`. Every facet input is at `head + k`, locked by its own code; each facet recreates itself. */
 function emitFacetBinding(e: Emitter, facets: readonly Uint8Array[]): void {
   const O = Opcodes;
   facets.forEach((facet, at) => {
     const k = at + 1;
-    const lock = encodeLockingBytecodeP2sh32(hash256(facet));
-    // `[M, i]`, where `i` is the input this facet must sit at.
-    e.op(O.OP_INPUTINDEX).count(k).op(O.OP_ADD);
-    e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
-    e.op(O.OP_DUP, O.OP_UTXOBYTECODE);
-    e.push(lock).op(O.OP_EQUALVERIFY);
-    // The facet recreates itself, worth at least what it came with, so a pool of facets cannot run out inside a
-    // transaction.
-    e.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
-    e.op(O.OP_DUP, O.OP_OUTPUTBYTECODE);
-    e.push(lock).op(O.OP_EQUALVERIFY);
-    e.op(O.OP_DUP, O.OP_UTXOVALUE, O.OP_OVER, O.OP_OUTPUTVALUE, O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
-    e.op(O.OP_DROP);
+    e.op(O.OP_INPUTINDEX).count(k).op(O.OP_ADD, O.OP_UTXOBYTECODE);
+    e.push(encodeLockingBytecodeP2sh32(hash256(facet))).op(O.OP_EQUALVERIFY);
   });
 }
 

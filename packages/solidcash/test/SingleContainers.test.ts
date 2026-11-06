@@ -7,8 +7,12 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
 import MockNetworkProvider from '../src/network/MockNetworkProvider.js';
 import { StatefulContract } from '../src/stateful/index.js';
+import { createSatoshiContainerUnlocker, createTokenContainerUnlocker } from '../src/stateful/covenant-helpers.js';
 import { TransactionBuilder } from '../src/index.js';
 import { addressToLockScript } from '../src/utils.js';
+import {
+  buildSatoshiContainerCovenantScript, buildTokenContainerCovenantScript, fillerLockingBytecode, FILLER_SATOSHIS, Op,
+} from '@solidcash/utils';
 
 const PAY = 100_000n;
 const FEE = 30_000n;
@@ -45,6 +49,7 @@ contract Vault(bytes32 asset) {
     this.tokens[asset].transfer(to, TOKENS);
     this.payMinerFee(FEE);
   }
+  function bump() public { this.n = this.n + 1; }
 }`;
 
 const same = (left: Uint8Array, right: Uint8Array): boolean => binToHex(left) === binToHex(right);
@@ -341,6 +346,76 @@ describe('the token container of pragma containers single', () => {
     await attacked.pool.call.take(attacked.bob.getLockingBytecode()).send();
     await expect(attacked.pool.call.take(attacked.bob.getLockingBytecode()).send()).rejects.toThrow();
     expect(await attacked.coins()).toEqual([1n, TOKENS].sort((a, b) => Number(a - b)));
+  });
+
+  it('refuses to take a coin\'s satoshis in a call that does not name it, which only the pragma stops', async () => {
+    // A call that names the coin pins its value. One that does not keeps its lock, category and amount, nothing more.
+    const attempt = async ({ provider, pool, alice, address }: Awaited<ReturnType<typeof tokenPool>>) => {
+      const [coin] = (await provider.getUtxos(address)).filter((candidate) => candidate.token);
+      const funding = (await alice.getUtxos()).filter((candidate) => !candidate.token)
+        .sort((left, right) => Number(right.satoshis - left.satoshis))[0]!;
+      const builder: any = await pool.call.bump().build();
+      builder.inputs.push(
+        { ...coin, unlocker: createTokenContainerUnlocker(pool.inner, 0, pool.categoryId, ASSET) },
+        { ...funding, unlocker: alice.unlockP2PKH() },
+      );
+      builder.outputs.push(
+        { to: address, amount: coin!.satoshis - 200n, token: coin!.token },
+        { to: alice.getAddress(), amount: funding.satoshis - 20_000n },
+      );
+      return builder.send();
+    };
+    const control = await tokenPool(1, WITHOUT_PRAGMA);
+    await attempt(control);
+    expect((await control.provider.getUtxos(control.address)).find((coin) => coin.token)?.satoshis).toBe(SEED - 200n);
+    const attacked = await tokenPool(1);
+    await expect(attempt(attacked)).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
+    expect((await attacked.provider.getUtxos(attacked.address)).find((coin) => coin.token)?.satoshis).toBe(SEED);
+  });
+
+  it('lets a coin\'s satoshis grow', async () => {
+    const { provider, pool, bob, lock } = await tokenPool(1);
+    const verdict = await mutated(provider, () => pool.call.take(bob.getLockingBytecode()).send(), (transaction: any) => {
+      transaction.outputs.find((output: any) => same(output.lockingBytecode, lock)).valueSatoshis += 100n;
+    });
+    expect(verdict).toBe('accepted');
+  });
+
+  it('refuses an NFT a script can see hung on a coin in a call that does not name it', async () => {
+    const attempt = async ({ provider, pool, alice, address, tokenCoin }: Awaited<ReturnType<typeof tokenPool>>, nft: object) => {
+      const held = (await provider.getUtxos(address)).find((coin) => coin.token)!;
+      const bearer = { ...(await tokenCoin(0n)), txid: 'be'.repeat(32), token: { category: ASSET, amount: 0n, nft } };
+      await provider.seedUtxo(alice.getAddress(), bearer as never);
+      const funding = (await alice.getUtxos()).filter((candidate) => !candidate.token)
+        .sort((left, right) => Number(right.satoshis - left.satoshis))[0]!;
+      const builder: any = await pool.call.bump().build();
+      builder.inputs.push(
+        { ...held, unlocker: createTokenContainerUnlocker(pool.inner, 0, pool.categoryId, ASSET) },
+        { ...bearer, unlocker: alice.unlockP2PKH() },
+        { ...funding, unlocker: alice.unlockP2PKH() },
+      );
+      builder.outputs.push(
+        { to: address, amount: held.satoshis, token: { ...held.token, nft } },
+        { to: alice.getAddress(), amount: funding.satoshis - 20_000n },
+      );
+      return builder.send();
+    };
+    // The same transaction with the one NFT no script can see goes through, so the rule is what refuses the others.
+    await attempt(await tokenPool(1), { capability: 'none', commitment: '' });
+    for (const nft of [{ capability: 'none', commitment: 'ab' }, { capability: 'mutable', commitment: '' }, { capability: 'minting', commitment: '' }]) {
+      await expect(attempt(await tokenPool(1), nft)).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
+    }
+  });
+
+  it('changes no other lock: only a token coin under the pragma reads its own value', () => {
+    const category = hexToBin(ASSET);
+    const master = new Uint8Array(35).fill(1);
+    const valueReads = (script: readonly unknown[]): number => script.filter((item) => item === Op.OP_UTXOVALUE).length;
+    const token = (keepsTokenless: boolean) => buildTokenContainerCovenantScript(category, category, master, { keepsTokenless });
+    const satoshi = (keepsTokenless: boolean) => buildSatoshiContainerCovenantScript(category, master, { keepsTokenless });
+    expect(valueReads(token(true))).toBe(1);
+    expect(valueReads(token(false))).toBe(0);
+    expect(valueReads(satoshi(true))).toBe(valueReads(satoshi(false)));
   });
 
   it('withdraws past coins paid to the lock from outside', async () => {

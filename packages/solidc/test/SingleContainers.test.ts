@@ -47,6 +47,18 @@ describe('pragma containers single', () => {
     expect(artifact.abi.map((fn) => fn.name)).not.toContain('__message_bus1');
   });
 
+  it('cannot send an NFT from a container, whose one coin stays as it is', () => {
+    const source = `pragma solidcash ^0.14.0;
+pragma containers single;
+contract C(bytes32 asset) {
+  uint32 n;
+  constructor() { this.n = 0; }
+  function f(address to) public { this.n = 1; this.tokens[asset].transferNft(to, hex"aa", 1); }
+}`;
+    expect(() => compileString(source)).toThrow(/cannot send an NFT from a container in 'f'/);
+    expect(() => compileString(source.replace('pragma containers single;\n', ''))).not.toThrow();
+  });
+
   it('is refused through an upgrade, which moves the containers', () => {
     expect(() => compileString(contract('function f(address to) public upgrade { this.n = 1; }')))
       .toThrow(/pragma containers single cannot keep its containers through 'f'/);

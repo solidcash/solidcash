@@ -53995,6 +53995,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitSingleTokenContainers(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // The one coin stays exactly as it is, so no NFT can leave it.
+    if (this.pendingTokenContainerTransfers.some((transfer) => transfer.method === 'transferNft')) {
+      throw new SingleContainersError(node, `cannot send an NFT from a container in '${node.name}'`);
+    }
     for (let i = 0; i < this.tokenContainerSlots.length; i++) {
       this.emitBlockSlotIndex('tokenContainer', i, loc);
       this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_VERIFY], loc);

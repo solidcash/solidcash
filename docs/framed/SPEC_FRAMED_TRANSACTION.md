@@ -2285,7 +2285,12 @@ since each needs a master.
   - On chain there is nothing to check: a transaction cannot spend masters that do not exist.
   - The margin is small: `arbitrate` uses 9 of Unicrow's 12. A dedicated test fills a pool exactly, then asks for
     one more (plan E12).
-- **Contention.** The tests run sequentially, so pools only need the per-transaction maxima.
+- **Contention.** The tests run sequentially, so pools only need the per-transaction maxima. Independent callers
+  are not sequential: each call takes the masters, the validator, the facets and the compute side-cars in a random
+  order of its own, the same one for all of its plans (`PoolOrder` in `solidcash/src/framed/deploy/pool-order.ts`).
+  Two calls then usually spend different UTXOs of a pool, and the chance that they meet is about one in the pool's
+  size. This is no lease, and a record two frames must both spend stays one UTXO. A facet's pool is every UTXO at its
+  lock, so it grows with each deployment, and anyone can widen it by paying that lock.
 - **Scale.** The largest transaction is `arbitrate`: about 24 masters, their state UTXOs, one validator and the
   funder.
 

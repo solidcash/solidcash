@@ -313,6 +313,9 @@ export default class MockNetworkProvider implements NetworkProvider {
   public policy: NetworkPolicy;
   /** Selects the SDK's fast VM paths at any configured limits; each enforces `consensusLimits`. */
   public readonly simulator = true;
+
+  /** Pools stay in listed order on this chain, so a test's outpoints repeat. A test of the order sets its own source. */
+  public poolRandom: () => number = () => 0;
   public readonly statefulSimulation?: 'legacy-mistswap-v1';
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.

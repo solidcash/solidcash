@@ -66,6 +66,7 @@ import {
   type TransactionLayout,
 } from '../composer/index.js';
 import { eventFundedAtLeastDust } from '../composer/dust.js';
+import type { PoolOrder } from '../deploy/pool-order.js';
 import {
   entryRecordReadUnlock, eventChunkLockingBytecode, eventCloseOf, eventSentinel, readComputedDeclaration,
   stateRecordUnlockingBytecode, type FramedDeploymentSet,
@@ -271,6 +272,8 @@ export interface CalleePlanOptions {
   readonly split?: FunctionSplitBundle;
   /** Outpoints already claimed, keyed by category, so a callee does not spend the root's master. */
   readonly takenMasters?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The order the call takes pools in. */
+  readonly poolOrder?: PoolOrder;
   /** How many sends each callee frame lists, by master, where a run showed it made fewer than it may. */
   readonly calleeListedSends?: ReadonlyMap<string, number>;
 }
@@ -564,6 +567,7 @@ export async function planEntryCallees(options: CalleePlanOptions): Promise<Plan
       ...(options.noteUndecidedCall === undefined ? {} : { noteUndecidedCall: options.noteUndecidedCall }),
       ...(options.split === undefined ? {} : { split: options.split, splitCategoryId: options.categoryId }),
       ...(options.takenMasters === undefined ? {} : { takenMasters: options.takenMasters }),
+      ...(options.poolOrder === undefined ? {} : { poolOrder: options.poolOrder }),
       // A callee's send to a contract is planned as the call into that contract's value entry it makes, a call back
       // to the entry's own address as a further frame of the entry's deployment, and a callee's site the planner
       // refuses as a stop the frame meets there.

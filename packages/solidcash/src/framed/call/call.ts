@@ -117,6 +117,9 @@ import {
   eventCloseOf,
   eventLockingBytecode,
   eventSentinel,
+  facetPool,
+  inPoolOrder,
+  poolOrderFor,
   readComputedDeclaration,
   readFramedDeployment,
   readSatoshiContainers,
@@ -126,6 +129,7 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
   type FramedDeploymentSet,
+  type PoolOrder,
   resolveMasterPoolSize,
   framedCreatedChildOf,
 } from '../deploy/index.js';
@@ -252,6 +256,8 @@ export interface FramedCallOptions {
    * again with other assumptions when the machine refuses a plan made from them (`callFramedEntry`).
    */
   readonly assumedActivations?: ReadonlyMap<number, boolean>;
+  /** Internal: the order this call takes pools in, one for all of its plans (`callFramedEntry` starts it). */
+  readonly poolOrder?: PoolOrder;
   /** Internal: the same for each callee frame, by master. */
   readonly calleeAssumedActivations?: ReadonlyMap<string, ReadonlyMap<number, boolean>>;
   /**
@@ -1075,7 +1081,10 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
 export async function callFramedEntry(callOptions: FramedCallOptions): Promise<FramedCallResult> {
   // A category minted from a per-entry bundle runs the entry's own shard, whichever handle names it.
   const registeredSplit = callOptions.split ?? functionSplitFor(callOptions.provider, callOptions.categoryId);
-  const options = registeredSplit === undefined ? callOptions : { ...callOptions, split: registeredSplit };
+  const options = {
+    ...callOptions, ...(registeredSplit === undefined ? {} : { split: registeredSplit }),
+    poolOrder: callOptions.poolOrder ?? poolOrderFor(callOptions.provider),
+  };
   requireFramedFunderSighash(options.funder);
   // The caller's coin pays the fee, so a call that may broadcast refuses an identity output or reserved coin there
   // before it is planned (docs/bcmr/DESIGN.md 4.4). A coin whose transaction is not served, as a simulation's
@@ -1364,10 +1373,12 @@ async function callInShape(
   const deployed = deployMaster(artifact, category, validatorProgram);
   const structs = structDefinitionsOf(artifact);
 
-  // The deployment's live pools and records, classified by category and ordered by data-NFT index.
-  const deployment = await readFramedDeployment(provider, categoryId, stateLayout, {
+  // The deployment's live pools and records, classified by category and ordered by data-NFT index, the pools in the
+  // order this call takes them.
+  const poolOrder = options.poolOrder ?? poolOrderFor(provider);
+  const deployment = inPoolOrder(await readFramedDeployment(provider, categoryId, stateLayout, {
     masterLocks: [deployed.lockingBytecode], validatorProgram,
-  });
+  }), poolOrder);
   let master = deployment.masters[0];
   if (splitShard !== undefined) {
     try {
@@ -1383,7 +1394,9 @@ async function callInShape(
   if (master === undefined) {
     throw new FramedCallError(`category ${categoryId} holds no master, which a root frame runs on`);
   }
-  const validator = deployment.validators[0];
+  // A pool takes its validators in any order, so a UTXO that only reads as one, at another lock, must not be drawn.
+  const validator = deployment.validators.find((utxo) => utxo.lockingBytecode === undefined
+    || bytesEqual(utxo.lockingBytecode, deployed.address));
   if (validator === undefined) {
     throw new FramedCallError(`category ${categoryId} holds no validator, which a root frame needs to be admitted`);
   }
@@ -1483,6 +1496,7 @@ async function callInShape(
         ...(options.split === undefined ? {} : { split: options.split }),
         // The root's own master is the root's: a call back into its deployment takes another of the pool.
         takenMasters: new Map([[categoryId, new Set([`${master.txid}:${master.vout}`])]]),
+        poolOrder,
         ...(shape.calleeListedSends === undefined ? {} : { calleeListedSends: shape.calleeListedSends }),
       });
     } catch (error) {
@@ -1763,6 +1777,7 @@ async function callInShape(
     ...(loopTurns.hashes === undefined ? {} : { hashes: loopTurns.hashes }),
     // The callees' frames spend side-cars of the same pools, so the entry's are taken past theirs.
     taken: new Set([...(calleePlan?.utxos.values() ?? [])].map((utxo) => `${utxo.txid}:${utxo.vout}`)),
+    poolOrder,
     ...(prior.keccakJobs === undefined ? {} : { jobs: prior.keccakJobs }),
   });
 
@@ -1811,7 +1826,7 @@ async function callInShape(
       // The send runs its body on the recipient's master, or on the shard of it a per-entry bundle publishes.
       const recipientSplit = functionSplitFor(provider, external.categoryId);
       const recipientShard = recipientSplit?.shards.find((shard) => shard.function === body.name);
-      const set = await readFramedDeployment(provider, external.categoryId, layout, {
+      const set = inPoolOrder(await readFramedDeployment(provider, external.categoryId, layout, {
         masterLocks: [
           deployMaster(external.artifact, recipientCategory, validatorProgram).lockingBytecode,
           ...(recipientShard === undefined ? [] : [
@@ -1819,7 +1834,7 @@ async function callInShape(
           ]),
         ],
         validatorProgram,
-      });
+      }), poolOrder);
       // The frames the entry's calls run on the same contract: its masters are theirs to run, so the payment takes
       // one they leave, and its records are theirs.
       const shared = calleePlan?.callees.filter((callee) => callee.categoryId === external.categoryId) ?? [];
@@ -3905,6 +3920,7 @@ async function callInShape(
     program,
     draft,
     liveUtxos,
+    poolOrder,
     callerIndex: placedInputs.get(CALLER_ID)!,
     value: options.value ?? 0n,
     fillerCoins: fillerCoins.map((utxo, index) => ({ utxo, index: placedInputs.get(fillerCoinInputId(index))! })),
@@ -4110,6 +4126,8 @@ interface BroadcastCallOptions {
   readonly draft: CompositionDraft;
   /** The live UTXO each participant sits on, read back by category. */
   readonly liveUtxos: ReadonlyMap<string, Utxo>;
+  /** The order the call takes pools in, which picks the UTXO of each facet. */
+  readonly poolOrder: PoolOrder;
   /** The caller's coin's index among the user inputs. */
   readonly callerIndex: number;
   /** The value the call carries into the root's containers, which the caller's coins pay. */
@@ -4168,7 +4186,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     }
     // A facet holds no token and pins no category, so any live UTXO at its lock serves the input.
     const facetUtxos = placed.kind === 'facet'
-      ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
+      ? facetPool(await provider.getUtxosForLockingBytecode(source.lockingBytecode), options.poolOrder)
       : [];
     const real = options.liveUtxos.get(placed.id)
       ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)

@@ -8,6 +8,7 @@ export * from './declaration.js';
 export * from './material.js';
 export * from './pool.js';
 export * from './entry-pool.js';
+export * from './pool-order.js';
 export * from './split-registry.js';
 export * from './create-lookahead.js';
 export * from './create-lookahead-session.js';

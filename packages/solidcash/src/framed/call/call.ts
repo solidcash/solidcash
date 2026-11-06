@@ -1363,7 +1363,9 @@ async function callInShape(
   const structs = structDefinitionsOf(artifact);
 
   // The deployment's live pools and records, classified by category and ordered by data-NFT index.
-  const deployment = await readFramedDeployment(provider, categoryId, stateLayout);
+  const deployment = await readFramedDeployment(provider, categoryId, stateLayout, {
+    masterLocks: [deployed.lockingBytecode], validatorProgram,
+  });
   let master = deployment.masters[0];
   if (splitShard !== undefined) {
     try {

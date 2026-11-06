@@ -41,11 +41,14 @@ import { decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList
 import { StateReader } from '../../stateful/StateReader.js';
 import { collectionKeyEncoding } from '../composer/mapping-plan.js';
 import {
+  categoryCoinsAtLocks,
   chunkRecordLockingBytecode,
   classifyFramedDeployment,
-  entryRecordLockingBytecode,
+  framedCollectionLocks,
+  framedRecordLocks,
+  framedStateLocks,
+  framedValueChunks,
   readSatoshiContainers,
-  stateRecordLockingBytecode,
 } from '../deploy/records.js';
 
 /** Raised when a storage snapshot cannot be taken or a value cannot be decoded from it. */
@@ -61,6 +64,12 @@ export interface FramedStorageOptions {
   readonly provider: NetworkProvider;
   readonly artifact: Artifact;
   readonly categoryId: string;
+  /**
+   * Leaves a provider that lists by lock to load the mapping nodes at the first mapping read, each collection being a
+   * listing of its own, so a page that wants only records asks for one lock a contract. `nodesByCollection` then holds
+   * what has been loaded. A provider that indexes categories has them all in one call, and this changes nothing.
+   */
+  readonly lazyMappings?: boolean;
 }
 
 /**
@@ -81,21 +90,27 @@ export interface FramedStorageSnapshot {
 }
 
 /** The category's UTXOs: by category where the provider indexes them, else at the locks the layout derives. */
-async function categoryUtxos(options: FramedStorageOptions, layout: StateLayout): Promise<readonly Utxo[]> {
+async function categoryUtxos(
+  options: FramedStorageOptions, layout: StateLayout, withMappings: boolean,
+): Promise<readonly Utxo[]> {
   const { provider, categoryId } = options;
   if (typeof provider.getUtxosByTokenCategory === 'function') {
     return provider.getUtxosByTokenCategory(categoryId);
   }
-  const locks = [
-    stateRecordLockingBytecode(categoryId),
-    ...(layout.collections ?? []).map((collection) =>
-      entryRecordLockingBytecode(categoryId, collection.signature)),
-    ...(layout.variables ?? []).filter((variable) => variable.dynamic === true).map((variable) =>
-      chunkRecordLockingBytecode(categoryId, variable.name, variable.type)),
-  ];
-  const lists = await Promise.all(locks.map(async (lock) =>
-    (await provider.getUtxosForLockingBytecode(lock)).map((utxo) => ({ ...utxo, lockingBytecode: lock }))));
-  return lists.flat();
+  const locks = withMappings ? framedStateLocks(categoryId, layout) : framedRecordLocks(categoryId, layout);
+  const coins = await categoryCoinsAtLocks(provider, categoryId, locks);
+  return [...coins, ...await framedValueChunks(provider, categoryId, layout, coins)];
+}
+
+/** The nodes of the category's collections, with their long values' chunks, keyed by collection. */
+async function mappingNodes(
+  options: FramedStorageOptions, layout: StateLayout,
+): Promise<ReadonlyMap<string, readonly Utxo[]>> {
+  const { provider, categoryId } = options;
+  const coins = await categoryCoinsAtLocks(provider, categoryId, framedCollectionLocks(categoryId, layout));
+  return classifyFramedDeployment(
+    [...coins, ...await framedValueChunks(provider, categoryId, layout, coins)], layout,
+  ).nodesByCollection;
 }
 
 /**
@@ -203,9 +218,21 @@ export async function readFramedStorage(options: FramedStorageOptions): Promise<
   if (layout === undefined) {
     throw new FramedStaticReadError(`contract "${artifact.contractName}" publishes no state layout`);
   }
-  const utxos = await categoryUtxos(options, layout);
+  // Only a provider that lists by lock pays per collection, and only where its caller has no use for them yet.
+  const deferMappings = options.lazyMappings === true && typeof provider.getUtxosByTokenCategory !== 'function';
+  const utxos = await categoryUtxos(options, layout, !deferMappings);
   const deployment = classifyFramedDeployment(utxos, layout);
   const state = readState(artifact, layout, categoryId, utxos, deployment.records);
+  let nodes: Promise<ReadonlyMap<string, readonly Utxo[]>> | undefined;
+  const nodesLoaded = new Map(deployment.nodesByCollection);
+  const loadNodes = (): Promise<ReadonlyMap<string, readonly Utxo[]>> => {
+    if (!deferMappings) return Promise.resolve(nodesLoaded);
+    nodes ??= mappingNodes(options, layout).then((found) => {
+      for (const [name, collection] of found) nodesLoaded.set(name, collection);
+      return nodesLoaded;
+    });
+    return nodes;
+  };
 
   let balance: Promise<bigint> | undefined;
   const nativeBalance = (): Promise<bigint> => (balance ??= readSatoshiContainers(provider, categoryId)
@@ -215,14 +242,14 @@ export async function readFramedStorage(options: FramedStorageOptions): Promise<
     categoryId,
     artifact,
     records: deployment.records,
-    nodesByCollection: deployment.nodesByCollection,
+    nodesByCollection: nodesLoaded,
     state,
     nativeBalance,
     async read(functionName, args = []) {
       const entry = artifact.abi.find((candidate) => candidate.name === functionName);
       if (entry === undefined || entry.writesState === true) return undefined;
       if (entry.directMappingReturn !== undefined) {
-        return readMapping(artifact, layout, deployment.nodesByCollection, entry, args);
+        return readMapping(artifact, layout, await loadNodes(), entry, args);
       }
       if (readsNativeBalance(artifact, functionName)) return [await nativeBalance()];
       // The compiler proves the whole body returns these state variables, in the declared output order. A `null`

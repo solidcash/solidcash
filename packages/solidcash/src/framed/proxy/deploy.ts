@@ -5348,10 +5348,18 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
 
   // The pools the two geneses published, read back by category and classified the way a framed deployment mints
   // them, so a participant is placed on the outpoint it actually sits on rather than a genesis output index.
-  const proxyPools = await readFramedDeployment(
-    provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!);
+  const hopValidator = framedValidator.buildValidatorProgram();
+  const hopMasterLocks = (artifact: Artifact, categoryId: string): readonly Uint8Array[] => [
+    deployMaster(artifact, hexToBin(categoryId), hopValidator).lockingBytecode,
+  ];
+  const proxyPools = await readFramedDeployment(provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!, {
+    masterLocks: hopMasterLocks(options.proxyArtifact, options.proxyCategoryId),
+  });
   const implementationPools = await readFramedDeployment(
-    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!);
+    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!, {
+      masterLocks: hopMasterLocks(options.implementationArtifact, options.implementationCategoryId),
+    },
+  );
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   // The hop's own shape is fixed - the composer assembled every contract input and there is no oracle or side-car
@@ -5630,7 +5638,10 @@ export async function callFramedProxyEntry(
   const proxyLayout = proxyArtifact.stateLayout!;
   const classificationLayout = implementationArtifact.stateLayout?.collections === undefined ? proxyLayout
     : { ...proxyLayout, collections: implementationArtifact.stateLayout.collections };
-  const proxyPools = await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout);
+  const proxyPools = await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout, {
+    masterLocks: [deployMaster(proxyArtifact, hexToBin(options.proxyCategoryId), framedValidator.buildValidatorProgram())
+      .lockingBytecode],
+  });
   if (proxyPools.records.length !== proxyLayout.dataNftCount) {
     throw new FramedProxyDeployError(
       `category ${options.proxyCategoryId} holds ${proxyPools.records.length} record(s) for a proxy whose layout `
@@ -5656,8 +5667,16 @@ export async function callFramedProxyEntry(
     state: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools) as
       Readonly<Record<string, StateValue>>,
   });
+  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
+  const oraclePool = framedOraclePool(provider, implementationProgram);
+  const validatorProgram = framedValidator.buildValidatorProgram();
+  const implementationCategory = hexToBin(options.implementationCategoryId);
+  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
   const implementationPools = await readFramedDeployment(
-    provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
+    provider, options.implementationCategoryId, implementationArtifact.stateLayout!, {
+      masterLocks: [implementationMaster.lockingBytecode], validatorProgram,
+    },
+  );
   const recordCommitments = proxyPools.records.map((record, nftIndex) => {
     const commitment = record.token?.nft?.commitment;
     if (commitment === undefined) {
@@ -5668,13 +5687,8 @@ export async function callFramedProxyEntry(
     return hexToBin(commitment);
   });
 
-  const validatorProgram = framedValidator.buildValidatorProgram();
   const proxyCategory = hexToBin(options.proxyCategoryId);
-  const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
-  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
-  const oraclePool = framedOraclePool(provider, implementationProgram);
-  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
   let implementationMasterUtxo = implementationPools.masters[0];
   if (splitShard !== undefined) {
     try {

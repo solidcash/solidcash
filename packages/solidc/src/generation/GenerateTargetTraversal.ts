@@ -53966,11 +53966,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `pragma containers single`: the input at a container's slot is identified as the container, so its lock is the
    * container's. The output at the slot stays at that lock and no other output is at it, so a call recreates the one
    * coin and opens no second: a filler, a new coin beside it or one made with nothing spent are all refused. Nothing
-   * runs when a coin is paid to the lock from outside, and such a coin holds nothing of the contract's. Stack neutral.
+   * runs when a coin is paid to the lock from outside, and such a coin holds nothing of the contract's. A satoshi
+   * container's slot holds no token: a token-bearing coin can be paid to its lock, and with it in the slot a call
+   * could leave the contract's satoshis on a coin that no longer reads as the container. Stack neutral.
    */
   private emitContainerStaysSingle(
     kind: 'satoshiContainer' | 'tokenContainer', slot: number | undefined, loc: SingleLocationData,
   ): void {
+    if (kind === 'satoshiContainer') {
+      this.emitBlockSlotIndex(kind, slot, loc);
+      this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY], loc);
+    }
     this.emitBlockSlotIndex(kind, slot, loc);
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.pushToStack('(__container_lock)');

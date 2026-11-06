@@ -30,6 +30,7 @@ contract Tip() {
   constructor() { this.n = 0; }
   function deposit() public payable { require(msg.value == PAY + FEE, "value"); this.n = this.n + 1; emit E(this.n); }
   function take(address to) public { this.n = this.n + 1; this.transfer(to, PAY); this.payMinerFee(FEE); }
+  function poke() public { this.n = this.n + 1; this.payMinerFee(FEE); }
 }`;
 
 const TOKEN_SOURCE = `pragma solidcash ^0.14.0;
@@ -263,6 +264,43 @@ describe('the satoshi container of pragma containers single', () => {
     await pool.call.take(bob.getAddress()).send();
     await pool.call.take(bob.getAddress()).send();
     expect(await coins()).toEqual([700n, SEED]);
+  });
+});
+
+describe('a coin paid to the satoshi container\'s lock', () => {
+  /** A coin of `satoshis`, with a token of another category when `token`, paid in as anyone can. */
+  const payIn = async ({ provider, pool }: Awaited<ReturnType<typeof satoshiPool>>, satoshis: bigint, token: boolean) => {
+    const txid = 'cd'.repeat(32);
+    await provider.seedUtxo(pool.satoshiContainer.address, {
+      txid, vout: 0, satoshis, ...(token ? { token: { category: ASSET, amount: 1n } } : {}),
+    } as never);
+    return txid;
+  };
+  /** Takes the slot from the real coin, and sweeps that into it through a filler. The fee is what the call allows. */
+  const sweep = async (context: Awaited<ReturnType<typeof satoshiPool>>, paidIn: string) => {
+    const { provider, alice, pool, lock } = context;
+    const coins = await provider.getUtxos(pool.satoshiContainer.address);
+    const coin = coins.find((candidate) => candidate.txid === paidIn)!;
+    const real = coins.filter((candidate) => candidate.txid !== paidIn)[0]!;
+    const unlocker = createSatoshiContainerUnlocker(pool.inner, 0, pool.categoryId);
+    const builder: any = await pool.call.poke().build();
+    const funding = (await alice.getUtxos()).filter((candidate) => !candidate.token).sort((left, right) => Number(right.satoshis - left.satoshis))[0]!;
+    builder.inputs[2] = { ...coin, unlocker };
+    builder.inputs.push({ ...real, unlocker }, { ...funding, unlocker: alice.unlockP2PKH() });
+    builder.outputs[2] = { to: lock, amount: coin.satoshis + real.satoshis - FEE, ...(coin.token ? { token: coin.token } : {}) };
+    builder.outputs.push({ to: fillerLockingBytecode(), amount: FILLER_SATOSHIS }, { to: alice.getAddress(), amount: funding.satoshis - 3_000n });
+    return builder.send();
+  };
+
+  it('can take the slot and merge the real coin when it is plain', async () => {
+    const context = await satoshiPool(1);
+    await sweep(context, await payIn(context, 2_000n, false));
+    expect((await context.coins()).length).toBe(1);
+  });
+
+  it('cannot when it holds a token, which would leave the money on a coin no client reads', async () => {
+    const context = await satoshiPool(1);
+    await expect(sweep(context, await payIn(context, 2_000n, true))).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
   });
 });
 

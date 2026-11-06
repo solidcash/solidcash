@@ -162,7 +162,7 @@ import {
 import { blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOraclePool } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
 import { FramedSendBelowDustError, sendBelowDustRefusal } from './send-dust.js';
-import { isTransportFailure } from './transport-failure.js';
+import { endsPlanSearch } from './transport-failure.js';
 import {
   framedCalleeTokenAccesses, framedTokenAccesses, framedTokenContainerLockingBytecode,
   framedTokenContainerUnlockingBytecode, framedTokenSendSentinels, learnEmptyNftCommitment, learnTokenSend,
@@ -3743,7 +3743,7 @@ async function callInShape(
       } catch (error) {
         // A call the shared side-cars cannot be planned for keeps the side-car each call planned. One that sends below
         // dust sends the same with its own side-cars.
-        if (error instanceof FramedSendBelowDustError || isTransportFailure(error)) throw error;
+        if (error instanceof FramedSendBelowDustError || endsPlanSearch(error)) throw error;
       }
     }
   }
@@ -4005,7 +4005,7 @@ async function callAssumingCalls(options: FramedCallOptions, shape: SendShape): 
       // A plan the machine accepted that sends below dust is the call's: another assumption would plan calls the
       // execution does not make, and its refusal would stand in for this one.
       if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment
-        || error instanceof FramedSendBelowDustError || isTransportFailure(error)) throw error;
+        || error instanceof FramedSendBelowDustError || endsPlanSearch(error)) throw error;
       if (assumed.size === 0 && met.size === 0) throw error;
       if (assumed.size === 0) failure = error;
     }
@@ -4065,7 +4065,7 @@ async function callAssumingActivations(options: FramedCallOptions, shape: SendSh
       }, shape);
     } catch (error) {
       if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment
-        || error instanceof FramedSendBelowDustError || isTransportFailure(error)) throw error;
+        || error instanceof FramedSendBelowDustError || endsPlanSearch(error)) throw error;
       continue;
     }
     if (result.accepted) return result;

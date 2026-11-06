@@ -194,8 +194,12 @@ function readMapping(
     if (!(encoded instanceof Uint8Array)) return undefined;
     keys.push(encoded);
   }
+  // A live collection always holds its head sentinel, so no nodes at all is no answer: Fulcrum lists a lock past its
+  // `max_history` as empty, and reading that as a key nobody set would state a zero the chain does not hold.
+  const nodes = nodesByCollection.get(collection.name) ?? [];
+  if (nodes.length === 0) return undefined;
   const slot = keyToSlotMulti(keys, collectionKeyEncoding(artifact, collection.name));
-  const node = (nodesByCollection.get(collection.name) ?? []).find((candidate) => {
+  const node = nodes.find((candidate) => {
     const commitment = candidate.token?.nft?.commitment;
     return commitment !== undefined
       && bytesEqual(decodeEntryCommitment(hexToBin(commitment)).slot, slot);

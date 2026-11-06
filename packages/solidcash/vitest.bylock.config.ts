@@ -13,14 +13,18 @@ const walk = (directory: string): string[] => readdirSync(directory).flatMap((na
 });
 const listsByCategory = walk(join(root, 'test/framed'))
   .filter((file) => readFileSync(file, 'utf8').includes('getUtxosByTokenCategory'));
-// Asserts the mock's clock register to the second, which the pool coin a by-lock read takes states one second behind.
-const mockClock = join(root, 'test/framed/deploy/proxy-dynamic-append-growth.test.ts');
+const leftOut = [
+  // Asserts the mock's clock register to the second, which the pool coin a by-lock read takes states one second behind.
+  'test/framed/deploy/proxy-dynamic-append-growth.test.ts',
+  // Stands its contracts up by hand and reads their masters itself, naming no entry lock and registering none.
+  'test/framed/shapes/deployment-circle.test.ts',
+].map((file) => join(root, file));
 
 export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/framed/**/*.test.ts'],
-    exclude: ['**/node_modules/**', ...listsByCategory, mockClock],
+    exclude: ['**/node_modules/**', ...listsByCategory, ...leftOut],
     setupFiles: ['./test/framed/by-lock-setup.ts'],
     globals: true,
     isolate: false,

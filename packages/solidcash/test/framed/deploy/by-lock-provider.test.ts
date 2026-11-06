@@ -227,6 +227,28 @@ describe('a framed deployment read by lock', () => {
     expect(await storage.read('balanceOf', [who])).toStrictEqual([12n]);
   }, 120_000);
 
+  it('states no value for a mapping whose lock lists empty, as Fulcrum lists one past its history limit', async () => {
+    const live = await deployLive();
+    const who = encodeLockingBytecodeP2pkh(alicePkh);
+    await enter(live, 'credit', [who, 7n]);
+    const collections = layout.collections!.map((collection) => bytesToHex(
+      entryRecordLockingBytecode(live.categoryId, collection.signature),
+    ));
+    const truncating = new Proxy(live.provider, {
+      get(target, property): unknown {
+        if (property === 'getUtxosForLockingBytecode') {
+          return async (lock: Uint8Array) => (collections.includes(bytesToHex(lock))
+            ? [] : target.getUtxosForLockingBytecode(lock));
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const storage = await readFramedStorage({ provider: truncating, artifact: bundle.logical, categoryId: live.categoryId });
+    await expect(storage.read('balanceOf', [who])).resolves.toBeUndefined();
+    expect(await storage.read('total')).toStrictEqual([7n]);
+  }, 120_000);
+
   it('takes a storage snapshot past a foreign coin at a record lock', async () => {
     const live = await deployLive();
     const before = await readFramedStorage({ provider: live.provider, artifact: bundle.logical, categoryId: live.categoryId });

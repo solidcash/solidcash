@@ -969,9 +969,10 @@ async function readFrameDeployments(
         && bytesEqual(utxo.lockingBytecode, frame.deployed.lockingBytecode))));
     // A read spends nothing, so the master only states the value its frame's input holds. An implementation's entry
     // read under its proxy's category has no master at the lock its own program fills, and a provider that lists by
-    // lock has no other master of the category to take that value from, so the frame states a pool coin's.
+    // lock has no other master of the category to take that value from, so the frame states a pool coin's. A category
+    // with no validator holds no deployment at all, which stays a refusal.
     const listsByLock = typeof provider.getUtxosByTokenCategory !== 'function';
-    if (master === undefined && (split || !listsByLock)) {
+    if (master === undefined && (split || !listsByLock || deployment.validators.length === 0)) {
       throw new FramedReadError(
         `category ${frame.categoryId} holds ${deployment.masters.length} master(s), and the read runs `
         + `${taken.size + 1} frame(s) over ${split ? `the pool of "${frame.entry.name}"` : 'it'}`,

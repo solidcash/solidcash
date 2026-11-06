@@ -40,8 +40,8 @@ describe('Release 1 scalar journal lowering', () => {
     // The C3 count-path record pin, which holds each own-category record at its own index, added 38 B (1289 -> 1327).
     // The data-record covenant that defines its category and authority bind once (590aca164) carries those
     // definitions in the record lock a direct master rebuilds: 15 B here (1327 -> 1342), for 395 B less in every
-    // record a transaction spends (707 -> 312).
-    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_355);
+    // record a transaction spends (707 -> 312). A drained container's filler added 70 B (1342 -> 1412, c2d8ed7ea).
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(1_425);
   });
 
   it('marks only recursion which survives tail-cycle lowering for concrete SDK preflight', () => {

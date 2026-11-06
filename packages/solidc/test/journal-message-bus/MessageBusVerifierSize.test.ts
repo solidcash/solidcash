@@ -36,9 +36,10 @@ describe('atomic verifier bytecode specialization', () => {
     // +35 B direct / +97 B composed for the C3 record pin: the own-category count holds each record at its own
     // index, and the route pins its records past the block, skipping its verifier by the bound index.
     // +8 B composed once the route binds its participant's physical size and claims only that block.
+    // +70 B both once a drained container left a filler, and the master counts what it keeps (c2d8ed7ea).
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 657,
-      composed: 1805,
+      direct: 727,
+      composed: 1875,
       frameworkTax: 1148,
     });
     expect(composed).toBeLessThanOrEqual(1900);

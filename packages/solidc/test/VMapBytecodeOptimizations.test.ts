@@ -38,7 +38,8 @@ describe('general vmap bytecode sharing', () => {
     // 4990.5 measured after the October reaudit/hardening set (master-lock binding plus the DS-6 activity
     // settlement and container/foreign-token scans); re-pinned to the verified current emission.
     // 5090.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(5100);
+    // 5160.5 once a drained container left a filler, and the master counts what it keeps (c2d8ed7ea).
+    expect(artifact.bytecode.length / 2).toBeLessThan(5170);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
@@ -60,7 +61,8 @@ describe('general vmap bytecode sharing', () => {
     // 5004 measured after the direct entry's message-bus-eligibility census widened.
     // 5283.5 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
     // 5383.5 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(5400);
+    // 5453.5 once a drained container left a filler, and the master counts what it keeps (c2d8ed7ea).
+    expect(artifact.bytecode.length / 2).toBeLessThan(5470);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
@@ -89,7 +91,8 @@ describe('general vmap bytecode sharing', () => {
     // lock build + admission check is per function that writes a dynamic var.
     // 10030 measured after the October reaudit/hardening set; re-pinned to the verified current emission.
     // 10130 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
-    expect(artifact.bytecode.length / 2).toBeLessThan(10150);
+    // 10196 once a drained container left a filler, and the master counts what it keeps (c2d8ed7ea).
+    expect(artifact.bytecode.length / 2).toBeLessThan(10210);
   });
 
   it('allocates collision-free structural and field-prefix helpers across entry points', () => {
@@ -149,7 +152,8 @@ describe('general vmap bytecode sharing', () => {
     // on in one classifying pass per side, and the mutable-output check tries the minted locks first.
     // 4786 once the direct keep of an unnamed container refused a minting NFT (306318a0b, CONT-1 residual).
     // 4996.5 once the C3 count-path record pin held each own-category record at its own index.
-    expect(artifact.bytecode.length / 2).toBeLessThan(5010);
+    // 5064.5 once a drained container left a filler, and the master counts what it keeps (c2d8ed7ea).
+    expect(artifact.bytecode.length / 2).toBeLessThan(5080);
   });
 
   it('nests only compiler helpers and other outlined spans, acyclically, while sharing composite array traversal', () => {

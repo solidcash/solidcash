@@ -551,8 +551,9 @@ The chain's limits apply to every input of a framed transaction:
   server has no index by category, so there each is listed at the lock it derives: validators at the contract's
   address, records, nodes and chunks at their covenants, and masters at the lock of each entry a call runs. One lock
   holds every coin of its kind: all the holders of a mapping, and all the children of a creator for each entry of a
-  constant-lock master. A read of one of them lists them all, and Fulcrum refuses a listing past its `max_history`
-  (125,000 coins by default).
+  constant-lock master. A read of one of them lists them all: 271 bytes a coin with no commitment, so 34 MB at 125,000
+  coins. Past its `max_history`, 125,000 by default, Fulcrum answers an empty list rather than an error, and anyone can
+  pay a lock, so a contract that matters needs a server configured for it.
 - **Side-cars.** An entry that hashes through `keccak256` co-spends a side-car, a mutable NFT at a shared covenant
   lock. The mock and a devnet mint them when a call asks; a real network holds what a deployment left, so run
   `framedDeploy.deployComputeSideCarPool` once on it.

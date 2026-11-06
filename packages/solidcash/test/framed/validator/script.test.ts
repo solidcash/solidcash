@@ -1473,3 +1473,174 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(report.every((row) => row.parts.every((part) => part.operationCost > 0))).toBe(true);
   });
 });
+
+describe('a record keeps the name its first declaration gave it', () => {
+  const VIEW_AFTER_UPDATE = seedBytes('names:E:updated', 6);
+
+  /**
+   * One contract whose root creates `E` between two calls. `A.update` rewrites it and `A.read` reads it, each by its
+   * output alone, as the SDK names a record an earlier frame created. `funders` adds users' coins behind the contract's
+   * inputs and `events` adds outputs ahead of the created record, which is how its index falls below or past the
+   * transaction's input count.
+   */
+  function createdRecordPlan(options: { readonly funders: number; readonly events: number }): CompositionPlan {
+    const contract: ContractPlan = {
+      id: 'A',
+      category: categoryOf('names-A'),
+      masterLock: contractLockOf(seedBytes('code:names-A', 8)),
+      stateLock: contractLockOf(seedBytes('state:names-A', 8)),
+      eventLock: contractLockOf(seedBytes('event:names-A', 8)),
+    };
+    const created = seedBytes('names:E:created', 6);
+    const child = (id: string, slot: string, viewOut?: Uint8Array): MasterPlan => ({
+      id,
+      contract: 'A',
+      kind: FrameKind.CALL,
+      caller: 'A.go',
+      selector: selectorOf(id),
+      args: [],
+      children: [],
+      segments: [{ touches: [viewOut === undefined ? { slot } : { slot, viewOut }] }],
+      retval: new Uint8Array(0),
+    });
+    return {
+      contracts: [contract],
+      users: [userPlan('U1'), ...Array.from({ length: options.funders }, (_unused, at) => userPlan(`F${at}`))],
+      stateSlots: [{ id: 'S', contract: 'A', commitment: seedBytes('names:S:0', 6), value: 3_000n }],
+      createdSlots: [{ id: 'E', contract: 'A', commitment: created, value: 1_500n }],
+      masters: [
+        {
+          id: 'A.go',
+          contract: 'A',
+          kind: FrameKind.ROOT,
+          caller: 'U1',
+          selector: selectorOf('go'),
+          args: [],
+          children: ['A.call', 'A.update', 'A.read'],
+          callKinds: [FrameKind.CALL, FrameKind.CALL, FrameKind.CALL],
+          callValues: [0n, 0n, 0n],
+          segments: [
+            { touches: [{ slot: 'S', viewOut: seedBytes('names:S:1', 6) }] },
+            { touches: [{ slot: 'S' }, { slot: 'E', viewOut: created }] },
+            { touches: [{ slot: 'S' }] },
+            { touches: [{ slot: 'S' }] },
+          ],
+          events: options.events,
+          retval: new Uint8Array(0),
+        },
+        child('A.call', 'S'),
+        child('A.update', 'E', VIEW_AFTER_UPDATE),
+        child('A.read', 'E'),
+      ],
+      changeUser: 'U1',
+    };
+  }
+
+  /** The two layouts: the created record's output index past the transaction's inputs, and below them. */
+  const PAST_THE_INPUTS = { funders: 0, events: 4 };
+  const BELOW_THE_INPUTS = { funders: 6, events: 0 };
+
+  /** The output index the created record sits at. */
+  function createdIndex(composition: Composition): number {
+    for (const block of composition.blocks.values()) {
+      for (const entry of block.segments.flat()) {
+        if (entry.in === INDEX_NONE && entry.viewIn.length === 0) return entry.out;
+      }
+    }
+    throw new Error('the composition creates no record');
+  }
+
+  /** All three models' verdicts on a composition. */
+  function verdicts(composition: Composition): {
+    readonly program: boolean;
+    readonly derivation: string;
+    readonly reference: string;
+  } {
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    const derivation = derivationOf(modelled, index);
+    const reference = decideReference(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: index });
+    return {
+      program: accepted(modelled, index),
+      derivation: derivation.accepted ? 'accepted' : derivation.rejection?.reason ?? 'refused',
+      reference: reference.accepted ? 'accepted' : reference.reason ?? 'refused',
+    };
+  }
+
+  test('lays out the created record past the inputs and below them', () => {
+    const past = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    expect(createdIndex(past)).toBeGreaterThanOrEqual(past.inputs.length);
+    const below = laidOut(createdRecordPlan(BELOW_THE_INPUTS));
+    expect(createdIndex(below)).toBeLessThan(below.inputs.length);
+  });
+
+  test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
+    'accepts a created record declared by its output alone in every frame, with its index %s',
+    (_name, layout) => {
+      expect(verdicts(laidOut(createdRecordPlan(layout))))
+        .toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+    },
+  );
+
+  test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
+    'refuses a later frame that names a created record by its index, %s',
+    (_name, layout) => {
+      for (const masters of [['A.read'], ['A.update', 'A.read']]) {
+        const composition = laidOut(createdRecordPlan(layout));
+        const index = createdIndex(composition);
+        for (const master of masters) {
+          const entry = composition.blocks.get(master)!.segments[0]![0]!;
+          composition.blocks.get(master)!.segments[0]![0] = { ...entry, in: index };
+        }
+        const decided = verdicts(composition);
+        expect(decided.program).toBe(false);
+        expect(decided.derivation).toBe('V7_TOUCHED_RECORDS_MISMATCH');
+        expect(decided.reference).not.toBe('accepted');
+      }
+    },
+  );
+
+  test('refuses a later frame that names a spent record by its output alone', () => {
+    const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    const entry = composition.blocks.get('A.call')!.segments[0]![0]!;
+    composition.blocks.get('A.call')!.segments[0]![0] = { ...entry, in: INDEX_NONE };
+    const decided = verdicts(composition);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).toBe('V7_CHAIN_START_MISMATCH');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('refuses a delete of a record the transaction created', () => {
+    const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    const entry = composition.blocks.get('A.read')!.segments[0]![0]!;
+    composition.blocks.get('A.read')!.segments[0]![0] = { ...entry, in: entry.out, out: INDEX_NONE, viewOut: new Uint8Array(0) };
+    const decided = verdicts(composition);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).not.toBe('accepted');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('takes nothing from the transcript\'s created list', () => {
+    // The list a builder states and an honest composition's own: the two decide alike, a list naming a state input's
+    // output changes nothing, and a chain that starts at nothing is refused whatever the list says.
+    const stating = (createdOutputs: readonly number[]): Composition => {
+      const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+      composition.transcript.settles[0] = { ...composition.transcript.settles[0]!, createdOutputs };
+      composition.inputs[composition.validatorIndex]!.validator!.transcript = composition.transcript;
+      return composition;
+    };
+    const honest = createdIndex(laidOut(createdRecordPlan(PAST_THE_INPUTS)));
+    const stateInput = laidOut(createdRecordPlan(PAST_THE_INPUTS)).slotIndex.get('S')!;
+    for (const list of [[], [honest], [stateInput], [honest, stateInput]]) {
+      expect(verdicts(stating(list))).toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+    }
+    for (const list of [[], [stateInput]]) {
+      const composition = stating(list);
+      const entry = composition.blocks.get('A.go')!.segments[0]![0]!;
+      composition.blocks.get('A.go')!.segments[0]![0] = { ...entry, viewIn: new Uint8Array(0) };
+      const decided = verdicts(composition);
+      expect(decided.program).toBe(false);
+      expect(decided.derivation).toBe('V7_CHAIN_START_MISMATCH');
+    }
+  });
+});

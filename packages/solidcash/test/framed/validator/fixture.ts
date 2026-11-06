@@ -448,7 +448,7 @@ export function planComposition(plan: CompositionPlan): Composition {
       }
       if (created !== undefined) {
         const viewIn = chains.get(touch.slot) ?? EMPTY;
-        const viewOut = touch.viewOut ?? created.commitment;
+        const viewOut = touch.viewOut ?? (viewIn.length > 0 ? viewIn : created.commitment);
         chains.set(touch.slot, viewOut);
         entries.push({ in: INDEX_NONE, out: createdIndex.get(touch.slot)!, viewIn, viewOut });
         continue;

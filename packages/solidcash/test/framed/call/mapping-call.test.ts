@@ -419,12 +419,10 @@ describe('calling an entry that writes a mapping on a deployed framed contract',
     expect(bytesToHex(created.nextKey)).toBe('00'.repeat(32));
     expect(bytesToHex(created.value)).toBe(bytesToHex(valueOf(5n)));
 
-    // `total` is the contract's one data record, which the entry never writes: its segment close requires it kept,
-    // so the run learns it kept and the transaction writes back what it spent, the plain encoded 1000.
-    const total = result.sourceOutputs.findIndex((output) => output.token?.nft !== undefined
-      && binToHex(output.token.nft.commitment) === '02e803');
-    expect(total).toBeGreaterThanOrEqual(0);
-    expect(binToHex(result.transaction.outputs[total]!.token!.nft!.commitment)).toBe('02e803');
+    // `total` is the contract's one data record, the plain encoded 1000. The entry never reads it, and the batch only
+    // counts its slot, which the frame fills with the caller's node, so the transaction leaves it unspent.
+    expect(result.sourceOutputs.some((output) => output.token?.nft !== undefined
+      && binToHex(output.token.nft.commitment) === '02e803')).toBe(false);
 
     // The entry returned the balance it credited.
     expect(result.values).toStrictEqual([5n]);

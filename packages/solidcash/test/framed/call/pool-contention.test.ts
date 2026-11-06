@@ -4,7 +4,6 @@ import {
 } from '@bitauth/libauth';
 import { validatorAddress, type FunctionSplitBundle } from '@solidcash/utils';
 import { framedValidator } from '@solidcash/solidc/runtime';
-import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringSplit } from '../../../../solidc/src/compiler.js';
 import { SignatureTemplate, Signer } from '../../../src/index.js';
 import type { Utxo } from '../../../src/interfaces.js';
@@ -19,12 +18,13 @@ import { aliceAddress, alicePkh, alicePriv, bobPkh, bobPriv, carolPkh } from '..
  * What two independent calls spend in common, composed against the same chain as two users' wallets would be.
  *
  * Only one of two transactions that spend one outpoint can be mined, so every outpoint two compositions share makes
- * one of them compose again. `Token`, `Pair` and `Router` are the shapes of a token, a pair and a router, compiled the
- * way the DEX compiles them, one master per entry. Each case composes one pair of calls twice: with pools as listed,
- * which is what every caller took before each call ordered them itself, and with the two calls drawing different
- * UTXOs, which is what independent callers usually do.
+ * one of them compose again. `Token`, `Pair` and `Router` are the shapes of a token, a pair and a router, compiled as
+ * a DEX compiles them, one master per entry, and composed under mainnet's limits. Each case composes one pair of calls
+ * twice: with pools as listed, which is what every caller took before each call ordered them itself, and with the two
+ * calls drawing different UTXOs, which is what independent callers usually do.
  *
- * What stays shared is what the frames must spend: a record their code reads or writes.
+ * What stays shared is what the frames must spend: a record their code reads or writes. A frame whose batch only
+ * counts a data record, as `transfer` and `approve` count theirs, leaves it unspent.
  */
 
 const SOURCE = `pragma solidity ^0.8.0;
@@ -99,6 +99,11 @@ const TOKEN = compiled('Token');
 const PAIR = compiled('Pair');
 const ROUTER = compiled('Router');
 const VALIDATOR = framedValidator.buildValidatorProgram();
+/** Mainnet's limits, its hash allowance in the whole units the mock takes. */
+const CHAIN_LIMITS = {
+  maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumTransactionBytes: 1_000_000,
+  maximumNftCommitmentBytes: 128, operationCostBudgetPerByte: 800, hashDigestIterationsPerByte: 1,
+};
 
 const lockOfPkh = (fill: number): Uint8Array => encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(fill));
 const ALICE = encodeLockingBytecodeP2pkh(alicePkh);
@@ -142,7 +147,7 @@ let run: Promise<Chain> | undefined;
 /** Four tokens, three pairs over them seeded with liquidity, and a router both users have approved. */
 async function deployed(): Promise<Chain> {
   run ??= (async (): Promise<Chain> => {
-    const provider = new ComposingProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const provider = new ComposingProvider({ consensusLimits: CHAIN_LIMITS });
     const alice = new Signer(alicePriv, provider);
     const bob = new Signer(bobPriv, provider);
     let serial = 0xa000;
@@ -291,24 +296,30 @@ describe('what two independent calls spend in common', () => {
     await chain.provider.sendRawTransaction(second.hex);
   }, 120_000);
 
-  it('transfers of one token by two users share its record once they draw apart', async () => {
+  it('transfers of one token by two users share nothing once they draw apart', async () => {
     const chain = await deployed();
-    const { alice, bob, tokens: { a } } = chain;
+    const { alice, bob, provider, tokens: { a } } = chain;
     const first = await compose(chain, alice, a, 'transfer', [CAROL, 1n], listed());
     expect(await sharedRoles(chain, first, await compose(chain, bob, a, 'transfer', [DAVE, 1n], listed())))
-      .toStrictEqual(['A master', 'A record', 'A validator', 'facet-1', 'facet-2']);
-    expect(await sharedRoles(chain, first, await compose(chain, bob, a, 'transfer', [DAVE, 1n], reversing())))
-      .toStrictEqual(['A record']);
+      .toStrictEqual(['A master', 'A validator', 'facet-1', 'facet-2']);
+
+    const second = await compose(chain, bob, a, 'transfer', [DAVE, 1n], reversing());
+    expect(await sharedRoles(chain, first, second)).toStrictEqual([]);
+    await provider.sendRawTransaction(first.hex);
+    await provider.sendRawTransaction(second.hex);
   }, 120_000);
 
-  it('an approval beside a sync shares the records the sync reads', async () => {
+  it('an approval beside a sync shares nothing once they draw apart', async () => {
     const chain = await deployed();
-    const { alice, bob, pairs: { x } } = chain;
+    const { alice, bob, provider, pairs: { x } } = chain;
     const first = await compose(chain, bob, x, 'approve', [CAROL, 1n], listed());
     expect(await sharedRoles(chain, first, await compose(chain, alice, x, 'sync', [], listed())))
-      .toStrictEqual(['X record', 'X validator', 'facet-1', 'facet-2']);
-    expect(await sharedRoles(chain, first, await compose(chain, alice, x, 'sync', [], reversing())))
-      .toStrictEqual(['X record']);
+      .toStrictEqual(['X validator', 'facet-1', 'facet-2']);
+
+    const second = await compose(chain, alice, x, 'sync', [], reversing());
+    expect(await sharedRoles(chain, first, second)).toStrictEqual([]);
+    await provider.sendRawTransaction(first.hex);
+    await provider.sendRawTransaction(second.hex);
   }, 120_000);
 
   it('swaps on two pairs of different tokens share only the router\'s record', async () => {
@@ -322,16 +333,16 @@ describe('what two independent calls spend in common', () => {
     expect(await sharedRoles(chain, first, await second(reversing()))).toStrictEqual(['Router record']);
   }, 180_000);
 
-  it('swaps on two pairs that share a token share its record too', async () => {
+  it('swaps on two pairs that share a token still share only the router\'s record', async () => {
     const chain = await deployed();
     const { alice, bob, router, tokens: { a }, pairs: { x, z } } = chain;
     const first = await compose(chain, alice, router, 'swapOnPair', [x.lock, a.lock, 1000n, 0n, 900n], listed());
     const second = (source: () => number): Promise<Composition> =>
       compose(chain, bob, router, 'swapOnPair', [z.lock, a.lock, 1000n, 0n, 900n], source);
     expect(await sharedRoles(chain, first, await second(listed()))).toStrictEqual([
-      'A master', 'A record', 'Router master', 'Router record', 'Router validator', 'facet-1', 'facet-2',
+      'A master', 'Router master', 'Router record', 'Router validator', 'facet-1', 'facet-2',
     ]);
-    expect(await sharedRoles(chain, first, await second(reversing()))).toStrictEqual(['A record', 'Router record']);
+    expect(await sharedRoles(chain, first, await second(reversing()))).toStrictEqual(['Router record']);
   }, 180_000);
 
   it('a swap settles on whichever of the pools\' UTXOs it draws', async () => {

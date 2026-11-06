@@ -150,8 +150,9 @@ import type { EnclosingRoot } from '../proxy/reentry.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
-  FramedCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, loopRecordSpans,
-  namedDataRecordIndices, orderLoopKeyArgs, placeRecordsBySpan, requireDistinctNodes, type CallLoopWritePlan,
+  FramedCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, leavesUnnamedRecordsUnspent,
+  loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs, placeRecordsBySpan, requireDistinctNodes,
+  unnamedSlotDeclarations, type CallLoopWritePlan,
   type LoopRecordMint, type LoopRecordSpan, type ReadNode,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
@@ -1434,9 +1435,6 @@ async function callInShape(
         + 'amount the VM cannot see it');
     }
   }
-  // The records the frame declares, and the transaction spends, in the order the entry's own code reads them.
-  const declared = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => records[nftIndex]!);
-  const recordIds = declared.map((record) => record.id);
   // A record the artifact publishes as written only after every call is kept in each segment before that last one, as
   // a callee's record is kept before its first write (`calleeFrames`). A read the body makes before its calls, such as
   // the width of a run it grows, read off the record's declared end, then reads the record as that segment holds it,
@@ -2016,6 +2014,22 @@ async function callInShape(
   if (selfBlock !== undefined) besideMasters.set(selfBlock, (besideMasters.get(selfBlock) ?? 0) + 1);
   const besideCallees = { masters: besideMasters, startViews };
 
+  // A call-free entry runs in exactly one segment, and one that calls closes one more per call it makes, which a
+  // loop's site makes once per turn, a value call into a contract among them. Every segment declares the frame's
+  // state records and the mapping records the entry writes, with each end commitment the body computes left
+  // unstated so the derivation learns it.
+  const segmentCount = calleePlan !== undefined || payees.length > 0
+    ? typedCalls.length + payees.length + 1
+    : published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
+  // The records the frame declares, and the transaction spends, in the order the entry's own code reads them. A frame
+  // that can spend no record its code does not name fills their slots with a node it spends anyway.
+  const frameRecords = frameDataRecordIndices(artifact, entry.name);
+  const leavesUnnamed = calleePlan?.blocked === undefined && (mappingRecords?.spentUtxos.size ?? 0) > 0
+    && leavesUnnamedRecordsUnspent(artifact, entry.name, segmentCount);
+  const declared = (leavesUnnamed ? namedDataRecordIndices(artifact, entry.name) : frameRecords)
+    .map((nftIndex) => records[nftIndex]!);
+  const recordIds = declared.map((record) => record.id);
+
   // One block for the contract: its master and its side-cars, its validator, and every record it reads and writes;
   // then one block for each contract it calls, holding the masters its frames run on and the records they read, and
   // one for each other contract it pays, holding the master that runs its `receive()` and its records.
@@ -2286,13 +2300,6 @@ async function callInShape(
   // against, until the derivation learns the amount the body computed.
   const callValueSentinels = payees.map((_payee, index) => recordValueBytes(CALL_VALUE_SENTINEL + BigInt(index)));
 
-  // A call-free entry runs in exactly one segment, and one that calls closes one more per call it makes, which a
-  // loop's site makes once per turn, a value call into a contract among them. Every segment declares the frame's
-  // state records and the mapping records the entry writes, with each end commitment the body computes left
-  // unstated so the derivation learns it.
-  const segmentCount = calleePlan !== undefined || payees.length > 0
-    ? typedCalls.length + payees.length + 1
-    : published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
   // Each published site's first call, past the value calls made before it.
   const callBases = (calleePlan?.callBases ?? []).map((base) => (base < 0 ? base : typedCallPosition(base)));
   const callPositions = calleePlan?.callPositions?.map((positions) => positions.map(typedCallPosition));
@@ -2468,6 +2475,7 @@ async function callInShape(
         }
         return { in: index, out: index, viewIn: position === 0 ? record.commitment : 'carried' };
       }),
+      ...unnamedSlotDeclarations(frameRecords.length - declared.length, laid?.entries ?? []),
       ...(mappingSegments?.[position] ?? laid?.entries ?? []),
     ];
     // The callees' events follow the entry's own, and the records their writes create follow the entry's.

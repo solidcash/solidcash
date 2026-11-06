@@ -228,16 +228,17 @@ describe('an entry that touches only a later data record', () => {
     expect(set.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   });
 
-  it('writes that record beside a mapping key, declaring the first kept ahead of the key\'s group', async () => {
+  it('writes that record beside a mapping key, leaving the first unspent', async () => {
     const deployed = await deployedWide();
     const before = await readFramedDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
     const first = before.records[0]!.token!.nft!.commitment;
 
     const marked = await call(deployed, 'mark', [HOLDER_LOCK]);
     expect(marked.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    // A batch's groups follow every data record, so the frame declares the one it names first and then the other.
+    // A batch's groups follow a slot for every data record, and the frame reads nothing in the one it does not name.
     const ids = marked.draft.layout.participants.map((placed) => placed.id);
-    expect(ids.indexOf('record-1')).toBeLessThan(ids.indexOf('record-0'));
+    expect(ids).toContain('record-1');
+    expect(ids).not.toContain('record-0');
     expect(binToHex(marked.writtenCommitments[0]!)).toBe(first);
     expect(parsePushdataCommitment(binToHex(marked.writtenCommitments[1]!), wide.stateLayout!, 1).counter).toBe(1n);
   });

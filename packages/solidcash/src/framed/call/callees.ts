@@ -83,7 +83,10 @@ import {
   requireSatisfiableReachWrites, routingOf, sharedNodeWritersBefore,
   type HopCallee, type HopCalleeRecord, type HopExternalPlan, type HopPlanBlock, type FramedProxyExternal,
 } from '../proxy/external-calls.js';
-import { adjacentRecordOrder, frameDataRecordIndices, namedDataRecordIndices } from './entry-records.js';
+import {
+  adjacentRecordOrder, frameDataRecordIndices, leavesUnnamedRecordsUnspent, namedDataRecordIndices,
+  unnamedSlotDeclarations,
+} from './entry-records.js';
 import { publishedLoopEffects } from './loop-turns.js';
 import { sendRecipient } from './send-recipient.js';
 import {
@@ -336,9 +339,17 @@ function mappingWriteSegment(callee: HopCallee): number | undefined {
   return segment! <= callee.calls.length ? segment : undefined;
 }
 
+/** True when a frame a call enters spends no data record its code does not name (`leavesUnnamedRecordsUnspent`). */
+function leavesUnnamedRecords(callee: HopCallee): boolean {
+  return callee.kind === FrameKind.CALL && callee.recordOwner === undefined && callee.truncated !== true
+    && (callee.entryWrites?.spentUtxos.size ?? 0) > 0
+    && leavesUnnamedRecordsUnspent(callee.artifact, callee.entry, callee.calls.length + 1);
+}
+
 /** The records one callee frame declares, in the order its entry's block layout names them. */
 function declaredRecords(callee: HopCallee): readonly HopCalleeRecord[] {
-  return frameDataRecordIndices(callee.artifact, callee.entry)
+  return (leavesUnnamedRecords(callee)
+    ? namedDataRecordIndices(callee.artifact, callee.entry) : frameDataRecordIndices(callee.artifact, callee.entry))
     .map((nftIndex) => callee.records[nftIndex])
     .filter((record): record is HopCalleeRecord => record !== undefined);
 }
@@ -1062,6 +1073,9 @@ export function calleeFrames(options: {
       const index = indexOf(node.id);
       return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
     });
+    const unnamedSlots = leavesUnnamedRecords(callee)
+      ? unnamedSlotDeclarations(frameDataRecordIndices(callee.artifact, callee.entry).length - declared.length, writeEntries)
+      : [];
     const segments = Array.from({ length: positions }, (_unused, position) => [
       ...declared.map((record): DraftRecordEntry => {
         const index = indexOf(record.id);
@@ -1084,6 +1098,7 @@ export function calleeFrames(options: {
         }
         return { in: index, out: index, viewIn: 'carried', viewOut: 'carried' };
       }),
+      ...unnamedSlots,
       ...readEntries,
       ...(byWrite === undefined ? writesAt(position) : []),
     ]);
@@ -1115,12 +1130,13 @@ export function calleeFrames(options: {
     // A node the frame reads and its batch also spends is one input (`calleeEntryWrites`): the read keeps the view the
     // batch's own declaration of the node starts each segment from, the spent view up to the write's segment and the
     // written one after it, as the hop keeps its own frame's (`batchSpentReads`).
-    const groupsFrom = declared.length + readEntries.length;
+    const readsFrom = declared.length + unnamedSlots.length;
+    const groupsFrom = readsFrom + readEntries.length;
     for (const segment of segments) {
       readEntries.forEach((read, ordinal) => {
         const spent = segment.slice(groupsFrom).find((entry) => entry.in !== INDEX_NONE && entry.in === read.in);
         if (!(spent?.viewIn instanceof Uint8Array)) return;
-        segment[declared.length + ordinal] = { ...read, viewIn: spent.viewIn, viewOut: spent.viewIn };
+        segment[readsFrom + ordinal] = { ...read, viewIn: spent.viewIn, viewOut: spent.viewIn };
       });
     }
     // Each segment this frame writes a record in leaves it at the placeholder the composer declares for that segment's

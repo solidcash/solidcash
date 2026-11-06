@@ -1,11 +1,11 @@
 /**
  * The order one call takes a deployment's pools in.
  *
- * A master, a validator and a facet are each one of a pool whose UTXOs serve alike: a composition spends one and
- * recreates it in place. Only one of two transactions that spend a UTXO can be mined, so callers that all take a pool's
- * first UTXO collide however large a pool the deployment funded. Each call takes the pools in an order of its own
- * instead, so two independent calls usually spend different UTXOs. This is no lease: two calls can still draw the same
- * UTXO, and the chance falls with the pool's size.
+ * A master, a validator, a facet and a compute side-car are each one of a pool whose UTXOs serve alike: a composition
+ * spends one and recreates it in place. Only one of two transactions that spend a UTXO can be mined, so callers that all
+ * take a pool's first UTXO collide however large a pool the deployment funded. Each call takes the pools in an order of
+ * its own instead, so two independent calls usually spend different UTXOs. This is no lease: two calls can still draw
+ * the same UTXO, and the chance falls with the pool's size.
  *
  * A UTXO keeps the rank it first drew for the whole call. A call reads a pool again each time it is planned, and the
  * proxy hop reads its pools once more to broadcast, so the same UTXOs come first every time, and a frame that takes the

@@ -84,6 +84,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_SELF_NOT_CALLER_SELF',
   'V5_DELEGATE_TARGET_MISMATCH',
   'V5_INTERNAL_LOCK_MISMATCH',
+  'V5_INTERNAL_CATEGORY_MISMATCH',
   'V5_RETVAL_MISMATCH',
   'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
@@ -1129,6 +1130,12 @@ function emitVisit(s: NamedStack): void {
       }, () => {
         s.pick('index', 'i').op(1, ['lock'], O.OP_UTXOBYTECODE);
         s.pick('xTarget', 't').emit(1, ['t'], (em) => dropFront(em, 2)).op(2, [], O.OP_EQUALVERIFY);
+        // A helper is a master of the contract whose records it runs on. Contracts can share a lock, as the pairs of a
+        // factory do, so the lock alone does not say so.
+        s.pick('index', 'i').emit(1, ['own'], (em) => {
+          em.op(O.OP_UTXOTOKENCATEGORY).count(32).op(O.OP_SPLIT, O.OP_DROP);
+        });
+        s.pick('xContext', 'x').op(2, [], O.OP_EQUALVERIFY);
       });
     }, () => {
       // A message call's callee presents the target, or the address that target identifies: a body that read the

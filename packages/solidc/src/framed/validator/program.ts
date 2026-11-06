@@ -63,6 +63,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V2_MASTER_INDEX_OUT_OF_RANGE',
   'V2_MASTER_WITNESS_BLOCK_MALFORMED',
   'V2_STATE_INPUT_INDEX_OUT_OF_RANGE',
+  'V2_CREATED_OUTPUT_INDEX_OUT_OF_RANGE',
   'V3_DUPLICATE_MASTER',
   'V3_MASTERS_MISSING',
   'V3_MASTER_NOT_POINTING_HERE',
@@ -119,6 +120,12 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_RECORD_VALUE_DECREASED',
   'V7_SEND_OUTPUT_SHARED',
   'V7_OUTPUT_OF_TWO_CONTRACTS',
+  'V7_RECORD_INDEX_OF_TWO_CONTRACTS',
+  'V7_RECORD_OUTPUT_OUT_OF_RANGE',
+  'V7_SPENT_RECORD_NAMED_BY_OUTPUT',
+  'V7_CREATED_RECORD_DELETED',
+  'V7_CREATED_OVER_OWN_INPUT',
+  'V7_STATE_INPUT_LISTED_TWICE',
   'V7_VALUE_NOT_CONSERVED',
   'V8_SETTLE_REQUIRED_MISSING',
   'V8_SETTLE_NOT_REQUIRED',
@@ -1375,9 +1382,9 @@ function emitCallTreeRules(e: Emitter): void {
  */
 const RECORD_SLOT_BYTES = 22;
 /**
- * The slot's state: declared and not deleted, deleted, read at its input, and created by a declaration. A record keeps
- * the name its first declaration gave it: a spent record is named by its input, and a record the transaction creates by
- * its output alone, in every frame that declares it (`emitLaterDeclaration`).
+ * The slot's state: declared and not deleted, deleted, read at its input, and created by a declaration. A spent record
+ * is named by its input in every declaration. A record the transaction creates has no input, so a later declaration
+ * names it by its output, alone or as its own index, and it outlives the transaction (`emitLaterDeclaration`).
  */
 const SLOT_LIVE = 0x01;
 const SLOT_DELETED = 0x02;
@@ -1831,8 +1838,8 @@ function emitRequireEntryShape(s: NamedStack): void {
  * table is on top of the alternate stack. The record's key is its input, or the output a created record appears at.
  * Its first declaration starts where the record does — the commitment the transaction spends at its input, or
  * nothing for a record created here — and a later one is of the same contract, starts at the view the last one
- * ended at, keeps the record's name, and follows no deletion. A created declaration's output is not an input carrying
- * the contract's token.
+ * ended at, and follows no deletion. A spent record is not named by its output alone, and a record created here is
+ * not deleted here. A created declaration's output is not an input carrying the contract's token.
  * A record a frame writes keeps at least its value, and its output joins the outputs the contract's frames declare.
  *
  * Most declarations restate a record a segment does not change, so that path writes nothing; the first declaration
@@ -1924,9 +1931,9 @@ function emitFirstDeclaration(s: NamedStack): void {
 }
 
 /**
- * A later declaration: the record is not deleted, it is the same contract's, it keeps the name its first declaration
- * gave it, and this declaration starts at the view the last one ended at. The slot changes only when the view does, the
- * declaration deletes the record, or a declaration reads it at its input for the first time.
+ * A later declaration: the record is not deleted, it is the same contract's, its name is one the record can have, and
+ * this declaration starts at the view the last one ended at. The slot changes only when the view does, the declaration
+ * deletes the record, or a declaration reads it at its index for the first time.
  *
  * Entry `[.., k, .., in, out, viewIn, viewOut, isCreated, key, before, after, flags, slotView]`, exit with `flags`
  * and `slotView` replaced by `slot`.
@@ -1937,10 +1944,13 @@ function emitLaterDeclaration(s: NamedStack): void {
     .push(new Uint8Array([0x00]), 'zero').op(2, [], O.OP_EQUALVERIFY);
   s.pick('slotView', 'sv').count(1, 'one').op(2, ['slotK', 'hash'], O.OP_SPLIT).remove('hash');
   s.pick('k', 'kk').count(1, 'width').op(2, ['tag'], O.OP_NUM2BIN).op(2, [], O.OP_EQUALVERIFY);
-  // One name per record: a record created here is declared by its output alone, and a spent one by its input.
+  // A spent record is not named by its output alone, and a record created here is not deleted here.
   s.pick('flags', 'f').push(Uint8Array.from([SLOT_CREATED]), 'createdFlag').op(2, ['c'], O.OP_AND)
-    .push(new Uint8Array([0x00]), 'zero').op(2, ['spent'], O.OP_EQUAL).op(1, ['created'], O.OP_NOT)
-    .pick('isCreated', 'c').op(2, [], O.OP_NUMEQUALVERIFY);
+    .push(new Uint8Array([0x00]), 'zero').op(2, ['spent'], O.OP_EQUAL).branch(() => {
+      s.pick('isCreated', 'c').op(1, [], O.OP_NOT, O.OP_VERIFY);
+    }, () => {
+      s.pick('out', 'o').push(INDEX_NONE_RAW, 'none').op(2, [], O.OP_EQUAL, O.OP_NOT, O.OP_VERIFY);
+    });
   s.pick('viewIn', 'v').op(1, ['hash'], O.OP_HASH160).pick('slotView', 'sv').count(1, 'one')
     .op(2, ['slotHash'], O.OP_SPLIT, O.OP_NIP).op(2, [], O.OP_EQUALVERIFY);
   // Unchanged: the same view, not deleted, and already read at its input or created here.
@@ -2056,7 +2066,7 @@ function emitWalkMintedMasters(s: NamedStack): void {
 
 /**
  * Every record's last declaration lands at an output of its contract that carries the view it ends at, or deletes
- * the record; and every record a frame read at an input is a state UTXO the contract lists.
+ * the record and leaves no record there; and every record a frame read at an input is a state UTXO the contract lists.
  *
  * Entry and exit `[M, declared, listed]`, the record table on top of the alternate stack, where it stays.
  */
@@ -2082,13 +2092,24 @@ function emitRequireRecordEnds(s: NamedStack): void {
           s.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
           s.op(2, [], O.OP_EQUALVERIFY);
         });
-      // A record read at its input is a state UTXO of its contract that the settle list names. Only a spent record is
-      // read, so the slot is an input's; a record created here is declared by its output alone and is never read.
-      s.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['t'], O.OP_AND)
-        .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['isTouched'], O.OP_EQUAL).branch(() => {
+      // A record read at its input is a state UTXO of its contract that the settle list names. A record created here
+      // has no input: a read of it at its own index is its later frames', and no list holds it.
+      s.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED | SLOT_CREATED]), 'mask').op(2, ['t'], O.OP_AND)
+        .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['readInput'], O.OP_EQUAL).branch(() => {
           s.pick('listed', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
             .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
             .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isListed'], O.OP_EQUAL).op(1, [], O.OP_VERIFY);
+        });
+      // A deleted record leaves no record at its index. An earlier declaration that kept it marked the output, and that
+      // mark would otherwise admit a mutable NFT of the contract there, one no chain ends at.
+      s.pick('state', 'st').push(Uint8Array.from([SLOT_DELETED]), 'deleted').op(2, ['d'], O.OP_AND)
+        .push(Uint8Array.from([SLOT_DELETED]), 'deleted').op(2, ['gone'], O.OP_EQUAL).branch(() => {
+          s.pick('out', 'o').op(1, ['isOutput'], O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN).branch(() => {
+            s.pick('out', 'o').op(1, ['pin'], O.OP_OUTPUTTOKENCATEGORY);
+            s.pickBottom(SETTLE_DECLARED_POSITION, 'declared').pick('k', 'kk').emit(2, ['category'], emitDeclaredAt);
+            s.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
+            s.op(2, [], O.OP_EQUAL, O.OP_NOT, O.OP_VERIFY);
+          });
         });
       }));
       for (const name of ['state', 'k', 'out', 'view']) s.remove(name);

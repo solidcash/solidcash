@@ -1490,14 +1490,14 @@ describe('the validator program refuses each rule it enforces', () => {
   });
 });
 
-describe('a record keeps the name its first declaration gave it', () => {
+describe('how a transaction names its records', () => {
   const VIEW_AFTER_UPDATE = seedBytes('names:E:updated', 6);
 
   /**
    * One contract whose root creates `E` between two calls. `A.update` rewrites it and `A.read` reads it, each by its
-   * output alone, as the SDK names a record an earlier frame created. `funders` adds users' coins behind the contract's
-   * inputs and `events` adds outputs ahead of the created record, which is how its index falls below or past the
-   * transaction's input count.
+   * output alone, as the SDK names a record an earlier frame created; the tests below also keep it at its own index, as
+   * a frame keeps its own creation in its later segments. `funders` adds users' coins behind the contract's inputs and
+   * `events` adds outputs ahead of the created record, which is how its index falls below or past the input count.
    */
   function createdRecordPlan(options: { readonly funders: number; readonly events: number }): CompositionPlan {
     const contract: ContractPlan = {
@@ -1599,8 +1599,10 @@ describe('a record keeps the name its first declaration gave it', () => {
   );
 
   test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
-    'refuses a later frame that names a created record by its index, %s',
+    'accepts a later declaration that keeps a created record at its own index, %s',
     (_name, layout) => {
+      // A frame keeps a record it created by the index in its later segments, and the SDK lays that out, so a wallet's
+      // coin count must not decide it: more funding inputs move the created index below the input count.
       for (const masters of [['A.read'], ['A.update', 'A.read']]) {
         const composition = laidOut(createdRecordPlan(layout));
         const index = createdIndex(composition);
@@ -1608,10 +1610,7 @@ describe('a record keeps the name its first declaration gave it', () => {
           const entry = composition.blocks.get(master)!.segments[0]![0]!;
           composition.blocks.get(master)!.segments[0]![0] = { ...entry, in: index };
         }
-        const decided = verdicts(composition);
-        expect(decided.program).toBe(false);
-        expect(decided.derivation).toBe('V7_TOUCHED_RECORDS_MISMATCH');
-        expect(decided.reference).not.toBe('accepted');
+        expect(verdicts(composition)).toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
       }
     },
   );
@@ -1622,17 +1621,89 @@ describe('a record keeps the name its first declaration gave it', () => {
     composition.blocks.get('A.call')!.segments[0]![0] = { ...entry, in: INDEX_NONE };
     const decided = verdicts(composition);
     expect(decided.program).toBe(false);
-    expect(decided.derivation).toBe('V7_CHAIN_START_MISMATCH');
+    expect(decided.derivation).toBe('V7_SPENT_RECORD_NAMED_BY_OUTPUT');
     expect(decided.reference).not.toBe('accepted');
   });
 
-  test('refuses a delete of a record the transaction created', () => {
+  test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
+    'refuses a delete of a record the transaction created, %s',
+    (_name, layout) => {
+      const composition = laidOut(createdRecordPlan(layout));
+      const index = createdIndex(composition);
+      const entry = composition.blocks.get('A.read')!.segments[0]![0]!;
+      composition.blocks.get('A.read')!.segments[0]![0] = { ...entry, in: index, out: INDEX_NONE, viewOut: new Uint8Array(0) };
+      const decided = verdicts(composition);
+      expect(decided.program).toBe(false);
+      expect(decided.derivation).toBe('V7_CREATED_RECORD_DELETED');
+      expect(decided.reference).not.toBe('accepted');
+    },
+  );
+
+  test('leaves no record at the index of one a frame kept and a later frame deleted', () => {
+    // The earlier declaration marks the output as a record's. The control deletes the record over a plain output, and
+    // the same transaction with a mutable NFT of the contract at that index is refused: no chain ends there.
+    const deleting = (): Composition => {
+      const plan = createdRecordPlan(PAST_THE_INPUTS);
+      const composition = laidOut({
+        ...plan,
+        masters: plan.masters.map((master) => (master.id === 'A.read'
+          ? { ...master, segments: [{ touches: [{ slot: 'S', delete: true }] }] } : master.id === 'A.go'
+            ? { ...master, segments: master.segments.slice(0, 3).concat([{ touches: [] }]) } : master)),
+      });
+      // A record kept before its delete keeps the value floor, so the output at its index holds what it held.
+      const at = composition.slotIndex.get('S')!;
+      (composition.outputs.find((output) => output.index === at) as { value: bigint }).value = composition.inputs[at]!.value;
+      return composition;
+    };
+    const control = deleting();
+    expect(verdicts(control)).toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+
+    const forged = deleting();
+    const at = forged.slotIndex.get('S')!;
+    const planted = forged.outputs.find((output) => output.index === at)!;
+    (planted as { lockingBytecode: Uint8Array }).lockingBytecode = forged.inputs[at]!.lockingBytecode;
+    (planted as { token: TokenShape }).token = mutableTokenShape(forged.inputs[at]!.token.category, seedBytes('names:planted', 6));
+    const decided = verdicts(forged);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).toBe('V7_CENSUS_UNEXPECTED_MUTABLE');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('refuses a created record over an input of its own contract', () => {
     const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
-    const entry = composition.blocks.get('A.read')!.segments[0]![0]!;
-    composition.blocks.get('A.read')!.segments[0]![0] = { ...entry, in: entry.out, out: INDEX_NONE, viewOut: new Uint8Array(0) };
+    const stateInput = composition.slotIndex.get('S')!;
+    for (const block of composition.blocks.values()) {
+      block.segments.forEach((segment, position) => {
+        segment.forEach((entry, at) => {
+          if (entry.in === INDEX_NONE) segment[at] = { ...entry, out: stateInput };
+        });
+        block.segments[position] = segment;
+      });
+    }
     const decided = verdicts(composition);
     expect(decided.program).toBe(false);
     expect(decided.derivation).not.toBe('accepted');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('holds a created entry to a real output, and a state input to one listing', () => {
+    const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    composition.transcript.settles[0] = {
+      ...composition.transcript.settles[0]!, createdOutputs: [composition.outputs.length + 1],
+    };
+    composition.inputs[composition.validatorIndex]!.validator!.transcript = composition.transcript;
+    const pastTheOutputs = verdicts(composition);
+    expect(pastTheOutputs.program).toBe(false);
+    expect(pastTheOutputs.derivation).toBe('V2_CREATED_OUTPUT_INDEX_OUT_OF_RANGE');
+    expect(pastTheOutputs.reference).not.toBe('accepted');
+
+    const twice = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    const listed = twice.transcript.settles[0]!;
+    twice.transcript.settles[0] = { ...listed, stateInputs: [...listed.stateInputs, listed.stateInputs[0]!] };
+    twice.inputs[twice.validatorIndex]!.validator!.transcript = twice.transcript;
+    const decided = verdicts(twice);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).toBe('V7_STATE_INPUT_LISTED_TWICE');
     expect(decided.reference).not.toBe('accepted');
   });
 

@@ -52,7 +52,7 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
 - **A master reads its record count from the segments its head keeps**, rather than reading its block again and
   stepping over the frame's header and every call record: `UniswapV2Pair.burn` spends 6.8M rather than 10.4M.
 - **The census runs in a facet of its own** (section 24). The validator is a head and two facets: the head keeps the
-  settlement walk and holds the census facet's leading push to the settle lists and accumulators that walk left, and
+  settlement walk and holds the census facet's leading push to the settle list and accumulators that walk left, and
   the census facet weighs V3's completeness and V7's census from that checkpoint. A builder reads the checkpoint off
   the close at which the head refuses a placeholder (`fillCensusCheckpoints`).
 - **The transcript's padding length trails it** (section 6), so the head and its facets cut the padding off before
@@ -1041,8 +1041,8 @@ M = "PC7" 0x02
                                                   transaction creates for that contract, for readers of the
                                                   transcript. The program holds each entry only to naming a real
                                                   output (V2) and decides nothing from it: a kept record's chain
-                                                  starts at its input's commitment, and a created record is
-                                                  declared by its output alone, which its slot remembers
+                                                  starts at its input's commitment, and a created record's first
+                                                  declaration has no input, which its slot remembers
     padding:u8[]     paddingLength:u16            zero bytes that buy the input's budget (section 16); the length
                                                   comes last, so the head and its facets cut the padding off the
                                                   end before they read anything else
@@ -1249,6 +1249,11 @@ Conversely, every covered master that is not a root appears in exactly one calle
   means recreated in place, at every index the transaction has (an output past the inputs stands over no master, so a
   minting one there is refused unless the transcript lists it as minted), and a bare 32-byte value is an immutable NFT
   under S2's exclusion of fungible amounts, so its index must be one a frame in X's context lists as an event;
+- **ownership**: the program keeps one slot per index and one mark per output, so an index a record sits at, and an
+  output a frame names as a record's, an event or a send, are one settled contract's. A second contract's declaration at
+  that index, or a frame of it naming that output, is refused. A record that ends deleted leaves no mutable NFT of X at
+  its index, though an earlier declaration kept it there. A created record's output is not an input carrying X's token,
+  and every listed state input is listed once;
 - **values** as in S4: every record keeps at least its value, no two frames in X's context list the same send, and
   `growth(X) >= in(X) - out(X)` (4b), where `in(X)` is the value of the frames in X's context that are not
   `DELEGATE` or `INTERNAL`, and `out(X)` is the value of their call records and their listed sends.
@@ -1937,12 +1942,14 @@ record = in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut
     record's slot as created, which is how the program tells its index apart from a spent state UTXO's; the
     transcript's settlement also lists that output (section 6, `createdOutputs`), and the program decides nothing
     from the list;
-  - a frame that reads or rewrites a record an earlier frame created: `in = 0xFFFF` and `out` at that output index,
-    because the record has no input to name. A record keeps the name its first declaration gave it: a created record
-    is declared by its output alone in every frame, a spent record by its input in every frame, and a declaration
-    under the other name is refused (V7), whatever the transaction's input count;
-  - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it. A dynamic write
-    deletes the old chunks it replaces; a mapping `delete` deletes no record (section 20).
+  - a later declaration of a record the transaction created: it has no input to name, so the declaration names it by
+    its output alone (`in = 0xFFFF`) or keeps it at its own index (`in == out == that output index`). The SDK keeps a
+    frame's own creation at its index in that frame's later segments, and names another frame's by its output alone.
+    Both continue one chain, whatever the transaction's input count, and the index may be one a user's coin sits at;
+  - a spent record is named by its input in every declaration, and a declaration by its output alone is refused (V7);
+  - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it, and a record the
+    transaction created is not deleted in it (V7). A dynamic write deletes the old chunks it replaces; a mapping
+    `delete` deletes no record (section 20).
 - **Values.** Entry `i` is the value the body's `i`-th long-value read takes; the body checks it against the root in
   the node's head (section 20). A read that finds its value inline, and a frame that reads none, leave the entry
   empty or the list short, and a master's head takes at most as many as its widest body reads.
@@ -2205,9 +2212,9 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
     root in the head.
 - **Inserts across frames.**
   - A node created in the transaction can be relinked or updated by later frames.
-  - The creating frame's record entry has `in = 0xFFFF`, and its view chain starts at creation; each later frame
-    that reads or rewrites the node declares it by the created output's index alone, with `in = 0xFFFF`, and continues
-    from the view the frame before it left.
+  - The creating frame's record entry has `in = 0xFFFF`, and its view chain starts at creation; each later declaration
+    that reads or rewrites the node names the created output's index, with `in = 0xFFFF` or `in == out`, and continues
+    from the view the one before it left.
   - V7 and S1 require the final view to equal the created output.
   - `MarketplaceData.initialize` inserts 8 MECE tags in one frame, using today's batch insert. A batch decides every
     predecessor against the list it started from, so inserts into one gap share their predecessor: each insert's
@@ -2404,9 +2411,9 @@ about 24 masters. So a validator may span several inputs, and since `dc4c1bdc6` 
 - Facets do not carry the head's hash, so the two hashes are not circular.
 
 **Census checkpoint.**
-- The census weighs what the walk gathered: the settle lists `created` and `listed`, the record table, the output
+- The census weighs what the walk gathered: the settle list `listed`, the record table, the output
   marks and the value totals. The census facet's unlocking bytecode is `push(checkpoint) push(padding) push(F_2)`,
-  where `checkpoint = created || listed || table || marks || totals`, and the head requires that first push to equal
+  where `checkpoint = listed || table || marks || totals`, and the head requires that first push to equal
   the checkpoint its own walk left: one `OP_EQUALVERIFY`, the computed checkpoint below the stated one. Each part's
   length follows from the transaction's input and output counts and the settle count, so the facet cuts them apart
   without lengths of their own.

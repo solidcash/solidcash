@@ -388,15 +388,15 @@ const MUTATIONS: ReadonlyArray<{
     },
   },
   {
-    name: 'a later frame names a created record by its index',
+    name: 'a later declaration keeps a created record at its index',
     needs: (plan) => plan.masters.some((master, at) => plan.masters.some((other, later) => later !== at
       && master.segments.some((segment) => segment.touches.some((touch) =>
         plan.createdSlots.some((slot) => slot.id === touch.slot)))
       && other.segments.some((segment) => segment.touches.some((touch) =>
         plan.createdSlots.some((slot) => slot.id === touch.slot))))),
     apply: (rng, composition) => {
-      // A created record has no input, and its index may be one a state or a user's coin sits at. Naming it there
-      // would read it as a spent record, which the settle list does not list.
+      // A created record has no input, and its index may be one a user's coin sits at. A later declaration may keep it
+      // there all the same, as a frame keeps its own creation: every model decides it as the same chain.
       const later = [...composition.blocks.values()].flatMap((block) => block.segments.flat())
         .filter((entry) => entry.in === INDEX_NONE && entry.viewIn.length > 0);
       if (later.length === 0) return;
@@ -823,7 +823,7 @@ export function generateCases(seed: number, count: number): GeneratedCase[] {
     // unmutated, so every compared case is one mutation away from a valid composition. A mutation aimed at one
     // shape draws longer, until the plan also has that shape.
     const mutation = MUTATIONS[index % MUTATIONS.length]!;
-    const attempts = mutation.needs === undefined ? 24 : 240;
+    const attempts = mutation.needs === undefined ? 24 : 1200;
     let plan: CompositionPlan | undefined;
     for (let attempt = 0; attempt < attempts && plan === undefined; attempt += 1) {
       const candidate = randomPlan(new Rng(seed + index * 7919 + attempt * 2654435761), seed, index);

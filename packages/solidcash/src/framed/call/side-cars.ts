@@ -117,8 +117,11 @@ async function livePool(
   taken: ReadonlySet<string> = new Set(),
 ): Promise<readonly Utxo[]> {
   if (count === 0) return [];
+  // The lock is public, so anyone can pay a token to it; a coin whose commitment holds no result is no side-car and
+  // would abort the covenant that splits one off it.
   const mutable = async (): Promise<Utxo[]> => (await provider.getUtxosForLockingBytecode(lock))
-    .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && !taken.has(`${utxo.txid}:${utxo.vout}`));
+    .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && utxo.token.nft.commitment.length >= 64
+      && !taken.has(`${utxo.txid}:${utxo.vout}`));
   let utxos = await mutable();
   const addUtxo = (provider as { addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
   if (utxos.length < count && typeof addUtxo === 'function') {

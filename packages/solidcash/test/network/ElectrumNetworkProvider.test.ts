@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import type { ElectrumClient, ElectrumClientEvents } from '@electrum-cash/network';
+import { HDSigner } from '../../src/HDSigner.js';
 import { Network } from '../../src/interfaces.js';
 import ElectrumNetworkProvider from '../../src/network/ElectrumNetworkProvider.js';
+import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from '../../src/stateful/logical-identity.js';
+import { addressToLockScript } from '../../src/utils.js';
 
 /**
  * What the provider owes a reader that an Electrum server does not state: the lock a listing was made at, and a
@@ -92,7 +95,7 @@ describe('the Electrum provider', () => {
 
   it('shares a listing in flight, and never one that left before a broadcast', async () => {
     const { server, client } = electrumServer();
-    const provider = new ElectrumNetworkProvider(Network.REGTEST, { electrum: client });
+    const provider = new ElectrumNetworkProvider(Network.REGTEST, { electrum: client, listingCacheMilliseconds: 0 });
     const listed = (): number => server.requests
       .filter(({ method }) => method === 'blockchain.scripthash.listunspent').length;
     await Promise.all([provider.getUtxosForLockingBytecode(LOCK), provider.getUtxosForLockingBytecode(LOCK)]);
@@ -104,6 +107,52 @@ describe('the Electrum provider', () => {
     const after = provider.getUtxosForLockingBytecode(LOCK);
     await Promise.all([before, after]);
     expect(listed()).toBe(4);
+  });
+
+  it('serves a repeat read from a recent listing until a broadcast or its time is up', async () => {
+    const { server, client } = electrumServer();
+    const provider = new ElectrumNetworkProvider(Network.REGTEST, { electrum: client, listingCacheMilliseconds: 80 });
+    const listed = (): number => server.requests
+      .filter(({ method }) => method === 'blockchain.scripthash.listunspent').length;
+    const [first] = await provider.getUtxosForLockingBytecode(LOCK);
+    const [second] = await provider.getUtxosForLockingBytecode(LOCK);
+    expect(listed()).toBe(1);
+    expect(second).toStrictEqual(first);
+    expect(second).not.toBe(first);
+
+    await provider.sendRawTransaction('00');
+    await provider.getUtxosForLockingBytecode(LOCK);
+    expect(listed()).toBe(2);
+
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+    await provider.getUtxosForLockingBytecode(LOCK);
+    expect(listed()).toBe(3);
+  });
+
+  it('does not keep a listing a broadcast overtook', async () => {
+    const { server, client } = electrumServer();
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const slow = {
+      ...client,
+      connect: client.connect,
+      disconnect: client.disconnect,
+      request: async (method: string, ...params: unknown[]) => {
+        if (method === 'blockchain.scripthash.listunspent' && server.requests.length === 0) {
+          const answer = client.request(method, ...params as string[]);
+          await held;
+          return answer;
+        }
+        return client.request(method, ...params as string[]);
+      },
+    } as unknown as ElectrumClient<ElectrumClientEvents>;
+    const provider = new ElectrumNetworkProvider(Network.REGTEST, { electrum: slow });
+    const before = provider.getUtxosForLockingBytecode(LOCK);
+    await provider.sendRawTransaction('00');
+    release!();
+    await before;
+    await provider.getUtxosForLockingBytecode(LOCK);
+    expect(server.requests.filter(({ method }) => method === 'blockchain.scripthash.listunspent')).toHaveLength(2);
   });
 
   it('reopens a socket a caller opened when it drops, as a long composition makes it', async () => {
@@ -143,6 +192,38 @@ describe('the Electrum provider', () => {
     } as unknown as ElectrumClient<ElectrumClientEvents>;
     const provider = new ElectrumNetworkProvider(Network.REGTEST, { electrum: dropping });
     await expect(provider.sendRawTransaction('00')).resolves.toBe(TXID);
+  });
+
+  it('seeds a signer\'s CREATE nonce from the anchors the chain already holds', async () => {
+    const { client } = electrumServer();
+    const anchored = new Map<string, string>();
+    const anchoring = {
+      ...client,
+      connect: client.connect,
+      disconnect: client.disconnect,
+      request: async (method: string, ...params: unknown[]) => {
+        const commitment = anchored.get(params[0] as string);
+        if (method === 'blockchain.scripthash.listunspent' && commitment !== undefined) {
+          return [{
+            tx_hash: TXID, tx_pos: 0, value: 1_000, height: 1,
+            token_data: { amount: '0', category: 'cd'.repeat(32), nft: { capability: 'none', commitment } },
+          }];
+        }
+        return client.request(method, ...params as string[]);
+      },
+    } as unknown as ElectrumClient<ElectrumClientEvents>;
+    const provider = new ElectrumNetworkProvider(Network.REGTEST, { electrum: anchoring, listingCacheMilliseconds: 0 });
+    const signer = HDSigner.fromPhrase('test test test test test test test test test test test junk', provider);
+    const deployer = signer.getAddress();
+    for (const nonce of [0n, 1n]) {
+      const address = deriveLogicalCreateAddress(deployer, nonce);
+      anchored.set(
+        binToHex(sha256.hash(addressToLockScript(address)).reverse()),
+        buildLogicalIdentityCommitment(deployer, nonce, address),
+      );
+    }
+    await provider.prepareSigner(signer);
+    expect(signer._getTransactionNonceState()).toBe(2n);
   });
 
   it('passes a server refusal on, without waiting for an index', async () => {

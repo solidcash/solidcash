@@ -17,6 +17,8 @@ interface OptionsBase {
   manualConnectionManagement?: boolean;
   /** How long a broadcast waits for the server's index to hold it; `DEFAULT_INDEX_WAIT_MILLISECONDS` by default. */
   indexWaitMilliseconds?: number;
+  /** How long a listing serves repeat reads; `DEFAULT_LISTING_CACHE_MILLISECONDS` by default, and 0 turns that off. */
+  listingCacheMilliseconds?: number;
   /** Category of the default oracle pool a block.* reader binds, 64 hex characters in display byte order. */
   oraclePoolCategory?: string;
 }
@@ -41,7 +43,11 @@ const ELECTRUM_PROTOCOL_VERSION = '1.5.0';
 
 // A server polls its node's mempool every two seconds by default, so a busy one is seconds behind a broadcast.
 const DEFAULT_INDEX_WAIT_MILLISECONDS = 15_000;
-const INDEX_POLL_MILLISECONDS = 100;
+const INDEX_POLL_MILLISECONDS = 250;
+
+// One call plans in passes, which list its locks six or seven times over in a few seconds. A coin another client spends
+// meanwhile fails the transaction as it would a moment later, and a broadcast of this provider's drops the cache.
+const DEFAULT_LISTING_CACHE_MILLISECONDS = 2_500;
 
 // A page's raw transactions, hex: a framed transaction is up to 200 kB of it, and a call proves a few dozen coins.
 const TRANSACTION_CACHE_BYTES = 64_000_000;
@@ -58,6 +64,10 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   private transactionBytes: number = 0;
   /** Listings in flight by script hash: reads of a page or a plan ask for one lock several times at once. */
   private readonly listings = new Map<string, Promise<ElectrumUtxo[]>>();
+  /** Recent listings by script hash, with when each was asked for. */
+  private readonly listed = new Map<string, { readonly at: number; readonly utxos: ElectrumUtxo[] }>();
+  private readonly listingCacheMilliseconds: number;
+  private listingGeneration: number = 0;
   /** Signers whose CREATE nonce was seeded from the chain. */
   private readonly seeded = new WeakSet<Signer>();
   readonly oraclePoolCategory?: string;
@@ -72,6 +82,7 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
     this.electrum = this.instantiateElectrumClient(network, options);
     this.manualConnectionManagement = options?.manualConnectionManagement ?? false;
     this.indexWaitMilliseconds = options?.indexWaitMilliseconds ?? DEFAULT_INDEX_WAIT_MILLISECONDS;
+    this.listingCacheMilliseconds = options?.listingCacheMilliseconds ?? DEFAULT_LISTING_CACHE_MILLISECONDS;
   }
 
   private instantiateElectrumClient(network: Network, options: Options): ElectrumClient<ElectrumClientEvents> {
@@ -133,17 +144,37 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
     return utxos;
   }
 
-  /** One listing of a script hash for everyone who asks while it is in flight. */
+  /** One listing of a script hash for everyone who asks while it is in flight, and for a moment after. */
   private listUnspent(scriptHash: string): Promise<ElectrumUtxo[]> {
+    const at = Date.now();
+    const recent = this.listed.get(scriptHash);
+    if (recent !== undefined && at - recent.at < this.listingCacheMilliseconds) return Promise.resolve(recent.utxos);
     const pending = this.listings.get(scriptHash);
     if (pending !== undefined) return pending;
+    const generation = this.listingGeneration;
     const listing = (this.performRequest(
       'blockchain.scripthash.listunspent', scriptHash, 'include_tokens',
-    ) as Promise<ElectrumUtxo[]>).finally(() => {
+    ) as Promise<ElectrumUtxo[]>).then((utxos) => {
+      // A broadcast since this listing left may have spent what it holds.
+      if (generation === this.listingGeneration && this.listingCacheMilliseconds > 0) {
+        for (const [key, entry] of this.listed) {
+          if (at - entry.at >= this.listingCacheMilliseconds) this.listed.delete(key);
+        }
+        this.listed.set(scriptHash, { at, utxos });
+      }
+      return utxos;
+    }).finally(() => {
       if (this.listings.get(scriptHash) === listing) this.listings.delete(scriptHash);
     });
     this.listings.set(scriptHash, listing);
     return listing;
+  }
+
+  /** Nothing listed so far serves a read from here on: the caller has changed what the server would answer. */
+  private forgetListings(): void {
+    this.listingGeneration += 1;
+    this.listings.clear();
+    this.listed.clear();
   }
 
   async getBlockHeight(): Promise<number> {
@@ -162,9 +193,10 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
   async sendRawTransaction(txHex: string): Promise<string> {
     const txid = await this.performRequest('blockchain.transaction.broadcast', txHex) as string;
     this.rememberTransaction(txid, txHex);
-    // A listing that left before this broadcast does not hold it, so nobody may join one now.
-    this.listings.clear();
+    // A listing from before this broadcast does not hold it, and neither does one made while the index catches up.
+    this.forgetListings();
     await this.awaitIndexed(txid);
+    this.forgetListings();
     return txid;
   }
 
@@ -195,7 +227,7 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
       } catch {
         if (Date.now() >= deadline) return;
       }
-      await new Promise((resolve) => { setTimeout(resolve, INDEX_POLL_MILLISECONDS); });
+      await wait(INDEX_POLL_MILLISECONDS);
     }
   }
 
@@ -270,7 +302,12 @@ export default class ElectrumNetworkProvider implements NetworkProvider {
 
 /** Whether a request failed for want of a socket rather than on the server's answer. */
 function isConnectionFailure(error: unknown): boolean {
-  return error instanceof Error && /^(?:Connection lost|Unable to send request to a disconnected server)/.test(error.message);
+  return error instanceof Error
+    && /^(?:Connection lost|Unable to send request to a disconnected server)/.test(error.message);
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 }
 
 interface ElectrumUtxo {

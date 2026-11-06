@@ -90,14 +90,6 @@ export interface CompilerOptions {
     envelopeTransport?: 'root-route' | 'proxy-forward';
   };
   enforceFunctionParameterTypes?: boolean;
-  /**
-   * BCH-only entry guards: address parameters that must carry a locking bytecode of an exact byte length, keyed
-   * `"Contract.function.parameter"`. The compiler checks the length at the entry and refuses any other shape, which
-   * is how a contract says a parameter is a contract lock (a 35-byte P2SH32) rather than a bare 20-byte identity or
-   * a P2PKH alias. The key names the entry explicitly, so recipient parameters are unaffected. Omitted on EVM
-   * builds, whose addresses are 20-byte values.
-   */
-  entryAddressLockLengths?: Record<string, number>;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
   // (FinalRequireStatementError) rather than the default warning. Such a path compiles to an

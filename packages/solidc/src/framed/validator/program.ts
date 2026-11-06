@@ -1956,6 +1956,12 @@ function emitLaterDeclaration(s: NamedStack): void {
       }, () => {
         fs.push(Uint8Array.from([SLOT_LIVE]), 'slot');
       });
+      // A created record stays created while it is live: an update does not give it an input, and a later frame
+      // may still read it at its output index. A delete drops the mark with the record.
+      fs.pick('out', 'o').push(INDEX_NONE_RAW, 'none').op(2, ['deletes'], O.OP_EQUAL).branch(() => {}, () => {
+        fs.pick('flags', 'f').push(Uint8Array.from([SLOT_CREATED]), 'createdBit').op(2, ['keepCreated'], O.OP_AND)
+          .op(2, ['slot'], O.OP_OR);
+      });
       fs.roll('flags').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['kept'], O.OP_AND).op(2, ['slot'], O.OP_OR);
       fs.pick('isCreated', 'c').op(1, ['reads'], O.OP_NOT).branch(() => {
         fs.push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['slot'], O.OP_OR);

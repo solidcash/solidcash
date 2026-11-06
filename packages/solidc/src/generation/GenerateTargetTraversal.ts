@@ -1737,6 +1737,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private scopeDepth = 0;
   private currentFunction: FunctionDefinitionNode;
+  /** The contract being compiled, for options keyed by `Contract.function.parameter`. */
+  private currentContractName: string | undefined;
   private constructorParameterCount: number;
   private contractParameters: ParameterNode[] = [];
   private contractFunctionKeys: Set<string> = new Set();
@@ -5554,6 +5556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.dynamicReadBases = [];
+    this.currentContractName = node.name;
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
     this.currentContractUsesBlockOracle = node.usesBlockOracle;
@@ -7905,6 +7908,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.isSubroutineUseProbe = this.isSubroutineUseProbe;
 
     // Visit the function definition to generate its body bytecode
+    subTraversal.currentContractName = this.currentContractName;
     subTraversal.currentFunction = func;
     subTraversal.visit(func);
 
@@ -8315,6 +8319,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // 1. Push function params to tracked stack
       // 2. Run body (including covenant verification for stateful contracts)
       // 3. removeFinalVerify / cleanStack -> leaves 1 truthy value
+      subTraversal.currentContractName = this.currentContractName;
       subTraversal.currentFunction = func;
       subTraversal.visit(func);
       return subTraversal;
@@ -11233,13 +11238,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   enforceFunctionParameterType(node: ParameterNode): void {
-    if (!this.shouldEnforceFunctionParameterType(node)) return;
+    // Unwrap ValueType to get the underlying type for enforcement
+    const effectiveType = node.type instanceof ValueType ? node.type.underlyingType : node.type;
+    const configuredLock = effectiveType instanceof AddressType ? this.entryAddressLockLength(node.name) : undefined;
+    if (configuredLock === undefined && !this.shouldEnforceFunctionParameterType(node)) return;
 
     const stackIndex = this.getStackIndex(node.name);
     this.emit(encodeInt(BigInt(stackIndex)), { location: node.location, positionHint: PositionHint.START });
-
-    // Unwrap ValueType to get the underlying type for enforcement
-    const effectiveType = node.type instanceof ValueType ? node.type.underlyingType : node.type;
 
     if (effectiveType === PrimitiveType.BOOL) {
       // For booleans, we take it from the stack and force-convert it to a boolean using OP_0NOTEQUAL
@@ -11260,6 +11265,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
 
       // We don't perform any stack operations, because these ops leave the original stack unchanged
+    }
+
+    // A configured entry address lock: the parameter must be a locking bytecode of exactly this byte length. The
+    // stack index pushed above is on the stack; copy the value, size it, compare, and drop the copy. The key names
+    // one entry explicitly (`Contract.function.parameter`), so recipient parameters stay unconstrained.
+    if (effectiveType instanceof AddressType && configuredLock !== undefined) {
+      this.emit(Op.OP_PICK, { location: node.location, positionHint: PositionHint.START });
+      this.emit(Op.OP_SIZE, { location: node.location, positionHint: PositionHint.START });
+      this.emit(encodeInt(BigInt(configuredLock)), { location: node.location, positionHint: PositionHint.START });
+      this.emit(Op.OP_EQUALVERIFY, { location: node.location, positionHint: PositionHint.START });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
     }
 
     // H6: bounded ints (uintN/intN), enums and fixed-point entry params are raw attacker-controlled VM numbers.
@@ -11302,6 +11318,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
       this.emit(Op.OP_DROP, loc);
     }
+  }
+
+  /** The locking-bytecode length the project configured for this entry parameter, or undefined. */
+  private entryAddressLockLength(parameterName: string): number | undefined {
+    const table = this.compilerOptions.entryAddressLockLengths;
+    if (table === undefined) return undefined;
+    const contract = this.currentContractName;
+    const fn = this.currentFunction?.name;
+    if (contract === undefined || fn === undefined) return undefined;
+    return table[`${contract}.${fn}.${parameterName}`];
   }
 
   shouldEnforceFunctionParameterType(node: ParameterNode): boolean {

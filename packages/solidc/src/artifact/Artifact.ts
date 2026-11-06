@@ -5068,6 +5068,8 @@ export function generateArtifact(
         // without every artifact gaining a field. The SDK's value emulation reads it back through
         // `artifactAddressForm`, so an explicit 'bytecode' compile is not mistaken for the 'hash' default.
         ...(compilerOptions.addressForm !== undefined && { addressForm: compilerOptions.addressForm }),
+        ...(compilerOptions.entryAddressLockLengths !== undefined
+          && { entryAddressLockLengths: compilerOptions.entryAddressLockLengths }),
         ...(compilerOptions.messageBus && compilerOptions.messageBusKernel !== undefined
           && { messageBusKernel: compilerOptions.messageBusKernel }),
         ...(compilerOptions.messageBusEntryPoolCapacity !== undefined

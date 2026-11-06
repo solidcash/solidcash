@@ -1366,10 +1366,11 @@ function emitCallTreeRules(e: Emitter): void {
  * names two real indices names the same one twice, so a record that is not deleted ends at its key.
  */
 const RECORD_SLOT_BYTES = 22;
-/** The slot's state: declared and not deleted, deleted, and read at its input by some declaration. */
+/** The slot's state: declared and not deleted, deleted, read at its input, and created by a declaration. */
 const SLOT_LIVE = 0x01;
 const SLOT_DELETED = 0x02;
 const SLOT_TOUCHED = 0x04;
+const SLOT_CREATED = 0x08;
 
 /**
  * An output's marks: a record output a frame declares, an event a frame lists, a send a frame lists, each made by a
@@ -1872,10 +1873,6 @@ function emitDeclare(s: NamedStack): void {
 function emitFirstDeclaration(s: NamedStack): void {
   const O = Opcodes;
   s.remove('slotView').remove('flags');
-  // Whether the record is one the transcript lists as created for the contract.
-  s.pickBottom(SETTLE_CREATED_POSITION, 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP)
-    .count(1, 'one').op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD)
-    .count(1, 'width').op(2, ['tag'], O.OP_NUM2BIN).op(2, ['listedCreated'], O.OP_EQUAL);
   s.pick('isCreated', 'c').branch(() => {
     // A created declaration's output is not an input that carries the contract's token: its chain would start
     // from nothing over a commitment the transaction spends.
@@ -1889,11 +1886,9 @@ function emitFirstDeclaration(s: NamedStack): void {
     });
     s.op(0, ['start'], O.OP_0);
   }, () => {
-    s.pick('listedCreated', 'c').branch(() => {
-      s.op(0, ['start'], O.OP_0);
-    }, () => {
-      s.pick('key', 'kk').op(1, ['start'], O.OP_UTXOTOKENCOMMITMENT);
-    });
+    // The chain starts at the commitment the input carries. The transcript's `created` list is not consulted:
+    // trusting it let a forged entry start a kept record at nothing (B-6).
+    s.pick('key', 'kk').op(1, ['start'], O.OP_UTXOTOKENCOMMITMENT);
   });
   s.pick('viewIn', 'v').op(2, [], O.OP_EQUALVERIFY);
   // The slot: deleted or live, read at its input unless created here, this contract's, ending at this view.
@@ -1901,6 +1896,10 @@ function emitFirstDeclaration(s: NamedStack): void {
     s.push(Uint8Array.from([SLOT_DELETED]), 'slot');
   }, () => {
     s.push(Uint8Array.from([SLOT_LIVE]), 'slot');
+  });
+  // A record this declaration creates: the slot remembers it, so a later frame may read it at the output index.
+  s.pick('isCreated', 'c').branch(() => {
+    s.push(Uint8Array.from([SLOT_CREATED]), 'createdFlag').op(2, ['slot'], O.OP_OR);
   });
   s.pick('isCreated', 'c').op(1, ['reads'], O.OP_NOT).branch(() => {
     s.push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['slot'], O.OP_OR);
@@ -1913,7 +1912,7 @@ function emitFirstDeclaration(s: NamedStack): void {
     s.op(0, ['marks'], O.OP_FROMALTSTACK);
     emitMarkOutput(s, 'output', MARK_RECORD);
     s.op(1, [], O.OP_TOALTSTACK);
-    s.pick('isCreated', 'c').pick('listedCreated', 'c2').op(2, ['created'], O.OP_BOOLOR).op(1, ['kept'], O.OP_NOT);
+    s.pick('isCreated', 'c').op(1, ['kept'], O.OP_NOT);
     s.pick('key', 'kk').op(1, ['isInput'], O.OP_TXINPUTCOUNT, O.OP_LESSTHAN).op(2, ['weighed'], O.OP_BOOLAND);
     s.branch(() => {
       s.pick('output', 'o').op(1, ['after'], O.OP_OUTPUTVALUE).pick('key', 'kk').op(1, ['before'], O.OP_UTXOVALUE)
@@ -1921,7 +1920,6 @@ function emitFirstDeclaration(s: NamedStack): void {
     });
     s.remove('output');
   });
-  s.remove('listedCreated');
 }
 
 /**
@@ -2051,8 +2049,8 @@ function emitWalkMintedMasters(s: NamedStack): void {
 
 /**
  * Every record's last declaration lands at an output of its contract that carries the view it ends at, or deletes
- * the record; and every record a frame read at an input is a state UTXO the contract lists, or one the transcript
- * lists as created for it.
+ * the record; every record a frame read at an input is a state UTXO the contract lists; and every record a frame
+ * read at an output index is one a frame created, marked in the slot by its first declaration.
  *
  * Entry and exit `[M, declared, created, listed]`, the record table on top of the alternate stack, where it stays.
  */
@@ -2078,20 +2076,19 @@ function emitRequireRecordEnds(s: NamedStack): void {
           s.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
           s.op(2, [], O.OP_EQUALVERIFY);
         });
-      // A record read at an input is a listed state UTXO of its contract, or a record listed as created for it.
+      // A record read at an input is a state UTXO of its contract that the settle list names. A record read at
+      // an output index is one a frame created, which its first declaration marked in the slot. The transcript's
+      // created list is not trusted here (B-6).
       s.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['t'], O.OP_AND)
         .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['isTouched'], O.OP_EQUAL).branch(() => {
           s.pick('key', 'kk').op(1, ['isInput'], O.OP_TXINPUTCOUNT, O.OP_LESSTHAN).branch(() => {
             s.pick('listed', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
               .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
-              .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isListed'], O.OP_EQUAL);
+              .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isListed'], O.OP_EQUAL).op(1, [], O.OP_VERIFY);
           }, () => {
-            s.count(0, 'isListed');
+            s.pick('state', 'st').push(Uint8Array.from([SLOT_CREATED]), 'createdFlag').op(2, ['marked'], O.OP_AND)
+              .push(Uint8Array.from([SLOT_CREATED]), 'createdFlag').op(2, ['isCreated'], O.OP_EQUAL).op(1, [], O.OP_VERIFY);
           });
-          s.pick('created', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
-            .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
-            .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isCreated'], O.OP_EQUAL);
-          s.op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
         });
       }));
       for (const name of ['state', 'k', 'out', 'view']) s.remove(name);

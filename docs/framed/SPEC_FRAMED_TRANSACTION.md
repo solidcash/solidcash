@@ -1038,8 +1038,12 @@ M = "PC7" 0x02
                       createdCount:u8, created:u8[])[]
                                                   contracts this validator settles (those with 2+ masters);
                                                   `created` lists the output indices of the records the
-                                                  transaction creates for that contract, which is what tells a
-                                                  frame's `in == out` at such an index apart from a state UTXO
+                                                  transaction creates for that contract. The program does not
+                                                  trust it for acceptance: a kept record's chain starts at its
+                                                  input's commitment, and a created record is marked in the
+                                                  record slot by its creating declaration, which is what tells
+                                                  a later frame's `in == out` at that index apart from a state
+                                                  UTXO. The list remains in the census checkpoint
     padding:u8[]     paddingLength:u16            zero bytes that buy the input's budget (section 16); the length
                                                   comes last, so the head and its facets cut the padding off the
                                                   end before they read anything else
@@ -1930,9 +1934,10 @@ record = in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut
 
 - **Records.** A record entry names its input `in` and its output `out`:
   - an existing record that is kept: `in == out`, because section 5 recreates at the same index;
-  - the frame that creates a record: `in = 0xFFFF`, and `out` is a trailing output. The transcript's settlement
-    lists that output (section 6, `createdOutputs`), which is how the program tells a created record's index apart
-    from a spent state UTXO's;
+  - the frame that creates a record: `in = 0xFFFF`, and `out` is a trailing output. The declaration marks the
+    record's slot as created, which is how the program tells its index apart from a spent state UTXO's; the
+    transcript's settlement also lists that output (section 6, `createdOutputs`) for the census checkpoint, and the
+    program does not depend on the list;
   - a frame that reads or rewrites a record an earlier frame created: `in == out == that output index`, because the
     frame resolves the record through its own declaration and the record has no input to name;
   - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it. A dynamic write

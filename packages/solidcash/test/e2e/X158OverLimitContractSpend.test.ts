@@ -122,7 +122,9 @@ async function bulkSpend(artifact: typeof OVER, lead: boolean = false, covenant:
     await provider.addUtxo(p2pkh.address, leadUtxo);
     builder.addInput(leadUtxo, p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
   }
-  const unlocker = contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv), 1n) as Record<string, unknown>;
+  const unlocker = contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv), 1n) as unknown as {
+    covenantUnlocker?: boolean;
+  };
   if (covenant) unlocker.covenantUnlocker = true;
   builder.addInput(utxo, unlocker as never);
   builder.addOutput({ to: contract.address, amount: lead ? 200_000n : 150_000n });

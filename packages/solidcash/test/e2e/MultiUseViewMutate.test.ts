@@ -57,7 +57,7 @@ async function buildTx(sels: [Uint8Array, Uint8Array]): Promise<TransactionBuild
   const loopTargets = encodePushdataValue([TARGET, TARGET], 'address[]');
 
   const tb = new TransactionBuilder({ provider });
-  tb.addInput(callerUtxo, contract.unlock.run(p, viewReturn0, 1n, loopTargets, SEL) as never);
+  tb.addInput(callerUtxo, contract.unlock.run(p, viewReturn0, 1n, loopTargets, 1n, SEL) as never);
   tb.addInput(t0, mkUnlocker(sels[0]));
   tb.addInput(t1, mkUnlocker(sels[1]));
   tb.addInput(funder.utxo, funder.unlocker);
@@ -104,8 +104,8 @@ describe('R11 multi-use view+mutate: view-witness read + swap co-spend (mechanis
     const vr = encodePushdataValue([10n, 20n], 'int[]');
     const loopTargets = encodePushdataValue([TARGET, TARGET], 'address[]');
     const tb = new TransactionBuilder({ provider });
-    // run(p, viewReturn0, viewReturn1, viewReturn2, externalCallInputBase, loopTargets0, selector)
-    tb.addInput(callerUtxo, contract.unlock.run(p, vr, vr, vr, 1n, loopTargets, SEL) as never);
+    // run(p, viewReturn0, viewReturn1, viewReturn2, externalCallInputBase, loopTargets0, loopTargetStride0, selector)
+    tb.addInput(callerUtxo, contract.unlock.run(p, vr, vr, vr, 1n, loopTargets, 1n, SEL) as never);
     tb.addInput(t0, mkUnlocker(SEL));
     tb.addInput(t1, mkUnlocker(SEL));
     tb.addInput(funder.utxo, funder.unlocker);

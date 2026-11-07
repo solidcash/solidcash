@@ -11,6 +11,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { callRecordDigest, parseCallRecord } from '../../src/stateful/call-record.js';
 import { decodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 
 // Every fixture here deploys a child through a deliberately unguarded deploy entry (these tests cover the
@@ -461,7 +462,10 @@ describe('returning corpus form', () => {
       );
       expect(retOut).toBeDefined();
       expect(arts.C.abi.find((fn) => fn.name === 't')!.resultEncoding).toBe('evm-abi-v1');
-      expect(decodeEvmInvocationResult(retOut!.token!.nft!.commitment, ['int256'], arts.C.structs)).toEqual([9n]);
+      // Since call records (D50) the carrier commits to the call it answers: t()'s digest, a form byte, the result.
+      const record = parseCallRecord(retOut!.token!.nft!.commitment);
+      expect(record?.digest).toEqual(callRecordDigest(arts.C.abi.find((fn) => fn.name === 't')!, []));
+      expect(decodeEvmInvocationResult(record!.raw!, ['int256'], arts.C.structs)).toEqual([9n]);
 
       // x holds the freshly-deployed Other's genesis address (store kept it received for later txs).
       expect(Buffer.from((await c.getState()).x as Uint8Array).toString('hex'))
@@ -531,7 +535,10 @@ describe('return-event x deploy', () => {
       expect(Buffer.from(retOut.lockingBytecode).toString('hex')).toBe('51');
       // A Solidity import publishes its result as the ABI-encoded tuple.
       expect(arts.C.abi.find((fn) => fn.name === 't')!.resultEncoding).toBe('evm-abi-v1');
-      expect(decodeEvmInvocationResult(retOut.token!.nft!.commitment, ['int256'], arts.C.structs)).toEqual([9n]);
+      // Since call records (D50) the carrier commits to the call it answers: t()'s digest, a form byte, the result.
+      const record = parseCallRecord(retOut.token!.nft!.commitment);
+      expect(record?.digest).toEqual(callRecordDigest(arts.C.abi.find((fn) => fn.name === 't')!, []));
+      expect(decodeEvmInvocationResult(record!.raw!, ['int256'], arts.C.structs)).toEqual([9n]);
     });
   });
 });

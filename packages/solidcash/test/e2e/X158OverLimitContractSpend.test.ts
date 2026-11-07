@@ -10,7 +10,7 @@ import {
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { randomUtxo } from '../../src/utils.js';
-import type { Unlocker } from '../../src/interfaces.js';
+import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -59,10 +59,12 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * CALL. Rows 6 and 7 are that, constructed. This is the sharpest form of "no compile-time check can reach it":
  * the same deployed contract is spendable through one call and not through another.
  *
- * THE MOCK ACCEPTS THE VERY BYTES THE GATE REFUSES, which is what makes row 1 evidence rather than a
- * coincidence. `MOCK_CONSENSUS_LIMITS.maximumInputBytes` is 1,000,000 - 100x the real ceiling - so the
- * provider's decider takes the transaction and the gate is the only thing objecting. That relaxed profile is
- * also why `debug()`, which runs first in `send()`, does not speak: at 100x the limit the VM has no complaint.
+ * THE GATE READS THE LIMITS ITS PROVIDER PUBLISHES (NATIVE-PORT.md), so these rows run on one that publishes BCH's.
+ * `MOCK_CONSENSUS_LIMITS.maximumInputBytes` is 1,000,000 - 100x the real ceiling - so on the default mock nothing
+ * objects and the over-limit spend settles: row 2 keeps that as the control, because it is exactly the shape in
+ * which an over-limit contract reaches the benches looking deployable. On real limits `debug()` runs first in
+ * `send()` and refuses a plain contract input in the VM's own words (row 1c), so the rows flag the input as a
+ * covenant, whose debug `send()` swallows, as every stateful covenant unlocker is flagged. The gate then speaks.
  *
  * THIS IS NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor and an attacker does not call
  * `send()`. It is a correctness aid: the composer reads the arithmetic here instead of building, funding and
@@ -91,16 +93,25 @@ ${Array.from({ length: n }, (_, i) => `    acc = acc + ${i + 1} * 3 - ${i};`).jo
 const OVER = compileString(source(915));
 const UNDER = compileString(source(914));
 
+/** BCH's own size limits. The gate's consensus rules read what the provider publishes. */
+const REAL_LIMITS = { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumNftCommitmentBytes: 128 };
+
 interface Spend {
   builder: TransactionBuilder;
   raw: string;
   provider: MockNetworkProvider;
+  address: string;
+  utxo: Utxo;
   unlockingBytes: number;
 }
 
-/** Spend one `Bulk` deployment, optionally behind a P2PKH input so the reported index is not always 0. */
-async function bulkSpend(artifact: typeof OVER, lead: boolean = false): Promise<Spend> {
-  const provider = new MockNetworkProvider();
+/**
+ * Spend one `Bulk` deployment on a provider that publishes BCH's limits, optionally behind a P2PKH input so the
+ * reported index is not always 0. `covenant` sets the field every stateful covenant unlocker sets, which is what
+ * `send()` reads to swallow `debug()` (see the file comment).
+ */
+async function bulkSpend(artifact: typeof OVER, lead: boolean = false, covenant: boolean = true): Promise<Spend> {
+  const provider = new MockNetworkProvider({ consensusLimits: REAL_LIMITS });
   const contract = new Contract(artifact, [alicePkh], { provider });
   const utxo = randomUtxo({ satoshis: 200_000n });
   await provider.addUtxo(contract.address, utxo);
@@ -111,12 +122,14 @@ async function bulkSpend(artifact: typeof OVER, lead: boolean = false): Promise<
     await provider.addUtxo(p2pkh.address, leadUtxo);
     builder.addInput(leadUtxo, p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
   }
-  builder.addInput(utxo, contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv), 1n));
+  const unlocker = contract.unlock.spend(alicePub, new SignatureTemplate(alicePriv), 1n) as Record<string, unknown>;
+  if (covenant) unlocker.covenantUnlocker = true;
+  builder.addInput(utxo, unlocker as never);
   builder.addOutput({ to: contract.address, amount: lead ? 200_000n : 150_000n });
   const raw = builder.build();
   const index = lead ? 1 : 0;
   const unlockingBytes = decodeTransactionUnsafe(hexToBin(raw)).inputs[index].unlockingBytecode.length;
-  return { builder, raw, provider, unlockingBytes };
+  return { builder, raw, provider, address: contract.address, utxo, unlockingBytes };
 }
 
 /**
@@ -145,6 +158,16 @@ const sendError = async (builder: TransactionBuilder): Promise<string> => {
   try { await builder.send(); return ''; } catch (error) { return (error as Error).message; }
 };
 
+/** The byte rules' verdict alone, on the limits the provider publishes. */
+const byteRefusal = ({ raw, provider }: Spend): string => {
+  try {
+    messageBus.assertFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(raw)), {
+      consensusLimits: provider.consensusLimits,
+    });
+    return '';
+  } catch (error) { return (error as Error).message; }
+};
+
 describe('X158 - the over-limit refusal at the spend boundary', () => {
   it('0. the pair differs in size ONLY, and the compiler is silent on both', () => {
     // Both sides are the same contract with one statement more or less. Neither carries a diagnostic: the
@@ -160,7 +183,8 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
   });
 
   it('1. REFUSES the spend at the contract input, naming the contract and the overage', async () => {
-    const { builder, unlockingBytes } = await bulkSpend(OVER);
+    const spend = await bulkSpend(OVER);
+    const { builder, unlockingBytes } = spend;
     // 9,881 script + 21 constructor push + 3 redeem prefix + 34 pubkey + 66 signature + 1 for `k` = 10,006.
     expect(unlockingBytes).toBe(10_006);
     const message = await sendError(builder);
@@ -169,8 +193,17 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
     // The contract by name, and where its bytes went - an index alone does not say which contract to shrink.
     expect(message).toMatch(/it spends contract 'Bulk', whose 9902-byte redeem script fits the limit on its own/);
     expect(message).toMatch(/leaves only 98 bytes for the 104 bytes of arguments and redeem push/);
-    // Exactly one rule fired: a refusal that also tripped dust or size would prove nothing about this one.
-    expect(message).toMatch(/refused by 1 byte rule\(s\)/);
+    // Exactly one rule fired: a refusal that also tripped dust or size would prove nothing about this one. A VM on
+    // these limits objects to the same input, so `send()` reports it beside the rule; the rules are read alone here.
+    expect(byteRefusal(spend)).toMatch(/refused by 1 byte rule\(s\)/);
+  }, 300_000);
+
+  it('1c. WITHOUT THE COVENANT FLAG `debug()` refuses the same spend first, in the VM\'s own words', async () => {
+    // The path a plain contract input takes on a live network: the limit holds, and the gate is not what says so.
+    const { builder } = await bulkSpend(OVER, false, false);
+    const message = await sendError(builder);
+    expect(message).toMatch(/exceeds the maximum bytecode length\. Maximum bytecode length: 10000 bytes/);
+    expect(message).toMatch(/Unlocking bytecode length: 10006 bytes/);
   }, 300_000);
 
   it('1b. GUARD: one statement fewer - 12 script bytes - and the identical spend settles', async () => {
@@ -181,12 +214,14 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
     await expect(builder.send()).resolves.toBeDefined();
   }, 300_000);
 
-  it('2. THE MOCK ACCEPTS THE REFUSED BYTES, so the gate is the only objector', async () => {
-    // The decisive control, and the reason this is a spend-boundary problem at all. The mock publishes
+  it('2. THE DEFAULT MOCK ACCEPTS THE REFUSED BYTES, so only a published limit objects', async () => {
+    // The decisive control, and the reason this is a spend-boundary problem at all. The default mock publishes
     // `maximumInputBytes: 1_000_000`, so its decider takes the same bytes the gate just refused - exactly the
     // shape in which an over-limit contract reached the benches looking deployable.
-    const { builder, raw, provider } = await bulkSpend(OVER);
+    const { builder, raw, address, utxo } = await bulkSpend(OVER);
     expect(await sendError(builder)).toMatch(/consensus-unlocking-bytes/);
+    const provider = new MockNetworkProvider();
+    await provider.addUtxo(address, utxo);
     await expect(provider.sendRawTransaction(raw)).resolves.toBeTypeOf('string');
   }, 300_000);
 

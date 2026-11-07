@@ -65,15 +65,22 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * these. Nor is any number in dispute: `calculateDust` (444 + 3 x output bytes) and the gate's
  * `finalizedOutputDustThreshold` (3 x (bytes + 148)) are the same arithmetic.
  *
- * SO THE GATE STAYS PROVIDER-BLIND, and row 2b is the behavioural pin: the identical bytes reach the identical
- * refusal under both policies. Only an exact preflight receipt may carry a composer's destination profile into
- * the final send check.
+ * SO THE RELAY RULES STAY PROVIDER-BLIND, and row 2b is the behavioural pin: the identical bytes reach the identical
+ * refusal under both policies. Only an exact preflight receipt may suppress one in the final send check. The
+ * consensus rules read the limits the provider publishes (NATIVE-PORT.md), so rows 4 and 4b ask a provider that
+ * publishes BCH's own.
  *
  * NOT A SECURITY BOUNDARY. The SDK is an untrusted witness constructor; this is a correctness aid that saves a
  * round trip and a confusing node error. Nothing here constrains an attacker, who does not call `send()`.
  */
 
 const dustProvider = (): MockNetworkProvider => new MockNetworkProvider({ policy: { enforceDust: false } });
+
+/** BCH's own size limits. The mock's default publishes 1,000,000 input bytes, which the consensus rules then read. */
+const REAL_LIMITS = { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumNftCommitmentBytes: 128 };
+const realLimitsProvider = (): MockNetworkProvider => new MockNetworkProvider({
+  consensusLimits: REAL_LIMITS, policy: { enforceDust: false },
+});
 
 /** `OP_1`: a one-byte locking script, so its serialized output is 10 bytes and its dust threshold is exact. */
 const OP_TRUE_LOCKING = Uint8Array.from([0x51]);
@@ -233,7 +240,17 @@ describe('X131 - TransactionBuilder.send() decides its finalized bytes', () => {
     // Consensus refusals are the half `allowNonRelayable` can never suppress. 12,003 unlocking bytes is 2,003
     // over the 10,000-byte per-input ceiling, and the message says exactly that. This input has a custom
     // unlocker, so `send()` does not debug it and the gate is the first thing that speaks.
-    const message = await sendError(await oversizedInputBuilder(dustProvider(), 12_000));
+    const message = await sendError(await oversizedInputBuilder(realLimitsProvider(), 12_000));
+    expect(message).toMatch(/\[consensus\] consensus-unlocking-bytes at input 0/);
+    expect(message).toMatch(/12003 unlocking bytecode bytes is 2003 over the 10000-byte per-input script limit/);
+  });
+
+  it('4c. a provider that publishes no limits is judged by BCH\'s own, as every live provider is', async () => {
+    // The field cleared the way X130 row 5 clears it. No limits means the empty profile, not the provider's.
+    const provider = dustProvider();
+    const builder = await oversizedInputBuilder(provider, 12_000);
+    (provider as unknown as { consensusLimits: unknown }).consensusLimits = undefined;
+    const message = await sendError(builder);
     expect(message).toMatch(/\[consensus\] consensus-unlocking-bytes at input 0/);
     expect(message).toMatch(/12003 unlocking bytecode bytes is 2003 over the 10000-byte per-input script limit/);
   });
@@ -242,7 +259,7 @@ describe('X131 - TransactionBuilder.send() decides its finalized bytes', () => {
     // Differs from row 4 only in the push length, so row 4 measures the 10,000-byte ceiling and not the shape.
     // The provider then refuses it for the synthetic script's own leftover stack item, which is what proves
     // the bytes got past the gate rather than being admitted by accident.
-    const message = await sendError(await oversizedInputBuilder(dustProvider(), 9_960));
+    const message = await sendError(await oversizedInputBuilder(realLimitsProvider(), 9_960));
     expect(message).not.toMatch(/consensus-unlocking-bytes/);
     expect(message).toMatch(/unexpected number of items on the stack/);
   });

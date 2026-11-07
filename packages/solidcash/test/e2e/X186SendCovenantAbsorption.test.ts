@@ -1,12 +1,13 @@
 import { readdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
   Contract,
   SignatureTemplate,
   TransactionBuilder,
 } from '../../src/index.js';
+import { assertFinalizedBytesWithCovenant } from '../../src/message-bus/index.js';
 import { MockNetworkProvider } from '../../src/network/mock/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub, bobPub } from '../fixture/vars.js';
@@ -62,6 +63,12 @@ const DUST_FLOOR = 474n;
  */
 const lenient = (): MockNetworkProvider => new MockNetworkProvider({ policy: { enforceDust: false } });
 
+/** BCH's own size limits. The consensus rules read what a provider publishes, and `lenient` publishes 1,000,000. */
+const REAL_LIMITS = { maximumInputBytes: 10_000, maximumStackItemBytes: 10_000, maximumNftCommitmentBytes: 128 };
+const realLimitsProvider = (): MockNetworkProvider => new MockNetworkProvider({
+  consensusLimits: REAL_LIMITS, policy: { enforceDust: false },
+});
+
 const sendError = async (builder: TransactionBuilder): Promise<string> => {
   try { await builder.send(); return ''; } catch (error) { return (error as Error).message; }
 };
@@ -104,8 +111,9 @@ async function customBuilder(
 }
 
 /** X131 rows 4/4b verbatim: one custom-unlocker input whose unlocking bytecode is `pushBytes + 3` long. */
-async function oversizedInputBuilder(pushBytes: number): Promise<TransactionBuilder> {
-  const provider = lenient();
+async function oversizedInputBuilder(
+  pushBytes: number, provider: MockNetworkProvider = lenient(),
+): Promise<TransactionBuilder> {
   const locking = Uint8Array.from([0x51]);
   const utxo = randomUtxo({ satoshis: 2_000_000n });
   await provider.addUtxo(binToHex(locking), utxo);
@@ -259,15 +267,22 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       // this row, asserts a CONSENSUS byte refusal, and is on the custom-unlocker path - so it is the
       // pre-existing send in the suite that the new code actually reaches. It gains the covenant line and
       // keeps every assertion it had, which is the whole claim: annotation, not replacement.
-      const refused = await sendError(await oversizedInputBuilder(12_000));
+      const refused = await sendError(await oversizedInputBuilder(12_000, realLimitsProvider()));
       expect(refused).toMatch(/^messageBus: finalized transaction refused by its covenant and 1 byte rule\(s\)/);
       expect(refused).toMatch(/\[consensus\] consensus-unlocking-bytes at input 0/);
       expect(refused).toMatch(/12003 unlocking bytecode bytes is 2003 over the 10000-byte per-input script limit/);
-      expect(refused).toContain(SENTENCE.leftover);
+
+      // A VM on those limits stops at the input's size, so the script's own sentence comes from one that runs it:
+      // the same two deciders, with the byte rule at the published limits and the VM at the mock's relaxed ones.
+      const relaxed = await oversizedInputBuilder(12_000);
+      const judged = (): void => assertFinalizedBytesWithCovenant(
+        relaxed, decodeTransactionUnsafe(hexToBin(relaxed.build())), [], { consensusLimits: REAL_LIMITS },
+      );
+      expect(judged).toThrow(SENTENCE.leftover);
 
       // Row 4b's shape, 2,040 bytes smaller, is admitted by the gate - and the provider then produces row 4's
       // covenant sentence verbatim. Same two deciders, same sentence, one on each side of the byte boundary.
-      const admitted = await sendError(await oversizedInputBuilder(9_960));
+      const admitted = await sendError(await oversizedInputBuilder(9_960, realLimitsProvider()));
       expect(admitted).not.toMatch(/consensus-unlocking-bytes/);
       expect(admitted).toContain(`error in evaluating input index 0: ${SENTENCE.leftover}`);
     }, 60_000);
@@ -291,7 +306,8 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
     // `/finalized transaction refused/` is asserted absent in rows 1c, 2b and 2e. It matches a gate refusal.
     expect(hostile).toMatch(/finalized transaction refused/);
     // `/consensus-unlocking-bytes/` is asserted absent in row 3's second half.
-    expect(await sendError(await oversizedInputBuilder(12_000))).toMatch(/consensus-unlocking-bytes/);
+    expect(await sendError(await oversizedInputBuilder(12_000, realLimitsProvider())))
+      .toMatch(/consensus-unlocking-bytes/);
     // `BYTES_ONLY` and `BOTH_REFUSED` are mutually exclusive at the anchor, so neither can absorb the other.
     expect(hostile).not.toMatch(BYTES_ONLY);
     expect(await sendError(await p2pkhBuilder(100n, alicePub, true))).not.toMatch(BOTH_REFUSED);

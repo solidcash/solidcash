@@ -79,8 +79,9 @@ A Router port should take pair addresses in its path, or provide the same extern
 
 ## SolidCash fixes in this worktree
 
-- `TransactionBuilder.send`: a send with no exact message-bus receipt judges bytes against the destination
-  provider's consensus limits instead of the hard-coded BCH 10,000-byte default. The mock publishes 10 MB.
+- `TransactionBuilder.send`: a send with no exact message-bus receipt judges the consensus rules against the
+  destination provider's limits instead of the hard-coded BCH 10,000-byte default. The mock publishes 10 MB. The
+  relay rules are not the provider's to relax: dust, the 100,000-byte ceiling and the rest still apply.
 - `StatefulContract._isPureRead`: an omitted `writesState` flag counts as a read when the compiler published a
   `view`/`pure` modifier.
 - `forceStateful: true`: stateless library/test contracts get a master NFT and a `returnEvent` slot, so

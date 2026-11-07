@@ -1537,7 +1537,8 @@ export class TransactionBuilder {
     // `standard: false` and `dustRelayFeePerKb: 0n`, which is a harness that models no relay policy at all.
     // `MockNetworkProvider` is also the only provider in `src/network/` that publishes `policy`, so wiring it
     // in here would soften the gate on the test harness and on nothing else. Only an exact preflight receipt
-    // from a protocol composer may carry a different destination profile into this second, final byte check.
+    // from a protocol composer may suppress a relay rule in this second, final byte check; a send without one
+    // judges consensus by the provider's published limits (see below) and relay by the rules themselves.
     //
     // X158. THE OVER-LIMIT REFUSAL LIVES HERE, and this is the only place it can. `solidc` warns when the
     // un-constructed script passes 10,000 bytes and cannot do better: it does not know the constructor
@@ -1556,15 +1557,16 @@ export class TransactionBuilder {
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
     const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./message-bus/preflight.js');
-    const { finalizedByteGateReceiptOf, finalizedByteGateOptionsForProvider } = await import('./message-bus/finalized-byte-gate.js');
-    // A send that never ran an exact message-bus preflight has no receipt. The destination provider's
-    // consensus limits are then the only profile available, and they are the authority a real provider
-    // would judge the bytes against. With no configured limits this is the empty profile, unchanged.
+    const { finalizedByteGateReceiptOf } = await import('./message-bus/finalized-byte-gate.js');
+    // A send that never ran an exact message-bus preflight has no receipt. The destination provider's consensus
+    // limits are then the only consensus profile available, and they are the authority a real provider would judge
+    // the bytes against; a provider that publishes none gets the empty profile, BCH's own limits. Its limits reach
+    // the consensus rules only: the relay rules stay on, because a provider's profile says nothing about relay.
     assertFinalizedBytesWithCovenant(
       this,
       transaction,
       inputSubjectsOfBuilder(this),
-      finalizedByteGateReceiptOf(this) ?? finalizedByteGateOptionsForProvider(this.provider),
+      finalizedByteGateReceiptOf(this) ?? { consensusLimits: this.provider.consensusLimits },
     );
 
     let txid: string;

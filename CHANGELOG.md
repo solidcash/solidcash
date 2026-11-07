@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.50.1
+
+`@solidcash/solidcash` only; the other packages stay at 0.50.0, whose `^0.50.0` ranges take it.
+
+- A deployment's metadata probe signs with placeholders. The probe genesis, which reads a token's name, symbol, decimals
+  and supply before the registry is built, is held and never broadcast, yet it asked a wallet that funds the deployment
+  to sign it, so the wallet saw two geneses for one. A wallet now signs once, for the genesis that goes out; a local key
+  signs the probe as before.
+
 ## 0.50.0
 
 SolidCash's version numbers now depart from CashScript's: 0.50.0 follows 0.14.0-beta.1 and tracks no CashScript release.

@@ -15,6 +15,7 @@ import type {
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact } from '@solidcash/utils';
 import type { Output, Unlocker, Utxo } from '../interfaces.js';
+import { isExternallySignedUnlocker } from '../external-signing.js';
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
 import type { DeployOptions } from '../stateful/stateful-lifecycle-types.js';
@@ -190,12 +191,29 @@ export function wrappedCategory(nativeToken: NativeTokenOptions | undefined): st
 }
 
 /** Reads the contract's token facts from a probe genesis that is never broadcast. */
+/**
+ * The probe's stand-in for an unlocker a wallet signs: the same lock and the same placeholder the wallet's signature
+ * would replace, with no wallet behind it. The probe genesis is held and never broadcast, so nobody is asked to sign
+ * it, and a wallet that funds a deployment signs once, for the genesis that goes out. Any other unlocker signs as it
+ * would, asking nobody.
+ */
+function probeUnlocker(unlocker: Unlocker): Unlocker {
+  if (!isExternallySignedUnlocker(unlocker)) return unlocker;
+  return {
+    generateLockingBytecode: () => unlocker.generateLockingBytecode(),
+    generateUnlockingBytecode: (context) => unlocker.generateUnlockingBytecode(context),
+  };
+}
+
 async function probeTokenFacts(
   artifact: Artifact, categoryVariable: string | undefined, options: DeployOptions, probe: ProbeDeploy,
 ): Promise<ContractTokenFacts> {
   const staging = stageBroadcasts(options.provider);
+  const nativeFunder = options.nativeToken?.funder;
   const { contract } = await probe({
     ...options, provider: staging.provider, bcmr: undefined, metadataProbe: true,
+    funder: probeUnlocker(options.funder),
+    ...(nativeFunder === undefined ? {} : { nativeToken: { ...options.nativeToken, funder: probeUnlocker(nativeFunder) } }),
   });
   // A framed genesis registers a per-entry bundle on the provider it went to, so the framed read finds the shards.
   const framed: FramedProbe | undefined = artifact.composition?.convention === 'framed'

@@ -5,15 +5,19 @@
  * is broadcast.
  */
 // cspell:ignore stETH STETH XMIN XSIL
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import { compileFile } from '@solidcash/solidc';
 import { describe, expect, it, vi } from 'vitest';
 import { NATIVE_TOKEN_EXTENSION } from '../../src/bcmr/index.js';
+import type { ExternalTransactionSigner } from '../../src/external-signing.js';
+import { HDSigner } from '../../src/HDSigner.js';
+import { SignatureTemplate, Signer as SdkSigner } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import type Signer from '../../src/Signer.js';
 import { StatefulContract, type DeployOptions, type DeployResult } from '../../src/stateful/index.js';
+import type { WcTransactionObject } from '../../src/walletconnect-utils.js';
 import { aliceTokenAddress } from '../fixture/vars.js';
 
 const PADDED = new URL('../fixture/bcmr_padded_token.scash', import.meta.url);
@@ -209,5 +213,45 @@ describe('a token without IERC20Metadata', () => {
     await expect(deploy({ nativeToken: { funding: held.funding } }))
       .rejects.toThrow('the token category must differ from the contract category');
     await expectUnspent(held);
+  });
+});
+
+describe('a token a wallet funds', () => {
+  const artifact = compileFile(PADDED, { messageBus: false });
+
+  it('asks the wallet once, for the genesis it broadcasts: the probe that reads the contract signs nothing', async () => {
+    const provider = new MockNetworkProvider();
+    const key = HDSigner.fromPhrase('test test test test test test test test test test test junk', provider);
+    const funding: Utxo = { txid: '5e'.repeat(32), vout: 0, satoshis: 2_000_000n };
+    const token: Utxo = { txid: '6e'.repeat(32), vout: 0, satoshis: 1_000_000n };
+    await provider.addUtxo(key.getAddress(), funding);
+    await provider.addUtxo(key.getAddress(), token);
+    // A wallet over the key, as a wc2 wallet answers bch_signTransaction: it fills its own inputs and keeps a record.
+    const requests: WcTransactionObject[] = [];
+    const own = binToHex(key.getLockingBytecode());
+    const template = new SignatureTemplate(key.privateKey);
+    const wallet: ExternalTransactionSigner = {
+      async signTransaction(request) {
+        requests.push(request);
+        const transaction = { ...request.transaction, inputs: request.transaction.inputs.map((input) => ({ ...input })) };
+        request.sourceOutputs.forEach((source, inputIndex) => {
+          if (binToHex(source.lockingBytecode) !== own) return;
+          transaction.inputs[inputIndex]!.unlockingBytecode = template.unlockP2PKH().generateUnlockingBytecode({
+            transaction: request.transaction, sourceOutputs: request.sourceOutputs, inputIndex,
+          });
+        });
+        return { signedTransaction: binToHex(encodeTransaction(transaction)) };
+      },
+    };
+    const external = SdkSigner.external({ wallet, address: key.getAddress() }, provider);
+    await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo: funding, funder: external.unlockP2PKH(), changeAddress: key.getAddress(),
+      initArgs: [hexToBin(token.txid)],
+      bcmr: { token: { symbol: 'STETH' }, timestamp: TIMESTAMP }, nativeToken: { funding: token },
+    });
+    expect(requests).toHaveLength(1);
+    // The one request is the genesis that went out: it spent both coins.
+    const live = await provider.getUtxos(key.getAddress());
+    expect(live.some((utxo) => utxo.txid === funding.txid || utxo.txid === token.txid)).toBe(false);
   });
 });

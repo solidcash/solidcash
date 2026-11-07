@@ -10520,6 +10520,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.BLOCK_TIMESTAMP) {
           return { kind: 'state', name: '__block_timestamp', type: 'uint256' };
         }
+        // The direct builder states the height beside the clock. A framed builder states the clock alone.
+        if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.BLOCK_NUMBER
+          && this.compilerOptions.composition !== 'framed') {
+          return { kind: 'state', name: '__block_number', type: 'uint256' };
+        }
         // The frame's own `msg.value`, which a builder states beside the caller's state as the clock is.
         if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_VALUE) {
           return { kind: 'state', name: '__msg_value', type: 'uint256' };

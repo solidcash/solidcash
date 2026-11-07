@@ -139,7 +139,7 @@ import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend, type BlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
-  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
+  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolClock,
 } from '../oracle/pool/reader.js';
 import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
 import { calleePoolReaders, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
@@ -7252,10 +7252,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const oraclePool = entryArtifact.usesBlockOracle !== true ? undefined
       : entryArtifact === this.inner.artifact ? this.inner.oraclePool
         : artifactOraclePool(entryArtifact) ?? this.inner.oraclePool;
-    const oracleTimestamp = oraclePool === undefined
-      ? undefined : await readPoolTimestamp(this.inner.provider, oraclePool);
-    const recipeState: Record<string, StateValue> = oracleTimestamp === undefined
-      ? onChainState.state : { ...onChainState.state, __block_timestamp: oracleTimestamp };
+    const oracleClock = oraclePool === undefined
+      ? undefined : await readPoolClock(this.inner.provider, oraclePool);
+    const recipeState: Record<string, StateValue> = oracleClock === undefined ? onChainState.state : {
+      ...onChainState.state, __block_timestamp: oracleClock.timestamp, __block_number: oracleClock.number,
+    };
 
     // Carrier coverage changes physical input/output ownership. Resolve it as soon as the effective entry handler
     // and selected route rows are known, before any journal provider lookup can mask a deterministic coverage

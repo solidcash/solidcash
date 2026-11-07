@@ -50,6 +50,7 @@ const { shapedLines, shapedKernelLines } = scanKernelVocabulary({
   root,
   censusCommit: manifest.censusCommit,
   forbiddenApplicationNames: manifest.forbiddenApplicationNames,
+  genericUses: manifest.genericVocabularyUses,
 });
 if (shapedLines.length > 0) {
   throw new Error(`kernel implementation added application-shaped production names:\n${shapedLines.join('\n')}`);
@@ -61,12 +62,12 @@ const requiredTestCommands = [
   { id: 'build', argv: ['yarn', 'build'] },
   { id: 'generated-artifacts', argv: ['yarn', 'workspace', 'testing-suite', 'vitest', 'run', 'test/artifact-freshness.test.ts'] },
   { id: 'utils-source-maps', argv: ['yarn', 'workspace', '@solidcash/utils', 'vitest', 'run', 'test/script.test.ts'] },
-  { id: 'compiler-journal', argv: ['yarn', 'workspace', 'solidc', 'vitest', 'run', 'test/journal-message-bus'] },
-  { id: 'sdk-journal', argv: ['yarn', 'workspace', 'solidcash', 'vitest', 'run', 'test/journal-message-bus'] },
+  { id: 'compiler-journal', argv: ['yarn', 'workspace', '@solidcash/solidc', 'vitest', 'run', 'test/journal-message-bus'] },
+  { id: 'sdk-journal', argv: ['yarn', 'workspace', '@solidcash/solidcash', 'vitest', 'run', 'test/journal-message-bus'] },
   {
     id: 'sdk-regressions',
     argv: [
-      'yarn', 'workspace', 'solidcash', 'vitest', 'run',
+      'yarn', 'workspace', '@solidcash/solidcash', 'vitest', 'run',
       'test/unit/AssignPhysicalReturnIndices.test.ts', 'test/unit/DirectMappingReadPlan.test.ts',
       'test/unit/KernelJournalExecutionSchedule.test.ts',
       'test/unit/KernelDirtyCarrierResolution.test.ts',
@@ -384,7 +385,11 @@ if (!testsOnly) {
   }
 }
 
-if (!allowDirty && git('status', '--porcelain').length > 0) {
+// A build stamps what it generates with the time it compiled, so a clean run still leaves those lines changed. That is
+// no change of state; any other changed line, or a new file, is.
+const COMPILE_TIME_LINE = '^[[:space:]]*"?updatedAt"?:';
+if (!allowDirty && (git('diff', 'HEAD', '-I', COMPILE_TIME_LINE, '--stat').length > 0
+  || git('ls-files', '--others', '--exclude-standard').length > 0)) {
   throw new Error('kernel beta gate changed tracked/generated state; regenerate and commit it before release');
 }
 

@@ -24,7 +24,7 @@ const cwd = path.resolve(argValue('--cwd', selfRoot));
 const testFile = argValue('--test', 'test/e2e/MappingEntryMutation.test.ts');
 const nameFilter = argValue('--name');
 
-const args = ['workspace', 'solidcash', 'vitest', 'run', testFile];
+const args = ['workspace', '@solidcash/solidcash', 'vitest', 'run', testFile];
 if (nameFilter) args.push('-t', nameFilter);
 
 const started = Date.now();

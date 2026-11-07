@@ -19,7 +19,7 @@ for (const [name, file] of applications) console.log(`- ${name}: packages/solidc
 const result = spawnSync(
   process.platform === 'win32' ? 'yarn.cmd' : 'yarn',
   [
-    'workspace', 'solidcash', 'vitest', 'run', '--no-file-parallelism',
+    'workspace', '@solidcash/solidcash', 'vitest', 'run', '--no-file-parallelism',
     ...applications.map(([, file]) => file),
   ],
   {

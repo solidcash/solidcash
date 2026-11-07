@@ -37,7 +37,7 @@ for (const [name, workspace, file, pattern] of cases) {
   console.log(`\n[${name}]`);
   const result = spawnSync(
     process.platform === 'win32' ? 'yarn.cmd' : 'yarn',
-    ['workspace', workspace, 'vitest', 'run', file, ...(pattern ? ['-t', pattern] : [])],
+    ['workspace', `@solidcash/${workspace}`, 'vitest', 'run', file, ...(pattern ? ['-t', pattern] : [])],
     { cwd: root, stdio: 'inherit', env: process.env },
   );
   if (result.error) throw result.error;

@@ -317,7 +317,7 @@ import {
   SortedMappingCodegenPendingError, FramedStaleReadError, FramedAliasedReadError,
   ChainedEntryElementReadError, ConditionalDeployError, DirectHeterogeneousDeployError,
   NegativeExponentError, SolidCashError,
-  RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
+  OmittedCallArgumentError, RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
   BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
   UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
   DirectStaleReadError, DirectInvokedStaleReadError, DirectIndirectStaleReadError, ConstructorStaleReadError,
@@ -49805,6 +49805,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (selector === undefined) return false;
     const declared = slot.callRecordParameterTypes ?? [];
     const digested = declared.flatMap((type, index) => (type === PrimitiveType.SIG ? [] : [index]));
+    if (digested.some((index) => index >= node.parameters.length)) {
+      throw new OmittedCallArgumentError(
+        node, `${node.interfaceName}.${node.functionName}()`, node.parameters.length, declared.length,
+      );
+    }
     const ordinal = slot.callOrdinal;
     const counter = this.liveCallOrdinalCounter(slot);
     // A counted call digests the group's counter as two little-endian bytes, read once its arguments have run.

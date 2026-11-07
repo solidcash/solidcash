@@ -50,6 +50,7 @@ const { shapedLines, shapedKernelLines } = scanKernelVocabulary({
   root,
   censusCommit: manifest.censusCommit,
   forbiddenApplicationNames: manifest.forbiddenApplicationNames,
+  genericUses: manifest.genericVocabularyUses,
 });
 if (shapedLines.length > 0) {
   throw new Error(`kernel implementation added application-shaped production names:\n${shapedLines.join('\n')}`);

@@ -45,11 +45,27 @@ export const addedProductionLines = (root, censusCommit, dirs = PRODUCTION_DIRS)
   return child.stdout.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++'));
 };
 
-/** Application-shaped lines, as `[location, line]` pairs for both fences. */
-export const scanKernelVocabulary = ({ root, censusCommit, forbiddenApplicationNames }) => {
+/**
+ * Application-shaped lines, as `[location, line]` pairs for both fences. A manifest entry in `genericUses` frees one
+ * word in one file, for a word that means something else there: every other name stays forbidden in that file, and
+ * the word stays forbidden everywhere else. Neither fence's kernel files can be freed, since a use there is a leak.
+ */
+export const scanKernelVocabulary = ({ root, censusCommit, forbiddenApplicationNames, genericUses = [] }) => {
   const pattern = applicationNamePattern(forbiddenApplicationNames);
-  const shapedLines = addedProductionLines(root, censusCommit)
-    .filter((line) => pattern.test(line));
+  for (const { file } of genericUses) {
+    if (KERNEL_IMPLEMENTATION_FILES.includes(file)) throw new Error(`${file} is kernel implementation, and frees no word`);
+  }
+  const elsewhere = [...PRODUCTION_DIRS, ...genericUses.map(({ file }) => `:(exclude)${file}`)];
+  const shapedLines = [
+    ...addedProductionLines(root, censusCommit, elsewhere).filter((line) => pattern.test(line)),
+    ...genericUses.flatMap(({ file, word }) => {
+      const left = forbiddenApplicationNames.filter((name) => name !== word);
+      // An empty alternation would match every line, and with nothing left there is nothing to find.
+      if (left.length === 0) return [];
+      const narrower = applicationNamePattern(left);
+      return addedProductionLines(root, censusCommit, [file]).filter((line) => narrower.test(line));
+    }),
+  ];
   const shapedKernelLines = KERNEL_IMPLEMENTATION_FILES.flatMap((file) =>
     readFileSync(resolve(root, file), 'utf8').split('\n').flatMap((line, index) =>
       (pattern.test(line) ? [`${file}:${index + 1}:${line}`] : [])));

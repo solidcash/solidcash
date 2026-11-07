@@ -1,14 +1,31 @@
 {
   "version": 1,
   "censusCommit": "95fbe8f3c",
+  "genericVocabularyUses": [
+    {
+      "file": "packages/solidcash/src/framed/call/call.ts",
+      "word": "jobs",
+      "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
+    },
+    {
+      "file": "packages/solidcash/src/framed/call/side-cars.ts",
+      "word": "jobs",
+      "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
+    },
+    {
+      "file": "packages/solidcash/src/framed/composer/side-car-sharing.ts",
+      "word": "jobs",
+      "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
+    }
+  ],
   "forbiddenApplicationNames": ["Marketplace", "publishJobPost", "jobs", "Unicrow", "claimMultiple"],
   "testCommands": [
     { "id": "build", "argv": ["yarn", "build"] },
     { "id": "generated-artifacts", "argv": ["yarn", "workspace", "testing-suite", "vitest", "run", "test/artifact-freshness.test.ts"] },
     { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
-    { "id": "compiler-journal", "argv": ["yarn", "workspace", "solidc", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-journal", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+    { "id": "compiler-journal", "argv": ["yarn", "workspace", "@solidcash/solidc", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-journal", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
   ],
   "requiredKernelProofs": [
     {

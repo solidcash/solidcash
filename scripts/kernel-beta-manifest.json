@@ -18,14 +18,85 @@
       "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
     }
   ],
-  "forbiddenApplicationNames": ["Marketplace", "publishJobPost", "jobs", "Unicrow", "claimMultiple"],
+  "forbiddenApplicationNames": [
+    "Marketplace",
+    "publishJobPost",
+    "jobs",
+    "Unicrow",
+    "claimMultiple"
+  ],
   "testCommands": [
-    { "id": "build", "argv": ["yarn", "build"] },
-    { "id": "generated-artifacts", "argv": ["yarn", "workspace", "testing-suite", "vitest", "run", "test/artifact-freshness.test.ts"] },
-    { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
-    { "id": "compiler-journal", "argv": ["yarn", "workspace", "@solidcash/solidc", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-journal", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+    {
+      "id": "build",
+      "argv": [
+        "yarn",
+        "build"
+      ]
+    },
+    {
+      "id": "generated-artifacts",
+      "argv": [
+        "yarn",
+        "workspace",
+        "testing-suite",
+        "vitest",
+        "run",
+        "test/artifact-freshness.test.ts"
+      ]
+    },
+    {
+      "id": "utils-source-maps",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/utils",
+        "vitest",
+        "run",
+        "test/script.test.ts"
+      ]
+    },
+    {
+      "id": "compiler-journal",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/solidc",
+        "vitest",
+        "run",
+        "test/journal-message-bus"
+      ]
+    },
+    {
+      "id": "sdk-journal",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/solidcash",
+        "vitest",
+        "run",
+        "test/journal-message-bus"
+      ]
+    },
+    {
+      "id": "sdk-regressions",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/solidcash",
+        "vitest",
+        "run",
+        "test/unit/AssignPhysicalReturnIndices.test.ts",
+        "test/unit/DirectMappingReadPlan.test.ts",
+        "test/unit/KernelJournalExecutionSchedule.test.ts",
+        "test/unit/KernelDirtyCarrierResolution.test.ts",
+        "test/unit/KernelJournalPhysicalSettlement.test.ts",
+        "test/FnPtrStructFieldCall.test.ts",
+        "test/e2e/CrossContractSubcaseSoundness.test.ts",
+        "test/e2e/CrossContractSortedWrite.test.ts",
+        "test/e2e/DynamicArrayCopyCast.test.ts",
+        "test/e2e/X167ArrayCopyReplaces.test.ts"
+      ]
+    }
   ],
   "requiredKernelProofs": [
     {
@@ -393,61 +464,75 @@
     {
       "name": "marketplace-v1",
       "contract": "MarketplaceV1",
-      "sourceRoot": "eacc", "source": "contracts/MarketplaceV1.sol",
+      "sourceRoot": "eacc",
+      "source": "contracts/MarketplaceV1.sol",
       "sourceSha256": "57d93a5bdf0edff5dfd74d5cda445f9b8653fc29ee10ba8b3e482b2be925bd72",
       "sourceClosureSha256": "06435ccfc5840a85a9b2c4d31b2336cf4af83d5dfedb1632ad7df09e17fadfac",
       "evidenceKind": "compile-compatibility-only",
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 14824,
+        "measuredRouteBytes": 14866,
         "routeAloneExceedsLimit": true,
         "note": "A route-only lower bound, not a deployability certificate; Marketplace greening remains fenced"
       },
       "modes": {
         "legacy": {
           "convention": "legacy-unroll",
-          "routeBytes": 44840,
-          "fullBytes": 247572,
-          "routeHash": "4a3946b1516c146f2865bddc51901f24653012d2ef790ca664624f0ae4e13b6a",
-          "fullHash": "bf00ad8f2b11dc1efa75cf64df2ddf6b79ce83304e290995fed259359bbad3f7",
-          "metadataHash": "c24d81ddea3cff2d94c80e5fbcb43e841e5c9a0830e885d286cae14bd0339205",
-          "handlers": { "total": 38, "eligible": 28, "refused": 10 }
+          "routeBytes": 44916,
+          "fullBytes": 247620,
+          "routeHash": "b2d69abef420a337a3c3eab663711b7e4527df1b76a64fcc38efeccdb30dfe29",
+          "fullHash": "3f98a8480aa0182abeb48c2c6eb81932847a8a238496214824696d4ac0df439a",
+          "metadataHash": "5a75f1d7bf2c320d97c08bc490986bcddcefe4e95cab4083e6eebef2c3f1d73a",
+          "handlers": {
+            "total": 38,
+            "eligible": 28,
+            "refused": 10
+          }
         },
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 14824,
-          "fullBytes": 309899,
-          "routeHash": "20e0de1c9e916d03bd32e662fe97e9bb16fa3bb6a35a3ccbbeb958069a51262f",
-          "fullHash": "d71e27544d2c87e2b601f23c3dc8e1a7c826ba29e9d39c2103b4a1b03f9a62d9",
-          "metadataHash": "c27283a3083f2ee7f787ef18e27588baef7f26fbcf8a3bcc0796c10843c06034",
-          "handlers": { "total": 38, "eligible": 38, "refused": 0 }
+          "routeBytes": 14866,
+          "fullBytes": 310071,
+          "routeHash": "e0b66d1b6560829e8fc88f68c1643f7f405474743ca3cc9ae264e2b7554d21e2",
+          "fullHash": "669be4410ece6a380c2b192eeb1692c9dddf7e9a54877338fe9b282fe4e7ba4f",
+          "metadataHash": "6e20a070f8fd9153c8319fe8a1c81b4b91147a1ec79b9ef7356398427df21a96",
+          "handlers": {
+            "total": 38,
+            "eligible": 38,
+            "refused": 0
+          }
         }
       }
     },
     {
       "name": "unicrow-claim",
       "contract": "UnicrowClaim",
-      "sourceRoot": "eacc", "source": "contracts/unicrow/UnicrowClaim.sol",
+      "sourceRoot": "eacc",
+      "source": "contracts/unicrow/UnicrowClaim.sol",
       "sourceSha256": "7881e9d98e6239931e92a3ee07d364180d87789719c50917aa117901457fd3db",
       "sourceClosureSha256": "e2a9f90493c56a8b5dcf46634a2d1e95f151e8ced279fe03d19529a083f560fd",
       "evidenceKind": "compile-compatibility-only",
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 1092,
+        "measuredRouteBytes": 1094,
         "routeAloneExceedsLimit": false,
         "note": "Route fits alone; full-contract deployability requires the compiler certificate"
       },
       "modes": {
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 1092,
-          "fullBytes": 15601,
-          "routeHash": "93296527ccae3bed1e2ea4c63b1c154a47214b10bbd31e056b8f658599b1892d",
-          "fullHash": "50af6a8ac4de8ee65231fc637e02dfb61a92929e3ea902add01744981e44018e",
-          "metadataHash": "fc48778a8927507480a868cfabed6c73eed3e5241afaba18aa18dd4610ffdf6e",
-          "handlers": { "total": 10, "eligible": 10, "refused": 0 }
+          "routeBytes": 1094,
+          "fullBytes": 16059,
+          "routeHash": "157a191be14609c6690837dcadfc7db39540f9386680e1fd80d72c7834761ef9",
+          "fullHash": "9fd07c0903f3258cdbfb8551051b85da08205461125d91e79d23a2934f06c8be",
+          "metadataHash": "f0b8f5f23f0a25737f76853959e66b894dbdea82f533a6efb4c6f5ad0cb43821",
+          "handlers": {
+            "total": 10,
+            "eligible": 10,
+            "refused": 0
+          }
         }
       }
     }

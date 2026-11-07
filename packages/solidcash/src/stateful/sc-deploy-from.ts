@@ -52,7 +52,7 @@ import {
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
-import { evalComputedKey } from './route-expression-key.js';
+import { evalComputedKey, keyArguments } from './route-expression-key.js';
 import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { registeredValueAddressLockingBytecode, registerDeployment } from './deployment-registry.js';
@@ -562,7 +562,9 @@ export async function deployFromStatefulContract<T extends Artifact>(
           firstKey ??= sortedTokenLbcs[1];
           continue;
         }
-        const auto = evalComputedKey(label, deployFunctionArgs as FunctionArgument[], deployAbi.inputs);
+        const auto = evalComputedKey(
+          label, keyArguments(deployFunctionArgs as FunctionArgument[], deployAbi.inputs), deployAbi.inputs,
+        );
         if (auto) {
           encodedKeys.push(auto);
           firstKey ??= auto;

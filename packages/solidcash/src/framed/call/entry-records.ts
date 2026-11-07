@@ -18,7 +18,8 @@
  * not read.
  */
 
-import { keyArguments, producerKeyValue } from '../proxy/entry-writes.js';
+import { keyArguments } from '../../stateful/route-expression-key.js';
+import { producerKeyValue } from '../proxy/entry-writes.js';
 import { collectionKeyEncoding } from '../composer/mapping-plan.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {

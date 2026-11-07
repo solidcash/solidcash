@@ -231,9 +231,8 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
     const sc = factory as any;
     const ab = await sc.getPair(tokenA, tokenB);
     const ba = await sc.getPair(tokenB, tokenA);
-    // The getter's EVM ABI result carries the child's 20-byte Solidity identity, as in C0.
-    const expected = solidityIdentity(addressToLockScript(result.child.address));
-    expect(ab).toEqual(expected);
-    expect(ba).toEqual(expected);
+    // Unlike C0's pair, the child is a deployment, which a public getter presents by its address (d0ddd1016).
+    expect(ab).toBe(result.child.address);
+    expect(ba).toBe(result.child.address);
   }, 180_000);
 });

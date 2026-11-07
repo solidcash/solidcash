@@ -273,9 +273,13 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
         require(keccak256(x) == h);
     }
 }`, {});
-    // sha256(bytecode) of this tree without KCHAIN-1 (at 94e27413c, the C3 pin folded into the count).
-    expect(sha(fixed.bytecode)).toBe('e568a8a8faa78187bf8b82b028a6aae15fb616e3fdd290c05869eac8ff3aed45');
-    expect(sha(stateless.bytecode)).toBe('7f8057ef1e74a7ce3791b7d522fe3542c50240b292197ae7fabe47d57b98e85e');
+    // sha256(bytecode) of this tree without KCHAIN-1 (at 94e27413c, the C3 pin folded into the count), moved since by
+    // the guard on a keccak read's side-car (66fb63b0f), the consumed round intermediates (3a5eee42f), the fixed form
+    // again by the record lock's definitions (590aca164) and a drained container's filler (c2d8ed7ea).
+    expect(sha(fixed.bytecode)).toBe('c22e366c0296d6e1bd20e91734f59e378057435309e89bb17674503bab59c525');
+    expect(sha(stateless.bytecode)).toBe('e30a54a5970cdcaea7418be514a369be94327face98780ba8d69a95ebc7d04c7');
+    expect(fixed.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(false);
+    expect(stateless.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(false);
     expect(ARTIFACT.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(true);
   });
 });

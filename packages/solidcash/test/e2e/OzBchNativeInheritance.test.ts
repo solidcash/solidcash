@@ -47,8 +47,11 @@ describe('BchNative with npm OpenZeppelin ERC20', () => {
     // mints (security NAMED-MINT-1) added 88 B (10_656). Laying always-run sorted writes out unconditionally, with
     // the direct outside-layout walk shared, took it to 9_258, under the single-input limit again. The containers'
     // destroy arm added 50 B (9_308), and the forged-log pin, which an event declared in IERC20 now gets as a
-    // contract-level one does (SEC-10), 70 B (9_378). This budget guards further growth.
-    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_450);
+    // contract-level one does (SEC-10), 70 B (9_378). Call records (D50) took it past that budget to 9_678, their
+    // settlement shared as one helper to 9_623 (18860c4fd), the keccak side-cars of outlined library helpers added
+    // 41 B (9_664, 38a12dcc6), and a drained container's filler, with the master counting what it keeps, 64 B
+    // (9_728, c2d8ed7ea). This budget guards further growth.
+    expect(scriptToBytecode(asmToScript(artifact.bytecode)).length).toBeLessThan(9_800);
     expect(artifact.contractName).toBe('OzNativeToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [

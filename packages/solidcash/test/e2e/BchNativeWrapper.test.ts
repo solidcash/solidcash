@@ -76,8 +76,9 @@ describe('BchNativeWrapper', () => {
     // (D50) added 178 B (7512 -> 7690).
     // The call-record settlement shared as one helper, whose count also refuses a standalone run's carriers
     // (18860c4fd), took 47 B off (7690 -> 7643), and the record lock a direct master rebuilds carries the data-record
-    // covenant's authority bind and category, each now defined once (590aca164): 2 B (7643 -> 7645).
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7645);
+    // covenant's authority bind and category, each now defined once (590aca164): 2 B (7643 -> 7645). A drained
+    // container's filler, and the master counting what it keeps (c2d8ed7ea), added 64 B (7645 -> 7709).
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7709);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

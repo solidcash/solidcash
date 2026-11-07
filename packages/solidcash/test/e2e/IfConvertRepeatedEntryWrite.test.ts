@@ -63,14 +63,15 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
   });
 
   it('leaves a single write per arm byte-identical', () => {
-    // Bytecode of the pre-fix build (958fb0120); the default and direct conventions compile these alike.
+    // Bytecode of the pre-fix build (958fb0120), moved with every direct master when a drained container left a filler
+    // (c2d8ed7ea); the default and direct conventions compile these alike.
     const before: Record<string, string> = {
       'k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }':
-        '31412ace540dbb79548fbd975c0cfcfe82f2bf96cff9786f7c2341e4c604c95b',
+        'cb30e6b0c365f8963716523bcf4ab74e3fd96edef8c15230789d9d150ba67618',
       'if (c) { m[k] = a; } else { n[k] = 5; }':
-        '496ae871b493b23bf4655a4af7a97db5311308afa3f6c0c81bbd32edc4f592af',
+        'ef87d29d20efb447bc137eeb240a5ab0f4d45c0a9a7a07dccc6305669a33ac6e',
       'k = k + 1; if (c) { m[k] = a; n[k] = 1; } else { m[k] = 5; }':
-        'c5f857767736ad24a66c75e256ace8b15b46557d25df5881fd8b4d11f8ba3277',
+        'd39efea41470fffd51d8bc313ab655707bdac8514b30ecdb38fefd681bc24553',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
@@ -108,16 +109,17 @@ describe('if entry writes: the condition runs once, each arm in its own order', 
   });
 
   it('leaves the shapes that converted soundly byte-identical', () => {
-    // Bytecode of the build before this fix (6bb226632); the default and direct conventions compile these alike.
+    // Bytecode of the build before this fix (6bb226632), moved with every direct master when a drained container left a
+    // filler (c2d8ed7ea); the default and direct conventions compile these alike.
     const before: Record<string, string> = {
       // The condition reads no mapping, or only the one the last write mutates.
-      'if (c) { m[k] = a; n[k] = 1; }': '84f30f1b4fa385b6552be9693571d898c91ba953ef800cb64816ffdac5440b95',
-      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': '07fe9ea4259600ca93181473f2791c8f5ddcc718560f96bf7e576f49a3b84f24',
+      'if (c) { m[k] = a; n[k] = 1; }': '3ea8ea6cd82ff9b2e4cd0b10219516d3a20ec5fa9023e43e8337696f34b1284e',
+      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': '637a6154232312384e6cfd555b4aa207261632ec3649a537c2703382ad8f09bd',
       // The merge runs n[k] ahead of the else arm's m[k]; neither write observes the other.
       'k = k + 1; if (c) { n[k] = 3; } else { m[k] = 1; n[k] = 2; }':
-        '2ca27ffc4cbb551b32203123800688375ed63fc7f4d58253a9b86bf2f0a360e1',
+        '0e5c251f9a30ff36de5bdb952095ecbd38c5d5a26bc6e72e236dc980b8e794ee',
       'k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }':
-        'dcfe31118ead72affbf96e117083b5f00ea4d393ac215838dc536c99e20fe081',
+        'd36763a4e1606c78b0e92c24944498a4aa3bedc0fc8ebbf9c4b4c1a78640971d',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);

@@ -1,4 +1,5 @@
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { FILLER_SATOSHIS, fillerLockingBytecode } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import {
   Contract,
@@ -113,10 +114,10 @@ describe('StatefulContract.upgrade() token-container migration (CRYPTO-4)', () =
     });
 
     const outputs = getTxOutputs(result.tx);
-    // out[0]=master, out[1]=zero-value/zero-token drain, out[2]=container re-mint, out[3]=change.
+    // out[0]=master, out[1]=drain filler, out[2]=container re-mint, out[3]=change.
     expect(outputs[0].token?.nft?.capability).toBe('minting');
-    expect(binToHex(outputs[1].to as Uint8Array)).toBe('6a');
-    expect(outputs[1].amount).toBe(0n);
+    expect(binToHex(addressToLockScript(outputs[1].to as string))).toBe(binToHex(fillerLockingBytecode()));
+    expect(outputs[1].amount).toBe(FILLER_SATOSHIS);
     expect(outputs[1].token).toBeUndefined();
 
     expect(outputs[2].token?.category).toBe(TOKEN_CATEGORY);
@@ -155,10 +156,11 @@ describe('StatefulContract.upgrade() token-container migration (CRYPTO-4)', () =
       ...(await upgradeFunding('f4cd')),
     });
 
-    // out[0]=master, out[1..2]=drains, out[3..4]=re-mints, out[5]=change.
+    // out[0]=master, out[1..2]=drain fillers, out[3..4]=re-mints, out[5]=change.
     const outputs = getTxOutputs(result.tx);
     for (const drain of outputs.slice(1, 3)) {
-      expect(drain.amount).toBe(0n);
+      expect(binToHex(addressToLockScript(drain.to as string))).toBe(binToHex(fillerLockingBytecode()));
+      expect(drain.amount).toBe(FILLER_SATOSHIS);
       expect(drain.token).toBeUndefined();
     }
     const newLock = binToHex(addressToLockScript(

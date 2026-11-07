@@ -43,8 +43,9 @@ describe('MinimalNativeToken bytecode budget', () => {
     // its record, with one shared count of its carriers) added 154 B (7445 -> 7599).
     // The call-record settlement shared as one helper, whose count also refuses a standalone run's carriers
     // (18860c4fd), took 67 B off (7599 -> 7532), and the record lock a direct master rebuilds carries the data-record
-    // covenant's authority bind and category, each now defined once (590aca164): 2 B (7532 -> 7534).
-    expect(artifactBytes).toBe(7534);
+    // covenant's authority bind and category, each now defined once (590aca164): 2 B (7532 -> 7534). A drained
+    // container's filler, and the master counting what it keeps (c2d8ed7ea), added 64 B (7534 -> 7598).
+    expect(artifactBytes).toBe(7598);
     expect(artifact.constructorInputs).toEqual([]);
     expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs.map((input) => input.name))
       .toEqual(['nativeCategory_']);

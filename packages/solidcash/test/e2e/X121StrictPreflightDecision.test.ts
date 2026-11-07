@@ -47,7 +47,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * - FAIL-OPEN under a strict profile: it accepts a P2PKH spend (row 1, refused at 150 x density) and a
  *   `decrement(3)` (row 2). Single-byte helper ids, then the October covenant hardening, lengthened the script
  *   until 150 and then 140 x density accept it; 30 refuses it with margin, which is the budget rows 2, 2b, 6 pin.
- * - FAIL-CLOSED under a relaxed budget: it refuses `SELF_DENSE`'s `decrement(30)` at the stock 800 x density
+ * - FAIL-CLOSED under a relaxed budget: it refuses `SELF_DENSE`'s `decrement(31)` at the stock 800 x density
  *   that the decider accepts (row 4).
  *
  * The fail-open direction is the one that must not stand, so the repair is applied at
@@ -100,7 +100,7 @@ contract C() {
 /**
  * SELF with nine more subtractions per frame (StatefulRecursion's handler). SELF fits the stock 800 x density at
  * every depth the 100-entry control stack allows (48 by 25,366 units on the send path); this one exceeds it from
- * depth 30.
+ * depth 31.
  */
 const SELF_DENSE = `pragma solidcash >=0.8.0;
 contract C() {
@@ -333,9 +333,10 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     // byte and refuses; the provider publishes 10,000,000 and accepts.
     //
     // The former SELF witnesses at depths 24, 40 and 46 now fit the bare VM after codegen and covenant changes
-    // (46 once the covenants grew; 49 overflows the 100-entry control stack). SELF_DENSE at depth 30 still proves
-    // the same divergence on the finalized transaction bytes (measured: 29 fits by 9,081 units, 30 is 29,933
-    // over): the stock 800-per-byte VM refuses, while the provider-configured VM and the network both accept.
+    // (46 once the covenants grew; 49 overflows the 100-entry control stack). SELF_DENSE at depth 31 still proves
+    // the same divergence on the finalized transaction bytes (measured: 30 fits by 34,128 units, 31 is 4,886
+    // over; it was depth 30 until a drained container's filler made the contract, and so its budget, larger:
+    // c2d8ed7ea): the stock 800-per-byte VM refuses, while the provider-configured VM and the network both accept.
     // If codegen shifts the boundary again, find a new concrete separating depth rather than dropping either
     // side of this assertion.
     // Asked for the relaxed budget by way of the DEFAULT profile until the default became the real 800 (see
@@ -344,7 +345,7 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     const provider = costProfile(MOCK_RELAXED_OPERATION_COST, true);
     expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(MOCK_RELAXED_OPERATION_COST);
     const sc = await recursionContract(provider, SELF_DENSE);
-    const { builder, error } = await sendCapturingPreflightInput(sc, 30n);
+    const { builder, error } = await sendCapturingPreflightInput(sc, 31n);
     expect(error, 'the repaired gate should no longer refuse this depth').toBeUndefined();
     expect(builder).toBeDefined();
 

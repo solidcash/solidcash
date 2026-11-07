@@ -8755,7 +8755,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node || seen.has(node)) return undefined;
     seen.add(node);
     if (node instanceof AssignNode && node.identifier.name === name) return node.expression;
-    for (const value of Object.values(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      // A resolved reference leads out of this body: `token0 = _token0` in a child's `initialize` is no assignment
+      // to a local of the function being searched.
+      if (RESOLVED_BACKREF_KEYS.has(key) || BODY_WALK_SKIP_KEYS.has(key)) continue;
       if (value instanceof Node) {
         const found = this.findAssignmentValue(value, name, seen);
         if (found) return found;

@@ -7,7 +7,7 @@ import { HashType, SignatureTemplate, Signer } from '../../src/index.js';
 import { ContractFactory } from '../../src/stateful/index.js';
 import { createTestProvider } from '../test-util.js';
 import { alicePriv, aliceAddress, bobAddress } from '../fixture/vars.js';
-import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
+import { addressToLockScript } from '../../src/utils.js';
 
 // Vendored MistSwap UniswapV2Factory/UniswapV2Pair, compiled whole (no split) under the same relaxed
 // input-script ceiling the marketplace uses, so the literal UniswapV2Factory.createPair acceptance runs.
@@ -65,15 +65,13 @@ describe('UniswapV2Factory.createPair (vendored source, fresh compile)', () => {
     expect(result.tx.txid).toBeDefined();
     const child = result.child;
 
-    // evmCompat stores an address as its 20-byte Solidity identity, which is what getPair returns; the child's
-    // SDK address is the cashaddr of its locking bytecode, so narrow that to the same identity before comparing.
-    const expected = lockingBytecodeToSolidityAddressPayload(
-      hexToBin(child.inner.lockingBytecode as string),
-    );
-    const pairAB = await (factory as any).getPair(tokenA, tokenB);
-    const pairBA = await (factory as any).getPair(tokenB, tokenA);
-    expect(binToHex(pairAB as Uint8Array)).toBe(binToHex(expected!));
-    expect(binToHex(pairBA as Uint8Array)).toBe(binToHex(expected!));
+    // A public getter presents the deployment the stored address names (d0ddd1016). The raw entries keep the stored
+    // bytes: both directions hold the child's whole locking bytecode.
+    expect(await (factory as any).getPair(tokenA, tokenB)).toBe(child.address);
+    expect(await (factory as any).getPair(tokenB, tokenA)).toBe(child.address);
+    const stored = await (factory as any).getEntries('getPair');
+    expect(stored.map((entry: { value: Uint8Array }) => binToHex(entry.value)))
+      .toEqual([child.inner.lockingBytecode, child.inner.lockingBytecode]);
   });
 
   it.skipIf(process.env.TESTS_USE_REGTEST)(

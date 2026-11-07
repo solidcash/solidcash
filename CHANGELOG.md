@@ -11,6 +11,19 @@ Source files need `pragma solidcash ^0.50.0`, and all six packages move together
 - An internal helper must be of the caller's context category.
 - A call takes a deployment's pools in an order of its own, and a frame leaves unspent the data records it only counts.
 - A slow server or a node's refusal ends a call's plan search with that error, rather than another plan's refusal.
+- A send keeps the relay rules when its provider publishes relaxed limits, as a mock and a devnet do. It had lost them, so
+  a below-dust output settled there.
+- A returning call that omits an argument its record binds is refused by name, where it crashed the compiler.
+- A parent's local no longer resolves into a child's body when a deploy folds, and the direct path orders address keys as
+  framed does.
+- An external call's arguments and guards can read `block.number` on a root call.
+
+### Known issues
+
+- On the direct convention, a nested callee's external call under a false guard on `block.number` or `block.timestamp`
+  spends the callee anyway and lands the wrong state, because the guard is not published on those paths. A false guard on
+  state or a constant fails closed there. Root calls and the framed convention are not affected.
+- `block.number` in a nested callee's external-call arguments is still unresolved on the direct convention.
 
 ## 0.14.0-beta.1
 

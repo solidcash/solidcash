@@ -8,6 +8,9 @@ SolidCash's version numbers now depart from CashScript's: 0.50.0 follows 0.14.0-
 The framed validator changed, so every framed address differs from an earlier build's. Please refer to the
 [migration notes](/docs/releases/migration-notes#v014-to-v050).
 
+Known issue: on the direct convention, a nested callee's external call under a false guard on `block.number` or
+`block.timestamp` spends the callee anyway and lands the wrong state. Root calls and the framed convention are not affected.
+
 ## v0.14.0-beta.1
 
 SolidCash 0.14.0-beta.1 adds a Solidity-syntax language and workflow layer for Bitcoin Cash contracts. The release covers

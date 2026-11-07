@@ -385,7 +385,11 @@ if (!testsOnly) {
   }
 }
 
-if (!allowDirty && git('status', '--porcelain').length > 0) {
+// A build stamps what it generates with the time it compiled, so a clean run still leaves those lines changed. That is
+// no change of state; any other changed line, or a new file, is.
+const COMPILE_TIME_LINE = '^[[:space:]]*"?updatedAt"?:';
+if (!allowDirty && (git('diff', 'HEAD', '-I', COMPILE_TIME_LINE, '--stat').length > 0
+  || git('ls-files', '--others', '--exclude-standard').length > 0)) {
   throw new Error('kernel beta gate changed tracked/generated state; regenerate and commit it before release');
 }
 

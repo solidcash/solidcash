@@ -15139,7 +15139,7 @@ export class StatefulFunctionCall {
   }
 
   async build(): Promise<TransactionBuilder> {
-    return buildStatefulFunctionCallImpl({
+    const builder = await buildStatefulFunctionCallImpl({
       compilerRoute: this.compilerRoute,
       functionName: this.functionName,
       parentContract: this.parentContract,
@@ -15149,6 +15149,10 @@ export class StatefulFunctionCall {
       recursivePreflightHasSignatures: () => this._recursivePreflightHasSignatures(),
       preflightRecursiveBuilder: (builder) => this._preflightRecursiveBuilder(builder),
     });
+    // Whoever sends a built call sends this builder, so the call's fee caps go with it (the default one, or
+    // `.withMaxFee`). A composition reads a participant's builder and never sends it.
+    if ('enforceFeeCaps' in builder) (builder as { enforceFeeCaps: boolean }).enforceFeeCaps = true;
+    return builder;
   }
 
   /** In-flight logical transaction of this call object. See {@link send}. */

@@ -2290,6 +2290,12 @@ export class StatefulTransactionBuilder {
       checkMinRelayFee: this._checkMinRelayFee,
       feeSigner: this.feeSigner,
       accountingFunderUtxos: () => this._accountingFunderUtxos(),
+      adoptAccountingFunders: (funders) => {
+        const held = new Set(this.embeddedFunderUtxos.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));
+        for (const funder of funders) {
+          if (!held.has(`${funder.txid.toLowerCase()}:${funder.vout}`)) this.embeddedFunderUtxos.push(funder);
+        }
+      },
       computeMinFee: (size) => this.computeMinFee(size),
     };
   }

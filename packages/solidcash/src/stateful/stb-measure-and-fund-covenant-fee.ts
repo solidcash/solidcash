@@ -2,7 +2,7 @@
  * phase-boundary extract: STB send-phase extract — measure covenant size and optionally mint a fee funder.
  */
 
-import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, binsAreEqual } from '@bitauth/libauth/build/lib/format/hex.js';
 import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { getDustThreshold } from '../network/dust-threshold.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -23,6 +23,8 @@ export interface MeasureAndFundCovenantFeeHost {
   /** The signer that pays when the provider cannot mint a funder, as a live network cannot. */
   readonly feeSigner?: Signer;
   accountingFunderUtxos(): readonly UnlockableUtxo[];
+  /** Count inputs the transaction already holds as funders, so their surplus is change. */
+  adoptAccountingFunders(funders: readonly UnlockableUtxo[]): void;
   computeMinFee(size: bigint): bigint;
 }
 
@@ -123,6 +125,24 @@ export async function measureAndFundCovenantFee(
   const existingOutputSats = covenantBuilder.outputs.reduce((sum, o) => sum + o.amount, 0n);
   const existingFee = existingInputSats - existingOutputSats;
   const alreadyFunded = existingFee >= neededFee;
+
+  // A connected signer's own coins that a call added by hand pay as a wallet's do: what they carry past the fee and
+  // the covenant's outputs comes back to the signer as change. When such a coin covered the fee by itself the SDK
+  // added no funder, so there was no change at all, and its whole surplus went to the miner up to the fee cap.
+  // Only a coin at the signer's own lock counts: anything else a transaction spends past its outputs, such as a
+  // contract paying the miner by omission, stays the fee it was meant to be.
+  if (alreadyFunded && accountingFundersAtMeasurement.length === 0 && host.feeSigner) {
+    const signerLock = host.feeSigner.getLockingBytecode();
+    const own = host.allInputs.filter((input) => binsAreEqual(input.unlocker.generateLockingBytecode(), signerLock));
+    if (own.length > 0) {
+      host.adoptAccountingFunders(own);
+      host.funderChangeAddress ??= signerLock;
+      // These coins are in the measured transaction already, so only the change output is still to come.
+      const changeOverhead = 8 + (signerLock.length < 253 ? 1 : 3) + signerLock.length;
+      const ownFee = host.computeMinFee(covenantSize + BigInt(changeOverhead) + sidecarOutputOverhead + 32n);
+      return { neededFee: ownFee, dustMinimum: getDustThreshold({ lockingBytecode: signerLock }) };
+    }
+  }
 
   if (!alreadyFunded && host.checkMinRelayFee) {
     // When covenant outputs exceed covenant inputs (e.g. return event outputs

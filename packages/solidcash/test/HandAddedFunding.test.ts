@@ -7,7 +7,9 @@ import { decodeTransaction, hexToBin, binToHex } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
 import MockNetworkProvider from '../src/network/MockNetworkProvider.js';
-import { StatefulContract } from '../src/stateful/index.js';
+import {
+  StatefulContract, genesisOutpointKey, releaseGenesisOutpoint, reserveGenesisOutpoint,
+} from '../src/stateful/index.js';
 
 const SOURCE = `pragma solidcash ^0.14.0;
 contract Counter() {
@@ -16,14 +18,22 @@ contract Counter() {
   function bump() public { this.n = this.n + 1; }
 }`;
 
+const LOGGED = `pragma solidcash ^0.14.0;
+contract Logged() {
+  event Bumped(uint32 n);
+  uint32 n;
+  constructor() { this.n = 0; }
+  function bump() public { this.n = this.n + 1; emit Bumped(this.n); }
+}`;
+
 const hex = (bytes: Uint8Array): string => binToHex(bytes);
 
 let nextCoin = 0;
-async function setup() {
+async function setup(source = SOURCE) {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const [alice, bob] = await provider.getSigners(2, { fundingUtxos: 4, genesisFundingUtxos: 2 });
   const fundingUtxo = (await alice.getUtxos()).find((utxo) => utxo.vout === 0 && !utxo.token && utxo.satoshis >= 200_000n)!;
-  const { contract } = await StatefulContract.deploy(compileString(SOURCE) as never, [], {
+  const { contract } = await StatefulContract.deploy(compileString(source) as never, [], {
     provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
   });
   const coin = async (owner: typeof alice, satoshis: bigint) => {
@@ -90,5 +100,31 @@ describe('a coin added by hand', () => {
       .withMaxFee(200_000n).build();
     const details = await allowed.send();
     expect(details.txid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('keeps a reserved genesis coin where the call put it, after the funder of an event slot', async () => {
+    const { provider, counter } = await setup(LOGGED);
+    // A signer whose plain coins are all at vout 0, so the SDK has only genesis-capable coins to fund the event's
+    // slot with, and the coin the call adds is the first of them.
+    const [, , carol] = await provider.getSigners(3, { fundingUtxos: 1, genesisFundingUtxos: 1 });
+    await provider.seedUtxo(carol.getAddress(), { txid: 'e1'.repeat(32), vout: 0, satoshis: 1_000_000n });
+    const genesis = (await carol.getUtxos())[0];
+    expect(genesis.vout).toBe(0);
+    const key = genesisOutpointKey(genesis.txid, genesis.vout);
+    const position = async () => {
+      const built = await counter.connect(carol).call.bump().addInput(genesis, carol.unlockP2PKH()).build();
+      return built.inputs.map((input: any) => `${input.txid}:${input.vout}`).indexOf(key);
+    };
+    // Unreserved, the SDK funds the slot with it and the coin the call added is the same input, one place early.
+    expect(await position()).toBe(2);
+    reserveGenesisOutpoint(key);
+    try {
+      // The master, the state record and the event's own funder, then the coin.
+      expect(await position()).toBe(3);
+      const details = await counter.connect(carol).call.bump().addInput(genesis, carol.unlockP2PKH()).send();
+      expect(hex(decoded(details).inputs[3].outpointTransactionHash)).toBe(genesis.txid);
+    } finally {
+      releaseGenesisOutpoint(key);
+    }
   });
 });

@@ -247,11 +247,13 @@ export async function deployStatefulContract<T extends Artifact>(
   const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
 
   const initialBalance = options.initialBalance ?? 0n;
-  // A call under `pragma containers single` cannot open a container, so the deployment has to.
-  const needsSatoshiContainer = artifact.abi.some((fn) => fn.blockLayout?.singleContainers === true
+  // A call under `pragma satoshicontainer single` cannot open the satoshi container, so the deployment has to.
+  const needsSatoshiContainer = artifact.abi.some((fn) => fn.blockLayout?.singleSatoshiContainer === true
     && fn.blockLayout.slots.some((slot) => slot.kind === 'satoshiContainer'));
   if (needsSatoshiContainer && initialBalance <= 0n) {
-    throw new Error('Under pragma containers single a call cannot open the satoshi container: pass initialBalance.');
+    throw new Error(
+      'Under pragma satoshicontainer single a call cannot open the satoshi container: pass initialBalance.',
+    );
   }
   const tokenContainerTotal = tokenContainerCoins.reduce((sum, { utxo }) => sum + utxo.satoshis, 0n);
   const totalMaster = masterAmount * BigInt(threadCount);

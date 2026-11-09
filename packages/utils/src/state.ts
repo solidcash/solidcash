@@ -2557,14 +2557,19 @@ export interface ContainerCovenantOptions {
 }
 
 /**
- * Whether a direct contract's bound containers refuse a token on a tokenless coin and keep a token coin as it is:
- * `pragma containers single`, whose one coin must keep reading as a container and stay able to be recreated. The
- * pragma is on every entry that has a block layout, so an ABI states it.
+ * Whether a direct contract's bound containers of `kind` refuse a token on a tokenless coin and keep a token coin as
+ * it is: `pragma satoshicontainer single` for the satoshi container, `pragma tokencontainer single` for the token
+ * containers, whose one coin must keep reading as a container and stay able to be recreated. A pragma is on every
+ * entry that has a block layout, so an ABI states it.
  */
 export function containerKeepsTokenless(
-  abi: readonly { readonly blockLayout?: { readonly singleContainers?: boolean } }[],
+  abi: readonly {
+    readonly blockLayout?: { readonly singleSatoshiContainer?: boolean; readonly singleTokenContainer?: boolean };
+  }[],
+  kind: 'satoshiContainer' | 'tokenContainer',
 ): boolean {
-  return abi.some((entry) => entry.blockLayout?.singleContainers === true);
+  const flag = kind === 'satoshiContainer' ? 'singleSatoshiContainer' : 'singleTokenContainer';
+  return abi.some((entry) => entry.blockLayout?.[flag] === true);
 }
 
 /**
@@ -2595,8 +2600,8 @@ function masterCategoryRead(retires: boolean): Script {
  *
  * The output at this input keeps the container lock, or it is a filler with no token (`fillerLockingBytecode`). A
  * kept lock also keeps the token category of a coin that has one. Under `tokenless`, a coin that has none keeps none:
- * `pragma containers single` has one coin per container, and a token on it would stop it reading as a container for
- * good. The satoshi and fungible amounts are the master's to account: an
+ * `pragma satoshicontainer single` and `pragma tokencontainer single` keep a container in one coin, and a token on it
+ * would stop it reading as a container for good. The satoshi and fungible amounts are the master's to account: an
  * authorized transfer debits them, a call that names no transfer leaves them on the lock, and a filler's satoshis
  * are no kept balance. Under `keepsCoin` a kept token coin stays exactly the coin it was, at the same or a higher
  * value: a call that names no container checks only its lock, category and amount, a coin is recreated with the

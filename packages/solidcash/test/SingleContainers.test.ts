@@ -1,6 +1,8 @@
 /**
- * `pragma containers single`: a contract keeps one coin per container. The deployment opens them, a call recreates them
- * and refuses to open another. Each attack is the SDK's own transaction with one thing changed, judged by the VM.
+ * `pragma satoshicontainer single` and `pragma tokencontainer single`: a contract keeps one coin per container of that
+ * kind. The deployment opens it, a call recreates it and refuses to open another. Each pragma is tested alone, and
+ * leaves the other kind as it is without one. Each attack is the SDK's own transaction with one thing changed, judged by
+ * the VM.
  */
 import { binToHex, decodeTransaction, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
@@ -8,8 +10,11 @@ import { compileString } from './direct-compile.js';
 import MockNetworkProvider from '../src/network/MockNetworkProvider.js';
 import { StatefulContract } from '../src/stateful/index.js';
 import { createSatoshiContainerUnlocker, createTokenContainerUnlocker } from '../src/stateful/covenant-helpers.js';
-import { TransactionBuilder } from '../src/index.js';
+import { Contract, SignatureTemplate, TransactionBuilder } from '../src/index.js';
 import { addressToLockScript } from '../src/utils.js';
+import { createTestProvider } from './test-util.js';
+import { alicePkh, alicePriv, alicePub } from './fixture/vars.js';
+import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import {
   buildSatoshiContainerCovenantScript, buildTokenContainerCovenantScript, fillerLockingBytecode, FILLER_SATOSHIS, Op,
 } from '@solidcash/utils';
@@ -20,8 +25,11 @@ const TOKENS = 100n;
 const SEED = 1_200n;
 const ASSET = 'a1b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef0011223344556677';
 
+const SATOSHI_PRAGMA = 'pragma satoshicontainer single;\n';
+const TOKEN_PRAGMA = 'pragma tokencontainer single;\n';
+
 const SATOSHI_SOURCE = `pragma solidcash ^0.14.0;
-pragma containers single;
+pragma satoshicontainer single;
 contract Tip() {
   int constant PAY = 100000;
   int constant FEE = 30000;
@@ -34,7 +42,7 @@ contract Tip() {
 }`;
 
 const TOKEN_SOURCE = `pragma solidcash ^0.14.0;
-pragma containers single;
+pragma tokencontainer single;
 contract Vault(bytes32 asset) {
   int constant TOKENS = 100;
   int constant FEE = 30000;
@@ -77,14 +85,17 @@ async function mutated(provider: any, send: () => Promise<unknown>, mutate: (tx:
   return verdict;
 }
 
-const WITHOUT_PRAGMA = { pragma: false };
-const withoutPragma = (source: string): string => source.replace('pragma containers single;\n', '');
+/** `source` with `pragmas` in place of its container pragmas. */
+const withPragmas = (source: string, pragmas: string): string => source
+  .replace(/^pragma (?:satoshi|token)container single;\n/gm, '')
+  .replace(/^pragma solidcash [^\n]*\n/m, (line) => line + pragmas);
+const WITHOUT_PRAGMA = { pragmas: '' };
 
-async function satoshiPool(deposits: number, { pragma = true } = {}) {
+async function satoshiPool(deposits: number, { pragmas = SATOSHI_PRAGMA } = {}) {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const [alice, bob] = await provider.getSigners(2, { fundingUtxos: 8, genesisFundingUtxos: 2 });
   const fundingUtxo = (await alice.getUtxos()).find((utxo) => utxo.vout === 0 && !utxo.token && utxo.satoshis >= 200_000n)!;
-  const source = pragma ? SATOSHI_SOURCE : withoutPragma(SATOSHI_SOURCE);
+  const source = withPragmas(SATOSHI_SOURCE, pragmas);
   const { contract } = await StatefulContract.deploy(compileString(source) as never, [], {
     provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialBalance: SEED,
   });
@@ -97,7 +108,7 @@ async function satoshiPool(deposits: number, { pragma = true } = {}) {
   return { provider, alice, bob, pool, lock, coins, deposit };
 }
 
-async function tokenPool(deposits: number, { pragma = true, seeded = true } = {}) {
+async function tokenPool(deposits: number, { pragmas = TOKEN_PRAGMA, seeded = true } = {}) {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const [alice, bob] = await provider.getSigners(2, { fundingUtxos: 8, genesisFundingUtxos: 2 });
   const fundingUtxo = (await alice.getUtxos()).find((utxo) => utxo.vout === 0 && !utxo.token && utxo.satoshis >= 200_000n)!;
@@ -110,7 +121,7 @@ async function tokenPool(deposits: number, { pragma = true, seeded = true } = {}
     await provider.seedUtxo(alice.getAddress(), coin);
     return coin;
   };
-  const artifact = compileString(pragma ? TOKEN_SOURCE : withoutPragma(TOKEN_SOURCE)) as any;
+  const artifact = compileString(withPragmas(TOKEN_SOURCE, pragmas)) as any;
   const { contract } = await StatefulContract.deploy(artifact as never, [hexToBin(ASSET)], {
     provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(), initialBalance: SEED,
     ...(seeded ? { tokenContainers: [{ utxo: await tokenCoin(1n), unlocker: alice.unlockP2PKH() }] } : {}),
@@ -126,7 +137,7 @@ async function tokenPool(deposits: number, { pragma = true, seeded = true } = {}
   return { provider, alice, bob, pool, lock, address, coins, deposit, tokenCoin, artifact };
 }
 
-describe('the satoshi container of pragma containers single', () => {
+describe('the satoshi container of pragma satoshicontainer single', () => {
   it('stays one coin through deposits and withdrawals, down to what the deployment put there', async () => {
     const { pool, bob, coins, deposit } = await satoshiPool(0);
     expect(await coins()).toEqual([SEED]);
@@ -144,13 +155,17 @@ describe('the satoshi container of pragma containers single', () => {
     expect((await deposit()).hex.length).toBe(first);
   });
 
-  it('needs the deployment to open it', async () => {
-    const provider = new MockNetworkProvider({ profile: 'production' });
-    const [alice] = await provider.getSigners(1, { fundingUtxos: 2, genesisFundingUtxos: 1 });
-    const fundingUtxo = (await alice.getUtxos()).find((utxo) => utxo.vout === 0 && !utxo.token)!;
-    await expect(StatefulContract.deploy(compileString(SATOSHI_SOURCE) as never, [], {
-      provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
-    })).rejects.toThrow(/initialBalance/);
+  it('needs the deployment to open it, which the token pragma alone does not', async () => {
+    const deploy = async (source: string): Promise<unknown> => {
+      const provider = new MockNetworkProvider({ profile: 'production' });
+      const [alice] = await provider.getSigners(1, { fundingUtxos: 2, genesisFundingUtxos: 1 });
+      const fundingUtxo = (await alice.getUtxos()).find((utxo) => utxo.vout === 0 && !utxo.token)!;
+      return StatefulContract.deploy(compileString(source) as never, [], {
+        provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: alice.getAddress(),
+      });
+    };
+    await expect(deploy(SATOSHI_SOURCE)).rejects.toThrow(/initialBalance/);
+    await expect(deploy(withPragmas(SATOSHI_SOURCE, TOKEN_PRAGMA))).resolves.toBeDefined();
   });
 
   it('accepts the unmodified transaction through the same path as the attacks below', async () => {
@@ -169,6 +184,12 @@ describe('the satoshi container of pragma containers single', () => {
     const attacked = await satoshiPool(1);
     await expect(splitDeposit(attacked)).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
     expect(await attacked.coins()).toEqual([SEED + PAY + FEE]);
+  });
+
+  it('takes a deposit split into a second coin under the token pragma alone, as without one', async () => {
+    const context = await satoshiPool(1, { pragmas: TOKEN_PRAGMA });
+    await splitDeposit(context);
+    expect(await context.coins()).toEqual([1_000n, SEED, PAY + FEE - 1_000n, PAY + FEE].sort((a, b) => Number(a - b)));
   });
 
   /** Opens a coin at the lock out of what the fee would have paid. The kept coin is exactly right. */
@@ -212,18 +233,21 @@ describe('the satoshi container of pragma containers single', () => {
     transaction.outputs[index].token = { amount: 1n, category: transaction.inputs[0].outpointTransactionHash };
   };
 
-  it('refuses a new token on the coin, which only the pragma stops', async () => {
-    // Without the pragma a call that leaves change on the coin is one this rule can reach.
-    const control = await satoshiPool(1, WITHOUT_PRAGMA);
-    const funding = (await control.alice.getUtxos()).filter((coin) => !coin.token)
-      .sort((left, right) => Number(right.satoshis - left.satoshis))[0]!;
-    await new TransactionBuilder({ provider: control.provider })
-      .addInput(funding, control.alice.unlockP2PKH())
-      .addOutput({ to: control.lock, amount: PAY + FEE + 5_000n })
-      .addOutput({ to: control.alice.getAddress(), amount: funding.satoshis - PAY - FEE - 8_000n })
-      .send();
-    expect(await mutated(control.provider, () => control.pool.call.take(control.bob.getAddress()).send(), newToken(control.lock)))
-      .toBe('accepted');
+  it('refuses a new token on the coin, which only the satoshi pragma stops', async () => {
+    // Without the pragma a call that leaves change on the coin is one this rule can reach. The token pragma alone
+    // leaves the coin's lock as it is without one.
+    for (const options of [WITHOUT_PRAGMA, { pragmas: TOKEN_PRAGMA }]) {
+      const control = await satoshiPool(1, options);
+      const funding = (await control.alice.getUtxos()).filter((coin) => !coin.token)
+        .sort((left, right) => Number(right.satoshis - left.satoshis))[0]!;
+      await new TransactionBuilder({ provider: control.provider })
+        .addInput(funding, control.alice.unlockP2PKH())
+        .addOutput({ to: control.lock, amount: PAY + FEE + 5_000n })
+        .addOutput({ to: control.alice.getAddress(), amount: funding.satoshis - PAY - FEE - 8_000n })
+        .send();
+      const take = (): Promise<unknown> => control.pool.call.take(control.bob.getAddress()).send();
+      expect(await mutated(control.provider, take, newToken(control.lock))).toBe('accepted');
+    }
 
     const attacked = await satoshiPool(1);
     expect(await mutated(attacked.provider, () => attacked.pool.call.take(attacked.bob.getAddress()).send(), newToken(attacked.lock)))
@@ -304,7 +328,7 @@ describe('a coin paid to the satoshi container\'s lock', () => {
   });
 });
 
-describe('the token container of pragma containers single', () => {
+describe('the token container of pragma tokencontainer single', () => {
   it('stays one coin through deposits and withdrawals, down to what the deployment put there', async () => {
     const { pool, bob, coins, deposit } = await tokenPool(0);
     expect(await coins()).toEqual([1n]);
@@ -356,12 +380,20 @@ describe('the token container of pragma containers single', () => {
   it('refuses to open the container from a pad in its slot, which only the pragma stops', async () => {
     const attacked = await tokenPool(0, { seeded: false });
     // The SDK refuses this up front. Without that, the transaction reaches the script.
-    for (const fn of attacked.artifact.abi) if (fn.name === 'deposit') delete fn.blockLayout.singleContainers;
+    for (const fn of attacked.artifact.abi) if (fn.name === 'deposit') delete fn.blockLayout.singleTokenContainer;
     await expect(attacked.deposit()).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
     expect(await attacked.coins()).toEqual([]);
-    const control = await tokenPool(0, { pragma: false, seeded: false });
+    const control = await tokenPool(0, { pragmas: '', seeded: false });
     await control.deposit();
     expect(await control.coins()).toEqual([TOKENS]);
+  });
+
+  it('is opened by a deposit and takes a second coin under the satoshi pragma alone, as without one', async () => {
+    const opened = await tokenPool(0, { pragmas: SATOSHI_PRAGMA, seeded: false });
+    await opened.deposit();
+    expect(await opened.coins()).toEqual([TOKENS]);
+    await splitDeposit(opened);
+    expect(await opened.coins()).toEqual([10n, TOKENS + TOKENS - 10n]);
   });
 
   it('refuses to drain a coin, which only the pragma stops', async () => {
@@ -376,7 +408,7 @@ describe('the token container of pragma containers single', () => {
         .addOutput({ to: alice.getAddress(), amount: funding.satoshis - 2_000n })
         .send();
     };
-    const control = await tokenPool(1, { pragma: false, seeded: false });
+    const control = await tokenPool(1, { pragmas: '', seeded: false });
     await control.pool.call.take(control.bob.getLockingBytecode()).send();
     expect(await control.coins()).toEqual([]);
     const attacked = await tokenPool(1);
@@ -386,7 +418,7 @@ describe('the token container of pragma containers single', () => {
     expect(await attacked.coins()).toEqual([1n, TOKENS].sort((a, b) => Number(a - b)));
   });
 
-  it('refuses to take a coin\'s satoshis in a call that does not name it, which only the pragma stops', async () => {
+  it('refuses to take a coin\'s satoshis in a call that does not name it, which only the token pragma stops', async () => {
     // A call that names the coin pins its value. One that does not keeps its lock, category and amount, nothing more.
     const attempt = async ({ provider, pool, alice, address }: Awaited<ReturnType<typeof tokenPool>>) => {
       const [coin] = (await provider.getUtxos(address)).filter((candidate) => candidate.token);
@@ -403,9 +435,12 @@ describe('the token container of pragma containers single', () => {
       );
       return builder.send();
     };
-    const control = await tokenPool(1, WITHOUT_PRAGMA);
-    await attempt(control);
-    expect((await control.provider.getUtxos(control.address)).find((coin) => coin.token)?.satoshis).toBe(SEED - 200n);
+    // The satoshi pragma alone leaves the coin's lock as it is without one.
+    for (const options of [WITHOUT_PRAGMA, { pragmas: SATOSHI_PRAGMA }]) {
+      const control = await tokenPool(1, options);
+      await attempt(control);
+      expect((await control.provider.getUtxos(control.address)).find((coin) => coin.token)?.satoshis).toBe(SEED - 200n);
+    }
     const attacked = await tokenPool(1);
     await expect(attempt(attacked)).rejects.toThrow(/Program failed|VERIFY|evaluat/i);
     expect((await attacked.provider.getUtxos(attacked.address)).find((coin) => coin.token)?.satoshis).toBe(SEED);
@@ -495,7 +530,7 @@ describe('the token container of pragma containers single', () => {
   });
 
   it('carries an NFT with an empty commitment, which no script can see', async () => {
-    const context = await tokenPool(0, { seeded: false, pragma: true }).catch(() => undefined);
+    const context = await tokenPool(0, { seeded: false }).catch(() => undefined);
     expect(context).toBeDefined();
     const { provider, address, pool, bob } = context!;
     await provider.seedUtxo(address, {
@@ -538,5 +573,57 @@ describe('the token container of pragma containers single', () => {
     await pool.call.take(bob.getLockingBytecode()).send();
     expect((await coins()).reduce((sum, amount) => sum + amount, 0n)).toBe(3n + TOKENS);
     expect(await coins()).toEqual([1n, 1n, 1n + TOKENS]);
+  });
+});
+
+describe('an upgrade that moves a satoshi container', () => {
+  /** A contract whose one container is the satoshi one. Only the first version can be upgraded. */
+  const vault = (
+    name: string, pragmas: string, upgradeable: boolean,
+  ): ReturnType<typeof compileString> => compileString(`pragma solidcash ^0.14.0;
+${pragmas}contract ${name}(pubkey admin) {
+  function pay(sig s, bytes20 recipient, int amount) {
+    require(checkSig(s, admin));
+    this.transfer(new LockingBytecodeP2PKH(recipient), amount);
+  }
+  ${upgradeable ? 'function migrate(sig s) upgrade { require(checkSig(s, admin)); }' : ''}
+  function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
+}`, { forceStateful: true });
+
+  /** Deploys the first version with a satoshi container and upgrades it to a second under `pragmas`. */
+  const upgradeTo = async (pragmas: string): ReturnType<typeof StatefulContract.upgrade> => {
+    const provider = createTestProvider();
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: 'a1cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(p2pkh.address, fundingUtxo);
+    const { contract } = await StatefulContract.deploy(vault('VaultV1', '', true), [alicePub], {
+      provider,
+      fundingUtxo,
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      initialBalance: 5_000n,
+      changeAddress: p2pkh.address,
+    });
+    const upgradeUtxo = { txid: 'a2cd'.repeat(16), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo('51', upgradeUtxo);
+    return StatefulContract.upgrade({
+      provider,
+      oldContract: contract,
+      upgradeFunctionName: 'migrate',
+      upgradeFunctionArgs: [new SignatureTemplate(alicePriv)],
+      newArtifact: vault('VaultV2', pragmas, false),
+      newConstructorArgs: [alicePub],
+      fundingUtxo: upgradeUtxo,
+      funder: { generateLockingBytecode: () => hexToBin('51'), generateUnlockingBytecode: () => new Uint8Array() },
+      changeAddress: p2pkh.address,
+    });
+  };
+
+  it('is refused into a contract under the satoshi pragma, whose satoshi container takes the other form', async () => {
+    await expect(upgradeTo(SATOSHI_PRAGMA)).rejects.toThrow(/is under `pragma satoshicontainer single`/);
+  });
+
+  it('goes through into a contract under the token pragma alone, whose satoshi container keeps its form', async () => {
+    const result = await upgradeTo(TOKEN_PRAGMA);
+    await result.contract.call.pay(new SignatureTemplate(alicePriv), alicePkh, 1_000n).send();
   });
 });

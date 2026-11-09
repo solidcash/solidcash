@@ -116,7 +116,7 @@ export async function loadCreateBuilderTokenContainers(
 
       const covenantScript = buildTokenContainerCovenantScript(
         hexToBin(host.categoryId), hexToBin(tokenContainerCategoryId),
-        directConventionMasterLock(host.inner as any), directContainerOptions(host.inner as any),
+        directConventionMasterLock(host.inner as any), directContainerOptions(host.inner as any, 'tokenContainer'),
       );
       const lockingBytecode = scriptToLockingBytecode(covenantScript, host.inner.addressType);
       tokenContainerLockingBytecodes.set(tokenContainerCategoryId, lockingBytecode);
@@ -130,7 +130,7 @@ export async function loadCreateBuilderTokenContainers(
           .filter((u) => u.token?.category === tokenContainerCategoryId);
         // Anyone can pay a coin to this address, so a contract keeping one coin takes the largest it can use. A coin
         // it cannot is what one paid in to stop every call would be, and the covenant keeps the deployment's coin usable.
-        containerUtxo = abiFunction?.blockLayout?.singleContainers === true
+        containerUtxo = abiFunction?.blockLayout?.singleTokenContainer === true
           ? largest(containerUtxos.filter((utxo) => usable(utxo, lockingBytecode))) ?? largest(containerUtxos)
           : containerUtxos[0];
       } catch {
@@ -138,9 +138,9 @@ export async function loadCreateBuilderTokenContainers(
       }
 
       const exists = !!containerUtxo;
-      if (!exists && abiFunction?.blockLayout?.singleContainers === true) {
+      if (!exists && abiFunction?.blockLayout?.singleTokenContainer === true) {
         throw new Error(
-          `Token container for ${tokenContainerCategoryId} not found. Under pragma containers single a call cannot `
+          `Token container for ${tokenContainerCategoryId} not found. Under pragma tokencontainer single a call cannot `
           + 'open one: deploy the contract with tokenContainers.',
         );
       }

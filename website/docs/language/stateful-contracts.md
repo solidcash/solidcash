@@ -400,29 +400,35 @@ function withdraw(address recipient) public {
 ### Keeping one coin per container
 
 A container is a lock, and by default any number of coins can sit at it: each `.withValue()` on a function that spends
-no container coin opens a new one. `pragma containers single` keeps one coin instead:
+no container coin opens a new one. Two pragmas keep one coin instead, each for one kind of container:
 
 ```solidity
 pragma solidcash ^0.14.0;
-pragma containers single;
+pragma satoshicontainer single; // the satoshi container
+pragma tokencontainer single;   // each token container
 ```
 
+Each holds for every contract in the file, and leaves the other kind of container as it is without a pragma. The rules
+below apply to the containers of the pragma's own kind.
+
 - The deployment opens the containers: `initialBalance` the satoshi container, `tokenContainers` a token container. A
-  call cannot open one later, so a deployment without `initialBalance` is refused where a function needs it.
-- A `payable` function spends the satoshi container and adds to it, so a call has the same shape however much the
-  contract holds.
+  call cannot open one later, so under `pragma satoshicontainer single` a deployment without `initialBalance` is refused
+  where a function needs it.
+- Under `pragma satoshicontainer single` a `payable` function spends the satoshi container and adds to it, so a call has
+  the same shape however much the contract holds.
 - A function with a container spends it, recreates it in the same slot and leaves no other output at its lock. A
   transaction that drains the coin, opens a second one or opens one with nothing spent fails. Keep a balance in the
   container: a call cannot empty it, and a token container needs at least one base unit.
 - The SDK spends the largest coin at the lock.
 - A container coin with no token cannot gain one: the covenant refuses it, whoever builds the transaction. The SDK reads
   a satoshi container as a tokenless coin, and a kept coin cannot drop a token, so one token on the only coin would stop
-  every SDK call for good. This makes the containers' locks differ from those of the same contract without the pragma.
+  every SDK call for good. This makes a container's lock differ from that of the same contract without the pragma.
 - Nothing runs when a coin is paid to a lock from outside, so such a coin can still exist. The contract holds none of
   its value there, and the SDK passes it by. A composer can spend it in the container's place, which leaves two funded
   coins but moves no value out of the contract's locks.
-- The pragma is refused in a [framed](/docs/guides/framed-composition) contract, through an `upgrade` function, a
-  function that delegatecalls and a transfer in a runtime loop. The contract gets no message-bus route.
+- Either pragma is refused in a [framed](/docs/guides/framed-composition) contract, through an `upgrade` function and a
+  function that delegatecalls, and `pragma satoshicontainer single` through a BCH transfer in a runtime loop. The
+  contract gets no message-bus route.
 
 ## Partial Struct Field Updates
 

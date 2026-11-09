@@ -1602,7 +1602,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && node.functions.length === 0 && node.stateVariables.length === 0;
     if (!shadowedInterface) this.contractMap.set(node.name, node);
     this.currentContract = node;
-    if (node.singleContainers) this.validateSingleContainers(node);
+    if (node.singleSatoshiContainer || node.singleTokenContainer) this.validateSingleContainers(node);
 
     // Types declared by an inherited interface are members of the contract scope. A file-level/library enum with
     // the same short name must not win merely because it was registered earlier (`contract C is I`, where both
@@ -19441,18 +19441,22 @@ export default class SymbolTableTraversal extends AstTraversal {
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
   /**
-   * `pragma containers single` keeps one coin at each container's lock, which a framed contract, whose frames settle
-   * its containers, a message-bus route and an upgrade, which moves them to a new lock, cannot promise.
+   * `pragma satoshicontainer single` and `pragma tokencontainer single` keep one coin at a container's lock, which a
+   * framed contract, whose frames settle its containers, a message-bus route and an upgrade, which moves them to a new
+   * lock, cannot promise. The error names the satoshi pragma when the contract has both.
    */
   private validateSingleContainers(node: ContractNode): void {
+    const pragma = node.singleSatoshiContainer ? 'satoshicontainer' : 'tokencontainer';
     if (this.compilerOptions.composition === 'framed') {
-      throw new SingleContainersError(node, 'is not available to a framed contract');
+      throw new SingleContainersError(node, pragma, 'is not available to a framed contract');
     }
     if (this.compilerOptions.messageBus) {
-      throw new SingleContainersError(node, 'is not available to a message-bus contract');
+      throw new SingleContainersError(node, pragma, 'is not available to a message-bus contract');
     }
     const upgrade = node.functions.find((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
-    if (upgrade) throw new SingleContainersError(upgrade, `cannot keep its containers through '${upgrade.name}'`);
+    if (upgrade) {
+      throw new SingleContainersError(upgrade, pragma, `cannot keep its containers through '${upgrade.name}'`);
+    }
   }
 
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
@@ -19512,11 +19516,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const minerFeeStatement = node.body?.statements?.find(
       (statement): statement is MinerFeeStatementNode => statement instanceof MinerFeeStatementNode,
     );
-    // Under `pragma containers single` a payable call adds to the one coin, so it spends it.
-    const singleContainers = this.currentContract?.singleContainers === true;
+    // Under `pragma satoshicontainer single` a payable call adds to the one coin, so it spends it.
+    const singleSatoshiContainer = this.currentContract?.singleSatoshiContainer === true;
     if ((node.transferInfos && node.transferInfos.length > 0)
       || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0 || minerFeeStatement
-      || (singleContainers && node.modifiers.includes(FunctionModifier.PAYABLE))) {
+      || (singleSatoshiContainer && node.modifiers.includes(FunctionModifier.PAYABLE))) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -19732,7 +19736,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       && (needsWideTrailingRegion || collectionRouteCapacity > 0);
     const published = {
       ...(minerFeeStatement ? { minerFee: this.minerFeeAmount(minerFeeStatement).toString() } : {}),
-      ...(singleContainers ? { singleContainers: true } : {}),
+      ...(singleSatoshiContainer ? { singleSatoshiContainer: true } : {}),
+      ...(this.currentContract?.singleTokenContainer ? { singleTokenContainer: true } : {}),
     };
     if (!needsTrailingRegion) return { blockSize: offset, slots, ...published };
 

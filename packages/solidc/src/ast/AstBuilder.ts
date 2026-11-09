@@ -876,14 +876,26 @@ export default class AstBuilder
     }
     let selectedAbiCoder: { version: 'v1' | 'v2'; legacy: boolean } | undefined;
     const experimentalFeatures = new Set<string>();
-    let singleContainers = false;
+    let singleSatoshiContainer = false;
+    let singleTokenContainer = false;
     for (const pragma of ctx.pragmaDirective_list()) {
       const text = pragma.getText();
       if (text.startsWith('pragmacontainers')) {
-        if (text !== 'pragmacontainerssingle;') {
-          throw new ParseError('Expected "pragma containers single"', Location.fromCtx(pragma));
+        throw new ParseError(
+          'Expected "pragma satoshicontainer single" or "pragma tokencontainer single"', Location.fromCtx(pragma),
+        );
+      }
+      if (text.startsWith('pragmasatoshicontainer')) {
+        if (text !== 'pragmasatoshicontainersingle;') {
+          throw new ParseError('Expected "pragma satoshicontainer single"', Location.fromCtx(pragma));
         }
-        singleContainers = true;
+        singleSatoshiContainer = true;
+      }
+      if (text.startsWith('pragmatokencontainer')) {
+        if (text !== 'pragmatokencontainersingle;') {
+          throw new ParseError('Expected "pragma tokencontainer single"', Location.fromCtx(pragma));
+        }
+        singleTokenContainer = true;
       }
       if (this.evmCompat && text.startsWith('pragmaexperimental')) {
         const feature = text.slice('pragmaexperimental'.length, -1);
@@ -1567,8 +1579,12 @@ export default class AstBuilder
     sourceFileNode.libraryErrorDefinitions = libraryErrorDefinitions;
     sourceFileNode.libraryModifierDefinitions = libraryModifierDefinitions;
     sourceFileNode.abiCoderVersion = selectedAbiCoder?.version;
-    sourceFileNode.singleContainers = singleContainers;
-    for (const contract of contracts) contract.singleContainers = singleContainers;
+    sourceFileNode.singleSatoshiContainer = singleSatoshiContainer;
+    sourceFileNode.singleTokenContainer = singleTokenContainer;
+    for (const contract of contracts) {
+      contract.singleSatoshiContainer = singleSatoshiContainer;
+      contract.singleTokenContainer = singleTokenContainer;
+    }
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }
@@ -1643,7 +1659,7 @@ export default class AstBuilder
     if (this.evmCompat) {
       if (!ctx.pragmaName()) {
         const name = ctx.Identifier(0)?.getText();
-        if (name !== 'abicoder' && name !== 'experimental' && name !== 'containers') {
+        if (name !== 'abicoder' && name !== 'experimental' && name !== 'satoshicontainer' && name !== 'tokencontainer') {
           throw new ParseError(`Unknown pragma '${name}'`, Location.fromCtx(ctx));
         }
       }
@@ -1654,7 +1670,9 @@ export default class AstBuilder
     // directives (abicoder / experimental); reject any other bare-identifier pragma as unsupported/typo'd.
     if (!ctx.pragmaName()) {
       const name = ctx.Identifier(0)?.getText();
-      if (name === 'abicoder' || name === 'experimental' || name === 'containers') return;
+      if (name === 'abicoder' || name === 'experimental' || name === 'satoshicontainer' || name === 'tokencontainer') {
+        return;
+      }
       throw new ParseError(
         `Unsupported pragma '${name}'. Only 'solidcash' is supported; `
         + 'enable evmCompat to accept \'solidity\'.',

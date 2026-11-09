@@ -155,8 +155,8 @@ Consensus enforces the category's overall token balance.
 The amount must be positive, and the called function must use `this.tokens[category]` so that the transaction
 includes the container. When no container exists for the category yet, the deposit creates it: a new container
 output of 1,200 satoshis holding the deposited tokens. Under
-[`pragma containers single`](/docs/language/stateful-contracts#keeping-one-coin-per-container) a call cannot open one,
-so the deployment does, with `tokenContainers`.
+[`pragma tokencontainer single`](/docs/language/stateful-contracts#keeping-one-coin-per-container) a call cannot open
+one, so the deployment does, with `tokenContainers`.
 
 ## SDK access
 

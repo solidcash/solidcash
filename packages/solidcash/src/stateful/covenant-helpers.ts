@@ -291,13 +291,15 @@ export function directConventionMasterLock(contract: Contract<any, any>): Uint8A
 }
 
 /**
- * A direct contract's bound container covenants carry the destroy arm when its master can retire, and the tokenless
- * pin under `pragma containers single`.
+ * A direct contract's bound container covenants of `kind` carry the destroy arm when its master can retire, and the
+ * tokenless pin under that kind's pragma: `pragma satoshicontainer single` or `pragma tokencontainer single`.
  */
-export function directContainerOptions(contract: Contract<any, any>): { masterRetires: boolean; keepsTokenless: boolean } {
+export function directContainerOptions(
+  contract: Contract<any, any>, kind: 'satoshiContainer' | 'tokenContainer',
+): { masterRetires: boolean; keepsTokenless: boolean } {
   // An artifact without an ABI states neither, so its containers take the plain pin.
   const abi = contract.artifact?.abi ?? [];
-  return { masterRetires: containerMasterRetires(abi), keepsTokenless: containerKeepsTokenless(abi) };
+  return { masterRetires: containerMasterRetires(abi), keepsTokenless: containerKeepsTokenless(abi, kind) };
 }
 
 export function getDataNftAddress(contract: Contract<any, any>, categoryId: string): string {
@@ -487,7 +489,7 @@ export function getTokenContainerAddress(
   validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
   const covenantScript = buildTokenContainerCovenantScript(
     hexToBin(categoryId), hexToBin(tokenContainerCategoryId), directConventionMasterLock(contract),
-    { accounted: framedAccountsTokens(contract.artifact), ...directContainerOptions(contract) },
+    { accounted: framedAccountsTokens(contract.artifact), ...directContainerOptions(contract, 'tokenContainer') },
   );
   // Always use P2SH32 for token containers so the in-script derivation
   // (which uses OP_HASH256) produces matching locking bytecodes
@@ -497,7 +499,7 @@ export function getTokenContainerAddress(
 export function getSatoshiContainerAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
   const covenantScript = buildSatoshiContainerCovenantScript(
-    hexToBin(categoryId), directConventionMasterLock(contract), directContainerOptions(contract),
+    hexToBin(categoryId), directConventionMasterLock(contract), directContainerOptions(contract, 'satoshiContainer'),
   );
   // Always use P2SH32 for satoshi containers so the in-script derivation
   // (which uses OP_HASH256) produces matching locking bytecodes
@@ -910,7 +912,7 @@ export function createTokenContainerUnlocker(
   validateCategoryId(tokenContainerCategoryId, 'tokenContainerCategoryId');
   const covenantScript = buildTokenContainerCovenantScript(
     hexToBin(categoryId), hexToBin(tokenContainerCategoryId), directConventionMasterLock(contract),
-    directContainerOptions(contract),
+    directContainerOptions(contract, 'tokenContainer'),
   );
   // Always use P2SH32 for token containers (matches in-script OP_HASH256 derivation)
   return createCovenantContractUnlocker(
@@ -929,7 +931,7 @@ export function createSatoshiContainerUnlocker(
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);
   const covenantScript = buildSatoshiContainerCovenantScript(
-    hexToBin(categoryId), directConventionMasterLock(contract), directContainerOptions(contract),
+    hexToBin(categoryId), directConventionMasterLock(contract), directContainerOptions(contract, 'satoshiContainer'),
   );
   // Always use P2SH32 for satoshi containers (matches in-script OP_HASH256 derivation)
   return createCovenantContractUnlocker(

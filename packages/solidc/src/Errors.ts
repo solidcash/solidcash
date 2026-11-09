@@ -1268,8 +1268,8 @@ export class MinerFeeStatementError extends SolidCashError {
 }
 
 export class SingleContainersError extends SolidCashError {
-  constructor(node: Node, reason: string) {
-    super(node, `pragma containers single ${reason}`);
+  constructor(node: Node, pragma: 'satoshicontainer' | 'tokencontainer', reason: string) {
+    super(node, `pragma ${pragma} single ${reason}`);
   }
 }
 

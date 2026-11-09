@@ -103,8 +103,9 @@ export class SourceFileNode extends Node {
   // Explicit source-unit ABI coder selection. Undefined means the compiler/default coder; only explicit v1
   // requires the legacy ABI type restrictions.
   abiCoderVersion?: 'v1' | 'v2';
-  // `pragma containers single;`, for every contract of this source unit.
-  singleContainers = false;
+  // `pragma satoshicontainer single;` and `pragma tokencontainer single;`, for every contract of this source unit.
+  singleSatoshiContainer = false;
+  singleTokenContainer = false;
   importedContracts: ContractNode[] = [];
   isLibrary: boolean = false;
   libraryName?: string;
@@ -166,8 +167,10 @@ export class ContractNode extends Node implements Named {
   // Evaluated `layout at <base>` slot (solc 0.8.29 custom storage layout). Shifts the EVM-visible slot of every
   // persistent state var (inherited ones included), not transient ones. Absent = slot 0.
   storageLayoutBase?: bigint;
-  // `pragma containers single;`: a call keeps one coin per container and opens no other.
-  singleContainers: boolean = false;
+  // `pragma satoshicontainer single;`: a call keeps the satoshi container in one coin and opens no other.
+  singleSatoshiContainer: boolean = false;
+  // `pragma tokencontainer single;`: a call keeps each token container in one coin and opens no other.
+  singleTokenContainer: boolean = false;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.

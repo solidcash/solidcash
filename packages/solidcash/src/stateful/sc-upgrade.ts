@@ -269,11 +269,14 @@ export async function upgradeStatefulContract<T extends Artifact>(
       + 'of them retires its master (a selfdestruct entry), so their container covenants differ.',
     );
   }
-  if (migratesContainers && containerKeepsTokenless(oldAbi) !== containerKeepsTokenless(newArtifact.abi)) {
-    throw new Error(
-      `Upgrade cannot migrate the containers of '${oldContract.name}' to '${newArtifact.contractName}': exactly one `
-      + 'of them is under `pragma containers single`, so their container covenants differ.',
-    );
+  for (const [kind, pragma] of [['satoshiContainer', 'satoshicontainer'], ['tokenContainer', 'tokencontainer']] as const) {
+    const migrates = oldAbi.some((fn) => fn.blockLayout?.slots.some((slot) => slot.kind === kind));
+    if (migrates && containerKeepsTokenless(oldAbi, kind) !== containerKeepsTokenless(newArtifact.abi, kind)) {
+      throw new Error(
+        `Upgrade cannot migrate the containers of '${oldContract.name}' to '${newArtifact.contractName}': exactly one `
+        + `of them is under \`pragma ${pragma} single\`, so their container covenants differ.`,
+      );
+    }
   }
 
   const previousLayout = oldContract.inner.artifact.stateLayout;

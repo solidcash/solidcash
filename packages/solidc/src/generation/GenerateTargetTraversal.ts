@@ -3876,7 +3876,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       slots,
       ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
       ...(node.blockLayout.minerFee !== undefined && { minerFee: node.blockLayout.minerFee }),
-      ...(node.blockLayout.singleContainers && { singleContainers: true }),
+      ...(node.blockLayout.singleSatoshiContainer && { singleSatoshiContainer: true }),
+      ...(node.blockLayout.singleTokenContainer && { singleTokenContainer: true }),
     };
   }
 
@@ -9408,7 +9409,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         slots,
         ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
         ...(node.blockLayout.minerFee !== undefined && { minerFee: node.blockLayout.minerFee }),
-        ...(node.blockLayout.singleContainers && { singleContainers: true }),
+        ...(node.blockLayout.singleSatoshiContainer && { singleSatoshiContainer: true }),
+        ...(node.blockLayout.singleTokenContainer && { singleTokenContainer: true }),
       };
     }
 
@@ -10450,9 +10452,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasEntryWrites = this.pendingEntryWrites.size > 0;
     const hasEntryDeletes = this.pendingEntryDeletes.size > 0;
     const hasTransfers = this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined;
-    if (node.blockLayout?.singleContainers
-      && (this.functionHasDelegatecall || this.functionContainsRuntimeLoopBchTransfer(node))) {
-      throw new SingleContainersError(node, `cannot keep its containers through '${node.name}'`);
+    const singlePragma = node.blockLayout?.singleSatoshiContainer ? 'satoshicontainer'
+      : node.blockLayout?.singleTokenContainer ? 'tokencontainer' : undefined;
+    if (singlePragma !== undefined && this.functionHasDelegatecall) {
+      throw new SingleContainersError(node, singlePragma, `cannot keep its containers through '${node.name}'`);
+    }
+    if (node.blockLayout?.singleSatoshiContainer && this.functionContainsRuntimeLoopBchTransfer(node)) {
+      throw new SingleContainersError(node, 'satoshicontainer', `cannot keep its containers through '${node.name}'`);
     }
     const hasEventEmits = this.pendingEmits.length > 0;
     const hasRuntimeLoopEvents = this.functionContainsRuntimeLoopEvent(node);
@@ -10647,7 +10653,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
           this.emitTokenContainerIdentityVerification(node);
-          if (node.blockLayout?.singleContainers && !isSelfdestruct) this.emitSingleTokenContainers(node);
+          if (node.blockLayout?.singleTokenContainer && !isSelfdestruct) this.emitSingleTokenContainers(node);
         }
         if (!this.functionHasDelegatecall && hasTokenContainerTransfers) {
           this.emitTokenContainerTransferCovenantVerification(node);
@@ -53956,16 +53962,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
   }
 
-  /** This function spends the satoshi container that `pragma containers single` keeps as one coin. */
+  /** This function spends the satoshi container that `pragma satoshicontainer single` keeps as one coin. */
   private hasSingleSatoshiContainer(): boolean {
     const layout = this.currentFunction.blockLayout;
-    return layout?.singleContainers === true && layout.slots.some((slot) => slot.kind === 'satoshiContainer');
+    return layout?.singleSatoshiContainer === true && layout.slots.some((slot) => slot.kind === 'satoshiContainer');
   }
 
   /**
-   * `pragma containers single`: the input at a container's slot is identified as the container, so its lock is the
-   * container's. The output at the slot stays at that lock and no other output is at it, so a call recreates the one
-   * coin and opens no second: a filler, a new coin beside it or one made with nothing spent are all refused. Nothing
+   * `pragma satoshicontainer single` and `pragma tokencontainer single`, for a container of `kind`: the input at a
+   * container's slot is identified as the container, so its lock is the container's. The output at the slot stays at
+   * that lock and no other output is at it, so a call recreates the one coin and opens no second: a filler, a new coin
+   * beside it or one made with nothing spent are all refused. Nothing
    * runs when a coin is paid to the lock from outside, and such a coin holds nothing of the contract's. A satoshi
    * container's slot holds no token: a token-bearing coin can be paid to its lock, and with it in the slot a call
    * could leave the contract's satoshis on a coin that no longer reads as the container. Stack neutral.
@@ -53997,13 +54004,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * A token container's identity is checked only when its slot holds a token, since a first deposit may fill the slot
-   * with a pad. Under `pragma containers single` the deployment made it, so the slot must hold it.
+   * with a pad. Under `pragma tokencontainer single` the deployment made it, so the slot must hold it.
    */
   private emitSingleTokenContainers(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     // The one coin stays exactly as it is, so no NFT can leave it.
     if (this.pendingTokenContainerTransfers.some((transfer) => transfer.method === 'transferNft')) {
-      throw new SingleContainersError(node, `cannot send an NFT from a container in '${node.name}'`);
+      throw new SingleContainersError(node, 'tokencontainer', `cannot send an NFT from a container in '${node.name}'`);
     }
     for (let i = 0; i < this.tokenContainerSlots.length; i++) {
       this.emitBlockSlotIndex('tokenContainer', i, loc);
@@ -55939,7 +55946,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.currentFunction.blockLayout && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
       // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot. A function
-      // that pays the miner fee, or holds the one container of `pragma containers single`, always spends it.
+      // that pays the miner fee, or holds the one container of `pragma satoshicontainer single`, always spends it.
       if (!spendsContainer) this.emitPendingTransferValueGuard(locationData);
       this.emitSatoshiContainerIdentity(locationData);
       if (singleContainer) this.emitContainerStaysSingle('satoshiContainer', undefined, locationData);
@@ -57080,9 +57087,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The bound container covenants' destroy arm, read off the entries this contract's ABI publishes as the SDK reads
    * it (`containerMasterRetires`). Every lock this program binds takes the same form: a delegate and its proxy both
    * keep the plain pin, and the SDK refuses an upgrade whose replacement takes the other form. The same goes for the
-   * tokenless pin of `pragma containers single` (`containerKeepsTokenless`).
+   * tokenless pin of `pragma satoshicontainer single` and `pragma tokencontainer single`, each on the containers of
+   * its own `kind` (`containerKeepsTokenless`).
    */
-  private boundContainerOptions(): { masterRetires: boolean; keepsTokenless: boolean } {
+  private boundContainerOptions(
+    kind: 'satoshiContainer' | 'tokenContainer',
+  ): { masterRetires: boolean; keepsTokenless: boolean } {
     const contract = this.sourcePrimaryContract;
     if (contract === undefined) throw new Error('A bound container covenant needs the contract it is compiled for');
     const entries = [
@@ -57094,7 +57104,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (contract.receiveDef) entries.push({ modifiers: ['payable'], lowLevelCalls: contract.receiveDef.lowLevelCalls });
     return {
       masterRetires: containerMasterRetires(entries),
-      keepsTokenless: containerKeepsTokenless([{ blockLayout: { singleContainers: contract.singleContainers } }]),
+      keepsTokenless: containerKeepsTokenless([{
+        blockLayout: {
+          singleSatoshiContainer: contract.singleSatoshiContainer, singleTokenContainer: contract.singleTokenContainer,
+        },
+      }], kind),
     };
   }
 
@@ -57103,7 +57117,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
     const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(
-      categoryPlaceholder, lockPlaceholder, this.boundContainerOptions(),
+      categoryPlaceholder, lockPlaceholder, this.boundContainerOptions('satoshiContainer'),
     ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
@@ -57133,7 +57147,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
     const covenant = scriptToBytecode(buildTokenContainerCovenantScript(
-      master, token, lockPlaceholder, this.boundContainerOptions(),
+      master, token, lockPlaceholder, this.boundContainerOptions('tokenContainer'),
     ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },

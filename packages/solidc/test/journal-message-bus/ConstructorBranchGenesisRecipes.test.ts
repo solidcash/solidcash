@@ -75,10 +75,9 @@ describe('conditional child-constructor genesis recipes', () => {
     ['a branch return', 'if (choose) { return; } this.selected = seed;'],
     ['a repeated branch update', 'if (choose) { while (seed > 0) { this.selected = seed; } }'],
     ['a branch resource effect', 'if (choose) { emit Seen(seed); }'],
-  ])('keeps %s fenced', (_label, constructorBody) => {
-    expect(selectedHandler(constructorBody)).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+  ])('refuses %s', (_label, constructorBody) => {
+    // None of these folds into the genesis the creator checks, so no route can create the child as its source
+    // would: the direct covenant would check type defaults for what the constructor sets, and skip its guards.
+    expect(() => selectedHandler(constructorBody)).toThrow(/Cannot deploy 'Unit' with new: its constructor does not fold/);
   });
 });

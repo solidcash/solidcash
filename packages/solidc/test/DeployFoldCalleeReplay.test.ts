@@ -58,17 +58,18 @@ describe('deploy-time callee replay', () => {
   });
 
   it('still refuses when the replayed body reads contract state', () => {
-    // A state read must not become a type default: the replay keeps refusing it, so the folded call refuses.
+    // A state read must not become a type default: the replay keeps refusing it, so the folded call refuses. The
+    // constructor that reads it does not fold either, which refuses the deploy before the call is reached.
     expect(() => compileString(childWithCtor(
       'x = helper();', 'function helper() public returns (uint) { return y; }', 'uint y; ',
-    ), OPTS)).toThrow(/DeployThenCallError|co-spend/);
+    ), OPTS)).toThrow(/DeployThenCallError|co-spend|constructor does not fold/);
   });
 
   it('still refuses when the replayed body has a loop', () => {
     expect(() => compileString(childWithCtor(
       'x = helper();',
       'function helper() public pure returns (uint) { uint t = 0; for (uint i = 0; i < 3; i++) { t = t + 1; } return t; }',
-    ), OPTS)).toThrow(/DeployThenCallError|co-spend/);
+    ), OPTS)).toThrow(/DeployThenCallError|co-spend|constructor does not fold/);
   });
 
   it('still refuses a function value bound to a body the replay cannot reproduce', () => {
@@ -76,6 +77,6 @@ describe('deploy-time callee replay', () => {
       + 'contract C {\n'
       + '    function f() public returns (uint) { D d = new D(this.loop); return d.x(); }\n'
       + '    function loop() public pure returns (uint) { uint t = 0; for (uint i = 0; i < 3; i++) { t = t + 1; } return t; }\n'
-      + '}', OPTS)).toThrow(/DeployThenCallError|co-spend/);
+      + '}', OPTS)).toThrow(/DeployThenCallError|co-spend|constructor does not fold/);
   });
 });

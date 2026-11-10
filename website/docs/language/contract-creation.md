@@ -161,6 +161,12 @@ Control flow, mapping writes, ordinary function calls, external calls, events, t
 and nested deployment are not foldable. The compiler fails with `DeployThenCallError`; deploy first and call the
 child in a later transaction.
 
+The child's own constructor folds the same way. A child whose constructor does not fold cannot be created with `new`:
+the factory checks the child's genesis against the folded constructor, so it could not check the state that
+constructor produces. The compiler fails with `UnfoldableChildConstructorError`. Assign those fields with straight-line
+expressions of constants and constructor arguments, for example a precomputed constant in place of a value a loop
+builds.
+
 :::danger
 `require(...)` statements inside a folded child initializer are not executed. Put every authorization and input
 guard in the factory before `new`/the folded call, as in the example. The initializer's assignments are still

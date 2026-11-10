@@ -440,6 +440,17 @@ export class ConditionalDeployError extends SolidCashError {
   }
 }
 
+export class UnfoldableChildConstructorError extends SolidCashError {
+  constructor(public node: InstantiationNode, contractName: string) {
+    super(node,
+      `Cannot deploy '${contractName}' with new: its constructor does not fold into the genesis the deploying `
+      + 'contract verifies. The child would be created with type defaults in the fields that constructor sets. '
+      + 'Only straight-line local and state assignments, branches over them and requires fold; a loop or a call '
+      + 'to a function that is not inlined does not. Assign those fields from constants or constructor '
+      + 'arguments, for example a precomputed constant in place of a value a loop builds');
+  }
+}
+
 export class DirectHeterogeneousDeployError extends SolidCashError {
   constructor(public node: InstantiationNode) {
     super(node,

@@ -231,6 +231,7 @@ import {
   UpgradeStrandsBoundStateError,
   MinerFeeStatementError,
   SingleContainersError,
+  UnfoldableChildConstructorError,
 } from '../Errors.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
 import {
@@ -15371,6 +15372,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later
       // deploy-then-call folds so their `this.field` reads see the true genesis value.
       this.tryFoldChildConstructor(node);
+      // A child's genesis is checked against the folded constructor and type defaults for every field it leaves
+      // unfolded. A constructor that failed to fold may set any field, so that check would create the child in a
+      // state its source never reaches. Refuse it rather than compile a covenant that verifies the wrong genesis.
+      if (node.isStatefulDeploy && node.ctorFoldFailed === true) {
+        throw new UnfoldableChildConstructorError(node, contract.name);
+      }
 
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
       // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,

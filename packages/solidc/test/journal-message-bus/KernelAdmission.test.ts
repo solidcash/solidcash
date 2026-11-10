@@ -3902,17 +3902,18 @@ describe('required kernel admission', () => {
     'constructor(int seed) { require(helper(seed) > 0); this.marker = seed; } '
       + 'function helper(int x) internal returns (int) { this.marker = x; return x; }',
     'constructor(int seed) { if (seed > 0) { require(seed < 65); } this.marker = seed; }',
-  ])('keeps resource-dependent or non-straight-line constructor logic fenced: %s', (constructor) => {
-    const artifact = compileString(`contract Unit() { int marker; ${constructor} }
+  ])('refuses resource-dependent or non-straight-line constructor logic: %s', (constructor) => {
+    // The constructor does not fold, so no route creates the child as its source would: the direct covenant would
+    // skip its guard and check type defaults for what it sets.
+    expect(() => compileString(`contract Unit() { int marker; ${constructor} }
       contract Coordinator() {
         function materialize(int seed) public { Unit child = new Unit(seed); require(true); }
-      }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, KERNEL)).toThrow(/Cannot deploy 'Unit' with new: its constructor does not fold/);
   });
 
-  it('keeps signature-dependent constructor predicates fenced', () => {
-    const artifact = compileString(`contract Unit() {
+  it('refuses signature-dependent constructor predicates', () => {
+    // A signature check the creator cannot replay would be skipped: anyone could create the child without it.
+    expect(() => compileString(`contract Unit() {
         int marker;
         constructor(sig proof, pubkey key) { require(checkSig(proof, key)); this.marker = 1; }
       }
@@ -3921,9 +3922,7 @@ describe('required kernel admission', () => {
           Unit child = new Unit(proof, key);
           require(true);
         }
-      }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize')?.eligible)
-      .toBe(false);
+      }`, KERNEL)).toThrow(/Cannot deploy 'Unit' with new: its constructor does not fold/);
   });
 
   it('authenticates a replayable helper-produced constructor predicate', () => {
@@ -4201,17 +4200,16 @@ describe('required kernel admission', () => {
       + 'function other(int x) internal pure returns (int) { return helper(x); }'],
     ['same-arity overloaded', 'function helper(int x) internal pure returns (int) { return x; } '
       + 'function helper(bool x) internal pure returns (int) { return x ? 1 : 0; }'],
-  ])('keeps %s constructor helpers outside genesis replay', (_label, helper) => {
-    const artifact = compileString(`contract Unit() {
+  ])('refuses %s constructor helpers outside genesis replay', (_label, helper) => {
+    // A helper the replay cannot reproduce leaves `marker` unfolded, which the direct covenant would check at zero.
+    expect(() => compileString(`contract Unit() {
         int marker;
         constructor(int seed) { this.marker = helper(seed); }
         ${helper}
       }
       contract Coordinator() {
         function materialize(int seed) public { Unit unit = new Unit(seed); require(true); }
-      }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'materialize'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      }`, KERNEL)).toThrow(/Cannot deploy 'Unit' with new: its constructor does not fold/);
   });
 
   it.each([
@@ -4657,45 +4655,46 @@ describe('required kernel admission', () => {
     });
     expect(asmToBytecode(supported.bytecode).length).toBeLessThanOrEqual(10_000);
 
-    const refused = compileString(`contract Ambiguous(int first, int second, int value) {
+    // These do not fold: two runtime keys may name one entry, and a literal and a runtime key may too, so the child's
+    // entries depend on values the creator would not check. The direct covenant would create the child without them.
+    const unfolded: [string, string, string][] = [
+      ['Ambiguous', `contract Ambiguous(int first, int second, int value) {
         mapping(int => int) values;
         constructor() { this.values[first] = value; this.values[second] = value + 1; }
-      }
-      contract Dynamic(bytes key, int value) {
+      }`, `function ambiguous(int first, int second, int value) public {
+          Ambiguous child = new Ambiguous(first, second, value); require(true);
+        }`],
+      ['CrossLiteral', `contract CrossLiteral(int value) {
+        mapping(int => int) values;
+        constructor() { this.values[1] = value; this.values[hex"01"] = value + 1; }
+      }`, 'function crossLiteral(int value) public { CrossLiteral child = new CrossLiteral(value); require(true); }'],
+      ['RuntimeThenLiteral', `contract RuntimeThenLiteral(int key, int value) {
+        mapping(int => int) values;
+        constructor() { this.values[key] = value; this.values[7] = value + 1; }
+      }`, `function runtimeThenLiteral(int key, int value) public {
+          RuntimeThenLiteral child = new RuntimeThenLiteral(key, value); require(true);
+        }`],
+      ['LiteralThenRuntime', `contract LiteralThenRuntime(int key, int value) {
+        mapping(int => int) values;
+        constructor() { this.values[7] = value; this.values[key] = value + 1; }
+      }`, `function literalThenRuntime(int key, int value) public {
+          LiteralThenRuntime child = new LiteralThenRuntime(key, value); require(true);
+        }`],
+    ];
+    for (const [name, child, deploy] of unfolded) {
+      expect(() => compileString(`${child}\n      contract Coordinator() {\n        ${deploy}\n      }`, KERNEL))
+        .toThrow(new RegExp(`Cannot deploy '${name}' with new: its constructor does not fold`));
+    }
+    // A dynamic key folds, so the child is created as its source says; only the kernel route has no recipe for it.
+    const dynamic = compileString(`contract Dynamic(bytes key, int value) {
         mapping(bytes => int) values;
         constructor() { this.values[key] = value; }
       }
-      contract CrossLiteral(int value) {
-        mapping(int => int) values;
-        constructor() { this.values[1] = value; this.values[hex"01"] = value + 1; }
-      }
-      contract RuntimeThenLiteral(int key, int value) {
-        mapping(int => int) values;
-        constructor() { this.values[key] = value; this.values[7] = value + 1; }
-      }
-      contract LiteralThenRuntime(int key, int value) {
-        mapping(int => int) values;
-        constructor() { this.values[7] = value; this.values[key] = value + 1; }
-      }
       contract Coordinator() {
-        function ambiguous(int first, int second, int value) public {
-          Ambiguous child = new Ambiguous(first, second, value); require(true);
-        }
         function dynamic(bytes key, int value) public { Dynamic child = new Dynamic(key, value); require(true); }
-        function crossLiteral(int value) public { CrossLiteral child = new CrossLiteral(value); require(true); }
-        function runtimeThenLiteral(int key, int value) public {
-          RuntimeThenLiteral child = new RuntimeThenLiteral(key, value); require(true);
-        }
-        function literalThenRuntime(int key, int value) public {
-          LiteralThenRuntime child = new LiteralThenRuntime(key, value); require(true);
-        }
       }`, KERNEL);
-    for (const name of [
-      'ambiguous', 'dynamic', 'crossLiteral', 'runtimeThenLiteral', 'literalThenRuntime',
-    ]) {
-      expect(refused.messageBus?.handlers.find((candidate) => candidate.name === name))
-        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    }
+    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'dynamic'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
   it('publishes fixed-layout struct entry recipes and fences dynamic aggregate layouts', () => {
@@ -4732,46 +4731,41 @@ describe('required kernel admission', () => {
     });
     expect(asmToBytecode(artifact.bytecode).length).toBeLessThanOrEqual(10_000);
 
-    const dynamic = compileString(`struct DynamicCell { string label; int32 amount; }
+    // A dynamic aggregate entry does not fold, so the direct covenant would create the child without it: refused.
+    expect(() => compileString(`struct DynamicCell { string label; int32 amount; }
       contract DynamicStore() {
         DynamicCell[1] rows;
         constructor() { this.rows[0] = DynamicCell("x", 1); }
       }
-      contract NestedCollectionStore() {
+      contract DynamicCoordinator() {
+        function dynamic() public { DynamicStore child = new DynamicStore(); require(true); }
+      }
+      `, { ...KERNEL, maximumInputBytes: 1_000_000 }))
+      .toThrow(/Cannot deploy 'DynamicStore' with new: its constructor does not fold/);
+    expect(() => compileString(`contract NestedCollectionStore() {
         mapping(int => int32[2]) groups;
         constructor() { this.groups[1] = [1, 2]; }
       }
       contract DynamicCoordinator() {
-        function dynamic() public { DynamicStore child = new DynamicStore(); require(true); }
         function nested() public {
           NestedCollectionStore child = new NestedCollectionStore(); require(true);
         }
       }
-      `, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'dynamic')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
-    expect(dynamic.messageBus?.handlers.find((candidate) => candidate.name === 'nested')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+      `, { ...KERNEL, maximumInputBytes: 1_000_000 }))
+      .toThrow(/Cannot deploy 'NestedCollectionStore' with new: its constructor does not fold/);
   });
 
-  it('does not publish or reserve an entry whose folded value has no materializable recipe', () => {
-    const artifact = compileString(`contract StringEntry() {
+  it('refuses a child whose constructor writes an entry with no materializable recipe', () => {
+    // The entry does not fold, so neither route can create it: the direct covenant would create the child without
+    // `values[0]`, which its constructor sets.
+    expect(() => compileString(`contract StringEntry() {
         string[1] values;
         constructor() { this.values[0] = "seed"; }
       }
       contract Coordinator() {
         function make() public { StringEntry child = new StringEntry(); require(true); }
-      }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'make'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
-    const make = artifact.abi.find((candidate) => candidate.name === 'make')!;
-    expect(make.deployTargets?.[0]).not.toHaveProperty('entryNftCount');
-    expect(make.deployTargets?.[0]).not.toHaveProperty('genesisEntries');
-    expect(make.blockLayout?.slots.filter((slot) => slot.kind === 'deployDataNft')).toHaveLength(0);
+      }`, { ...KERNEL, maximumInputBytes: 1_000_000 }))
+      .toThrow(/Cannot deploy 'StringEntry' with new: its constructor does not fold/);
   });
 
   it('publishes arithmetic and hash child recipes per resolved overload', () => {

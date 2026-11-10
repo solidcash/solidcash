@@ -6371,6 +6371,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       for (const key in current) {
         if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
+        // A deployed or referenced contract is embedded as compiled bytes, never run here, and its function ids
+        // are numbered in its own space. Reading them would mark this contract's function of the same id invoked
+        // and OP_DEFINE it beside its inline copy, a dead definition the size of the whole body.
+        if (key === 'referencedContract' || key === 'deployedStateVars') continue;
         // A resolved direct call already contributed its target above unless it folded away. Its callee
         // identifier is not a function-pointer value; scanning that identifier re-adds a folded target as a
         // dead OP_DEFINE. Keep scanning arguments, which may contain real function-pointer values.

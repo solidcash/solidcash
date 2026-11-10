@@ -614,6 +614,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
     // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
     creationBytecode?: string;
+    // `new C{code: c}`: where the child's code comes from and the sha256 it must have.
+    code?: import('@solidcash/utils').DeployCodeSourceAbi;
+    template?: import('@solidcash/utils').DeployTemplateAbi;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -2987,6 +2990,13 @@ export interface CallOptions {
   value?: ExpressionNode;
   gas?: ExpressionNode;
   salt?: ExpressionNode;
+  /**
+   * `new C{code: c}(...)`: the child's code is the bytes `c` rather than C's compiled body embedded in the creator.
+   * The creator requires `sha256(c)` to equal `template`, or C's own compiled code when no template is named.
+   */
+  code?: ExpressionNode;
+  /** `new C{code: c, template: t}(...)`: the sha256 of the code the child runs, chosen at run time. */
+  template?: ExpressionNode;
 }
 
 export class ExternalFunctionCallNode extends ExpressionNode {

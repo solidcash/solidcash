@@ -5,7 +5,9 @@
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import {
+  asmToBytecode,
   buildChunkCommitment,
   buildEntryCommitment,
   buildEventNftCovenantScript,
@@ -71,6 +73,37 @@ import type {
   DeployFromOptions, DeployFromResult,
 } from './stateful-lifecycle-types.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
+
+/**
+ * The code a `new C{code: c}` child runs: the deploy argument the factory forwards as `c`, or else the caller's child
+ * artifact. A code that does not hash to the template the factory requires is refused here, before the covenant
+ * would refuse the transaction.
+ */
+function deployChildCode(
+  target: NonNullable<Artifact['abi'][number]['deployTargets']>[number], args: readonly unknown[],
+  childArtifact: Artifact, functionName: string,
+): Uint8Array {
+  const bytesOf = (value: unknown): Uint8Array | undefined => {
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === 'string' && /^(?:0x)?(?:[0-9a-f]{2})*$/i.test(value)) return hexToBin(value.replace(/^0x/i, ''));
+    return undefined;
+  };
+  const code = target.code?.kind === 'parameter' ? bytesOf(args[target.code.index]) : asmToBytecode(childArtifact.bytecode);
+  if (!code || code.length === 0) {
+    throw new Error(`deployFrom('${functionName}'): the child's code must be given as bytes`);
+  }
+  const template = target.template;
+  const required = template?.kind === 'compiled' ? template.hash
+    : template?.kind === 'parameter' ? bytesOf(args[template.index]) : undefined;
+  const requiredHex = required instanceof Uint8Array ? binToHex(required) : required;
+  if (requiredHex !== undefined && binToHex(sha256(code)) !== requiredHex.toLowerCase()) {
+    throw new Error(
+      `deployFrom('${functionName}'): the child's code hashes to ${binToHex(sha256(code))}, not to the template `
+      + `${requiredHex} the factory requires`,
+    );
+  }
+  return code;
+}
 
 export async function deployFromStatefulContract<T extends Artifact>(
   options: DeployFromOptions<T>,
@@ -287,7 +320,11 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // children (loop deploy) has a distinct address derived from its own category. childContracts[0] is the
   // returned handle. childConstructorArgs are shared (a loop mints the same child type each iteration).
   let effectiveChildArtifact = childArtifact;
-  if (deployTarget.creationBytecode) {
+  if (deployTarget.code) {
+    // `new C{code: c}`: the child runs the code this call supplies, which the factory checks against its template.
+    const code = deployChildCode(deployTarget, deployFunctionArgs, childArtifact, deployFunctionName);
+    effectiveChildArtifact = { ...childArtifact, bytecode: scriptToAsm(bytecodeToScript(code)) } as T;
+  } else if (deployTarget.creationBytecode) {
     effectiveChildArtifact = {
       ...childArtifact,
       bytecode: scriptToAsm(bytecodeToScript(hexToBin(deployTarget.creationBytecode))),

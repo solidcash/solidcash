@@ -155,6 +155,14 @@ export default class LowerFramedCreate2Address extends AstTraversal {
 
   visitInstantiation(node: InstantiationNode): Node {
     const childName = node.identifier.name;
+    if (node.callOptions?.code !== undefined || node.callOptions?.template !== undefined) {
+      // A framed creator checks a child against its shards' constant locks, not against code it is handed.
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `'new ${childName}{code: ...}' names the code its child runs, which a framed creation does not check yet`,
+        { requested: 'framed', reason: 'create-with-code' },
+      );
+    }
     const salt = node.callOptions?.salt;
     if (salt === undefined) {
       throw new SolidcDiagnosticError(

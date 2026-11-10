@@ -324,6 +324,12 @@ export default class AstTraversal extends AstVisitor<Node> {
     if (node.callOptions?.salt) {
       node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
     }
+    if (node.callOptions?.code) {
+      node.callOptions.code = this.visit(node.callOptions.code) as ExpressionNode;
+    }
+    if (node.callOptions?.template) {
+      node.callOptions.template = this.visit(node.callOptions.template) as ExpressionNode;
+    }
     return node;
   }
 

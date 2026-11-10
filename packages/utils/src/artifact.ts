@@ -517,6 +517,15 @@ export interface FixedBchTransferAbi {
   failedCallMessage?: string;
 }
 
+/** Where a `new C{code: c}` child's code comes from: a deploy-function parameter it forwards, or an expression. */
+export type DeployCodeSourceAbi = { kind: 'parameter'; name: string; index: number } | { kind: 'expression' };
+
+/**
+ * The sha256 the code of a `new C{code: c}` child must have, which the creator checks before building the child's
+ * address from that code: the hash of C's compiled body (`compiled`), or a value chosen at run time.
+ */
+export type DeployTemplateAbi = { kind: 'compiled'; hash: string } | DeployCodeSourceAbi;
+
 /** Completely folded, constructor-only initial state for one child deployment site. */
 export interface ChildDeploymentGenesisStateAbi {
   kind: 'constructor';
@@ -773,8 +782,14 @@ export interface AbiFunction {
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
-    /** Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. */
+    /**
+     * Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. With `code` the
+     * factory embeds nothing, and this is C's compiled body: the code a `compiled` template requires.
+     */
     creationBytecode?: string;
+    /** `new C{code: c}`: the child runs the bytes `c`, whose sha256 the factory requires to be `template`. */
+    code?: DeployCodeSourceAbi;
+    template?: DeployTemplateAbi;
     /** The deploy covenant folds a same-transaction child call and its post-call genesis must be VM-derived. */
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;

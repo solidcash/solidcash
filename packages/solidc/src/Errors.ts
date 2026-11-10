@@ -451,6 +451,12 @@ export class UnfoldableChildConstructorError extends SolidCashError {
   }
 }
 
+export class DeployCodeError extends SolidCashError {
+  constructor(public node: InstantiationNode, message: string) {
+    super(node, message);
+  }
+}
+
 export class DirectHeterogeneousDeployError extends SolidCashError {
   constructor(public node: InstantiationNode) {
     super(node,

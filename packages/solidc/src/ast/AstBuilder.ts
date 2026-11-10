@@ -5270,7 +5270,7 @@ export default class AstBuilder
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
     if (ctx.callOptions()) {
-      instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+      instantiation.callOptions = this.parseCallOptions(ctx.callOptions(), true);
     }
     return instantiation;
   }
@@ -5283,7 +5283,7 @@ export default class AstBuilder
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
-    instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+    instantiation.callOptions = this.parseCallOptions(ctx.callOptions(), true);
     return instantiation;
   }
 
@@ -8250,7 +8250,8 @@ export default class AstBuilder
     return node;
   }
 
-  private parseCallOptions(ctx: CallOptionsContext | undefined): CallOptions | undefined {
+  /** `instantiation` admits `code` and `template`, which name the code a `new` child runs. */
+  private parseCallOptions(ctx: CallOptionsContext | undefined, instantiation = false): CallOptions | undefined {
     if (!ctx) return undefined;
     const options: CallOptions = {};
     const seen = new Set<string>();
@@ -8261,22 +8262,33 @@ export default class AstBuilder
       }
       seen.add(name);
       const expr = this.visit(opt.expression()) as ExpressionNode;
+      if ((name === 'code' || name === 'template') && !instantiation) {
+        throw new ParseError(
+          `Call option '${name}' names the code a contract created with 'new' runs, and applies only to 'new'`,
+          Location.fromCtx(opt),
+        );
+      }
       if (name === 'value') {
         options.value = expr;
       } else if (name === 'salt') {
         options.salt = expr;
+      } else if (name === 'code') {
+        options.code = expr;
+      } else if (name === 'template') {
+        options.template = expr;
       } else if (name === 'gas') {
         options.gas = expr;
         const line = this.diagLine(opt.start?.line);
         emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
       } else {
         throw new ParseError(
-          `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`,
+          `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`
+            + (instantiation ? ', and on new also \'code\' and \'template\'' : ''),
           Location.fromCtx(opt),
         );
       }
     }
-    return (options.value || options.gas || options.salt) ? options : undefined;
+    return (options.value || options.gas || options.salt || options.code || options.template) ? options : undefined;
   }
 
   // Legacy 0.6.x low-level-call option syntax `target.call.value(v)(data)` / `.call.gas(g)(data)`. Desugar to the

@@ -11,6 +11,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { callRecordDigest, parseCallRecord } from '../../src/stateful/call-record.js';
 import { decodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 import { callRecordDigest, parseCallRecord } from '../../src/stateful/call-record.js';
 

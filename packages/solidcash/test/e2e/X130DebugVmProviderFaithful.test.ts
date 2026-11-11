@@ -21,12 +21,12 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * `debugging.ts` DECIDES: `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows,
  * so its VM is the accept/reject gate for `.build()` on a `recursiveStateHandler`. It built a bare
  * `createVirtualMachineBch2026()`, which diverges from the decider in BOTH directions at every sanctioned
- * version (0.0.8 and 0.0.10). X121 rows 2/4/6 measured the divergence and pinned the fail-open half as a KNOWN
+ * version (0.0.8, 0.0.10 and 0.0.11). X121 rows 2/4/6 measured the divergence and pinned the fail-open half as a KNOWN
  * GAP because the repair needed a hunk in `libauth-template/LibauthTemplate.ts`. Both halves are landed now,
  * together: an optional parameter nobody supplies would read as provider-aware while behaving bare.
  *
- * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.11 (re-measured there on 2026-11-05, all green) and row 0 asserts
- * it, for the reason X121 row 0 gives: at 0.0.7
+ * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.11 (re-measured at 0.0.10 on 2026-10-11 and at 0.0.11 on 2026-11-07, all
+ * green) and row 0 asserts it, for the reason X121 row 0 gives: at 0.0.7
  * `TxVerifierConfig` has no `consensus` field, the published overrides are silently dropped, and every verdict
  * here inverts.
  *
@@ -171,7 +171,7 @@ async function p2pkhSpend(provider: MockNetworkProvider): Promise<TransactionBui
   return builder;
 }
 
-describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.10)', () => {
+describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.11)', () => {
   it('0. VERSION GATE: the installed decider is 0.0.11, which every row below is pinned to', () => {
     expect(
       MEM_CASH_VALIDATION_VERSION,

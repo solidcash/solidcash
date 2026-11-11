@@ -19,9 +19,25 @@ test('kernel production code names no application', () => {
     root,
     censusCommit: manifest.censusCommit,
     forbiddenApplicationNames: manifest.forbiddenApplicationNames,
+    genericUses: manifest.genericVocabularyUses,
   });
   assert.deepEqual(shapedLines, [], 'production lines added since the census commit name an application');
   assert.deepEqual(shapedKernelLines, [], 'the kernel implementation names an application');
+});
+
+test('a generic use frees one word in one file, and nothing more', () => {
+  const scan = (forbiddenApplicationNames, genericUses) => scanKernelVocabulary({
+    root, censusCommit: manifest.censusCommit, forbiddenApplicationNames, genericUses,
+  }).shapedLines;
+  const [use] = manifest.genericVocabularyUses;
+  // Freed nowhere, the word is caught. Freed in only one of its files, it is still caught in the others.
+  assert.ok(scan(['jobs'], []).length > 0);
+  assert.ok(scan(['jobs'], [use]).length > 0);
+  assert.deepEqual(scan(['jobs'], manifest.genericVocabularyUses), []);
+  // A freed file still answers for every other name: keccak is in it, and freeing jobs does not free keccak.
+  assert.ok(scan(['jobs', 'keccak'], manifest.genericVocabularyUses).length > 0);
+  // The kernel's own files free nothing.
+  assert.throws(() => scan(['jobs'], [{ file: KERNEL_IMPLEMENTATION_FILES[0], word: 'jobs' }]), /frees no word/);
 });
 
 test('the scan reads every kernel implementation file', () => {

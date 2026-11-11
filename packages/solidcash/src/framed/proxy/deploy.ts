@@ -97,6 +97,7 @@ import {
 import type { HopCallInputs } from './call-resolution.js';
 import { eventChunkLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { masterForEntry, requireFunctionSplitShard } from '../deploy/entry-pool.js';
+import { facetPool, inPoolOrder, poolOrderFor, type PoolOrder } from '../deploy/pool-order.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import { ownCoinRefusal } from '../deploy/own-coin.js';
 import {
@@ -1017,7 +1018,7 @@ function callPushes(
  */
 async function implementationFrameSideCars(
   provider: NetworkProvider, artifact: Artifact, functionName: string, args: readonly FunctionArgument[],
-  loopHashes?: number,
+  loopHashes?: number, poolOrder?: PoolOrder,
 ): Promise<ReadonlyMap<string, RecoverySideCars>> {
   const abiFunction = artifact.abi.find((candidate) => candidate.name === functionName);
   if (abiFunction === undefined) return new Map();
@@ -1031,6 +1032,7 @@ async function implementationFrameSideCars(
     provider, master: IMPLEMENTATION_MASTER_ID, abiFunction,
     argumentPushes: callPushes(artifact, functionName, args), leadingPushes: 1,
     ...(loopHashes === undefined ? {} : { hashes: loopHashes }),
+    ...(poolOrder === undefined ? {} : { poolOrder }),
   });
   return frame.ids.length === 0 ? new Map() : new Map([[IMPLEMENTATION_MASTER_ID, frame]]);
 }
@@ -3553,7 +3555,9 @@ function hopEmits(
 ): readonly (NonNullable<Artifact['abi'][number]['emits']>[number] & { readonly chunk: number })[] {
   const rows = artifact.abi.find((candidate) => candidate.name === functionName)?.emits ?? [];
   // A wide emit lists one output per chunk of its payload (`EmitAbi.chunks`).
-  const chunked = (row: NonNullable<Artifact['abi'][number]['emits']>[number]): ReturnType<typeof hopEmits>[number][] =>
+  const chunked = (
+    row: NonNullable<Artifact['abi'][number]['emits']>[number],
+  ): (NonNullable<Artifact['abi'][number]['emits']>[number] & { readonly chunk: number })[] =>
     Array.from({ length: row.chunks ?? 1 }, (_unused, chunk) => ({ ...row, chunk }));
   if (emits === undefined) {
     if (publishedLoopEffects(artifact, functionName)?.events !== undefined) {
@@ -5053,6 +5057,8 @@ interface BroadcastHopOptions {
   /** The derived hop: the specification every input's unlocking bytecode and every output is taken from. */
   readonly program: ShippedVmProgram;
   readonly draft: CompositionDraft;
+  /** The order the call planned its pools in. Absent, the hop takes pools in an order of its own. */
+  readonly poolOrder?: PoolOrder;
   /**
    * The UTXO each participant the entry spends sits on, when its id does not name one the pools can be searched for.
    *
@@ -5348,10 +5354,21 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
 
   // The pools the two geneses published, read back by category and classified the way a framed deployment mints
   // them, so a participant is placed on the outpoint it actually sits on rather than a genesis output index.
-  const proxyPools = await readFramedDeployment(
-    provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!);
-  const implementationPools = await readFramedDeployment(
-    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!);
+  const hopValidator = framedValidator.buildValidatorProgram();
+  const hopMasterLocks = (artifact: Artifact, categoryId: string): readonly Uint8Array[] => [
+    deployMaster(artifact, hexToBin(categoryId), hopValidator).lockingBytecode,
+  ];
+  const poolOrder = options.poolOrder ?? poolOrderFor(provider);
+  const proxyPools = inPoolOrder(await readFramedDeployment(
+    provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!, {
+      masterLocks: hopMasterLocks(options.proxyArtifact, options.proxyCategoryId),
+    },
+  ), poolOrder);
+  const implementationPools = inPoolOrder(await readFramedDeployment(
+    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!, {
+      masterLocks: hopMasterLocks(options.implementationArtifact, options.implementationCategoryId),
+    },
+  ), poolOrder);
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   // The hop's own shape is fixed - the composer assembled every contract input and there is no oracle or side-car
@@ -5385,7 +5402,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     // A validator's facet holds no token and pins no category, so any live UTXO of its code serves the input; the
     // composer supplies its source, so the lookup is by the lock the plan states.
     const facetUtxos = placed.kind === 'facet'
-      ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
+      ? facetPool(await provider.getUtxosForLockingBytecode(source.lockingBytecode), poolOrder)
       : [];
     const real = options.spentUtxos?.get(placed.id)
       ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id,
@@ -5630,7 +5647,11 @@ export async function callFramedProxyEntry(
   const proxyLayout = proxyArtifact.stateLayout!;
   const classificationLayout = implementationArtifact.stateLayout?.collections === undefined ? proxyLayout
     : { ...proxyLayout, collections: implementationArtifact.stateLayout.collections };
-  const proxyPools = await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout);
+  const poolOrder = poolOrderFor(provider);
+  const proxyPools = inPoolOrder(await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout, {
+    masterLocks: [deployMaster(proxyArtifact, hexToBin(options.proxyCategoryId), framedValidator.buildValidatorProgram())
+      .lockingBytecode],
+  }), poolOrder);
   if (proxyPools.records.length !== proxyLayout.dataNftCount) {
     throw new FramedProxyDeployError(
       `category ${options.proxyCategoryId} holds ${proxyPools.records.length} record(s) for a proxy whose layout `
@@ -5656,8 +5677,16 @@ export async function callFramedProxyEntry(
     state: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools) as
       Readonly<Record<string, StateValue>>,
   });
-  const implementationPools = await readFramedDeployment(
-    provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
+  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
+  const oraclePool = framedOraclePool(provider, implementationProgram);
+  const validatorProgram = framedValidator.buildValidatorProgram();
+  const implementationCategory = hexToBin(options.implementationCategoryId);
+  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
+  const implementationPools = inPoolOrder(await readFramedDeployment(
+    provider, options.implementationCategoryId, implementationArtifact.stateLayout!, {
+      masterLocks: [implementationMaster.lockingBytecode], validatorProgram,
+    },
+  ), poolOrder);
   const recordCommitments = proxyPools.records.map((record, nftIndex) => {
     const commitment = record.token?.nft?.commitment;
     if (commitment === undefined) {
@@ -5668,13 +5697,8 @@ export async function callFramedProxyEntry(
     return hexToBin(commitment);
   });
 
-  const validatorProgram = framedValidator.buildValidatorProgram();
   const proxyCategory = hexToBin(options.proxyCategoryId);
-  const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
-  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
-  const oraclePool = framedOraclePool(provider, implementationProgram);
-  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
   let implementationMasterUtxo = implementationPools.masters[0];
   if (splitShard !== undefined) {
     try {
@@ -5860,7 +5884,7 @@ export async function callFramedProxyEntry(
   });
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
   const implementationSideCars = withBlockOracle(await implementationFrameSideCars(
-    provider, implementationArtifact, options.functionName, args, loopTurns.hashes,
+    provider, implementationArtifact, options.functionName, args, loopTurns.hashes, poolOrder,
   ), blockOracle);
   // A frame below the entry may call back into the root, a receiver's hook or a borrower's repayment: it runs on
   // the root's own records, which the root's frames name as the proxy's record participants.
@@ -5879,6 +5903,7 @@ export async function callFramedProxyEntry(
         args, externals: options.externals ?? {}, validatorProgram,
         stateValues: executionState,
         entryDeployment: { categoryId: options.proxyCategoryId, deployment: proxyPools, layout: classificationLayout },
+        poolOrder,
         reentrantRoot,
         selfAddress: proxyMaster.address,
         senderAddress: options.callerLockingBytecode,
@@ -5929,6 +5954,7 @@ export async function callFramedProxyEntry(
     implementationCategoryId: options.implementationCategoryId,
     program: settled.program,
     draft: settled.draft,
+    poolOrder,
     ...(settled.entryWrites === undefined && externalPlan.utxos.size === 0 && readNodes.length === 0
       ? {}
       : {

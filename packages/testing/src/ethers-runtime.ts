@@ -522,7 +522,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
       const SC = await loadStatefulContract();
       // A factory-created child's address commits to its category, which only the creating frame knows. Reuse
       // the registered handle so `getContractAt` reads the state this session actually deployed.
-      const { findDeploymentByAddress } = await import('@solidcash/solidcash/stateful');
+      const { findDeploymentByAddress, listDeployments: listRegistered } = await import('@solidcash/solidcash/stateful');
       let registered = typeof addressOrCategory === 'string'
         ? findDeploymentByAddress(provider as never, addressOrCategory) : undefined;
       // A getter's decoded `address` is the 20-byte Solidity identity of the child's physical lock, or under
@@ -533,7 +533,7 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
         ? (rawAddress.length === 20 ? rawAddress : decodedSolidityAddressIdentity(rawAddress)) : undefined;
       if (registered === undefined && rawIdentity !== undefined) {
         const wanted = binToHex(rawIdentity);
-        registered = [...listDeployments(provider as never)].reverse().find((entry) => (
+        registered = [...listRegistered(provider as never)].reverse().find((entry) => (
           entry.lockingBytecode !== undefined
           && binToHex(hash160(hexToBin(entry.lockingBytecode))) === wanted
         ));
@@ -561,12 +561,12 @@ export function buildEthers(provider: NetworkProvider, mnemonic: string, opts: E
         // ethers parity: `getContractAt` connects the default signer just like `.at()` does. Without it the
         // builder provisions no native P2PKH input, and a covenant reading msg.sender/tx.origin (emitTxOrigin
         // scans for exactly that input) refuses the transaction with an empty origin.
-        const signer = defaultRunner() as unknown as {
+        const signingRunner = defaultRunner() as unknown as {
           unlockP2PKH?: unknown; getAddress?: unknown; _logicalNonceSigner?: unknown;
         };
-        if (typeof signer?.unlockP2PKH === 'function' && typeof signer.getAddress === 'function') {
-          (child as unknown as { _signer?: unknown })._signer = signer;
-          (child as unknown as { _logicalNonceSigner?: unknown })._logicalNonceSigner = signer;
+        if (typeof signingRunner?.unlockP2PKH === 'function' && typeof signingRunner.getAddress === 'function') {
+          (child as unknown as { _signer?: unknown })._signer = signingRunner;
+          (child as unknown as { _logicalNonceSigner?: unknown })._logicalNonceSigner = signingRunner;
         }
         return presentAddresses(preferAbiMethods(child as object, loaded), loaded) as typeof child;
       }

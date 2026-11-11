@@ -11,6 +11,9 @@ Revision 18, 2026-10-26. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 ### Since revision 18 (2026-10-27)
 
 Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the chain's own limits.
+- **Contention** (sections 20, 21). A call takes a deployment's pools in a random order of its own, and a frame that
+  only counts a data record leaves it unspent, so two independent calls share a UTXO only where their code touches
+  the same record, or by chance. No program changes.
 - **The validator settles every covered master's contract** (R4, N1, S, V8). A covered master settles nothing itself:
   V8 needs the contract of every master the transaction spends and covers settled, so the head's settlement holds each
   one, and a master's head keeps S only on its standalone arm. A per-entry shard has no standalone arm. This removes
@@ -52,7 +55,7 @@ Uncommitted on `sushi-port`, towards running the SushiSwap V2 suite under the ch
 - **A master reads its record count from the segments its head keeps**, rather than reading its block again and
   stepping over the frame's header and every call record: `UniswapV2Pair.burn` spends 6.8M rather than 10.4M.
 - **The census runs in a facet of its own** (section 24). The validator is a head and two facets: the head keeps the
-  settlement walk and holds the census facet's leading push to the settle lists and accumulators that walk left, and
+  settlement walk and holds the census facet's leading push to the settle list and accumulators that walk left, and
   the census facet weighs V3's completeness and V7's census from that checkpoint. A builder reads the checkpoint off
   the close at which the head refuses a placeholder (`fillCensusCheckpoints`).
 - **The transcript's padding length trails it** (section 6), so the head and its facets cut the padding off before
@@ -1038,8 +1041,11 @@ M = "PC7" 0x02
                       createdCount:u8, created:u8[])[]
                                                   contracts this validator settles (those with 2+ masters);
                                                   `created` lists the output indices of the records the
-                                                  transaction creates for that contract, which is what tells a
-                                                  frame's `in == out` at such an index apart from a state UTXO
+                                                  transaction creates for that contract, for readers of the
+                                                  transcript. The program holds each entry only to naming a real
+                                                  output (V2) and decides nothing from it: a kept record's chain
+                                                  starts at its input's commitment, and a created record's first
+                                                  declaration has no input, which its slot remembers
     padding:u8[]     paddingLength:u16            zero bytes that buy the input's budget (section 16); the length
                                                   comes last, so the head and its facets cut the padding off the
                                                   end before they read anything else
@@ -1246,6 +1252,11 @@ Conversely, every covered master that is not a root appears in exactly one calle
   means recreated in place, at every index the transaction has (an output past the inputs stands over no master, so a
   minting one there is refused unless the transcript lists it as minted), and a bare 32-byte value is an immutable NFT
   under S2's exclusion of fungible amounts, so its index must be one a frame in X's context lists as an event;
+- **ownership**: the program keeps one slot per index and one mark per output, so an index a record sits at, and an
+  output a frame names as a record's, an event or a send, are one settled contract's. A second contract's declaration at
+  that index, or a frame of it naming that output, is refused. A record that ends deleted leaves no mutable NFT of X at
+  its index, though an earlier declaration kept it there. A created record's output is not an input carrying X's token,
+  and every listed state input is listed once;
 - **values** as in S4: every record keeps at least its value, no two frames in X's context list the same send, and
   `growth(X) >= in(X) - out(X)` (4b), where `in(X)` is the value of the frames in X's context that are not
   `DELEGATE` or `INTERNAL`, and `out(X)` is the value of their call records and their listed sends.
@@ -1930,13 +1941,18 @@ record = in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut
 
 - **Records.** A record entry names its input `in` and its output `out`:
   - an existing record that is kept: `in == out`, because section 5 recreates at the same index;
-  - the frame that creates a record: `in = 0xFFFF`, and `out` is a trailing output. The transcript's settlement
-    lists that output (section 6, `createdOutputs`), which is how the program tells a created record's index apart
-    from a spent state UTXO's;
-  - a frame that reads or rewrites a record an earlier frame created: `in == out == that output index`, because the
-    frame resolves the record through its own declaration and the record has no input to name;
-  - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it. A dynamic write
-    deletes the old chunks it replaces; a mapping `delete` deletes no record (section 20).
+  - the frame that creates a record: `in = 0xFFFF`, and `out` is a trailing output. The declaration marks the
+    record's slot as created, which is how the program tells its index apart from a spent state UTXO's; the
+    transcript's settlement also lists that output (section 6, `createdOutputs`), and the program decides nothing
+    from the list;
+  - a later declaration of a record the transaction created: it has no input to name, so the declaration names it by
+    its output alone (`in = 0xFFFF`) or keeps it at its own index (`in == out == that output index`). The SDK keeps a
+    frame's own creation at its index in that frame's later segments, and names another frame's by its output alone.
+    Both continue one chain, whatever the transaction's input count, and the index may be one a user's coin sits at;
+  - a spent record is named by its input in every declaration, and a declaration by its output alone is refused (V7);
+  - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it, and a record the
+    transaction created is not deleted in it (V7). A dynamic write deletes the old chunks it replaces; a mapping
+    `delete` deletes no record (section 20).
 - **Values.** Entry `i` is the value the body's `i`-th long-value read takes; the body checks it against the root in
   the node's head (section 20). A read that finds its value inline, and a frame that reads none, leave the entry
   empty or the list short, and a master's head takes at most as many as its widest body reads.
@@ -2184,7 +2200,10 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 - **Which records a frame declares.**
   - First, the data records its entry's block layout names, in that order: its code reads each at its place past the
     first record the frame declares.
-  - An entry that writes a verified mapping then declares every other data record, kept.
+  - An entry that writes a verified mapping then declares a kept record in the slot of every other data record. Its
+    code counts those slots and reads nothing in them. In a frame of one segment whose code addresses nothing past
+    its first declaration, the SDK fills them with a node the frame spends anyway, so those data records are not spent
+    (`leavesUnnamedRecordsUnspent`). Any other frame declares the data records themselves.
   - Then one node, kept, for each mapping key the entry only reads, in the order the layout lists the entry's slots:
     its code reads each at its place past the records before it. A node the batch also spends, such as the node a
     key the batch splices in relinks, cannot be declared twice, so that call is refused.
@@ -2199,9 +2218,9 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
     root in the head.
 - **Inserts across frames.**
   - A node created in the transaction can be relinked or updated by later frames.
-  - The creating frame's record entry has `in = 0xFFFF`, and its view chain starts at creation; each later frame
-    that reads or rewrites the node declares `in == out` at the created output's index and continues from the view
-    the frame before it left.
+  - The creating frame's record entry has `in = 0xFFFF`, and its view chain starts at creation; each later declaration
+    that reads or rewrites the node names the created output's index, with `in = 0xFFFF` or `in == out`, and continues
+    from the view the one before it left.
   - V7 and S1 require the final view to equal the created output.
   - `MarketplaceData.initialize` inserts 8 MECE tags in one frame, using today's batch insert. A batch decides every
     predecessor against the list it started from, so inserts into one gap share their predecessor: each insert's
@@ -2272,7 +2291,12 @@ since each needs a master.
   - On chain there is nothing to check: a transaction cannot spend masters that do not exist.
   - The margin is small: `arbitrate` uses 9 of Unicrow's 12. A dedicated test fills a pool exactly, then asks for
     one more (plan E12).
-- **Contention.** The tests run sequentially, so pools only need the per-transaction maxima.
+- **Contention.** The tests run sequentially, so pools only need the per-transaction maxima. Independent callers
+  are not sequential: each call takes the masters, the validator, the facets and the compute side-cars in a random
+  order of its own, the same one for all of its plans (`PoolOrder` in `solidcash/src/framed/deploy/pool-order.ts`).
+  Two calls then usually spend different UTXOs of a pool, and the chance that they meet is about one in the pool's
+  size. This is no lease, and a record two frames must both spend stays one UTXO. A facet's pool is every UTXO at its
+  lock, so it grows with each deployment, and anyone can widen it by paying that lock.
 - **Scale.** The largest transaction is `arbitrate`: about 24 masters, their state UTXOs, one validator and the
   funder.
 
@@ -2393,14 +2417,19 @@ about 24 masters. So a validator may span several inputs, and since `dc4c1bdc6` 
 **Binding, in the head.**
 - For each `k`, the input at `head + k` is locked by `P2SH32(F_k)`. `V_TEMPLATE` carries each `F_k`'s hash, so
   `addrV` commits to every facet's code (D9), and no facet can be replaced without changing every address.
-- The output at `head + k` recreates the facet in place with at least its value, as V1 does for the head, so a
-  facet pool cannot run out inside a transaction (section 21).
-- Facets do not carry the head's hash, so the two hashes are not circular.
+- Facets do not carry the head's hash, so the two hashes are not circular. That also means a facet cannot tell a real
+  head from any other input below it.
+
+**Recreation, in each facet.** The output at the facet's own index keeps its lock, keeps at least its value, and takes
+no token it did not hold, as V1 does for the head, so a facet pool cannot run out inside a transaction (section 21). The
+rule is the facet's and not the head's, because the facets' coins are shared and tokenless: left to the head, a
+transaction with a stranger's script in the head's place spends one and keeps its value, and every composition then
+fails for want of a facet.
 
 **Census checkpoint.**
-- The census weighs what the walk gathered: the settle lists `created` and `listed`, the record table, the output
+- The census weighs what the walk gathered: the settle list `listed`, the record table, the output
   marks and the value totals. The census facet's unlocking bytecode is `push(checkpoint) push(padding) push(F_2)`,
-  where `checkpoint = created || listed || table || marks || totals`, and the head requires that first push to equal
+  where `checkpoint = listed || table || marks || totals`, and the head requires that first push to equal
   the checkpoint its own walk left: one `OP_EQUALVERIFY`, the computed checkpoint below the stated one. Each part's
   length follows from the transaction's input and output counts and the settle count, so the facet cuts them apart
   without lengths of their own.

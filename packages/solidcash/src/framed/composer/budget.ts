@@ -6,11 +6,11 @@
  * master's, a validator's or a facet's cost follows the transaction it runs in (how many masters, records, events and
  * calls it walks), which its program cannot know when it is compiled, so the programs carry no padding of their own.
  * Each one reads a field it skips instead: a master's block and a validator's transcript end with a padding field,
- * and a facet's unlocking bytecode carries a padding push just before its code. Once every view and value of the
- * composition is known, each input's cost is measured on a machine with the budgets lifted, and its padding is grown
- * to the length that buys it. Padding one input lengthens what others read of it, so the inputs are measured again
- * until none needs more. A keccak side-car comes with a pad its builder estimated, which is cut to its measured need
- * first.
+ * and a facet's unlocking bytecode carries a padding push just before its code.
+ * Once every view and value of the composition is known,
+ * each input's cost is measured on a machine with the budgets lifted, and its padding is grown to the length that
+ * buys it. Padding one input lengthens what others read of it, so the inputs are measured again until none needs
+ * more. A keccak side-car comes with a pad its builder estimated, which is cut to its measured need first.
  */
 
 import { measureOperationCost } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-consensus.js';

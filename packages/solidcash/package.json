@@ -1,6 +1,6 @@
 {
   "name": "@solidcash/solidcash",
-  "version": "0.14.0-beta.1",
+  "version": "0.50.1",
   "description": "SolidCash SDK - easily write and interact with Bitcoin Cash contracts",
   "keywords": [
     "bitcoin cash",
@@ -111,6 +111,7 @@
     "test": "vitest run --exclude 'test/e2e/**'",
     "test:unit": "vitest run test/unit --maxWorkers='60%'",
     "test:conformance": "vitest run test/conformance",
+    "test:bylock": "vitest run --config vitest.bylock.config.ts",
     "test:e2e": "vitest run test/e2e",
     "test:e2e:changed": "vitest run --config vitest.e2e.config.ts --changed --passWithNoTests",
     "test:e2e:watch": "vitest --config vitest.e2e.config.ts",
@@ -126,7 +127,7 @@
     "@mem-cash/electrum": "^0.0.11",
     "@mem-cash/validation": "^0.0.11",
     "@mr-zwets/bchn-api-wrapper": "^1.0.1",
-    "@solidcash/utils": "^0.14.0-beta.1",
+    "@solidcash/utils": "^0.50.0",
     "fflate": "^0.8.2",
     "semver": "^7.7.2",
     "@noble/hashes": "^2.0.0",

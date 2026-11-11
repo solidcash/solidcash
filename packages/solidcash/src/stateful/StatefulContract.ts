@@ -139,7 +139,7 @@ import { completeInternalFunctionArguments } from './kernel-journal-helpers.js';
 import { routeAuthenticatesPublicSelf, usesOrdinarySelfIdentity } from './ordinary-self-identity.js';
 import { resolveBlockhashCoSpend, type BlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import {
-  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolTimestamp,
+  artifactOraclePool, isPoolInfoInput, poolInfoCoSpend, readPoolClock,
 } from '../oracle/pool/reader.js';
 import type { DeploymentOraclePool } from '../oracle/pool/deployment.js';
 import { calleePoolReaders, resolveUnslottedPoolInfoCoins } from './unslotted-pool-co-spends.js';
@@ -2296,14 +2296,13 @@ export function evalComputedKey(
                 ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
       }
-      // An address comparison orders the bytes as an unsigned big-endian number, as the covenant does.
-      const unsigned = (value: Uint8Array): bigint => (value.length === 0 ? 0n : BigInt(`0x${binToHex(value)}`));
-      if (left instanceof Uint8Array && right instanceof Uint8Array) {
-        if (m[1] === '<') return unsigned(left) < unsigned(right);
-        if (m[1] === '<=') return unsigned(left) <= unsigned(right);
-        if (m[1] === '>') return unsigned(left) > unsigned(right);
-        if (m[1] === '>=') return unsigned(left) >= unsigned(right);
-        return undefined;
+      // An address or bytesN ordering compares the byte values as unsigned big-endian numbers, as the covenant's
+      // own comparison does (`emitBytesCompare`).
+      if (left instanceof Uint8Array && right instanceof Uint8Array
+        && (m[1] === '<' || m[1] === '<=' || m[1] === '>' || m[1] === '>=')) {
+        const number = (bytes: Uint8Array): bigint => bytes.reduce((value, byte) => (value << 8n) | BigInt(byte), 0n);
+        const [l, r] = [number(left), number(right)];
+        return m[1] === '<' ? l < r : m[1] === '<=' ? l <= r : m[1] === '>' ? l > r : l >= r;
       }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
@@ -4100,6 +4099,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   async _ensureResolved(): Promise<void> {
     if (this._resolved) return;
     const pendingAddress = this._pendingAddress!;
+    // A framed contract's address derives from its category, which proves the category whatever else anyone paid to
+    // the address, a token that imitates an identity record included. A logical address derives from no category.
+    if (isFramedArtifact(this._inner.artifact)) {
+      const { framedCategoryAt } = await import('../framed/deploy/records.js');
+      const proven = await framedCategoryAt(this._inner.provider, pendingAddress);
+      if (proven !== undefined) {
+        this._categoryId = proven;
+        this._inner = this._inner.withCategory(hexToBin(proven));
+        this._resolved = true;
+        return;
+      }
+    }
     try {
       const identity = await resolveLogicalIdentity(this._inner.provider, pendingAddress);
       this._categoryId = identity.categoryId;
@@ -7245,10 +7256,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const oraclePool = entryArtifact.usesBlockOracle !== true ? undefined
       : entryArtifact === this.inner.artifact ? this.inner.oraclePool
         : artifactOraclePool(entryArtifact) ?? this.inner.oraclePool;
-    const oracleTimestamp = oraclePool === undefined
-      ? undefined : await readPoolTimestamp(this.inner.provider, oraclePool);
-    const recipeState: Record<string, StateValue> = oracleTimestamp === undefined
-      ? onChainState.state : { ...onChainState.state, __block_timestamp: oracleTimestamp };
+    const oracleClock = oraclePool === undefined
+      ? undefined : await readPoolClock(this.inner.provider, oraclePool);
+    const recipeState: Record<string, StateValue> = oracleClock === undefined ? onChainState.state : {
+      ...onChainState.state, __block_timestamp: oracleClock.timestamp, __block_number: oracleClock.number,
+    };
 
     // Carrier coverage changes physical input/output ownership. Resolve it as soon as the effective entry handler
     // and selected route rows are known, before any journal provider lookup can mask a deterministic coverage

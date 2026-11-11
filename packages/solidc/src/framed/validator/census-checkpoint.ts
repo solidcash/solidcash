@@ -40,7 +40,10 @@ const LIFTED_CONSENSUS = {
 };
 
 /** The instruction set and machine the head's run is stepped on. */
-function liftedMachine(): { set: InstructionSet; machine: HeadMachine } {
+function liftedMachine(): {
+  set: InstructionSet;
+  machine: AuthenticationVirtualMachine<ResolvedTransactionCommon, ValidatorHeadProgram, MachineState>;
+} {
   const set = createInstructionSetBch2026(false, { consensus: LIFTED_CONSENSUS, ripemd160, secp256k1, sha1, sha256 });
   return { set, machine: createVirtualMachine(set) };
 }

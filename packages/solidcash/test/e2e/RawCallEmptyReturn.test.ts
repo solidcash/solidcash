@@ -71,7 +71,7 @@ const EVM_OPTIONS = { evmCompat: true, forceStateful: true } as const;
 
 const deploy = async (
   provider: ReturnType<typeof createTestProvider>, source: string,
-): Promise<{ contract: ReturnType<typeof StatefulContract.withCategory>; address: Uint8Array }> => {
+): Promise<{ contract: StatefulContract; address: Uint8Array }> => {
   const artifact = compileString(source, EVM_OPTIONS);
   const base = new Contract(artifact, [], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});

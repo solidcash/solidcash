@@ -196,7 +196,7 @@ contract ReturnReader(bytes counterAddr) {
 
     function callAndRead(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        bigint result = IReturningCounter(counterAddr).getAndIncrement();
+        bigint result = IReturningCounter(counterAddr).getAndIncrement(pk, s);
         this.lastResult = result;
     }
 }
@@ -238,7 +238,7 @@ contract MultiReturnReader(bytes statsAddr) {
 
     function callStats(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        (bigint x, bigint y) = IStats(statsAddr).getStats();
+        (bigint x, bigint y) = IStats(statsAddr).getStats(pk, s);
         this.sum = x + y;
     }
 }
@@ -258,7 +258,7 @@ contract CombinedReader(bytes counterAddr) {
 
     function callWithReturn(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        bigint result = IReturningCounter(counterAddr).getAndIncrement();
+        bigint result = IReturningCounter(counterAddr).getAndIncrement(pk, s);
         this.lastSeen = result;
     }
 
@@ -1140,7 +1140,7 @@ contract TryStatsReader(bytes statsAddr) {
 
     function callStats(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        try IStats(statsAddr).getStats() returns (bigint x, bigint y) {
+        try IStats(statsAddr).getStats(pk, s) returns (bigint x, bigint y) {
             this.sum = x + y;
         } catch {
             this.sum = 0;

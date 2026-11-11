@@ -9,10 +9,11 @@ import { validatorSpend } from '../../../../solidc/test/framed/master/validator-
 /**
  * The validator's head holds the facet it binds (spec section 24).
  *
- * The head requires the input and the output at `head + 1` to be the facet's lock, the output worth at least the
- * input, and the facet reads the transcript from the input below it. So a facet can be neither dropped nor drained,
- * nor made to check another transcript than the one its head runs. Each case mutates the reference composition,
- * whose head and facet both accept. The derivation knows no facets, so where it accepts, the binding refuses.
+ * The head requires the input at `head + 1` to be the facet's lock, the facet recreates itself at its own index, with
+ * at least its value and no token, and it reads the transcript from the input below it. So a facet can be neither
+ * dropped nor drained, by a head or by anyone else, nor made to check another transcript than the one its head runs.
+ * Each case mutates the reference composition, whose head and facet both accept. The derivation knows no facets, so
+ * where it accepts, the binding refuses.
  */
 
 /** The reference composition, and its transcript with a settle the composition does not need. */
@@ -57,7 +58,9 @@ describe('the shipped validator head holds the facet it binds', () => {
         : output)),
     };
     expect(decisionOf(tampered, index).accepted).toBe(true);
-    expect(inputAccepted(tampered, index)).toBe(false);
+    // The recreation is the facet's own rule, so it holds for any spender, and it is the facet that refuses.
+    expect(inputAccepted(tampered, index)).toBe(true);
+    expect(inputAccepted(tampered, facet)).toBe(false);
   });
 
   test('refuses a facet recreated with less value than it held', () => {
@@ -70,7 +73,8 @@ describe('the shipped validator head holds the facet it binds', () => {
         : output)),
     };
     expect(decisionOf(tampered, index).accepted).toBe(true);
-    expect(inputAccepted(tampered, index)).toBe(false);
+    expect(inputAccepted(tampered, index)).toBe(true);
+    expect(inputAccepted(tampered, facet)).toBe(false);
   });
 
   test('refuses, at the facet alone, a transcript settling a contract that needs no settlement', () => {

@@ -42,6 +42,32 @@ contract PoolClock() {
     }
 }`;
 
+const RECORDER = `pragma solidity ^0.8.0;
+contract Recorder {
+    uint256 public height;
+    uint256 public clock;
+    function set(uint256 h, uint256 t) public { height = h; clock = t; }
+}`;
+
+const FORWARDER = `pragma solidity ^0.8.0;
+interface IRecorder { function set(uint256 h, uint256 t) external; }
+contract Forwarder {
+    IRecorder public recorder;
+    uint256 public forwards;
+    constructor(IRecorder recorder_) { recorder = recorder_; }
+    function forward() public { recorder.set(block.number + 1, block.timestamp + 1); forwards = forwards + 1; }
+}`;
+
+const GUARDED = `pragma solidity ^0.8.0;
+interface IRecorder { function set(uint256 h, uint256 t) external; }
+contract Guarded {
+    IRecorder public recorder;
+    uint256 public runs;
+    constructor(IRecorder recorder_) { recorder = recorder_; }
+    function atGenesis() public { if (block.number == 0) { recorder.set(1, 1); } runs = runs + 1; }
+    function afterGenesis() public { if (block.number > 0) { recorder.set(2, 2); } runs = runs + 1; }
+}`;
+
 const ZERO_TXID = `0x${'00'.repeat(32)}`;
 
 // The creator reads nothing; it binds the pool because the child it creates does.
@@ -166,6 +192,32 @@ describe('oracle pool block-info reads by direct contracts', () => {
     expect(txid).toMatch(TXID);
     expect(await recreatedIn(provider, category, txid)).toBe(true);
     await expect(spendReader(provider, reader, [fields.timestamp, fields.number + 1n])).rejects.toThrow(SCRIPT_FAILURE);
+  });
+
+  it('an external call\'s arguments read block.number and block.timestamp from the coin the body slices', async () => {
+    const { provider, signer } = await chain();
+    const options = { evmCompat: true, forceStateful: true, messageBus: false } as const;
+    const recorder = await getContractFactory(compileString(RECORDER, options), signer).deploy() as any;
+    const forwarder = await getContractFactory(compileString(FORWARDER, options), signer)
+      .deploy(recorder.address) as any;
+    const { fields } = (await selectPoolInfoCoin(provider, provider.oraclePoolCategory!))!;
+    await forwarder.forward().send();
+    expect(await recorder.height()).toBe(fields.number + 1n);
+    expect(await recorder.clock()).toBe(fields.timestamp + 1n);
+  });
+
+  it('a guard that reads block.number decides whether its external call runs', async () => {
+    const { signer } = await chain();
+    const options = { evmCompat: true, forceStateful: true, messageBus: false } as const;
+    const recorder = await getContractFactory(compileString(RECORDER, options), signer).deploy() as any;
+    const guarded = await getContractFactory(compileString(GUARDED, options), signer)
+      .deploy(recorder.address) as any;
+    await guarded.atGenesis().send();
+    expect(await guarded.runs()).toBe(1n);
+    expect(await recorder.height()).toBe(0n);
+    await guarded.afterGenesis().send();
+    expect(await guarded.runs()).toBe(2n);
+    expect(await recorder.height()).toBe(2n);
   });
 
   it('a creator deploys a child that reads block.* through the creator\'s pool', async () => {

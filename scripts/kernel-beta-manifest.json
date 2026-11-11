@@ -1,14 +1,102 @@
 {
   "version": 1,
   "censusCommit": "95fbe8f3c",
-  "forbiddenApplicationNames": ["Marketplace", "publishJobPost", "jobs", "Unicrow", "claimMultiple"],
+  "genericVocabularyUses": [
+    {
+      "file": "packages/solidcash/src/framed/call/call.ts",
+      "word": "jobs",
+      "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
+    },
+    {
+      "file": "packages/solidcash/src/framed/call/side-cars.ts",
+      "word": "jobs",
+      "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
+    },
+    {
+      "file": "packages/solidcash/src/framed/composer/side-car-sharing.ts",
+      "word": "jobs",
+      "why": "A job is a keccak256 hash a compute side-car does, in framed code that no application shapes."
+    }
+  ],
+  "forbiddenApplicationNames": [
+    "Marketplace",
+    "publishJobPost",
+    "jobs",
+    "Unicrow",
+    "claimMultiple"
+  ],
   "testCommands": [
-    { "id": "build", "argv": ["yarn", "build"] },
-    { "id": "generated-artifacts", "argv": ["yarn", "workspace", "testing-suite", "vitest", "run", "test/artifact-freshness.test.ts"] },
-    { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
-    { "id": "compiler-journal", "argv": ["yarn", "workspace", "@solidcash/solidc", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-journal", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/journal-message-bus"] },
-    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "@solidcash/solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+    {
+      "id": "build",
+      "argv": [
+        "yarn",
+        "build"
+      ]
+    },
+    {
+      "id": "generated-artifacts",
+      "argv": [
+        "yarn",
+        "workspace",
+        "testing-suite",
+        "vitest",
+        "run",
+        "test/artifact-freshness.test.ts"
+      ]
+    },
+    {
+      "id": "utils-source-maps",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/utils",
+        "vitest",
+        "run",
+        "test/script.test.ts"
+      ]
+    },
+    {
+      "id": "compiler-journal",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/solidc",
+        "vitest",
+        "run",
+        "test/journal-message-bus"
+      ]
+    },
+    {
+      "id": "sdk-journal",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/solidcash",
+        "vitest",
+        "run",
+        "test/journal-message-bus"
+      ]
+    },
+    {
+      "id": "sdk-regressions",
+      "argv": [
+        "yarn",
+        "workspace",
+        "@solidcash/solidcash",
+        "vitest",
+        "run",
+        "test/unit/AssignPhysicalReturnIndices.test.ts",
+        "test/unit/DirectMappingReadPlan.test.ts",
+        "test/unit/KernelJournalExecutionSchedule.test.ts",
+        "test/unit/KernelDirtyCarrierResolution.test.ts",
+        "test/unit/KernelJournalPhysicalSettlement.test.ts",
+        "test/FnPtrStructFieldCall.test.ts",
+        "test/e2e/CrossContractSubcaseSoundness.test.ts",
+        "test/e2e/CrossContractSortedWrite.test.ts",
+        "test/e2e/DynamicArrayCopyCast.test.ts",
+        "test/e2e/X167ArrayCopyReplaces.test.ts"
+      ]
+    }
   ],
   "requiredKernelProofs": [
     {
@@ -376,61 +464,75 @@
     {
       "name": "marketplace-v1",
       "contract": "MarketplaceV1",
-      "sourceRoot": "eacc", "source": "contracts/MarketplaceV1.sol",
+      "sourceRoot": "eacc",
+      "source": "contracts/MarketplaceV1.sol",
       "sourceSha256": "57d93a5bdf0edff5dfd74d5cda445f9b8653fc29ee10ba8b3e482b2be925bd72",
       "sourceClosureSha256": "06435ccfc5840a85a9b2c4d31b2336cf4af83d5dfedb1632ad7df09e17fadfac",
       "evidenceKind": "compile-compatibility-only",
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 14850,
+        "measuredRouteBytes": 14866,
         "routeAloneExceedsLimit": true,
         "note": "A route-only lower bound, not a deployability certificate; Marketplace greening remains fenced"
       },
       "modes": {
         "legacy": {
           "convention": "legacy-unroll",
-          "routeBytes": 44865,
-          "fullBytes": 254165,
-          "routeHash": "8b23a047b9518cb5f01b07fc72fce24dbed71babb5bc023a1937aee656f1486b",
-          "fullHash": "352c03e8fb1b3c98d2338451017253b2bbfb03f09d7fbe13b9f0dbee5b57d895",
-          "metadataHash": "7e33d0d7395a8a0a6f39bca4c7eac7398aa7067c8fa8bb62bf81a4e8bc4d999b",
-          "handlers": { "total": 38, "eligible": 28, "refused": 10 }
+          "routeBytes": 44916,
+          "fullBytes": 247620,
+          "routeHash": "b2d69abef420a337a3c3eab663711b7e4527df1b76a64fcc38efeccdb30dfe29",
+          "fullHash": "3f98a8480aa0182abeb48c2c6eb81932847a8a238496214824696d4ac0df439a",
+          "metadataHash": "5a75f1d7bf2c320d97c08bc490986bcddcefe4e95cab4083e6eebef2c3f1d73a",
+          "handlers": {
+            "total": 38,
+            "eligible": 28,
+            "refused": 10
+          }
         },
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 14850,
-          "fullBytes": 320052,
-          "routeHash": "756b40df2ee1a36ef8b0fb70b59f1ebd61fdfad96c60f767f32e1b9a78dd2f59",
-          "fullHash": "68c3609b3bef996b9ecd1710463850de5a54c1d4edf409bf9d2833978f4ad300",
-          "metadataHash": "83b05b5a8f16acf5ab8b7eb28bc3a585a1d050dc3a3902c2ac3d2c906afe566c",
-          "handlers": { "total": 38, "eligible": 38, "refused": 0 }
+          "routeBytes": 14866,
+          "fullBytes": 310071,
+          "routeHash": "e0b66d1b6560829e8fc88f68c1643f7f405474743ca3cc9ae264e2b7554d21e2",
+          "fullHash": "669be4410ece6a380c2b192eeb1692c9dddf7e9a54877338fe9b282fe4e7ba4f",
+          "metadataHash": "6e20a070f8fd9153c8319fe8a1c81b4b91147a1ec79b9ef7356398427df21a96",
+          "handlers": {
+            "total": 38,
+            "eligible": 38,
+            "refused": 0
+          }
         }
       }
     },
     {
       "name": "unicrow-claim",
       "contract": "UnicrowClaim",
-      "sourceRoot": "eacc", "source": "contracts/unicrow/UnicrowClaim.sol",
+      "sourceRoot": "eacc",
+      "source": "contracts/unicrow/UnicrowClaim.sol",
       "sourceSha256": "7881e9d98e6239931e92a3ee07d364180d87789719c50917aa117901457fd3db",
       "sourceClosureSha256": "e2a9f90493c56a8b5dcf46634a2d1e95f151e8ced279fe03d19529a083f560fd",
       "evidenceKind": "compile-compatibility-only",
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 1087,
+        "measuredRouteBytes": 1094,
         "routeAloneExceedsLimit": false,
         "note": "Route fits alone; full-contract deployability requires the compiler certificate"
       },
       "modes": {
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 1087,
-          "fullBytes": 16942,
-          "routeHash": "48e15c5e16f07ff798db8a0a44e9072dc5c1b551c54167d47e38fa1b313c3c29",
-          "fullHash": "cf0ed83b96e89d44982a54b5ba198ce4e564be70f272d53b49122d483ce2216a",
-          "metadataHash": "2329a922308532d62a0d3df8bcb9df48a154454e5ccb8f504a9292898a925443",
-          "handlers": { "total": 10, "eligible": 10, "refused": 0 }
+          "routeBytes": 1094,
+          "fullBytes": 16059,
+          "routeHash": "157a191be14609c6690837dcadfc7db39540f9386680e1fd80d72c7834761ef9",
+          "fullHash": "9fd07c0903f3258cdbfb8551051b85da08205461125d91e79d23a2934f06c8be",
+          "metadataHash": "f0b8f5f23f0a25737f76853959e66b894dbdea82f533a6efb4c6f5ad0cb43821",
+          "handlers": {
+            "total": 10,
+            "eligible": 10,
+            "refused": 0
+          }
         }
       }
     }

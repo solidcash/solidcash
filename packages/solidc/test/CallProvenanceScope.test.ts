@@ -82,9 +82,9 @@ describe('external-call operand provenance stays in its executable body', () => 
         }
       }
     `, { composition: 'framed', evmCompat: true, suppressWarnings: true });
-    const forward = (paramIndex: number): Record<string, unknown> => ({
-      kind: 'source', source: { kind: 'forward', paramIndex }, type: 'uint256',
-    });
+    const forward = (paramIndex: number): { kind: string; source: { kind: string; paramIndex: number }; type: string } => (
+      { kind: 'source', source: { kind: 'forward', paramIndex }, type: 'uint256' }
+    );
     const flip = { kind: 'source', source: { kind: 'forward', paramIndex: 1 } };
     const bumped = {
       kind: 'binary', operator: '+', type: 'uint256',

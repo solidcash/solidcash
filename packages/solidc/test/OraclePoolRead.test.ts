@@ -33,7 +33,7 @@ interface Coin {
   readonly unlocking: Uint8Array;
 }
 
-const P = 'pragma solidcash ^0.14.0;';
+const P = 'pragma solidcash ^0.50.0;';
 const READER = `${P} contract R { function read(int t, int n) { require(block.timestamp == t); `
   + 'require(block.number == n); } }';
 // A field makes it stateful, so its two reads share one pool check helper.

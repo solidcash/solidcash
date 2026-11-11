@@ -2,6 +2,11 @@
 title: Migration Notes
 ---
 
+## v0.14 to v0.50
+
+- Change `pragma solidcash ^0.14.0` to `pragma solidcash ^0.50.0`, and move all six packages to 0.50.0 together.
+- Recompile. The framed validator changed, so a framed contract's address changes: deploy a new category.
+
 ## v0.12 to v0.14
 
 Version 0.14.0-beta.1 is a major protocol and workflow upgrade, not only a syntax update. Existing stateless contracts can

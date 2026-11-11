@@ -305,8 +305,7 @@ export function getCreate2Address(
     ));
     if (registered) return registered.address;
     const predicted = process.env.DISABLE_PREDICT
-      ? undefined
-      : predictFactoryChildAddress(provider, parent?.contract, saltHex);
+      ? undefined : predictFactoryChildAddress(provider, parent?.contract, saltHex);
     if ((globalThis as any).process?.env?.DEBUG_CREATE2) {
       console.error('GET_CREATE2', JSON.stringify({
         from, saltHex, parent: parent ? [parent.address, parent.contractName] : null, predicted,

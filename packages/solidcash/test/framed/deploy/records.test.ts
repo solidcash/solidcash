@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, hexToBin, sha256, utf8ToBin } from '@bitauth/libauth';
 import {
-  buildDataNftCovenantScript, buildPushdataCommitment, parsePushdataCommitment, scriptToBytecode, type StateLayout,
+  buildDataNftCovenantScript, buildPushdataCommitment, bytesToHex, parsePushdataCommitment, scriptToBytecode,
+  type StateLayout,
 } from '@solidcash/utils';
 import type { Utxo } from '../../../src/interfaces.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
@@ -18,8 +19,8 @@ import { scriptToLockingBytecode } from '../../../src/utils.js';
  * A framed genesis mints its records at the data-NFT covenant its category derives, but a reader reaches every
  * pool the same way: by enumerating the contract's category. A master is the category's minting NFT, a validator
  * is a mutable NFT with no commitment, and a record is a mutable NFT at the data-NFT covenant whose commitment
- * decodes as the layout's state encoding. These cases pin that classification, and the refusal when a provider
- * cannot enumerate a category at all, which is what tells the three kinds apart.
+ * decodes as the layout's state encoding. These cases pin that classification; `by-lock-provider.test.ts` holds the
+ * read on a provider with no index by category.
  */
 
 const LAYOUT: StateLayout = {
@@ -122,9 +123,16 @@ describe('classifying a framed deployment by category', () => {
     expect(set.collectionNodes.map((entry) => entry.vout)).toStrictEqual([2]);
   });
 
-  it('refuses when the provider cannot enumerate the category the records are found by', async () => {
-    const addressOnly = { getUtxos: async () => [] } as unknown as NetworkProvider;
-    await expect(readFramedDeployment(addressOnly, CATEGORY, LAYOUT)).rejects.toBeInstanceOf(FramedRecordError);
+  it('finds the records at the lock they derive when the provider lists by lock alone', async () => {
+    const recordLock = bytesToHex(stateRecordLockingBytecode(CATEGORY));
+    const lockOnly = {
+      getUtxosForLockingBytecode: async (lock: Uint8Array) => (bytesToHex(lock) === recordLock
+        ? [utxo(2, nft(CATEGORY, 'mutable', RECORD_COMMITMENT))] : []),
+    } as unknown as NetworkProvider;
+
+    const set = await readFramedDeployment(lockOnly, CATEGORY, LAYOUT);
+    expect(set.records.map((entry) => entry.vout)).toStrictEqual([2]);
+    expect(set.records[0]!.lockingBytecode).toStrictEqual(stateRecordLockingBytecode(CATEGORY));
   });
 });
 

@@ -6,6 +6,7 @@ import { Op, type Script, scriptToBytecode } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { Unlocker, Utxo } from '../interfaces.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../utils.js';
+import { listDeployments } from './deployment-registry.js';
 
 const IDENTITY_MAGIC = Uint8Array.from([0x53, 0x43, 0x49, 0x44]); // "SCID"
 const FACET_MAGIC = Uint8Array.from([0x53, 0x43, 0x49, 0x46]); // "SCIF"
@@ -310,10 +311,21 @@ export async function resolveLogicalIdentityFromAddresses(
   return undefined;
 }
 
+/** The logical addresses this provider's registrations name for `categoryId`. */
+function registeredLogicalAddresses(provider: NetworkProvider, categoryId: string): string[] {
+  const wanted = categoryId.toLowerCase();
+  return listDeployments(provider).flatMap((registered) => {
+    const contract = registered.contract as { categoryId?: string; _logicalAddress?: string } | undefined;
+    const category = (registered.category ?? contract?.categoryId)?.toLowerCase();
+    return category === wanted && contract?._logicalAddress !== undefined ? [contract._logicalAddress] : [];
+  });
+}
+
 /**
  * Find the unique immutable SCID v1 NFT of `categoryId`. Address variants are
  * tried first; if the provider can list by category, that scan is the fallback
- * so a moved/recreated anchor is still found.
+ * so a moved/recreated anchor is still found. A provider that lists by lock
+ * reaches an anchor only at an address it is told of, here or by a registration.
  */
 export async function resolveLogicalIdentityByCategory(
   provider: NetworkProvider,
@@ -321,7 +333,11 @@ export async function resolveLogicalIdentityByCategory(
   preferredAddresses: Iterable<string | undefined> = [],
 ): Promise<ResolvedLogicalIdentity | undefined> {
   if (isZeroMsgSenderCategory(categoryId)) return undefined;
-  const fromAddress = await resolveLogicalIdentityFromAddresses(provider, preferredAddresses);
+  // A provider that lists by lock has no scan to fall back on, so the addresses its registrations hold for the category
+  // are tried too: a handle may only know a physical address, and the deployment knows the logical one.
+  const fromAddress = await resolveLogicalIdentityFromAddresses(provider, [
+    ...preferredAddresses, ...registeredLogicalAddresses(provider, categoryId),
+  ]);
   if (fromAddress) {
     const found = fromAddress.categoryId.toLowerCase();
     const wanted = categoryId.toLowerCase();
@@ -361,8 +377,8 @@ export async function requireMsgSenderIdentity(
       return { address, error: error instanceof Error ? error.message : String(error) };
     }
   }));
-  let byCategory = 0;
-  let scidAtCategory = 0;
+  let byCategory: number | string = 'not listed, the provider lists by lock';
+  let scidAtCategory: number | string = byCategory;
   if (typeof provider.getUtxosByTokenCategory === 'function') {
     const utxos = await provider.getUtxosByTokenCategory(categoryId);
     byCategory = utxos.length;

@@ -278,6 +278,8 @@ describe('KCHAIN-1 chained keccak256 side-car binding', () => {
     // (3a5eee42f) the second, KCHAIN-1 neither.
     expect(sha(fixed.bytecode)).toBe('dfa38321f04f6ea7f1ee0af33b232ec38c4cf96b46c61a265cbb18616c6206f4');
     expect(sha(stateless.bytecode)).toBe('bd3f92d0ad764f649d381edce602e151b11471a50b21aaa548ac5e771ccd0a20');
+    expect(fixed.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(false);
+    expect(stateless.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(false);
     expect(ARTIFACT.bytecode.includes(KECCAK_CHAIN_COVENANT_HASH)).toBe(true);
   });
 });

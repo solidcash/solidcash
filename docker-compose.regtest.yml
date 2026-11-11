@@ -14,7 +14,7 @@ services:
       -rpcallowip=192.168.0.0/16
       -rpcbind=0.0.0.0
       -zmqpubhashblock=tcp://0.0.0.0:28332
-      -upgrade12activationtime=1762596456
+      -upgrade12activationtime=1690000000
     ports:
       - "127.0.0.1:18443:18443"
       - "127.0.0.1:28332:28332"

@@ -201,7 +201,7 @@ function categoryOf(utxos: Utxo[], where: string): string {
  */
 // Category resolution is token-seeking: query the token-aware form of the address so providers that gate token
 // UTXOs on address token-awareness (e.g. BCHN listunspent) still return them. No-op for hex / non-cashaddr.
-function toTokenAwareAddress(address: string): string {
+export function toTokenAwareAddress(address: string): string {
   if (isHex(address)) return address;
   const decoded = cashAddressToLockingBytecode(address);
   if (typeof decoded === 'string') return address;
@@ -530,7 +530,9 @@ export async function getContractState(
 
   if (framedOwner !== undefined) {
     const { readFramedDeployment, chunkRecordLockingBytecode } = await import('../framed/deploy/records.js');
-    const inventory = await readFramedDeployment(contract.provider, categoryId, framedOwner.layout);
+    const inventory = await readFramedDeployment(contract.provider, categoryId, framedOwner.layout, {
+      masterLocks: [framedOwner.masterLockingBytecode],
+    });
     const dynamicChunkUtxos: Record<string, Utxo[]> = {};
     for (const variable of contract.artifact.stateLayout.variables) {
       if (variable.dynamic !== true) continue;

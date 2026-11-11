@@ -46,7 +46,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -113,8 +113,8 @@ function layout(options: Options): { caller: number; state: number; validator: n
   // it.
   return options.recordLast === true
     ? {
-      caller: 0, validator: 1, user: 1 + VALIDATOR_INPUT_SPAN,
-      callee: 2 + VALIDATOR_INPUT_SPAN, state: 3 + VALIDATOR_INPUT_SPAN,
+      caller: 0, validator: 1, user: 1 + VALIDATOR_INPUT_SPAN, callee: 2 + VALIDATOR_INPUT_SPAN,
+      state: 3 + VALIDATOR_INPUT_SPAN,
     }
     : { caller: 0, state: 1, validator: 2, user: 2 + VALIDATOR_INPUT_SPAN, callee: 3 + VALIDATOR_INPUT_SPAN };
 }

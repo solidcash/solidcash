@@ -241,12 +241,15 @@ function randomPlan(rng: Rng, seed: number, index: number): CompositionPlan {
   };
   walk(specs[0]!);
 
-  // A created record appears in the last segment of the last frame on its contract, which therefore has a call.
+  // A created record appears in the last segment of a frame on its contract, which therefore has a call. Half the
+  // plans create it in the last such frame. The others create it in the first, and every frame that runs after that
+  // segment may read or rewrite it by its output alone, as an earlier frame's creation is named.
   const created = new Set<string>();
   for (const slot of [...createdSlots]) {
     const contract = Number(slot.contract.slice(1));
-    const owner = [...order].reverse()
-      .find((spec) => spec.context === contract && spec.children.length > 0 && !spec.staticContext);
+    const eligible = order.filter((spec) => spec.context === contract && spec.children.length > 0 && !spec.staticContext);
+    const early = rng.chance(0.5);
+    const owner = early ? eligible[0] : eligible[eligible.length - 1];
     if (owner === undefined) {
       // A created record needs a segment after the first, and a read-only frame cannot create one.
       createdSlots.splice(createdSlots.indexOf(slot), 1);
@@ -254,6 +257,22 @@ function randomPlan(rng: Rng, seed: number, index: number): CompositionPlan {
     }
     owner.touches[owner.touches.length - 1]!.push({ slot: slot.id });
     created.add(slot.id);
+    if (!early) continue;
+    // The frames after the owner's last segment: its subtree runs before that segment.
+    const subtree = new Set<string>();
+    const collect = (spec: MasterSpec): void => {
+      subtree.add(spec.id);
+      for (const childId of spec.children) collect(specs.find((candidate) => candidate.id === childId)!);
+    };
+    collect(owner);
+    const after = order.slice(order.indexOf(owner)).filter((spec) => !subtree.has(spec.id) && spec.context === contract);
+    for (const spec of after) {
+      if (!rng.chance(0.7)) continue;
+      const touches = spec.touches[rng.int(spec.touches.length)]!;
+      touches.push(spec.staticContext || rng.chance(0.5)
+        ? { slot: slot.id }
+        : { slot: slot.id, viewOut: seedBytes(`${slot.id}-${spec.id}-later`, slot.commitment.length) });
+    }
   }
 
   const slotsOf = (contract: number): StateSlotPlan[] =>
@@ -366,6 +385,41 @@ const MUTATIONS: ReadonlyArray<{
       first.viewOut = fake;
       second.viewIn = fake;
       second.viewOut = fake;
+    },
+  },
+  {
+    name: 'a later declaration keeps a created record at its index',
+    needs: (plan) => plan.masters.some((master, at) => plan.masters.some((other, later) => later !== at
+      && master.segments.some((segment) => segment.touches.some((touch) =>
+        plan.createdSlots.some((slot) => slot.id === touch.slot)))
+      && other.segments.some((segment) => segment.touches.some((touch) =>
+        plan.createdSlots.some((slot) => slot.id === touch.slot))))),
+    apply: (rng, composition) => {
+      // A created record has no input, and its index may be one a user's coin sits at. A later declaration may keep it
+      // there all the same, as a frame keeps its own creation: every model decides it as the same chain.
+      const later = [...composition.blocks.values()].flatMap((block) => block.segments.flat())
+        .filter((entry) => entry.in === INDEX_NONE && entry.viewIn.length > 0);
+      if (later.length === 0) return;
+      const entry = rng.pick(later);
+      entry.in = entry.out;
+    },
+  },
+  {
+    name: 'a later frame names a spent record by its output alone',
+    apply: (rng, composition) => {
+      // The record's first declaration is the one that starts at its input's commitment, so the rename takes a later
+      // declaration of the same input and leaves the chain's views as they are.
+      const byInput = new Map<number, import('@solidcash/utils').RecordEntry[]>();
+      for (const step of composition.order) {
+        for (const entry of composition.blocks.get(step.master)!.segments[step.segment] ?? []) {
+          if (entry.in === INDEX_NONE || entry.out === INDEX_NONE) continue;
+          byInput.set(entry.in, [...(byInput.get(entry.in) ?? []), entry]);
+        }
+      }
+      const later = [...byInput.values()].filter((entries) => entries.length >= 2);
+      if (later.length === 0) return;
+      const entries = rng.pick(later);
+      entries[1 + rng.int(entries.length - 1)]!.in = INDEX_NONE;
     },
   },
   {
@@ -769,7 +823,7 @@ export function generateCases(seed: number, count: number): GeneratedCase[] {
     // unmutated, so every compared case is one mutation away from a valid composition. A mutation aimed at one
     // shape draws longer, until the plan also has that shape.
     const mutation = MUTATIONS[index % MUTATIONS.length]!;
-    const attempts = mutation.needs === undefined ? 24 : 240;
+    const attempts = mutation.needs === undefined ? 24 : 1200;
     let plan: CompositionPlan | undefined;
     for (let attempt = 0; attempt < attempts && plan === undefined; attempt += 1) {
       const candidate = randomPlan(new Rng(seed + index * 7919 + attempt * 2654435761), seed, index);

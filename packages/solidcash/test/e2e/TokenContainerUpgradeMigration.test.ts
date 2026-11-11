@@ -156,9 +156,10 @@ describe('StatefulContract.upgrade() token-container migration (CRYPTO-4)', () =
       ...(await upgradeFunding('f4cd')),
     });
 
-    // out[0]=master, out[1..2]=drains, out[3..4]=re-mints, out[5]=change.
+    // out[0]=master, out[1..2]=drain fillers, out[3..4]=re-mints, out[5]=change.
     const outputs = getTxOutputs(result.tx);
     for (const drain of outputs.slice(1, 3)) {
+      expect(binToHex(addressToLockScript(drain.to as string))).toBe(binToHex(fillerLockingBytecode()));
       expect(drain.amount).toBe(FILLER_SATOSHIS);
       expect(drain.token).toBeUndefined();
     }

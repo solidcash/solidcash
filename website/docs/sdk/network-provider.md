@@ -123,7 +123,7 @@ You can create a PR to add your custom `NetworkProvider` to the SolidCash codeba
 | --- | --- |
 | `consensusLimits`, `policy` | Limits and relay policy the SDK preflights against (see below) |
 | `oraclePoolCategory` | The default oracle pool (category, display order) that contracts reading block data bind |
-| `getUtxosByTokenCategory(categoryId)` | Every live UTXO of a CashToken category, used to find a CREATE identity NFT that moved and to list an oracle pool's coins |
+| `getUtxosByTokenCategory(categoryId)` | Every live UTXO of a CashToken category. Where a provider has it, a framed deployment, an oracle pool and a moved CREATE identity NFT are read in one call. A provider without it, such as an Electrum server, is read at the locks each of them derives |
 
 Contracts that read block data bind an oracle pool: the `oraclePool` option, or else the provider's
 `oraclePoolCategory`. `MockNetworkProvider` and `RegtestNetworkProvider` mint their own, and `MemCashNetworkProvider`

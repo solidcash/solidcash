@@ -3013,6 +3013,11 @@ function argumentFieldUpdatesOf(func: FunctionDefinitionNode): AbiFunction['argu
   return updates.length === 0 ? undefined : updates;
 }
 
+/** A published expression's own copy, which shares no object with the domain it was read from. */
+function cloneExpression(expression: ExternalCallExpression): ExternalCallExpression {
+  return structuredClone(expression);
+}
+
 /**
  * Gives each counter a framed site publishes by name (a `loopIndex` with no literal start, `SymbolTableTraversal`)
  * the progression of the loop the site's own domain describes: the domain's start, the counter's value where the loop
@@ -3041,8 +3046,8 @@ function publishComputedLoopCounters(
       if (source.kind === 'loopIndex' && source.initialValue === undefined && source.counterName !== undefined) {
         const domain = byCounter.get(source.counterName);
         if (domain !== undefined) {
-          source.initialExpression = structuredClone(domain.initialValue);
-          source.stepExpression = structuredClone(domain.stepValue);
+          source.initialExpression = cloneExpression(domain.initialValue);
+          source.stepExpression = cloneExpression(domain.stepValue);
         }
         return;
       }

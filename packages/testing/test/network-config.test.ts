@@ -27,6 +27,19 @@ describe('configured SolidHat networks', () => {
     expect(rpc.network).toBe('mainnet');
   });
 
+  it('reaches a local Electrum server on regtest, on the port it serves', () => {
+    const local = createProvider('regtest', {
+      type: 'electrum', network: 'regtest', electrum: { host: '127.0.0.1', port: 50103, encrypted: false },
+    });
+    expect(local).toBeInstanceOf(ElectrumNetworkProvider);
+    expect(local.network).toBe('regtest');
+    const socket = (local as unknown as { electrum: { hostIdentifier?: string; socket?: { options?: object } } }).electrum;
+    expect(socket.hostIdentifier).toContain('127.0.0.1');
+    // A regtest chain has no public server to default to.
+    expect(() => createProvider('regtest', { type: 'electrum', network: 'regtest' }))
+      .toThrow('names its server');
+  });
+
   it('rejects incomplete RPC networks and unknown network selection', async () => {
     expect(() => createProvider('broken', {
       type: 'bitcoin-rpc', rpc: { url: 'http://127.0.0.1:18443' },

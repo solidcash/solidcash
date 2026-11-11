@@ -68,7 +68,7 @@ export async function framedBlockOracle(
   } catch (error) {
     throw fail((error as Error).message);
   }
-  const { unlocker: _unlocker, ...coin } = spent;
+  const coin = (({ unlocker: _unlocker, ...rest }: UnlockableUtxo) => rest)(spent);
   const locks = poolLocks(pool);
   return {
     utxo: coin,

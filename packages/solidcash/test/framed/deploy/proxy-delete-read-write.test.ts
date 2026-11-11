@@ -33,7 +33,7 @@ const CALLER_TXID = '33'.repeat(31) + 'cc';
 const SECOND_CALLER_TXID = '44'.repeat(31) + 'bb';
 
 /** The body whose delete sits inside a branch: the compiler publishes it as a conditional soft-delete slot. */
-const GUARDED_SOURCE = 'pragma solidcash ^0.14.0;'
+const GUARDED_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Impl {'
   + '   address public owner;'
   + '   address external keeper;'
@@ -46,7 +46,7 @@ const GUARDED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' }';
 
 /** The same removal with no branch: the shipped in-place write of the value type's default. */
-const PLAIN_SOURCE = 'pragma solidcash ^0.14.0;'
+const PLAIN_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Impl {'
   + '   address public owner;'
   + '   address external keeper;'
@@ -172,7 +172,9 @@ describe('a proxied delete of a sorted-mapping key', () => {
     expect(deployment.initialize.accepted).toBe(true);
 
     // The value the live node the key names carries, read back through the shipped decoders.
-    const classification = buildProxyArtifact(artifacts.Impl!).stateLayout!;
+    const classification = {
+      ...buildProxyArtifact(artifacts.Impl!).stateLayout!, collections: artifacts.Impl!.stateLayout!.collections,
+    };
     const slot = keyToSlotMulti([encoder.encode(key)]);
     const heldValue = async (): Promise<string | undefined> => {
       const pools = await readFramedDeployment(network, deployment.proxy.categoryId, classification);

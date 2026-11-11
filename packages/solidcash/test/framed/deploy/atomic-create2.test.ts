@@ -78,9 +78,9 @@ describe('a child created with create2 in one transaction', () => {
   };
 
   /** Plans `make` on a creator whose sentinels the deployment filled, with any outputs after the genesis. */
-  const plan = async (
-    extra?: (caller: Utxo) => readonly Output[],
-  ): Promise<{ provider: MockNetworkProvider; caller: Utxo; result: FramedCallResult }> => {
+  const plan = async (extra?: (caller: Utxo) => readonly Output[]): Promise<{
+    provider: MockNetworkProvider; caller: Utxo; result: FramedCallResult;
+  }> => {
     const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = nextCoin(1_500_000n);
     await provider.addUtxo(binToHex(callerLock), funding);

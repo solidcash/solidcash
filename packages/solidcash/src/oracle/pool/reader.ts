@@ -159,6 +159,15 @@ export async function readPoolTimestamp(provider: NetworkProvider, category: str
   return decodePoolInfoCommitment(hexToBin(coin.token!.nft!.commitment)).timestamp;
 }
 
+/** The height and timestamp a read of pool `category` slices, both of the coin `poolInfoCoSpend` co-spends. */
+export async function readPoolClock(
+  provider: NetworkProvider, category: string,
+): Promise<{ number: bigint; timestamp: bigint }> {
+  const coin = await chooseInfoCoin(provider, category);
+  const { number, timestamp } = decodePoolInfoCommitment(hexToBin(coin.token!.nft!.commitment));
+  return { number, timestamp };
+}
+
 /** The pool each artifact was last bound to, for a recipe that runs in an implementation's context. */
 const poolsByArtifact = new WeakMap<object, string>();
 

@@ -54,7 +54,12 @@ function accepted(body: Script, others: readonly OtherInput[] = []): string | tr
   ]);
   const lock = p2sh32(redeem);
   const vm = compositionMachine();
-  const input = (index: number, unlockingBytecode: Uint8Array): Input => ({
+  const input = (index: number, unlockingBytecode: Uint8Array): {
+    outpointIndex: number;
+    outpointTransactionHash: Uint8Array;
+    sequenceNumber: number;
+    unlockingBytecode: Uint8Array;
+  } => ({
     outpointIndex: 0,
     outpointTransactionHash: new Uint8Array(32).fill(index),
     sequenceNumber: 0xffffffff,
@@ -170,7 +175,7 @@ describe('the framework library', () => {
   });
 
   it('is what a per-entry master invokes, and no shard defines one of its identifiers', () => {
-    const bundle = compileStringSplit(`pragma solidcash ^0.14.0;
+    const bundle = compileStringSplit(`pragma solidcash ^0.50.0;
 contract Ledger {
   int total;
   mapping(int => int) seen;

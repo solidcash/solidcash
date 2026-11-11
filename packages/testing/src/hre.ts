@@ -95,16 +95,18 @@ export function createProvider(
         );
       }
       const network = configuredNetwork;
-      if (network === Networks.REGTEST) {
-        throw new Error('ElectrumNetworkProvider does not support regtest; use type "regtest" or "bitcoin-rpc".');
+      const server = netCfg?.electrum;
+      // A regtest chain has no public server, so a local one is named, on whatever port it serves.
+      if (network === Networks.REGTEST && !server?.host) {
+        throw new Error('An Electrum network on regtest names its server: set electrum.host.');
       }
-      if (netCfg?.electrum?.port !== undefined) {
-        throw new Error('Custom Electrum ports are not supported; configure a hostname using its standard port.');
-      }
-      return new ElectrumNetworkProvider(
-        network,
-        netCfg?.electrum?.host ? { hostname: netCfg.electrum.host } : {},
-      );
+      return new ElectrumNetworkProvider(network, {
+        ...(server?.host ? { hostname: server.host } : {}),
+        ...(server?.port === undefined ? {} : { port: server.port }),
+        ...(server?.encrypted === undefined ? {} : { encrypted: server.encrypted }),
+        ...(server?.manualConnectionManagement === undefined
+          ? {} : { manualConnectionManagement: server.manualConnectionManagement }),
+      });
     }
     case 'mem-cash': {
       const memCash = netCfg?.memCash;
@@ -356,6 +358,10 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     const cnCfg = validateNetwork(cn);
     const conn = attachEthersNetwork(buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts, config));
     opened.push(conn);
+    // A network that keeps one socket for the run opens it here, where a connection first needs it.
+    if (cnCfg.electrum?.manualConnectionManagement === true) {
+      await (conn.provider as unknown as { connect(): Promise<void> }).connect();
+    }
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;

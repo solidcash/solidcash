@@ -2072,6 +2072,21 @@ export class UnboundReturnCallError extends SolidCashError {
   }
 }
 
+/**
+ * A returning direct call reads a record bound to the arguments it passes (call records, D50), so an argument the
+ * source leaves out has nothing to bind. Only a signature may be absent: it is no argument of the digest.
+ */
+export class OmittedCallArgumentError extends SolidCashError {
+  constructor(node: Node, edge: string, passed: number, declared: number) {
+    super(
+      node,
+      `The external call '${edge}' passes ${passed} of the ${declared} arguments its interface declares. A returning `
+      + 'call reads a record bound to the arguments it passes, so every declared argument but a signature must be '
+      + 'spelled at the call.',
+    );
+  }
+}
+
 export class GraphEmissionEffectError extends SolidCashError {
   constructor(node: Node, handlerName: string, effect: string) {
     super(

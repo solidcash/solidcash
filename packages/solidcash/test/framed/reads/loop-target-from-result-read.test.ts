@@ -40,7 +40,7 @@ const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
 
 /** A store answers ten times the index plus its base; the reader folds the turns of the store the directory names. */
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IStore { function at(int i) view returns (int); }'
   + ' interface IDirectory { function store() view returns (address); }'
   + ' contract Store {'
@@ -69,7 +69,12 @@ const directory = artifacts.Directory!;
 const store = artifacts.Store!;
 
 /** One live UTXO as the provider holds it: a token of the category, with the commitment it carries. */
-function utxo(txid: string, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array, vout = 0): Utxo {
+function utxo(txid: string, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array, vout = 0): {
+  txid: string;
+  vout: number;
+  satoshis: bigint;
+  token: { category: string; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: string } };
+} {
   return {
     txid, vout, satoshis: 20_000n,
     token: { category, amount: 0n, nft: { capability, commitment: bytesToHex(commitment) } },

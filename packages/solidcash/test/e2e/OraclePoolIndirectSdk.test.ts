@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, decodeTransaction, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import { ORACLE_POOL_PARAMETER, POOL_FLAG_SLOT, type Artifact } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { Contract, Signer, TransactionBuilder } from '../../src/index.js';

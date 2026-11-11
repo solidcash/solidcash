@@ -10,6 +10,7 @@ import { addressToLockScript, randomUtxo } from '../utils.js';
 const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
+import { seedLogicalNonce } from './logical-nonce.js';
 import { runMockNetworkProviderResetHooks } from './mock-reset.js';
 import { TokenWebSocket } from './TokenWebSocket.js';
 
@@ -717,40 +718,9 @@ export default class MemCashNetworkProvider implements NetworkProvider {
       + '`networks.localhost.mnemonic` in solidcash.config.ts.';
   }
 
-  /**
-   * Seed and advance the CREATE nonce from the chain.
-   *
-   * A no-op while the signer holds an active reservation; never lowers the local nonce; probes forward from the local
-   * nonce (or from 0 on the first call) to the smallest logical address with no identity anchor. A long-lived node
-   * keeps every earlier run's anchors, so the probe runs until it finds a free address.
-   */
+  /** Seed and advance the CREATE nonce from the chain (`seedLogicalNonce`). */
   async prepareSigner(signer: Signer): Promise<void> {
-    if (signer.transactionNonceReserved) return;
-    const local = signer._getTransactionNonceState();
-    const firstSeed = !this.seeded.has(signer);
-    this.seeded.add(signer);
-    const { deriveLogicalCreateAddress, resolveLogicalIdentity } = await import('../stateful/logical-identity.js');
-    const deployer = signer.getAddress();
-    let candidate = firstSeed ? 0n : local;
-    while (await this.logicalAddressOccupied(deriveLogicalCreateAddress(deployer, candidate), resolveLogicalIdentity)) {
-      candidate += 1n;
-    }
-    if (candidate > local) signer._setTransactionNonceState(candidate);
-  }
-
-  private async logicalAddressOccupied(
-    address: string,
-    resolve: (provider: NetworkProvider, address: string) => Promise<unknown>,
-  ): Promise<boolean> {
-    try {
-      await resolve(this, address);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/ambiguous/.test(message)) return true;
-      if (/missing or invalid/.test(message)) return false;
-      throw error;
-    }
+    await seedLogicalNonce(this, signer, this.seeded);
   }
 
   private async refreshTip(): Promise<void> {

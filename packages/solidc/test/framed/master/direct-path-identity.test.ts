@@ -14,13 +14,14 @@ import { compileString } from '../../../src/compiler.js';
  * covenant lost its merge path and the keep of an unnamed container refused a minting NFT (the master pin's destroy
  * arm moved them only while every contract carried it); and again when the own-category count pinned each record
  * beside a count-path call at its own index (C3); and again when the data-record covenant, whose lock the master
- * rebuilds to check its records, defined its authority bind and its category once. A framed compile may add
- * artifacts, but it may not make these two directs disagree.
+ * rebuilds to check its records, defined its authority bind and its category once; and again when a drained container
+ * left a sweepable filler in place of a zero-value output (c2d8ed7ea). A framed compile may add artifacts, but it may
+ * not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-const STATE_CONTRACT = 'pragma solidcash ^0.14.0;'
+const STATE_CONTRACT = 'pragma solidcash ^0.50.0;'
   + ' contract Counter(pubkey admin) {'
   + '   int public counter;'
   + '   function increment(sig s) {'
@@ -29,7 +30,7 @@ const STATE_CONTRACT = 'pragma solidcash ^0.14.0;'
   + '   }'
   + ' }';
 
-const SENDER_CONTRACT = 'pragma solidcash ^0.14.0;'
+const SENDER_CONTRACT = 'pragma solidcash ^0.50.0;'
   + ' contract Gate(address owner) {'
   + '   int public hits;'
   + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'

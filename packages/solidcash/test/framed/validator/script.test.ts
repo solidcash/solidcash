@@ -38,6 +38,7 @@ import {
   buildValidatorFacets,
   buildValidatorProgram,
   decideValidator,
+  validatorFacetUnlockingBytecode,
   type FramedTransaction as ModelledTransaction,
   type TokenShape,
 } from '../../../../solidc/src/framed/validator/index.js';
@@ -1042,6 +1043,22 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(verdict.objection).toMatch(/control stack/);
   });
 
+  test('refuses an output that two contracts\' frames both name', () => {
+    // Either contract's own rules pass: each lists the output once. The program marks an output for the contract that
+    // names it first, so the second contract's frame stops there, and both models say so.
+    const composition = laidOut(widePlan(2, 2));
+    const index = composition.validatorIndex;
+    const output = composition.outputs.length - 1;
+    expect(accepted(materialise(composition), index)).toBe(true);
+    composition.blocks.get('W0.root')!.sends = [output];
+    expect(accepted(materialise(composition), index)).toBe(true);
+    composition.blocks.get('W1.root')!.sends = [output];
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V7_OUTPUT_OF_TWO_CONTRACTS');
+    expect(decideReference(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: index }).accepted).toBe(false);
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a read-only frame that pays an output', () => {
     const composition = laidOut(singleContractPlan());
     const index = composition.validatorIndex;
@@ -1471,5 +1488,303 @@ describe('the validator program refuses each rule it enforces', () => {
     const priced = report.find((row) => row.masters === 9)!;
     expect(priced.parts.every((part) => part.accepted)).toBe(true);
     expect(report.every((row) => row.parts.every((part) => part.operationCost > 0))).toBe(true);
+  });
+});
+
+describe('how a transaction names its records', () => {
+  const VIEW_AFTER_UPDATE = seedBytes('names:E:updated', 6);
+
+  /**
+   * One contract whose root creates `E` between two calls. `A.update` rewrites it and `A.read` reads it, each by its
+   * output alone, as the SDK names a record an earlier frame created; the tests below also keep it at its own index, as
+   * a frame keeps its own creation in its later segments. `funders` adds users' coins behind the contract's inputs and
+   * `events` adds outputs ahead of the created record, which is how its index falls below or past the input count.
+   */
+  function createdRecordPlan(options: { readonly funders: number; readonly events: number }): CompositionPlan {
+    const contract: ContractPlan = {
+      id: 'A',
+      category: categoryOf('names-A'),
+      masterLock: contractLockOf(seedBytes('code:names-A', 8)),
+      stateLock: contractLockOf(seedBytes('state:names-A', 8)),
+      eventLock: contractLockOf(seedBytes('event:names-A', 8)),
+    };
+    const created = seedBytes('names:E:created', 6);
+    const child = (id: string, slot: string, viewOut?: Uint8Array): MasterPlan => ({
+      id,
+      contract: 'A',
+      kind: FrameKind.CALL,
+      caller: 'A.go',
+      selector: selectorOf(id),
+      args: [],
+      children: [],
+      segments: [{ touches: [viewOut === undefined ? { slot } : { slot, viewOut }] }],
+      retval: new Uint8Array(0),
+    });
+    return {
+      contracts: [contract],
+      users: [userPlan('U1'), ...Array.from({ length: options.funders }, (_unused, at) => userPlan(`F${at}`))],
+      stateSlots: [{ id: 'S', contract: 'A', commitment: seedBytes('names:S:0', 6), value: 3_000n }],
+      createdSlots: [{ id: 'E', contract: 'A', commitment: created, value: 1_500n }],
+      masters: [
+        {
+          id: 'A.go',
+          contract: 'A',
+          kind: FrameKind.ROOT,
+          caller: 'U1',
+          selector: selectorOf('go'),
+          args: [],
+          children: ['A.call', 'A.update', 'A.read'],
+          callKinds: [FrameKind.CALL, FrameKind.CALL, FrameKind.CALL],
+          callValues: [0n, 0n, 0n],
+          segments: [
+            { touches: [{ slot: 'S', viewOut: seedBytes('names:S:1', 6) }] },
+            { touches: [{ slot: 'S' }, { slot: 'E', viewOut: created }] },
+            { touches: [{ slot: 'S' }] },
+            { touches: [{ slot: 'S' }] },
+          ],
+          events: options.events,
+          retval: new Uint8Array(0),
+        },
+        child('A.call', 'S'),
+        child('A.update', 'E', VIEW_AFTER_UPDATE),
+        child('A.read', 'E'),
+      ],
+      changeUser: 'U1',
+    };
+  }
+
+  /** The two layouts: the created record's output index past the transaction's inputs, and below them. */
+  const PAST_THE_INPUTS = { funders: 0, events: 4 };
+  const BELOW_THE_INPUTS = { funders: 6, events: 0 };
+
+  /** The output index the created record sits at. */
+  function createdIndex(composition: Composition): number {
+    for (const block of composition.blocks.values()) {
+      for (const entry of block.segments.flat()) {
+        if (entry.in === INDEX_NONE && entry.viewIn.length === 0) return entry.out;
+      }
+    }
+    throw new Error('the composition creates no record');
+  }
+
+  /** All three models' verdicts on a composition. */
+  function verdicts(composition: Composition): {
+    readonly program: boolean;
+    readonly derivation: string;
+    readonly reference: string;
+  } {
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    const derivation = derivationOf(modelled, index);
+    const reference = decideReference(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: index });
+    return {
+      program: accepted(modelled, index),
+      derivation: derivation.accepted ? 'accepted' : derivation.rejection?.reason ?? 'refused',
+      reference: reference.accepted ? 'accepted' : reference.reason ?? 'refused',
+    };
+  }
+
+  test('lays out the created record past the inputs and below them', () => {
+    const past = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    expect(createdIndex(past)).toBeGreaterThanOrEqual(past.inputs.length);
+    const below = laidOut(createdRecordPlan(BELOW_THE_INPUTS));
+    expect(createdIndex(below)).toBeLessThan(below.inputs.length);
+  });
+
+  test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
+    'accepts a created record declared by its output alone in every frame, with its index %s',
+    (_name, layout) => {
+      expect(verdicts(laidOut(createdRecordPlan(layout))))
+        .toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+    },
+  );
+
+  test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
+    'accepts a later declaration that keeps a created record at its own index, %s',
+    (_name, layout) => {
+      // A frame keeps a record it created by the index in its later segments, and the SDK lays that out, so a wallet's
+      // coin count must not decide it: more funding inputs move the created index below the input count.
+      for (const masters of [['A.read'], ['A.update', 'A.read']]) {
+        const composition = laidOut(createdRecordPlan(layout));
+        const index = createdIndex(composition);
+        for (const master of masters) {
+          const entry = composition.blocks.get(master)!.segments[0]![0]!;
+          composition.blocks.get(master)!.segments[0]![0] = { ...entry, in: index };
+        }
+        expect(verdicts(composition)).toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+      }
+    },
+  );
+
+  test('refuses a later frame that names a spent record by its output alone', () => {
+    const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    const entry = composition.blocks.get('A.call')!.segments[0]![0]!;
+    composition.blocks.get('A.call')!.segments[0]![0] = { ...entry, in: INDEX_NONE };
+    const decided = verdicts(composition);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).toBe('V7_SPENT_RECORD_NAMED_BY_OUTPUT');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test.each([['past the inputs', PAST_THE_INPUTS], ['below the inputs', BELOW_THE_INPUTS]] as const)(
+    'refuses a delete of a record the transaction created, %s',
+    (_name, layout) => {
+      const composition = laidOut(createdRecordPlan(layout));
+      const index = createdIndex(composition);
+      const entry = composition.blocks.get('A.read')!.segments[0]![0]!;
+      composition.blocks.get('A.read')!.segments[0]![0] = { ...entry, in: index, out: INDEX_NONE, viewOut: new Uint8Array(0) };
+      const decided = verdicts(composition);
+      expect(decided.program).toBe(false);
+      expect(decided.derivation).toBe('V7_CREATED_RECORD_DELETED');
+      expect(decided.reference).not.toBe('accepted');
+    },
+  );
+
+  test('leaves no record at the index of one a frame kept and a later frame deleted', () => {
+    // The earlier declaration marks the output as a record's. The control deletes the record over a plain output, and
+    // the same transaction with a mutable NFT of the contract at that index is refused: no chain ends there.
+    const deleting = (): Composition => {
+      const plan = createdRecordPlan(PAST_THE_INPUTS);
+      const composition = laidOut({
+        ...plan,
+        masters: plan.masters.map((master) => (master.id === 'A.read'
+          ? { ...master, segments: [{ touches: [{ slot: 'S', delete: true }] }] } : master.id === 'A.go'
+            ? { ...master, segments: master.segments.slice(0, 3).concat([{ touches: [] }]) } : master)),
+      });
+      // A record kept before its delete keeps the value floor, so the output at its index holds what it held.
+      const at = composition.slotIndex.get('S')!;
+      (composition.outputs.find((output) => output.index === at) as { value: bigint }).value = composition.inputs[at]!.value;
+      return composition;
+    };
+    const control = deleting();
+    expect(verdicts(control)).toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+
+    const forged = deleting();
+    const at = forged.slotIndex.get('S')!;
+    const planted = forged.outputs.find((output) => output.index === at)!;
+    (planted as { lockingBytecode: Uint8Array }).lockingBytecode = forged.inputs[at]!.lockingBytecode;
+    (planted as { token: TokenShape }).token = mutableTokenShape(forged.inputs[at]!.token.category, seedBytes('names:planted', 6));
+    const decided = verdicts(forged);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).toBe('V7_CENSUS_UNEXPECTED_MUTABLE');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('refuses a created record over an input of its own contract', () => {
+    const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    const stateInput = composition.slotIndex.get('S')!;
+    for (const block of composition.blocks.values()) {
+      block.segments.forEach((segment, position) => {
+        segment.forEach((entry, at) => {
+          if (entry.in === INDEX_NONE) segment[at] = { ...entry, out: stateInput };
+        });
+        block.segments[position] = segment;
+      });
+    }
+    const decided = verdicts(composition);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).not.toBe('accepted');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('holds a created entry to a real output, and a state input to one listing', () => {
+    const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    composition.transcript.settles[0] = {
+      ...composition.transcript.settles[0]!, createdOutputs: [composition.outputs.length + 1],
+    };
+    composition.inputs[composition.validatorIndex]!.validator!.transcript = composition.transcript;
+    const pastTheOutputs = verdicts(composition);
+    expect(pastTheOutputs.program).toBe(false);
+    expect(pastTheOutputs.derivation).toBe('V2_CREATED_OUTPUT_INDEX_OUT_OF_RANGE');
+    expect(pastTheOutputs.reference).not.toBe('accepted');
+
+    const twice = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+    const listed = twice.transcript.settles[0]!;
+    twice.transcript.settles[0] = { ...listed, stateInputs: [...listed.stateInputs, listed.stateInputs[0]!] };
+    twice.inputs[twice.validatorIndex]!.validator!.transcript = twice.transcript;
+    const decided = verdicts(twice);
+    expect(decided.program).toBe(false);
+    expect(decided.derivation).toBe('V7_STATE_INPUT_LISTED_TWICE');
+    expect(decided.reference).not.toBe('accepted');
+  });
+
+  test('takes nothing from the transcript\'s created list', () => {
+    // The list a builder states and an honest composition's own: the two decide alike, a list naming a state input's
+    // output changes nothing, and a chain that starts at nothing is refused whatever the list says.
+    const stating = (createdOutputs: readonly number[]): Composition => {
+      const composition = laidOut(createdRecordPlan(PAST_THE_INPUTS));
+      composition.transcript.settles[0] = { ...composition.transcript.settles[0]!, createdOutputs };
+      composition.inputs[composition.validatorIndex]!.validator!.transcript = composition.transcript;
+      return composition;
+    };
+    const honest = createdIndex(laidOut(createdRecordPlan(PAST_THE_INPUTS)));
+    const stateInput = laidOut(createdRecordPlan(PAST_THE_INPUTS)).slotIndex.get('S')!;
+    for (const list of [[], [honest], [stateInput], [honest, stateInput]]) {
+      expect(verdicts(stating(list))).toEqual({ program: true, derivation: 'accepted', reference: 'accepted' });
+    }
+    for (const list of [[], [stateInput]]) {
+      const composition = stating(list);
+      const entry = composition.blocks.get('A.go')!.segments[0]![0]!;
+      composition.blocks.get('A.go')!.segments[0]![0] = { ...entry, viewIn: new Uint8Array(0) };
+      const decided = verdicts(composition);
+      expect(decided.program).toBe(false);
+      expect(decided.derivation).toBe('V7_CHAIN_START_MISMATCH');
+    }
+  });
+});
+
+describe('a facet recreates itself', () => {
+  /**
+   * A stranger's spend of the facet at `head + k`, with an empty transcript in the head's place. A facet cannot tell a
+   * head from any other input, so what protects its coin is that it recreates it, whatever stands below it. `outputs`
+   * is what the transaction leaves at the facet's own index.
+   */
+  function strangerSpend(k: number, recreation: VmSourceOutput | undefined): { accepted: boolean; objection?: string } {
+    const code = FACETS[k - 1]!;
+    const lock = encodeLockingBytecodeP2sh32(hash256(code));
+    const transcript = Uint8Array.from([0x50, 0x43, 0x37, 0x02, 0, 0, 0, 0, 0]);
+    const redeem = new Uint8Array([0x28, ...new Uint8Array(40).fill(0xcd), 0x6d, 0x51]);
+    const stranger = encodeLockingBytecodeP2sh32(hash256(redeem));
+    const coin = (lockingBytecode: Uint8Array): VmSourceOutput => ({ lockingBytecode, valueSatoshis: 10_000n });
+    const fillers = k - 1;
+    const sourceOutputs = [coin(stranger), ...Array.from({ length: fillers }, () => coin(stranger)), coin(lock)];
+    const headUnlocking = Uint8Array.from([...encodeDataPush(transcript), ...encodeDataPush(redeem)]);
+    const inputCount = sourceOutputs.length;
+    const outputCount = recreation === undefined ? 1 : inputCount;
+    const checkpoint = new Uint8Array(inputCount + Math.max(inputCount, outputCount) * 22 + outputCount);
+    const inputs = sourceOutputs.map((_source, at) => ({
+      outpointIndex: 0,
+      outpointTransactionHash: seedBytes(`facet-spend:${at}`, 32),
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: at === 0 ? headUnlocking
+        : at === k ? validatorFacetUnlockingBytecode(k, code, 0, checkpoint) : headUnlocking,
+    }));
+    const paid = { lockingBytecode: stranger, valueSatoshis: 546n };
+    const outputs = recreation === undefined ? [paid]
+      : [...Array.from({ length: k }, () => paid), recreation];
+    const vm = relaxedMachine();
+    const state = vm.evaluate({ inputIndex: k, sourceOutputs, transaction: { version: 2, locktime: 0, inputs, outputs } });
+    return vm.stateSuccess(state) === true ? { accepted: true }
+      : { accepted: false, objection: String((state as { error?: unknown }).error) };
+  }
+
+  const LOCK_OF = (k: number): Uint8Array => encodeLockingBytecodeP2sh32(hash256(FACETS[k - 1]!));
+
+  test.each([[1], [2]])('refuses a spend of facet %i that does not recreate it', (k) => {
+    // The control: the same spend, recreating the coin, passes this rule, so a refusal below is the rule.
+    expect(strangerSpend(k, { lockingBytecode: LOCK_OF(k), valueSatoshis: 10_000n }).accepted).toBe(true);
+
+    // Kept by the spender: the coin's value leaves with no output at the facet's index.
+    expect(strangerSpend(k, undefined).accepted).toBe(false);
+    // Recreated at another lock.
+    expect(strangerSpend(k, { lockingBytecode: userLockOf('facet-sweeper'), valueSatoshis: 10_000n }).accepted).toBe(false);
+    // Recreated for less.
+    expect(strangerSpend(k, { lockingBytecode: LOCK_OF(k), valueSatoshis: 9_999n }).accepted).toBe(false);
+    // Recreated holding a token, which takes it out of the tokenless pool a composition draws from.
+    expect(strangerSpend(k, {
+      lockingBytecode: LOCK_OF(k),
+      valueSatoshis: 10_000n,
+      token: { category: categoryOf('facet-token'), amount: 1n },
+    }).accepted).toBe(false);
   });
 });

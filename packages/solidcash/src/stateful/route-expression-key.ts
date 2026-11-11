@@ -19,6 +19,25 @@ import { sortAddressPair } from './solidityAbi.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
 /**
+ * A call's arguments as a key expression reads them: a scalar `address` stated as a CashAddress is the lock the body
+ * receives, so a key that orders or hashes it computes over the same bytes the body does.
+ */
+export function keyArguments(
+  args: readonly FunctionArgument[], inputs: readonly { readonly type?: string }[],
+): FunctionArgument[] {
+  return args.map((arg, index) => {
+    const type = inputs[index]?.type;
+    if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
+    try {
+      const encoded = encodeFunctionArgument(arg, 'address');
+      return encoded instanceof Uint8Array ? encoded : arg;
+    } catch {
+      return arg;
+    }
+  });
+}
+
+/**
  * Auto-evaluate a sorted mapping's COMPUTED key from the artifact's canonical expression label against the call
  * args, for the common hash-builtin + bytes-cast cases (e.g. balances[hash160(pk)] -> hash160(argPk)). This makes
  * a direct computed key resolve WITHOUT a manual withEntryKey (Solidity auto-resolves such keys). Returns

@@ -97,7 +97,7 @@ import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode }
 import {
   decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
 } from '../../stateful/SortedList.js';
-import { evalComputedKey } from '../../stateful/route-expression-key.js';
+import { evalComputedKey, keyArguments } from '../../stateful/route-expression-key.js';
 import { entryRecordReadUnlock } from '../deploy/records.js';
 import type { DraftInput, DraftSourceOutput, DraftToken } from '../composer/draft.js';
 import {
@@ -1075,25 +1075,6 @@ function resolveHopKey(
     `the implementation's "${request.functionName}" entry writes mapping "${access.collection}" at a key this `
     + `hop cannot resolve from its call data (${label ?? '<unnamed>'})`,
   );
-}
-
-/**
- * A frame's arguments as a key expression reads them: a scalar `address` stated as a CashAddress is the lock the body
- * receives, so a key that orders or hashes it computes over the same bytes the body does.
- */
-export function keyArguments(
-  args: readonly FunctionArgument[], inputs: readonly { readonly type?: string }[],
-): FunctionArgument[] {
-  return args.map((arg, index) => {
-    const type = inputs[index]?.type;
-    if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
-    try {
-      const encoded = encodeFunctionArgument(arg, 'address');
-      return encoded instanceof Uint8Array ? encoded : arg;
-    } catch {
-      return arg;
-    }
-  });
 }
 
 /** A key label naming what one of the frame's own calls returned: `producer:<callsite>:<result>`. */

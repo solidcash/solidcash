@@ -62,6 +62,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V2_MASTER_INDEX_OUT_OF_RANGE',
   'V2_MASTER_WITNESS_BLOCK_MALFORMED',
   'V2_STATE_INPUT_INDEX_OUT_OF_RANGE',
+  'V2_CREATED_OUTPUT_INDEX_OUT_OF_RANGE',
   'V3_DUPLICATE_MASTER',
   'V3_MASTERS_MISSING',
   'V3_MASTER_NOT_POINTING_HERE',
@@ -83,6 +84,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_SELF_NOT_CALLER_SELF',
   'V5_DELEGATE_TARGET_MISMATCH',
   'V5_INTERNAL_LOCK_MISMATCH',
+  'V5_INTERNAL_CATEGORY_MISMATCH',
   'V5_RETVAL_MISMATCH',
   'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
@@ -116,6 +118,13 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_CHAIN_MIDDLE_DELETE',
   'V7_RECORD_VALUE_DECREASED',
   'V7_SEND_OUTPUT_SHARED',
+  'V7_OUTPUT_OF_TWO_CONTRACTS',
+  'V7_RECORD_INDEX_OF_TWO_CONTRACTS',
+  'V7_RECORD_OUTPUT_OUT_OF_RANGE',
+  'V7_SPENT_RECORD_NAMED_BY_OUTPUT',
+  'V7_CREATED_RECORD_DELETED',
+  'V7_CREATED_OVER_OWN_INPUT',
+  'V7_STATE_INPUT_LISTED_TWICE',
   'V7_VALUE_NOT_CONSERVED',
   'V8_SETTLE_REQUIRED_MISSING',
   'V8_SETTLE_NOT_REQUIRED',
@@ -192,13 +201,13 @@ const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
  *
  * Facet `k` is the input at `head + k`, locked by `P2SH32(F_k)` and carrying no token. It reads `M` from the first
  * push of the unlocking bytecode of the input `k` places below its own, which is the head: a facet reads the
- * transcript once, from the head, so no check reads a master's input twice. A facet decides nothing about itself —
- * the head holds it in place.
+ * transcript once, from the head, so no check reads a master's input twice. A facet's only rule about itself is that
+ * it recreates itself; the head holds it in place.
  *
- * The head carries every facet's lock as a constant and requires the input and the output at `head + k` to be that
- * lock, the output worth at least the input. A position holds one lock and a facet's lock is not a head's, so a
- * facet cannot be left out, moved, replaced or shared by two heads. Because those constants are part of the head,
- * the address every master presents commits to every facet's code.
+ * The head carries every facet's lock as a constant and requires the input at `head + k` to be that lock, and each
+ * facet recreates itself in place. A position holds one lock and a facet's lock is not a head's, so a facet cannot be
+ * left out, moved, replaced or shared by two heads. Because those constants are part of the head, the address every
+ * master presents commits to every facet's code.
  *
  * The machine charges an instruction it steps over whether or not it executes it, so each part keeps its loops'
  * bodies short and moves what a pass rarely runs into functions ({@link NamedStack.call}), and each part reads every
@@ -215,7 +224,7 @@ const FACET_CHECKS: readonly (readonly CheckEmitter[])[] = [
  * 5. the settlement on `[M]` ({@link emitSettlement}): one walk over the call tree in the order V6 derives, which
  *    holds each master's block to the codec (V2) and to this validator (V3) and gathers what V7 weighs, then the
  *    census checkpoint: the census facet's leading push is what the walk gathered;
- * 6. the facets: each input at `head + k` is the facet's lock and recreates it.
+ * 6. the facets: each input at `head + k` is the facet's lock, and each facet recreates itself.
  *
  * The first facet's sequence, on the same `[M]`:
  *
@@ -401,6 +410,13 @@ function emitFacetEntry(e: Emitter, k: number): void {
   const O = Opcodes;
   // The head holds the census facet to its first push, so nothing else may stand beside it and the padding.
   if (k === CENSUS_FACET) e.op(O.OP_DEPTH).count(2).op(O.OP_NUMEQUALVERIFY);
+  // A facet recreates itself, in place: the same lock, at least its value, and no token it did not hold. Nothing a facet
+  // can read proves the input below it is a head, since it cannot carry the head's hash, so this rule has to be its own:
+  // left to the head, a stranger's script in the head's place kept the coin, and the coins are what every composition
+  // spends.
+  e.op(O.OP_INPUTINDEX, O.OP_UTXOBYTECODE, O.OP_INPUTINDEX, O.OP_OUTPUTBYTECODE, O.OP_EQUALVERIFY);
+  e.op(O.OP_INPUTINDEX, O.OP_OUTPUTVALUE, O.OP_INPUTINDEX, O.OP_UTXOVALUE, O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+  e.op(O.OP_INPUTINDEX, O.OP_OUTPUTTOKENCATEGORY, O.OP_INPUTINDEX, O.OP_UTXOTOKENCATEGORY, O.OP_EQUALVERIFY);
   // The facet's own padding, the push its unlocking bytecode carries just before its code.
   e.op(O.OP_DROP);
   e.op(O.OP_INPUTINDEX).count(k).op(O.OP_SUB);
@@ -445,24 +461,13 @@ function emitSplitDataPush(e: Emitter): void {
   e.op(O.OP_ENDIF, O.OP_ENDIF);
 }
 
-/** Entry `[M]`, exit `[M]`. Every facet input is at `head + k`, locked by its own code, and recreated in place. */
+/** Entry `[M]`, exit `[M]`. Every facet input is at `head + k`, locked by its own code; each facet recreates itself. */
 function emitFacetBinding(e: Emitter, facets: readonly Uint8Array[]): void {
   const O = Opcodes;
   facets.forEach((facet, at) => {
     const k = at + 1;
-    const lock = encodeLockingBytecodeP2sh32(hash256(facet));
-    // `[M, i]`, where `i` is the input this facet must sit at.
-    e.op(O.OP_INPUTINDEX).count(k).op(O.OP_ADD);
-    e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
-    e.op(O.OP_DUP, O.OP_UTXOBYTECODE);
-    e.push(lock).op(O.OP_EQUALVERIFY);
-    // The facet recreates itself, worth at least what it came with, so a pool of facets cannot run out inside a
-    // transaction.
-    e.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
-    e.op(O.OP_DUP, O.OP_OUTPUTBYTECODE);
-    e.push(lock).op(O.OP_EQUALVERIFY);
-    e.op(O.OP_DUP, O.OP_UTXOVALUE, O.OP_OVER, O.OP_OUTPUTVALUE, O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
-    e.op(O.OP_DROP);
+    e.op(O.OP_INPUTINDEX).count(k).op(O.OP_ADD, O.OP_UTXOBYTECODE);
+    e.push(encodeLockingBytecodeP2sh32(hash256(facet))).op(O.OP_EQUALVERIFY);
   });
 }
 
@@ -1127,6 +1132,12 @@ function emitVisit(s: NamedStack): void {
       }, () => {
         s.pick('index', 'i').op(1, ['lock'], O.OP_UTXOBYTECODE);
         s.pick('xTarget', 't').emit(1, ['t'], (em) => dropFront(em, 2)).op(2, [], O.OP_EQUALVERIFY);
+        // A helper is a master of the contract whose records it runs on. Contracts can share a lock, as the pairs of a
+        // factory do, so the lock alone does not say so.
+        s.pick('index', 'i').emit(1, ['own'], (em) => {
+          em.op(O.OP_UTXOTOKENCATEGORY).count(32).op(O.OP_SPLIT, O.OP_DROP);
+        });
+        s.pick('xContext', 'x').op(2, [], O.OP_EQUALVERIFY);
       });
     }, () => {
       // A message call's callee presents the target, or the address that target identifies: a body that read the
@@ -1365,10 +1376,15 @@ function emitCallTreeRules(e: Emitter): void {
  * names two real indices names the same one twice, so a record that is not deleted ends at its key.
  */
 const RECORD_SLOT_BYTES = 22;
-/** The slot's state: declared and not deleted, deleted, and read at its input by some declaration. */
+/**
+ * The slot's state: declared and not deleted, deleted, read at its input, and created by a declaration. A spent record
+ * is named by its input in every declaration. A record the transaction creates has no input, so a later declaration
+ * names it by its output, alone or as its own index, and it outlives the transaction (`emitLaterDeclaration`).
+ */
 const SLOT_LIVE = 0x01;
 const SLOT_DELETED = 0x02;
 const SLOT_TOUCHED = 0x04;
+const SLOT_CREATED = 0x08;
 
 /**
  * An output's marks: a record output a frame declares, an event a frame lists, a send a frame lists, each made by a
@@ -1388,7 +1404,6 @@ const VALUE_TOTAL_BYTES = 9;
 /** Where the walk's read-only items sit, counted from the bottom of the main stack. */
 const SETTLE_TRANSCRIPT_POSITION = 0;
 const SETTLE_DECLARED_POSITION = 1;
-const SETTLE_CREATED_POSITION = 2;
 
 /**
  * V7, and the rules of V2 and V3 that are about one master's own block: decided in one ordered walk over the call
@@ -1419,7 +1434,7 @@ function emitSettlement(e: Emitter): void {
   s.pick('declared', 'd').op(1, ['settleCount'], O.OP_SIZE, O.OP_NIP).count(32, 'width').op(2, ['settleCount'], O.OP_DIV);
   s.count(MAX_SETTLED_CONTRACTS, 'max').op(2, [], O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
   emitSettleLists(s);
-  s.expect(['M', 'declared', 'created', 'listed']);
+  s.expect(['M', 'declared', 'listed']);
 
   // The accumulators, above the program bytes: each contract's value total, the output marks, the record table.
   s.pick('declared', 'd').op(1, ['n'], O.OP_SIZE, O.OP_NIP).count(32, 'width').op(2, ['n'], O.OP_DIV);
@@ -1448,24 +1463,24 @@ function emitSettlement(e: Emitter): void {
   });
   s.remove('roots');
   emitWalkMintedMasters(s);
-  s.expect(['M', 'declared', 'created', 'listed']);
+  s.expect(['M', 'declared', 'listed']);
   emitCensusCheckpoint(s);
-  s.remove('listed').remove('created').remove('declared');
+  s.remove('listed').remove('declared');
   s.expect(['M']);
 }
 
 /**
- * The census checkpoint: the census facet's leading push is `created || listed || table || marks || totals`, the
- * settle lists and the accumulators as this walk left them. Every part's length follows from the transaction's input
- * and output counts and the settle count, so the facet cuts them apart again without lengths of their own.
+ * The census checkpoint: the census facet's leading push is `listed || table || marks || totals`, the settle list and
+ * the accumulators as this walk left them. Every part's length follows from the transaction's input and output counts
+ * and the settle count, so the facet cuts them apart again without lengths of their own.
  *
- * Entry and exit `[M, declared, created, listed]`, the record table, the marks and the totals on the alternate stack,
+ * Entry and exit `[M, declared, listed]`, the record table, the marks and the totals on the alternate stack,
  * which this spends. The checkpoint the walk computed is compared below the one the facet states, so a builder reads
  * it off the close a stated placeholder fails.
  */
 function emitCensusCheckpoint(s: NamedStack): void {
   const O = Opcodes;
-  s.pick('created', 'checkpoint').pick('listed', 'l').op(2, ['checkpoint'], O.OP_CAT);
+  s.pick('listed', 'checkpoint');
   for (const accumulator of ['table', 'marks', 'totals']) {
     s.op(0, [accumulator], O.OP_FROMALTSTACK).op(2, ['checkpoint'], O.OP_CAT);
   }
@@ -1494,30 +1509,29 @@ function emitCensus(e: Emitter): void {
   s.op(0, ['checkpoint'], O.OP_FROMALTSTACK);
   s.pick('M', 'transcript').emit(1, ['transcript', 'declared'], emitDeclaredCategories).remove('transcript');
   s.roll('checkpoint').op(0, ['n'], O.OP_TXINPUTCOUNT, O.OP_TXOUTPUTCOUNT, O.OP_MAX).roll('checkpoint');
-  s.pick('n', 'w').op(2, ['created', 'checkpoint'], O.OP_SPLIT);
   s.op(0, ['w'], O.OP_TXINPUTCOUNT).op(2, ['listed', 'checkpoint'], O.OP_SPLIT);
   s.roll('n').count(RECORD_SLOT_BYTES, 'width').op(2, ['w'], O.OP_MUL).op(2, ['table', 'checkpoint'], O.OP_SPLIT);
   s.op(0, ['w'], O.OP_TXOUTPUTCOUNT).op(2, ['marks', 'totals'], O.OP_SPLIT);
   // On the alternate stack as the walk left them: the totals, the marks, then the record table on top.
   s.op(1, [], O.OP_TOALTSTACK).op(1, [], O.OP_TOALTSTACK).op(1, [], O.OP_TOALTSTACK);
-  s.expect(['M', 'declared', 'created', 'listed']);
+  s.expect(['M', 'declared', 'listed']);
   emitCompletenessByPointers(s);
   emitRequireRecordEnds(s);
   emitRequireStateInputs(s);
   emitRequireOutputClasses(s);
   emitRequireMastersInPlace(s);
   emitRequireContractValues(s);
-  s.remove('covered').remove('listed').remove('created').remove('declared');
+  s.remove('covered').remove('listed').remove('declared');
   s.expect(['M']);
 }
 
 /**
- * The transcript's settle lists: the records each contract creates, and the state inputs each one lists.
+ * The transcript's settle lists: the state inputs each contract lists. The records a contract creates are declared by
+ * its frames, so the program reads no list of them, and the transcript's own is stepped over.
  *
- * Entry `[M, declared]`, exit `[M, declared, created, listed]`. `created` holds one byte per index, the contract's
- * index plus one at an output a contract creates a record at, each created once. `listed` holds one byte per input,
- * the contract's index plus one at an input a contract lists: each listed input is a state UTXO of that contract — a
- * mutable NFT of its category that is not this validator — and is listed once, by one contract.
+ * Entry `[M, declared]`, exit `[M, declared, listed]`. `listed` holds one byte per input, the contract's index plus
+ * one at an input a contract lists: each listed input is a state UTXO of that contract — a mutable NFT of its category
+ * that is not this validator — and is listed once, by one contract.
  */
 function emitSettleLists(s: NamedStack): void {
   const O = Opcodes;
@@ -1531,10 +1545,8 @@ function emitSettleLists(s: NamedStack): void {
   // `skipMintedListIfV3` reads the version from the transcript, two items down.
   s.emit(1, ['cursor'], (em) => skipMintedListIfV3(em, 2));
   s.emit(1, ['settleCount', 'cursor'], takeCount).count(0, 'k');
-  s.op(0, ['n'], O.OP_TXINPUTCOUNT, O.OP_TXOUTPUTCOUNT, O.OP_MAX).count(0, 'zero').roll('n')
-    .op(2, ['created'], O.OP_NUM2BIN);
   s.op(0, ['n'], O.OP_TXINPUTCOUNT).count(0, 'zero').roll('n').op(2, ['listed'], O.OP_NUM2BIN).roll('cursor');
-  const settleLoop = ['M', 'declared', 'settleCount', 'k', 'created', 'listed', 'cursor'];
+  const settleLoop = ['M', 'declared', 'settleCount', 'k', 'listed', 'cursor'];
   s.expect(settleLoop);
   s.loop(() => {
     s.pick('k', 'kk').pick('settleCount', 'n').op(2, ['more'], O.OP_LESSTHAN).branch(() => {
@@ -1559,19 +1571,11 @@ function emitSettleLists(s: NamedStack): void {
         s.pick('inputCount', 'left').op(1, ['done'], O.OP_NOT);
       });
       s.remove('inputCount');
-      s.emit(1, ['createdCount', 'cursor'], takeCount).roll('createdCount');
-      s.loop(() => {
-        s.pick('createdCount', 'more').op(1, ['more'], O.OP_0NOTEQUAL).branch(() => {
-          s.roll('cursor').count(1, 'one').op(2, ['output', 'cursor'], O.OP_SPLIT);
-          s.roll('output').emit(1, ['output'], (em) => em.unsignedByteOnTop());
-          s.roll('created').roll('output').pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'w')
-            .op(2, ['tag'], O.OP_NUM2BIN).emit(3, ['created'], (em) => emitSetTaggedByte(em));
-          s.roll('createdCount').op(1, ['createdCount'], O.OP_1SUB).order(['created', 'listed', 'cursor', 'createdCount']);
-        });
-        s.pick('createdCount', 'left').op(1, ['done'], O.OP_NOT);
+      s.emit(1, ['cursor'], (em) => {
+        takeCount(em);
+        em.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
       });
-      s.remove('createdCount');
-      s.roll('k').op(1, ['k'], O.OP_1ADD).order(['k', 'created', 'listed', 'cursor']);
+      s.roll('k').op(1, ['k'], O.OP_1ADD).order(['k', 'listed', 'cursor']);
     });
     s.pick('k', 'kk').pick('settleCount', 'n').op(2, ['done'], O.OP_GREATERTHANOREQUAL);
   });
@@ -1631,9 +1635,10 @@ function emitIndexOf32(e: Emitter): void {
  * The function takes `[m, kIn, block]` and leaves nothing: `m` is the master's id, an input index or
  * `mintedRef(output)` for a minted master, `kIn` the settle index of the contract its caller runs on (or -1), and
  * `block` its witness block. It holds the block to the codec's layout (V2) and requires that it names this validator
- * (V3). For a frame on a settled contract it adds the frame's records, events, sends and value to the accumulators.
- * Between segment `j` and segment `j + 1` it visits the callee of call `j`, which is the order V6 derives. The call
- * tree is a forest that reaches every covered master once, as the facet's walk requires, so the recursion ends.
+ * (V3). For a frame on a settled contract it adds the frame's records, events, sends and value to the
+ * accumulators. Between segment `j`
+ * and segment `j + 1` it visits the callee of call `j`, which is the order V6 derives. The call tree is a forest that
+ * reaches every covered master once, as the facet's walk requires, so the recursion ends.
  */
 function emitDefineSettleWalk(e: Emitter): void {
   const O = Opcodes;
@@ -1829,7 +1834,8 @@ function emitRequireEntryShape(s: NamedStack): void {
  * table is on top of the alternate stack. The record's key is its input, or the output a created record appears at.
  * Its first declaration starts where the record does — the commitment the transaction spends at its input, or
  * nothing for a record created here — and a later one is of the same contract, starts at the view the last one
- * ended at, and follows no deletion. A created declaration's output is not an input carrying the contract's token.
+ * ended at, and follows no deletion. A spent record is not named by its output alone, and a record created here is
+ * not deleted here. A created declaration's output is not an input carrying the contract's token.
  * A record a frame writes keeps at least its value, and its output joins the outputs the contract's frames declare.
  *
  * Most declarations restate a record a segment does not change, so that path writes nothing; the first declaration
@@ -1871,10 +1877,6 @@ function emitDeclare(s: NamedStack): void {
 function emitFirstDeclaration(s: NamedStack): void {
   const O = Opcodes;
   s.remove('slotView').remove('flags');
-  // Whether the record is one the transcript lists as created for the contract.
-  s.pickBottom(SETTLE_CREATED_POSITION, 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP)
-    .count(1, 'one').op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD)
-    .count(1, 'width').op(2, ['tag'], O.OP_NUM2BIN).op(2, ['listedCreated'], O.OP_EQUAL);
   s.pick('isCreated', 'c').branch(() => {
     // A created declaration's output is not an input that carries the contract's token: its chain would start
     // from nothing over a commitment the transaction spends.
@@ -1888,11 +1890,9 @@ function emitFirstDeclaration(s: NamedStack): void {
     });
     s.op(0, ['start'], O.OP_0);
   }, () => {
-    s.pick('listedCreated', 'c').branch(() => {
-      s.op(0, ['start'], O.OP_0);
-    }, () => {
-      s.pick('key', 'kk').op(1, ['start'], O.OP_UTXOTOKENCOMMITMENT);
-    });
+    // The chain starts at the commitment the input carries. The transcript's `created` list is not consulted:
+    // trusting it let a forged entry start a kept record at nothing (B-6).
+    s.pick('key', 'kk').op(1, ['start'], O.OP_UTXOTOKENCOMMITMENT);
   });
   s.pick('viewIn', 'v').op(2, [], O.OP_EQUALVERIFY);
   // The slot: deleted or live, read at its input unless created here, this contract's, ending at this view.
@@ -1900,6 +1900,10 @@ function emitFirstDeclaration(s: NamedStack): void {
     s.push(Uint8Array.from([SLOT_DELETED]), 'slot');
   }, () => {
     s.push(Uint8Array.from([SLOT_LIVE]), 'slot');
+  });
+  // A record this declaration creates: the slot remembers it, so a later frame may read it at the output index.
+  s.pick('isCreated', 'c').branch(() => {
+    s.push(Uint8Array.from([SLOT_CREATED]), 'createdFlag').op(2, ['slot'], O.OP_OR);
   });
   s.pick('isCreated', 'c').op(1, ['reads'], O.OP_NOT).branch(() => {
     s.push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['slot'], O.OP_OR);
@@ -1912,7 +1916,7 @@ function emitFirstDeclaration(s: NamedStack): void {
     s.op(0, ['marks'], O.OP_FROMALTSTACK);
     emitMarkOutput(s, 'output', MARK_RECORD);
     s.op(1, [], O.OP_TOALTSTACK);
-    s.pick('isCreated', 'c').pick('listedCreated', 'c2').op(2, ['created'], O.OP_BOOLOR).op(1, ['kept'], O.OP_NOT);
+    s.pick('isCreated', 'c').op(1, ['kept'], O.OP_NOT);
     s.pick('key', 'kk').op(1, ['isInput'], O.OP_TXINPUTCOUNT, O.OP_LESSTHAN).op(2, ['weighed'], O.OP_BOOLAND);
     s.branch(() => {
       s.pick('output', 'o').op(1, ['after'], O.OP_OUTPUTVALUE).pick('key', 'kk').op(1, ['before'], O.OP_UTXOVALUE)
@@ -1920,13 +1924,12 @@ function emitFirstDeclaration(s: NamedStack): void {
     });
     s.remove('output');
   });
-  s.remove('listedCreated');
 }
 
 /**
- * A later declaration: the record is not deleted, it is the same contract's, and this declaration starts at the
- * view the last one ended at. The slot changes only when the view does, the declaration deletes the record, or a
- * declaration reads it at its input for the first time.
+ * A later declaration: the record is not deleted, it is the same contract's, its name is one the record can have, and
+ * this declaration starts at the view the last one ended at. The slot changes only when the view does, the declaration
+ * deletes the record, or a declaration reads it at its index for the first time.
  *
  * Entry `[.., k, .., in, out, viewIn, viewOut, isCreated, key, before, after, flags, slotView]`, exit with `flags`
  * and `slotView` replaced by `slot`.
@@ -1937,6 +1940,13 @@ function emitLaterDeclaration(s: NamedStack): void {
     .push(new Uint8Array([0x00]), 'zero').op(2, [], O.OP_EQUALVERIFY);
   s.pick('slotView', 'sv').count(1, 'one').op(2, ['slotK', 'hash'], O.OP_SPLIT).remove('hash');
   s.pick('k', 'kk').count(1, 'width').op(2, ['tag'], O.OP_NUM2BIN).op(2, [], O.OP_EQUALVERIFY);
+  // A spent record is not named by its output alone, and a record created here is not deleted here.
+  s.pick('flags', 'f').push(Uint8Array.from([SLOT_CREATED]), 'createdFlag').op(2, ['c'], O.OP_AND)
+    .push(new Uint8Array([0x00]), 'zero').op(2, ['spent'], O.OP_EQUAL).branch(() => {
+      s.pick('isCreated', 'c').op(1, [], O.OP_NOT, O.OP_VERIFY);
+    }, () => {
+      s.pick('out', 'o').push(INDEX_NONE_RAW, 'none').op(2, [], O.OP_EQUAL, O.OP_NOT, O.OP_VERIFY);
+    });
   s.pick('viewIn', 'v').op(1, ['hash'], O.OP_HASH160).pick('slotView', 'sv').count(1, 'one')
     .op(2, ['slotHash'], O.OP_SPLIT, O.OP_NIP).op(2, [], O.OP_EQUALVERIFY);
   // Unchanged: the same view, not deleted, and already read at its input or created here.
@@ -1957,7 +1967,9 @@ function emitLaterDeclaration(s: NamedStack): void {
       }, () => {
         fs.push(Uint8Array.from([SLOT_LIVE]), 'slot');
       });
-      fs.roll('flags').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['kept'], O.OP_AND).op(2, ['slot'], O.OP_OR);
+      // What it was read as and created as stays with the record.
+      fs.roll('flags').push(Uint8Array.from([SLOT_TOUCHED | SLOT_CREATED]), 'history').op(2, ['kept'], O.OP_AND)
+        .op(2, ['slot'], O.OP_OR);
       fs.pick('isCreated', 'c').op(1, ['reads'], O.OP_NOT).branch(() => {
         fs.push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['slot'], O.OP_OR);
       });
@@ -2012,7 +2024,7 @@ function emitAddToTotal(s: NamedStack): void {
 /**
  * The minted masters' visits: a version-0x03 transcript's genesis roots, whose blocks the transcript carries.
  *
- * Entry and exit `[M, declared, created, listed]`. Each minted master is visited after the roots, as V6 orders it.
+ * Entry and exit `[M, declared, listed]`. Each minted master is visited after the roots, as V6 orders it.
  */
 function emitWalkMintedMasters(s: NamedStack): void {
   const O = Opcodes;
@@ -2050,10 +2062,9 @@ function emitWalkMintedMasters(s: NamedStack): void {
 
 /**
  * Every record's last declaration lands at an output of its contract that carries the view it ends at, or deletes
- * the record; and every record a frame read at an input is a state UTXO the contract lists, or one the transcript
- * lists as created for it.
+ * the record and leaves no record there; and every record a frame read at an input is a state UTXO the contract lists.
  *
- * Entry and exit `[M, declared, created, listed]`, the record table on top of the alternate stack, where it stays.
+ * Entry and exit `[M, declared, listed]`, the record table on top of the alternate stack, where it stays.
  */
 function emitRequireRecordEnds(s: NamedStack): void {
   const O = Opcodes;
@@ -2077,20 +2088,24 @@ function emitRequireRecordEnds(s: NamedStack): void {
             fs.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
             fs.op(2, [], O.OP_EQUALVERIFY);
           });
-        // A record read at an input is a listed state UTXO of its contract, or a record listed as created for it.
-        fs.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['t'], O.OP_AND)
-          .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['isTouched'], O.OP_EQUAL).branch(() => {
-            fs.pick('key', 'kk').op(1, ['isInput'], O.OP_TXINPUTCOUNT, O.OP_LESSTHAN).branch(() => {
-              fs.pick('listed', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
-                .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
-                .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isListed'], O.OP_EQUAL);
-            }, () => {
-              fs.count(0, 'isListed');
-            });
-            fs.pick('created', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
+        // A record read at its input is a state UTXO of its contract that the settle list names. A record created here
+        // has no input: a read of it at its own index is its later frames', and no list holds it.
+        fs.pick('state', 'st').push(Uint8Array.from([SLOT_TOUCHED | SLOT_CREATED]), 'mask').op(2, ['t'], O.OP_AND)
+          .push(Uint8Array.from([SLOT_TOUCHED]), 'touched').op(2, ['readInput'], O.OP_EQUAL).branch(() => {
+            fs.pick('listed', 'map').pick('key', 'kk').op(2, ['byte'], O.OP_SPLIT, O.OP_NIP).count(1, 'one')
               .op(2, ['byte'], O.OP_SPLIT, O.OP_DROP).pick('k', 'kk').op(1, ['tag'], O.OP_1ADD).count(1, 'width')
-              .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isCreated'], O.OP_EQUAL);
-            fs.op(2, [], O.OP_BOOLOR, O.OP_VERIFY);
+              .op(2, ['tag'], O.OP_NUM2BIN).op(2, ['isListed'], O.OP_EQUAL).op(1, [], O.OP_VERIFY);
+          });
+        // A deleted record leaves no record at its index. An earlier declaration that kept it marked the output, and that
+        // mark would otherwise admit a mutable NFT of the contract there, one no chain ends at.
+        fs.pick('state', 'st').push(Uint8Array.from([SLOT_DELETED]), 'deleted').op(2, ['d'], O.OP_AND)
+          .push(Uint8Array.from([SLOT_DELETED]), 'deleted').op(2, ['gone'], O.OP_EQUAL).branch(() => {
+            fs.pick('out', 'o').op(1, ['isOutput'], O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN).branch(() => {
+              fs.pick('out', 'o').op(1, ['pin'], O.OP_OUTPUTTOKENCATEGORY);
+              fs.pickBottom(SETTLE_DECLARED_POSITION, 'declared').pick('k', 'kk').emit(2, ['category'], emitDeclaredAt);
+              fs.push(Uint8Array.from([TokenCapability.MUTABLE]), 'mutable').op(2, ['category'], O.OP_CAT);
+              fs.op(2, [], O.OP_EQUAL, O.OP_NOT, O.OP_VERIFY);
+            });
           });
       }));
       for (const name of ['state', 'k', 'out', 'view']) s.remove(name);
@@ -2104,7 +2119,7 @@ function emitRequireRecordEnds(s: NamedStack): void {
 /**
  * Every state UTXO a settled contract spends is one it lists and one a frame of it read at its input.
  *
- * Entry and exit `[M, declared, created, listed, covered]`, the record table on top of the alternate stack. A state
+ * Entry and exit `[M, declared, listed, covered]`, the record table on top of the alternate stack. A state
  * UTXO is a mutable NFT of the contract's category that is not this validator. A listed input is one, of the
  * contract that lists it (the settle list's own rule), so it is read by that contract's frames; an input not listed
  * is of no settled contract.
@@ -2145,7 +2160,7 @@ function emitRequireStateInputs(s: NamedStack): void {
  * A minting one is the masters' rule's, and an output a frame names that is not of its contract is the frame's own
  * master's to refuse.
  *
- * Entry and exit `[M, declared, created, listed, covered]`, the record table and the marks on top of the alternate
+ * Entry and exit `[M, declared, listed, covered]`, the record table and the marks on top of the alternate
  * stack. Only a mutable or an immutable NFT is weighed. Its contract is found from its mark when the mark's contract
  * is its own, and by a search of the settled categories otherwise.
  */
@@ -2199,7 +2214,7 @@ function emitRequireOutputClasses(s: NamedStack): void {
  * Every master of a settled contract is covered here and recreated in place, at the same index, and a master output
  * stands over a master input, or is a minted master the transcript lists.
  *
- * Entry and exit `[M, declared, created, listed, covered]`. A master is identified by its category with the minting
+ * Entry and exit `[M, declared, listed, covered]`. A master is identified by its category with the minting
  * capability. A covered master is recreated in place whatever its contract, as its own rule recreates it. A minting
  * input that is not covered, and a minting output over an index that is not a covered master, are weighed only when
  * their category is settled: the first is refused, and the second must stand over a master input of its pin or be a
@@ -2325,7 +2340,7 @@ function emitIsMintedOutputAt(e: Emitter): void {
  * V7's value rule (spec 4b): each settled contract's containers grow by at least what its frames receive less what
  * they pay. The accumulators are spent here.
  *
- * Entry and exit `[M, declared, created, listed, covered]`, the totals third on the alternate stack. The growth of a
+ * Entry and exit `[M, declared, listed, covered]`, the totals third on the alternate stack. The growth of a
  * contract's containers is summed without a branch: each output adds its value times whether it is at the lock, and
  * each input takes its value away the same way.
  */
@@ -2345,8 +2360,8 @@ function emitRequireContractValues(s: NamedStack): void {
         em.count(0).op(O.OP_BEGIN);
         em.op(O.OP_DUP, O.OP_UTXOBYTECODE).count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_OVER, O.OP_UTXOVALUE, O.OP_MUL);
         em.op(
-          O.OP_ROT, O.OP_SWAP, O.OP_SUB, O.OP_SWAP, O.OP_1ADD, O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL,
-          O.OP_UNTIL,
+          O.OP_ROT, O.OP_SWAP, O.OP_SUB, O.OP_SWAP, O.OP_1ADD, O.OP_DUP, O.OP_TXINPUTCOUNT,
+          O.OP_GREATERTHANOREQUAL, O.OP_UNTIL,
         );
         em.op(O.OP_DROP);
       });

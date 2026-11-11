@@ -472,18 +472,18 @@
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 14866,
+        "measuredRouteBytes": 14870,
         "routeAloneExceedsLimit": true,
         "note": "A route-only lower bound, not a deployability certificate; Marketplace greening remains fenced"
       },
       "modes": {
         "legacy": {
           "convention": "legacy-unroll",
-          "routeBytes": 44916,
-          "fullBytes": 247620,
-          "routeHash": "b2d69abef420a337a3c3eab663711b7e4527df1b76a64fcc38efeccdb30dfe29",
-          "fullHash": "3f98a8480aa0182abeb48c2c6eb81932847a8a238496214824696d4ac0df439a",
-          "metadataHash": "5a75f1d7bf2c320d97c08bc490986bcddcefe4e95cab4083e6eebef2c3f1d73a",
+          "routeBytes": 44920,
+          "fullBytes": 256741,
+          "routeHash": "f616d682d933fdd000838e09f46a508700204de955276ba05bea5bc3639d300c",
+          "fullHash": "6a3ccc467ccc480bc034786d395b479e2e0903b6476adfb42318c9e9862eab87",
+          "metadataHash": "7eafa93fcda9b46ca0290d168e41c22396448046640b5b68ba600826cc6a35ea",
           "handlers": {
             "total": 38,
             "eligible": 28,
@@ -492,11 +492,11 @@
         },
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 14866,
-          "fullBytes": 310071,
-          "routeHash": "e0b66d1b6560829e8fc88f68c1643f7f405474743ca3cc9ae264e2b7554d21e2",
-          "fullHash": "669be4410ece6a380c2b192eeb1692c9dddf7e9a54877338fe9b282fe4e7ba4f",
-          "metadataHash": "6e20a070f8fd9153c8319fe8a1c81b4b91147a1ec79b9ef7356398427df21a96",
+          "routeBytes": 14870,
+          "fullBytes": 323217,
+          "routeHash": "c5250248d8282044cec642976276cf08b2b0041e94dd6933cbd974cfdc085616",
+          "fullHash": "f02dab61662880b80e8b3ffaa9ac7d749817fa2801019844341cd310d2f61d0b",
+          "metadataHash": "ee356bf5344c8cd0ebea0f0d1de86ca286e65e3db64686a88370afa7a51d0897",
           "handlers": {
             "total": 38,
             "eligible": 38,
@@ -516,18 +516,18 @@
       "routeSizeScreen": {
         "version": 1,
         "p2shBytecodeLimit": 10000,
-        "measuredRouteBytes": 1094,
+        "measuredRouteBytes": 1110,
         "routeAloneExceedsLimit": false,
         "note": "Route fits alone; full-contract deployability requires the compiler certificate"
       },
       "modes": {
         "kernel": {
           "convention": "kernel-row-loop",
-          "routeBytes": 1094,
-          "fullBytes": 16059,
-          "routeHash": "157a191be14609c6690837dcadfc7db39540f9386680e1fd80d72c7834761ef9",
-          "fullHash": "9fd07c0903f3258cdbfb8551051b85da08205461125d91e79d23a2934f06c8be",
-          "metadataHash": "f0b8f5f23f0a25737f76853959e66b894dbdea82f533a6efb4c6f5ad0cb43821",
+          "routeBytes": 1110,
+          "fullBytes": 17413,
+          "routeHash": "a177becc3977adeb24a464df319c0c25f362ad28adc528856b64b2b4bf987d21",
+          "fullHash": "07ebe2d8a6b379013794efdf90a436beeb164fde473360c078b184873434bfc6",
+          "metadataHash": "a9cc6d909a268a83748dba8f67394c866e6a82b8edee587e135551be99b90603",
           "handlers": {
             "total": 10,
             "eligible": 10,

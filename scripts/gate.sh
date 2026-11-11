@@ -10,7 +10,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-EXPECTED='{"routeBytes":44865,"fullBytes":254165,"fullHash":"352c03e8fb1b3c98"}'
+EXPECTED='{"routeBytes":44920,"fullBytes":256741,"fullHash":"6a3ccc467ccc480b"}'
 status=0
 
 echo "== build =="

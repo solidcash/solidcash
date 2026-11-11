@@ -1,8 +1,10 @@
 import {
-  attachDecodedAccessors, decorateDecodedResult, parseArrayTypeString,
+  attachDecodedAccessors, decorateDecodedResult, decodedSolidityAddressIdentity, parseArrayTypeString,
   type AbiFunction, type Artifact, type StateValue,
 } from '@solidcash/utils';
-import { artifactAddressForm, artifactUsesSolidityAbi, resolveExternalResultEncoding } from './solidityAbi.js';
+import {
+  artifactAddressForm, artifactUsesSolidityAbi, externalResultUsesEvmWords, resolveExternalResultEncoding,
+} from './solidityAbi.js';
 
 /** The same public schema projection for authenticated direct reads and decoded VM return values. */
 export function decorateFunctionResult(value: StateValue, fn: AbiFunction | undefined, artifact: Artifact): StateValue {
@@ -32,15 +34,17 @@ export function indexStateAccessorValue(value: unknown, indices: readonly unknow
 }
 
 /**
- * State accessors already decoded the storage representation, so no return-wire encoding is inferred here.
- * Apply the declared value schema and compiler's address semantics to a public copy, including indexed arrays
- * and mappings which have no generated ABI getter. Raw state/entry APIs keep their storage bytes unchanged.
+ * State accessors already decoded the storage representation; the value is presented as its getter's result travels
+ * (`externalResultUsesEvmWords`), so a direct read and a call answer one form. Apply the declared value schema and
+ * compiler's address semantics to a public copy, including indexed arrays and mappings which have no generated ABI
+ * getter. Raw state/entry APIs keep their storage bytes unchanged.
  */
 export function decorateStateAccessorResult(
   value: StateValue | undefined,
   name: string,
   indexCount: number,
   artifact: Artifact,
+  resolveDeployedAddress?: (identity: Uint8Array) => string | undefined,
 ): StateValue | undefined {
   if (value === undefined) return value;
   const variable = artifact.stateLayout?.variables.find((entry) => entry.name === name);
@@ -55,6 +59,21 @@ export function decorateStateAccessorResult(
     if (!array) throw new Error(`State variable '${name}' is not indexable at this depth.`);
     type = array.elementType;
   }
-  return decorateDecodedResult(value, type, artifact.structs ?? artifact.stateLayout?.structs,
-    artifactUsesSolidityAbi(artifact) ? 'evm-abi-v1' : 'compact-pushdata-v1', artifactAddressForm(artifact));
+  // The value answers as its getter's result travels (`externalResultUsesEvmWords`): ABI words, whose address is the
+  // 20-byte identity, or compact pushdata, which keeps the stored locking bytecode under `addressForm: 'bytecode'`.
+  const decorated = decorateDecodedResult(value, type, artifact.structs ?? artifact.stateLayout?.structs,
+    externalResultUsesEvmWords(artifact, [type]) ? 'evm-abi-v1' : 'compact-pushdata-v1', artifactAddressForm(artifact));
+  // An unmodified Solidity test compares a `public address` getter with `contract.getAddress()`, which names the
+  // deployed contract, and hands it to `getContractAt`, so present the registered deployment's address when the
+  // value names one (D54). A deployment is found by its 20-byte identity, the value itself under 'hash' and, under
+  // `evmCompat` with 'bytecode', the identity of the whole lock: a framed deployment's handle and its lock are
+  // registered under one identity, where a lookup by the lock alone can meet another registration. Any other address
+  // keeps its form - under 'bytecode' an account's whole lock - and raw `getState()`/entry reads keep their storage.
+  if (type === 'address' && resolveDeployedAddress !== undefined && decorated instanceof Uint8Array) {
+    const identity = decorated.length === 20 ? decorated
+      : artifactUsesSolidityAbi(artifact) ? decodedSolidityAddressIdentity(decorated) : undefined;
+    const resolved = identity === undefined ? undefined : resolveDeployedAddress(identity);
+    if (resolved !== undefined) return resolved;
+  }
+  return decorated;
 }

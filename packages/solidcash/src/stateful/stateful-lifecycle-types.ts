@@ -69,6 +69,28 @@ export interface DeployOptions {
    */
   functionSplit?: FunctionSplitBundle;
   /**
+   * The entry locks of the child a creating contract mints, in the order a creation mints their masters
+   * (docs/framed/CREATE2_IDENTITY.md, "The genesis replay"). Only a creator's deployment needs them; with `childPool`
+   * they give the chain over the child's masters the creator's replay requires. `framedDeploy.framedChildConstants`
+   * computes every child constant.
+   */
+  childLocks?: readonly Uint8Array[];
+  /**
+   * The pool each creation of the child funds: masters per entry lock and validators. The creator's replay requires
+   * exactly that many, so every creation must state the same pool (`creates.pool`).
+   */
+  childPool?: { readonly masters: number; readonly validators: number };
+  /**
+   * How many outputs of the child's category a creation mints. A creator compiled with the genesis replay reserves no
+   * slot for it (the replay fixes every output); one compiled before it is filled with this.
+   */
+  childOutputCount?: number;
+  /**
+   * The 20-byte hashes of the child's sorted collections, whose empty heads its genesis mints: the creator's replay
+   * derives each head's lock from `K` and that hash.
+   */
+  childCollections?: readonly Uint8Array[];
+  /**
    * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
    * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
    * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while
@@ -79,6 +101,8 @@ export interface DeployOptions {
   /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
+  /** Fungible token coins the genesis moves whole into their containers, one coin per category. */
+  tokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
   /** When false, the genesis transaction is built and its txid is returned, but nothing is broadcast. */

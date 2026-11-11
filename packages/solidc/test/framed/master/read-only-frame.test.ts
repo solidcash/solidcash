@@ -215,13 +215,13 @@ function readVerdicts(readerSource: string, options: ReadOptions = {}): Record<n
   ]));
 }
 
-const EXPLICIT_READ = 'pragma solidcash ^0.14.0;'
+const EXPLICIT_READ = 'pragma solidcash ^0.50.0;'
   + ' interface IReader { function peek() returns (int); }'
   + ` contract Answer { function peek() returns (int) { return ${ANSWER}; } }`
   + ' contract Reader { function readIt() {'
   + `   int r = IReader(0x${toHex(ADDRESS_CALLEE)}).peek.staticcall(); require(r == ${ANSWER}); require(true); } }`;
 
-const VIEW_READ = 'pragma solidcash ^0.14.0;'
+const VIEW_READ = 'pragma solidcash ^0.50.0;'
   + ' interface IReader { function peek() view returns (int); }'
   + ` contract Answer { function peek() returns (int) { return ${ANSWER}; } }`
   + ' contract Reader { function readIt() {'
@@ -254,11 +254,11 @@ describe('a read under the framed convention', () => {
  * A read whose callee would write its record.
  *
  * The callee is stateful and its entry increments the counter, so a frame that runs it changes the record. Entered
- * as a static frame, the callee's own code still settles the write — it is its contract's only master, so the
- * settlement walk is its own — and only the validator's static-frame rule refuses it. The refusal is therefore the
- * rule, not the callee's own shape checks.
+ * as a static frame, the callee's own code still accepts the write, and the validator, which settles the callee's
+ * contract, finds the record's chain whole; only its static-frame rule refuses the frame. The refusal is therefore
+ * the rule, not the callee's own shape checks nor the settlement.
  */
-const MUTANT_SOURCE = 'pragma solidcash ^0.14.0;'
+const MUTANT_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IMutant { function bump(); }'
   + ' contract Mutant {'
   + '   int public counter;'
@@ -286,8 +286,14 @@ interface MutantComposition {
 }
 
 function buildMutant(): MutantComposition {
+  // The validator settles both covered masters' contracts: the reader, which holds no record, and the mutant's record.
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+    roots: [CALLER_INDEX],
+    masters: [CALLER_INDEX, CALLEE_INDEX],
+    settles: [
+      { category: CATEGORY_CALLER, stateInputs: [] },
+      { category: CATEGORY_MUTANT, stateInputs: [RECORD_INDEX] },
+    ],
   });
   const facets = validatorFacetPlacements();
   const declaration: RecordEntry = { in: RECORD_INDEX, out: RECORD_INDEX, viewIn: BEFORE, viewOut: AFTER };
@@ -426,9 +432,9 @@ function validatorModel(composition: MutantComposition): FramedTransaction {
 
 describe('a static frame that would write its record', () => {
   it('is accepted by the callee\'s own code and refused by the validator, as the static-frame rule', () => {
-    // The callee settles its own record: it is its contract's only master, so the write it computed is its own
-    // business and its own code admits it. The read-only-frame rule is one the split runs in the facet at
-    // `head + 1`, so the facet is the validator input that refuses a static frame changing a record.
+    // The callee's own code admits the write it computed, and the validator's settlement of its contract finds the
+    // chain whole. The read-only-frame rule is one the split runs in the facet at `head + 1`, so the facet is the
+    // validator input that refuses a static frame changing a record.
     expect(mutantAccepted(CALLEE_INDEX)).toBe(true);
     expect(mutantAccepted(CALLER_INDEX)).toBe(true);
     expect(mutantAccepted(VALIDATOR_FACET_INDEX)).toBe(false);
@@ -450,7 +456,7 @@ describe('a static frame that would write its record', () => {
  * does not begin at the commitment the transaction spends is refused by the caller's own code; the validator does
  * not check it, because a lone master needs no validator settlement.
  */
-const STATEFUL_SOURCE = 'pragma solidcash ^0.14.0;'
+const STATEFUL_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IAnswer { function peek() returns (int); }'
   + ` contract Answer { function peek() returns (int) { return ${ANSWER}; } }`
   + ' contract Counter {'
@@ -605,7 +611,7 @@ const refusalOf = (source: string): string => refusalMessageOf(source);
 
 describe('the reads a master still cannot compile', () => {
   it('refuses a delegatecall, because the callee would run on its caller\'s records', () => {
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface ICallee { function peek(int x) returns (int); }'
       + ` contract Caller { function readIt() { int r = ICallee(0x${toHex(ADDRESS_CALLEE)}).peek.delegatecall(7); `
       + ' require(r == 1); } }';
@@ -614,15 +620,14 @@ describe('the reads a master still cannot compile', () => {
     expect(refusal).toContain("runs on its caller's own records");
   });
 
-  it('refuses a read whose target is the transaction\'s own sender', () => {
-    // A parameter or a value the caller's own state carries is admitted, but the transaction's sender is not: the
-    // site's own target check would have to bind the callee to a category of its own, which it does not.
-    const source = 'pragma solidcash ^0.14.0;'
+  it('compiles a read whose target is the frame\'s own sender, as any value the caller holds', () => {
+    // A parameter, a value the caller's own state carries, and the frame's sender, which its head leaves as a slot,
+    // are each a value the site binds its record to.
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface ICallee { function peek() returns (int); }'
       + ' contract Caller { function readIt() {'
       + '   int r = ICallee(msg.sender).peek.staticcall(); require(r == 1); } }';
-    const refusal = refusalOf(source);
-    expect(refusal).toContain("the call to 'peek' targets the transaction's own sender");
+    expect(refusalOf(source)).toBe('');
   });
 });
 
@@ -634,7 +639,7 @@ describe('the reads a master still cannot compile', () => {
  * argument the caller computed and the return the callee computed.
  */
 const ARGUMENT_READ_ENTRY_COUNT = USER_INDEX + 1;
-const ARGUMENT_READ = 'pragma solidcash ^0.14.0;'
+const ARGUMENT_READ = 'pragma solidcash ^0.50.0;'
   + ' interface IReader { function peek(int n) returns (int); }'
   + ' contract Answer { function peek(int n) view returns (int) { return n; } }'
   + ' contract Reader { function readIt() {'

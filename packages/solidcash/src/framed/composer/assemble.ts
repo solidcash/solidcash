@@ -12,13 +12,13 @@
 
 import {
   INDEX_NONE,
+  FrameKind,
   FramedEncodingError,
   SELECTOR_LENGTH,
   VALIDATOR_PIN_PUSH_LENGTH,
   argsHash,
   bytesEqual,
   encodeArgumentList,
-  encodeMinimalDataPush,
   mintedRef,
   type FrameKindValue,
   type MintedMaster,
@@ -60,6 +60,8 @@ export interface PlannedCall {
    */
   readonly argumentPushes: readonly Uint8Array[];
   readonly result: Uint8Array;
+  /** The call's `DraftCall.failedCallMessage`, which the assembly's resolved call keeps. */
+  readonly failedCallMessage?: string;
 }
 
 /** One master's execution, as the plan intends it. */
@@ -81,8 +83,10 @@ export interface PlannedMaster {
   readonly events: readonly number[];
   readonly sends: readonly number[];
   readonly argumentPushes: readonly Uint8Array[];
-  /** The master's redeem script: the category pin followed by the contract code. */
+  /** The master's redeem script: the contract code, whose head reads its category from a deployment-filled slot. */
   readonly redeemScript: Uint8Array;
+  /** The category the master's UTXO carries, which a validator that covers the master settles (V8). */
+  readonly category?: Uint8Array;
   /** The long mapping values the body reads, by value-witness slot. */
   readonly values?: readonly Uint8Array[];
   /** True when the program dispatches over several entries, so a user's call data selects one. */
@@ -266,6 +270,8 @@ export interface ResolvedCall {
   readonly callee: string;
   readonly calleeRef: number;
   readonly argsHash: Uint8Array;
+  /** The planned call's `DraftCall.failedCallMessage`. */
+  readonly failedCallMessage?: string;
 }
 
 /** One validator's transcript, as the assembly built it from the plan. */
@@ -374,6 +380,54 @@ function resolveOutputRegions(
     sends: declaredSends,
   });
   return regions;
+}
+
+/**
+ * The contracts a validator settles: the plan's own settlements, then each covered master's contract the plan left
+ * out, since a validator settles every contract whose masters it covers (V8).
+ *
+ * A contract the plan leaves out is one no other frame chains into, so its settlement is what its own masters state:
+ * the state UTXOs its block spends and the records their segments create. A master that runs on its caller's records
+ * (`DELEGATE`, `INTERNAL`) declares none of its own contract's, so such a contract is settled on no record.
+ */
+function coveredSettlements(
+  validator: PlannedValidator, covered: readonly PlannedMaster[], blocks: readonly ContractBlock[],
+): readonly PlannedSettlement[] {
+  const settles = [...validator.settles];
+  const byCategory = new Map<string, { category: Uint8Array; masters: PlannedMaster[] }>();
+  for (const master of covered) {
+    const { category } = master;
+    if (category === undefined) {
+      throw new FramedEncodingError(`the covered master "${master.master}" states no category for its validator to settle`);
+    }
+    if (settles.some((settled) => bytesEqual(settled.category, category))) continue;
+    const key = Array.from(category, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    const group = byCategory.get(key) ?? { category, masters: [] };
+    group.masters.push(master);
+    byCategory.set(key, group);
+  }
+  for (const { category, masters } of byCategory.values()) {
+    const owners = masters.filter((master) => master.facts.kind !== FrameKind.DELEGATE
+      && master.facts.kind !== FrameKind.INTERNAL);
+    const contracts = [...new Set(owners.map((master) => master.contract))];
+    const created = createdRecordOutputs(owners);
+    settles.push({
+      category,
+      stateInputs: contracts.flatMap((contract) => blocks.find((block) => block.contract === contract)?.state ?? []),
+      ...(created.length === 0 ? {} : { createdOutputs: created }),
+    });
+  }
+  return settles;
+}
+
+/**
+ * The unlocking bytecode of facet `k`: the census facet's checkpoint, then the padding push, which buys the input's
+ * operation-cost budget and which nothing reads, then the facet's own code. The padding is grown once the composition
+ * is final (`padForBudget`), and the checkpoint is a placeholder until the head's walk is read
+ * (`fillCensusCheckpoints`).
+ */
+export function facetUnlockingBytecode(k: number, code: Uint8Array, padding = 0): Uint8Array {
+  return framedValidator.validatorFacetUnlockingBytecode(k, code, padding);
 }
 
 /** A settlement's created outputs, requiring each to be one the plan's trailing region creates. */
@@ -523,7 +577,10 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
         throw new FramedEncodingError(`master "${master.master}" calls itself, which the format refuses`);
       }
       const hashed = argsHashOf(call);
-      resolvedCalls.push({ from: master.master, callee: call.callee, calleeRef, argsHash: hashed });
+      resolvedCalls.push({
+        from: master.master, callee: call.callee, calleeRef, argsHash: hashed,
+        ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
+      });
       return {
         kind: call.kind, target: call.target, value: call.value, calleeRef, argsHash: hashed, result: call.result,
       };
@@ -559,7 +616,10 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     const calls = minted.calls.map((call) => {
       const calleeRef = resolve(call.callee, 'callee');
       const hashed = argsHashOf(call);
-      resolvedCalls.push({ from: minted.master, callee: call.callee, calleeRef, argsHash: hashed });
+      resolvedCalls.push({
+        from: minted.master, callee: call.callee, calleeRef, argsHash: hashed,
+        ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
+      });
       return {
         kind: call.kind, target: call.target, value: call.value, calleeRef, argsHash: hashed, result: call.result,
       };
@@ -592,7 +652,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       if (block === undefined) throw new FramedEncodingError(`the minted master "${master.master}" was not assembled`);
       minted.push({ output: outputs.mintedMasterIndices[position]!, block });
     });
-    const settles: Transcript['settles'] = validator.settles.map((settled) => ({
+    const settles: Transcript['settles'] = coveredSettlements(validator, covered, plan.blocks).map((settled) => ({
       category: settled.category,
       stateInputs: settled.stateInputs.map((state) => resolve(state, 'state input')),
       createdOutputs: requireCreatedOutputs(settled, outputs),
@@ -618,10 +678,11 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       index: resolve(validator.id, 'validator'),
       unlockingBytecode: validatorWitness.unlockingBytecode,
     });
-    // A facet's unlocking bytecode is its own code and nothing else: the transcript rides with the head.
+    // A facet's unlocking bytecode is its padding and its own code, led by the census checkpoint for the census
+    // facet: the transcript rides with the head.
     validatorFacetsOf(validator).forEach((code, at) => {
       const id = facetId(validator.id, at + 1);
-      assembled.push({ id, index: resolve(id, 'facet'), unlockingBytecode: encodeMinimalDataPush(code) });
+      assembled.push({ id, index: resolve(id, 'facet'), unlockingBytecode: facetUnlockingBytecode(at + 1, code) });
     });
     transcripts.push({ validator: validator.id, transcript });
   }

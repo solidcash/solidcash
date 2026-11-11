@@ -97,8 +97,10 @@ const CAROL_LOCK = encodeLockingBytecodeP2pkh(carolPkh);
 
 /** The slot a node keyed by id `id` sits at. */
 const idSlot = (id: bigint): Uint8Array => keyToSlotMulti([bigIntToVmNumber(id)]);
+/** How the ledger keys a party: by the 20-byte identity, as a Solidity collection does. */
+const PARTY_KEYS = artifacts.Ledger!.stateLayout!.collections!.find((collection) => collection.name === 'credits')!;
 /** The slot a node keyed by `party` sits at. */
-const partySlot = (party: Uint8Array): Uint8Array => keyToSlotMulti([party]);
+const partySlot = (party: Uint8Array): Uint8Array => keyToSlotMulti([party], PARTY_KEYS);
 
 /** A deployment behind its generated proxy. */
 interface Proxied { readonly proxy: string; readonly implementation: string }

@@ -24,8 +24,8 @@ import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruc
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
-  bytecodeToScript, PositionHint, PrimitiveType, type FullLocationData, type LocationI, type LogEntry,
-  type RequireStatement, type Script,
+  bytecodeToScript, bytesEqual, PositionHint, PrimitiveType, scriptToBytecode, type FullLocationData, type LocationI,
+  type LogEntry, type RequireStatement, type Script,
 } from '@solidcash/utils';
 import {
   BinaryOpNode, CastNode, FunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, IntLiteralNode,
@@ -34,6 +34,7 @@ import {
 import { GlobalFunction } from '../../ast/Globals.js';
 import { BinaryOperator } from '../../ast/Operator.js';
 import { SolidcDiagnosticError } from '../../Errors.js';
+import { defineValidatorSettledScript, validatorSettledFlagScript, validatorSettledScript } from './declared-view.js';
 
 /** The first push of a lifecycle spend: which change the master serves. */
 export const LIFECYCLE_MODE = { SPLIT: 1, MERGE: 2, RETIRE: 3 } as const;
@@ -388,6 +389,57 @@ export function wrapLifecycleArm(
     logs: parts.logs.map((log) => ({ ...log, ip: log.ip + shift })),
     requires: parts.requires.map((require) => ({ ...require, ip: require.ip + shift })),
   };
+}
+
+/**
+ * Answers a master's asks of the frame's validator-settled flag (`validatorSettledFlagScript`). A master that asks
+ * more than once defines the flag ahead of its program, so the count over the transaction's inputs runs once however
+ * many segments ask; one that asks once counts where it asks, which costs no definition. A body the generator defines
+ * carries its asks inside the definition's bytes, so the asks are counted in the program's bytecode, and a lone ask
+ * inside such a body is answered by the definition too. The definition leaves the stack as it found it, so the program
+ * after it starts as before. Either way the instructions after the change move, and their debug records with them.
+ */
+export function withValidatorSettledDefinition(parts: MasterProgramParts, location: LocationI): MasterProgramParts {
+  const ask = validatorSettledFlagScript();
+  const asks = occurrences(scriptToBytecode(parts.script), ask);
+  if (asks === 0) return parts;
+  const [askedId] = bytecodeToScript(ask);
+  const lone = asks === 1 ? parts.script.findIndex((element, at) => element instanceof Uint8Array
+    && askedId instanceof Uint8Array && bytesEqual(element, askedId) && parts.script[at + 1] === O.OP_INVOKE) : -1;
+  if (lone >= 0) {
+    const count = bytecodeToScript(validatorSettledScript());
+    const moved = count.length - 2;
+    const after = (ip: number): number => (ip > lone + 1 ? ip + moved : ip);
+    return {
+      script: [...parts.script.slice(0, lone), ...count, ...parts.script.slice(lone + 2)],
+      locationData: [
+        ...parts.locationData.slice(0, lone), ...count.map(() => parts.locationData[lone]!),
+        ...parts.locationData.slice(lone + 2),
+      ],
+      logs: parts.logs.map((log) => ({ ...log, ip: after(log.ip) })),
+      requires: parts.requires.map((require) => ({ ...require, ip: after(require.ip) })),
+    };
+  }
+  const head = bytecodeToScript(defineValidatorSettledScript());
+  const shift = head.length;
+  return {
+    script: [...head, ...parts.script],
+    locationData: [...head.map(() => ({ location, positionHint: PositionHint.START })), ...parts.locationData],
+    logs: parts.logs.map((log) => ({ ...log, ip: log.ip + shift })),
+    requires: parts.requires.map((require) => ({ ...require, ip: require.ip + shift })),
+  };
+}
+
+/** How many times `needle` occurs in `haystack`. */
+function occurrences(haystack: Uint8Array, needle: Uint8Array): number {
+  let found = 0;
+  outer: for (let at = 0; at + needle.length <= haystack.length; at += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[at + offset] !== needle[offset]) continue outer;
+    }
+    found += 1;
+  }
+  return found;
 }
 
 /** What a master serves outside its head, as the artifact publishes it. */

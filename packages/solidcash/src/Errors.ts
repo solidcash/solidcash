@@ -19,6 +19,15 @@ export class TypeError extends Error {
   }
 }
 
+export class MixedCompileModeCallError extends Error {
+  constructor(interfaceName: string, functionName: string, callerEvmCompat: boolean) {
+    const [caller, callee] = callerEvmCompat ? ['under evmCompat', 'natively'] : ['natively', 'under evmCompat'];
+    super(`Call to ${interfaceName}.${functionName} crosses compile modes: its caller is compiled ${caller} and its `
+      + `callee ${callee}. The caller binds the selector it hashed, keccak256 under evmCompat and sha256 natively, `
+      + 'so the callee can never match it. Compile both contracts in one mode.');
+  }
+}
+
 export class UndefinedInputError extends Error {
   constructor() {
     super('Input is undefined');

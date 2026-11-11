@@ -65,6 +65,66 @@ describe('external-call operand provenance stays in its executable body', () => 
     ]);
   });
 
+  it('reads a local each arm of a branch assigns from its own tuple from the arm that reaches the read', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      interface ISink { function ping(uint256 first, uint256 second) external; }
+      contract Pick {
+        function go(address sink, bool flip, uint256 x, uint256 y) public {
+          uint256 first;
+          uint256 second;
+          if (flip) {
+            (first, second) = (x, y);
+          } else {
+            uint256 bumped = y + 1;
+            (first, second) = (bumped, x);
+          }
+          ISink(sink).ping(first, second);
+        }
+      }
+    `, { composition: 'framed', evmCompat: true, suppressWarnings: true });
+    const forward = (paramIndex: number): { kind: string; source: { kind: string; paramIndex: number }; type: string } => (
+      { kind: 'source', source: { kind: 'forward', paramIndex }, type: 'uint256' }
+    );
+    const flip = { kind: 'source', source: { kind: 'forward', paramIndex: 1 } };
+    const bumped = {
+      kind: 'binary', operator: '+', type: 'uint256',
+      left: { kind: 'source', source: { kind: 'forward', paramIndex: 3 } },
+      right: { kind: 'literal', type: 'bigint', value: '1' },
+    };
+    expect(artifact.abi.find((fn) => fn.name === 'go')!.externalCalls![0]!.argSources).toEqual([
+      { kind: 'expression', expression: { kind: 'ternary', type: 'uint256', condition: flip, ifTrue: forward(2), ifFalse: bumped } },
+      { kind: 'expression', expression: { kind: 'ternary', type: 'uint256', condition: flip, ifTrue: forward(3), ifFalse: forward(2) } },
+    ]);
+  });
+
+  it('publishes a counter whose start the source computes with its own loop\'s start and step', () => {
+    const artifact = compileString(`pragma solidity ^0.8.20;
+      interface ISink { function ping(uint256 at) external; }
+      contract Walk {
+        function back(address sink, uint256[] memory xs) public {
+          for (uint256 i = xs.length - 1; i > 0; i--) { ISink(sink).ping(xs[i]); }
+        }
+      }
+    `, { composition: 'framed', evmCompat: true, suppressWarnings: true });
+    const call = artifact.abi.find((fn) => fn.name === 'back')!.externalCalls![0]!;
+    const domain = call.iterationDomain!;
+    // `xs[i]` reads the counter each turn holds, not the value its initializer gives the first turn.
+    expect(call.argSources).toEqual([{
+      kind: 'expression',
+      expression: {
+        kind: 'arrayAccess', type: 'uint256',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        right: {
+          kind: 'source',
+          source: {
+            kind: 'loopIndex', counterName: domain.counterName,
+            initialExpression: domain.initialValue, stepExpression: domain.stepValue,
+          },
+        },
+      },
+    }]);
+  });
+
   it('projects typed fields through a framed struct join without depending on unused producer fields', () => {
     const artifact = compileString(`pragma solidity ^0.8.20;
       struct Details { uint8 status; bool active; string note; uint256 unused; }

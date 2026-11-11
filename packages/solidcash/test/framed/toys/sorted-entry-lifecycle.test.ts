@@ -46,14 +46,15 @@ const DEFAULT = 0n;
 // The inserting master sits last among the Ledger masters, so the node it creates lands at the output just past
 // its own input. The head the insert relinks is a state input that recreates in place after the masters, and the
 // user follows.
-// The hub, its validator, the facet it binds, the ledger's three masters, then the created node, its head and the user.
-const CREATED_INDEX = 6;
-const HEAD_INDEX = 7;
-const USER_INDEX = 8;
+// The hub, its validator, the two facets it binds, the ledger's three masters, then the created node, its head and
+// the user.
+const CREATED_INDEX = 7;
+const HEAD_INDEX = 8;
+const USER_INDEX = 9;
 const ZERO_SLOT = new Uint8Array(32);
 const VALUE_TAIL_BYTES = 64;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ILedger {'
   + '   function insert(int key, int value);'
   + '   function update(int key, int value);'

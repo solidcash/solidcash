@@ -12,6 +12,8 @@ import {
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { version } from '../version.js';
+import { directWriteAlternative } from '../framed/master/write-activation.js';
+import { framedEmitChunks } from '../framed/master/support.js';
 import {
   type Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
@@ -29,7 +31,7 @@ import {
   type ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
   UnaryOpNode, NullaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
-  type EntryAccessInfo, type EventDefinitionNode,
+  type EntryAccessInfo, type EventDefinitionNode, type StatementNode,
 } from '../ast/AST.js';
 import { emittedEventSignatures } from '../analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -410,6 +412,83 @@ export const sourceEffectOrderForArtifact = (
   return declared === 'linear' && !complete ? undefined : declared;
 };
 
+/** The keys a walk over a node's own parts skips: references to other nodes, not parts of this one. */
+const REFERENCE_KEYS = new Set([
+  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'collection',
+]);
+
+/**
+ * True when `value` is `target`, or holds it among its own parts. A call a later pass cloned is the node of its kind at
+ * the same source span: copies of one inlined helper share theirs, and with it the statements that follow the call.
+ */
+const holdsNode = (value: unknown, target: object, seen = new Set<object>()): boolean => {
+  if (value === target) return true;
+  if (!(value instanceof Node) || seen.has(value)) return false;
+  if (target instanceof ExternalFunctionCallNode && value instanceof ExternalFunctionCallNode
+    && value.location !== undefined && target.location !== undefined
+    && value.location.sourceFileId === target.location.sourceFileId
+    && value.location.start.line === target.location.start.line
+    && value.location.start.column === target.location.start.column
+    && value.location.end.line === target.location.end.line
+    && value.location.end.column === target.location.end.column) return true;
+  seen.add(value);
+  return Object.entries(value).some(([key, child]) => !REFERENCE_KEYS.has(key)
+    && (Array.isArray(child) ? child.some((item) => holdsNode(item, target, seen)) : holdsNode(child, target, seen)));
+};
+
+/** True when `value` reads the local `name`. */
+const readsLocal = (value: unknown, name: string, seen = new Set<object>()): boolean => {
+  if (value instanceof IdentifierNode && value.name === name) return true;
+  if (!(value instanceof Node) || seen.has(value)) return false;
+  seen.add(value);
+  return Object.entries(value).some(([key, child]) => !REFERENCE_KEYS.has(key)
+    && (Array.isArray(child) ? child.some((item) => readsLocal(item, name, seen)) : readsLocal(child, name, seen)));
+};
+
+/**
+ * The message of the `require` a body makes over a low-level call's success: what the caller refuses with when the
+ * call fails, as the EVM's call returns `false` to the caller and the body's own check reverts.
+ *
+ * The statement that makes the call binds its success to a local, as `(bool ok, bytes memory data) = token.call(..)`
+ * does, which the lowered call or send records (`successLocal`); the `require` is the first later statement of the
+ * same block that reads that local, before any statement assigns it again.
+ */
+export const failedCallMessageOf = (
+  body: BlockNode | undefined, call: ExpressionNode | StatementNode | undefined,
+): string | undefined => {
+  if (!body || !call) return undefined;
+  // The lowerings name the local the call's success is bound to: the send's own, or the route's of a call with a
+  // payload. An unlowered call is still the statement binding its results.
+  const successOf = (statement: StatementNode): string | undefined => {
+    if (statement === call && statement instanceof TransferStatementNode) return statement.successLocal;
+    if (call instanceof ExternalFunctionCallNode && call.lowLevelRoute?.successLocal !== undefined) {
+      return call.lowLevelRoute.successLocal;
+    }
+    if (statement instanceof TupleAssignmentNode && !statement.tupleExpressions && holdsNode(statement.tuple, call)) {
+      const [success] = statement.elements;
+      return success?.skip === true ? undefined : success?.name;
+    }
+    return undefined;
+  };
+  const search = (block: BlockNode): string | undefined => {
+    const statements = block.statements ?? [];
+    const at = statements.findIndex((statement) => holdsNode(statement, call));
+    if (at < 0) return undefined;
+    const success = successOf(statements[at]!);
+    if (success === undefined) {
+      const inner = Object.values(statements[at]!).filter((child): child is BlockNode => child instanceof BlockNode);
+      return inner.map(search).find((message) => message !== undefined);
+    }
+    for (const later of statements.slice(at + 1)) {
+      if (later instanceof RequireNode && readsLocal(later.expression, success)) return later.message;
+      if (later instanceof AssignNode && later.identifier.name === success) return undefined;
+    }
+    return undefined;
+  };
+  return search(body);
+};
+
 /**
  * Link a rolled external-call loop to the ABI array it directly fills. This is deliberately structural: the SDK
  * may use the provisional parent return's authenticated array length as the reached occurrence count only when
@@ -644,9 +723,16 @@ export const occurrenceInfoOf = (
  * `targets`, when given, names the nodes whose loops are read instead of the external calls, each by its own key:
  * a framed body's effects repeated per turn are counted by the same recurrence (`framed/master/loop-effects.ts`).
  */
+/** A branch predicate around a node: the condition the branch reads, and whether the node is on its false arm. */
+export interface EnclosingPredicate {
+  readonly expression: ExpressionNode;
+  readonly negated: boolean;
+}
+
 const externalCallIterationDomainLists = (
   fn: FunctionDefinitionNode, compilerOptions: CompilerOptions,
   interfaces: readonly InterfaceNode[], targets?: ReadonlyMap<Node, number>,
+  predicates?: ReadonlyMap<number, readonly EnclosingPredicate[]>,
 ): ReadonlyMap<number, readonly {
   sourceLoopId: number;
   counterName: string;
@@ -654,6 +740,7 @@ const externalCallIterationDomainLists = (
   stepValue: ExternalCallExpression;
   continueCondition: ExternalCallExpression;
   maximumIterations: number;
+  condition?: ExternalCallExpression | null;
 }[]> => {
   if (!fn.body || (targets === undefined && !fn.externalCalls?.length)) return new Map();
   type Binding = ExternalCallExpression | undefined;
@@ -1032,10 +1119,20 @@ const externalCallIterationDomainLists = (
       // Its unrelated state effects do not change a recurrence derived only from other
       // input arguments; state reads are separately excluded by stableRead below. Keep calls that touch a
       // recurrence dependency conservative, along with local aggregate mutations and tuple assignments.
+      // A local aggregate mutation, or a tuple assignment, is opaque only where it writes a value the recurrence
+      // reads: an element write into another array (`amounts[i + 1] = ...` beside a bound over `path.length`)
+      // leaves every dependency as it was.
+      const writtenName = value instanceof TupleAssignmentNode ? undefined
+        : (value as { name?: unknown }).name ?? (value as { identifier?: { name?: unknown } }).identifier?.name
+          ?? (value as { assign?: { identifier?: { name?: unknown } } }).assign?.identifier?.name;
+      const writesDependency = (name: unknown): boolean => typeof name !== 'string' || [...recurrenceDependencies]
+        .some((dependency) => dependency === `name:${name}`
+          || (typeof dependency === 'object' && (dependency as { name?: unknown }).name === name));
       if ((value instanceof FunctionCallNode && !interfaceCast && touchesRecurrence(value))
-        || value instanceof TupleAssignmentNode
-        || /^(ArrayAssignNode|ArrayPushNode|ArrayPopNode|ArrayDeleteNode|DeleteLocalNode|AssignmentExpressionNode)$/
-          .test(value.constructor.name)) { found = true; return; }
+        || (value instanceof TupleAssignmentNode
+          && value.elements.some((element) => element.skip !== true && writesDependency(element.name)))
+        || (/^(ArrayAssignNode|ArrayPushNode|ArrayPopNode|ArrayDeleteNode|DeleteLocalNode|AssignmentExpressionNode)$/
+          .test(value.constructor.name) && writesDependency(writtenName))) { found = true; return; }
       for (const [key, child] of Object.entries(value)) {
         if (skip.has(key)) continue;
         if (child instanceof Node) visit(child, seen);
@@ -1063,6 +1160,7 @@ const externalCallIterationDomainLists = (
     stepValue: ExternalCallExpression;
     continueCondition: ExternalCallExpression;
     maximumIterations: number;
+    condition?: ExternalCallExpression | null;
   };
   const result = new Map<number, Domain[]>();
   const sites = targets === undefined ? fn.externalCalls!
@@ -1075,8 +1173,10 @@ const externalCallIterationDomainLists = (
     const domains: Domain[] = [];
     for (const [depth, { block, index, loop }] of enclosing.entries()) {
       const counter = block.statements?.[index - 1];
-      if (!(counter instanceof VariableDefinitionNode) || !counter.isLoopVariable || !counter.expression
+      if (!(counter instanceof VariableDefinitionNode) || !counter.isLoopVariable
       || loop.forLoopUpdateCount !== 1 || loopCanExitEarly(loop)) break;
+      // A counter declared without a value (`for (uint i; ...)`) starts at its type's zero, as Solidity's does.
+      const counterStart: ExpressionNode = counter.expression ?? new IntLiteralNode(0n);
       const update = loop.block.statements?.at(-1);
       if (!(update instanceof AssignNode) || update.identifier.name !== counter.name
       || !(update.expression instanceof BinaryOpNode)
@@ -1105,7 +1205,7 @@ const externalCallIterationDomainLists = (
       if (counterAssignments !== 1) break;
       const magnitude = counterOnLeft ? update.expression.right : update.expression.left;
       const deps = new Set([
-        ...dependencies(counter.expression, counter),
+        ...dependencies(counterStart, counter),
         ...dependencies(loop.condition, counter),
         ...dependencies(magnitude, counter),
       ]);
@@ -1132,7 +1232,7 @@ const externalCallIterationDomainLists = (
       // is then occurrence-qualified by the SDK before evaluating this inner recurrence. An earlier loop
       // in the prefix is not replayable here, so it still withholds the domain.
       if (depth === 0 && !replayBefore(fn.body, counter, state, (prior) => {
-        const stableRead = ![counter.expression!, loop.condition, magnitude].some(recurrenceHasLiveExternalRead);
+        const stableRead = ![counterStart, loop.condition, magnitude].some(recurrenceHasLiveExternalRead);
         const earlyExit = loopCanExitEarly(prior);
         const opaqueEffect = priorLoopHasOpaqueLocalEffect(prior, deps);
         const dependencyWrites = [...deps].filter((dependency) => assignedIn(prior, dependency, counter));
@@ -1154,7 +1254,7 @@ const externalCallIterationDomainLists = (
         state.bindings.set(`name:${outerCounter.name}`, outerReference);
         if (!replayBefore(block, counter, state, () => false)) break;
       }
-      const initialValue = serialize(counter.expression, state);
+      const initialValue = serialize(counterStart, state);
       // The declaration starts the live induction binding only after its initializer is evaluated.
       state.bindings.set(counter, { kind: 'identifier', name: counter.name });
       state.bindings.set(`name:${counter.name}`, { kind: 'identifier', name: counter.name });
@@ -1178,9 +1278,57 @@ const externalCallIterationDomainLists = (
       // their value expression instead; conditional/local-alias fallbacks remain deliberately unpublished.
       if ([initialValue, stepValue, continueCondition].some((expression) =>
         usesStateSnapshotAfterWrite(expression))) break;
+      // The predicates a target is reached under, read on each turn with the counter bound as the recurrence reads
+      // it, after the statements of the turn's body before the target, whose locals are read through their values.
+      // A predicate reaching a value the loop carries from one turn to the next has no such reading: `null`.
+      const targetPredicates = depth === enclosing.length - 1 ? predicates?.get(call.slotIndex) : undefined;
+      const condition = targetPredicates === undefined || targetPredicates.length === 0 ? undefined
+        : ((): ExternalCallExpression | null => {
+          const turn = clone(state);
+          // The statements before the one that makes the target, descending into the block or arm holding it.
+          const replayTurn = (turnBlock: BlockNode): boolean => {
+            for (const statement of turnBlock.statements ?? []) {
+              if (!contains(statement, target)) {
+                if (!processBlock(new BlockNode([statement]), turn) || !turn.reachable) return false;
+                continue;
+              }
+              if (statement instanceof BlockNode) return replayTurn(statement);
+              if (statement instanceof UncheckedNode) return replayTurn(statement.block);
+              if (statement instanceof BranchNode) {
+                const arm = contains(statement.ifBlock, target) ? statement.ifBlock : statement.elseBlock;
+                if (arm !== undefined && contains(arm, target)) return replayTurn(arm);
+              }
+              return true;
+            }
+            return false;
+          };
+          if (!replayTurn(loop.block)) return null;
+          const reads = new Set<object | string>();
+          const pending = targetPredicates.flatMap(({ expression }) => [...dependencies(expression, counter)]);
+          while (pending.length > 0) {
+            const dependency = pending.pop()!;
+            if (reads.has(dependency)) continue;
+            reads.add(dependency);
+            if (dependency instanceof VariableDefinitionNode && contains(loop.block, dependency)) {
+              if (dependency.expression === undefined) return null;
+              pending.push(...dependencies(dependency.expression, counter));
+            }
+          }
+          if ([...reads].some((dependency) => assignedIn(loop.block, dependency, counter))) return null;
+          const parts = targetPredicates.map(({ expression, negated }): ExternalCallExpression | undefined => {
+            const read = serialize(expression, turn, counter);
+            if (read === undefined || usesStateSnapshotAfterWrite(read)) return undefined;
+            return negated ? { kind: 'unary', operator: UnaryOperator.NOT, expression: read } : read;
+          });
+          if (parts.some((part) => part === undefined)) return null;
+          return (parts as ExternalCallExpression[]).reduce((left, right) => ({
+            kind: 'binary', operator: BinaryOperator.AND, left, right,
+          }));
+        })();
       domains.push({
         sourceLoopId: loopIds.get(loop)!,
         counterName: counter.name, initialValue, stepValue, continueCondition, maximumIterations,
+        ...(condition === undefined ? {} : { condition }),
       });
     }
     if (domains.length === enclosing.length) result.set(call.slotIndex, domains);
@@ -1195,12 +1343,14 @@ const externalCallIterationDomainLists = (
  */
 export const externalCallIterationDomains = (
   fn: FunctionDefinitionNode, compilerOptions: CompilerOptions, targets?: ReadonlyMap<Node, number>,
+  predicates?: ReadonlyMap<number, readonly EnclosingPredicate[]>,
 ): ReadonlyMap<number, {
   counterName: string;
   initialValue: ExternalCallExpression;
   stepValue: ExternalCallExpression;
   continueCondition: ExternalCallExpression;
   maximumIterations: number;
+  condition?: ExternalCallExpression | null;
 }> => {
   const single = new Map<number, {
     counterName: string;
@@ -1208,11 +1358,15 @@ export const externalCallIterationDomains = (
     stepValue: ExternalCallExpression;
     continueCondition: ExternalCallExpression;
     maximumIterations: number;
+    condition?: ExternalCallExpression | null;
   }>();
-  for (const [key, domains] of externalCallIterationDomainLists(fn, compilerOptions, [], targets)) {
+  for (const [key, domains] of externalCallIterationDomainLists(fn, compilerOptions, [], targets, predicates)) {
     if (domains.length !== 1) continue;
-    const { counterName, initialValue, stepValue, continueCondition, maximumIterations } = domains[0]!;
-    single.set(key, { counterName, initialValue, stepValue, continueCondition, maximumIterations });
+    const { counterName, initialValue, stepValue, continueCondition, maximumIterations, condition } = domains[0]!;
+    single.set(key, {
+      counterName, initialValue, stepValue, continueCondition, maximumIterations,
+      ...(condition === undefined ? {} : { condition }),
+    });
   }
   return single;
 };
@@ -2161,7 +2315,7 @@ const dynamicWriteRecipesOf = (
 };
 
 const transferEffects = (
-  fn: FunctionDefinitionNode, contract: ContractNode,
+  fn: FunctionDefinitionNode, contract: ContractNode, framed = false,
 ): readonly FixedBchTransferAbi[] => {
   const transfers: {
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
@@ -2355,8 +2509,22 @@ const transferEffects = (
       recipe: ChildDeploymentValueRecipe | undefined,
     ): ChildDeploymentValueRecipe | undefined => recipe?.kind === 'handlerInput'
       ? { kind: 'handlerInput', inputIndex: recipe.inputIndex } : recipe;
+    // A framed send whose recipient the fixed-effect walk states no recipe for is still read where its operand is the
+    // caller (`payable(msg.sender).call{value: v}("")`): that names the frame's `msg.sender` in every body, an inlined
+    // helper's too, so a planner can tell a user's lock from a contract's before the frame runs.
+    const callerOnly = (expression: ExpressionNode): ChildDeploymentValueRecipe | undefined => {
+      let operand = expression;
+      while (operand instanceof CastNode) operand = operand.expression;
+      if (operand instanceof NullaryOpNode && operand.operator === NullaryOperator.MSG_SENDER) {
+        return { kind: 'logicalCaller', resultType: 'address' };
+      }
+      let recipe = operandRecipe(expression);
+      while (recipe?.kind === 'cast') recipe = recipe.operand;
+      return recipe?.kind === 'logicalCaller' ? recipe : undefined;
+    };
     const recipientRecipe = preserveFixedOperandShape(
-      effect?.recipient ?? (!transfer.node ? operandRecipe(transfer.recipient) : undefined),
+      effect?.recipient ?? (!transfer.node ? operandRecipe(transfer.recipient)
+        : framed ? callerOnly(transfer.recipient) : undefined),
     );
     const amountRecipe = preserveFixedOperandShape(
       effect?.amount ?? (!transfer.node ? operandRecipe(transfer.amount) : undefined),
@@ -2420,6 +2588,8 @@ const transferEffects = (
       });
     }
     const condition = conditionRecipe && activationExpression(conditionRecipe);
+    const failedCallMessage = transfer.node instanceof TransferStatementNode || transfer.callOption === 'value'
+      ? failedCallMessageOf(fn.body, transfer.node) : undefined;
     return {
       transferIndex: transfer.transferIndex,
       recipient: expressionSource(transfer.recipient, fn, contract),
@@ -2432,6 +2602,7 @@ const transferEffects = (
         ? { condition: null }
         : condition ? { condition }
           : transfer.condition ? { condition: null } : {}),
+      ...(failedCallMessage !== undefined && { failedCallMessage }),
     };
   });
 };
@@ -2842,10 +3013,59 @@ function argumentFieldUpdatesOf(func: FunctionDefinitionNode): AbiFunction['argu
   return updates.length === 0 ? undefined : updates;
 }
 
+/** A published expression's own copy, which shares no object with the domain it was read from. */
+function cloneExpression(expression: ExternalCallExpression): ExternalCallExpression {
+  return structuredClone(expression);
+}
+
+/**
+ * Gives each counter a framed site publishes by name (a `loopIndex` with no literal start, `SymbolTableTraversal`)
+ * the progression of the loop the site's own domain describes: the domain's start, the counter's value where the loop
+ * opens, and its step. The domain carries both as the body computes them, renamed through any inlining. A counter no
+ * domain of the site names is left without them, so a planner refuses it rather than guess a turn's value.
+ */
+function publishComputedLoopCounters(
+  func: FunctionDefinitionNode,
+  iterationDomains: ReadonlyMap<number, readonly {
+    readonly counterName: string;
+    readonly initialValue: ExternalCallExpression;
+    readonly stepValue: ExternalCallExpression;
+  }[]>,
+  compilerOptions: CompilerOptions,
+): void {
+  if (compilerOptions.composition !== 'framed') return;
+  for (const slot of func.externalCalls ?? []) {
+    const byCounter = new Map((iterationDomains.get(slot.slotIndex) ?? []).map((domain) => [domain.counterName, domain]));
+    if (byCounter.size === 0) continue;
+    const seen = new Set<object>();
+    // eslint-disable-next-line @typescript-eslint/no-loop-func
+    const visit = (value: unknown): void => {
+      if (value === null || typeof value !== 'object' || seen.has(value)) return;
+      seen.add(value);
+      const source = value as ExternalCallArgSource;
+      if (source.kind === 'loopIndex' && source.initialValue === undefined && source.counterName !== undefined) {
+        const domain = byCounter.get(source.counterName);
+        if (domain !== undefined) {
+          source.initialExpression = cloneExpression(domain.initialValue);
+          source.stepExpression = cloneExpression(domain.stepValue);
+        }
+        return;
+      }
+      for (const child of Object.values(value)) visit(child);
+    };
+    visit(slot.argSources);
+    visit(slot.rawArgSources);
+    visit(slot.addressSource);
+    visit(slot.condition);
+    visit(slot.preCallRequires);
+  }
+}
+
 /** Build the common metadata fields for an ABI function entry. */
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
+  constants: ReadonlyMap<string, ExpressionNode> = new Map(),
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract, compilerOptions);
   const dynamicWriteGrowth = dynamicWriteGrowthOf(func, contract, compilerOptions);
@@ -3265,6 +3485,7 @@ function buildFunctionAbiMetadata(
       || (left.resultIndex ?? 0) - (right.resultIndex ?? 0));
   };
   const consumers = resultConsumers();
+  publishComputedLoopCounters(func, iterationDomains, compilerOptions);
   const computeSideCarRecipes = computeSideCarRecipesOf(func, compilerOptions);
   // X37. Both walks are paid for only by a function that has the construct they describe: a body with no
   // low-level call and no signature check resolves nothing and publishes nothing.
@@ -3703,6 +3924,58 @@ function buildFunctionAbiMetadata(
     }
     return keyParams.length > 0 ? { collection: returned[0].name, keyParams } : undefined;
   })();
+  const directStateReturn = (() => {
+    if (!func.sourceReadOnly && !func.modifiers.includes(FunctionModifier.VIEW)
+      && !func.modifiers.includes(FunctionModifier.PURE)) return undefined;
+    if ((func.externalCalls?.length ?? 0) !== 0) return undefined;
+    const statements = func.body?.statements;
+    if (!statements || statements.length === 0) return undefined;
+    // `return a;` and `return (a, b, ...);`: the expressions are the state variables, in output order.
+    if (statements.length === 1 && statements[0] instanceof ReturnNode) {
+      const returned = statements[0].expressions;
+      if (returned.length === 0) return undefined;
+      const variables: string[] = [];
+      for (const expression of returned) {
+        // Exactly a state variable: an indexed array element, a mapping value or an expression is not one.
+        if (!(expression instanceof StateAccessNode) || expression.stateVariable === undefined) return undefined;
+        variables.push(expression.stateVariable.name);
+      }
+      return variables.length === func.returnTypes.length ? { variables } : undefined;
+    }
+    // Named returns assigned once each, from a state variable: `r0 = reserve0; r1 = reserve1;`. The assignments may
+    // come in any order; the declared return order is the output order.
+    const returnNames = func.returnNames ?? [];
+    if (returnNames.length !== func.returnTypes.length || returnNames.some((name) => name.length === 0)) {
+      return undefined;
+    }
+    const assigned = new Map<string, string>();
+    for (const statement of statements) {
+      // Named returns are lowered to a zero-initialized declaration per name, the source's own assignments, and an
+      // implicit `return (name, ...);`. Only the assignments carry a value to publish.
+      if (statement instanceof VariableDefinitionNode && statement.expression === undefined
+        && returnNames.includes(statement.name)) continue;
+      if (statement instanceof ReturnNode
+        && statement.expressions.every((expression) =>
+          expression instanceof IdentifierNode && returnNames.includes(expression.name))) continue;
+      // A later assignment to the name (`_r0 = reserve0;`) is an `AssignNode`; both forms carry the state variable
+      // on the right.
+      const name = statement instanceof VariableDefinitionNode ? statement.name
+        : statement instanceof AssignNode ? statement.identifier.name : undefined;
+      const expression = statement instanceof VariableDefinitionNode || statement instanceof AssignNode
+        ? statement.expression : undefined;
+      if (name === undefined || !(expression instanceof StateAccessNode)
+        || expression.stateVariable === undefined) return undefined;
+      if (!returnNames.includes(name) || assigned.has(name)) return undefined;
+      assigned.set(name, expression.stateVariable.name);
+    }
+    // A named return nothing assigns keeps its zero-initialized value: its output is published as `null`, the
+    // output type's zero, for an integer or bool output. Any other unassigned output leaves the getter unproved, and
+    // so does one that reads no state at all, which is a constant the caller keeps.
+    const variables = returnNames.map((name, index) => assigned.get(name)
+      ?? (/^(?:u?int(?:\d+)?|bigint|bool)$/.test(func.returnTypes[index].toString()) ? null : undefined));
+    if (variables.some((variable) => variable === undefined) || assigned.size === 0) return undefined;
+    return { variables: variables as (string | null)[] };
+  })();
   const directCollectionLengthReturn = (() => {
     if (!func.sourceReadOnly && !func.modifiers.includes(FunctionModifier.VIEW)
       && !func.modifiers.includes(FunctionModifier.PURE)) return undefined;
@@ -3790,11 +4063,29 @@ function buildFunctionAbiMetadata(
         slotIndex: ea.slotIndex,
         collection: ea.collection,
         keyParams: ea.keyParams,
+        // A merged entry can have several write sites with different runtime keys (`balanceOf[_feeTo]` and the
+        // locked `balanceOf[address(0)]`). Publish each site whose key differs from the primary key so the SDK can
+        // switch to it when that site's decidable activation holds.
+        ...(ea.operations.includes('write') && (ea.mutationEffectOrdinals?.length ?? 0) > 1 && (() => {
+          const alternatives = (ea.mutationEffectOrdinals ?? [])
+            .map((ordinal) => directWriteAlternative(func, ordinal, constants, ea.keyParams))
+            .filter((alternative): alternative is NonNullable<typeof alternative> => alternative !== undefined)
+            .filter((alternative, index, all) =>
+              all.findIndex((candidate) => candidate.key === alternative.key) === index);
+          return alternatives.length > 0 ? { alternatives } : {};
+        })()),
         ...(ea.keySources && (ea.keySources.some((ks) => ks.kind !== 'param')
           || ea.keyParams.some((name) => /_sender(?:_|$)/.test(name))) && {
           keySources: ea.keySources.map((ks, index) => {
             const syntheticSender = ks.kind === 'param'
               && /_sender(?:_|$)/.test(ea.keyParams[index] ?? '');
+            // A producer whose callsite was only known by its source effect when the key was classified is named by
+            // the callsite id the external-call scan assigned it, in its label as in its structured form.
+            const producerCallsite = ks.producer === undefined ? undefined : ks.producer.callsiteId
+              ?? func.externalCalls?.find((call) =>
+                call.sourceEffectOrdinal === ks.producer!.sourceEffectOrdinal)?.slotIndex;
+            const expressionLabel = ks.producer !== undefined && producerCallsite !== undefined
+              ? `producer:${producerCallsite}:${ks.producer.resultIndex}` : ks.canonical;
             return {
               kind: syntheticSender ? 'msgSender' : ks.kind,
               ...(ks.paramName && { paramName: ks.paramName }),
@@ -3802,7 +4093,14 @@ function buildFunctionAbiMetadata(
               ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
               ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
               ...((ks.kind === 'msgSender' || syntheticSender) && { senderOp: ks.senderOp ?? 'msg.sender' }),
-              ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
+              ...(ks.kind === 'expression' && { expressionLabel }),
+              ...(ks.producer && {
+                producer: {
+                  callsiteId: producerCallsite,
+                  resultIndex: ks.producer.resultIndex,
+                  ...(ks.producer.functionName && { functionName: ks.producer.functionName }),
+                },
+              }),
               ...(ks.postWriteExpressionLabel && { postWriteExpressionLabel: ks.postWriteExpressionLabel }),
               ...(ks.preWriteMappingCollections?.length && {
                 preWriteMappingCollections: [...ks.preWriteMappingCollections],
@@ -3858,22 +4156,34 @@ function buildFunctionAbiMetadata(
     }),
     ...(publishedSourceEffectOrder !== undefined && { sourceEffectOrder: publishedSourceEffectOrder }),
     ...(directMappingReturn && { directMappingReturn }),
+    ...(directStateReturn && { directStateReturn }),
     ...(directCollectionLengthReturn && { directCollectionLengthReturn }),
     ...(directExternalReturn && { directExternalReturn }),
-    ...(func.emitInfos && func.emitInfos.length > 0 && {
-      emits: func.emitInfos.map((ei) => ({
-        eventName: ei.eventName,
-        eventSignature: ei.eventSignature,
-        emitIndex: ei.emitIndex,
-        ...(ei.activation !== undefined && { activation: cloneExternalCallExpression(ei.activation) }),
+    ...(func.framedStateWrites !== undefined && func.framedStateWrites.length > 0 && {
+      stateWrites: func.framedStateWrites.map((write) => ({
+        name: write.name, value: cloneExternalCallExpression(write.value),
       })),
+    }),
+    ...(func.emitInfos && func.emitInfos.length > 0 && {
+      emits: func.emitInfos.map((ei) => {
+        // A framed frame lists a wide emit's chunks at consecutive event outputs (`framedEmitChunks`).
+        const chunks = compilerOptions.composition === 'framed'
+          ? framedEmitChunks(ei, compilerOptions.commitmentLimit) : 1;
+        return {
+          eventName: ei.eventName,
+          eventSignature: ei.eventSignature,
+          emitIndex: ei.emitIndex,
+          ...(ei.activation !== undefined && { activation: cloneExternalCallExpression(ei.activation) }),
+          ...(chunks > 1 && { chunks }),
+        };
+      }),
     }),
     ...(runtimeLoopEvents.length > 0 && { runtimeLoopEvents }),
     ...(runtimeLoopTransfers.length > 0 && { runtimeLoopTransfers }),
     ...(tokenContainerTransferSites.length > 0 && { tokenContainerTransferSites }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
-      ...(contract && { transfers: transferEffects(func, contract) }),
+      ...(contract && { transfers: transferEffects(func, contract, compilerOptions.composition === 'framed') }),
     }),
     ...(func.deployTargets && func.deployTargets.length > 0 && {
       deployTargets: func.deployTargets.map((dt) => ({
@@ -3883,6 +4193,8 @@ function buildFunctionAbiMetadata(
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
         ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
+        ...(dt.code && { code: dt.code }),
+        ...(dt.template && { template: dt.template }),
         ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),
         ...(dt.childLayoutDigest && { childLayoutDigest: dt.childLayoutDigest }),
         ...(dt.genesisState && { genesisState: dt.genesisState }),
@@ -3977,6 +4289,11 @@ function buildFunctionAbiMetadata(
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
           ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
           ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
+          // A low-level call returns its failure to the caller rather than reverting it, a typed call does not.
+          ...((rawCall || (ec.callMode !== undefined && ec.callMode !== ExternalCallMode.REGULAR)) && (() => {
+            const failedCallMessage = failedCallMessageOf(func.body, ec.sourceCallNode);
+            return failedCallMessage === undefined ? {} : { failedCallMessage };
+          })()),
           // Publish the empty list too. Omission means legacy/unknown provenance to SDK consumers; a present empty
           // list is the proof that this call has zero arguments and needs no runtime argument resolution.
           ...(ec.argSources && { argSources: ec.argSources }),
@@ -4403,7 +4720,7 @@ export function generateArtifact(
 
   // Mirror the stateLayout gate below: writesState is only meaningful (and only emitted) for stateful contracts.
   const isStateful = contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || compilerOptions.forceStateful || contract.readsBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
@@ -4421,7 +4738,12 @@ export function generateArtifact(
       type: abiTypeString(parameter.type),
     })),
     ...(func.returnTypes.length > 0 && {
-      outputs: func.returnTypes.map((type) => ({ type: abiTypeString(type) })),
+      // A framed entry names its outputs as the source does, so a caller reads a tuple result by name.
+      outputs: func.returnTypes.map((type, index) => ({
+        type: abiTypeString(type),
+        ...(compilerOptions.composition === 'framed' && (func.returnNames[index] ?? '') !== ''
+          ? { name: func.returnNames[index]! } : {}),
+      })),
       // The compiler-generated route always carries its aggregate vector in one compact outer bytes field.
       // Individual handler rows independently publish EVM or compact result encodings inside that carrier.
       resultEncoding: func.messageBusRoute
@@ -4433,7 +4755,8 @@ export function generateArtifact(
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
     ...(func.nativeSelfBatchDispatcher && { nativeSelfBatchDispatcher: true }),
-    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions, compilerOptions),
+    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions, compilerOptions,
+      new Map(ast.constantDefinitions.map((constant) => [constant.name, constant.expression]))),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));
@@ -4505,7 +4828,7 @@ export function generateArtifact(
   // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
   if (contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || compilerOptions.forceStateful || contract.readsBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))) {
     stateLayout = {
@@ -4544,7 +4867,6 @@ export function generateArtifact(
           keyType: keyEncodingTypeString(coll.keyType),
           valueType: coll.innermostValueType.toString(),
           ...(coll.sorted && (compilerOptions.evmCompat)
-            && compilerOptions.composition !== 'framed'
             && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
             && { addressKeyEncoding: 'identity20' as const }),
           ...(coll.depth > 1 && {
@@ -4571,7 +4893,6 @@ export function generateArtifact(
             keyType: keyEncodingTypeString(coll.keyType),
             valueType: coll.innermostValueType.toString(),
             ...(coll.sorted && (compilerOptions.evmCompat)
-              && compilerOptions.composition !== 'framed'
               && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
               && { addressKeyEncoding: 'identity20' as const }),
             ...(coll.depth > 1 && {

@@ -55,11 +55,15 @@ export {
   buildValidatorFacets,
   buildValidatorParts,
   buildValidatorProgram,
+  CENSUS_CHECKPOINT_PLACEHOLDER,
+  CENSUS_FACET,
   MAX_TRANSCRIPT_COUNT,
   TRANSCRIPT_MAGIC,
-  VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_CHECKS,
   VALIDATOR_PROGRAM_REASONS,
   validatorFacetSpends,
+  validatorFacetUnlockingBytecode,
   type ValidatorFacetSpend,
 } from './program.js';
+
+export { validatorCensusCheckpointOf, type ValidatorHeadProgram } from './census-checkpoint.js';

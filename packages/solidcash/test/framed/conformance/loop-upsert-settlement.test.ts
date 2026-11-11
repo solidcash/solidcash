@@ -29,7 +29,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * accept-and-refused-mutation pair is taken there for one turn and for three.
  */
 
-const FIXED_SOURCE = 'pragma solidcash ^0.14.0;'
+const FIXED_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address to, uint amount, int turns) {'
@@ -39,7 +39,7 @@ const FIXED_SOURCE = 'pragma solidcash ^0.14.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const VARYING_SOURCE = 'pragma solidcash ^0.14.0;'
+const VARYING_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function move(address[] workers, uint amount) {'
@@ -50,7 +50,7 @@ const VARYING_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' }';
 
 /** The same loop storing a literal `true` under every key, whose value the artifact publishes as one boolean. */
-const BOOL_SOURCE = 'pragma solidcash ^0.14.0;'
+const BOOL_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Ledger {'
   + '   mapping(address => bool) allowlist;'
   + '   function move(address[] workers) {'
@@ -171,11 +171,13 @@ function expectMutatedRecordRefused(answered: CallResult): void {
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: changed } } }
       : output)),
   };
-  const master = answered.verdicts.findIndex((verdict) => verdict.accepted);
-  expect(master).toBeGreaterThanOrEqual(0);
+  // The entry runs beside a validator that settles its contract (V8), so the validator holds the record's last
+  // declaration to the output: its census facet, which weighs every record's ends, is the input that refuses it.
+  const census = answered.verdicts.find((verdict) => verdict.id === 'validator/2');
+  expect(census?.accepted).toBe(true);
   const vm = compositionMachine();
   const state = vm.evaluate({
-    inputIndex: master, sourceOutputs: answered.sourceOutputs, transaction: mutated,
+    inputIndex: census!.index, sourceOutputs: answered.sourceOutputs, transaction: mutated,
   });
   expect(vm.stateSuccess(state)).not.toBe(true);
 }

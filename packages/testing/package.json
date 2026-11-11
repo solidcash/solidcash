@@ -1,6 +1,6 @@
 {
   "name": "@solidcash/testing",
-  "version": "0.14.0-beta.1",
+  "version": "0.50.0",
   "description": "SolidCash testing framework - Hardhat-style development environment for Bitcoin Cash contracts",
   "keywords": [
     "bitcoin cash",
@@ -54,6 +54,10 @@
       "types": "./dist/hre.d.ts",
       "default": "./dist/hre.js"
     },
+    "./ethers-runtime": {
+      "types": "./dist/ethers-runtime.d.ts",
+      "default": "./dist/ethers-runtime.js"
+    },
     "./tasks": {
       "types": "./dist/tasks.d.ts",
       "default": "./dist/tasks.js"
@@ -89,10 +93,10 @@
   },
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8",
-    "@solidcash/utils": "^0.14.0-beta.1",
+    "@solidcash/utils": "^0.50.0",
     "ethers": "^6.17.0",
-    "@solidcash/solidc": "^0.14.0-beta.1",
-    "@solidcash/solidcash": "^0.14.0-beta.1",
+    "@solidcash/solidc": "^0.50.0",
+    "@solidcash/solidcash": "^0.50.0",
     "@mem-cash/server": "0.0.11",
     "@mem-cash/server-evm": "0.0.11",
     "@mem-cash/types": "0.0.11"

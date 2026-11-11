@@ -98,7 +98,7 @@ contract LbcCaller(bytes counterAddr) {
 
     function callAndRead(pubkey pk, sig s) {
         require(checkSig(s, pk));
-        int result = IReturningCounter(counterAddr).getAndIncrement();
+        int result = IReturningCounter(counterAddr).getAndIncrement(pk, s);
         this.lastResult = result;
     }
 }
@@ -131,6 +131,15 @@ describe('Lbc Verification (address instantiation)', () => {
   // ---------- Artifact Metadata Tests ----------
 
   describe('artifact metadata', () => {
+    it('should refuse a returning call that leaves out an argument its record binds, naming the call', () => {
+      const leavesOut = (args: string): string => LBC_CALLER_CONTRACT
+        .replace('.getAndIncrement(pk, s)', `.getAndIncrement(${args})`);
+      expect(() => compileString(leavesOut('')))
+        .toThrow(/The external call 'IReturningCounter\.getAndIncrement\(\)' passes 0 of the 2 arguments/);
+      // A signature is no argument of the digest, so it alone may be left out.
+      expect(() => compileString(leavesOut('pk'))).not.toThrow();
+    });
+
     it('should include addressParam in externalReads for address state read', () => {
       const artifact = compileString(LBC_READER_CONTRACT);
       const fn = artifact.abi.find((f) => f.name === 'sync');
@@ -355,7 +364,7 @@ contract Reader(bytes counterAddr) {
 
     it('should build a StatefulTransactionBuilder with address-parameterized external call', () => {
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
-        alicePub, new SignatureTemplate(alicePriv), 2n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
 
@@ -393,7 +402,7 @@ contract Reader(bytes counterAddr) {
 
     it('should compute correct transfer output base with address external call', () => {
       const readerMasterUnlocker = readerContract.unlock.readOutputState(
-        alicePub, new SignatureTemplate(alicePriv), 2n,
+        alicePub, new SignatureTemplate(alicePriv), 2n, -1n,
       );
       const readerDataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
       const counterMasterUnlocker = counterContract.unlock.increment(

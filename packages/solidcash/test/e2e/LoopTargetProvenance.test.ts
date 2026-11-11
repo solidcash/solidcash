@@ -48,7 +48,7 @@ async function spend(callee: Uint8Array): Promise<TransactionBuilder> {
   const funder = await createFeeFunder(provider, 10000n);
   const builder = new TransactionBuilder({ provider });
   builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
-    contract.unlock.go(1n, encodePushdataValue([callee, callee], 'address[]'), swapSelector()) as never);
+    contract.unlock.go(1n, encodePushdataValue([callee, callee], 'address[]'), 1n, swapSelector()) as never);
   builder.addInput({ txid: '01'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee));
   builder.addInput({ txid: '02'.repeat(32), vout: 0, satoshis: 1500n }, unlocker(callee));
   builder.addInput(funder.utxo, funder.unlocker);
@@ -63,7 +63,8 @@ describe('loop targets a contract fixes', () => {
   it('binds a loop-local receiver over the contract\'s own addresses to them', async () => {
     const go = compileString(FIXED).abi.find((entry) => entry.name === 'go')!;
     expect(go.inputs.map((input) => input.name)).toEqual([
-      '__internal__externalCallInputBase', '__internal__loopTargets0', '__internal__externalCallSelector',
+      '__internal__externalCallInputBase', '__internal__loopTargets0', '__internal__loopTargetStride0',
+      '__internal__externalCallSelector',
     ]);
     verifyTransaction(await spend(TARGET));
     // The same spend through callees the spender picked: the witness no longer equals the contract's address.
@@ -89,8 +90,8 @@ contract Fixed(address a, address b) {
       const funder = await createFeeFunder(provider, 10000n);
       const builder = new TransactionBuilder({ provider });
       builder.addInput({ txid: 'cc'.repeat(32), vout: 0, satoshis: 100000n },
-        contract.unlock.go(encodePushdataValue([TARGET], 'address[]'), 1n, encodePushdataValue([TARGET], 'address[]'),
-          encodePushdataValue([second, second], 'address[]'), selector, selector) as never);
+        contract.unlock.go(encodePushdataValue([TARGET], 'address[]'), 1n, encodePushdataValue([TARGET], 'address[]'), 1n,
+          encodePushdataValue([second, second], 'address[]'), 1n, selector, selector) as never);
       const locks = [TARGET, second, second];
       locks.forEach((lock, at) => builder.addInput({ txid: `0${at + 1}`.repeat(32), vout: 0, satoshis: 1500n },
         unlocker(lock)));
@@ -152,6 +153,7 @@ describe('loop targets held by locals and written arrays', () => {
       if (input.name === '__internal__externalCallInputBase') return 1n;
       const witness = /^__internal__loopTargets(\d+)$/.exec(input.name);
       if (witness) return encodePushdataValue(witnesses[Number(witness[1])]!, 'address[]');
+      if (input.name.startsWith('__internal__loopTargetStride')) return 1n;
       if (input.name.startsWith('__internal__externalCallSelector')) return selector;
       if (input.name in extra) return extra[input.name];
       throw new Error(`no value for ${input.name}`);

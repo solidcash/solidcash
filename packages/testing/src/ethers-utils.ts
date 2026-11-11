@@ -11,13 +11,15 @@ import {
   keccak256, sha256, ripemd160, randomBytes, id, computeAddress,
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
-  getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
+  isAddress,
   Interface, Signature, SigningKey, Mnemonic,
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
   type BytesLike, type BigNumberish,
 } from 'ethers';
 import { hashMessage } from 'ethers/hash';
-import { getCreateAddress, getCreate2Address } from './ethers-shim.js';
+// The CashAddress-aware forms the `ethers` module alias gives a ported file, so `hre.ethers.solidityPacked` packs an
+// address the way `import { solidityPacked } from "ethers"` does.
+import { getAddress, getCreateAddress, getCreate2Address, solidityPacked } from './ethers-shim.js';
 import { AbiCoder, defaultAbiCoder } from './cash-abi-coder.js';
 
 export {
@@ -25,7 +27,7 @@ export {
   keccak256, sha256, ripemd160, randomBytes, id, computeAddress, hashMessage,
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
-  getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
+  getAddress, isAddress, solidityPacked,
   Interface, Signature, SigningKey, Mnemonic,
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
   AbiCoder, defaultAbiCoder,
@@ -36,6 +38,10 @@ export type { BytesLike, BigNumberish };
 // override with the BCH shim (identity = category, salt maps to the CREATE2 segment). See ethers-shim.ts. Imported
 // (not `export ... from`) so the names bind locally for the v5 `utils` namespace below.
 export { getCreateAddress, getCreate2Address };
+/** ethers `solidityPackedKeccak256`, over the CashAddress-aware packing. */
+export function solidityPackedKeccak256(types: readonly string[], values: readonly unknown[]): string {
+  return keccak256(solidityPacked(types, values));
+}
 /** ethers v5 `ethers.constants.AddressZero` alias. */
 export const AddressZero = ZeroAddress;
 /** MistSwap/Sushi-style `ADDRESS_ZERO` constant (test-utilities helper). */

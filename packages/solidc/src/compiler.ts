@@ -11,6 +11,7 @@ import {
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
@@ -48,7 +49,7 @@ import {
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   type KernelJournalDispositionsAbi,
   MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
-  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature,
+  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature, dynamicChunkSignature, fillerLockingBytecode,
 } from '@solidcash/utils';
 import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
@@ -73,7 +74,7 @@ import { assessFramedMasterShape, directRefusedEntries, stripFrameParameters } f
 import { requireUpgradeLayouts, type UpgradesFrom } from './framed/upgrade-layout.js';
 import type { MasterCallSite } from './framed/master/frame-tail.js';
 import {
-  extractFramedLifecycle, framedLifecycleFunctions, publishLifecycle, wrapLifecycleArm,
+  extractFramedLifecycle, framedLifecycleFunctions, publishLifecycle, withValidatorSettledDefinition, wrapLifecycleArm,
   type FramedLifecycleEntry,
 } from './framed/master/lifecycle.js';
 import {
@@ -83,11 +84,12 @@ import {
 } from './framed/master/stop-sites.js';
 import {
   alignCensusAddressOffset,
-  padFramedMasterScript,
   findPlaceholderOffsets,
   isFramedMaster,
+  framedConstantLockMaster,
   setFramedMaster,
 } from './framed/master/master-program.js';
+import { outlineFramedMasterProgram, type FramedOutlinedFunction } from './framed/master/program-outline.js';
 import {
   admittedHandlerNamesFromAnalysis,
   assertPublishedHandlersMatchAdmission,
@@ -137,13 +139,11 @@ import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
-import SymbolTableTraversal, {
-  assignFunctionSourceEffectOrdinals,
-  getMaxPushdataEncodedSizeForType,
-} from './semantic/SymbolTableTraversal.js';
+import SymbolTableTraversal, { assignFunctionSourceEffectOrdinals } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
 import { publishStoredValueSources } from './semantic/stored-value-source.js';
-import { getEventChunkCount, getMaxStateFieldBytes, stateNftPackingLimit } from './semantic/maxEncodedSize.js';
+import { getEventChunkCount } from './semantic/maxEncodedSize.js';
+import { packedStateLayoutVariables } from './semantic/packedStateLayout.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -236,6 +236,9 @@ import {
 } from './semantic/CaptureConstructedKeyVectorProvenance.js';
 import LowerLegacyVMapCounterLoops from './semantic/LowerLegacyVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
+import LowerFramedCreate2Address, { type FramedCreateSite } from './semantic/LowerFramedCreate2Address.js';
+import FoldFramedCreate2Initializer, { type FramedGenesisReplayer } from './semantic/FoldFramedCreate2Initializer.js';
+import { framedChildGenesisReplay } from './framed/child-genesis-replay.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
 import DesugarLocalBytesElementWrite from './semantic/DesugarLocalBytesElementWrite.js';
@@ -285,6 +288,7 @@ import {
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
   UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
+  ChildGenesisFoldError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -681,6 +685,8 @@ type InternalCompilerOptions = CompilerOptions & {
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   __framedCallCount?: number;
   __framedRefusedEntries?: Map<string, string>;
+  /** The CREATE2 children the master's bodies create, which the builder stands up at their EVM identities. */
+  __framedCreates?: readonly FramedCreateSite[];
   /** Refused bodies no selector reaches whose definitions are emitted as refusal stubs; never published. */
   __framedStubbedDefinitions?: Map<string, string>;
   __framedBalanceReaders?: readonly string[];
@@ -689,6 +695,11 @@ type InternalCompilerOptions = CompilerOptions & {
   __framedStopSites?: PublishedFramedStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
   __framedReservesValidatorHash?: boolean;
+  /**
+   * Set for a contract another contract of the compile unit creates: its masters that every spend covers reserve no
+   * deployment slot, so each has one lock whatever its category, which the creator checks the child's genesis against.
+   */
+  __framedConstantLock?: boolean;
   /** The source's `split(n)` and `merge(n)`, served by the master's lifecycle arm rather than its head. */
   __framedLifecycle?: readonly FramedLifecycleEntry[];
   /**
@@ -1364,6 +1375,12 @@ export interface SplitCompileOptions extends CompileOptions {
    * unlocking bytecode, not just the redeem script.
    */
   maxShardBytes?: number;
+  /**
+   * Count each framed shard's witness block against `maxShardBytes` beside its redeem script. The block shares a
+   * framed master's input with the script, so with a cap that is the input limit the pair fits the input. The block
+   * is estimated from what the shard publishes, at the widest view each of its records can hold.
+   */
+  framedWitnessReserve?: boolean;
   /** Split eligible entry points even when the original artifact already fits. Useful for testing/tuning. */
   forceSplit?: boolean;
   /** Keep named public entry points in the state-owning root instead of delegating them. */
@@ -2189,6 +2206,8 @@ function admittedHandlerCount(artifact: Artifact): number {
 /** A source-owned refusal whose outcome cannot depend on which optional message-bus handlers are admitted. */
 function isAdmissionIndependentSourceError(error: unknown): boolean {
   return error instanceof CounterLoopReadWriteConflictError
+    // A child genesis the direct creator cannot fold fails its direct entry too.
+    || error instanceof ChildGenesisFoldError
     || (error instanceof UnsupportedInlineAssemblyError && !generatedOriginOf(error.node.location));
 }
 
@@ -2714,6 +2733,14 @@ function compileStringUncheckedAttempt(code: string, compilerOptions: CompileOpt
   const {
     errorListener, warningListener, primaryContractName, suppressWarnings = false, ...artifactCompilerOptions
   } = compilerOptions;
+  // A contract opted out of route synthesis compiles as if `messageBus` were false for it: it keeps the direct
+  // lowering it had before the project enabled the bus and publishes no route or refusal stub. Every other
+  // declaration in the same project still compiles with its own route.
+  if (primaryContractName !== undefined
+    && artifactCompilerOptions.messageBusByContract?.[primaryContractName] === false) {
+    artifactCompilerOptions.messageBus = false;
+    delete artifactCompilerOptions.messageBusHandlersByContract;
+  }
   const internalOptions = artifactCompilerOptions as InternalCompilerOptions;
   if (((internalOptions.messageBusKernel ?? DEFAULT_COMPILER_OPTIONS.messageBusKernel) === true
       || internalOptions.__strictNoInternalRecovery)
@@ -4225,53 +4252,6 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     + 'route of their own',
 };
 
-/**
- * Publish typed child-genesis geometry independently of kernel admission. The resolved deployment node and
- * compiled child body are the authority; no contract, function, or application name participates.
- */
-function packedStateLayoutVariables(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): Array<{
-  state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
-}> {
-  const result: Array<{
-    state: ContractNode['stateVariables'][number]; nftIndex: number; fieldIndex: number;
-  }> = [];
-  let nftIndex = 0;
-  let fieldIndex = 0;
-  let currentNftUsed = 0;
-  for (const state of contract.stateVariables) {
-    let maxSize = getMaxStateFieldBytes(state.type);
-    if (state.isDynamic || isDynamicStorageType(state.type)) {
-      maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32));
-    }
-    const unboundedPackedArray = state.isPacked
-      && state.type instanceof ArrayType
-      && !state.type.bound;
-    const isolated = state.isolatedNft
-      || state.visibility === StateVariableVisibility.EXTERNAL
-      || unboundedPackedArray;
-    const terminal = state.type instanceof StructType
-      || (state.isPacked && state.type instanceof ArrayType && Boolean(state.type.bound));
-    if (isolated) {
-      if (currentNftUsed > 0) { nftIndex += 1; fieldIndex = 0; currentNftUsed = 0; }
-      result.push({ state, nftIndex, fieldIndex: 0 });
-      nftIndex += 1;
-      fieldIndex = 0;
-    } else {
-      if (currentNftUsed + maxSize > stateNftPackingLimit(commitmentLimit, nftIndex, tagSingletonDataNfts)
-        && currentNftUsed > 0) {
-        nftIndex += 1;
-        fieldIndex = 0;
-        currentNftUsed = 0;
-      }
-      result.push({ state, nftIndex, fieldIndex });
-      fieldIndex += 1;
-      currentNftUsed += maxSize;
-      if (terminal) { nftIndex += 1; fieldIndex = 0; currentNftUsed = 0; }
-    }
-  }
-  return result;
-}
-
 function packedStateDataNftCount(contract: ContractNode, commitmentLimit: number, tagSingletonDataNfts = false): number {
   const variables = packedStateLayoutVariables(contract, commitmentLimit, tagSingletonDataNfts);
   return variables.length === 0 ? 0 : Math.max(...variables.map((variable) => variable.nftIndex)) + 1;
@@ -4435,6 +4415,7 @@ function childDeploymentSites(
       const genesisEntries = value.constructorStateFoldComplete === true
         ? childDeploymentGenesisEntries(
           value.foldedCollectionEntries, inputIndex, inputTypes, analyzed?.aliases, analyzed?.aliasDefinitions,
+          child.collections,
         ) : undefined;
       if (root.messageBusEligible === true && value.hasFoldedChildCall && !genesisState) {
         throw new Error(`Kernel folded child initialization at site ${sites.length} has no complete genesis proof`);
@@ -4661,7 +4642,7 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
   // master block and therefore cannot soundly advertise or execute message-bus batch. `forceStateful` remains the explicit
   // way to opt a zero-storage contract into the stateful/master-NFT model.
   return contract.stateVariables.length > 0 || contract.collections.length > 0
-    || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || !!compilerOptions.forceStateful || contract.readsBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 }
@@ -6012,6 +5993,25 @@ function messageBusRecordClaim(
   return { ...claim, collections: [...named] };
 }
 
+/** Whether the function deploys a child with `new C{code: c}`, which only the direct path checks. */
+function deploysChildCode(fn: FunctionDefinitionNode): boolean {
+  const seen = new Set<object>();
+  const visit = (value: unknown): boolean => {
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof InstantiationNode && value.callOptions?.code !== undefined) return true;
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'deployedStateVars', 'stateVariable', 'collection'].includes(key)) continue;
+      if (child instanceof Node ? visit(child) : Array.isArray(child) && child.some((item) => visit(item))) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return visit(fn.body);
+}
+
 function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -6031,8 +6031,10 @@ function synthesizeMessageBusRoute(
       ...(contract.receiveDef ? [contract.receiveDef] : []),
     ]
     : contract.functions;
+  const requestedHandlers = compilerOptions.messageBusHandlersByContract?.[contract.name]
+    ?? compilerOptions.messageBusHandlers;
   const functions = entryFunctions.filter((fn) => fn.isEntryPoint && !fn.isAbstract
-    && messageBusHandlerSelected(fn, compilerOptions.messageBusHandlers, compilerOptions.evmCompat === true));
+    && messageBusHandlerSelected(fn, requestedHandlers, compilerOptions.evmCompat === true));
   // Record every entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
   for (const fn of functions) {
@@ -6139,6 +6141,13 @@ function synthesizeMessageBusRoute(
     const returned = returns[0];
     if (returned.expressions.length !== 1) return undefined;
     const expression = returned.expressions[0];
+    if (expression instanceof BoolLiteralNode) return expression.value ? 'true' : 'false';
+    if (expression instanceof IntLiteralNode) return expression.value.toString();
+    if (expression instanceof HexLiteralNode) return `hex"${binToHex(expression.value)}"`;
+    return undefined;
+  };
+  /** A public constant's ABI getter publishes its folded literal; only literal initializers have a source form. */
+  const literalConstantSource = (expression: ExpressionNode): string | undefined => {
     if (expression instanceof BoolLiteralNode) return expression.value ? 'true' : 'false';
     if (expression instanceof IntLiteralNode) return expression.value.toString();
     if (expression instanceof HexLiteralNode) return `hex"${binToHex(expression.value)}"`;
@@ -6905,10 +6914,14 @@ function synthesizeMessageBusRoute(
     }
     return candidates.length === 1 ? candidates[0] : undefined;
   };
-  // The fixed entry/effect frame can settle an unconditional scalar update beside mapping rows, but a scalar
-  // write selected by a source branch has no independent row-local settlement identity. Inspect successful
-  // paths through internal calls rather than treating every syntactic arm as reachable: a preceding terminal
-  // zero guard can rule out that arm, including when the guard is in the caller of the writing helper.
+  // A scalar write selected by a source branch shares its branch's absence with the row/event settlement when
+  // both live in the SAME arm: the frame publishes that whole arm or none of it, which measurably works (see
+  // `KernelConditionalScalarRoute`), so such a write is admitted. What has no row-local settlement identity is a
+  // scalar write in one arm while a SIBLING arm settles a collection or event: the two absences are then
+  // complementary, and the fixed frame would have to pair a scalar with a row that the other path settles.
+  // Inspect successful paths through internal calls rather than treating every syntactic arm as reachable: a
+  // preceding terminal zero guard can rule out that arm, including when the guard is in the caller of the
+  // writing helper.
   const hasSuccessfulConditionalScalarWrite = (root: FunctionDefinitionNode): boolean => {
     const scalarStateNames = new Set(contract.stateVariables.map((state) => state.name));
     let nextLocalMarker = 0;
@@ -6917,11 +6930,11 @@ function synthesizeMessageBusRoute(
       aliases: Map<string, string>;
       nonZero: Set<string>;
       conditional: boolean;
-      // True when an enclosing branch also writes a collection, emits, or transfers. A scalar update in that
-      // branch has no row of its own. A scalar update in a branch that does none of those is unrelated.
+      // True when a SIBLING arm of an enclosing branch writes a collection, emits or transfers, so this path's
+      // scalar update has no row of its own. A scalar update whose own arm carries that settlement is unrelated.
       settlementBranch: boolean;
     }
-    const branchSettlesCollectionOrEvent = (branch: BranchNode): boolean => {
+    const branchSettlesCollectionOrEvent = (branch: Node): boolean => {
       let settles = false;
       walkInvocationAst(branch, (node) => {
         const namedCollection = (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode)
@@ -7001,20 +7014,25 @@ function synthesizeMessageBusRoute(
           || !path.nonZero.has(comparison.marker);
         const falsePossible = comparison === undefined || comparison.equal
           || !path.nonZero.has(comparison.marker);
-        const settles = branchSettlesCollectionOrEvent(statement);
-        const branchPath = (nonZero: Set<string>): ScalarPath => ({
+        // An arm is settlement-bearing when the OTHER arm settles a collection/event. Same-arm settlement (the
+        // handler's row, event and scalar published together) keeps this path clean.
+        const yesSettles = branchSettlesCollectionOrEvent(statement.ifBlock);
+        const noSettles = statement.elseBlock === undefined
+          ? false : branchSettlesCollectionOrEvent(statement.elseBlock);
+        const branchPath = (nonZero: Set<string>, rivalSettles: boolean): ScalarPath => ({
           owner: path.owner, aliases: new Map(path.aliases), nonZero, conditional: true,
-          settlementBranch: path.settlementBranch || settles,
+          settlementBranch: path.settlementBranch || rivalSettles,
         });
         const trueNonZero = new Set(path.nonZero);
         const falseNonZero = new Set(path.nonZero);
         if (comparison && !comparison.equal) trueNonZero.add(comparison.marker);
         if (comparison && comparison.equal) falseNonZero.add(comparison.marker);
-        const yes = truePossible ? visitBlock(statement.ifBlock, [branchPath(trueNonZero)]) : [];
+        const yes = truePossible
+          ? visitBlock(statement.ifBlock, [branchPath(trueNonZero, noSettles)]) : [];
         const no = falsePossible
           ? statement.elseBlock
-            ? visitBlock(statement.elseBlock, [branchPath(falseNonZero)])
-            : [branchPath(falseNonZero)]
+            ? visitBlock(statement.elseBlock, [branchPath(falseNonZero, yesSettles)])
+            : [branchPath(falseNonZero, yesSettles)]
           : [];
         // The branch predicate selects writes *inside* an arm; an assignment after the join is not itself
         // conditional. Retain only the proven facts on each surviving path.
@@ -7643,6 +7661,14 @@ function synthesizeMessageBusRoute(
       continue;
     }
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
+        ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
+      continue;
+    }
+    // A route rebuilds its child sites from the embedded body; `new C{code: c}` embeds none and requires the code to
+    // match a template, which no route replays. Keep such a deploy on the direct path alone, where it is checked.
+    if (deploysChildCode(fn)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
         ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
@@ -11645,6 +11671,23 @@ function synthesizeMessageBusRoute(
         const getterState = fn.parameters.length === 0
           ? contract.stateVariables.find((state) => state.name === fn.name)
           : undefined;
+        // A `public constant` reports a synthesized ABI getter but has no state variable, so the route's scalar
+        // getter branch below cannot see it and falls through to invoking a function that does not exist.
+        // Publish the folded literal instead: a constant has no runtime storage to read.
+        const constantGetter = fn.parameters.length === 0 && getterState === undefined
+          ? [...contract.constantDefinitions, ...ast.constantDefinitions].find((constant) => constant.name === fn.name
+            && (constant.visibility === StateVariableVisibility.PUBLIC
+              || constant.visibility === StateVariableVisibility.EXTERNAL))
+          : undefined;
+        const constantLiteral = constantGetter === undefined
+          ? undefined : literalConstantSource(constantGetter.expression);
+        if (constantLiteral !== undefined && fn.returnTypes.length === 1) {
+          if (!captureResults) return '';
+          const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
+          const local = fn.returnTypes[0].toString();
+          return `${local} ${name}; ${name} = ${constantLiteral}; `
+            + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
+        }
         const scalarGetter = fn.parameters.length === 0
           && getterState !== undefined
           && !(getterState.type instanceof StructType)
@@ -13506,7 +13549,7 @@ function synthesizeMessageBusRoute(
               require(outputCategoryLength == 0 || outputCategoryLength == 32 || outputCategoryLength == 33);
               if (outputCategoryLength == 0) {
                 require(rowEffect.length == 1 && tx.outputs[targetSlot].tokenCategory.length == 0
-                  && tx.outputs[targetSlot].lockingBytecode == hex"6a" && tx.outputs[targetSlot].value == 0);
+                  && tx.outputs[targetSlot].lockingBytecode == hex"${binToHex(fillerLockingBytecode())}");
               } else {
                 require(rowEffect.length >= 1 + outputCategoryLength + 8
                   && tx.outputs[targetSlot].lockingBytecode == rowSubject
@@ -15214,7 +15257,8 @@ function compileResolvedAst(
   // options and iterated low-level calls today and must keep doing so.
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
-    const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
+    const requestedHandlers = mergedCompilerOptions.messageBusHandlersByContract?.[ast.contract.name]
+      ?? mergedCompilerOptions.messageBusHandlers;
     if (solidcEnvFlagEnabled('SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK')) {
       console.error('message-bus required validation surface', ast.contract.name, requestedHandlers);
     }
@@ -15345,7 +15389,8 @@ function compileResolvedAst(
   // than the count diagnostic the bus loop expansions would produce for it here.
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
-    const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
+    const requestedHandlers = mergedCompilerOptions.messageBusHandlersByContract?.[ast.contract.name]
+      ?? mergedCompilerOptions.messageBusHandlers;
     if (requestedHandlers === undefined) {
       validateLowLevelCallShapes(ast.contract);
     } else {
@@ -15972,6 +16017,14 @@ function compileResolvedAst(
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
   if (needsInlineAssembly) ast = ast.accept(new LowerInlineAssembly()) as Ast;
+  // A framed master's CREATE2 child is addressed by its EVM identity and stood up by the builder beforehand, so the
+  // creation lowers to that identity here, after the Yul `create2` became `new C{salt}()`. Published so a builder
+  // knows which child an address names (`composition.creates`).
+  if (mergedCompilerOptions.composition === 'framed') {
+    const create2 = new LowerFramedCreate2Address();
+    ast = ast.accept(create2) as Ast;
+    if (create2.creates.length > 0) (mergedCompilerOptions as InternalCompilerOptions).__framedCreates = create2.creates;
+  }
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case. A call through a function
@@ -16241,7 +16294,7 @@ function compileResolvedAst(
   if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
     ast = ast.accept(new SynthesizeLibraryDelegateCalls(mergedCompilerOptions.evmCompat === true)) as Ast;
   }
-  // Oracle-backed block.* reads stay reads of the shared covenant commitment. No state is injected.
+  // Oracle-backed block.* reads stay reads of a pool coin's commitment. No state is injected.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.evmCompat ?? false,
     oracleDelegateExecutionContext,
@@ -16914,6 +16967,17 @@ function compileResolvedAst(
     mergedCompilerOptions.composition === 'framed',
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
+  // A creator's `initialize` on the child it just made runs in a later transaction, so its effects are folded into
+  // the child's genesis state: the call is published on the create site and dropped from the creating body. Each
+  // creation of a child this unit holds gets the genesis its creating body replays (docs/framed/CREATE2_IDENTITY.md,
+  // "The genesis replay").
+  if (mergedCompilerOptions.composition === 'framed') {
+    const creates = (mergedCompilerOptions as InternalCompilerOptions).__framedCreates as FramedCreateSite[] | undefined;
+    if (creates !== undefined && creates.length > 0) {
+      const replayer = framedGenesisReplayer(ast, mergedCompilerOptions);
+      ast = ast.accept(new FoldFramedCreate2Initializer(creates, replayer)) as Ast;
+    }
+  }
   publishStoredValueSources(ast.contract, ast.structDefinitions);
   const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
@@ -16942,6 +17006,7 @@ function compileResolvedAst(
   const compiledBytecodes = ast.importedContracts.length === 0
     ? new Map<string, Uint8Array>()
     : compileReferencedContracts(ast, code, mergedCompilerOptions);
+  foldPublishedCreationCodeHashes(ast.contract, compiledBytecodes);
   // Code generation lowers selected handlers in place. Snapshot deployment provenance at the last semantic
   // boundary so publication does not depend on which representation the backend chose for a handler body.
   const deploymentTopologyKey = (fn: FunctionDefinitionNode): string => fn.messageBusSignatureIdentity
@@ -17253,19 +17318,30 @@ function compileResolvedAst(
 
   // The census baked its address offset before this rewrite. Point it at the slot the finished script contains.
   // The comparison above is the two optimisers against each other, so the retarget stays outside it.
+  let framedOutlinedFunctions: FramedOutlinedFunction[] = [];
   if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__framedReservesValidatorHash === true;
+    const constantLockMaster = framedConstantLockMaster(mergedCompilerOptions as InternalCompilerOptions);
     // The lifecycle arm wraps the optimised master, so the census is retargeted after it moves the master's bytes.
     const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
+    // A master that asks whether a validator settles it beside another master of its contract computes the answer
+    // once, ahead of its own head, and every segment that asks invokes it. A lifecycle spend carries no witness block
+    // to read the answer from, so the definition sits inside the master's arm.
+    Object.assign(optimisationResult, withValidatorSettledDefinition(optimisationResult, ast.contract.location));
     if (lifecycle !== undefined) {
       Object.assign(optimisationResult, wrapLifecycleArm(optimisationResult, lifecycle, ast.contract.location));
     }
-    // The padding comes after the census retarget: it is appended, so no earlier offset moves, and the artefact,
-    // the published slots and the fingerprint are all built from the padded script.
-    optimisationResult.script = padFramedMasterScript(
-      alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash),
-      (mergedCompilerOptions as InternalCompilerOptions).__framedCallCount ?? 0,
+    // The whole program's repeated spans are shared once it is final, the lifecycle arm included, and before the
+    // census retarget, which reads the offsets the definitions move. An unoptimised compile keeps the generator's
+    // own instructions, and `SOLIDCASH_NO_OUTLINE` keeps it inline.
+    if (mergedCompilerOptions.optimise !== false && !solidcEnvFlagEnabled('SOLIDCASH_NO_OUTLINE')) {
+      const outlined = outlineFramedMasterProgram(optimisationResult, reservesValidatorHash, constantLockMaster);
+      Object.assign(optimisationResult, outlined.parts);
+      framedOutlinedFunctions = outlined.functions;
+    }
+    optimisationResult.script = alignCensusAddressOffset(
+      optimisationResult.script, reservesValidatorHash, constantLockMaster,
     );
   }
 
@@ -17273,8 +17349,19 @@ function compileResolvedAst(
   const functionDebug = traversal.entryPointDebugInfo.size > 0
     ? Object.fromEntries(traversal.entryPointDebugInfo)
     : undefined;
-  const invokeDebug = traversal.invokeDebugInfo.size > 0
-    ? Object.fromEntries(traversal.invokeDebugInfo)
+  // A function the framed pass defined runs in its own instruction space, as a compiler helper does, and holds no
+  // require or log site: those stay in the program.
+  const invokeDebug = traversal.invokeDebugInfo.size > 0 || framedOutlinedFunctions.length > 0
+    ? {
+      ...Object.fromEntries(traversal.invokeDebugInfo),
+      ...Object.fromEntries(framedOutlinedFunctions.map((fn) => [fn.id, {
+        bytecode: binToHex(scriptToBytecode(fn.script)),
+        name: `outlined master span ${fn.id}`,
+        requires: [],
+        logs: [],
+        sourceMap: generateSourceMap(fn.locationData, mergedCompilerOptions.sourceMap !== false),
+      }])),
+    }
     : undefined;
 
   // A helper body an entry OP_INVOKEs runs in its own instruction space, so its `require` pointers are recorded
@@ -17325,10 +17412,12 @@ function compileResolvedAst(
     // for the validator program's hash; one that stands alone reserves two.
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__framedReservesValidatorHash === true;
-    const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash);
+    // A constant-lock master reserves no slot: its lock is the same for every category it is deployed as.
     const composition: NonNullable<Artifact['composition']> = {
       convention: 'framed',
-      placeholders: { version: 1, ...offsets },
+      placeholders: framedConstantLockMaster(mergedCompilerOptions as InternalCompilerOptions)
+        ? { version: 1, constantLock: true }
+        : { version: 1, ...findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash) },
     };
     // The stop sites a builder resumes each served entry from.
     const stopSites = (mergedCompilerOptions as InternalCompilerOptions).__framedStopSites;
@@ -17349,6 +17438,14 @@ function compileResolvedAst(
     }
     const lifecycle = (mergedCompilerOptions as InternalCompilerOptions).__framedLifecycle;
     if (lifecycle !== undefined) composition.lifecycle = publishLifecycle(lifecycle);
+    const creates = (mergedCompilerOptions as InternalCompilerOptions).__framedCreates;
+    if (creates !== undefined && creates.length > 0) {
+      composition.creates = creates.map((site) => ({
+        ...(site.contractName === undefined ? {} : { contractName: site.contractName }),
+        ...(site.codeStateVariable === undefined ? {} : { codeStateVariable: site.codeStateVariable }),
+        ...(site.foldedCall === undefined ? {} : { foldedCall: site.foldedCall }),
+      }));
+    }
     artifact.composition = composition;
   } else {
     // A direct artifact names its functions refused for a loop guard as a master names its refused entries, with
@@ -18821,16 +18918,23 @@ function compileResolvedAst(
   const childPoolReads = createdPoolReads(ast.contract, ast.freeFunctions);
   if (childPoolReads !== undefined) artifact.createdPoolReads = childPoolReads;
   if (ast.contract.usesBlockOracle) {
-    artifact.usesBlockOracle = true;
     // A direct reader takes P as its `__oraclePool` input; a framed one carries it in pool slots.
     if (isFramedMaster(mergedCompilerOptions as InternalCompilerOptions)) {
       const slots = findOraclePoolSlots(asmToBytecode(artifact.bytecode));
-      if (slots.length === 0) {
+      // A framed entry the master refuses runs none of its body, so a contract whose only clock read is in such a
+      // body reads no pool.
+      const refusedOnly = (artifact.composition?.refusedEntries?.length ?? 0) > 0;
+      if (slots.length > 0) {
+        artifact.usesBlockOracle = true;
+        artifact.oraclePoolSlots = slots;
+      } else if (!refusedOnly) {
         throw new Error(`'${artifact.contractName}' reads the block oracle but did not publish its pool slot`);
       }
-      artifact.oraclePoolSlots = slots;
-    } else if (!takesOraclePool(ast.contract)) {
-      throw new Error(`'${artifact.contractName}' reads the block oracle but takes no ${ORACLE_POOL_PARAMETER}`);
+    } else {
+      artifact.usesBlockOracle = true;
+      if (!takesOraclePool(ast.contract)) {
+        throw new Error(`'${artifact.contractName}' reads the block oracle but takes no ${ORACLE_POOL_PARAMETER}`);
+      }
     }
   }
   const boundVerifierProgram = mergedCompilerOptions.__messageBusVerifierProgram ?? singlePassVerifierProgram;
@@ -19128,6 +19232,36 @@ function validateInheritedPrivateFunctionAccess(ast: Ast): void {
  * Abstract contracts are excluded (not deployable). `compileString` is unchanged (single primary artifact).
  * See docs/multi-contract-artifacts.md.
  */
+/**
+ * The contracts the given contracts create: every `type(C).creationCode` and every `new C(...)` names its child. The
+ * walk follows each node's fields once, so references back up the tree (a resolved contract) end it.
+ */
+function framedCreationTargetsOf(contracts: readonly ContractNode[]): string[] {
+  const targets = new Set<string>();
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof TypeIntrospectionNode && value.property === 'creationCode') targets.add(value.typeArgText);
+    if (value instanceof InstantiationNode) targets.add(value.identifier.name);
+    for (const field of Object.values(value)) walk(field);
+  };
+  for (const contract of contracts) walk(contract);
+  return [...targets];
+}
+
+/**
+ * The contracts a source creates, by `type(C).creationCode` or `new C(...)`, its imports included. A project compiler
+ * gathers them across every source and passes them to each compile (`framedCreationTargets`), since a creator and its
+ * child need not share a source.
+ */
+export function framedCreationTargetsOfSource(code: string, options: CompileStringOptions = {}): string[] {
+  const parsed = parseAndResolve(code, normalizeCompilerOptions(withFilesResolver(options)), options.errorListener);
+  return framedCreationTargetsOf(
+    [...parsed.importedContracts, parsed.contract].filter((contract): contract is ContractNode => contract !== undefined),
+  );
+}
+
 export function compileStringMulti(code: string, options: CompileStringOptions = {}): ArtifactMap {
   const compilerOptions: CompileOptions = withFilesResolver(options);
   const { upgradesFrom } = compilerOptions;
@@ -19197,6 +19331,12 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
   });
   const allContracts = [...probe.importedContracts, probe.contract].filter(Boolean);
   const interfaces = probe.interfaceDefinitions ?? [];
+  // The contracts another contract of the unit creates: their masters carry no deployment slot, so each shard has one
+  // lock its creator can check the child's genesis against (docs/framed/CREATE2_IDENTITY.md).
+  const creationTargets = new Set([
+    ...framedCreationTargetsOf(allContracts.filter((contract): contract is ContractNode => contract !== undefined)),
+    ...(artifactCompilerOptions.framedCreationTargets ?? []),
+  ]);
   // Taken from the pristine probe: the last primary's pipeline consumes it.
   const implementers = artifactCompilerOptions.callBatch === undefined
     ? interfaceImplementers(interfaces, allContracts) : new Map<string, string[]>();
@@ -19237,6 +19377,7 @@ function compileStringMultiUnchecked(code: string, compilerOptions: CompileOptio
       suppressWarnings,
       primaryContractName: contract.name,
       __parsedAst: parsedAst,
+      ...(creationTargets.has(contract.name) ? { __framedConstantLock: true } : {}),
     } as CompileOptions);
     const compiled = map[contract.name];
     profileLog('multi-contract', contractStarted, {
@@ -19304,6 +19445,7 @@ type SplitHelperCutProfile = {
   readsLocalState: boolean;
   writesState: boolean;
   externalCalls: boolean;
+  sendsValue: boolean;
   unknown: boolean;
 };
 
@@ -19358,7 +19500,9 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
     options: compilerOptions,
     host: {
       prepare(source, options) {
-        probe = prepareSplitAst(source, normalizeCompilerOptions(stripSplitPlanning(options)), errorListener);
+        probe = prepareSplitAst(
+          source, normalizeCompilerOptions(stripSplitPlanning(options)), errorListener, compilerOptions.primaryContractName,
+        );
         return probe;
       },
       compileMonolith(source, options) {
@@ -19366,12 +19510,20 @@ function runFunctionSplit(code: string, compilerOptions: SplitCompileOptions): F
         return logical;
       },
       compileParsed(source, options, ast, frameKinds) {
+        // A contract the unit (or the project, through the option) creates: its shards carry no deployment slot.
+        const creationTarget = probe !== undefined && new Set([
+          ...framedCreationTargetsOf([...probe.importedContracts, probe.contract].filter(
+            (contract): contract is ContractNode => contract !== undefined,
+          )),
+          ...(options.framedCreationTargets ?? []),
+        ]).has(probe.contract.name);
         return compileStringUnchecked(source, {
           ...stripSplitPlanning(options),
           errorListener,
           __parsedAst: ast,
           __functionSplitPrepared: true,
           __functionSplitFrameKinds: frameKinds,
+          ...(creationTarget ? { __framedConstantLock: true } : {}),
           ...(probe !== undefined && contractNamesTokenContainer(probe.contract)
             ? { __framedContractHoldsTokens: true } : {}),
           ...(logical === undefined ? {} : splitLogicalEventOptions(logical, probe)),
@@ -19483,7 +19635,7 @@ function compileStringSplitUnchecked(
   // Split preparation is source-wide and independent of physical placement. Keep one template and clone it for
   // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
   // every packing probe made split compilation scale with (candidate count * front-end cost).
-  const probe = prepareSplitAst(code, merged, errorListener);
+  const probe = prepareSplitAst(code, merged, errorListener, compilerOptions.primaryContractName);
   Object.assign(merged, splitLogicalEventOptions(baseline, probe));
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
@@ -19708,7 +19860,7 @@ function compileStringSplitUnchecked(
           });
         }
       });
-      prepareSplitRoot(trial.contract, trialRoutes, compilerOptions.evmCompat === true);
+      prepareSplitRoot(trial.contract, trialRoutes, compilerOptions.evmCompat === true, compilerOptions.addressForm);
       trial.contract.implements = [];
       trial.contract.parentInvocations = [];
       for (const fn of trial.contract.functions) {
@@ -19805,7 +19957,7 @@ function compileStringSplitUnchecked(
       ...(censusedCollectionSignatures.length > 0 && { censusedCollectionSignatures }),
     });
   }
-  prepareSplitRoot(rootAst.contract, routeByName, compilerOptions.evmCompat === true);
+  prepareSplitRoot(rootAst.contract, routeByName, compilerOptions.evmCompat === true, compilerOptions.addressForm);
   // `rootAst` is also the already-flattened logical contract. Its second compiler pass must not interpret
   // source-only override base lists against the now-empty concrete-base list.
   rootAst.contract.implements = [];
@@ -19952,6 +20104,7 @@ function splitHelperCutProfiles(
           resource.startsWith('state:') || resource.startsWith('collection:')),
         writesState: footprint.writes.length > 0,
         externalCalls: footprint.effects.includes('external-call') || hasTransitiveTypedExternalCall(helper),
+        sendsValue: footprint.effects.includes('value'),
         unknown: footprint.unknown,
       });
     }
@@ -20148,8 +20301,10 @@ function splitPreLowersFnPtrArrays(_options: CompilerOptions): boolean {
  * inherited entry points, inherited state, and modifier-injected calls/effects. */
 function prepareSplitAst(
   code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
+  primaryContractName: string | undefined,
 ): Ast {
-  let ast = parseAndResolve(code, options, listener);
+  // The split is of the contract the compile names, as the monolith it is checked against is.
+  let ast = parseAndResolve(code, options, listener, primaryContractName);
   if (!(rootSourceCoversProgram(ast) && !code.includes('using '))) {
     ast = ast.accept(new RedesugarImportedUsingForCalls(true)) as Ast;
   }
@@ -20187,8 +20342,8 @@ function prepareSplitAst(
   if (!(rootSourceCoversProgram(ast) && !code.includes('assembly'))) {
     ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   }
-  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of the shared
-  // covenant; the pass marks the function and injects no state. Running it on the complete function set
+  // Sharding must happen after storage-shaping synthesis. A block.* read stays a read of a pool coin; the pass
+  // marks the function and injects no state. Running it on the complete function set
   // keeps that mark on the same functions the unsplit pipeline marks.
   if (!(rootSourceCoversProgram(ast) && !code.includes('block.') && !code.includes('now'))) {
     ast = ast.accept(new SynthesizeBlockOracle(
@@ -20308,7 +20463,7 @@ function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
 
 function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
   facet: string; link: string; delegateEventOffsets?: number[]; censusedCollectionSignatures?: string[];
-}>, evmCompat = false): void {
+}>, evmCompat = false, addressForm?: CompilerOptions['addressForm']): void {
   // Once moved entry bodies become forwarders, helpers reachable only from those entries belong exclusively to
   // facets. Leaving their OP_INVOKE bodies in the root defeats splitting and can keep an otherwise valid root over
   // the VM limit. Preserve helpers reachable from root-local entries and the constructor.
@@ -20371,6 +20526,10 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, {
       const bytes = new IdentifierNode(dataName); bytes.location = fn.location;
       const decode = new AbiDecodeNode(bytes, fn.returnTypes); decode.location = fn.location;
       decode.trustedEncoding = true;
+      // The facet returns in the wire its entry publishes, which carries an address result whole under 'bytecode'.
+      decode.resultWire = externalResultEncoding(
+        fn.returnTypes, { evmCompat, ...(addressForm === undefined ? {} : { addressForm }) },
+      );
       let returnStatement: ReturnNode;
       const statements: StatementNode[] = [capture, guard];
       if (fn.returnTypes.length === 1) {
@@ -20413,6 +20572,79 @@ function generateInterfaceArtifact(
   } finally {
     ast.libraryName = savedLibraryName;
   }
+}
+
+/**
+ * Folds `keccak256(type(C).creationCode)` in the expressions a contract publishes for its external calls.
+ *
+ * The routing a builder evaluates is serialized before the referenced contracts are compiled, so the creation code
+ * of a child is not yet known there and the serializer marks it (`creationCodeOf`). Once the children are compiled,
+ * each such hash is the digest of the child's program, which is what code generation folds the body's own hash to.
+ */
+function foldPublishedCreationCodeHashes(contract: ContractNode, compiledBytecodes: ReadonlyMap<string, Uint8Array>): void {
+  const fold = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(fold);
+    if (value === null || typeof value !== 'object' || value instanceof Node || value instanceof Uint8Array) return value;
+    const record = value as Record<string, unknown>;
+    const args = record.args;
+    if (record.kind === 'call' && record.name === 'keccak256' && Array.isArray(args) && args.length === 1) {
+      const child = (args[0] as { creationCodeOf?: unknown } | undefined)?.creationCodeOf;
+      const bytes = typeof child === 'string' ? compiledBytecodes.get(child) : undefined;
+      if (bytes !== undefined) {
+        return { kind: 'literal', type: 'bytes32', value: binToHex(Uint8Array.from(keccak_256(bytes))) };
+      }
+    }
+    for (const key of Object.keys(record)) {
+      const folded = fold(record[key]);
+      if (folded !== record[key]) record[key] = folded;
+    }
+    return record;
+  };
+  for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
+    for (const slot of fn?.externalCalls ?? []) fold(slot);
+  }
+}
+
+/**
+ * The genesis a framed creating body replays for a child of this unit, by name: its constructor folded with the
+ * creator as `msg.sender`, then the initializer the creator calls on it over the creator's arguments.
+ */
+function framedGenesisReplayer(ast: Ast, compilerOptions: CompilerOptions): FramedGenesisReplayer {
+  const contracts = new Map(ast.importedContracts.map((contract) => [contract.name, contract]));
+  const contractTypes = new Set([
+    ...ast.importedContracts.map((contract) => contract.name),
+    ...(ast.contract ? [ast.contract.name] : []),
+    ...ast.interfaceDefinitions.map((iface) => iface.name),
+  ]);
+  return (contractName, initializer) => {
+    const child = contracts.get(contractName);
+    if (child === undefined) {
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `a framed creator replays the genesis of the "${contractName}" it creates, which this compile unit does not `
+        + 'hold apart from the creator',
+        { requested: 'framed', reason: 'create2-genesis-replay', contract: contractName },
+      );
+    }
+    const visible = (fn: FunctionDefinitionNode): number => fn.parameters
+      .filter((parameter) => !parameter.name.startsWith('__internal__')).length;
+    const callee = initializer === undefined ? undefined : child.functions.find((fn) =>
+      fn.name === initializer.functionName && visible(fn) === initializer.args.length);
+    if (initializer !== undefined && callee === undefined) {
+      throw new SolidcDiagnosticError(
+        'FRAMED_CODEGEN_UNAVAILABLE',
+        `a framed creator folds "${contractName}.${initializer.functionName}" into the child's genesis, and the child `
+        + `declares no "${initializer.functionName}" of ${initializer.args.length} parameters`,
+        { requested: 'framed', reason: 'create2-genesis-replay', contract: contractName },
+      );
+    }
+    return framedChildGenesisReplay({
+      child,
+      compilerOptions,
+      ...(callee === undefined ? {} : { initializer: { callee, args: initializer!.args } }),
+      isContractType: (name) => contractTypes.has(name),
+    });
+  };
 }
 
 /**

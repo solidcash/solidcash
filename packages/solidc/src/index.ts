@@ -5,7 +5,7 @@ export {
   assertNoReservedMessageBusSelector,
   classifyMessageBusRejection,
   clearCompileCache,
-  compileString, compileStringMulti, compileStringSplit, DEFAULT_COMPILER_OPTIONS,
+  compileString, compileStringMulti, compileStringSplit, DEFAULT_COMPILER_OPTIONS, framedCreationTargetsOfSource,
   ensureMessageBusAdmissionStamp,
   getArtifactCacheHitCount,
   resetPendingSpanAdmissionAnalysis,

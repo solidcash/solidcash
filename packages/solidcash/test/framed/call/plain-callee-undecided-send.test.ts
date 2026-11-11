@@ -4,6 +4,7 @@ import { FrameKind } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import type { FunctionArgument } from '../../../src/Argument.js';
 import type { FramedCallResult } from '../../../src/framed/call/index.js';
+import { readSatoshiContainers, satoshiContainerLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
@@ -15,9 +16,10 @@ import {
  * `Vault.share` pays the native coin through a low-level call when the token it is named is the zero address, and
  * otherwise moves the token. `Vault.refund` reads a deal into memory and branches on the deal's token the same way:
  * a guard over a memory copy of a record is one the send's row does not reproduce. A send the facts do not decide
- * is listed by none, as the hop's callee frames list none, and its body settles it: for a real token the body skips
- * the send and moves the token, the payouts settle and the token balances read back. For the zero address the body
- * reaches a send its frame lists no output for, and the send is refused before anything is spent.
+ * is listed by the vault's frame as the entry lists its own, and its body settles it: for a real token the body skips
+ * the send, so the run shows it made none and the call is planned again listing none; the token moves and the
+ * balances read back. For the zero address the body makes the send, which the vault's containers pay: a vault that
+ * holds less is refused by name before anything is spent, and a funded one pays each recipient's lock.
  */
 
 const SOURCE = [
@@ -166,7 +168,7 @@ describe('a plain callee whose value send its call does not decide', () => {
       .toStrictEqual([vaultBefore - 50n, 50n]);
   }, 600_000);
 
-  it('refuses a share and a refund whose body reaches its send, before anything is spent', async () => {
+  it('refuses a share and a refund whose send the vault\'s containers do not cover, before anything is spent', async () => {
     const c = await chain();
     await settle(c.world, c.vault, 'open', [NATIVE_DEAL, PAYER, ZERO_ADDRESS, 50n]);
     const before = [await balanceOf(c, c.vault.address), await balanceOf(c, RECIPIENT), await balanceOf(c, PAYER)];
@@ -174,5 +176,23 @@ describe('a plain callee whose value send its call does not decide', () => {
     expectRefused(await enterDesk(c, 'refundDeal', [NATIVE_DEAL]));
     expect([await balanceOf(c, c.vault.address), await balanceOf(c, RECIPIENT), await balanceOf(c, PAYER)])
       .toStrictEqual(before);
+  }, 600_000);
+
+  it('pays a share and a refund in the native coin from a funded vault\'s containers', async () => {
+    const c = await chain();
+    await c.world.network.addUtxo(binToHex(satoshiContainerLockingBytecode(c.vault.categoryId)),
+      { txid: '5d'.repeat(32), vout: 0, satoshis: 20_000n });
+    const pays = async (paid: Outcome<FramedCallResult>, lock: Uint8Array, amount: bigint): Promise<void> => {
+      expect(paid.error?.message).toBeUndefined();
+      expect(refusedVerdicts(paid.result!)).toBeUndefined();
+      expect(paid.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(paid.result!.transaction.outputs.filter((output) => binToHex(output.lockingBytecode) === binToHex(lock))
+        .map((output) => output.valueSatoshis)).toStrictEqual([amount]);
+    };
+    await pays(await enterDesk(c, 'payOut', [RECIPIENT, 2_000n, ZERO_ADDRESS]), RECIPIENT, 2_000n);
+    await settle(c.world, c.vault, 'open', [NATIVE_DEAL + 1n, PAYER, ZERO_ADDRESS, 3_000n]);
+    await pays(await enterDesk(c, 'refundDeal', [NATIVE_DEAL + 1n]), PAYER, 3_000n);
+    const kept = await readSatoshiContainers(c.world.network, c.vault.categoryId);
+    expect(kept.reduce((sum, utxo) => sum + utxo.satoshis, 0n)).toBe(15_000n);
   }, 600_000);
 });

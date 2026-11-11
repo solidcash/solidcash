@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hash160 } from '@solidcash/utils';
 import type {
   ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression,
@@ -26,6 +27,7 @@ import {
   expandResolveCreateBuilderExternalCalls,
   type ExpandResolveCreateBuilderExternalCallsHost,
 } from '../../src/stateful/sc-expand-resolve-create-builder-external-calls.js';
+import { orchestrateCreateBuilderExternalCalls } from '../../src/stateful/sc-orchestrate-create-builder-external-calls.js';
 import { fillCreateBuilderDirectCallArgWitnesses } from '../../src/stateful/sc-fill-create-builder-direct-call-arg-witnesses.js';
 
 type PredicateEvaluator = {
@@ -769,6 +771,62 @@ describe('compiler-published external-call predicate evaluation', () => {
       expression, [`0x${binToHex(lock)}`], artifact, undefined, [{ type: 'address' }],
     )).toEqual(hash160(lock));
   });
+
+  it('evaluates a library CREATE2 helper used as an external-call target', () => {
+    // The shape `UniswapV2Library.pairFor` publishes on a call target: a pure helper whose body sorts its
+    // arguments through a tuple assignment and hashes the packed result. Resolving it pins the callee; the
+    // evaluator must reproduce the digest the covenant computes, including the big-endian word casts.
+    const targetArtifact = compileString(`
+      pragma solidity >=0.8.0;
+      library PairMath {
+        function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+          require(tokenA != tokenB, 'PairMath: IDENTICAL_ADDRESSES');
+          (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+          require(token0 != address(0), 'PairMath: ZERO_ADDRESS');
+        }
+        function pairFor(address factory, address tokenA, address tokenB) internal pure returns (address pair) {
+          (address token0, address token1) = sortTokens(tokenA, tokenB);
+          pair = address(uint160(uint256(keccak256(abi.encodePacked(
+            hex'ff',
+            factory,
+            keccak256(abi.encodePacked(token0, token1)),
+            hex'e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303'
+          )))));
+        }
+      }
+      interface IPing { function ping() external; }
+      contract Caller(address target) {
+        function run(address factory, address tokenA, address tokenB) public {
+          IPing(address(PairMath.pairFor(factory, tokenA, tokenB))).ping();
+        }
+      }
+    `, { evmCompat: true, forceStateful: true });
+    const run = targetArtifact.abi.find((candidate) => candidate.name === 'run')!;
+    const addressSource = run.externalCalls?.[0].addressSource;
+    expect(addressSource?.kind).toBe('expression');
+
+    const caller = new StatefulContract(
+      '00'.repeat(32), targetArtifact, createTestProvider(),
+      { constructorArgs: [new Uint8Array(20)] },
+    ) as unknown as PredicateEvaluator;
+    const factory = Uint8Array.from({ length: 20 }, (_unused, index) => index + 1);
+    const tokenA = Uint8Array.from({ length: 20 }, (_unused, index) => 0x40 + index);
+    const tokenB = Uint8Array.from({ length: 20 }, (_unused, index) => 0x20 + index);
+    const resolved = caller._resolveExternalArgs(
+      [addressSource!], [factory, tokenA, tokenB], targetArtifact, undefined, run.inputs,
+    )?.[0];
+
+    const sorted = [tokenA, tokenB].sort((left, right) => (
+      binToHex(left) < binToHex(right) ? -1 : 1
+    ));
+    const salt = keccak_256(Uint8Array.from([...sorted[0]!, ...sorted[1]!]));
+    const digest = keccak_256(Uint8Array.from([
+      0xff, ...factory, ...salt,
+      ...hexToBin('e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303'),
+    ]));
+    // An EVM CREATE2 identity is the low 160 bits of the digest, i.e. its last twenty bytes.
+    expect(resolved).toEqual(digest.slice(12));
+  });
 });
 
 describe('conditional external-call topology', () => {
@@ -1288,5 +1346,84 @@ describe('conditional external-call topology', () => {
 
     expect(resolveAt(0)).toEqual(['test']);
     expect(resolveAt(2)).toEqual(['test']);
+  });
+
+  it('refuses a callee that only an off-chain CREATE2 projection names', async () => {
+    const callee = { categoryId: 'ab'.repeat(31) + '54' };
+    const fn = {
+      name: 'run', inputs: [{ name: 'pair', type: 'address' }], externalCalls: [{
+        interfaceName: 'IUniswapV2Pair', functionName: 'getReserves', requiredDataNftIndices: [],
+        addressSource: { kind: 'expression', expression: source(0) },
+      }],
+    } as unknown as Artifact['abi'][number];
+    const host = {
+      getExternalTargetEntriesByInterface: () => [],
+      getExternalRegistryEntry: () => undefined,
+      getExternalDeploymentByAddressValue: () => callee,
+      isCreate2ProjectedAddressValue: () => true,
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      evaluateExternalExpression: (...values: any[]) => (
+        evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+      )(...values),
+    };
+
+    await expect(expandResolveCreateBuilderExternalCalls(
+      host, fn, [Uint8Array.from({ length: 20 }, (_unused, index) => index + 1)], artifact,
+      undefined, undefined,
+    )).rejects.toThrow(/CREATE2 identity/);
+  });
+
+  it('refuses to assemble a transaction whose reached callee cannot be pinned', async () => {
+    // A Router `addLiquidity` call reaches `IUniswapV2Pair.getReserves` on a pair created in the same
+    // transaction. The planner has no co-spendable deployment, and leaving the topology witnesses at their
+    // defaults would fail an unrelated `OP_VERIFY`. The build must name the real problem instead.
+    const fn = {
+      name: 'run', inputs: [], externalCalls: [{
+        callsiteId: 0, interfaceName: 'IUniswapV2Pair', functionName: 'getReserves',
+        requiredDataNftIndices: [], occurrence: 'once', argSources: [], hasReturnValues: true,
+        returnTypes: ['uint112', 'uint112', 'uint32'],
+      }],
+    } as unknown as Artifact['abi'][number];
+    const provider = createTestProvider();
+    const host = {
+      categoryId: '00'.repeat(32),
+      inner: {
+        provider, artifact, lockingBytecode: '51', encodedConstructorArgs: [],
+        oraclePool: undefined, getExternalTargetEntriesByInterface: () => [],
+      },
+      signer: undefined,
+      externalRegistry: new Map(),
+      callerContract: {
+        _evaluateExternalExpression: (...values: any[]) => (
+          evaluator._evaluateExternalExpression as (...args: any[]) => FunctionArgument | undefined
+        )(...values),
+        _resolveExternalExpressionReturns: async () => new Map(),
+        _hydrateExternalPredicateState: async () => ({}),
+      },
+      getFullState: async () => ({ state: {} }),
+      resolveExternalArgs: (...values: any[]) => (
+        evaluator._resolveExternalArgs as (...args: any[]) => FunctionArgument[] | undefined
+      )(...values),
+      buildRepeatedExternalBatch: () => undefined,
+      resolveExternalKeccakSideCars: () => undefined,
+      resolveExternalBlockhashCoSpends: () => undefined,
+      keysMatch: () => false,
+    } as never;
+    const params = {
+      abiFunction: fn, args: [], finalArgs: [], overrides: {}, onChainState: { state: {} },
+      requiredNftIndices: [], externalReadUtxos: [], outStateInputCount: 0,
+      externalOutStateUtxoGroups: [], earlySignerUtxos: undefined,
+      publicSelfAddress: undefined, publicSelfIdentity: undefined,
+      physicalSelfAddress: new Uint8Array(35), timing: () => undefined,
+      valueChunkWriteStagingSession: undefined, iterationEntryInputs: [], entryNfts: [],
+      condSoftDeleteSlots: new Set<number>(), entryDeleteSlots: new Set<number>(),
+      selectorParamSlot: undefined, isComputedBlockhashKey: () => false, maxBhLocktime: 0,
+    };
+
+    await expect(orchestrateCreateBuilderExternalCalls(host, params as never))
+      .rejects.toThrow(/could not pin the callee for IUniswapV2Pair\.getReserves/);
   });
 });

@@ -23,7 +23,9 @@ import {
  *
  * The case drives the shipped compiler, the shipped composer and the shipped machine. Its control is the sharpest
  * part of it: the same program and the same witnesses, with only the record's output commitment changed to the one
- * a write that rebuilt the commitment from the written field alone would leave, is refused.
+ * a write that rebuilt the commitment from the written field alone would leave, is refused. The body closes its
+ * write against the declaration, and the validator, which settles the master's contract (V8), ties the
+ * declaration to the output: the refusal is the validator's.
  */
 
 const LABEL = 'partial write vault';
@@ -31,10 +33,10 @@ const RECORD_ID = 'record';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const MASTER_ID = 'vault-1';
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits two participants on: the caller, the validator's head, the two facets it binds, then the record.
+const RECORD_INDEX = 4;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Other { function ping() { require(true); } }'
   + ' contract Vault {'
   + '   address public implementation;'
@@ -56,6 +58,7 @@ function derive(counterWritten: bigint): {
   readonly program: ReturnType<ReturnType<typeof createComposedDerivationHost>['draft']['programFor']>;
   readonly vm: ReturnType<typeof compositionMachine>;
   readonly recordIndex: number;
+  readonly validatorIndex: number;
 } {
   const { artifacts, contracts } = compileAndDeploy(SOURCE, { Vault: LABEL, Other: 'partial write other' });
   const vault = contracts.Vault!;
@@ -83,8 +86,8 @@ function derive(counterWritten: bigint): {
     blocks: [
       { contract: 'Vault', masters: [MASTER_ID], validator: { id: VALIDATOR_ID, settles: [] }, state: [RECORD_ID] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs([USER_ID], 4),
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: userInputs([USER_ID], 5),
     masters: [vaultMaster],
     inputs: {
       [MASTER_ID]: { source: masterInput(vault) },
@@ -111,15 +114,22 @@ function derive(counterWritten: bigint): {
     vm, artifacts: [artifacts.Vault!, artifacts.Other!], plan,
   });
   deriveComposition([rootOf('Vault', 'bump', MASTER_ID)], host);
-  return { artifacts, program: draft.programFor(MASTER_ID), vm, recordIndex: participant(draft.layout, RECORD_ID).index };
+  return {
+    artifacts, program: draft.programFor(MASTER_ID), vm, recordIndex: participant(draft.layout, RECORD_ID).index,
+    validatorIndex: participant(draft.layout, VALIDATOR_ID).index,
+  };
 }
 
-/** The verdict on the master of a program, with the record's output commitment replaced when one is given. */
+/**
+ * The verdict on one input of a program, the master unless `inputIndex` names another, with the record's output
+ * commitment replaced when one is given.
+ */
 function verdictWithOutput(
   program: ReturnType<ReturnType<typeof createComposedDerivationHost>['draft']['programFor']>,
   vm: ReturnType<typeof compositionMachine>,
   recordIndex: number,
   replacement?: Uint8Array,
+  inputIndex = program.inputIndex,
 ): { readonly accepted: boolean; readonly error?: string } {
   const transaction = replacement === undefined
     ? program.transaction
@@ -129,7 +139,7 @@ function verdictWithOutput(
         ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: replacement } } }
         : output)),
     };
-  const state = vm.evaluate({ inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction });
+  const state = vm.evaluate({ inputIndex, sourceOutputs: program.sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }
     : { accepted: false, error: String(state.error) };
@@ -137,18 +147,21 @@ function verdictWithOutput(
 
 describe('a record write that leaves another field alone', () => {
   it('accepts the write when the declared output keeps every field', () => {
-    const { program, vm } = derive(6n);
+    const { program, vm, validatorIndex } = derive(6n);
     expect(verdictWithOutput(program, vm, RECORD_INDEX)).toStrictEqual({ accepted: true });
+    expect(verdictWithOutput(program, vm, RECORD_INDEX, undefined, validatorIndex)).toStrictEqual({ accepted: true });
   });
 
   it('refuses the same write when the record\'s output drops the field the body did not touch', () => {
-    const { artifacts, program, vm } = derive(6n);
+    const { artifacts, program, vm, validatorIndex } = derive(6n);
     // The written field alone: the commitment a write that rebuilt the record from that field would leave.
     const dropped = new Uint8Array(Buffer.from(
       buildPushdataCommitment(artifacts.Vault!.stateLayout!, { counter: 6n }, 0), 'hex'));
     const derived = program.transaction!.outputs[RECORD_INDEX]!.token!.nft!.commitment;
     expect(bytesToHex(dropped)).not.toBe(bytesToHex(derived));
-    const verdict = verdictWithOutput(program, vm, RECORD_INDEX, dropped);
+    // The master leaves the settlement to the validator, which holds the declaration to the output.
+    expect(verdictWithOutput(program, vm, RECORD_INDEX, dropped).accepted).toBe(true);
+    const verdict = verdictWithOutput(program, vm, RECORD_INDEX, dropped, validatorIndex);
     expect(verdict.accepted).toBe(false);
     expect(verdict.error).toContain('OP_VERIFY');
   });

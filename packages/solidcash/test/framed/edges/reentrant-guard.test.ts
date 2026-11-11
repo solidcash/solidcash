@@ -29,7 +29,7 @@ const tokenWith = (
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment } });
 
-const GUARDED = 'pragma solidcash ^0.14.0;'
+const GUARDED = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Guarded {'
@@ -53,8 +53,8 @@ const BEFORE = commitment(0n, 5n);
 // The segment boundary at the call: the guard is set and the first increment done.
 const MIDDLE = commitment(1n, 6n);
 const AFTER = commitment(0n, 8n);
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits after the caller, the validator's head and the two facets it binds.
+const RECORD_INDEX = 4;
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
   ({ in: RECORD_INDEX, out: RECORD_INDEX, viewIn, viewOut });
 
@@ -103,8 +103,8 @@ function plan(): CompositionDraftPlan {
   };
   return {
     blocks,
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: 'user', index: 5 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: 'user', index: 6 }],
     masters: [guardedMaster, calleeMaster],
     inputs: {
       'guarded-1': { source: { lockingBytecode: guarded.lockingBytecode, valueSatoshis: 20_000n, token: tokenWith(guarded.category, 'minting', new Uint8Array(0)) } },
@@ -157,7 +157,7 @@ describe('a guard a callee re-enters', () => {
     // re-enters the contract mid-guard. Both entries share one master head; the head walks the call section with
     // the length the block declares and each body pins it to the calls its own source makes, so the two entries
     // may declare different lengths.
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface ICallee { function hop(); }'
       + ' contract Callee { function hop() { require(true); } }'
       + ' contract Guarded {'

@@ -33,7 +33,7 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Bank {'
   + '   receive() external payable { require(true); }'
   + '   function check(int expected) { require(address(this).balance == expected); }'
@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidcash ^0.14.0;'
   + '   }'
   + ' }';
 
-const OTHER_SOURCE = 'pragma solidcash ^0.14.0;'
+const OTHER_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Peek {'
   + '   function peek(address who) { require(who.balance > 0); }'
   + '   function own() { require(address(this).balance >= 0); }'
@@ -178,13 +178,38 @@ describe('address(this).balance, compiled framed', () => {
   });
 });
 
+const OUT_STATE_SOURCE = 'pragma solidcash ^0.14.0;'
+  + ' contract OutState {'
+  + '   constructor() { }'
+  + '   function check(int expected) { require(this.outState.balance == expected); }'
+  + ' }';
+
+describe('this.outState.balance, compiled framed', () => {
+  it('sums the contract\'s own output container and is not refused as another address\'s balance', () => {
+    const outState = compileString(OUT_STATE_SOURCE, { composition: 'framed' });
+    expect(outState.composition!.refusedEntries).toBeUndefined();
+    // It reads outputs, so the builder need not spend the contract's containers for it.
+    expect(outState.composition!.balanceReaders).toBeUndefined();
+    expect(verdict({
+      artifact: outState, entry: 'check', args: [int(50_000n)], containersIn: [], trailing: [container(50_000n)],
+    })).toStrictEqual({ accepted: true });
+    expect(verdict({
+      artifact: outState, entry: 'check', args: [int(49_999n)], containersIn: [], trailing: [container(50_000n)],
+    }).accepted).toBe(false);
+    // A spent container is not an output: the read sees only what the transaction pays to it.
+    expect(verdict({
+      artifact: outState, entry: 'check', args: [int(50_000n)], containersIn: [50_000n], trailing: [],
+    }).accepted).toBe(false);
+  });
+});
+
 /**
  * A constructor's balance read (spec 4b): the constructor runs only at its genesis, and no genesis shows a balance.
  * Another address's balance shows only in the inputs a transaction spends, and the contract's own is the
  * containers a transaction spends beside one of its masters, which do not exist before the genesis. A read is
  * refused by name and published as the constructor's refusal, while the bodies the master serves keep serving.
  */
-const constructorSource = (name: string, members: string): string => 'pragma solidcash ^0.14.0;'
+const constructorSource = (name: string, members: string): string => 'pragma solidcash ^0.50.0;'
   + ` contract ${name} {${members}`
   + '   function note() { require(true); }'
   + ' }';
@@ -205,13 +230,13 @@ const SOLIDITY_OWN_BALANCE_SOURCE = 'pragma solidity ^0.8.0;'
   + ' contract Sol { uint256 public seen; constructor() { seen = address(this).balance; }'
   + '   function note() public { seen = seen + 1; } }';
 
-const KEPT_SOURCE = 'pragma solidcash ^0.14.0;'
+const KEPT_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Kept {'
   + '   constructor() { require(address(this).balance >= 0); }'
   + '   function check(int expected) { require(address(this).balance == expected); }'
   + ' }';
 
-const SERVED_SOURCE = 'pragma solidcash ^0.14.0;'
+const SERVED_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Served {'
   + '   constructor() { require(true); }'
   + '   function check(int expected) { require(address(this).balance == expected); }'
@@ -277,7 +302,7 @@ describe('a constructor that reads a balance, compiled framed', () => {
  * emitted and used to fail the whole compile. It is emitted as a refusal stub instead, and the entry and the
  * constructor that run it are refused with it, by name, while the entry that reads its balance itself settles.
  */
-const KEPT_HELPER_SOURCE = 'pragma solidcash ^0.14.0;'
+const KEPT_HELPER_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Vault {'
   + '   constructor() { require(mine() >= 0); }'
   + '   function f(int expected) { require(mine() == expected); }'

@@ -18,7 +18,7 @@ import type {
 } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
-  buildKeccakChainSidecars, buildKeccakComputeSidecar,
+  buildKeccakChainSidecars, buildKeccakComputeSidecar, groupKeccakPreimages,
 } from '../keccak/keccakComputeSidecar.js';
 import { addressToLockScript } from '../utils.js';
 import {
@@ -56,6 +56,9 @@ export type ResolveKeccakProbeCtx = {
   dataNftUtxos: Utxo[];
   dataNftUnlockers: Unlocker[];
   frontRegionInputs?: UnlockableUtxo[];
+  /** Physical block slots after the keccak band that the master reads before its side-car bindings (entry
+   * proofs, in particular). The probe must carry them, or the first `tx.inputs[k]` read aborts it. */
+  slotInputs?: ReadonlyArray<{ offset: number; utxo: Utxo; unlocker: Unlocker }>;
   /** Read-only trailing run in transaction order: collection-iteration entries, then dynamic chunk runs. */
   trailingReadInputs?: readonly UnlockableUtxo[];
   /** The first read-only dynamic chunk, which an explicit dynamic chunk base addresses. */
@@ -131,8 +134,14 @@ export async function resolveKeccakComputeCoSpends(
   probeCtx?: ResolveKeccakProbeCtx,
 ): Promise<ResolveKeccakComputeCoSpendsResult> {
   const params = abiFunction.keccakPreimageParams ?? [];
+  // An entry point whose keccak calls live in an outlined helper publishes no per-call preimage list (codegen
+  // records it in the helper body), while the compiler still counted the closure's calls and reserved the
+  // block-layout side-cars for them. Use the larger count so those preimages are learned by the VM probe
+  // instead of silently omitting the co-spends the covenant expects.
+  const declaredKeccakCalls = Number(abiFunction.externalLibraryCalls?.keccak256 ?? 0);
+  const keccakCallCount = Math.max(params.length, declaredKeccakCalls);
   const recoveryPreimages = probeCtx?.ecrecoverPreimages ?? [];
-  const totalCallCount = params.length + recoveryPreimages.length;
+  const totalCallCount = keccakCallCount + recoveryPreimages.length;
   if (totalCallCount === 0 || !host.categoryId) {
     return { coSpends: [], preimages: [], salt: new Uint8Array(32), legacy: false };
   }
@@ -196,7 +205,9 @@ export async function resolveKeccakComputeCoSpends(
     : keccakComputeLockingBytecode(salt, true);
   let scUtxos = (await host.inner.provider.getUtxosForLockingBytecode(lock))
     .filter((u) => u.token?.nft?.capability === 'mutable');
-  const batchCount = legacy ? totalCallCount : Math.ceil(totalCallCount / 3);
+  // Allocate conservatively: one side-car per preimage. The resolved preimages are grouped below by their
+  // block cost, because a single side-car funds at most three keccak blocks, not three preimages.
+  const batchCount = totalCallCount;
   // Mock providers can mint the branded compute side-cars on demand. Production providers do not expose
   // addUtxo, so real networks retain the explicit deployment requirement below.
   if (scUtxos.length < batchCount) {
@@ -219,12 +230,13 @@ export async function resolveKeccakComputeCoSpends(
   // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
   // are resolved by a VM probe of the master (mirrors the stateless resolveKeccakPreimages, but positioned
   // at the block-layout keccakSideCar slots).
-  if (probeCtx?.plannedPreimages && probeCtx.plannedPreimages.length !== params.length) {
+  if (probeCtx?.plannedPreimages && probeCtx.plannedPreimages.length !== keccakCallCount) {
     throw new Error('message-bus keccak recipe count does not match the selected compute calls');
   }
-  const preimages: (Uint8Array | null)[] = params.map((p, index) => {
+  const preimages: (Uint8Array | null)[] = Array.from({ length: keccakCallCount }, (_, index) => {
     const planned = probeCtx?.plannedPreimages?.[index];
     if (planned instanceof Uint8Array) return planned.slice();
+    const p = params[index];
     const value = p ? args[visible.findIndex((x) => x.name === p)] : undefined;
     return value instanceof Uint8Array ? value : null;
   });
@@ -274,11 +286,16 @@ export async function resolveKeccakComputeCoSpends(
   if (preimages.some((p) => p === null) && probeCtx?.deferUnresolved !== true) {
     await host.extractStatefulKeccakPreimages(abiFunction, preimages, salt, scUtxos, probeCtx);
   }
+  const groups = groupKeccakPreimages(preimages, legacy);
+  if (scUtxos.length < groups.length) {
+    throw new Error(`keccak256 needs ${groups.length} compute side-car UTXO(s) at the branded address; `
+      + `found ${scUtxos.length}. Deploy one mutable-NFT side-car per three keccak blocks.`);
+  }
   const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
-  for (let batch = 0; batch < batchCount; batch++) {
-    const batchPreimages = preimages.slice(batch * 3, batch * 3 + 3);
+  for (let batch = 0; batch < groups.length; batch++) {
+    const batchPreimages = groups[batch];
     if (legacy) {
-      const preimage = preimages[batch];
+      const preimage = batchPreimages[0];
       if (!(preimage instanceof Uint8Array) && probeCtx?.deferUnresolved !== true) {
         throw new Error(`keccak256 preimage ${batch} could not be resolved.`);
       }

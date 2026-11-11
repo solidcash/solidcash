@@ -50,8 +50,8 @@ const STORE_PROXY_CATEGORY = idOf('store proxy');
 const ROOT_IMPL_CATEGORY = idOf('root implementation');
 const ROOT_PROXY_CATEGORY = idOf('root proxy');
 /** Two escrow deployments: the buyer's token balance sorts right after the escrow's in one, before it in the other. */
-const ESCROW_BELOW_BUYER = idOf('escrow 168');
-const ESCROW_ABOVE_BUYER = idOf('escrow 3');
+const ESCROW_BELOW_BUYER = idOf('escrow 3');
+const ESCROW_ABOVE_BUYER = idOf('escrow 47');
 
 const JOB_ID = 0n;
 const ESCROW_ID = 3n;
@@ -65,7 +65,7 @@ const ROOT_PROXY_ADDRESS = validatorAddress(hexToBin(ROOT_PROXY_CATEGORY), VALID
 
 /** The five contracts; `guarded` keeps the escrow's own reentrancy guard, a write to its data record. */
 function sourceFor(guarded: boolean): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' struct Job { address worker; address arbitrator; int state; int escrowId; int disputed; }'
     + ' interface IStore {'
     + '   function markDown(address who); function markRefusal(address who); function log(int id, int kind);'

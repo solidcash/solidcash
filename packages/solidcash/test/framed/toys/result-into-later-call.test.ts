@@ -30,14 +30,14 @@ const PAY = hexOf(seededAddress(PAY_LABEL));
 /** Where the later call's second argument comes from. */
 type IdMode = 'literal' | 'runtime';
 const LITERAL_ID = 7n;
-/** The composed transaction's input count: the three masters, the validator, the facet it binds and the user. */
-const RUNTIME_ID = 6n;
+/** The composed transaction's input count: the three masters, the validator, the two facets it binds and the user. */
+const RUNTIME_ID = 7n;
 
 /** The source, with `id` taken from a literal or the running transaction's input count. */
 function source(mode: IdMode): string {
   const id = mode === 'literal' ? LITERAL_ID.toString() : 'id';
   const declare = mode === 'runtime' ? '     int id = tx.inputs.length;\n' : '';
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface IFee { function fee(int id) view returns (int); }'
     + ' interface IPay { function pay(int id, int amount); }'
     + ' contract Fee { function fee(int id) view returns (int) { return id * 2; } }'
@@ -91,8 +91,8 @@ function build(mode: IdMode): Built {
       { contract: 'Fee', masters: ['fee-1'], state: [] },
       { contract: 'Pay', masters: ['pay-1'], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs(['user'], 5),
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: userInputs(['user'], 6),
     masters: [
       draftMaster({
         master: 'claimer-1', contract: 'Claimer', functionName: 'Claimer.f()', program: claimer.program,

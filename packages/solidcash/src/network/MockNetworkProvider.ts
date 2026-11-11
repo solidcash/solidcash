@@ -1,6 +1,7 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth/build/lib/format/hex.js';
-import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import { decodeTransaction, encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { secp256k1 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { hash256, sha256, POOL_MAX_DEPTH } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
@@ -8,7 +9,10 @@ import { createTxVerifier } from '@mem-cash/validation';
 import { type Utxo, Network, VmTarget, type TokenDetails } from '../interfaces.js';
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
-import { addressToLockScript, publicKeyToP2PKHLockingBytecode, randomUtxo } from '../utils.js';
+import {
+  addressToLockScript, publicKeyToP2PKHLockingBytecode, randomUtxo, solidCashOutputToLibauthOutput,
+} from '../utils.js';
+import { surveyOn, surveyTransaction } from '../tx-survey.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 import { createPreparedBch2026TxVerifier } from './createPreparedTxVerifier.js';
@@ -36,6 +40,12 @@ export interface MockNetworkProviderOptions {
   /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
   consensusLimits: ConsensusLimits;
   policy: NetworkPolicy;
+  /**
+   * `'production'` behaves as a real node does: BCH's size limits, the standard relay VM with dust, and no coin the
+   * network does not already hold. The SDK's mock branches read `addUtxo`, which this profile removes, so a transaction
+   * is funded only by real coins and what it measures is what a real network would see. Seed coins with `seedUtxo`.
+   */
+  profile?: 'production';
 }
 
 export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
@@ -62,6 +72,16 @@ export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
   maximumNftCommitmentBytes: 1_000_000,
   operationCostBudgetPerByte: 800,
   hashDigestIterationsPerByte: 10_000_000,
+};
+
+/** What a real node enforces. The real hash allowances are fractional, which mem-cash refuses, so they stay its own. */
+export const MOCK_PRODUCTION_LIMITS: ConsensusLimits = {
+  maximumInputBytes: ConsensusBch2026.maximumBytecodeLength,
+  maximumStackItemBytes: ConsensusBch2026.maximumStackItemLength,
+  maximumTransactionBytes: ConsensusBch2026.maximumStandardTransactionSize,
+  maximumNftCommitmentBytes: ConsensusBch2026.maximumTokenCommitmentLength,
+  operationCostBudgetPerByte: ConsensusBch2026.operationCostBudgetPerByte,
+  hashDigestIterationsPerByte: ConsensusBch2026.hashDigestIterationsPerByteStandard,
 };
 
 /** The pre-2026-08 relaxed budget, for harnesses that are testing the relaxed profile itself. */
@@ -310,6 +330,9 @@ export default class MockNetworkProvider implements NetworkProvider {
   public policy: NetworkPolicy;
   /** Selects the SDK's fast VM paths at any configured limits; each enforces `consensusLimits`. */
   public readonly simulator = true;
+
+  /** Pools stay in listed order on this chain, so a test's outpoints repeat. A test of the order sets its own source. */
+  public poolRandom: () => number = () => 0;
   public readonly statefulSimulation?: 'legacy-mistswap-v1';
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
@@ -352,14 +375,28 @@ export default class MockNetworkProvider implements NetworkProvider {
   }
 
   constructor(options?: MockNetworkProviderOverrides) {
+    const production = options?.profile === 'production';
     this.options = {
       updateUtxoSet: true,
       ...options,
-      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...options?.consensusLimits },
-      policy: { enforceDust: false, ...options?.policy },
+      consensusLimits: {
+        ...(production ? MOCK_PRODUCTION_LIMITS : MOCK_CONSENSUS_LIMITS), ...options?.consensusLimits,
+      },
+      policy: { enforceDust: production, ...options?.policy },
     };
+    // A real node mints nothing on request, and the SDK treats a provider without this as one.
+    if (production) (this as { addUtxo?: unknown }).addUtxo = undefined;
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
     this.consensusLimits = this.options.consensusLimits;
+    for (const field of production ? [] : [
+      'hashDigestIterationsPerByte', 'hashDigestIterationsPerByteStandard',
+      'hashDigestIterationsPerByteNonstandard',
+    ] as const) {
+      const value = this.consensusLimits[field];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`${field} must be a positive safe integer, got ${value}`);
+      }
+    }
     this.policy = this.options.policy;
     this.statefulSimulation = this.options.statefulSimulation;
 
@@ -380,11 +417,15 @@ export default class MockNetworkProvider implements NetworkProvider {
       // mem-cash builds its primary VM with `standard = policy.enforceDust` (and a second consensus VM
       // alongside it), so writing only the nonstandard field left a dust-enforcing mock on libauth's real
       // 0.5/byte standard allowance regardless of its profile. mem-cash rejects non-integer overrides, so the
-      // real fractional allowances (0.5 and 3.5) cannot be expressed here - it throws rather than round.
-      hashDigestIterationsPerByteStandard:
-        this.consensusLimits.hashDigestIterationsPerByteStandard ?? this.consensusLimits.hashDigestIterationsPerByte,
-      hashDigestIterationsPerByteNonstandard:
-        this.consensusLimits.hashDigestIterationsPerByteNonstandard ?? this.consensusLimits.hashDigestIterationsPerByte,
+      // real fractional allowances (0.5 and 3.5) cannot be expressed here - it throws rather than round. The
+      // production profile sets neither, which leaves its VM on those real allowances.
+      ...(production ? {} : {
+        hashDigestIterationsPerByteStandard:
+          this.consensusLimits.hashDigestIterationsPerByteStandard ?? this.consensusLimits.hashDigestIterationsPerByte,
+        hashDigestIterationsPerByteNonstandard:
+          this.consensusLimits.hashDigestIterationsPerByteNonstandard
+            ?? this.consensusLimits.hashDigestIterationsPerByte,
+      }),
     };
     const verifierConfig = {
       // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the
@@ -482,7 +523,8 @@ export default class MockNetworkProvider implements NetworkProvider {
     try {
       const { category, transactions } = buildOraclePoolGenesis({
         funding, funder: owner, ownerKey: owner, infoCoins: MOCK_ORACLE_POOL_INFO_COINS, ringDepth: POOL_MAX_DEPTH,
-        slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime()), ring,
+        // The second before the tip, as every refresh publishes it: a send here mines at the tip's own time.
+        slotReplicas: 1, tip: simulatorPoolFields(this.blockHeight, this.getBlockTime() - 1), ring,
       });
       for (const transaction of transactions) this.publishOraclePoolTransaction(transaction.hex);
       this.oraclePool = category;
@@ -548,7 +590,9 @@ export default class MockNetworkProvider implements NetworkProvider {
       simulator: true,
       getUtxos: (address) => this.getUtxos(address),
       getUtxosForLockingBytecode: (lockingBytecode) => this.getUtxosForLockingBytecode(lockingBytecode),
-      getUtxosByTokenCategory: (categoryId) => this.getUtxosByTokenCategory(categoryId),
+      ...(this.getUtxosByTokenCategory === undefined ? {} : {
+        getUtxosByTokenCategory: (categoryId: string) => this.getUtxosByTokenCategory(categoryId),
+      }),
       getBlockHeight: () => this.getBlockHeight(),
       getRawTransaction: (txid) => this.getRawTransaction(txid),
       sendRawTransaction: async (txHex) => this.publishOraclePoolTransaction(txHex),
@@ -855,6 +899,7 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
+    if (surveyOn()) await this.surveyBroadcast(txHex);
     const debugTiming = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PREFLIGHT_TIMING === '1';
     const submitStartedAt = debugTiming ? Date.now() : 0;
@@ -874,7 +919,11 @@ export default class MockNetworkProvider implements NetworkProvider {
     // from the mempool to the confirmed UTXO set and clears mempool spend
     // tracking, matching the old MockNetworkProvider's simple UTXO-array behavior.
     const mineStartedAt = debugTiming ? Date.now() : 0;
-    this.indexer.mine();
+    // A transaction executes against the chain's current tip time, so the block it is auto-mined
+    // into must carry that same timestamp. `mine()` with no argument advances the clock by one second, which
+    // makes `block.timestamp` inside the covenant one second behind the block the receipt reports (the
+    // Hardhat automine model executes at the block's own timestamp).
+    this.indexer.mine(this.getBlockTime());
     // The mock chain starts at a synthetic height, so its eleven-header median-time-past would sit far behind the
     // mined block. Keep the window on the tip's timestamp, as the mock's chain always did: nLocktime finality (the
     // node's time basis) is then measured against the block the next send will extend.
@@ -889,6 +938,21 @@ export default class MockNetworkProvider implements NetworkProvider {
     });
 
     return result.txid;
+  }
+
+  /** States a transaction to the size survey while the outputs it spends are still live (`tx-survey.ts`). */
+  private async surveyBroadcast(txHex: string): Promise<void> {
+    const raw = hexToBin(txHex);
+    const transaction = this.preparedTransaction?.transaction ?? decodeTransaction(raw);
+    if (typeof transaction === 'string') return;
+    const sourceOutputs = await Promise.all(transaction.inputs.map(async (input) => {
+      const spent = await this.getLedgerOutput(binToHex(input.outpointTransactionHash), input.outpointIndex);
+      return spent === undefined ? undefined : solidCashOutputToLibauthOutput({
+        to: spent.lockingBytecode, amount: spent.satoshis, ...(spent.token === undefined ? {} : { token: spent.token }),
+      });
+    }));
+    const { createVirtualMachineBch2026ForProvider } = await import('./createVirtualMachine.js');
+    surveyTransaction(raw, transaction, sourceOutputs, createVirtualMachineBch2026ForProvider(this));
   }
 
   /** Submit to the indexer under this provider's stack-item limit. */
@@ -908,7 +972,18 @@ export default class MockNetworkProvider implements NetworkProvider {
     }
   }
 
+  /** A coin the SDK may treat as its own to mint: absent from a production profile. */
   async addUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
+    return this.seedUtxo(addressOrLockingBytecode, utxo);
+  }
+
+  /** The mock's own funding: through `addUtxo` where it exists, so a subclass that overrides it still sees each coin. */
+  private ledgerAdd(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
+    return (this.addUtxo ?? this.seedUtxo).call(this, addressOrLockingBytecode, utxo);
+  }
+
+  /** Puts a coin on the ledger for a test, under every profile. */
+  async seedUtxo(addressOrLockingBytecode: string, utxo: Utxo): Promise<Utxo> {
     const lockingBytecodeBin = isHex(addressOrLockingBytecode)
       ? hexToBin(addressOrLockingBytecode)
       : addressToLockScript(addressOrLockingBytecode);
@@ -959,7 +1034,7 @@ export default class MockNetworkProvider implements NetworkProvider {
           nft: out.token.nft,
         } : undefined,
       };
-      await this.addUtxo(out.address, utxo);
+      await this.ledgerAdd(out.address, utxo);
       utxos.push(utxo);
     }
 
@@ -1061,7 +1136,7 @@ export default class MockNetworkProvider implements NetworkProvider {
         const fundingTxid = binToHex(hash256(raw).reverse());
         this.indexer.storage.storeRawTx(fundingTxid, binToHex(raw));
         for (let i = 0; i < outputCount; i++) {
-          await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
+          await this.ledgerAdd(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
         }
       }
       this.fundedSignerKeys.add(key);

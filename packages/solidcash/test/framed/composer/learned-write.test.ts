@@ -33,10 +33,10 @@ const RECORD_ID = 'record';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const MASTER_ID = 'vault-1';
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits two participants on: the caller, the validator's head, the two facets it binds, then the record.
+const RECORD_INDEX = 4;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Vault {'
   + '   int public counter;'
   + '   function bump() { this.counter = this.counter + 1; require(this.counter > 0); }'
@@ -80,8 +80,8 @@ function buildPlan(statedView?: Uint8Array): CompositionDraftPlan {
     blocks: [
       { contract: 'Vault', masters: [MASTER_ID], validator: { id: VALIDATOR_ID, settles: [] }, state: [RECORD_ID] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs([USER_ID], 4),
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: userInputs([USER_ID], 5),
     masters: [vaultMaster],
     inputs: {
       [MASTER_ID]: { source: masterInput(vault) },
@@ -148,7 +148,7 @@ describe('a plan that leaves a record write unstated', () => {
     expect(bytesToHex(output.token!.nft!.commitment)).toBe(bytesToHex(commitment(WRITTEN)));
     // Every participant accepts: the master closes against the learned view, and the settlement holds.
     expect(verdicts(draft)).toStrictEqual([
-      `${MASTER_ID}:accepted`, `${VALIDATOR_ID}:accepted`, `${VALIDATOR_ID}/1:accepted`,
+      `${MASTER_ID}:accepted`, `${VALIDATOR_ID}:accepted`, `${VALIDATOR_ID}/1:accepted`, `${VALIDATOR_ID}/2:accepted`,
       `${RECORD_ID}:accepted`,
     ]);
   });
@@ -175,7 +175,7 @@ const SPLIT_CALLEE = seededAddress('learned split callee');
 const SPLIT_LEDGER = 'ledger-1';
 const SPLIT_CALLEE_MASTER = 'callee-1';
 const SPLIT_RECORD = 'record';
-const SPLIT_SOURCE = 'pragma solidcash ^0.14.0;'
+const SPLIT_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Ledger {'
@@ -269,8 +269,8 @@ function buildSplitPlan(): {
   };
   const plan: CompositionDraftPlan = {
     blocks,
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs([USER_ID], 5),
+    // The user follows every participant, the two facets the validator binds among them.
+    userInputs: userInputs([USER_ID], layoutWithFacets(blocks).participantCount),
     masters: [ledgerMaster, calleeMaster],
     inputs: {
       [SPLIT_LEDGER]: { source: masterInput(ledger) },
@@ -324,6 +324,6 @@ describe('a frame that writes on both sides of a call', () => {
     const accepted = draft.layout.participants.map((placed) => vm.stateSuccess(vm.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     })) === true);
-    expect(accepted).toStrictEqual([true, true, true, true, true]);
+    expect(accepted).toStrictEqual([true, true, true, true, true, true]);
   });
 });

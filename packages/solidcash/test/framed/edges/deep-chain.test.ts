@@ -34,7 +34,7 @@ const labels = {
 const category = (label: string): Uint8Array => seededCategory(label);
 const address = (label: string): Uint8Array => validatorAddress(category(label), REAL_VALIDATOR_PROGRAM);
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IB { function mid(); }'
   + ' interface IC { function end(); }'
   + ' interface ID { function leaf(); }'
@@ -106,8 +106,8 @@ describe('a chain of four contracts, each calling the next', () => {
         { contract: 'C', masters: ['c-1'], state: [] },
         { contract: 'D', masters: ['d-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: [{ id: 'user', index: 6 }],
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: [{ id: 'user', index: 7 }],
       masters,
       inputs: {
         ...Object.fromEntries(LINKS.map((link) => [`${link.name.toLowerCase()}-1`, {
@@ -134,9 +134,9 @@ describe('a chain of four contracts, each calling the next', () => {
     });
     deriveDepthFirst({ contract: 'A', functionName: 'A.start()', kind: FrameKind.ROOT, master: 'a-1' }, host);
 
-    // The layout places the four masters around the validator and the facet it binds, in entry order.
+    // The layout places the four masters around the validator and the two facets it binds, in entry order.
     expect(LINKS.map((link) => participant(draft.layout, `${link.name.toLowerCase()}-1`).index))
-      .toStrictEqual([0, 3, 4, 5]);
+      .toStrictEqual([0, 4, 5, 6]);
 
     const vm = compositionMachine();
     const rejected = LINK_IDS.map((id) => {

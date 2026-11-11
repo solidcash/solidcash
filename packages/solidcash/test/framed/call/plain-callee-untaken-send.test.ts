@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
+import { readSatoshiContainers, satoshiContainerLockingBytecode } from '../../../src/framed/deploy/records.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
 import {
   compileFramed, deployPlain, enterPlain, newWorld, refusedVerdicts, type Outcome, type PlainDeployment, type World,
@@ -15,10 +16,11 @@ import type { FramedCallResult } from '../../../src/framed/call/index.js';
  * `Vault.pay` pays the native coin when the token it is named is the zero address, and otherwise moves the token
  * through `IERC20(token).transfer`. The send's row publishes the branch's condition, which the call's own facts
  * decide as they decide an emit's (`skippedSends`): named a real token, the body skips the send, so the vault's frame
- * lists none, as the hop's callee frames list none, and the payout settles with the token's balances read back.
- * Named the zero address, the send is one the call reaches, which this path does not plan for a callee yet, and it is
- * refused by name before anything is spent. The vault keeps one field its payout never reads, which makes it a
- * stateful contract to deploy.
+ * lists none, and the payout settles with the token's balances read back. Named the zero address, the send is one the
+ * call reaches, which the vault's frame lists as the entry lists its own: its output pays the recipient's lock, and
+ * the vault's containers pay it, the change kept in the container its run of sends starts with. A vault whose
+ * containers hold less than it sends is refused by name before anything is spent, as the EVM's transfer reverts. The
+ * vault keeps one field its payout never reads, which makes it a stateful contract to deploy.
  */
 
 const SOURCE = [
@@ -121,14 +123,33 @@ describe('a plain callee that sends value on a branch its call does not take', (
     expect([await balanceOf(c, c.vault.address), await balanceOf(c, RECIPIENT)]).toStrictEqual([970n, 30n]);
   }, 600_000);
 
-  it('refuses by name a payout whose send the call reaches, before anything is spent', async () => {
+  it('refuses by name a payout the vault\'s containers do not cover, before anything is spent', async () => {
     const c = await chain();
     const before = [await balanceOf(c, c.vault.address), await balanceOf(c, RECIPIENT)];
     const refused = await payOut(c, ZERO_ADDRESS, RECIPIENT, 1n);
     expect(refused.result).toBeUndefined();
-    expect(refused.error?.message).toContain('the callee "Vault.pay()" sends value on a path the call reaches, which '
-      + 'this call path does not plan for a callee yet');
+    expect(refused.error?.message).toContain('contract "Vault" holds 0 satoshis in its containers, and the callee '
+      + '"Vault.pay()" sends 1 more than it receives');
     expect(refused.coinSpent).toBe(false);
     expect([await balanceOf(c, c.vault.address), await balanceOf(c, RECIPIENT)]).toStrictEqual(before);
+  }, 600_000);
+
+  it('pays the native coin from the vault\'s containers, the send listed in the vault\'s own frame', async () => {
+    const c = await chain();
+    // A payment to the vault's container lock is the coin the vault holds, as an EVM contract's balance.
+    await c.world.network.addUtxo(binToHex(satoshiContainerLockingBytecode(c.vault.categoryId)),
+      { txid: '5c'.repeat(32), vout: 0, satoshis: 10_000n });
+    const paid = await payOut(c, ZERO_ADDRESS, RECIPIENT, 2_500n);
+    expect(paid.error?.message).toBeUndefined();
+    expect(refusedVerdicts(paid.result!)).toBeUndefined();
+    expect(paid.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    const frames = paid.result!.completed.map((frame) => [frame.functionName, frame.kind]);
+    expect(frames).toEqual(expect.arrayContaining([['Desk.payOut()', FrameKind.ROOT], ['Vault.pay()', FrameKind.CALL]]));
+    const payments = paid.result!.transaction.outputs
+      .filter((output) => binToHex(output.lockingBytecode) === binToHex(RECIPIENT));
+    expect(payments.map((output) => output.valueSatoshis)).toStrictEqual([2_500n]);
+    const kept = await readSatoshiContainers(c.world.network, c.vault.categoryId);
+    expect(kept.reduce((sum, utxo) => sum + utxo.satoshis, 0n)).toBe(7_500n);
+    expect(await balanceOf(c, RECIPIENT)).toBe(30n);
   }, 600_000);
 });

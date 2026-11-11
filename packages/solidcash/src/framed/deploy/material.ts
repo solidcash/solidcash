@@ -8,7 +8,7 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   applyOraclePool,
   asmToScript,
@@ -48,10 +48,28 @@ export class FramedDeploymentError extends Error {
 export interface DeployedMaster {
   /** The master program (`code_X`) with both slots filled. */
   readonly script: Uint8Array;
-  /** The contract's address, `addrV(category)`: a 35-byte P2SH32 locking bytecode. */
+  /**
+   * `addrV(category)`: a 35-byte P2SH32 locking bytecode, where the contract's validators sit. It is the contract's
+   * address unless the contract is a CREATE2 child, which presents its EVM identity instead (`self`).
+   */
   readonly address: Uint8Array;
+  /** The address the contract presents as `address(this)`: its CREATE2 identity when it has one, else `address`. */
+  readonly self: Uint8Array;
   /** The master lock, `lockX = P2SH32(hash256(script))`: where the master UTXOs sit. */
   readonly lockingBytecode: Uint8Array;
+}
+
+/**
+ * The EVM identities CREATE2 children present, by category.
+ *
+ * A child created with `new C{salt: s}()` presents `keccak256(0xff ++ creator ++ s ++ keccak256(creationCode))[12:]`
+ * as `address(this)`, which its master holds in its identity slot. The identity is a fact of the child's creation,
+ * not of its category, so whoever stands the child up records it here before the child's master is first filled.
+ */
+const create2Identities = new Map<string, Uint8Array>();
+
+export function framedCreate2Identity(category: Uint8Array): Uint8Array | undefined {
+  return create2Identities.get(binToHex(category));
 }
 
 /** Reads the placeholder descriptor an artifact must publish to be deployable. */
@@ -152,23 +170,37 @@ export function deployMaster(
   const cached = filled?.bytecode === artifact.bytecode
     ? filled.byPool.get(poolKey)?.get(category)?.get(validatorProgram)
     : undefined;
-  if (cached !== undefined) return cached;
+  const identity = framedCreate2Identity(category);
+  if (cached !== undefined && (identity === undefined || bytesEqual(cached.self, identity))) return cached;
   const placeholders = requirePlaceholders(artifact);
   const address = validatorAddress(category, validatorProgram);
   const original = poolFilledProgram(artifact, pool);
   assertPlaceholders(original, placeholders);
+  // A constant-lock master is a creator's child: it presents its own category's address, never a CREATE2 identity,
+  // and its program is the same for every category (docs/framed/CREATE2_IDENTITY.md).
+  if (placeholders.constantLock === true && identity !== undefined) {
+    throw new FramedDeploymentError(
+      `artifact "${artifact.contractName}" is a constant-lock master, which presents its own address, not an identity`,
+    );
+  }
   // The hash is only filled where the descriptor reserves a slot for it: a master that cannot be reached through a
   // call never reads it, and passing it to a script with no slot is refused.
-  const templateHash = placeholders.templateHashOffset === undefined
+  const templateHash = placeholders.constantLock === true || placeholders.templateHashOffset === undefined
     ? undefined
     : validatorTemplateHash(validatorProgram);
+  if (identity !== undefined && placeholders.constantLock !== true && placeholders.identityOffset === undefined) {
+    throw new FramedDeploymentError(
+      `artifact "${artifact.contractName}" reserves no identity slot, so it cannot present a CREATE2 identity`,
+    );
+  }
   const script = fillPlaceholders(original, placeholders, {
     // The slot is compared with OP_UTXOTOKENCATEGORY, which answers in the chain's order.
     category: chainCategory(category),
     contractAddress: address,
     ...(templateHash === undefined ? {} : { templateHash }),
+    ...(identity === undefined ? {} : { identity }),
   });
-  const deployed = { script, address, lockingBytecode: masterLock(script) };
+  const deployed = { script, address, self: identity ?? address, lockingBytecode: masterLock(script) };
   let remembered = filledMasters.get(artifact);
   if (remembered === undefined || remembered.bytecode !== artifact.bytecode) {
     remembered = { bytecode: artifact.bytecode, byPool: new Map() };
@@ -211,6 +243,17 @@ export function verifyMasterDeployment(
     throw new FramedDeploymentError(
       `the deployed script is ${deployed.script.length} bytes, not the artifact's ${original.length}`,
     );
+  }
+  // A constant-lock master carries no deployment constant: it is the compiled program with its pool slots filled, and
+  // its lock is that program's, whatever the category.
+  if (placeholders.constantLock === true) {
+    if (!bytesEqual(deployed.script, original)) {
+      throw new FramedDeploymentError('a constant-lock master is deployed as other bytes than its compiled program');
+    }
+    if (!bytesEqual(deployed.lockingBytecode, masterLock(deployed.script))) {
+      throw new FramedDeploymentError('the master lock is not the P2SH32 of the deployed program');
+    }
+    return;
   }
 
   const readBack = readPlaceholders(deployed.script, placeholders);

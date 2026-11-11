@@ -27,6 +27,19 @@ describe('configured SolidHat networks', () => {
     expect(rpc.network).toBe('mainnet');
   });
 
+  it('reaches a local Electrum server on regtest, on the port it serves', () => {
+    const local = createProvider('regtest', {
+      type: 'electrum', network: 'regtest', electrum: { host: '127.0.0.1', port: 50103, encrypted: false },
+    });
+    expect(local).toBeInstanceOf(ElectrumNetworkProvider);
+    expect(local.network).toBe('regtest');
+    const socket = (local as unknown as { electrum: { hostIdentifier?: string; socket?: { options?: object } } }).electrum;
+    expect(socket.hostIdentifier).toContain('127.0.0.1');
+    // A regtest chain has no public server to default to.
+    expect(() => createProvider('regtest', { type: 'electrum', network: 'regtest' }))
+      .toThrow('names its server');
+  });
+
   it('rejects incomplete RPC networks and unknown network selection', async () => {
     expect(() => createProvider('broken', {
       type: 'bitcoin-rpc', rpc: { url: 'http://127.0.0.1:18443' },
@@ -63,6 +76,17 @@ describe('configured SolidHat networks', () => {
       type: 'mock', policy: { enforceProductionInputLimit: true }, consensus: { maximumInputBytes: 50_000 },
     });
     expect(capped.consensusLimits?.maximumInputBytes).toBe(10_000);
+  });
+
+  it('a mem-cash network states the limits a compile reads before it connects', () => {
+    // A compile reads consensusLimits without connecting, so the network entry's consensus is the pre-connect value.
+    const provider = createProvider('localhost', {
+      type: 'mem-cash',
+      memCash: { url: 'http://127.0.0.1:8496' },
+      consensus: { maximumNftCommitmentBytes: 128, maximumStackItemBytes: 10_000 },
+    });
+    expect(provider.consensusLimits?.maximumNftCommitmentBytes).toBe(128);
+    expect(provider.consensusLimits?.maximumStackItemBytes).toBe(10_000);
   });
 
   it('TOOLS-7 a shared mnemonic cannot sign on two live chains', async () => {

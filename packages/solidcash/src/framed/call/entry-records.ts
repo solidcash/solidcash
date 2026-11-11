@@ -18,6 +18,9 @@
  * not read.
  */
 
+import { keyArguments } from '../../stateful/route-expression-key.js';
+import { producerKeyValue } from '../proxy/entry-writes.js';
+import { collectionKeyEncoding } from '../composer/mapping-plan.js';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   INDEX_NONE,
@@ -62,6 +65,8 @@ export interface CallEntryRecordsRequest {
   readonly state?: Readonly<Record<string, StateValue>>;
   /** The frame's caller lock, which a `msg.sender` key resolves to. */
   readonly callerLockingBytecode: Uint8Array;
+  /** The frame's own address, which an `address(this)` key resolves to. */
+  readonly selfAddress?: Uint8Array;
   /** The deployed category, as hex: the records' covenant and the token every node carries derive from it. */
   readonly categoryId: string;
   /** Each sorted collection's live nodes, as the deployment's own classification reports them. */
@@ -92,7 +97,8 @@ export function namedDataRecordIndices(artifact: Artifact, functionName: string)
 /**
  * The data-NFT indices of the records a frame running an entry declares, in the order its code reads them: the ones
  * its published block layout names. An entry that writes a verified mapping declares every other record after them,
- * because its batch's groups follow every data record. An entry that publishes no layout declares every record.
+ * because its batch's groups follow every data record, unless the frame fills those slots itself
+ * (`leavesUnnamedRecordsUnspent`). An entry that publishes no layout declares every record.
  */
 export function frameDataRecordIndices(artifact: Artifact, functionName: string): number[] {
   const entry = artifact.abi.find((candidate) => candidate.name === functionName);
@@ -100,6 +106,47 @@ export function frameDataRecordIndices(artifact: Artifact, functionName: string)
   if (entry?.blockLayout?.slots === undefined || (entry.sortedBatchInfo ?? []).length === 0) return named;
   const all = Array.from({ length: artifact.stateLayout?.dataNftCount ?? 0 }, (_unused, nftIndex) => nftIndex);
   return [...named, ...all.filter((nftIndex) => !named.includes(nftIndex))];
+}
+
+/**
+ * True when a frame can leave the data records its entry does not name unspent.
+ *
+ * A compiled batch counts every data record ahead of its groups (`frameDataRecordIndices`), but its code only steps
+ * over the slots of the records its entry does not name. A frame has to declare a record in each slot, kept, and any
+ * record it spends anyway serves (`unnamedSlotDeclarations`), so those data records stay out of the transaction and
+ * another caller's transaction does not have to wait for this one over them.
+ *
+ * That takes a frame of one segment, where a declaration of a node a batch writes holds one view. It also takes code
+ * that addresses nothing past its first declaration: a key read beside the batch and a dynamic run are both found
+ * there, a value that chunks is a run too, and a run-time loop's records follow its own count of them.
+ */
+export function leavesUnnamedRecordsUnspent(artifact: Artifact, functionName: string, segments: number): boolean {
+  const entry = artifact.abi.find((candidate) => candidate.name === functionName);
+  if (entry === undefined || segments !== 1) return false;
+  if (frameDataRecordIndices(artifact, functionName).length === namedDataRecordIndices(artifact, functionName).length) {
+    return false;
+  }
+  const batches = entry.sortedBatchInfo ?? [];
+  const batched = new Set(batches.flatMap((batch) => batch.slotIndices));
+  return [entry.dynamicReads, entry.dynamicWrites, entry.entryLoopWrites, entry.sortedInsertLoops,
+    entry.sortedUpsertLoopInfo, entry.collectionIterations].every((list) => (list ?? []).length === 0)
+    && !batches.some((batch) => collectionChunksValue(artifact, batch.collection))
+    && (entry.entryAccesses ?? []).every((access) => access.slotIndex !== undefined && batched.has(access.slotIndex));
+}
+
+/**
+ * The kept declarations that fill `slots` slots of a frame that leaves its unnamed data records unspent: each restates
+ * the first node `entries` spend and recreates in place, at the view it starts from. A batch already declares a node
+ * once per group that names it, so the validator chains these into the node's other declarations.
+ */
+export function unnamedSlotDeclarations(slots: number, entries: readonly DraftRecordEntry[]): readonly DraftRecordEntry[] {
+  if (slots === 0) return [];
+  const spent = entries.find((entry) => entry.in !== INDEX_NONE && entry.out === entry.in);
+  if (spent === undefined || !(spent.viewIn instanceof Uint8Array)) {
+    throw new FramedCallRecordError('a frame that leaves a data record unspent spends no node to declare in its slot');
+  }
+  const kept: DraftRecordEntry = { in: spent.in, out: spent.in, viewIn: spent.viewIn, viewOut: spent.viewIn };
+  return Array.from({ length: slots }, () => kept);
 }
 
 /**
@@ -153,11 +200,21 @@ function encodedArgument(
 /** The expression labels an artifact publishes for the frame's own caller. */
 const CALLER_KEY_LABELS = new Set(['nullop:msg.sender', 'sender:msg.sender', 'call:_msgSender()', 'nullop:tx.origin']);
 
+/** The labels the artifact publishes `address(this)` under: the lock of the input the frame runs on. */
+const SELF_KEY_LABELS = new Set([
+  'cast:address(unop:tx.inputs[i].lockingBytecode(nullop:this.activeInputIndex))',
+  'unop:tx.inputs[i].lockingBytecode(nullop:this.activeInputIndex)',
+]);
+
 /** The frame's own facts a mapping access's key(s) are resolved from. */
 interface KeyResolutionContext {
   readonly functionName: string;
   readonly args: readonly FunctionArgument[];
   readonly callerLockingBytecode: Uint8Array;
+  /** The frame's own address, which an `address(this)` key resolves to. */
+  readonly selfAddress?: Uint8Array;
+  /** What the frame's own calls returned, by callsite id, for keys read back through them (`producerKeyValue`). */
+  readonly producerResults?: ReadonlyMap<number, FunctionArgument>;
   /**
    * The state the frame reads, when the caller holds a decoded view of it.
    *
@@ -190,8 +247,8 @@ function resolveKeys(
   access: NonNullable<AbiFunction['entryAccesses']>[number],
   structs: Artifact['structs'],
 ): readonly Uint8Array[] {
-  const args = [...request.args];
   const visible = visibleInputs(fn);
+  const args = keyArguments(request.args, visible);
   return access.keyParams.map((_param, index): Uint8Array => {
     const source = access.keySources?.[index];
     if (source?.kind === 'msgSender') return request.callerLockingBytecode;
@@ -199,6 +256,11 @@ function resolveKeys(
     // An artifact may publish the caller as an expression label rather than as a source kind. A root frame's
     // sender and its transaction origin are the same user, which is the coin the call spends.
     if (label !== undefined && CALLER_KEY_LABELS.has(label)) return request.callerLockingBytecode;
+    if (label !== undefined && SELF_KEY_LABELS.has(label) && request.selfAddress !== undefined) {
+      return request.selfAddress;
+    }
+    const produced = producerKeyValue(label, request.producerResults);
+    if (produced !== undefined) return produced;
     const evaluated = evalComputedKey(
       label, args, visible, request.state, request.stateLengthDeltas, request.readMappingValue,
     );
@@ -221,7 +283,8 @@ export function accessKeySlot(
   if (fn === undefined) return undefined;
   const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
   try {
-    return keyToSlotMulti([...resolveKeys(request, fn, access, structs)]);
+    return keyToSlotMulti(
+      [...resolveKeys(request, fn, access, structs)], collectionKeyEncoding(request.artifact, access.collection));
   } catch {
     return undefined;
   }
@@ -371,16 +434,17 @@ export function planCallLoopWrites(
       );
     }
     const reordered = invariantValue && !calling;
+    const keyEncoding = collectionKeyEncoding(request.artifact, info.collection);
     const ordered = reordered
       ? [...selected].sort((left, right) => {
-        const leftSlot = bytesToSlotValue(keyToSlotMulti([...left.keys]));
-        const rightSlot = bytesToSlotValue(keyToSlotMulti([...right.keys]));
+        const leftSlot = bytesToSlotValue(keyToSlotMulti([...left.keys], keyEncoding));
+        const rightSlot = bytesToSlotValue(keyToSlotMulti([...right.keys], keyEncoding));
         return leftSlot === rightSlot ? left.source - right.source : leftSlot < rightSlot ? -1 : 1;
       })
       : selected;
     let previous: bigint | undefined;
     for (const entry of ordered) {
-      const value = bytesToSlotValue(keyToSlotMulti([...entry.keys]));
+      const value = bytesToSlotValue(keyToSlotMulti([...entry.keys], keyEncoding));
       if (previous !== undefined && value < previous) {
         throw new FramedCallRecordError(
           `entry "${request.functionName}" writes mapping "${info.collection}" at turn ${entry.source} of `
@@ -567,6 +631,7 @@ export function loopRecordMints(
   functionName: string,
   run: readonly CallLoopWritePlan[],
   written: readonly { readonly slot: Uint8Array; readonly existed: boolean; readonly before: Uint8Array }[],
+  artifact?: Artifact,
 ): readonly LoopRecordMint[] {
   // Every node a turn co-spends - its target, or the predecessor its insert splices through - is one the plan writes.
   const nodes = written.filter((node) => node.existed).map((node) => decodeEntryCommitment(node.before));
@@ -575,7 +640,7 @@ export function loopRecordMints(
   run.forEach((loop, index) => {
     let held: { slot: Uint8Array; next: Uint8Array } | undefined;
     loop.turns.forEach((turn, at) => {
-      const slot = keyToSlotMulti([...turn.keys]);
+      const slot = keyToSlotMulti([...turn.keys], collectionKeyEncoding(artifact, loop.collection));
       if (held !== undefined) {
         const next = value(held.next);
         const inGap = value(held.slot) < value(slot) && (next === 0n || value(slot) < next);
@@ -734,7 +799,7 @@ export function readEntryNode(request: KeyResolutionContext & {
     );
   }
   const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
-  const slot = keyToSlotMulti([...resolveKeys(request, fn, access, structs)]);
+  const slot = keyToSlotMulti([...resolveKeys(request, fn, access, structs)], collection);
   const nodes = (request.nodesByCollection.get(collection.name) ?? []).map((utxo) => {
     const commitment = utxo.token?.nft?.commitment;
     if (commitment === undefined) {

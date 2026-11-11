@@ -85,6 +85,7 @@ following fields belong to its third `options` argument.
 | `addressType` | `AddressType` | `'p2sh32'` | Must be `'p2sh32'` |
 | `threadCount` | `number` | `1` | Number of master NFTs (threads); 12 for a framed artifact |
 | `initialBalance` | `bigint` | `0n` | Initial satoshi container balance |
+| `tokenContainers` | `{ utxo, unlocker }[]` | none | Fungible token coins the genesis moves whole into their containers |
 | `messageBusVerificationInputCount` | `number` | `1` when required | Message-bus verifier instances provisioned at genesis (experimental) |
 | `validatorCount` | `number` | `4` for a framed artifact | Validator UTXOs a framed genesis mints (experimental) |
 | `salt` | `Uint8Array` | none | CREATE/address salt and optional operation-density reserve |
@@ -374,6 +375,11 @@ await sc.call.sendFunds(sig, recipient, 5000n)
 // Pay into the satoshi container through a payable function
 await sc.call.deposit().withValue(5000n).send();
 ```
+
+A connected signer pays the fee and any `.withValue()` amount from its plain coins, largest first, and gets one
+change output. A function that spends no satoshi container coin gets a new one holding the value. A function that
+calls `this.payMinerFee` takes no coin from the signer, even when the fee falls short: a contract's withdrawal
+should not link the wallet that sent it.
 
 ## Upgrading
 

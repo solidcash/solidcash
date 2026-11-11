@@ -8,6 +8,9 @@ Run a package's focused suites, or one directory of them, with its framed config
     yarn workspace solidc vitest run --config vitest.framed.config.ts [<directory>]
     yarn workspace solidcash vitest run --config vitest.framed.config.ts [<directory>]
     yarn workspace @solidcash/testing vitest run --config vitest.framed.config.ts [<directory>]
+
+`yarn workspace solidcash test:bylock [<directory>]` runs the SDK's framed suites on a mock network with no category
+index, as a Fulcrum server is: a reader that needs one fails there as it would on Electrum.
     yarn workspace @solidcash/utils vitest run test/framed
 
 Vitest does not check types. Check the `solidc` and `solidcash` framed tests from the repository root with

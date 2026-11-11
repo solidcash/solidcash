@@ -27,7 +27,7 @@ const CAL = seededAddress('reads and loops cal');
 const LOOPER = seededAddress('reads and loops looper');
 
 describe('a call inside a data-dependent loop', () => {
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ILooper { function go(int n); }'
     + ' interface ICal { function ping(); }'
     + ' contract Cal { function ping() { require(true); } }'
@@ -66,8 +66,8 @@ describe('a call inside a data-dependent loop', () => {
         { contract: 'Looper', masters: ['looper-1'], state: [] },
         { contract: 'Cal', masters: ['cal-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: [{ id: 'user', index: 5 }],
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: [{ id: 'user', index: 6 }],
       masters: [
         planMaster('caller-1', 'Caller', 'start', FrameKind.ROOT, USER_LOCK, 'user',
           [{ kind: FrameKind.CALL, callee: 'looper-1', target: looper.address, value: 0n, argumentPushes: [goSelector, one] }], []),
@@ -97,7 +97,7 @@ describe('a call inside a data-dependent loop', () => {
 
 describe('a call whose execution depends on a run-time value', () => {
   const CHOOSER = seededAddress('reads and loops chooser');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface IChooser { function go(int n); }'
     + ' interface ICal { function ping(); }'
     + ' contract Cal { function ping() { require(true); } }'
@@ -130,8 +130,8 @@ describe('a call whose execution depends on a run-time value', () => {
         { contract: 'Chooser', masters: ['chooser-1'], state: [] },
         { contract: 'Cal', masters: ['cal-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: userInputs(['user'], 5),
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: userInputs(['user'], 6),
       masters: [
         master({
           master: 'caller-1', contract: 'Caller', entry: 'start', program: caller.program,
@@ -209,7 +209,7 @@ describe('a call whose execution depends on a run-time value', () => {
   });
 
   it('is refused by name when the call sits in a switch, whose arms need not agree', () => {
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface ICal { function ping(); }'
       + ' contract Cal { function ping() { require(true); } }'
       + ' contract Chooser { function go(uint sel) {'
@@ -224,7 +224,7 @@ describe('a call whose execution depends on a run-time value', () => {
 describe('a read of state that belongs to another contract', () => {
   it('is refused before code generation: the block layout of the read is unavailable', () => {
     const ledger = seededAddress('reads and loops ledger');
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface ILedger { public int counter; }'
       + ' contract Ledger { int public counter; function bump() { this.counter = this.counter + 1; require(true); } }'
       + ' contract Reader { function peek() returns (int) {'
@@ -237,7 +237,7 @@ describe('a read of state that belongs to another contract', () => {
 describe('a static read whose callee reverts', () => {
   const CAL_ADDRESS = seededAddress('reverting read cal');
 
-  const read = (calleeBody: string): string => 'pragma solidcash ^0.14.0;'
+  const read = (calleeBody: string): string => 'pragma solidcash ^0.50.0;'
     + ' interface ICal { function check(); }'
     + ` contract Cal { function check() { ${calleeBody} require(true); } }`
     + ' contract Reader { function start() {'
@@ -268,8 +268,8 @@ describe('a static read whose callee reverts', () => {
         { contract: 'Reader', masters: ['reader-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Cal', masters: ['cal-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: [{ id: 'user', index: 4 }],
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: [{ id: 'user', index: 5 }],
       masters: [
         build('reader-1', 'Reader', 'start', FrameKind.ROOT, USER_LOCK, 'user',
           [{ kind: FrameKind.STATIC, callee: 'cal-1', target: cal.address, value: 0n, argumentPushes: [selector] }], []),

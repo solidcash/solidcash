@@ -35,6 +35,11 @@ export interface ConsensusLimits {
   hashDigestIterationsPerByteStandard?: number;
   /** Nonstandard (consensus) hash-iteration allowance. Real BCH-2026 value: 3.5. See the note above. */
   hashDigestIterationsPerByteNonstandard?: number;
+  /**
+   * The most satoshis one output, or a transaction's inputs together, may hold. Real BCH value: 21 million coins
+   * (`MAX_MONEY`), which applies when this is absent; a development network may raise it to carry larger values.
+   */
+  maximumMoney?: bigint;
 }
 
 /** A live output as an in-process simulator's own ledger holds it. */
@@ -79,6 +84,12 @@ export default interface NetworkProvider {
    * enforce `consensusLimits` as libauth's own paths do; live providers omit it and keep libauth's paths.
    */
   readonly simulator?: boolean;
+
+  /**
+   * Optional: the source each framed call orders a deployment's pools with (`PoolOrder`), of `Math.random`'s shape.
+   * Omitted providers use `Math.random`, so independent callers rarely spend the same master, validator or facet.
+   */
+  poolRandom?: () => number;
 
   /**
    * Retrieve all UTXOs (confirmed and unconfirmed) for a given address.

@@ -15,7 +15,8 @@ import {
   asmToScript, buildDataNftCovenantScript, buildEntryNftCovenantScript,
   buildPushdataCommitment, buildSatoshiContainerCovenantScript, buildTokenContainerCovenantScript,
   computeCollectionHash, computeCollectionSignature, ecrecoverComputeLockingBytecode,
-  encodeIntegerValue, scriptToBytecode, SHARED_LIBRARY_SALT, type AbiFunction, type Artifact,
+  encodeIntegerValue, FILLER_SATOSHIS, fillerLockingBytecode, scriptToBytecode, SHARED_LIBRARY_SALT,
+  type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
 import { encodeEntryCommitment, keyToSlot, keyToSlotMulti } from '../../solidcash/src/stateful/SortedList.js';
@@ -45,7 +46,7 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 type SourceOutputs = NonNullable<VmProgram['sourceOutputs']>;
 
-const P = 'pragma solidcash ^0.14.0;';
+const P = 'pragma solidcash ^0.50.0;';
 const BUS = { messageBus: true } as const;
 const CATEGORY = Uint8Array.from({ length: 32 }, (_, i) => (0x29 + i * 17) & 0xff);
 const FOREIGN = Uint8Array.from({ length: 32 }, (_, i) => (0x44 + i * 13) & 0xff);
@@ -368,7 +369,7 @@ describe('October 2026 critical holes', () => {
     expect(verdict(drained.sourceOutputs, drained.transaction), 'DX-1 transfer drain').not.toBe(true);
   });
 
-  it('DX-1 a full transfer spends the zero placeholder, and a nonzero redirect fails', () => {
+  it('DX-1 a full transfer leaves the filler, and a nonzero redirect fails', () => {
     const artifact = compileBus(
       'int n; function payAll(bytes to) { this.transfer(to, 50000); this.n = this.n + 1; require(true); }',
     );
@@ -380,9 +381,21 @@ describe('October 2026 critical holes', () => {
       throw new Error(`payAll slots ${JSON.stringify(fn.blockLayout?.slots ?? null)}`);
     }
     const placeholder = fullSatoshiSpend(artifact, recipient, true);
-    expect(verdict(placeholder.sourceOutputs, placeholder.transaction), 'DX-1 full placeholder').toBe(true);
+    expect(verdict(placeholder.sourceOutputs, placeholder.transaction), 'DX-1 full filler').toBe(true);
     const redirect = fullSatoshiSpend(artifact, recipient, false);
     expect(verdict(redirect.sourceOutputs, redirect.transaction), 'DX-1 nonzero redirect').not.toBe(true);
+  });
+
+  it('DX-1 a filler keeps nothing, so a remainder of its value cannot leave the container', () => {
+    // The remainder equals the filler's value: a filler counted as kept balance would admit the swap.
+    const artifact = compileBus(
+      'int n; function payMost(bytes to) { this.transfer(to, 49424); this.n = this.n + 1; require(true); }',
+    );
+    const recipient = Uint8Array.of(0x76, 0xa9, 0x14, 0x22, 0x88, 0xac);
+    const kept = fullSatoshiSpend(artifact, recipient, false, 'payMost', 49_424n, FILLER_SATOSHIS);
+    expect(verdict(kept.sourceOutputs, kept.transaction), 'DX-1 remainder kept').toBe(true);
+    const filled = fullSatoshiSpend(artifact, recipient, true, 'payMost', 49_424n);
+    expect(verdict(filled.sourceOutputs, filled.transaction), 'DX-1 remainder into a filler').not.toBe(true);
   });
 
   it('DX-2 a public call cannot drain a token container, and the same call without it succeeds', () => {
@@ -402,7 +415,7 @@ describe('October 2026 critical holes', () => {
     expect(verdict(nftDrained.sourceOutputs, nftDrained.transaction), 'DX-2 nft container drain').not.toBe(true);
   });
 
-  it('DX-2 a full token movement spends the zero placeholder, and a nonzero redirect fails', () => {
+  it('DX-2 a full token movement leaves the filler, and a nonzero redirect fails', () => {
     const artifact = compileBus(
       'int n; function sendAll(bytes32 cat, bytes to) { this.tokens[cat].transfer(to, 1000);'
       + ' this.n = this.n + 1; require(true); }',
@@ -415,7 +428,7 @@ describe('October 2026 critical holes', () => {
       throw new Error(`sendAll slots ${JSON.stringify(fn.blockLayout?.slots ?? null)}`);
     }
     const placeholder = fullTokenSpend(artifact, recipient, true);
-    expect(verdict(placeholder.sourceOutputs, placeholder.transaction), 'DX-2 full placeholder').toBe(true);
+    expect(verdict(placeholder.sourceOutputs, placeholder.transaction), 'DX-2 full filler').toBe(true);
     const redirect = fullTokenSpend(artifact, recipient, false);
     expect(verdict(redirect.sourceOutputs, redirect.transaction), 'DX-2 nonzero token redirect').not.toBe(true);
   });
@@ -963,17 +976,19 @@ function paySpend(artifact: Artifact, recipient: Uint8Array): Spend {
   return { sourceOutputs, transaction: { ...base.transaction, inputs, outputs } };
 }
 
-/** The container's whole balance moves, and its own output is the SDK's zero placeholder or a paid redirect. */
-function fullSatoshiSpend(artifact: Artifact, recipient: Uint8Array, placeholder: boolean): Spend {
-  const base = scalarSpend(artifact, 'payAll', { n: 1n }, { n: 2n }, true, { to: recipient });
+/** The container's whole balance moves, and its own output is the drain's filler or a paid redirect. */
+function fullSatoshiSpend(
+  artifact: Artifact, recipient: Uint8Array, placeholder: boolean, name = 'payAll', paid = 50_000n, kept?: bigint,
+): Spend {
+  const base = scalarSpend(artifact, name, { n: 1n }, { n: 2n }, true, { to: recipient });
   const containerRedeem = scriptToBytecode(buildSatoshiContainerCovenantScript(
     CATEGORY, p2sh32(redeemOf(artifact)),
   ));
   const containerLock = p2sh32(containerRedeem);
   const containerIn = 50_000n;
-  const containerOut = placeholder
-    ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
-    : { lockingBytecode: FUNDER_LOCK, valueSatoshis: containerIn };
+  const containerOut = kept !== undefined ? { lockingBytecode: containerLock, valueSatoshis: kept }
+    : placeholder ? { lockingBytecode: fillerLockingBytecode(), valueSatoshis: FILLER_SATOSHIS }
+      : { lockingBytecode: FUNDER_LOCK, valueSatoshis: containerIn };
   return {
     sourceOutputs: [
       base.sourceOutputs[0]!,
@@ -993,14 +1008,14 @@ function fullSatoshiSpend(artifact: Artifact, recipient: Uint8Array, placeholder
         base.transaction.outputs[0]!,
         base.transaction.outputs[1]!,
         containerOut,
-        { lockingBytecode: recipient, valueSatoshis: containerIn },
+        { lockingBytecode: recipient, valueSatoshis: paid },
         base.transaction.outputs[2]!,
       ],
     },
   };
 }
 
-/** Every fungible token moves, and the container output is the zero placeholder or the same amount elsewhere. */
+/** Every fungible token moves, and the container output is the drain's filler or the same amount elsewhere. */
 function fullTokenSpend(artifact: Artifact, recipient: Uint8Array, placeholder: boolean): Spend {
   const base = scalarSpend(artifact, 'sendAll', { n: 1n }, { n: 2n }, true, { cat: FOREIGN, to: recipient });
   const containerRedeem = scriptToBytecode(buildTokenContainerCovenantScript(
@@ -1009,7 +1024,7 @@ function fullTokenSpend(artifact: Artifact, recipient: Uint8Array, placeholder: 
   const containerLock = p2sh32(containerRedeem);
   const held = { category: FOREIGN, amount: 1_000n };
   const containerOut = placeholder
-    ? { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n }
+    ? { lockingBytecode: fillerLockingBytecode(), valueSatoshis: FILLER_SATOSHIS }
     : { lockingBytecode: FUNDER_LOCK, valueSatoshis: VALUE, token: held };
   return {
     sourceOutputs: [

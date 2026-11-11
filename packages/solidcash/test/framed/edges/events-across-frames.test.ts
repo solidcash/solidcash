@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { FrameKind, computeEventNameHash, encodeEventCommitment, hash256 } from '@solidcash/utils';
+import {
+  FrameKind, computeEventContinuationHash, computeEventNameHash, encodeEventCommitment, hash256,
+} from '@solidcash/utils';
 import {
   compileAndDeploy, composeAndDerive, entryName, hexOf, seededAddress, token, userInput, USER_LOCK,
   selectorOf, validatorFor,
@@ -13,14 +15,18 @@ type CompositionFeedback = ReturnType<typeof composeAndDerive>;
  * Events laid out by the shipped composer and decided by the machine.
  *
  * The event region of a transaction is trailing, so a plan that lists events has to give each one an output the
- * composer materialises. The composer's draft takes an output for every input it places, so the tests below place
- * the event outputs at the trailing indices the layout allocates and give the root user its own input past them.
- * Every event covenant is rebuilt here the way the body rebuilds it, from the emitting contract's category.
+ * composer materialises, and a wide event one per chunk of its payload. The composer's draft takes an output for
+ * every input it places, so the tests below place the event outputs at the trailing indices the layout allocates and
+ * give the root user its own input past them. Every event covenant is rebuilt here the way the body rebuilds it, from
+ * the emitting contract's category.
  */
 
-/** The lock the emitting body recomputes: category pin, event-signature hash and the relative timelock. */
-function eventCovenantLock(category: Uint8Array, signature: string): Uint8Array {
-  const nameHash = computeEventNameHash(signature);
+/**
+ * The lock the emitting body recomputes: category pin, event-signature hash and the relative timelock. A wide
+ * event's further chunks sit under the same covenant over the event's continuation hash.
+ */
+function eventCovenantLock(category: Uint8Array, signature: string, continuation = false): Uint8Array {
+  const nameHash = continuation ? computeEventContinuationHash(signature, false) : computeEventNameHash(signature);
   const script = new Uint8Array([
     0xc0, 0xce, 0x01, 0x20, 0x7f, 0x7c,
     0x20, ...categorySlotValue(category),
@@ -51,7 +57,7 @@ function acceptedInputs(verdicts: CompositionFeedback['verdicts']): string[] {
 }
 
 describe('the events one transaction carries', () => {
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' contract Log {'
     + '   event First(int x);'
     + '   event Second(int y);'
@@ -107,7 +113,7 @@ describe('the events one transaction carries', () => {
 describe('an event emitted by a nested frame', () => {
   const emitterAddress = seededAddress('nested event emitter');
   // The unit-level event survey marks every contract in a unit that contains an emit, so the root also emits.
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface IEmitter { function fire(); }'
     + ' contract Emitter { event Report(int a, int b, int c, int d, int e);'
     + '   function fire() {'
@@ -132,6 +138,10 @@ describe('an event emitted by a nested frame', () => {
     const callerPayload = encodeEventCommitment(callerEvent.parameters, [1n]);
     const emitterPayload = encodeEventCommitment(emitterEvent.parameters, [big, big, big, big, big]);
     expect(emitterPayload.length).toBeGreaterThan(128);
+    // The payload can outgrow one commitment, so the emit lists two outputs: its first 128 bytes under the event
+    // covenant and the rest under the continuation covenant, the pieces the body takes from the payload's front.
+    expect(artifacts.Emitter!.abi.find((row) => row.name === 'fire')!.emits![0]!.chunks).toBe(2);
+    const emitterChunks = [emitterPayload.slice(0, 128), emitterPayload.slice(128)];
 
     const validator = validatorFor(caller.category);
     const selector = selectorOf(artifacts, 'Emitter', 'fire');
@@ -145,8 +155,8 @@ describe('an event emitted by a nested frame', () => {
       enteredBy: 'user', origin: 'user',
       calls: [{ kind: FrameKind.CALL, callee: 'emitter-1', target: emitter.address, value: 0n, argumentPushes: [selector] }],
       retval: new Uint8Array(0), segments: [[], []],
-      // The facet the validator binds is one participant ahead of the events.
-      events: [4], sends: [], argumentPushes: [], redeemScript: caller.program,
+      // The two facets the validator binds are two participants ahead of the events.
+      events: [5], sends: [], argumentPushes: [], redeemScript: caller.program,
     };
     const emitterMaster: DraftMaster = {
       master: 'emitter-1', contract: 'Emitter', functionName: entryName('Emitter', 'fire'), program: emitter.program,
@@ -156,23 +166,30 @@ describe('an event emitted by a nested frame', () => {
       },
       frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
       enteredBy: 'caller-1', origin: 'user', calls: [], retval: new Uint8Array(0), segments: [[]],
-      // The facet the validator binds is one participant ahead of the events.
-      events: [5], sends: [], argumentPushes: [selector], redeemScript: emitter.program,
+      // The two facets the validator binds are two participants ahead of the events; the wide event takes two.
+      events: [6, 7], sends: [], argumentPushes: [selector], redeemScript: emitter.program,
     };
     const plan: CompositionDraftPlan = {
       blocks: [
         { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Emitter', masters: ['emitter-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the users.
-      userInputs: [{ id: 'event-0', index: 4 }, { id: 'event-1', index: 5 }, { id: 'user', index: 6 }],
+      // The two facets the validator binds are two participants ahead of the users.
+      userInputs: [
+        { id: 'event-0', index: 5 }, { id: 'event-1', index: 6 }, { id: 'event-2', index: 7 }, { id: 'user', index: 8 },
+      ],
       masters: [callerMaster, emitterMaster],
       inputs: {
         'caller-1': { source: { lockingBytecode: caller.lockingBytecode, valueSatoshis: 20_000n, token: token(caller.category, 'minting') } },
         'emitter-1': { source: { lockingBytecode: emitter.lockingBytecode, valueSatoshis: 20_000n, token: token(emitter.category, 'minting') } },
         validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(caller.category, 'mutable') } },
         'event-0': eventInput(eventCovenantLock(caller.category, callerEvent.signature), caller.category, callerPayload),
-        'event-1': eventInput(eventCovenantLock(emitter.category, emitterEvent.signature), emitter.category, emitterPayload),
+        'event-1': eventInput(
+          eventCovenantLock(emitter.category, emitterEvent.signature), emitter.category, emitterChunks[0]!,
+        ),
+        'event-2': eventInput(
+          eventCovenantLock(emitter.category, emitterEvent.signature, true), emitter.category, emitterChunks[1]!,
+        ),
         user: {
           source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
           unlockingBytecode: userInput().unlockingBytecode,
@@ -185,9 +202,9 @@ describe('an event emitted by a nested frame', () => {
       { contract: 'Caller', functionName: entryName('Caller', 'start'), kind: FrameKind.ROOT, master: 'caller-1' },
     ]);
 
-    expect(outcome.draft.assembly.outputs.eventIndices).toStrictEqual([4, 5]);
+    expect(outcome.draft.assembly.outputs.eventIndices).toStrictEqual([5, 6, 7]);
     expect(acceptedInputs(outcome.verdicts)).toStrictEqual([]);
-    // The callee's own event is one of the two records the transaction creates.
+    // The callee's own event, in its two chunks, is one of the two events the transaction creates.
     expect(outcome.verdicts.find((verdict) => verdict.participant === 'emitter-1')?.accepted).toBe(true);
   });
 });

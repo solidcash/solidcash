@@ -372,6 +372,64 @@ const { contract } = await StatefulContract.deploy(
 );
 ```
 
+### Paying the miner from the container
+
+A public call must keep every satoshi it does not transfer: the container's inputs may not exceed its outputs plus
+the call's transfers. `this.payMinerFee(amount)` lets one entry lose `amount` more, with no output for it. That value
+is the transaction's input-output delta, so the contract pays the miner by omission.
+
+```solidity
+int constant MINER_FEE = 10000;
+
+function withdraw(address recipient) public {
+    this.transfer(recipient, DENOMINATION);
+    this.payMinerFee(MINER_FEE);
+}
+```
+
+- The amount is a positive compile-time constant: a literal or a `constant`.
+- The statement is a top-level one in a public entry, once. It emits nothing where it stands; it adds the amount to
+  what the entry's container checks allow, however many container coins the transaction spends.
+- The SDK spends the largest container coin and takes no funder, since the amount pays for the entry's outputs and
+  the fee. The caller needs no coin. An amount that cannot pay for the transaction fails at the relay fee.
+- The amount is an upper bound on what leaves the container, and it does not name a recipient: a composer may add an
+  output of its own and keep what the miner does not need.
+- It is refused in the [framed composition](/docs/guides/framed-composition), where a contract's BCH leaves only as a
+  send.
+
+### Keeping one coin per container
+
+A container is a lock, and by default any number of coins can sit at it: each `.withValue()` on a function that spends
+no container coin opens a new one. Two pragmas keep one coin instead, each for one kind of container:
+
+```solidity
+pragma solidcash ^0.14.0;
+pragma satoshicontainer single; // the satoshi container
+pragma tokencontainer single;   // each token container
+```
+
+Each holds for every contract in the file, and leaves the other kind of container as it is without a pragma. The rules
+below apply to the containers of the pragma's own kind.
+
+- The deployment opens the containers: `initialBalance` the satoshi container, `tokenContainers` a token container. A
+  call cannot open one later, so under `pragma satoshicontainer single` a deployment without `initialBalance` is refused
+  where a function needs it.
+- Under `pragma satoshicontainer single` a `payable` function spends the satoshi container and adds to it, so a call has
+  the same shape however much the contract holds.
+- A function with a container spends it, recreates it in the same slot and leaves no other output at its lock. A
+  transaction that drains the coin, opens a second one or opens one with nothing spent fails. Keep a balance in the
+  container: a call cannot empty it, and a token container needs at least one base unit.
+- The SDK spends the largest coin at the lock.
+- A container coin with no token cannot gain one: the covenant refuses it, whoever builds the transaction. The SDK reads
+  a satoshi container as a tokenless coin, and a kept coin cannot drop a token, so one token on the only coin would stop
+  every SDK call for good. This makes a container's lock differ from that of the same contract without the pragma.
+- Nothing runs when a coin is paid to a lock from outside, so such a coin can still exist. The contract holds none of
+  its value there, and the SDK passes it by. A composer can spend it in the container's place, which leaves two funded
+  coins but moves no value out of the contract's locks.
+- Either pragma is refused in a [framed](/docs/guides/framed-composition) contract, through an `upgrade` function and a
+  function that delegatecalls, and `pragma satoshicontainer single` through a BCH transfer in a runtime loop. The
+  contract gets no message-bus route.
+
 ## Partial Struct Field Updates
 
 When a struct is stored in a mapping, individual fields can be updated without rewriting the entire struct:

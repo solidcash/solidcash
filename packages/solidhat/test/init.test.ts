@@ -1,6 +1,6 @@
 import { execFileSync } from 'child_process';
 import {
-  existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
 import { createRequire } from 'node:module';
@@ -24,6 +24,16 @@ function temporaryDirectory(name: string): string {
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
+
+// A project's own directory of links: Vitest clears a node_modules' module cache when the lockfile above its project
+// differs, and through one link to the whole tree that is the cache of the run around this test.
+function linkDependencies(directory: string): void {
+  const shared = resolve('../../node_modules');
+  mkdirSync(join(directory, 'node_modules'));
+  for (const entry of readdirSync(shared).filter((name) => name === '.bin' || !name.startsWith('.'))) {
+    symlinkSync(join(shared, entry), join(directory, 'node_modules', entry), 'dir');
+  }
+}
 
 describe('initializeProject', () => {
   it('creates a complete TypeScript project in a new directory', () => {
@@ -218,7 +228,7 @@ describe('CLI entry points', () => {
     const parent = temporaryDirectory('generated-e2e');
     initializeProject({ cwd: parent, target: 'app', install: false });
     const directory = join(parent, 'app');
-    symlinkSync(resolve('../../node_modules'), join(directory, 'node_modules'), 'dir');
+    linkDependencies(directory);
 
     const output = execFileSync(process.execPath, [solidhatCli, 'test'], {
       cwd: directory, encoding: 'utf8',

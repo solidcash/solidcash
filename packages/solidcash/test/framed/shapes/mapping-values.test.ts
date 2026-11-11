@@ -72,7 +72,7 @@ const NOTES_ADDRESS = seededAddress('mapping values notes');
 const LEDGER_ADDRESS = seededAddress('mapping values ledger');
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ITags { function put(string k, string v); }'
   + ' interface INotes { function check(string k, string v); }'
   + ' contract Tags {'
@@ -271,7 +271,9 @@ describe('a string-keyed string mapping set', () => {
       inputIndex: input.index, sourceOutputs: program.sourceOutputs,
       transaction: { ...program.transaction, outputs: drained },
     })) !== true).map((input) => input.id);
-    expect(refusedBy).toStrictEqual([ENTRY_MASTER]);
+    // The validator covers the entry's master, so it settles the entry's contract (V8), the value floor included: its
+    // census facet weighs the floor, and the machine decides the head with that facet.
+    expect(refusedBy).toStrictEqual([VALIDATOR_ID, `${VALIDATOR_ID}/2`]);
   });
 
   it('refuses a close the body did not compute', () => {

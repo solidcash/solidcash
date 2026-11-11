@@ -16,6 +16,7 @@
  * value is encoded, because that depends on the collection's declared value type.
  */
 
+import type { Artifact } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   INDEX_NONE,
@@ -49,6 +50,15 @@ import {
 const NODE_HEADER_BYTES = 64;
 
 /** One node of a mapping's sorted list, as the inventory holds it. */
+
+/** The collection fields `keyToSlotMulti` hashes a key by. */
+export type MappingKeyEncoding = Parameters<typeof keyToSlotMulti>[1];
+
+/** How the collection `name` of `artifact` hashes its keys, or undefined when the artifact publishes no such one. */
+export function collectionKeyEncoding(artifact: Artifact | undefined, name: string): MappingKeyEncoding {
+  return artifact?.stateLayout?.collections?.find((collection) => collection.name === name);
+}
+
 export interface MappingNode {
   readonly slot: Uint8Array;
   readonly nextKey: Uint8Array;
@@ -88,6 +98,8 @@ export interface MappingWritePlan {
 export interface MappingWriteRequest<V> {
   /** The collection's key(s): one entry for a flat mapping, several for a nested `m[a][b]`. */
   readonly keys: readonly Uint8Array[];
+  /** How the collection hashes its keys: an `address` key of a Solidity collection as its 20-byte identity. */
+  readonly keyEncoding?: MappingKeyEncoding;
   /** The value to store, or `undefined` to remove the key. */
   readonly value: V | undefined;
   /** The current node inventory: every node commitment the caller reads from the state UTXOs. */
@@ -138,7 +150,7 @@ function relink(node: MappingNode, nextKey: Uint8Array): Uint8Array {
  * the target. A write of `undefined` to a key the inventory does not hold changes nothing and writes no node.
  */
 export function planMappingWrite<V>(request: MappingWriteRequest<V>): MappingWritePlan {
-  const slot = keyToSlotMulti([...request.keys]);
+  const slot = keyToSlotMulti([...request.keys], request.keyEncoding);
   const nodes = readInventory(request.inventory);
   const target = findNode(nodes, slot);
 
@@ -184,6 +196,8 @@ export function planMappingWrite<V>(request: MappingWriteRequest<V>): MappingWri
 export interface MappingDeleteRequest {
   /** The collection's key(s): one entry for a flat mapping, several for a nested `m[a][b]`. */
   readonly keys: readonly Uint8Array[];
+  /** How the collection hashes its keys: an `address` key of a Solidity collection as its 20-byte identity. */
+  readonly keyEncoding?: MappingKeyEncoding;
   /** The current node inventory: every node commitment the caller reads from the state UTXOs. */
   readonly inventory: readonly Uint8Array[];
   /**
@@ -212,7 +226,7 @@ export interface MappingDeleteRequest {
  * its one written node is the predecessor, kept. The returned plan's `removed` is therefore always false.
  */
 export function planMappingDelete(request: MappingDeleteRequest): MappingWritePlan {
-  const slot = keyToSlotMulti([...request.keys]);
+  const slot = keyToSlotMulti([...request.keys], request.keyEncoding);
   const nodes = readInventory(request.inventory);
   if (request.guarded === true && findNode(nodes, slot) === undefined) {
     const predecessor = requirePredecessor(nodes, slot);
@@ -221,6 +235,7 @@ export function planMappingDelete(request: MappingDeleteRequest): MappingWritePl
   }
   return planMappingWrite({
     keys: request.keys,
+    ...(request.keyEncoding === undefined ? {} : { keyEncoding: request.keyEncoding }),
     value: request.encodeDefault(),
     inventory: request.inventory,
     encodeValue: (encoded: Uint8Array) => encoded,
@@ -349,6 +364,8 @@ export interface MappingBatchWrite<V> {
 export interface MappingBatchRequest<V> {
   /** The writes in the body's target order, the order its segment declares their record groups in. */
   readonly writes: readonly MappingBatchWrite<V>[];
+  /** How the collection hashes its keys: an `address` key of a Solidity collection as its 20-byte identity. */
+  readonly keyEncoding?: MappingKeyEncoding;
   /** Every node commitment the caller reads from the collection's state UTXOs, the head included. */
   readonly inventory: readonly Uint8Array[];
   readonly encodeValue: (value: V) => Uint8Array;
@@ -364,6 +381,11 @@ export interface MappingBatchRequest<V> {
    * continues from that view; the record it declares names the creating frame's output instead of an input.
    */
   readonly continuedSlots?: ReadonlySet<string>;
+  /**
+   * Keeps the later write of a slot an earlier write names, declared as a skipped target, instead of refusing the
+   * batch (`planMappingBatch`): a caller that reports a run refused past it by the same refusal (`repeatedSlots`).
+   */
+  readonly keepsRepeatedSlot?: boolean;
 }
 
 /** One value chunk a long value takes: its node's slot, the value's root, its index and its commitment. */
@@ -404,6 +426,8 @@ export interface MappingBatchPlan {
   readonly written: readonly MappingWrittenNode[];
   /** The value chunks the batch's long values take, in target order and, inside a value, by index. */
   readonly chunks: readonly MappingValueChunk[];
+  /** The slots a later write named again, kept as skipped targets (`MappingBatchRequest.keepsRepeatedSlot`). */
+  readonly repeatedSlots?: readonly Uint8Array[];
 }
 
 /**
@@ -419,17 +443,27 @@ export interface MappingBatchPlan {
 export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBatchPlan {
   const nodes = readInventory(request.inventory);
   const targets = request.writes.map((write) => ({
-    slot: keyToSlotMulti([...write.keys]),
+    slot: keyToSlotMulti([...write.keys], request.keyEncoding),
     value: request.encodeValue(write.value),
     skipped: write.skipped === true,
   }));
   // A slot two writes name would be written twice. A skipped write writes nothing, so its key may meet a written
-  // one's, as a swap-remove write's meets the delete that follows it: the delete writes the entry.
+  // one's, as a swap-remove write's meets the delete that follows it: the delete writes the entry. Two writes of one
+  // slot are refused, or, for a caller that asks, planned as the first, the second kept: the body's batch verifies each
+  // target once, and reads a target that may meet an earlier one's slot as one it may skip, so a body that reaches
+  // both writes fails its own check, while one that refuses before the batch (`require(a != b)` ahead of
+  // `m[a][b] = x; m[b][a] = x`) reports that refusal rather than the plan's.
   const writtenSlots = new Set<string>();
-  for (const target of targets) {
+  const repeatedSlots: Uint8Array[] = [];
+  for (const [index, target] of targets.entries()) {
     if (target.skipped) continue;
     const key = bytesToHex(target.slot);
-    if (writtenSlots.has(key)) throw mappingBatchRepeatsSlot(target.slot);
+    if (writtenSlots.has(key)) {
+      if (request.keepsRepeatedSlot !== true) throw mappingBatchRepeatsSlot(target.slot);
+      targets[index] = { ...target, skipped: true };
+      repeatedSlots.push(target.slot);
+      continue;
+    }
     writtenSlots.add(key);
   }
 
@@ -472,13 +506,19 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
     const continued = held !== undefined && (request.continuedSlots?.has(key) ?? false);
     return { slot, existed: held !== undefined, ...(continued ? { continued: true } : {}), viewIn, viewOut };
   };
+  // The slots a group already names as its target, so a skipped target meeting one is told apart from it.
+  const targeted = new Set<string>();
   const groups = targets.map((target): MappingBatchGroup => {
     const held = findNode(nodes, target.slot);
+    const repeated = targeted.has(bytesToHex(target.slot));
+    targeted.add(bytesToHex(target.slot));
     if (target.skipped) {
       // The key's own node is declared in its final form, which an insert of another target may relink. The
       // predecessor proving an absent key absent is declared kept where the groups before it left it, and a later
-      // group that relinks it continues from that view; so is the predecessor of a key another write rewrites.
-      if (held !== undefined && !writtenSlots.has(bytesToHex(target.slot))) {
+      // group that relinks it continues from that view; so is the predecessor of a key another write rewrites, and
+      // of a key an earlier group already names: the body's batch admits two targets at one slot only where one of
+      // them is skipped, which it reads from a kept record that is not the key's node.
+      if (held !== undefined && !writtenSlots.has(bytesToHex(target.slot)) && !repeated) {
         return { slot: target.slot, existed: true, skipped: true, records: [declare(target.slot, held)] };
       }
       const predecessor = requirePredecessor(nodes, target.slot);
@@ -506,7 +546,7 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
       slot: targets[position]!.slot, root, index, commitment: hexToBin(buildValueChunkCommitment(index, data)),
     }));
   });
-  return { groups, written, chunks };
+  return { groups, written, chunks, ...(repeatedSlots.length === 0 ? {} : { repeatedSlots }) };
 }
 
 /**

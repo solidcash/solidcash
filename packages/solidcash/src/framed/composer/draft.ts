@@ -28,6 +28,7 @@
  */
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-vm.js';
 import {
   INDEX_NONE,
@@ -36,7 +37,6 @@ import {
   bytesEqual,
   bytesToHex,
   encodeArgumentList,
-  encodeMinimalDataPush,
   hash256,
   mintedRef,
   sha256,
@@ -49,6 +49,7 @@ import { readComputedDeclaration } from '../deploy/declaration.js';
 import {
   INDEX_NONE_REFERENCE,
   assembleComposition,
+  facetUnlockingBytecode,
   bindContractValidators,
   type CompositionAssembly,
   type CompositionPlan,
@@ -60,6 +61,7 @@ import {
   validatorFacetsOf,
 } from './assemble.js';
 import type { EntryFacts } from './need-test.js';
+import { sparseBlock, sparseDeclarationsOf, type SparseDeclarations } from './sparse.js';
 import { viewUnlearned } from './refusals.js';
 import type { FrameRequest } from './derivation.js';
 import type { FrameWitness } from './witness.js';
@@ -198,6 +200,14 @@ export interface DraftInput {
   readonly source: DraftSourceOutput;
   readonly unlockingBytecode?: Uint8Array;
   /**
+   * The outpoint the input spends, when the plan knows it.
+   *
+   * The derivation states it so a body that reads `OP_OUTPOINTTXHASH` (a creating body's `addrV(K)`, whose `K` is
+   * the genesis-eligible coin) sees the coin it will spend on the chain; an input without one keeps the stand-in the
+   * derivation uses. The broadcast restates the real inputs, so a value computed from a stand-in would not survive it.
+   */
+  readonly outpoint?: { readonly txid: string; readonly vout: number };
+  /**
    * The output this input recreates, when that output is not the input unchanged.
    *
    * A master and the validator are recreated as they were, so their output defaults to their source. A record an
@@ -245,6 +255,11 @@ export interface DraftCall {
    * is filled when the draft is built, and its callee is derived as a request of its own.
    */
   readonly deferred?: boolean;
+  /**
+   * For a low-level call, the message of the caller's own check over its success (`failedCallMessage`): the reason a
+   * failure below the call is reported by, since the EVM's call returns it to the caller as `false`.
+   */
+  readonly failedCallMessage?: string;
 }
 
 /**
@@ -289,6 +304,12 @@ export interface DraftMaster {
    * the plan states one call per site in order, which is the site's own published position.
    */
   readonly callBaseBySite?: readonly number[];
+  /**
+   * For each published call site, the position in `calls` of each of its visits, for a frame a loop of which calls
+   * at several sites: a turn makes all of its calls before the next turn's, so a site's visits interleave with the
+   * other sites' rather than running on from its base. Absent means each site's visits run on from its base.
+   */
+  readonly callPositionsBySite?: readonly (readonly number[])[];
   readonly retval: Uint8Array;
   readonly segments: readonly (readonly DraftRecordEntry[])[];
   readonly events: readonly number[];
@@ -321,6 +342,12 @@ export interface CompositionDraftPlan {
   readonly masters: readonly DraftMaster[];
   /** The length of each token run the trailing outputs lead with: a container recreated, then its token sends. */
   readonly tokenRuns?: readonly number[];
+  /**
+   * State known input outpoints in the provider's display order, as the node's wire and `TransactionBuilder` do.
+   * A creator's child address and category read the funding coin's outpoint, and the node reads that outpoint in
+   * display order; a derivation that creates a child states it the same way.
+   */
+  readonly displayOutpoints?: boolean;
   /**
    * The transaction's nLocktime, fixed before any derivation runs.
    *
@@ -374,6 +401,15 @@ export interface CompositionDraft {
   unlockingBytecodeOf(master: string): Uint8Array;
   /** The VM program that evaluates a master with the draft as it currently stands. */
   programFor(master: string): ShippedVmProgram;
+  /**
+   * Binds every record's first declaration to the commitment the transaction spends at its input.
+   *
+   * A shipped composition calls this once every view is learned, before it builds the program it judges and signs:
+   * the plan's stated first views and the inputs it spends can come from two reads, and the validator compares them
+   * at the record's first declaration. A plan-level caller that wants the machine's verdict on its own declarations
+   * leaves it alone.
+   */
+  bindRecordChainStarts(): void;
   /** The declarations a plan left unstated that no run has learned yet, each still holding its placeholder. */
   unlearnedViews(): readonly UnstatedView[];
   /**
@@ -451,6 +487,7 @@ function toCompositionPlan(
         value: call.value,
         argumentPushes: call.argumentPushes,
         result: callResultOf(call, retvals),
+        ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
       })),
       retval: master.retval,
       segments: segments.get(master.master)!,
@@ -458,6 +495,8 @@ function toCompositionPlan(
       sends: master.sends,
       argumentPushes: master.argumentPushes,
       redeemScript: master.redeemScript,
+      ...(plan.inputs[master.master]?.source.token === undefined ? {}
+        : { category: plan.inputs[master.master]!.source.token!.category }),
       ...(master.values === undefined ? {} : { values: master.values }),
       ...(master.dispatches === undefined ? {} : { dispatches: master.dispatches }),
     })),
@@ -473,6 +512,7 @@ function toCompositionPlan(
           value: call.value,
           argumentPushes: call.argumentPushes,
           result: callResultOf(call, retvals),
+          ...(call.failedCallMessage === undefined ? {} : { failedCallMessage: call.failedCallMessage }),
         })),
         retval: minted.retval,
         segments: segments.get(minted.master)!,
@@ -508,6 +548,11 @@ export interface ComposeDraftOptions {
    * limit; a contract compiled with a larger `commitmentLimit` raises it.
    */
   readonly maximumCommitmentBytes?: number;
+  /**
+   * The declarations each master's block leaves out of a segment, by master (`sparseDeclarationsOf`): the
+   * transaction carries the shorter block, and the draft keeps the full one its learned views name.
+   */
+  readonly sparse?: ReadonlyMap<string, SparseDeclarations>;
 }
 
 /**
@@ -694,9 +739,10 @@ export function composeDraft(
   }
 
   // Inputs in index order, each with the source output the machine reads and how its unlocking bytecode is built.
-  const facetCode = new Map<string, Uint8Array>();
+  // Each facet's code, and its place `k` after its head.
+  const facetCode = new Map<string, { readonly code: Uint8Array; readonly k: number }>();
   for (const validator of binding.hosted) {
-    validatorFacetsOf(validator).forEach((code, at) => facetCode.set(facetId(validator.id, at + 1), code));
+    validatorFacetsOf(validator).forEach((code, at) => facetCode.set(facetId(validator.id, at + 1), { code, k: at + 1 }));
   }
   const inputCount = Math.max(0, ...indices.values()) + 1;
   const byIndex = new Array<{ id: string } | undefined>(inputCount).fill(undefined);
@@ -714,9 +760,9 @@ export function composeDraft(
     if (input !== undefined) return input.source;
     // A validator's facets are a function of the validator program, so no plan states their UTXOs: a facet UTXO
     // holds no token and pins no category, so any UTXO of its code serves any composition.
-    const code = facetCode.get(id);
-    if (code !== undefined) {
-      return { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)), valueSatoshis: FACET_SATOSHIS };
+    const facet = facetCode.get(id);
+    if (facet !== undefined) {
+      return { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(facet.code)), valueSatoshis: FACET_SATOSHIS };
     }
     throw new CompositionDraftError(`input "${id}" has no source output`);
   };
@@ -756,6 +802,24 @@ export function composeDraft(
     for (const master of [...roots, ...plan.masters.map((candidate) => candidate.master)]) visit(master);
     return walked;
   };
+
+  /**
+   * Begins every record's declaration chain at the commitment its input carries.
+   *
+   * The transcript declares each record's chain: the first declaration starts where the record does — the token
+   * commitment the transaction spends at its input, or nothing for a record the transaction creates — and a later
+   * one starts at the view the declaration before it left. A plan states those views, and a block can carry the
+   * first declaration from a read that differs from the input's own commitment (a re-plan against a deployment read
+   * again between the two). The validator's first-record check compares the two and refuses the whole transaction
+   * with an opcode failure that names neither, so the input's commitment — the bytes the node actually spends — is
+   * bound to the first declaration here. Only the chain's first view is touched: later declarations carry on from
+   * the view before them, not from the input.
+   */
+  const bindFirstDeclarations = (): void => bindRecordChainStarts(segmentsInWalkOrder(), (index) => {
+    const id = orderedIds[index];
+    if (id === undefined) return undefined;
+    return { id, commitment: sourceOf(id).token?.nft?.commitment };
+  });
 
   /**
    * The commitment a record's declaration chain ends at, across every block as it currently stands.
@@ -825,12 +889,14 @@ export function composeDraft(
   const unlockingFor = (id: string, block?: WitnessBlock): Uint8Array => {
     const master = mastersById.get(id);
     if (master !== undefined) {
-      return buildMasterUnlockingBytecode(block ?? blocks.get(id)!, master.argumentPushes, master.redeemScript);
+      return buildMasterUnlockingBytecode(
+        sparseBlock(block ?? blocks.get(id)!, options.sparse?.get(id)), master.argumentPushes, master.redeemScript,
+      );
     }
     const validator = validatorUnlocking.get(id);
     if (validator !== undefined) return validator;
     const facet = facetCode.get(id);
-    if (facet !== undefined) return encodeMinimalDataPush(facet);
+    if (facet !== undefined) return facetUnlockingBytecode(facet.k, facet.code);
     const provided = settled.get(id)?.unlockingBytecode ?? plan.inputs[id]?.unlockingBytecode;
     if (provided === undefined) {
       throw new CompositionDraftError(`input "${id}" is not a master, a validator or a facet, so it needs unlocking bytecode`);
@@ -849,12 +915,19 @@ export function composeDraft(
   ): ShippedVmProgram['transaction'] =>
     ({
       version: 2,
-      inputs: orderedIds.map((id, index) => ({
-        outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(index + 1),
-        sequenceNumber,
-        unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
-      })),
+      inputs: orderedIds.map((id, index) => {
+        // A known outpoint is stated as the chain holds it: display order reversed into the transaction's byte order.
+        const known = plan.inputs[id]?.outpoint;
+        return {
+          outpointIndex: known?.vout ?? 0,
+          outpointTransactionHash: known === undefined
+            ? new Uint8Array(32).fill(index + 1)
+            : plan.displayOutpoints === true ? hexToBin(known.txid)
+              : Uint8Array.from(hexToBin(known.txid).reverse()),
+          sequenceNumber,
+          unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
+        };
+      }),
       outputs: transactionOutputs(),
       locktime,
     });
@@ -1025,8 +1098,11 @@ export function composeDraft(
         // this step does not own and leave the site that owns it with a reference already filled.
         const laterBases = master.callBaseBySite?.filter((candidate) => candidate > base) ?? [];
         const limit = laterBases.length === 0 ? master.calls.length : Math.min(...laterBases);
-        const callIndex = site.repeated === true ? base + visit : base;
-        if (callIndex >= limit) return {};
+        // A loop that calls at several sites places each visit where its turn made it, past the other sites' calls.
+        const positions = master.callPositionsBySite?.[site.site];
+        const callIndex = positions !== undefined ? positions[visit] ?? master.calls.length
+          : site.repeated === true ? base + visit : base;
+        if (positions === undefined ? callIndex >= limit : callIndex >= master.calls.length) return {};
         const call = master.calls[callIndex];
         // A repeated site's execution may have moved past every record the plan declares, which is what ends the
         // resumption. Any other site names the record it binds, so a plan without it is a plan the composer refuses.
@@ -1072,6 +1148,7 @@ export function composeDraft(
       if (run === undefined) throw new CompositionDraftError(`no master "${master}"`);
       return run.programFor(run.initialBlock());
     },
+    bindRecordChainStarts: () => bindFirstDeclarations(),
     // A learned placeholder leaves its master's map, so what remains is exactly what no run learned.
     unlearnedViews: () => [...unstatedByMaster.values()].flatMap((byPlaceholder) => [...byPlaceholder.values()]),
     // A caller that evaluates a program itself never resumes it at a site, so nothing would read a plan's unstated
@@ -1101,9 +1178,16 @@ export function createComposedDerivationHost(options: {
   readonly maximumCommitmentBytes?: number;
   readonly onRun?: ShippedHostOptions['onRun'];
 }): { readonly host: ReturnType<typeof createShippedDerivationHost>; readonly draft: CompositionDraft } {
+  // Each master leaves out of a segment the records its entry's code does not touch there.
+  const sparse = new Map<string, SparseDeclarations>();
+  for (const master of options.plan.masters) {
+    const declarations = sparseDeclarationsOf(options.artifacts, master.functionName, master.frame.kind);
+    if (declarations !== undefined) sparse.set(master.master, declarations);
+  }
   const draft = composeDraft(options.plan, {
     ...(options.vm === undefined ? {} : { vm: options.vm }),
     ...(options.maximumCommitmentBytes === undefined ? {} : { maximumCommitmentBytes: options.maximumCommitmentBytes }),
+    ...(sparse.size === 0 ? {} : { sparse }),
   });
   const host = createShippedDerivationHost({
     artifacts: options.artifacts,
@@ -1112,4 +1196,38 @@ export function createComposedDerivationHost(options: {
     ...(options.onRun === undefined ? {} : { onRun: options.onRun }),
   });
   return { host, draft };
+}
+
+/**
+ * Binds each record's first declaration to the commitment the transaction spends at its input.
+ *
+ * `walked` is every block's segments in the order the validator walks them, so the first entry naming an input is
+ * the declaration whose `viewIn` the validator compares with that input's token commitment. A record whose first
+ * declaration already names it is left alone; a later declaration is never touched, because it starts at the view
+ * the declaration before it left rather than at the input. `spentOf` answers an input's record identity and the
+ * commitment it carries, or `undefined` when the input is not a record.
+ */
+export function bindRecordChainStarts(
+  walked: readonly (readonly RecordEntry[])[],
+  spentOf: (inputIndex: number) => { readonly id: string; readonly commitment: Uint8Array | undefined } | undefined,
+): void {
+  const bound = new Set<string>();
+  for (const segment of walked) {
+    for (let at = 0; at < segment.length; at += 1) {
+      const entry = segment[at]!;
+      if (entry.in === INDEX_NONE || entry.in < 0) continue;
+      const spent = spentOf(entry.in);
+      if (spent === undefined || spent.commitment === undefined || bound.has(spent.id)) continue;
+      bound.add(spent.id);
+      if (bytesEqual(entry.viewIn, spent.commitment)) continue;
+      // eslint-disable-next-line no-param-reassign
+      (segment as RecordEntry[])[at] = { ...entry, viewIn: spent.commitment };
+      if ((globalThis as unknown as { process?: { env: Record<string, string | undefined> } })
+        .process?.env?.FRAMED_VIEW_DEBUG !== undefined) {
+        console.error('view-debug', JSON.stringify({
+          input: entry.in, id: spent.id, declared: entry.viewIn.length, spent: spent.commitment.length,
+        }));
+      }
+    }
+  }
 }

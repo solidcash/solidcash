@@ -61,7 +61,7 @@ const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
 const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
 const K_SELECTOR = computeFunctionSelector(computeFunctionSignature('k', []));
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ' contract B {'
@@ -168,8 +168,8 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
       { contract: 'A', masters: [A_FIRST, A_SECOND], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'B', masters: [B_MASTER], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: USER_ID, index: 5 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 6 }],
     masters: [aFirst, bMaster, aSecond],
     inputs: {
       [A_FIRST]: { source: masterSource(a.lockingBytecode, CATEGORY_A) },
@@ -187,7 +187,7 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
       id: VALIDATOR_ID,
       covers: ['B'],
       // `A` runs on two masters, so its validator settles it; `A` has no records yet, so the settlement lists no
-      // state input. `B` runs on one master and settles itself.
+      // state input. The validator covers `B`'s master too, so the composer settles `B` beside it.
       settles: [{ category: CATEGORY_A, stateInputs: [] }],
       redeemScript: validator.redeem,
     },
@@ -291,8 +291,8 @@ describe('a contract entered twice, composed on the machine', () => {
     expect(participant(draft.layout, A_FIRST).index).toBe(0);
     expect(participant(draft.layout, A_SECOND).index).toBe(1);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(2);
-    // The facet the validator binds sits at 3, so B follows at 4.
-    expect(participant(draft.layout, B_MASTER).index).toBe(4);
+    // The two facets the validator binds sit at 3 and 4, so B follows at 5.
+    expect(participant(draft.layout, B_MASTER).index).toBe(5);
   });
 
   it('accepts the root master once its call record is filled, and answers the same verdict twice', () => {
@@ -341,12 +341,9 @@ describe('a contract entered twice, composed on the machine', () => {
     const at = (index: number): string => verdict(vm, program.transaction, program.sourceOutputs, index)
       .objection ?? 'accepted';
 
-    // The user's entry, the re-entered entry, the validator that covers both contracts, and the callee that calls
-    // back: every contract input the transaction spends is settled by its own program.
-    expect(at(0)).toBe('accepted');
-    expect(at(1)).toBe('accepted');
-    expect(at(2)).toBe('accepted');
-    expect(at(3)).toBe('accepted');
+    // The user's entry, the re-entered entry, the validator that covers both contracts with its two facets, and the
+    // callee that calls back: every contract input the transaction spends is settled by its own program.
+    for (const placed of draft.layout.participants) expect(at(placed.index), placed.id).toBe('accepted');
   });
 
   it('refuses the derivation when a block declares a call its entry does not make', () => {
@@ -357,7 +354,7 @@ describe('a contract entered twice, composed on the machine', () => {
       vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     const stray = structuredClone(draft.blockOf(A_SECOND)) as WitnessBlock;
     stray.calls = [{
-      kind: FrameKind.CALL, target: ADDRESS_B, value: 0n, calleeRef: 3,
+      kind: FrameKind.CALL, target: ADDRESS_B, value: 0n, calleeRef: participant(draft.layout, B_MASTER).index,
       argsHash: sha256(G_SELECTOR), result: empty,
     }];
     stray.segments = [[], []];

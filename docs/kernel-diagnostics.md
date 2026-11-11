@@ -123,3 +123,20 @@ verdicts remain unchanged. Use it on one focused title, for example
 `FRAMED_HOP_TRACE=1 yarn workspace solidcash vitest --watch --config vitest.framed.config.ts test/framed/shapes/proxied-root-append.test.ts -t 'settles the record write and both appends'`.
 Recheck with the variable unset before recording a passing checkpoint or comparing timings.
 `docs/framed/NOPROXY_LANE_COST.md` is the reading that motivated it.
+
+`FRAMED_REFUSAL_DUMP=1` writes, for every participant of a composed framed transaction the machine refuses, the
+program as the machine left it: the input, the failing instruction pointer and error, the instructions around it,
+both stacks, and the instructions each enclosing function frame was at (`FRAMED-REFUSAL ...` on stderr). Read it
+when a refusal names no source line (`no source message`): the stack names the operands the failing check compared,
+and a bottom-relative `OP_DEPTH <k> OP_SUB OP_PICK` reads position `k - 1` from the bottom. It changes logging only.
+
+`SOLIDCASH_TX_SURVEY=<file>` appends one JSON line per transaction a `MockNetworkProvider` accepts, before the
+transaction spends its inputs: its byte length, input and output counts, fee, largest unlocking bytecode, largest
+output locking bytecode and largest NFT commitment, and per input its role, unlocking and locking lengths, the
+operation cost and hash digest iterations its evaluation spent on the network's own limits, and the budgets a real
+chain grants an input of that length (`(41 + unlocking length) × 800`; 3.5 and 0.5 hash iterations per byte). The
+framed call path labels its transactions with the frames they run (`Root.entry() > Callee.entry() ...`) and each
+input's part (`master`, `validator`, `facet`, `state`, `recovery`, `caller`, `container`, ...); a framed genesis is
+`deploy <Contract>`; anything else is `unlabelled`. It evaluates every input once more, so a run with it set is
+slower; programs, plans and verdicts are unchanged. `SOLIDCASH_TX_TRACE=1` prints a shorter line per broadcast on
+stderr. The size survey in `NATIVE-PORT.md` was read from this switch.

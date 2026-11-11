@@ -4,6 +4,10 @@
  * Starts one `@mem-cash/server` process on a shared chain, mints and keeps its oracle pool during `prepare`, prints the
  * funded-account table (human or `--json`), and exits 0 on SIGINT/SIGTERM after releasing the port.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { generateBip39Mnemonic } from '@bitauth/libauth/build/lib/key/bip39.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
 import type { NetworkConfig } from './config.js';
@@ -17,6 +21,8 @@ const DEFAULT_ACCOUNTS_PATH = "m/44'/60'/0'/0";
 interface ServerHandleLike {
   readonly httpUrl: string;
   readonly wsUrl: string;
+  readonly httpsUrl?: string;
+  readonly wssUrl?: string;
   readonly host: string;
   readonly port: number;
   readonly chainId: string;
@@ -88,6 +94,34 @@ function formatBch(satoshis: string): string {
   return fraction.length === 0 ? `${whole}` : `${whole}.${fraction}`;
 }
 
+interface TlsMaterial {
+  readonly key: string;
+  readonly cert: string;
+}
+
+/** A self-signed certificate for the loopback TLS listener, generated with the host's openssl. */
+function selfSignedCertificate(): TlsMaterial {
+  const dir = mkdtempSync(join(tmpdir(), 'solidcash-tls-'));
+  const keyPath = join(dir, 'key.pem');
+  const certPath = join(dir, 'cert.pem');
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '30',
+      '-subj', '/CN=localhost',
+      '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1',
+      '-keyout', keyPath, '-out', certPath,
+    ], { stdio: 'ignore' });
+    return { key: readFileSync(keyPath, 'utf8'), cert: readFileSync(certPath, 'utf8') };
+  } catch (error) {
+    throw new Error(
+      '--tls needs a certificate: pass --tls-cert and --tls-key, or make openssl available '
+      + `(${error instanceof Error ? error.message : String(error)})`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvironment): Promise<void> {
   const json = args.json === true;
   const quiet = args.quiet === true;
@@ -100,6 +134,23 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
 
   const host = stringArg(args, 'host') ?? devnetCfg.host ?? '127.0.0.1';
   const port = numberArg(args, 'port') ?? devnetCfg.port ?? 8545;
+  const tlsCertPath = stringArg(args, 'tls-cert');
+  const tlsKeyPath = stringArg(args, 'tls-key');
+  const tlsEnabled = args.tls === true;
+  if (!tlsEnabled && (tlsCertPath !== undefined || tlsKeyPath !== undefined)) {
+    throw new Error('--tls-cert and --tls-key require --tls');
+  }
+  if (tlsEnabled && (tlsCertPath === undefined) !== (tlsKeyPath === undefined)) {
+    throw new Error('--tls-cert and --tls-key must be given together');
+  }
+  const tls = tlsEnabled
+    ? {
+      ...(tlsCertPath !== undefined && tlsKeyPath !== undefined
+        ? { cert: readFileSync(tlsCertPath, 'utf8'), key: readFileSync(tlsKeyPath, 'utf8') }
+        : selfSignedCertificate()),
+      port: numberArg(args, 'tls-port') ?? (port === 0 ? 0 : port + 1),
+    }
+    : undefined;
   const mining = enumArg(args, 'mining', ['auto', 'manual', 'interval'] as const)
     ?? devnetCfg.mining ?? 'auto';
   const intervalMs = numberArg(args, 'interval') ?? devnetCfg.intervalMs ?? 1000;
@@ -117,7 +168,8 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
   const mnemonic = args['random-mnemonic'] === true
     ? generateBip39Mnemonic()
     : stringArg(args, 'mnemonic') ?? netCfg?.mnemonic ?? hre.config.mnemonic ?? DEFAULT_MNEMONIC;
-  const consensusName = enumArg(args, 'consensus', ['relaxed', 'production'] as const) ?? 'relaxed';
+  // Mainnet rules by default: a devnet must refuse what mainnet refuses unless someone explicitly asks for relaxed.
+  const consensusName = enumArg(args, 'consensus', ['relaxed', 'production'] as const) ?? 'production';
   const vm = enumArg(args, 'vm', ['BCH_2023_05', 'BCH_2025_05', 'BCH_2026_05', 'BCH_SPEC'] as const);
   const logLevel = enumArg(args, 'log-level', ['error', 'warn', 'info', 'debug'] as const);
   const funding = args['no-fund'] !== true;
@@ -125,10 +177,17 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
 
   const server = (await import('@mem-cash/server')) as unknown as ServerModule;
 
+  // A relaxed devnet takes the selected network's `consensus` over its own profile, and enforces what it then
+  // advertises. A production devnet is BCH mainnet's: mem-cash verifies a profile that enforces dust with libauth's
+  // stock limits whatever the profile states, so a network's `consensus` (a mock's own limits, or the limits a compile
+  // reads before it connects) merged into it would be advertised and never enforced. Clients pad each input to the
+  // advertised operation-cost budget: padded to a project's 1,000,000 units a byte, their transactions were refused at
+  // mainnet's 800. So production takes none of it.
+  const production = consensusName === 'production';
   const consensus = {
-    ...(consensusName === 'production' ? server.PRODUCTION_CONSENSUS : server.RELAXED_CONSENSUS),
+    ...(production ? server.PRODUCTION_CONSENSUS : server.RELAXED_CONSENSUS),
     ...(vm === undefined ? {} : { vmVersion: vm }),
-    ...(netCfg?.consensus ?? {}),
+    ...(production ? {} : netCfg?.consensus ?? {}),
   };
 
   const oraclePool = createDevnetOraclePool(bchNetwork);
@@ -170,6 +229,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     handle = await server.createServer({
       host,
       port,
+      ...(tls === undefined ? {} : { tls }),
       devnet: devnetOptions,
       extensions,
       limits: {
@@ -217,6 +277,7 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
       event: 'listening',
       httpUrl: handle.httpUrl,
       wsUrl: handle.wsUrl,
+      ...(handle.httpsUrl === undefined ? {} : { httpsUrl: handle.httpsUrl, wssUrl: handle.wssUrl }),
       port: handle.port,
       host: handle.host,
       genesisHash: handle.genesisHash,
@@ -248,6 +309,11 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     lines.push('');
     lines.push(`  HTTP        ${handle.httpUrl}`);
     lines.push(`  WebSocket   ${handle.wsUrl}`);
+    if (handle.httpsUrl !== undefined) {
+      lines.push(`  HTTPS       ${handle.httpsUrl}`);
+      lines.push(`  WSS         ${handle.wssUrl}`);
+      lines.push('              (open the HTTPS URL once and accept the certificate for a browser wallet)');
+    }
     lines.push(`  Genesis     ${handle.genesisHash.slice(0, 20)}…  (height 0)`);
     lines.push(`  Tip         ${info.height}  ${info.blockHash.slice(0, 20)}…`);
     lines.push(`  Mining      ${info.mining.mode}${info.mining.mode === 'auto'
@@ -257,11 +323,16 @@ export async function runDevnetNode(args: TaskArguments, hre: HardhatRuntimeEnvi
     lines.push(`  Accounts    ${accounts.length} funded · ${coins} coins each · ${balanceBch} BCH each`);
     if (!quiet) {
       lines.push('');
-      lines.push(`  #  Address${' '.repeat(34)}${noKeys ? '' : `WIF${' '.repeat(36)}`}Balance      Path`);
+      // Columns are as wide as their widest entry: a BCH address is 50 characters and a WIF 52, where the EVM table
+      // this mirrors fits 42-character addresses.
+      const addressWidth = Math.max('Address'.length, ...accounts.map((account) => account.address.length)) + 2;
+      const wifWidth = Math.max('WIF'.length, ...accounts.map((account) => account.wif.length)) + 2;
+      const balanceWidth = `${balanceBch} BCH`.length + 2;
+      lines.push(`  #  ${'Address'.padEnd(addressWidth)}${noKeys ? '' : 'WIF'.padEnd(wifWidth)}${'Balance'.padEnd(balanceWidth)}Path`);
       for (const account of accounts) {
-        const address = account.address.padEnd(42);
-        const wif = noKeys ? '' : `${account.wif.padEnd(40)}`;
-        lines.push(`  ${String(account.index).padStart(2)} ${address}${wif}${`${balanceBch} BCH`.padEnd(13)}${account.path}`);
+        const address = account.address.padEnd(addressWidth);
+        const wif = noKeys ? '' : account.wif.padEnd(wifWidth);
+        lines.push(`  ${String(account.index).padStart(2)} ${address}${wif}${`${balanceBch} BCH`.padEnd(balanceWidth)}${account.path}`);
       }
       lines.push('');
       lines.push(`  Mnemonic: ${mnemonic}`);

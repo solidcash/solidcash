@@ -11,6 +11,19 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { ripemd160, secp256k1, sha1, sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
+import { binToHex, flattenBinArray, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { encodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import type { TransactionCommon } from '@bitauth/libauth/build/lib/message/transaction-types.js';
+import { measureOperationCost } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2025/bch-2025-consensus.js';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
+import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
+import { createVirtualMachine } from '@bitauth/libauth/build/lib/vm/virtual-machine.js';
 import { ElectrumClient } from '@electrum-cash/network';
 import { ElectrumWebSocket } from '@electrum-cash/web-socket';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -391,9 +404,9 @@ describe('solidhat node end to end', () => {
     try {
       const scripthash = (await (async () => {
         const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-        const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-        const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-        return binToHex(sha256.hash(addressToLockScript(first.address)));
+        const { sha256: localSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+        const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+        return localBinToHex(localSha256.hash(addressToLockScript(first.address)).reverse());
       })());
       const utxos = await client.request('blockchain.scripthash.listunspent', scripthash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
@@ -415,9 +428,9 @@ describe('solidhat node end to end', () => {
     const clientAgain = await rawClient(node);
     try {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-      const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-      const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const firstScriptHash = binToHex(sha256.hash(addressToLockScript(first.address)));
+      const { sha256: localSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+      const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+      const firstScriptHash = localBinToHex(localSha256.hash(addressToLockScript(first.address)).reverse());
       const utxos = await clientAgain.request(
         'blockchain.scripthash.listunspent',
         firstScriptHash,
@@ -436,9 +449,9 @@ describe('solidhat node end to end', () => {
     const clientFinal = await rawClient(node);
     try {
       const { addressToLockScript } = await import('@solidcash/solidcash/dist/utils.js');
-      const { sha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
-      const { binToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
-      const scriptHash = binToHex(sha256.hash(addressToLockScript(afterRevert.address)));
+      const { sha256: localSha256 } = await import('@bitauth/libauth/build/lib/crypto/default-crypto-instances.js');
+      const { binToHex: localBinToHex } = await import('@bitauth/libauth/build/lib/format/hex.js');
+      const scriptHash = localBinToHex(localSha256.hash(addressToLockScript(afterRevert.address)).reverse());
       const utxos = await clientFinal.request('blockchain.scripthash.listunspent', scriptHash, 'include_tokens') as unknown[];
       expect(utxos.length).toBeGreaterThan(0);
     } finally {
@@ -649,6 +662,108 @@ describe('solidhat node --evm-rpc', () => {
       }
     } finally {
       const exit = await stopNode(node);
+      expect(exit.code).toBe(0);
+    }
+  }, 300_000);
+});
+
+describe('solidhat node --consensus production', () => {
+  /** A redeem script that drops the padding pushed under its count, counts down to zero, and leaves 1. */
+  const countdown = Uint8Array.of(
+    OpcodesBch2026.OP_NIP, OpcodesBch2026.OP_BEGIN, OpcodesBch2026.OP_1SUB, OpcodesBch2026.OP_DUP,
+    OpcodesBch2026.OP_NOT, OpcodesBch2026.OP_UNTIL, OpcodesBch2026.OP_NOT,
+  );
+  const countdownLock = encodeLockingBytecodeP2sh32(hash256(countdown));
+  /** 2,000 turns cost about 800,000 units of operation cost, which mainnet funds with an input of about 1,000 bytes. */
+  const turns = 2_000n;
+  const coin = { txid: 'c0'.repeat(32), vout: 0, satoshis: 100_000n };
+  const spend = (padding: number): TransactionCommon => ({
+    version: 2,
+    locktime: 0,
+    inputs: [{
+      outpointTransactionHash: hexToBin(coin.txid),
+      outpointIndex: coin.vout,
+      sequenceNumber: 0xffffffff,
+      unlockingBytecode: flattenBinArray([
+        encodeDataPush(new Uint8Array(padding)), encodeDataPush(bigIntToVmNumber(turns)), encodeDataPush(countdown),
+      ]),
+    }],
+    outputs: [{ lockingBytecode: hexToBin(`76a914${'11'.repeat(20)}88ac`), valueSatoshis: coin.satoshis - 5_000n }],
+  });
+  /** The machine a client measures an input's cost on: libauth's own, with the budgets lifted. */
+  const measuring = createVirtualMachine(createInstructionSetBch2026(true, {
+    consensus: {
+      ...ConsensusBch2026, operationCostBudgetPerByte: 1e9, hashDigestIterationsPerByteStandard: 1e9,
+      hashDigestIterationsPerByteNonstandard: 1e9,
+    },
+    ripemd160, secp256k1, sha1, sha256,
+  } as never));
+  /** The spend with its unlocking bytecode as long as its cost needs at `budgetPerByte`, as the SDK pads an input. */
+  const spendPaddedTo = (budgetPerByte: number): ReturnType<typeof spend> => {
+    let padding = 0;
+    for (;;) {
+      const transaction = spend(padding);
+      const { metrics } = measuring.evaluate({
+        inputIndex: 0, transaction,
+        sourceOutputs: [{ lockingBytecode: countdownLock, valueSatoshis: coin.satoshis }],
+      } as never) as { metrics: Parameters<typeof measureOperationCost>[0] };
+      const needed = Math.ceil(measureOperationCost(metrics) / budgetPerByte) - 41;
+      const length = transaction.inputs[0]!.unlockingBytecode.length;
+      if (length >= needed) return transaction;
+      padding += needed - length;
+    }
+  };
+
+  it("advertises BCH mainnet's limits, whatever the project's networks state, and enforces what it advertises", async () => {
+    // A project that lifts its own limits, as one composing large transactions does: its default network is a mock
+    // funding 1,000,000 units of operation cost a byte, and its devnet entry states the same before it connects.
+    const projectDir = makeProjectDir();
+    fs.writeFileSync(path.join(projectDir, 'solidcash.config.ts'), [
+      "import { defineConfig } from '@solidcash/solidhat/config';",
+      'export default defineConfig({',
+      '  networks: {',
+      "    mock: { type: 'mock', consensus: { maximumInputBytes: 10_000_000, maximumStackItemBytes: 10_000_000,",
+      '      maximumTransactionBytes: 100_000_000, operationCostBudgetPerByte: 1_000_000 } },',
+      "    localhost: { type: 'mem-cash', network: 'mocknet', consensus: { operationCostBudgetPerByte: 1_000_000,",
+      '      hashDigestIterationsPerByte: 10_000_000 } },',
+      '  },',
+      "  defaultNetwork: 'mock',",
+      '});',
+      '',
+    ].join('\n'));
+    const node = await startNode(['--consensus', 'production'], projectDir);
+    try {
+      const { devnet } = await call<{ devnet: { consensus: Record<string, number> } }>(node, 'server.features');
+      // A production node verifies with libauth's stock 2026 limits, so those are what it states.
+      expect.soft(devnet.consensus).toMatchObject({
+        maximum_input_bytes: ConsensusBch2026.maximumBytecodeLength,
+        maximum_stack_item_bytes: ConsensusBch2026.maximumStackItemLength,
+        maximum_transaction_bytes: ConsensusBch2026.maximumTransactionLengthBytes,
+        maximum_nft_commitment_bytes: ConsensusBch2026.maximumTokenCommitmentLength,
+        operation_cost_budget_per_byte: ConsensusBch2026.operationCostBudgetPerByte,
+        hash_digest_iterations_per_byte_standard: ConsensusBch2026.hashDigestIterationsPerByteStandard,
+        hash_digest_iterations_per_byte_nonstandard: ConsensusBch2026.hashDigestIterationsPerByteNonstandard,
+      });
+
+      // A client sizes an input by the advertised budget (the SDK pads each contract input of a composed transaction
+      // to it), so a spend padded to it is one the node accepts, and the same spend unpadded is not.
+      await call(node, 'devnet.injectUtxo', [
+        binToHex(countdownLock), { txid: coin.txid, vout: coin.vout, satoshis: String(coin.satoshis) },
+      ]);
+      const broadcast = (transaction: ReturnType<typeof spend>): Promise<Rpc> => rpc(
+        node,
+        'blockchain.transaction.broadcast',
+        [binToHex(encodeTransaction(transaction))],
+      );
+      const unpadded = await broadcast(spend(0));
+      expect(unpadded.error?.message).toMatch(/operation cost/);
+      const padded = spendPaddedTo(devnet.consensus.operation_cost_budget_per_byte!);
+      const accepted = await broadcast(padded);
+      expect(accepted.error).toBeUndefined();
+      expect(padded.inputs[0]!.unlockingBytecode.length).toBeGreaterThan(900);
+    } finally {
+      const exit = await stopNode(node);
+      fs.rmSync(projectDir, { recursive: true, force: true });
       expect(exit.code).toBe(0);
     }
   }, 300_000);

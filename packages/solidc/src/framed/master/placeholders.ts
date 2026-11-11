@@ -21,6 +21,12 @@ export const ADDRESS_SLOT_LENGTH = 35;
 /** Length of the hash of the validator program, which a master carries when it recognises a validator. */
 export const TEMPLATE_HASH_SLOT_LENGTH = 32;
 
+/**
+ * Length of the identity a CREATE2 child presents as `address(this)`: the 20-byte EVM identity its creator derived.
+ * Zero for every other contract, which presents the address its category derives.
+ */
+export const IDENTITY_SLOT_LENGTH = 20;
+
 /** The push opcode for a payload above 75 bytes: one length byte. */
 const PUSHDATA1_OPCODE = 0x4c;
 
@@ -75,10 +81,15 @@ export function placeholdersAt(
 export function declaredSlots(
   placeholders: CompositionPlaceholders,
 ): readonly { readonly offset: number; readonly length: number; readonly what: string }[] {
+  // A constant-lock master reserves no slot: nothing in it depends on the category it is deployed as.
+  if (placeholders.constantLock === true) return [];
   const slots = [
     { offset: placeholders.categoryOffset, length: CATEGORY_SLOT_LENGTH, what: 'category' },
     { offset: placeholders.addressOffset, length: ADDRESS_SLOT_LENGTH, what: 'address' },
   ];
+  if (placeholders.identityOffset !== undefined) {
+    slots.push({ offset: placeholders.identityOffset, length: IDENTITY_SLOT_LENGTH, what: 'identity' });
+  }
   if (placeholders.templateHashOffset !== undefined) {
     slots.push({
       offset: placeholders.templateHashOffset,
@@ -130,8 +141,13 @@ export function placeholdersAreEmpty(script: Uint8Array, placeholders: Compositi
 export function fillPlaceholders(
   script: Uint8Array,
   placeholders: CompositionPlaceholders,
-  values: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array },
+  values: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array; identity?: Uint8Array },
 ): Uint8Array {
+  // A constant-lock master is deployed as it was compiled: every category runs the same program.
+  if (placeholders.constantLock === true) {
+    assertPlaceholders(script, placeholders);
+    return Uint8Array.from(script);
+  }
   if (values.category.length !== CATEGORY_SLOT_LENGTH) {
     throw new FramedEncodingError(
       `a category is ${CATEGORY_SLOT_LENGTH} bytes: got ${values.category.length}`,
@@ -155,16 +171,25 @@ export function fillPlaceholders(
   } else if (values.templateHash !== undefined) {
     throw new FramedEncodingError('the descriptor declares no validator program hash slot, so none can be filled');
   }
+  if (values.identity !== undefined && values.identity.length !== IDENTITY_SLOT_LENGTH) {
+    throw new FramedEncodingError(`an identity is ${IDENTITY_SLOT_LENGTH} bytes: got ${values.identity.length}`);
+  }
+  if (values.identity !== undefined && placeholders.identityOffset === undefined) {
+    throw new FramedEncodingError('the descriptor declares no identity slot, so no identity can be filled');
+  }
   assertPlaceholders(script, placeholders);
 
   const filled = Uint8Array.from(script);
-  // The payload starts after the push's opcode and length field.
+  // The payload starts after the push's opcode and length field. An identity left unstated stays zero: the contract
+  // presents the address its category derives.
   for (const slot of declaredSlots(placeholders)) {
     const value = slot.what === 'category'
       ? values.category
       : slot.what === 'address'
         ? values.contractAddress
-        : values.templateHash!;
+        : slot.what === 'identity'
+          ? values.identity ?? emptySlot(IDENTITY_SLOT_LENGTH)
+          : values.templateHash!;
     filled.set(value, slot.offset + placeholderPrefixLength(slot.length));
   }
   return filled;
@@ -174,7 +199,10 @@ export function fillPlaceholders(
 export function readPlaceholders(
   script: Uint8Array,
   placeholders: CompositionPlaceholders,
-): { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array } {
+): { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array; identity?: Uint8Array } {
+  if (placeholders.constantLock === true) {
+    throw new FramedEncodingError('a constant-lock master holds no deployment constant to read back');
+  }
   const bounds = (offset: number, length: number): void => {
     if (offset < 0 || offset + placeholderPushLength(length) > script.length) {
       throw new FramedEncodingError(`slot at ${offset} is outside a ${script.length}-byte script`);
@@ -186,10 +214,14 @@ export function readPlaceholders(
     const start = offset + placeholderPrefixLength(length);
     return script.subarray(start, start + length);
   };
-  const read: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array } = {
+  const read: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array; identity?: Uint8Array } = {
     category: at(placeholders.categoryOffset, CATEGORY_SLOT_LENGTH),
     contractAddress: at(placeholders.addressOffset, ADDRESS_SLOT_LENGTH),
   };
+  if (placeholders.identityOffset !== undefined) {
+    bounds(placeholders.identityOffset, IDENTITY_SLOT_LENGTH);
+    read.identity = at(placeholders.identityOffset, IDENTITY_SLOT_LENGTH);
+  }
   if (placeholders.templateHashOffset !== undefined) {
     read.templateHash = at(placeholders.templateHashOffset, TEMPLATE_HASH_SLOT_LENGTH);
   }

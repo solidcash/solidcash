@@ -190,11 +190,62 @@ describe('stateful RETURNING computed-target loop (s += IFoo(pairFor(..)).tally(
     pubSc.registerExternalArray('IFoo', [sub1Sc, sub2Sc]);
 
     const path = [hexToBin('aa'.repeat(35)), hexToBin('bb'.repeat(35)), hexToBin('cc'.repeat(35))];
-    await pubSc.notify(path, 10n, alicePub, sig()).send();
+    // The loop-expanded callee is a stateful participant, so one occurrence occupies its master AND its data
+    // NFT. Iteration 1's master must therefore advance by two inputs, not one; a stride of 1 would resolve to
+    // the first callee's data NFT and fail its identity check.
+    const notifyAbi = pubArt.abi.find((fn) => fn.name === 'notify')!;
+    const strideIndex = notifyAbi.inputs.findIndex((input) => (
+      input.name.startsWith('__internal__loopTargetStride')
+    ));
+    expect(strideIndex).toBeGreaterThanOrEqual(0);
+    const call = pubSc.notify(path, 10n, alicePub, sig());
+    const built = await call.build();
+    const callerUnlocker = built.inputs
+      .map((input) => input.unlocker as { params?: unknown[] } | undefined)
+      .find((unlocker) => (unlocker?.params?.length ?? 0) === notifyAbi.inputs.length);
+    expect(callerUnlocker?.params?.[strideIndex]).toBe(2n);
+    await call.send();
     // each callee tally(10) -> received 0->10, returns 10; s = 10 + 10 = 20
     expect((await sub1Sc.getState()).received).toBe(10n);
     expect((await sub2Sc.getState()).received).toBe(10n);
     expect((await pubSc.getState()).total).toBe(20n);
+  });
+
+  it('advances a three-callee route by the full block width on every iteration', async () => {
+    const pubArt = compileString(PUBLISHER_RET);
+    const subArt = compileString(SUBSCRIBER_RET);
+    const subs: StatefulContract[] = [];
+    for (let index = 0; index < 3; index++) {
+      const sub = new Contract(subArt, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, sub, subArt.stateLayout!, { received: 0n }, { saltContract: true },
+      );
+      subs.push(StatefulContract.withCategory(sub, categoryId));
+    }
+    const pub = new Contract(pubArt, [], { provider });
+    const { categoryId: pc } = await setupStatefulUtxos(
+      provider, pub, pubArt.stateLayout!, { total: 0n }, { saltContract: true },
+    );
+    const pubSc = StatefulContract.withCategory(pub, pc);
+    pubSc.registerExternalArray('IFoo', subs);
+
+    // Four tokens -> three iterations. Iteration 2 must read the THIRD callee's master, four inputs past the first
+    // (two per occupied block); a stride of one would resolve to the first callee's data NFT by then.
+    const path = ['aa', 'bb', 'cc', 'dd'].map((token) => hexToBin(token.repeat(35)));
+    const notifyAbi = pubArt.abi.find((fn) => fn.name === 'notify')!;
+    const strideIndex = notifyAbi.inputs.findIndex((input) => (
+      input.name.startsWith('__internal__loopTargetStride')
+    ));
+    const call = pubSc.notify(path, 10n, alicePub, sig());
+    const built = await call.build();
+    const callerUnlocker = built.inputs
+      .map((input) => input.unlocker as { params?: unknown[] } | undefined)
+      .find((unlocker) => (unlocker?.params?.length ?? 0) === notifyAbi.inputs.length);
+    expect(callerUnlocker?.params?.[strideIndex]).toBe(2n);
+    await call.send();
+    // Each callee returns 10, so the accumulated total proves every iteration read its own return event.
+    for (const sub of subs) expect((await sub.getState()).received).toBe(10n);
+    expect((await pubSc.getState()).total).toBe(30n);
   });
 });
 

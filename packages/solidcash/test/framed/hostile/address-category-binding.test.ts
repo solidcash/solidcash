@@ -32,7 +32,7 @@ const FOREIGN_CATEGORY = seededCategory('address binding foreign');
 const ADDRESS = validatorAddress(CATEGORY, PROGRAM);
 const FOREIGN_ADDRESS = validatorAddress(FOREIGN_CATEGORY, PROGRAM);
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Sample {'
   + '   function ping() { require(true); }'
   + ' }';
@@ -43,7 +43,8 @@ const placeholders = artifact.composition!.placeholders;
 
 /** A deployment whose filled bytes and stated address need not agree, so the gate's read-back is what is asked. */
 function deployment(script: Uint8Array, address: Uint8Array): DeployedMaster {
-  return { script, address, lockingBytecode: encodeLockingBytecodeP2sh32(hash256(script)) };
+  // No CREATE2 identity: the contract presents its own address as `address(this)`.
+  return { script, address, self: address, lockingBytecode: encodeLockingBytecodeP2sh32(hash256(script)) };
 }
 
 /** The reference composition with its root frame presenting the other contract's own address. */

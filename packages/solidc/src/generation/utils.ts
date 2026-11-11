@@ -300,6 +300,23 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
       : [...compileAddressToEvmIdentity(), ...endian, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
 
+  // Integer -> address: Solidity keeps the low 160 bits, i.e. the LAST 20 bytes of the big-endian word.
+  // Under evmCompat an address value is a raw 20-byte identity, so the VM number is zero-extended to a
+  // 32-byte EVM word, reversed to big-endian, and its rightmost 20 bytes are kept. Without this a small
+  // numeric identity (or one whose leading bytes are zero) reaches an address lane as a short number and
+  // the P2PKH fallback misreads it.
+  if (to instanceof AddressType
+    && (from instanceof IntType || from instanceof FixedType || from === PrimitiveType.BIGINT)) {
+    if (!solidityCompat) return [];
+    // address(0) stays the empty value (the same representation every zero-address check in the port uses).
+    return [
+      Op.OP_DUP, encodeInt(0n), Op.OP_NUMEQUAL, Op.OP_IF,
+      Op.OP_ELSE,
+      encodeInt(33n), Op.OP_NUM2BIN, encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP, Op.OP_REVERSEBYTES,
+      encodeInt(12n), Op.OP_SPLIT, Op.OP_NIP,
+      Op.OP_ENDIF,
+    ];
+  }
   // address casts are no-ops (stack value unchanged)
   if (to instanceof AddressType) return [];
   if (from instanceof AddressType) return [];

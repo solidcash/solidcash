@@ -52,7 +52,7 @@ const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Counter {'
   + '   int public counter;'
   + '   function bump(int by) { this.counter = this.counter + by; require(true); }'
@@ -106,8 +106,8 @@ function writeComposition(by: bigint): { readonly written: Uint8Array; readonly 
     frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: ADDRESS, value: 0n },
     enteredBy: 'user', origin: 'user',
     calls: [], retval: empty,
-    // The record sits one participant further on: caller, head, facet, then the record.
-    segments: [[{ in: 3, out: 3, viewIn: before, viewOut: after }]],
+    // The record sits two participants further on: caller, head, the two facets, then the record.
+    segments: [[{ in: 4, out: 4, viewIn: before, viewOut: after }]],
     events: [], sends: [], argumentPushes: [BUMP_SELECTOR, encodeIntegerValue(by)],
     redeemScript: deployed.script, dispatches: true,
   };
@@ -118,8 +118,8 @@ function writeComposition(by: bigint): { readonly written: Uint8Array; readonly 
   };
   const plan: CompositionDraftPlan = {
     blocks: [{ contract: 'Counter', masters: ['writer'], validator: { id: 'validator', settles: [] }, state: ['record'] }],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: 'user', index: 4 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: 'user', index: 5 }],
     masters: [writer],
     inputs: {
       writer: {
@@ -153,7 +153,9 @@ function writeComposition(by: bigint): { readonly written: Uint8Array; readonly 
   const program = draft.programFor('writer');
   const written = program.transaction.outputs[participant(draft.layout, 'record').index]!.token?.nft?.commitment;
   expect(written).toStrictEqual(after);
-  return { written: after, verdicts: [verdict(program, 0), verdict(program, 2)] };
+  return {
+    written: after, verdicts: [verdict(program, 0), verdict(program, participant(draft.layout, 'record').index)],
+  };
 }
 
 /** The provider a read runs against: the master, a validator and the record at `written`, as the live chain. */
@@ -299,7 +301,7 @@ describe('reading a framed record the contract already wrote', () => {
 
   it('reports the machine\'s objection when the read entry refuses', async () => {
     // A record of zero fails the entry's own guard, so its body never reaches the return comparison.
-    const refusing = 'pragma solidcash ^0.14.0;\n'
+    const refusing = 'pragma solidcash ^0.50.0;\n'
       + ' contract Guarded {\n'
       + '   int public counter;\n'
       + '   function current() view returns (int) {\n'

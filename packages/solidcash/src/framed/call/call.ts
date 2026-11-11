@@ -70,8 +70,6 @@ import {
   FrameKind,
   INDEX_NONE,
   bytesEqual,
-  computeFunctionSelector,
-  computeFunctionSignature,
   parsePushdataCommitment,
   sha256,
   validatorAddress,
@@ -88,51 +86,83 @@ import {
   encodeFunctionArgument, type FunctionArgument,
 } from '../../Argument.js';
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
-import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
+import {
+  createDerivationVirtualMachineForProvider, createVirtualMachineBch2026ForProvider,
+} from '../../network/createVirtualMachine.js';
+import { padForBudget } from '../composer/budget.js';
+import { fillCensusCheckpoints, withRestatedCensus } from '../composer/census.js';
+import { keccakJobsToShare } from '../composer/side-car-sharing.js';
+import { eventFundedAtLeastDust, firstNativePaymentBelowDust } from '../composer/dust.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
-import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
-import { requireFramedFunderSighash } from '../sighash.js';
-import { traceBroadcast } from '../../tx-trace.js';
 import {
+  generateLibauthSourceOutputs, libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails,
+} from '../../utils.js';
+import { requireFramedFunderSighash } from '../sighash.js';
+import { hashedCallArguments } from './hashed-arguments.js';
+import { WrittenValueAwaited, registeredExternalFor, type HopCallee } from '../proxy/external-calls.js';
+import type { Output } from '../../interfaces.js';
+import { addressToLockScript } from '../../utils.js';
+import { functionSplitFor } from '../deploy/split-registry.js';
+import { childGenesisOutputs } from '../deploy/genesis-outputs.js';
+import { traceBroadcast } from '../../tx-trace.js';
+import { labelNextBroadcast, surveyOn } from '../../tx-survey.js';
+import {
+  deployFunctionSplitShard,
   deployMaster,
   masterForEntry,
   prepareFunctionSplitDeployment,
   requireFunctionSplitShard,
+  eventChunkLockingBytecode,
   eventCloseOf,
   eventLockingBytecode,
   eventSentinel,
+  facetPool,
+  inPoolOrder,
+  poolOrderFor,
   readComputedDeclaration,
   readFramedDeployment,
   readSatoshiContainers,
+  runLeadOutput,
   satoshiContainerLockingBytecode,
   satoshiContainerUnlockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
   type FramedDeploymentSet,
+  type PoolOrder,
+  resolveMasterPoolSize,
+  framedCreatedChildOf,
 } from '../deploy/index.js';
 import { identityCoinRefusal, withoutIdentityOutputs } from '../deploy/own-coin.js';
 import {
-  chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults, samePlannedSites, settleCallees,
+  calleeKeyCallResults, chainSharedNodeViews, placeOwnWrites, producedCallResults, reachedCallResults,
+  samePlannedSites, settleCallees,
   withChainEnds, withCreatedChainEnds, type PlacedLaidWrite,
 } from '../proxy/deploy.js';
 import { EnclosingValueLearned } from '../proxy/enclosed-values.js';
 import {
-  declaredRunWidth, hopEntryWrites, type HopEntryWrites, type LaidHopEntryWrites,
+  declaredRunWidth, hopEntryWrites, producerKeyCallsites, sharedNodeId, type HopEntryWrites, type LaidHopEntryWrites,
 } from '../proxy/entry-writes.js';
 import { FramedProxyDeployError } from '../proxy/errors.js';
+import { makeCallResolver } from '../proxy/call-resolution.js';
 import { declareUnstatedCalls } from '../proxy/planning-refusal.js';
 import type { EnclosingRoot } from '../proxy/reentry.js';
 import { skippedEmits, type WriteActivationFacts } from '../proxy/write-activation.js';
 import { deploymentActivationFacts } from './activation-facts.js';
 import {
-  FramedCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, loopRecordSpans,
-  namedDataRecordIndices, orderLoopKeyArgs, placeRecordsBySpan, requireDistinctNodes, type CallLoopWritePlan,
-  type LoopRecordMint, type LoopRecordSpan,
+  FramedCallRecordError, adjacentRecordOrder, callEntryReads, frameDataRecordIndices, leavesUnnamedRecordsUnspent,
+  loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs, placeRecordsBySpan, requireDistinctNodes,
+  unnamedSlotDeclarations, type CallLoopWritePlan,
+  type LoopRecordMint, type LoopRecordSpan, type ReadNode,
 } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
+import {
+  FALLBACK_ENTRY, RECEIVE_ENTRY, valueEntryOrRefusal, valueSendCallData,
+} from './value-entry.js';
 import { blockOracleClock, entryReadsBlockOracle, framedBlockOracle, framedOraclePool } from './block-oracle.js';
 import { sendRecipient, type RecipientContext } from './send-recipient.js';
+import { FramedSendBelowDustError, sendBelowDustRefusal } from './send-dust.js';
+import { endsPlanSearch } from './transport-failure.js';
 import {
   framedCalleeTokenAccesses, framedTokenAccesses, framedTokenContainerLockingBytecode,
   framedTokenContainerUnlockingBytecode, framedTokenSendSentinels, learnEmptyNftCommitment, learnTokenSend,
@@ -142,8 +172,8 @@ import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from './loop-turns.js';
 import {
-  NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeRetvalPlaceholder, calleeSettlementSeed,
-  calleeValuesOfSettlement,
+  NO_CALLEE_VALUES, FramedCalleeError, calleeFrames, calleeRetvalPlaceholder, calleeSendSentinels,
+  calleeSettlementSeed, calleeShortSends, calleeValuesOfSettlement,
   calleeTokenRunSends, calleeValuesOwed, calleeWrites, deriveThroughFrame, learnCalleeValue, planEntryCallees,
   scopedCalleeFrame, type CalleeValues, type PlannedCallees,
 } from './callees.js';
@@ -158,6 +188,7 @@ import {
   describeRefusedFrame,
   frameEntered,
   layoutTransaction,
+  mappingBatchRepeatsSlot,
   participant,
   readPublishedStopSites,
   reportCompositionRefusal,
@@ -171,6 +202,7 @@ import {
   type DraftInput,
   type DraftMaster,
   type DraftRecordEntry,
+  type RefusedFrame,
   type DraftSourceOutput,
   type FrameRequest,
   type PublishedEntryStopSites,
@@ -185,6 +217,14 @@ export class FramedCallError extends Error {
   public readonly name = 'FramedCallError';
 
   public constructor(message: string) {
+    super(message);
+  }
+}
+
+/** A shape the planner refuses at one of the entry's sites: it stands once the execution reaches that site. */
+class FramedPlanningRefusal extends FramedCallError {
+  /** `failedCallMessage` is set for a low-level call the plan found failing (`FramedFailedCallSite`). */
+  public constructor(message: string, public readonly failedCallMessage?: string) {
     super(message);
   }
 }
@@ -212,6 +252,22 @@ export interface FramedCallOptions {
   readonly validatorProgram?: Uint8Array;
   /** The value the call carries, in satoshis: the frame's `msg.value`. Only a payable entry takes one. */
   readonly value?: bigint;
+  /**
+   * Internal: whether each guarded write the frame's facts do not decide runs, by entry-access slot. The call plans
+   * again with other assumptions when the machine refuses a plan made from them (`callFramedEntry`).
+   */
+  readonly assumedActivations?: ReadonlyMap<number, boolean>;
+  /** Internal: the order this call takes pools in, one for all of its plans (`callFramedEntry` starts it). */
+  readonly poolOrder?: PoolOrder;
+  /** Internal: the same for each callee frame, by master. */
+  readonly calleeAssumedActivations?: ReadonlyMap<string, ReadonlyMap<number, boolean>>;
+  /**
+   * Internal: whether each conditional site no fact of the caller decides is taken, by the frame's path and the site
+   * (`undecidedCallKey`). The call plans again with other assumptions when the machine refuses a plan.
+   */
+  readonly assumedCalls?: ReadonlyMap<string, boolean>;
+  /** Internal: told each conditional site no fact decides that a plan meets unassumed, and the way it planned it. */
+  readonly noteUndecidedCall?: (key: string, taken: boolean) => void;
   /** The contracts the entry's value sends may pay, each found by the address its category derives. */
   readonly externals?: Readonly<Record<string, FramedExternal>>;
   /**
@@ -228,6 +284,20 @@ export interface FramedCallOptions {
    * what an entry such as BchNative's `wrap` reads as the container's growth. A coin's remainder returns to the caller.
    */
   readonly tokenDeposits?: readonly FramedTokenDeposit[];
+  /**
+   * The child this entry creates with `create2`, minted in this same transaction (docs/framed/CREATE2_IDENTITY.md).
+   *
+   * Its genesis outputs are appended after the composition's own, carrying the caller coin's outpoint as their
+   * category `K`: the coin must be genesis-eligible (vout 0), and its outpoint is what the creating body's
+   * `addrV(K)` names. `null` mints nothing.
+   */
+  readonly creates?: FramedCallCreation | null;
+  /**
+   * Outputs the caller states after the composition's own, each as it will sit on chain. A creating entry's category
+   * check runs over every output, so this is also how a transaction that adds an output of the child's category is
+   * planned and judged.
+   */
+  readonly extraOutputs?: readonly Output[];
 }
 
 /** Tokens a call pays into a container: the coin they come from, its unlocker, and the amount the container takes. */
@@ -235,6 +305,23 @@ export interface FramedTokenDeposit {
   readonly utxo: Utxo;
   readonly unlocker: Unlocker;
   readonly amount: bigint;
+}
+
+/** A child a call's account creates, with the artifact its genesis mints from. */
+export interface FramedCallCreation {
+  readonly artifact: Artifact;
+  /** The per-entry bundle the child runs its entries from, when its contract is published as one. */
+  readonly split?: FunctionSplitBundle;
+  /** The constructor's arguments, in parameter order. */
+  readonly constructorArgs?: readonly FunctionArgument[];
+  /** The master pool the genesis funds per entry lock. */
+  readonly pool?: { readonly masters: number; readonly validators: number };
+  /**
+   * The initializer the creating body calls on the child, folded into its genesis (the compiler publishes it as
+   * `composition.creates[].foldedCall`). Its state is derived after the constructor's, because the child's frames
+   * cannot run in the transaction that mints its masters.
+   */
+  readonly initializer?: { readonly functionName: string; readonly args: readonly FunctionArgument[] };
 }
 
 /** A deployed contract a call may pay: its framed artifact and its category, as hex. */
@@ -279,6 +366,15 @@ export interface FramedCallResult {
   readonly value: StateValue;
   /** The provider's receipt for the call, present only when every participant was accepted. */
   readonly broadcast?: TransactionDetails;
+  /** The entry-access slots of the guarded writes the plan assumed whether they run (`assumedActivations`). */
+  readonly undecidedSlots?: readonly number[];
+  /** The same for each callee frame, by master (`calleeAssumedActivations`). */
+  readonly calleeUndecidedSlots?: ReadonlyMap<string, readonly number[]>;
+  /**
+   * Internal: the earlier results this plan was made from, which a plan of the same call under other assumptions
+   * starts from (`callAssumingActivations`) rather than learning them again.
+   */
+  readonly plannedFrom?: unknown;
 }
 
 /** The identities the plan names; the layout is the only source of their coordinates. */
@@ -289,7 +385,10 @@ const CALLER_ID = 'caller';
 /** The satoshi value an event output carries, matching the genesis's own event outputs. */
 const EVENT_OUTPUT_SATOSHIS = 1_000n;
 
-/** The least a container before a frame's sends keeps; the caller tops it up past the change. */
+/**
+ * The least a container a frame keeps value in holds; the caller tops a smaller balance up past the change. A frame
+ * that keeps nothing leaves no container, and its sends follow the drained run's marker (`runLeadOutput`).
+ */
 const CONTAINER_MINIMUM_SATOSHIS = 1_000n;
 
 /** The amount a send output carries until the body's own pin hands back the one it computed. */
@@ -386,6 +485,118 @@ function tokenDepositInputId(index: number): string {
   return `token-deposit:${index}`;
 }
 
+/** The participant id of the `position`-th container a paying callee frame spends. */
+function calleeContainerInputId(master: string, position: number): string {
+  return `${master}-container-${position}`;
+}
+
+/** What a callee frame whose sends carry value pays from its own contract's containers. */
+interface CalleePaying {
+  readonly master: string;
+  readonly categoryId: string;
+  /** The containers it spends, largest first, until they cover what it sends beyond what it receives. */
+  readonly spent: readonly Utxo[];
+  /** What it keeps in one container: the change of the spent containers, or nothing. */
+  readonly kept: bigint;
+}
+
+/** The value a frame's deferred calls carry: the sends to a contract its body makes (`calleeValueCalls`). */
+function deferredValueOf(callee: HopCallee): bigint {
+  return callee.calls.filter((call) => call.deferred === true).reduce((sum, call) => sum + call.value, 0n);
+}
+
+/** The callee frames a callee's send to a contract enters: no stop site reaches them. */
+function deferredCalleeFrames(plan: PlannedCallees | undefined): readonly HopCallee[] {
+  const entered = new Set((plan?.callees ?? []).flatMap((callee) => callee.calls
+    .filter((call) => call.deferred === true).map((call) => call.callee)));
+  return (plan?.callees ?? []).filter((callee) => entered.has(callee.master));
+}
+
+/** The value the callees' sends bring into frames of the contract at `categoryId`. */
+function calleeValueInto(plan: PlannedCallees | undefined, categoryId: string): bigint {
+  const into = new Set(deferredCalleeFrames(plan).filter((callee) => callee.categoryId === categoryId)
+    .map((callee) => callee.master));
+  return (plan?.callees ?? []).flatMap((callee) => callee.calls)
+    .filter((call) => call.deferred === true && into.has(call.callee)).reduce((sum, call) => sum + call.value, 0n);
+}
+
+/** A callee frame that pays value from its contract's containers, which the call reads before planning its outputs. */
+interface CalleeFunds {
+  readonly callee: HopCallee;
+  readonly containers: readonly Utxo[];
+}
+
+/**
+ * The callee frames that pay value from their contract's containers, each with those containers: a frame whose sends
+ * to a contract carry value, and one that lists sends to a user's lock (`PlannedCallees.listedSends`). Two frames of
+ * one contract paying are refused, since each would count the other's containers, and so is a frame of the entry's
+ * own contract that lists sends, whose containers the entry's own sends count.
+ */
+async function calleeFundsOf(
+  provider: NetworkProvider, plan: PlannedCallees | undefined, rootCategoryId: string,
+): Promise<readonly CalleeFunds[]> {
+  const funds: CalleeFunds[] = [];
+  const paid = new Set<string>();
+  for (const callee of plan?.callees ?? []) {
+    const listed = plan?.listedSends?.get(callee.master)?.count ?? 0;
+    if (deferredValueOf(callee) === 0n && listed === 0) continue;
+    if (listed > 0 && callee.categoryId === rootCategoryId) {
+      throw new FramedCallError(
+        `the callee "${callee.functionName}" sends value from the entry's own contract "${callee.artifact.contractName}", `
+        + "whose containers the entry's own sends count",
+      );
+    }
+    if (paid.has(callee.categoryId)) {
+      throw new FramedCallError(
+        `two frames of contract "${callee.artifact.contractName}" send value in one call, and each would count the `
+        + "other's containers",
+      );
+    }
+    paid.add(callee.categoryId);
+    funds.push({ callee, containers: await readSatoshiContainers(provider, callee.categoryId) });
+  }
+  return funds;
+}
+
+/**
+ * What each paying callee frame pays from its contract's containers: the containers, largest first, that cover what
+ * its sends to contracts and its listed sends carry beyond the value it is entered with (`enteredWith`), and the
+ * change it keeps, at least the container minimum where it keeps any. A frame whose listed sends' amounts are not all
+ * learned spends nothing yet and keeps the minimum, as a paid contract's does. A contract whose containers cannot
+ * cover a send is refused by name, as the EVM reverts it.
+ */
+function calleePayingsOf(
+  plan: PlannedCallees | undefined, funds: readonly CalleeFunds[], values: CalleeValues,
+  enteredWith: (master: string) => bigint,
+): readonly CalleePaying[] {
+  const settle = (kept: bigint): bigint => (kept <= 0n ? 0n
+    : kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
+  return funds.map(({ callee, containers }): CalleePaying => {
+    const listed = plan?.listedSends?.get(callee.master)?.count ?? 0;
+    const amounts = Array.from({ length: listed }, (_unused, at) => values.sends?.get(callee.master)?.[at]?.amount);
+    if (amounts.some((amount) => amount === undefined)) {
+      return { master: callee.master, categoryId: callee.categoryId, spent: [], kept: CONTAINER_MINIMUM_SATOSHIS };
+    }
+    const need = deferredValueOf(callee) + amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n)
+      - enteredWith(callee.master);
+    if (need <= 0n) return { master: callee.master, categoryId: callee.categoryId, spent: [], kept: settle(-need) };
+    const spent: Utxo[] = [];
+    let total = 0n;
+    for (const utxo of [...containers].sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))) {
+      if (total >= need) break;
+      spent.push(utxo);
+      total += utxo.satoshis;
+    }
+    if (total < need) {
+      throw new FramedCallError(
+        `contract "${callee.artifact.contractName}" holds ${total} satoshis in its containers, and the callee `
+        + `"${callee.functionName}" sends ${need} more than it receives`,
+      );
+    }
+    return { master: callee.master, categoryId: callee.categoryId, spent, kept: settle(total - need) };
+  });
+}
+
 /** The identity of the `index`-th container a call spends. */
 function containerInputId(index: number): string {
   return `container-${index}`;
@@ -453,8 +664,13 @@ interface CallEntry {
   readonly outputs: readonly { readonly type: string }[];
   /** How the entry encodes its returns: Solidity ABI words for a Solidity-compatible entry. */
   readonly resultEncoding?: ExternalResultEncoding;
-  /** The events the entry emits, which its frame declares one output per, in emit order. */
-  readonly emits: readonly { readonly eventSignature: string; readonly emitIndex: number }[];
+  /**
+   * The events the entry emits, which its frame declares one output per, in emit order, and one per chunk of an emit
+   * whose payload can outgrow one commitment (`chunks`).
+   */
+  readonly emits: readonly {
+    readonly eventSignature: string; readonly emitIndex: number; readonly chunks?: number;
+  }[];
   /** True when the entry is payable, so a call to it may carry value. */
   readonly payable: boolean;
   /** How many sends the entry makes. */
@@ -463,34 +679,16 @@ interface CallEntry {
   readonly transfers: readonly FixedBchTransferAbi[];
 }
 
-/** The ABI name of `receive()`, the entry a value send runs. */
-export const RECEIVE_ENTRY = '__receive';
-/** The ABI name of `fallback()`, which a value send runs when the contract has no `receive()`. */
-export const FALLBACK_ENTRY = '__fallback';
-/** A value send's call data: the selector of `receive()` alone, the EVM's empty call data. The selector scheme
- * follows the compile's mode (D27), so it is derived per artifact rather than from a native-only constant. */
-const valueSendCallData = (artifact: Artifact): Uint8Array =>
-  computeFunctionSelector(
-    computeFunctionSignature(RECEIVE_ENTRY, []), artifact.compiler?.options?.evmCompat === true,
-  );
+export { FALLBACK_ENTRY, RECEIVE_ENTRY };
 
 /**
  * The body a value send runs, as the EVM picks it: `receive()`, else a payable `fallback()`. `what` names the value
  * in the refusal of a contract with neither.
  */
 function valueEntryOf(artifact: Artifact, what: string): Artifact['abi'][number] {
-  const receive = artifact.abi.find((candidate) => candidate.name === RECEIVE_ENTRY);
-  if (receive !== undefined) return receive;
-  const fallback = artifact.abi.find((candidate) => candidate.name === FALLBACK_ENTRY);
-  if (fallback === undefined) {
-    throw new FramedCallError(`contract "${artifact.contractName}" has no receive(), so ${what} has no body to run`);
-  }
-  if (!(fallback.modifiers ?? []).includes('payable')) {
-    throw new FramedCallError(
-      `contract "${artifact.contractName}" has no receive() and its fallback() is not payable, so it refuses ${what}`,
-    );
-  }
-  return fallback;
+  const picked = valueEntryOrRefusal(artifact, what);
+  if ('refusal' in picked) throw new FramedCallError(picked.refusal);
+  return picked.entry;
 }
 
 /** The ABI row a call names, refusing an entry the artifact does not publish. */
@@ -594,6 +792,12 @@ interface EntryMappingContext {
    * that is still a candidate is the plan's.
    */
   readonly learnedViews: readonly (Uint8Array | undefined)[];
+  /**
+   * The participant id each node the frame reads or writes is placed under when a frame of its contract below a call
+   * also touches it: the id those frames share for the node (`sharedNodeId`), so the call spends it once. Absent, its
+   * own.
+   */
+  readonly sharedNodeIds?: ReadonlyMap<string, string>;
   /** The input index of a participant id the layout placed. */
   indexOf(id: string): number;
 }
@@ -607,6 +811,13 @@ interface LaidEntryMapping {
   readonly trailingOutputs: readonly DraftSourceOutput[];
   /** The structural candidate each value-dependent record's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
+  /**
+   * The declarations the frame's writes transition a node with, as `place` lays them, and those of them that only
+   * relink a node: what a walk that chains a node the frame shares with a frame of its contract below a call
+   * (`chainSharedNodeViews`) carries from one view to the next.
+   */
+  readonly writeEntries: readonly DraftRecordEntry[];
+  readonly relinkEntries: readonly DraftRecordEntry[];
   /** For a run of loops, the turn that mints each of `entries`, or undefined for a record no turn mints. */
   readonly entryMints?: readonly (LoopRecordMint | undefined)[];
   /** The long mapping values the body reads, by value-witness slot, which the frame's block lists. */
@@ -636,10 +847,18 @@ interface EntryMapping {
   readonly participantIds: readonly string[];
   /** The live UTXO of each spent record, keyed by the participant id the frame places it under. */
   readonly spentUtxos: ReadonlyMap<string, Utxo>;
+  /** The nodes the frame only reads, each under the id `participantIds` names it by. */
+  readonly readNodes: readonly ReadNode[];
+  /** The collection and slot of each node the frame's writes spend, by the id `participantIds` names it by. */
+  readonly writtenNodes: ReadonlyMap<string, { readonly collection: string; readonly slot: Uint8Array }>;
   /** The run-time loops that write the collection, in the order the body runs them, when loops write it. */
   readonly loopRun?: readonly CallLoopWritePlan[];
   /** The dynamic run whose width a record's length or the entry's growth fixed, and that width (`hopEntryWrites`). */
   readonly sizedRun?: HopEntryWrites['sizedRun'];
+  /** The guarded writes whose activation the plan assumed (`HopEntryWrites.undecidedSlots`). */
+  readonly undecidedSlots?: readonly number[];
+  /** The slots a batch writes twice, its later write kept as skipped (`HopEntryWrites.repeatedSlots`). */
+  readonly repeatedSlots?: readonly Uint8Array[];
   lay(context: EntryMappingContext): LaidEntryMapping;
 }
 
@@ -664,6 +883,12 @@ interface EntryMappingRequest {
    * such a write refused.
    */
   readonly writtenCommitments?: readonly Uint8Array[];
+  /** What the frame's own calls returned, by callsite id, for keys read back through them. */
+  readonly producerResults?: ReadonlyMap<number, FunctionArgument>;
+  /** Whether each guarded write the frame's facts do not decide runs, by entry-access slot. */
+  readonly assumedActivations?: ReadonlyMap<number, boolean>;
+  /** The frame's own address, which an `address(this)` key resolves to. */
+  readonly selfAddress?: Uint8Array;
 }
 
 /**
@@ -703,9 +928,11 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
   const { artifact, functionName, args, categoryId, deployment, facts } = request;
   const state = facts.stateValues as Readonly<Record<string, StateValue>>;
   const valueReader = facts.readMappingValue === undefined ? {} : { readMappingValue: facts.readMappingValue };
+  const producerResults = request.producerResults === undefined ? {} : { producerResults: request.producerResults };
   const reads = callEntryReads({
     artifact, functionName, args, state, callerLockingBytecode: request.senderLockingBytecode, categoryId,
-    nodesByCollection: deployment.nodesByCollection, ...valueReader,
+    nodesByCollection: deployment.nodesByCollection, ...valueReader, ...producerResults,
+    ...(request.selfAddress === undefined ? {} : { selfAddress: request.selfAddress }),
   });
   const fn = artifact.abi.find((candidate) => candidate.name === functionName);
   const batches = fn?.sortedBatchInfo ?? [];
@@ -720,10 +947,19 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
     || (fn?.entryAccesses ?? []).some((access) => access.operations.some((operation) => operation !== 'read'));
   const category = new Uint8Array(hexToBin(categoryId));
   const several = new Set(batches.map((batch) => batch.collection)).size > 1;
+  // The node each id the writes spend names, so a node a frame of the contract below a call also touches can be
+  // placed under the id those frames share for it.
+  const writtenNodes = new Map<string, { readonly collection: string; readonly slot: Uint8Array }>();
   let writes: HopEntryWrites | undefined;
   try {
     writes = !writesOwn ? undefined : hopEntryWrites({
-      artifact, functionName, args, callerLockingBytecode: request.senderLockingBytecode,
+      artifact, functionName, args, callerLockingBytecode: request.senderLockingBytecode, ...producerResults,
+      // The call plans its undecided writes again, assumed the other way, when the frame refuses the first plan, and
+      // keeps a batch's later write of one slot as skipped, which a run refused past it reports by name.
+      assumesUndecided: true,
+      keepsRepeatedSlots: true,
+      ...(request.assumedActivations === undefined ? {} : { assumedActivations: request.assumedActivations }),
+      ...(request.selfAddress === undefined ? {} : { selfAddress: request.selfAddress }),
       liveDeployment: {
         category,
         recordCommitments: deployment.records.map((record) => hexToBin(record.token?.nft?.commitment ?? '')),
@@ -732,7 +968,11 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
         state,
       },
       declaredReadSlots: reads.nodes.map((node) => node.slotIndex),
-      nodeIdOf: (collection, slot) => writtenNodeId(slot, several ? collection : undefined),
+      nodeIdOf: (collection, slot) => {
+        const id = writtenNodeId(slot, several ? collection : undefined);
+        writtenNodes.set(id, { collection, slot });
+        return id;
+      },
       activationFacts: facts,
       ...(request.blockClock === undefined ? {} : { blockClock: request.blockClock }),
       ...valueReader,
@@ -758,14 +998,25 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
     // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
     participantIds: [...reads.nodes.map((node) => node.id), ...(writes?.participantIds ?? [])],
     spentUtxos: new Map([...reads.nodes.map((node) => [node.id, node.utxo] as const), ...(writes?.spentUtxos ?? [])]),
+    readNodes: reads.nodes,
+    writtenNodes: new Map([...writtenNodes].filter(([id]) => writes?.spentUtxos.has(id) === true)),
     ...(writes?.loopRun === undefined ? {} : { loopRun: writes.loopRun }),
     ...(writes?.sizedRun === undefined ? {} : { sizedRun: writes.sizedRun }),
+    ...(writes?.undecidedSlots === undefined ? {} : { undecidedSlots: writes.undecidedSlots }),
+    ...(writes?.repeatedSlots === undefined ? {} : { repeatedSlots: writes.repeatedSlots }),
     lay: (context: EntryMappingContext): LaidEntryMapping => {
-      const read = reads.lay(context.indexOf);
+      // A node a frame of the contract below a call also touches is one input under the id those frames share, whether
+      // this frame reads it or writes it.
+      const idOf = (id: string): string => context.sharedNodeIds?.get(id) ?? id;
+      const indexOf = (id: string): number => context.indexOf(idOf(id));
+      const underSharedIds = (inputs: Readonly<Record<string, DraftInput>> | undefined): Record<string, DraftInput> =>
+        Object.fromEntries(Object.entries(inputs ?? {}).map(([id, input]) => [idOf(id), input]));
+      const laidReads = reads.lay(indexOf);
+      const read = { entries: laidReads.entries, inputs: underSharedIds(laidReads.inputs) };
       let laid: LaidHopEntryWrites | undefined;
       try {
         laid = writes?.lay({
-          indexOf: context.indexOf, proxyMasterIndex: context.masterIndex, createdBase: context.createdBase,
+          indexOf, proxyMasterIndex: context.masterIndex, createdBase: context.createdBase,
           recordAmount: context.recordAmount, category, learnedViews: context.learnedViews,
           releasedLock: request.releasedLock,
         });
@@ -790,18 +1041,21 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
         try {
           return placeOwnWrites(segments, {
             artifact, functionName, label: `entry "${functionName}"`, laid: { ...laid, entries: written }, writes,
-            indexOf: context.indexOf, category, createdBase: context.createdBase, calls, callBases,
+            indexOf, category, createdBase: context.createdBase, calls, callBases,
             ...(truncated ? { truncated } : {}),
           });
         } catch (error) {
           throw asCallRefusal(error, functionName);
         }
       };
+      const relinked = new Set(laid?.relinked ?? []);
       return {
         entries: [...read.entries, ...written],
-        inputs: { ...read.inputs, ...laid?.inputs },
+        inputs: { ...read.inputs, ...underSharedIds(laid?.inputs) },
         trailingOutputs: laid?.trailingOutputs ?? [],
         learningCandidates: writes?.learningCandidates ?? [],
+        writeEntries: written,
+        relinkEntries: written.filter((_entry, at) => relinked.has(laid!.entries[at]!)),
         // A loop's records lead its writes' declarations; a node read apart, and any record past them, no turn mints.
         ...(mints === undefined ? {} : {
           entryMints: [
@@ -825,7 +1079,13 @@ function entryMapping(request: EntryMappingRequest): EntryMapping | undefined {
 }
 
 /** Calls an entry on a deployed framed contract, evaluates it, and broadcasts it when every participant agrees. */
-export async function callFramedEntry(options: FramedCallOptions): Promise<FramedCallResult> {
+export async function callFramedEntry(callOptions: FramedCallOptions): Promise<FramedCallResult> {
+  // A category minted from a per-entry bundle runs the entry's own shard, whichever handle names it.
+  const registeredSplit = callOptions.split ?? functionSplitFor(callOptions.provider, callOptions.categoryId);
+  const options = {
+    ...callOptions, ...(registeredSplit === undefined ? {} : { split: registeredSplit }),
+    poolOrder: callOptions.poolOrder ?? poolOrderFor(callOptions.provider),
+  };
   requireFramedFunderSighash(options.funder);
   // The caller's coin pays the fee, so a call that may broadcast refuses an identity output or reserved coin there
   // before it is planned (docs/bcmr/DESIGN.md 4.4). A coin whose transaction is not served, as a simulation's
@@ -843,7 +1103,7 @@ export async function callFramedEntry(options: FramedCallOptions): Promise<Frame
   const assignments = new Set<string>();
   for (;;) {
     try {
-      const result = await callInShape(options, {
+      const result = await callAssumingCalls(options, {
         listedSends: undefined, skippedPayees: new Set(), payeeListedSends: new Map(), tokenContainerCounts,
         tokenNftContainers, foldContainers,
       });
@@ -893,6 +1153,8 @@ interface SendShape {
   readonly foldContainers?: boolean;
   /** The sends each token run makes, by its key, where its body made fewer than its entry can. */
   readonly tokenSendCounts?: ReadonlyMap<string, { readonly sends: number; readonly nftSends: number }>;
+  /** The sends each callee frame lists, by master, where its body made fewer than its entry can. */
+  readonly calleeListedSends?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -911,12 +1173,121 @@ interface EarlierResults {
    * closes: the length each states sizes a run the artifact states no element for. Absent until learned.
    */
   readonly writtenRecords?: readonly Uint8Array[];
+  /**
+   * The arguments runs of the entry's body hashed for visits whose arguments no published expression states, in
+   * parameter order and keyed by `hashedArgumentsKey`. Absent until a plan stops before such a visit.
+   */
+  readonly hashedArguments?: ReadonlyMap<string, readonly Uint8Array[]>;
+  /**
+   * The end views a settle of an earlier plan's callee frames learned, per frame master, in each frame's learning
+   * order: a frame that reads a node an earlier frame of the call rewrote is planned from the view it ended at.
+   */
+  readonly calleeWriteViews?: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>;
+  /** How many times the call was planned again from end views its frames learned (`MAXIMUM_VIEW_PASSES`). */
+  readonly viewPasses?: number;
+  /**
+   * The value each typed call carries, by its position among the typed calls, as an earlier plan's closes handed it
+   * back: a call planned again starts from them, so its frames are derived with the values they carry.
+   */
+  readonly typedValues?: ReadonlyMap<number, bigint>;
+  /**
+   * The entry's keccak256 jobs as a settled plan found them, by call: the job the call's side-car states, or `null`
+   * for a call whose job another side-car holds, which takes none (`keccakJobsToShare`). Absent until a plan shared
+   * them, and the call is shared at most once.
+   */
+  readonly keccakJobs?: readonly (Uint8Array | null)[];
+}
+
+/** The most times a call is planned again from the end views its callee frames learned. */
+const MAXIMUM_VIEW_PASSES = 3;
+
+/**
+ * True when a frame of a deployment the call reaches again after it ended at a view other than the one its plan
+ * stated: the later frame of that deployment starts there, so its own writes are stated from a view it never sees.
+ */
+function laterFrameStartsElsewhere(planned: PlannedCallees, views: CalleeValues['views']): boolean {
+  return planned.callees.some((callee, at) => {
+    if (!planned.callees.slice(at + 1).some((later) => later.block === callee.block)) return false;
+    const candidates = callee.entryWrites?.learningCandidates ?? [];
+    return (views.get(callee.master) ?? []).some((view, position) => view !== undefined
+      && candidates[position] !== undefined && !bytesEqual(view, candidates[position]!));
+  });
+}
+
+/** The end views of the frames a later frame of the same deployment starts from: what a call is planned again from. */
+function viewsLaterFramesStartFrom(
+  planned: PlannedCallees, views: CalleeValues['views'],
+): ReadonlyMap<string, readonly (Uint8Array | undefined)[]> {
+  return new Map(planned.callees.flatMap((callee, at) => {
+    const learned = views.get(callee.master);
+    const reachedAgain = planned.callees.slice(at + 1).some((later) => later.block === callee.block);
+    return learned === undefined || !reachedAgain ? [] : [[callee.master, learned] as const];
+  }));
+}
+
+/** True when two sets of learned end views hold the same views for the same frames. */
+function sameEndViews(
+  left: ReadonlyMap<string, readonly (Uint8Array | undefined)[]>,
+  right: ReadonlyMap<string, readonly (Uint8Array | undefined)[]> | undefined,
+): boolean {
+  if (right === undefined || left.size !== right.size) return false;
+  for (const [master, views] of left) {
+    const other = right.get(master);
+    if (other === undefined || other.length !== views.length) return false;
+    const same = views.every((view, at) => (view === undefined
+      ? other[at] === undefined : other[at] !== undefined && bytesEqual(view, other[at]!)));
+    if (!same) return false;
+  }
+  return true;
 }
 
 /** No earlier result learned: a call's first plan. */
 const NO_EARLIER_RESULTS: EarlierResults = { reached: new Map(), returns: new Map(), passes: 0, writeValues: new Map() };
 
 /** A call planned with the sends `shape` declares, and from the results `prior` holds. */
+/**
+ * The child a creating entry mints, when the project registered the artifact its `create2` names.
+ *
+ * A creator's call mints the child's genesis in the same transaction (`composition.creates`). The child is not
+ * deployed yet, so its artifact comes from the registry the project fills; the folded initializer's arguments are
+ * evaluated over the creating entry's own arguments, exactly as the body computes them.
+ */
+function inferredCreates(
+  provider: NetworkProvider,
+  artifact: Artifact,
+  functionName: string,
+  args: readonly FunctionArgument[],
+  stateValues: Readonly<Record<string, unknown>>,
+  callerLockingBytecode: Uint8Array,
+): FramedCallCreation | undefined {
+  const named = (artifact.composition?.creates ?? []).filter((site) => site.contractName !== undefined);
+  if (named.length !== 1) return undefined;
+  const site = named[0]!;
+  const child = framedCreatedChildOf(provider, site.contractName!);
+  if (child === undefined) return undefined;
+  let initializer: FramedCallCreation['initializer'];
+  if (site.foldedCall !== undefined) {
+    const resolver = makeCallResolver({
+      artifact, functionName, args, stateValues, selfAddress: callerLockingBytecode,
+      senderAddress: callerLockingBytecode,
+    });
+    const resolved = site.foldedCall.argumentSources.map((source) => resolver.resolve(source, 0));
+    if (resolved.some((value) => value === undefined)) {
+      throw new FramedCallError(
+        `entry "${functionName}" creates "${site.contractName}" and folds its "${site.foldedCall.functionName}" `
+        + 'call, whose arguments the call cannot resolve',
+      );
+    }
+    initializer = { functionName: site.foldedCall.functionName, args: resolved as FunctionArgument[] };
+  }
+  return {
+    artifact: child.artifact,
+    ...(child.split === undefined ? {} : { split: child.split }),
+    pool: resolveMasterPoolSize(),
+    ...(initializer === undefined ? {} : { initializer }),
+  };
+}
+
 async function callInShape(
   options: FramedCallOptions, shape: SendShape, prior: EarlierResults = NO_EARLIER_RESULTS,
 ): Promise<FramedCallResult> {
@@ -986,7 +1357,9 @@ async function callInShape(
   }
   const { framedValidator } = await import('@solidcash/solidc/runtime');
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
-  const machine = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
+  // The derivation learns on a machine with the budgets lifted; the padded transaction is judged on the provider's.
+  const machine = options.vm ?? createDerivationVirtualMachineForProvider(provider);
+  const judging = options.vm ?? createVirtualMachineBch2026ForProvider(provider);
   const category = new Uint8Array(hexToBin(categoryId));
   if (splitShard !== undefined && options.split !== undefined
     && (artifact.composition?.internalHelperLocks?.length ?? 0) > 0) {
@@ -1001,8 +1374,12 @@ async function callInShape(
   const deployed = deployMaster(artifact, category, validatorProgram);
   const structs = structDefinitionsOf(artifact);
 
-  // The deployment's live pools and records, classified by category and ordered by data-NFT index.
-  const deployment = await readFramedDeployment(provider, categoryId, stateLayout);
+  // The deployment's live pools and records, classified by category and ordered by data-NFT index, the pools in the
+  // order this call takes them.
+  const poolOrder = options.poolOrder ?? poolOrderFor(provider);
+  const deployment = inPoolOrder(await readFramedDeployment(provider, categoryId, stateLayout, {
+    masterLocks: [deployed.lockingBytecode], validatorProgram,
+  }), poolOrder);
   let master = deployment.masters[0];
   if (splitShard !== undefined) {
     try {
@@ -1018,7 +1395,9 @@ async function callInShape(
   if (master === undefined) {
     throw new FramedCallError(`category ${categoryId} holds no master, which a root frame runs on`);
   }
-  const validator = deployment.validators[0];
+  // A pool takes its validators in any order, so a UTXO that only reads as one, at another lock, must not be drawn.
+  const validator = deployment.validators.find((utxo) => utxo.lockingBytecode === undefined
+    || bytesEqual(utxo.lockingBytecode, deployed.address));
   if (validator === undefined) {
     throw new FramedCallError(`category ${categoryId} holds no validator, which a root frame needs to be admitted`);
   }
@@ -1045,6 +1424,7 @@ async function callInShape(
     args,
     stateLayout,
     records: records.map((record) => record.utxo),
+    ...(artifact.creationArguments === undefined ? {} : { creationArguments: artifact.creationArguments }),
   });
   const tokenDeposits = options.tokenDeposits ?? [];
   for (const deposit of tokenDeposits) {
@@ -1056,9 +1436,6 @@ async function callInShape(
         + 'amount the VM cannot see it');
     }
   }
-  // The records the frame declares, and the transaction spends, in the order the entry's own code reads them.
-  const declared = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => records[nftIndex]!);
-  const recordIds = declared.map((record) => record.id);
   // A record the artifact publishes as written only after every call is kept in each segment before that last one, as
   // a callee's record is kept before its first write (`calleeFrames`). A read the body makes before its calls, such as
   // the width of a run it grows, read off the record's declared end, then reads the record as that segment holds it,
@@ -1080,13 +1457,15 @@ async function callInShape(
     ? await framedBlockOracle(provider, oraclePool, functionName, (reason) => new FramedCallError(reason))
     : undefined;
   const blockClock = fetchedBlockOracle === undefined ? undefined : blockOracleClock(fetchedBlockOracle);
-  const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.address);
+  const deploymentFacts = deploymentActivationFacts(artifact, categoryId, deployment, deployed.self);
   const activationFacts = {
     ...deploymentFacts, stateValues: { ...deploymentFacts.stateValues, ...blockClock },
   };
   const mappingRecords = entryMapping({
     artifact, functionName, args, senderLockingBytecode: options.callerLockingBytecode, categoryId, deployment,
-    facts: activationFacts, releasedLock: options.callerLockingBytecode,
+    facts: activationFacts, releasedLock: options.callerLockingBytecode, producerResults: prior.returns,
+    selfAddress: deployed.self,
+    ...(options.assumedActivations === undefined ? {} : { assumedActivations: options.assumedActivations }),
     ...(blockClock === undefined ? {} : { blockClock }),
     writtenCommitments: prior.writtenRecords ?? records.map((record) => record.commitment),
   });
@@ -1094,26 +1473,91 @@ async function callInShape(
 
   // The calls the entry makes and the callee frames they reach, each on a master of its own contract's pool, planned
   // from the results earlier plans learned.
-  const planCallees = async (returns: ReadonlyMap<number, FunctionArgument>): Promise<PlannedCallees | undefined> => {
+  const planCallees = async (
+    returns: ReadonlyMap<number, FunctionArgument>, stopBefore?: number,
+  ): Promise<PlannedCallees | undefined> => {
     try {
       return await planEntryCallees({
         provider, artifact, functionName, args, externals: options.externals ?? {}, validatorProgram, categoryId,
-        deployment, selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+        deployment, selfAddress: deployed.self, senderAddress: options.callerLockingBytecode,
         ...(blockClock === undefined ? {} : { blockClock }),
         ...(prior.reached.size === 0 ? {} : { reachedResults: prior.reached }),
+        ...(prior.hashedArguments === undefined ? {} : { hashedArguments: prior.hashedArguments }),
+        ...(prior.calleeWriteViews === undefined ? {} : { calleeWriteViews: prior.calleeWriteViews }),
+        ...(stopBefore === undefined ? {} : { stopBefore }),
         ...(returns.size === 0 ? {} : { externalReturns: returns }),
         ...(prior.writeValues.size === 0 ? {} : { calleeWriteValues: prior.writeValues }),
+        ...(options.calleeAssumedActivations === undefined
+          ? {} : { calleeAssumedActivations: options.calleeAssumedActivations }),
+        ...(options.assumedCalls === undefined ? {} : { assumedCalls: options.assumedCalls }),
+        ...(options.noteUndecidedCall === undefined ? {} : { noteUndecidedCall: options.noteUndecidedCall }),
+        msgValue: options.value ?? 0n,
         ...(options.split === undefined ? {} : { split: options.split }),
-        ...(splitShard === undefined ? {} : {
-          takenMasters: new Map([[categoryId, new Set([`${master.txid}:${master.vout}`])]]),
-        }),
+        // The root's own master is the root's: a call back into its deployment takes another of the pool.
+        takenMasters: new Map([[categoryId, new Set([`${master.txid}:${master.vout}`])]]),
+        poolOrder,
+        ...(shape.calleeListedSends === undefined ? {} : { calleeListedSends: shape.calleeListedSends }),
       });
     } catch (error) {
-      if (error instanceof FramedCalleeError) throw new FramedCallError(error.message);
+      if (error instanceof FramedCalleeError) throw new FramedPlanningRefusal(error.message, error.failedCallMessage);
       throw error;
     }
   };
-  const calleePlan = await planCallees(prior.returns);
+  // A refusal met while planning a site stands only once the execution reaches that site, as the hop's does
+  // (`planBeforeRefusedSite`): the call is planned stopped before the first of the entry's own sites the planner
+  // refuses, and the entry runs to it, so a body that stops on a check of its own first names its own reason. A frame
+  // that reads a node an earlier frame of the call rewrote at a value that frame's body computes is planned again once
+  // the frames before the site have settled, from the end views they learned.
+  let refusedPlanning: FramedPlanningRefusal | WrittenValueAwaited | undefined;
+  const refusedWhilePlanning = (error: unknown): error is FramedPlanningRefusal | WrittenValueAwaited => (
+    error instanceof FramedPlanningRefusal || error instanceof WrittenValueAwaited);
+  const calleePlan = await (async (): Promise<PlannedCallees | undefined> => {
+    try {
+      return await planCallees(prior.returns);
+    } catch (error) {
+      if (!refusedWhilePlanning(error)) throw error;
+      refusedPlanning = error;
+    }
+    let before: PlannedCallees | undefined;
+    for (let site = 0; ; site += 1) {
+      let next: PlannedCallees | undefined;
+      try {
+        next = await planCallees(prior.returns, site);
+      } catch (error) {
+        if (!refusedWhilePlanning(error)) throw error;
+        break;
+      }
+      if (next?.blocked?.reads !== 'refusal') break;
+      before = next;
+    }
+    if (before === undefined) {
+      throw refusedPlanning instanceof WrittenValueAwaited
+        ? new FramedCallError(`entry "${functionName}": ${refusedPlanning.message}`) : refusedPlanning;
+    }
+    return before;
+  })();
+  // A node the entry reads or writes that a frame of its own contract below a call also touches is one input of the
+  // call: the entry's declaration is placed under the id those frames share for the node, so the transaction spends it
+  // once, and the walk chains the views every frame declares of it (`chainSharedNodeViews`). An INTERNAL helper a split
+  // cut out of the body is such a frame: a skipped write of its keeps the node that brackets the absent key, which may
+  // be the very node the entry rewrites. Placed under two ids, that node was spent twice and the broadcast refused it.
+  const sharedNodeIds = ((): ReadonlyMap<string, string> => {
+    const touched = new Set((calleePlan?.callees ?? []).filter((callee) => callee.categoryId === categoryId)
+      .flatMap((callee) => [
+        ...(callee.readNodes ?? []).map((node) => node.id),
+        ...(callee.entryWrites?.reachWrites ?? []).flatMap((write) => write.spentIds),
+      ]));
+    return new Map([
+      ...(mappingRecords?.readNodes ?? []).flatMap((node) => {
+        const shared = sharedNodeId(categoryId, node.collection, node.slot);
+        return node.present && touched.has(shared) ? [[node.id, shared] as const] : [];
+      }),
+      ...[...(mappingRecords?.writtenNodes ?? [])].flatMap(([id, node]) => {
+        const shared = sharedNodeId(categoryId, node.collection, node.slot);
+        return touched.has(shared) ? [[id, shared] as const] : [];
+      }),
+    ]);
+  })();
   // A callee run the shape cut to the sends its body made learns only those.
   for (const callee of calleePlan?.callees ?? []) {
     const runs = calleeTokenRunSends(callee).map((counts, run) =>
@@ -1271,18 +1715,31 @@ async function callInShape(
       && run.contractCategoryId === depositTargets[index] && run.category === deposit.utxo.token!.category)));
   // The sends of every run but the last sit at indices whose inputs are not containers: the caller's coin and its
   // deposits fill them first, then more tokenless coins at the caller's lock.
-  const fillersNeeded = tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0)
-    - 1 - tokenDeposits.length;
-  const fillerCoins = fillersNeeded <= 0 ? [] : (await withoutIdentityOutputs(
+  const runFillersNeeded = Math.max(0,
+    tokenRuns.slice(0, -1).reduce((sum, run) => sum + run.sends + run.nftSends, 0) - 1 - tokenDeposits.length);
+  // The value the call carries is paid from the caller's own coins, so a value larger than the coin it starts with
+  // takes more of them: the change returns what the call does not spend. The margin covers the fee and the dust of
+  // the outputs the call creates.
+  const candidates = await withoutIdentityOutputs(
     provider, await provider.getUtxosForLockingBytecode(options.callerLockingBytecode),
-  ))
-    .filter((utxo) => utxo.token === undefined
-      && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout))
-    .slice(0, fillersNeeded);
+  );
+  const spendable = candidates.filter((utxo) => utxo.token === undefined
+    && !(utxo.txid === options.callerUtxo.txid && utxo.vout === options.callerUtxo.vout));
+  const valueNeeded = (options.value ?? 0n) + 20_000n;
+  let valueFillers = 0;
+  let covered = options.callerUtxo.satoshis;
+  while (covered < valueNeeded && valueFillers < spendable.length) {
+    covered += spendable[valueFillers]!.satoshis;
+    valueFillers += 1;
+  }
+  const fillersNeeded = Math.max(runFillersNeeded, valueFillers);
+  const fillerCoins = spendable.slice(0, fillersNeeded);
   if (fillerCoins.length < fillersNeeded) {
     throw new FramedCallError(
-      `entry "${functionName}" pays from ${tokenRuns.length} token runs, which need ${fillersNeeded} more tokenless `
-      + `coins at the caller's lock between them, and it holds ${fillerCoins.length}`,
+      `entry "${functionName}" needs ${fillersNeeded} more tokenless coin(s) at the caller's lock`
+      + (tokenRuns.length > 1 ? ` for its ${tokenRuns.length} token runs` : '')
+      + ((options.value ?? 0n) > 0n ? ` and to pay the ${options.value} satoshis it carries` : '')
+      + `, and it holds ${fillerCoins.length}`,
     );
   }
 
@@ -1299,7 +1756,7 @@ async function callInShape(
   try {
     loopTurns = entryLoopTurns({
       artifact, functionName, args, stateValues: activationFacts.stateValues,
-      selfAddress: deployed.address, senderAddress: options.callerLockingBytecode,
+      selfAddress: deployed.self, senderAddress: options.callerLockingBytecode,
     });
   } catch (error) {
     if (error instanceof FramedLoopTurnsError) throw new FramedCallError(error.message);
@@ -1317,6 +1774,10 @@ async function callInShape(
     argumentPushes,
     leadingPushes: argumentPushes === selectorPushes ? 1 : 0,
     ...(loopTurns.hashes === undefined ? {} : { hashes: loopTurns.hashes }),
+    // The callees' frames spend side-cars of the same pools, so the entry's are taken past theirs.
+    taken: new Set([...(calleePlan?.utxos.values() ?? [])].map((utxo) => `${utxo.txid}:${utxo.vout}`)),
+    poolOrder,
+    ...(prior.keccakJobs === undefined ? {} : { jobs: prior.keccakJobs }),
   });
 
   // Each send pays a user's lock as a listed send, or a contract through a call into its `receive()`: the body
@@ -1340,15 +1801,14 @@ async function callInShape(
   const payable = await Promise.all(recipients.flatMap((lock, transferPosition) => {
     if (lock === undefined || lock.length === 25) return [];
     return [(async () => {
-      const found = Object.entries(options.externals ?? {}).find(([, external]) => bytesEqual(
-        validatorAddress(hexToBin(external.categoryId), validatorProgram), lock,
-      ));
-      if (found === undefined) {
-        throw new FramedCallError(
-          `entry "${functionName}" sends to the contract at ${binToHex(lock)}, which the call's externals do not name`,
-        );
+      // The contract the send pays: one the call's externals name, else one the provider registers at that address.
+      const external = Object.values(options.externals ?? {}).find((candidate) => bytesEqual(
+        validatorAddress(hexToBin(candidate.categoryId), validatorProgram), lock,
+      )) ?? registeredExternalFor(provider, lock, '');
+      if (external === undefined) {
+        throw new FramedCallError(`entry "${functionName}" sends to the contract at ${binToHex(lock)}, which neither `
+          + "the call's externals nor the provider's registrations name");
       }
-      const [, external] = found;
       const body = valueEntryOf(external.artifact, `the value entry "${functionName}" sends it`);
       const layout = external.artifact.stateLayout;
       const bodySites = publishedEntryOf(external.artifact, body.name);
@@ -1362,7 +1822,18 @@ async function callInShape(
           + 'path does not plan for a paid contract yet');
       }
       const recipientCategory = hexToBin(external.categoryId);
-      const set = await readFramedDeployment(provider, external.categoryId, layout);
+      // The send runs its body on the recipient's master, or on the shard of it a per-entry bundle publishes.
+      const recipientSplit = functionSplitFor(provider, external.categoryId);
+      const recipientShard = recipientSplit?.shards.find((shard) => shard.function === body.name);
+      const set = inPoolOrder(await readFramedDeployment(provider, external.categoryId, layout, {
+        masterLocks: [
+          deployMaster(external.artifact, recipientCategory, validatorProgram).lockingBytecode,
+          ...(recipientShard === undefined ? [] : [
+            deployFunctionSplitShard(recipientShard, recipientCategory, validatorProgram, recipientSplit).lockingBytecode,
+          ]),
+        ],
+        validatorProgram,
+      }), poolOrder);
       // The frames the entry's calls run on the same contract: its masters are theirs to run, so the payment takes
       // one they leave, and its records are theirs.
       const shared = calleePlan?.callees.filter((callee) => callee.categoryId === external.categoryId) ?? [];
@@ -1382,7 +1853,7 @@ async function callInShape(
         args: [],
         inputs: body.inputs,
         structs: structDefinitionsOf(external.artifact),
-        callerLock: deployed.address,
+        callerLock: deployed.self,
         state: set.records.slice(0, layout.dataNftCount).map((utxo, nftIndex) =>
           parsePushdataCommitment(utxo.token?.nft?.commitment ?? '', layout, nftIndex)),
       }));
@@ -1408,7 +1879,7 @@ async function callInShape(
         emits: [...(body.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex),
         // Its mapping writes, keyed by the paying contract, which is its `msg.sender`.
         mapping: entryMapping({
-          artifact: external.artifact, functionName: body.name, args: [], senderLockingBytecode: deployed.address,
+          artifact: external.artifact, functionName: body.name, args: [], senderLockingBytecode: deployed.self,
           categoryId: external.categoryId, deployment: set,
           facts: deploymentActivationFacts(external.artifact, external.categoryId, set, lock),
           releasedLock: options.callerLockingBytecode,
@@ -1440,7 +1911,11 @@ async function callInShape(
   // Each value call takes its place among the calls the entry makes: after the calls its artifact counts before the
   // send, and after the value calls of the earlier sends to contracts (spec 4b).
   const sendCallsBefore = published?.sendCallsBefore;
-  if (calleePlan !== undefined && payees.length > 0 && sendCallsBefore === undefined) {
+  // A send the entry makes no call after takes its place after every call the plan states, its count open or not.
+  const followsCalls = (payee: { readonly transferPosition: number }): boolean =>
+    published?.sendsAfterCalls?.[payee.transferPosition] === true;
+  if (calleePlan !== undefined && payees.length > 0 && sendCallsBefore === undefined
+    && !payees.every(followsCalls)) {
     throw new FramedCallError(
       `entry "${functionName}" sends value to a contract and makes ${calleePlan.calls.length} external call(s), and `
       + 'its artifact does not place the sends among the calls, so this call path does not plan both in one call yet',
@@ -1540,6 +2015,22 @@ async function callInShape(
   if (selfBlock !== undefined) besideMasters.set(selfBlock, (besideMasters.get(selfBlock) ?? 0) + 1);
   const besideCallees = { masters: besideMasters, startViews };
 
+  // A call-free entry runs in exactly one segment, and one that calls closes one more per call it makes, which a
+  // loop's site makes once per turn, a value call into a contract among them. Every segment declares the frame's
+  // state records and the mapping records the entry writes, with each end commitment the body computes left
+  // unstated so the derivation learns it.
+  const segmentCount = calleePlan !== undefined || payees.length > 0
+    ? typedCalls.length + payees.length + 1
+    : published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
+  // The records the frame declares, and the transaction spends, in the order the entry's own code reads them. A frame
+  // that can spend no record its code does not name fills their slots with a node it spends anyway.
+  const frameRecords = frameDataRecordIndices(artifact, entry.name);
+  const leavesUnnamed = calleePlan?.blocked === undefined && (mappingRecords?.spentUtxos.size ?? 0) > 0
+    && leavesUnnamedRecordsUnspent(artifact, entry.name, segmentCount);
+  const declared = (leavesUnnamed ? namedDataRecordIndices(artifact, entry.name) : frameRecords)
+    .map((nftIndex) => records[nftIndex]!);
+  const recordIds = declared.map((record) => record.id);
+
   // One block for the contract: its master and its side-cars, its validator, and every record it reads and writes;
   // then one block for each contract it calls, holding the masters its frames run on and the records they read, and
   // one for each other contract it pays, holding the master that runs its `receive()` and its records.
@@ -1552,7 +2043,8 @@ async function callInShape(
     masters: [MASTER_ID, ...ownCalleeBlocks.flatMap((block) => block.masters)],
     validator: { id: VALIDATOR_ID, settles: [] },
     state: [...new Set([
-      ...recordIds, ...mappingIds, ...ownCalleeBlocks.flatMap((block) => block.state),
+      ...recordIds, ...mappingIds.map((id) => sharedNodeIds.get(id) ?? id),
+      ...ownCalleeBlocks.flatMap((block) => block.state),
     ])],
     recovery: {
       ...Object.assign({}, ...ownCalleeBlocks.map((block) => block.recovery ?? {})),
@@ -1643,14 +2135,16 @@ async function callInShape(
   // An emit the frame's facts decide its body skips lists its output with the empty commitment its not-taken arm
   // closes against, and a skip those facts do not decide is learned from that close.
   const eventDefinitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
-  // A body that emits from a loop lists one output per event it emits, in the order it emits them.
-  const emits = loopTurns.emits === undefined
+  // A body that emits from a loop lists one output per event it emits, in the order it emits them. A wide emit lists
+  // one per chunk its payload can take (`EmitAbi.chunks`), each started from a sentinel of its own: the first at the
+  // event covenant, each further one at the event's continuation covenant, a chunk past the payload left empty.
+  const emits = (loopTurns.emits === undefined
     ? [...entry.emits].sort((left, right) => left.emitIndex - right.emitIndex)
     : loopTurns.emits.map((emitIndex) => {
       const emit = entry.emits.find((candidate) => candidate.emitIndex === emitIndex);
       if (emit === undefined) throw new FramedCallError(`entry "${functionName}" publishes no emit ${emitIndex}`);
       return emit;
-    });
+    })).flatMap((emit) => Array.from({ length: emit.chunks ?? 1 }, (_unused, chunk) => ({ ...emit, chunk })));
   const maximumCommitmentBytes = Math.max(
     stateLayout.commitmentLimit ?? 0, provider.consensusLimits?.maximumNftCommitmentBytes ?? 0, 32,
   );
@@ -1660,10 +2154,11 @@ async function callInShape(
   const eventSentinels = emits.map((emit, position) => (skippedEmitIndices.includes(emit.emitIndex)
     ? new Uint8Array(0) : eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes)));
   const eventIndices = emits.map((_emit, position) => trailingBase + position);
+  // An event output carries at least its own dust threshold, which a wide payload raises past the fixed amount.
   const eventOutputs = (commitments: readonly (Uint8Array | undefined)[]): DraftSourceOutput[] =>
-    emits.map((emit, position) => ({
-      lockingBytecode: eventLockingBytecode(
-        category, emit.eventSignature, eventDefinitions.get(emit.eventSignature)?.anonymous === true,
+    emits.map((emit, position) => eventFundedAtLeastDust({
+      lockingBytecode: eventChunkLockingBytecode(
+        category, emit.eventSignature, eventDefinitions.get(emit.eventSignature)?.anonymous === true, emit.chunk,
       ),
       valueSatoshis: EVENT_OUTPUT_SATOSHIS,
       token: {
@@ -1703,6 +2198,19 @@ async function callInShape(
     )).slice(0, 20))));
   const payeeSendAmountSentinels = payees.map((payee, index) => Array.from({ length: payee.sendCount },
     (_unused, position) => SEND_AMOUNT_SENTINEL + BigInt(1_000 * (index + 1) + position)));
+  // Each callee frame that sends to a user's lock lists a run of its own after the paid contracts': one of its
+  // contract's containers, then its sends, as the entry lists its own (`PlannedCallees.listedSends`).
+  const sendingCallees = (calleePlan?.callees ?? [])
+    .filter((callee) => (calleePlan?.listedSends?.get(callee.master)?.count ?? 0) > 0);
+  const calleeRunsBase = markerIndex + runLength(sendCount)
+    + payees.reduce((count, payee) => count + runLength(payee.sendCount), 0);
+  const calleeSendIndices = new Map<string, readonly number[]>();
+  for (const callee of sendingCallees) {
+    const marker = calleeRunsBase
+      + [...calleeSendIndices.values()].reduce((count, sends) => count + runLength(sends.length), 0);
+    calleeSendIndices.set(callee.master, Array.from({ length: calleePlan!.listedSends!.get(callee.master)!.count },
+      (_unused, position) => marker + 1 + position));
+  }
   // An entry that reads its own balance reads the containers its transaction spends, so it spends every one.
   const readsBalance = (
     (artifact.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders ?? []
@@ -1710,17 +2218,29 @@ async function callInShape(
   const containers = entry.transfers.length > 0 || readsBalance || payableCalls.length > 0
     ? await readSatoshiContainers(provider, categoryId)
     : [];
+  // A callee frame whose sends carry value pays them from its own contract's containers, as the entry pays its own
+  // sends, and a frame of the entry's own contract a send to a contract enters brings that value in: the entry's
+  // sends may spend it in the same transaction, since the validator weighs the contract's frames together (V7).
+  const calleeFunds = await calleeFundsOf(provider, calleePlan, categoryId);
+  const brought = value + calleeValueInto(calleePlan, categoryId);
+  // The value each callee frame is entered with: what a typed call of the entry's carries into it, or what the call
+  // record of the frame that calls it carries.
+  const calleeEnteredWith = (typedCallValues: ReadonlyMap<number, bigint>) => (calleeMaster: string): bigint => {
+    const typed = [...typedCallValues].find(([position]) => typedCalls[position]?.callee === calleeMaster)?.[1];
+    return typed ?? (calleePlan?.callees ?? []).flatMap((frame) => frame.calls)
+      .find((call) => call.callee === calleeMaster)?.value ?? 0n;
+  };
   /**
    * The containers the sends and the value calls are paid from once every amount is known, and what the contract's
    * own container keeps: the one before the sends, or the change or the deposit on its own.
    */
   const payFromContainers = (amounts: readonly (bigint | undefined)[]): { spent: readonly Utxo[]; kept: bigint } => {
     const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
-    const settle = (kept: bigint): bigint => (sendCount > 0 || kept > 0n ? atLeastMinimum(kept) : 0n);
+    const settle = (kept: bigint): bigint => (kept > 0n ? atLeastMinimum(kept) : 0n);
     const every = readsBalance ? containers : [];
     const everyTotal = every.reduce<bigint>((sum, utxo) => sum + utxo.satoshis, 0n);
-    if (amounts.some((amount) => amount === undefined)) return { spent: every, kept: settle(everyTotal + value) };
-    const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - value;
+    if (amounts.some((amount) => amount === undefined)) return { spent: every, kept: settle(everyTotal + brought) };
+    const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - brought;
     if (readsBalance) {
       if (everyTotal < need) {
         throw new FramedCallError(
@@ -1747,8 +2267,8 @@ async function callInShape(
     return { spent, kept: settle(total - need) };
   };
   // Created mapping nodes are the trailing outputs past every run of sends.
-  const createdBase = markerIndex + runLength(sendCount)
-    + payees.reduce((count, payee) => count + runLength(payee.sendCount), 0);
+  const createdBase = calleeRunsBase
+    + [...calleeSendIndices.values()].reduce((count, sends) => count + runLength(sends.length), 0);
   /**
    * What a paid contract that sends keeps, and the containers it spends: its sends are paid from what it receives,
    * then from its own containers, as the EVM's are from its balance.
@@ -1758,9 +2278,10 @@ async function callInShape(
   ): { spent: readonly Utxo[]; kept: bigint } => {
     const payee = payees[index]!;
     const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
+    const settle = (kept: bigint): bigint => (kept > 0n ? atLeastMinimum(kept) : 0n);
     if (amounts.some((amount) => amount === undefined)) return { spent: [], kept: CONTAINER_MINIMUM_SATOSHIS };
     const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - received;
-    if (need <= 0n) return { spent: [], kept: atLeastMinimum(-need) };
+    if (need <= 0n) return { spent: [], kept: settle(-need) };
     const spent: Utxo[] = [];
     let total = 0n;
     for (const utxo of [...payee.containers].sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))) {
@@ -1774,21 +2295,15 @@ async function callInShape(
         + `"${functionName}" pays sends ${need} more than it receives`,
       );
     }
-    return { spent, kept: atLeastMinimum(total - need) };
+    return { spent, kept: settle(total - need) };
   };
   // The value a call into a contract's `receive()` carries starts from a sentinel the body's own site fails
   // against, until the derivation learns the amount the body computed.
   const callValueSentinels = payees.map((_payee, index) => recordValueBytes(CALL_VALUE_SENTINEL + BigInt(index)));
 
-  // A call-free entry runs in exactly one segment, and one that calls closes one more per call it makes, which a
-  // loop's site makes once per turn, a value call into a contract among them. Every segment declares the frame's
-  // state records and the mapping records the entry writes, with each end commitment the body computes left
-  // unstated so the derivation learns it.
-  const segmentCount = calleePlan !== undefined || payees.length > 0
-    ? typedCalls.length + payees.length + 1
-    : published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
   // Each published site's first call, past the value calls made before it.
   const callBases = (calleePlan?.callBases ?? []).map((base) => (base < 0 ? base : typedCallPosition(base)));
+  const callPositions = calleePlan?.callPositions?.map((positions) => positions.map(typedCallPosition));
   const recordIndex = (id: string): number => participant(layout, id).index;
   // Where each value-dependent node's declaration sits in the frame's segments, and the structural candidate it
   // starts from, so the value the body's close hands back can be read and written into the next attempt.
@@ -1798,6 +2313,7 @@ async function callInShape(
     masterIndex,
     recordAmount: validator.satoshis,
     learnedViews: [],
+    ...(sharedNodeIds.size === 0 ? {} : { sharedNodeIds }),
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
@@ -1864,6 +2380,8 @@ async function callInShape(
     const paying = payFromContainers([
       ...learnedSends.map((send) => send.amount), ...learnedCallAmounts, ...typedCallValues.values(),
     ]);
+    // What each paying callee frame spends and keeps, from what its sends carry as far as the plan learned them.
+    const calleePayings = calleePayingsOf(calleePlan, calleeFunds, learnedCallees, calleeEnteredWith(typedCallValues));
     const callValue = (index: number): bigint => learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index);
     // Each paid contract that sends keeps what it does not send in the container its run starts with.
     const payeePayings = payees.map((payee, index) => (payee.sendCount === 0
@@ -1873,7 +2391,7 @@ async function callInShape(
       const payeePay = payeePayings[index];
       if (payeePay === undefined) return [];
       return [
-        { lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: payeePay.kept },
+        runLeadOutput(payee.categoryId, payeePay.kept),
         ...learnedPayees[index]!.sends.map((send, position) => ({
           lockingBytecode: send.lock ?? payeeSendLockSentinels[index]![position]!,
           valueSatoshis: send.amount ?? payeeSendAmountSentinels[index]![position]!,
@@ -1882,11 +2400,25 @@ async function callInShape(
     });
     const payeeSpent = payees.flatMap((_payee, index) => (payeePayings[index]?.spent ?? [])
       .map((utxo, position) => ({ id: receiveContainerId(index, position), index, utxo })));
+    // Each callee frame that lists sends keeps what it does not send in the container its run starts with, and each
+    // send starts from its sentinels until the frame's own pin hands back what its body computed.
+    const calleeRuns: DraftSourceOutput[] = sendingCallees.flatMap((callee) => {
+      const kept = calleePayings.find((calleePaying) => calleePaying.master === callee.master)!.kept;
+      const sentinels = calleeSendSentinels(calleePlan!, callee);
+      const learned = learnedCallees.sends?.get(callee.master) ?? [];
+      return [
+        runLeadOutput(callee.categoryId, kept),
+        ...sentinels.locks.map((lock, position) => ({
+          lockingBytecode: learned[position]?.lock ?? lock,
+          valueSatoshis: learned[position]?.amount ?? sentinels.amounts[position]!,
+        })),
+      ];
+    });
     const ownContainer: DraftSourceOutput[] = paying.kept > 0n
       ? [{ lockingBytecode: containerLock, valueSatoshis: paying.kept }]
       : [];
     const sendOutputs: DraftSourceOutput[] = sendCount === 0 ? [] : [
-      ...ownContainer,
+      runLeadOutput(categoryId, paying.kept),
       ...learnedSends.map((send, position) => ({
         lockingBytecode: send.lock ?? sendLockSentinels[position]!,
         valueSatoshis: send.amount ?? SEND_AMOUNT_SENTINEL + BigInt(position),
@@ -1897,6 +2429,7 @@ async function callInShape(
       masterIndex,
       recordAmount: validator.satoshis,
       learnedViews,
+      ...(sharedNodeIds.size === 0 ? {} : { sharedNodeIds }),
       indexOf: indexOfParticipant,
     });
     // A record's first segment starts from the commitment it was spent with, and each later one from the view the
@@ -1943,12 +2476,29 @@ async function callInShape(
         }
         return { in: index, out: index, viewIn: position === 0 ? record.commitment : 'carried' };
       }),
+      ...unnamedSlotDeclarations(frameRecords.length - declared.length, laid?.entries ?? []),
       ...(mappingSegments?.[position] ?? laid?.entries ?? []),
     ];
     // The callees' events follow the entry's own, and the records their writes create follow the entry's.
     const calleeCreatedBase = createdBase + (laid?.trailingOutputs.length ?? 0);
+    // A same-category callee runs on the root's records, so a record the root wrote in a segment before the callee's
+    // call reaches it at the view that write left: the root's unstated end there, at the record's place among the
+    // segment's entries (`segment`).
+    const rootWrites = selfBlock === undefined ? undefined : new Map(declared.flatMap((record, at) => {
+      const nftIndex = frameDataRecordIndices(artifact, entry.name)[at];
+      const writes = (published?.writeSegments ?? []).filter((write) => write.record === nftIndex);
+      if (writes.length === 0 || writes.some((write) => write.turns !== undefined)) return [];
+      const segments = [...new Set(writes.map((write) => (write.segment === 'last' ? segmentCount - 1 : write.segment)))]
+        .sort((left, right) => left - right);
+      return [[record.id, segments.map((written) => ({
+        segment: written, view: unstatedViewPlaceholder(MASTER_ID, written, at),
+      }))] as const];
+    }));
+    const rootCallPositions = new Map((calleePlan?.callees ?? []).map((callee) =>
+      [callee.master, rootCallOf(callee.master)] as const));
     const callees = sharedPlan === undefined ? undefined : calleeFrames({
-      planned: sharedPlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.address, origin: CALLER_ID,
+      planned: sharedPlan, layout, rootMaster: MASTER_ID, rootAddress: deployed.self,
+      rootSender: options.callerLockingBytecode, rootValue: value, origin: CALLER_ID,
       values: learnedCallees, eventBase: trailingBase + emits.length,
       createdBase: calleeCreatedBase, recordAmount: validator.satoshis,
       maximumCommitmentBytes, beside: besideCallees,
@@ -1957,16 +2507,23 @@ async function callInShape(
       // A same-category callee shares this master. Counting the root makes the record it writes chain into the
       // segment after the call.
       ...(selfBlock === undefined ? {} : { rootBlock: selfBlock }),
+      ...(rootWrites === undefined || rootWrites.size === 0 ? {} : { rootWrites }),
+      rootCallPositions,
+      ...(calleeSendIndices.size === 0 ? {} : { sends: calleeSendIndices }),
     });
     // The calls its body makes, each value call into a contract where the body sends.
-    const valueCalls = payees.map((payee, index): DraftCall => ({
-      kind: FrameKind.CALL,
-      callee: receiveMasterId(index),
-      target: payee.lock,
-      value: callValue(index),
-      argumentPushes: [payee.selector],
-      deferred: true,
-    }));
+    const valueCalls = payees.map((payee, index): DraftCall => {
+      const failedCallMessage = entry.transfers?.[payee.transferPosition]?.failedCallMessage;
+      return {
+        kind: FrameKind.CALL,
+        callee: receiveMasterId(index),
+        target: payee.lock,
+        value: callValue(index),
+        argumentPushes: [payee.selector],
+        deferred: true,
+        ...(failedCallMessage === undefined ? {} : { failedCallMessage }),
+      };
+    });
     const rootCalls: DraftCall[] = [];
     for (let position = 0; position <= typedCalls.length; position += 1) {
       payees.forEach((_payee, index) => {
@@ -1979,17 +2536,20 @@ async function callInShape(
       }
     }
     // Each typed call that carries value pays it into a container of the callee's contract, which the callee's frame
-    // takes as `msg.value`.
-    const calleeContainers: DraftSourceOutput[] = [...typedCallValues].map(([position, amount]) => ({
-      lockingBytecode: satoshiContainerLockingBytecode(
-        calleePlan!.callees.find((callee) => callee.master === typedCalls[position]!.callee)!.categoryId,
-      ),
-      valueSatoshis: amount,
-    }));
+    // takes as `msg.value`. A callee that lists sends keeps what it receives in the container its run starts with,
+    // past what its sends take (`calleePayingsOf`).
+    const calleeContainers: DraftSourceOutput[] = [...typedCallValues]
+      .filter(([position]) => !calleeSendIndices.has(typedCalls[position]!.callee))
+      .map(([position, amount]) => ({
+        lockingBytecode: satoshiContainerLockingBytecode(
+          calleePlan!.callees.find((callee) => callee.master === typedCalls[position]!.callee)!.categoryId,
+        ),
+        valueSatoshis: amount,
+      }));
     // Each contract it pays: its events, listed right after the entry's, and the mapping nodes it creates.
     const payeeLaid = payees.map((payee, index) => ({
       events: payee.emits.map((_emit, position) => payeeEventBases[index]! + position),
-      eventOutputs: payee.emits.map((emit, position): DraftSourceOutput => ({
+      eventOutputs: payee.emits.map((emit, position): DraftSourceOutput => eventFundedAtLeastDust({
         lockingBytecode: eventLockingBytecode(
           payee.category, emit.eventSignature,
           (payee.artifact.events ?? []).find((event) => event.signature === emit.eventSignature)?.anonymous === true,
@@ -2021,12 +2581,13 @@ async function callInShape(
         mastersOfContract: 1 + (calleePlan?.callees ?? [])
           .filter((callee) => callee.categoryId === categoryId).length,
       },
-      frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value },
+      frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.self, value },
       enteredBy: CALLER_ID,
       origin: CALLER_ID,
       calls: rootCalls,
       // Each published site's first call, past the value calls made before it.
       ...(calleePlan === undefined ? {} : { callBaseBySite: callBases }),
+      ...(callPositions === undefined ? {} : { callPositionsBySite: callPositions }),
       // A returning entry's slot starts from the candidate its own comparison fails against; a void entry's is empty.
       retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
       segments: Array.from({ length: segmentCount }, segment),
@@ -2056,7 +2617,7 @@ async function callInShape(
         makesExternalCall: false,
         mastersOfContract: 1 + payee.shared.length,
       },
-      frame: { kind: FrameKind.CALL, sender: deployed.address, self: payee.deployed.address, value: callValue(index) },
+      frame: { kind: FrameKind.CALL, sender: deployed.self, self: payee.deployed.self, value: callValue(index) },
       enteredBy: MASTER_ID,
       origin: CALLER_ID,
       calls: [],
@@ -2075,18 +2636,26 @@ async function callInShape(
       ...(payeeLaid[index]!.mapping?.values === undefined ? {} : { values: payeeLaid[index]!.mapping!.values }),
     }));
 
+    // Every input whose UTXO the plan holds states its real outpoint, so a body that reads one (a creating body's
+    // `addrV(K)`) sees the coin the broadcast will spend rather than the derivation's stand-in.
     const inputs: Record<string, DraftInput> = {
-      [MASTER_ID]: { source: masterSource(deployed.lockingBytecode, category, master.satoshis) },
+      [MASTER_ID]: {
+        source: masterSource(deployed.lockingBytecode, category, master.satoshis),
+        outpoint: { txid: master.txid, vout: master.vout },
+      },
       [VALIDATOR_ID]: {
         source: mutableSource(deployed.address, validator.satoshis, category, new Uint8Array(0)),
+        outpoint: { txid: validator.txid, vout: validator.vout },
       },
       [CALLER_ID]: {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerUtxo.satoshis },
         unlockingBytecode: callerUnlocking(),
+        outpoint: { txid: options.callerUtxo.txid, vout: options.callerUtxo.vout },
       },
       ...Object.fromEntries(fillerCoins.map((utxo, index) => [fillerCoinInputId(index), {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: utxo.satoshis },
         unlockingBytecode: callerUnlocking(),
+        outpoint: { txid: utxo.txid, vout: utxo.vout },
       }])),
     };
     for (const record of declared) {
@@ -2099,12 +2668,18 @@ async function callInShape(
         },
         // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
         unlockingBytecode: stateRecordUnlockingBytecode(categoryId, masterIndex, 1),
+        outpoint: { txid: record.utxo.txid, vout: record.utxo.vout },
       };
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
     if (blockOracle !== undefined) inputs[BLOCK_ORACLE_INPUT] = blockOracle.input;
-    Object.assign(inputs, callees?.inputs ?? {});
+    // A callee's plan of an input the entry also lays stands where a callee writes it, as a node the entry reads that
+    // a callee below it rewrites. One it only keeps does not: a frame of the entry's own contract (an INTERNAL helper)
+    // keeps the entry's records and nodes, which the entry itself may write before or after that frame runs.
+    for (const [id, input] of Object.entries(callees?.inputs ?? {})) {
+      if (inputs[id] === undefined || callees?.kept.has(id) !== true) inputs[id] = input;
+    }
     payees.forEach((payee, index) => {
       inputs[receiveMasterId(index)] = {
         source: masterSource(payee.deployed.lockingBytecode, payee.category, payee.master.satoshis),
@@ -2132,6 +2707,20 @@ async function callInShape(
         consumed: true,
       };
     });
+    // A paying callee's containers are opened by its own master, which accounts for them.
+    for (const calleePaying of calleePayings) {
+      calleePaying.spent.forEach((utxo, position) => {
+        inputs[calleeContainerInputId(calleePaying.master, position)] = {
+          source: {
+            lockingBytecode: satoshiContainerLockingBytecode(calleePaying.categoryId), valueSatoshis: utxo.satoshis,
+          },
+          unlockingBytecode: satoshiContainerUnlockingBytecode(
+            calleePaying.categoryId, indexOfParticipant(calleePaying.master),
+          ),
+          consumed: true,
+        };
+      });
+    }
     // A token run's container is recreated by the run, and a deposit's coin by the deposit's outputs.
     tokenRuns.forEach((run, index) => run.containers.forEach((container, position) => {
       inputs[tokenContainerInputId(index, position)] = {
@@ -2210,6 +2799,7 @@ async function callInShape(
       return [
         ...run.containers.map((container, at): DraftSourceOutput => {
           const nft = container.token!.nft;
+          // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
           if (!keepsNft(container) && at !== holder) return { lockingBytecode: Uint8Array.of(0x6a), valueSatoshis: 0n };
           return {
             lockingBytecode: run.lockingBytecode,
@@ -2289,15 +2879,87 @@ async function callInShape(
             || (write.segment === 'last' && segmentIndex === masterDraft.segments.length - 1)));
       }),
     );
+    // So is a mapping node the root writes that a frame of its contract below a call also touches: the root's write
+    // continues from the view the frames before it in the walk left, a relink of its keeping that view's value and a
+    // rewrite of the value keeping its successor, which a helper's insert may have relinked.
+    const rootNodeWrites = callees?.chain === undefined ? [] : (laid?.writeEntries ?? [])
+      .filter((declaration) => declaration.in !== INDEX_NONE && callees.chain!.nodes.has(declaration.in));
+    const rootNodeRelinks = (laid?.relinkEntries ?? [])
+      .filter((declaration) => rootNodeWrites.includes(declaration));
+    // A value the body computes is declared first as its structural candidate, which the derivation matches by its
+    // bytes to hand the body's value back, so only a stated or learned end takes the successor the walk carries.
+    const nodeCandidates = laid?.learningCandidates ?? [];
+    const rootValueWrites = rootNodeWrites.filter((declaration) => {
+      const end = declaration.viewOut;
+      return !rootNodeRelinks.includes(declaration) && end instanceof Uint8Array
+        && !nodeCandidates.some((candidate) => bytesEqual(candidate, end));
+    });
     const chain = callees?.chain === undefined ? undefined : chainSharedNodeViews(
       [masterDraft, ...callees.masters, ...payeeDrafts], MASTER_ID, callees.chain.nodes,
-      new Set([...callees.chain.writes, ...ownCreated, ...rootWriteTransitions]),
-      new Map(), false, callees.chain.relinks,
+      new Set([...callees.chain.writes, ...ownCreated, ...rootWriteTransitions, ...rootNodeWrites]),
+      new Map(), false, new Set([...callees.chain.relinks, ...rootNodeRelinks]), new Set(rootValueWrites),
     );
     if (chain !== undefined) withChainEnds(layout.participants, chain.ends, inputs);
     const calleeCreated = chain === undefined
       ? callees?.createdOutputs ?? [] : withCreatedChainEnds(callees!.createdOutputs, calleeCreatedBase, chain.createdEnds);
 
+    // The child a creating entry mints: its genesis outputs are trailing outputs of this same transaction, so the
+    // caller coin's outpoint is the category they carry and the creating body's `addrV(K)` names them.
+    const declaredCreates = artifact.composition?.creates ?? [];
+    const creates = options.creates === undefined
+      ? inferredCreates(
+        provider, artifact, functionName, options.args ?? [], activationFacts.stateValues,
+        options.callerLockingBytecode,
+      )
+      : options.creates;
+    // A creating entry always mints its child: a call that states nothing must refuse rather than compose a
+    // transaction whose `create2` names a category no output carries. `null` is the caller's explicit statement that
+    // it mints nothing (a derivation-only call, as the address tests make).
+    if (declaredCreates.length > 0 && creates === undefined) {
+      const names = declaredCreates.map((site) => site.contractName ?? site.codeStateVariable ?? 'a runtime code')
+        .join(', ');
+      throw new FramedCallError(
+        `entry "${functionName}" creates ${names}, and the call states no child to mint: register the child's artifact `
+        + '(`registerFramedCreatedChild`) or pass `creates`',
+      );
+    }
+    // A creator whose compiler folded the child's initializer must fold it here too: the creating body records no
+    // call to run, so an unstated initializer would mint a child in its default state.
+    const foldedCall = creates === null || creates === undefined
+      ? undefined
+      : declaredCreates.find((site) => site.contractName === creates.artifact.contractName)?.foldedCall;
+    if (foldedCall !== undefined && creates?.initializer === undefined) {
+      throw new FramedCallError(
+        `the creating entry "${functionName}" folds "${creates?.artifact.contractName}.${foldedCall.functionName}()" `
+        + "into the child's genesis, and the call states no initializer: pass `creates.initializer`",
+      );
+    }
+    const createdOutputs: DraftSourceOutput[] = creates === undefined || creates === null
+      ? []
+      : childGenesisOutputs({
+        artifact: creates.artifact,
+        category: hexToBin(options.callerUtxo.txid),
+        validatorProgram,
+        provider,
+        constructorArgs: creates.constructorArgs ?? [],
+        // The child's constructor reads `msg.sender` as the contract that creates it, which is this frame's own.
+        senderLockingBytecode: deployed.address,
+        ...(creates.split === undefined ? {} : { split: creates.split }),
+        ...(creates.pool === undefined ? {} : { pool: creates.pool }),
+        ...(creates.initializer === undefined ? {} : { initializer: creates.initializer }),
+        ownerLock: options.callerLockingBytecode,
+      }).outputs.map((output) => ({
+        lockingBytecode: output.to as Uint8Array,
+        valueSatoshis: output.amount,
+        ...(output.token === undefined ? {} : { token: draftToken(output.token) }),
+      }));
+    for (const output of options.extraOutputs ?? []) {
+      createdOutputs.push({
+        lockingBytecode: typeof output.to === 'string' ? addressToLockScript(output.to) : output.to,
+        valueSatoshis: output.amount,
+        ...(output.token === undefined ? {} : { token: draftToken(output.token) }),
+      });
+    }
     return {
       blocks,
       // The chain's own time, read from the provider: a body that reads the transaction's locktime sees it.
@@ -2305,22 +2967,34 @@ async function callInShape(
       // A stated locktime means nothing to `OP_CHECKLOCKTIMEVERIFY` on a final input, and the builder's own
       // default is non-final, so the call states the same rather than leaving the composer's final default.
       sequenceNumber: 0xfffffffe,
+      // A creating call reads the child's category and address from its funding coin's outpoint; the node's wire,
+      // `TransactionBuilder` and the broadcast read that outpoint in display order.
+      displayOutpoints: creates !== undefined && creates !== null,
       userInputs: [...placeUserInputs([
         CALLER_ID,
         ...fillerCoins.map((_utxo, index) => fillerCoinInputId(index)),
         ...paying.spent.map((_utxo, position) => containerInputId(position)),
+        ...calleePayings.flatMap((calleePaying) => calleePaying.spent
+          .map((_utxo, position) => calleeContainerInputId(calleePaying.master, position))),
         ...payeeSpent.map((spent) => spent.id),
         ...tokenDeposits.map((_deposit, index) => tokenDepositInputId(index)),
       ])].map(([id, index]) => ({ id, index })),
       ...(tokenRuns.length === 0 ? {} : { tokenRuns: tokenRuns.map(tokenRunWidth) }),
       masters: chain?.masters ?? [masterDraft, ...(callees?.masters ?? []), ...payeeDrafts],
       inputs,
-      ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
+      ...(() => {
+        // The callees' side-cars carry values their own bodies compute, learned beside the root's.
+        const computedWitnesses = [
+          ...sideCars.computedWitnesses,
+          ...[...(calleePlan?.sideCars.values() ?? [])].flatMap((sideCar) => sideCar.computedWitnesses),
+        ];
+        return computedWitnesses.length === 0 ? {} : { computedWitnesses };
+      })(),
       trailingOutputs: [
         ...tokenRunOutputs,
         ...eventOutputs(learnedEvents), ...(callees?.eventOutputs ?? []),
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
-        ...sendOutputs, ...payeeRuns,
+        ...sendOutputs, ...payeeRuns, ...calleeRuns,
         ...(laid?.trailingOutputs ?? []), ...calleeCreated,
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.mapping?.trailingOutputs ?? []),
         // The contract's own container, when no send precedes it: the change its calls leave, or the value it takes.
@@ -2330,7 +3004,13 @@ async function callInShape(
           lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: callValue(index),
         }])),
         ...calleeContainers,
+        // What each paying callee keeps of the containers it spent, where no run of sends of its own leads with it.
+        ...calleePayings.filter((calleePaying) => !calleeSendIndices.has(calleePaying.master))
+          .flatMap((calleePaying) => (calleePaying.kept === 0n ? [] : [{
+            lockingBytecode: satoshiContainerLockingBytecode(calleePaying.categoryId), valueSatoshis: calleePaying.kept,
+          }])),
         ...depositOutputs,
+        ...createdOutputs,
       ],
       validator: {
         id: VALIDATOR_ID,
@@ -2366,7 +3046,13 @@ async function callInShape(
   let learnedTokenSends: readonly LearnedRun[] = rootTokenRuns.map((run) => unlearnedRun(run.sends, run.nftSends));
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
   // The value each typed call carries, by its position among the typed calls, once its site's close handed it back.
-  let learnedTypedValues: ReadonlyMap<number, bigint> = new Map();
+  let learnedTypedValues: ReadonlyMap<number, bigint> = prior.typedValues ?? new Map();
+  /**
+   * The earlier results as a plan that starts again reads them. A typed call's value is learned from the body's own
+   * close, so a plan that starts again from what was learned keeps it.
+   */
+  const carried = (): EarlierResults => (
+    learnedTypedValues.size === 0 ? prior : { ...prior, typedValues: learnedTypedValues });
   let learnedPayees: readonly PayeeLearned[] = payees.map((_payee, index) => ({
     events: payeeEventSentinels[index]!.map(() => undefined),
     views: payeeCandidates[index]!.map(() => undefined),
@@ -2421,12 +3107,18 @@ async function callInShape(
     return undefined;
   };
   // The frames of the contracts it pays return nothing to it, so each is derived on its own before the root.
-  const payeeRequests: FrameRequest[] = payees.map((payee, index) => ({
-    contract: payee.artifact.contractName,
-    functionName: `${payee.artifact.contractName}.${payee.entryName}()`,
-    kind: FrameKind.CALL,
-    master: receiveMasterId(index),
-  }));
+  const payeeRequests: FrameRequest[] = [
+    ...payees.map((payee, index) => ({
+      contract: payee.artifact.contractName,
+      functionName: `${payee.artifact.contractName}.${payee.entryName}()`,
+      kind: FrameKind.CALL,
+      master: receiveMasterId(index),
+    })),
+    // A frame a callee's send enters is reached by no stop site, so it is derived as a request of its own.
+    ...deferredCalleeFrames(calleePlan).map((callee): FrameRequest => ({
+      contract: callee.block, functionName: callee.functionName, kind: callee.kind, master: callee.master,
+    })),
+  ];
   // What each callee's body computed, by master: the return the frames that call it read as the call's result, and
   // the payloads and node views its own frame declares.
   let calleeValues: CalleeValues = NO_CALLEE_VALUES;
@@ -2536,6 +3228,25 @@ async function callInShape(
       return undefined;
     }
   };
+  /**
+   * Learns a typed call's value from a close that compares it, the record's eight bytes stating none until learned.
+   * The site is the last payable typed call the run bound, since a call is bound before its site's check runs, and
+   * the callees answer again: a frame computed from the value its call was planned with. True when it learned one.
+   */
+  const learnTypedValue = (candidate: CompositionDraft, declaredValue: Uint8Array, computed: Uint8Array): boolean => {
+    const typedAmount = vmNumberToBigInt(declaredValue, { requireMinimalEncoding: false });
+    if (typeof typedAmount !== 'bigint' || typedAmount <= 0n || declaredValue.length !== 8
+      || !bytesEqual(computed, recordValueBytes(0n))) return false;
+    const calls = candidate.blockOf(MASTER_ID).calls;
+    const valued = learnedTypedValues;
+    const bound = payableCalls.filter((at) => !valued.has(at)
+      && (calls[typedCallPosition(at)]?.calleeRef ?? UNFILLED_CALLEE_REF) !== UNFILLED_CALLEE_REF);
+    const site = bound[bound.length - 1];
+    if (site === undefined) return false;
+    learnedTypedValues = new Map([...learnedTypedValues, [site, typedAmount]]);
+    calleeValues = NO_CALLEE_VALUES;
+    return true;
+  };
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     bumpFramedCounter('attempts');
     if (perFrame === 'stalled' && calleeValues === NO_CALLEE_VALUES) perFrame = 'ready';
@@ -2562,7 +3273,8 @@ async function callInShape(
         if (learnedCalleeCount(frames) <= learnedCalleeCount(calleeValues) || calleeValuesOwed(calleePlan, frames)) {
           perFrame = 'stalled';
         }
-        calleeValues = frames;
+        // The per-frame settle lists no frame's sends, so the sends the composition learned stand.
+        calleeValues = calleeValues.sends === undefined ? frames : { ...frames, sends: calleeValues.sends };
       }
     }
     const plan = buildPlan(
@@ -2615,7 +3327,47 @@ async function callInShape(
         calleeValues = answered;
         continue;
       }
+      // A callee's write keyed by what one of its own calls returned is planned under a placeholder until that call
+      // answered, as the entry's own is (below), and a frame planned at the placeholder stalls or refuses at its write:
+      // once the calls answered, the call is planned again from what they returned, held under the callee's path as
+      // the results its sites read are, once per such result.
+      const calleeKeyed = decodedCalleeResults(
+        candidate, calleeValues.retvals, (retvals) => calleeKeyCallResults(calleePlan, retvals));
+      if ('unlearned' in calleeKeyed) {
+        unlearnedResult = calleeKeyed.unlearned;
+        settled = true;
+        break;
+      }
+      const keyedResults = [...calleeKeyed.results].filter(([key]) => !prior.reached.has(key));
+      if (keyedResults.length > 0) {
+        return callInShape(options, shape, { ...prior, reached: new Map([...prior.reached, ...keyedResults]) });
+      }
+      // A frame of a deployment the call reaches again ended at a view its plan did not state, and the later frame of
+      // that deployment was planned from the stated one: once a pass learns no more, the call is planned again from
+      // the views learned, as the hop plans its reaches from the views a settle learned.
+      const laterStartViews = viewsLaterFramesStartFrom(calleePlan, calleeValues.views);
+      if (laterFrameStartsElsewhere(calleePlan, calleeValues.views) && (prior.viewPasses ?? 0) < MAXIMUM_VIEW_PASSES
+        && !sameEndViews(laterStartViews, prior.calleeWriteViews)) {
+        return callInShape(options, shape, {
+          ...prior, calleeWriteViews: laterStartViews, viewPasses: (prior.viewPasses ?? 0) + 1,
+        });
+      }
+      // A callee frame whose run made fewer listed sends than its frame lists stops at its count, as the entry does: the
+      // sends past the ones it made are on branches it did not take, and the call is planned again without them.
+      const shortSends = calleeShortSends(calleePlan, calleeValues);
+      if (shortSends.size > 0) {
+        return callInShape(options, {
+          ...shape, calleeListedSends: new Map([...shape.calleeListedSends ?? [], ...shortSends]),
+        }, prior);
+      }
       if (calleeValuesOwed(calleePlan, calleeValues)) {
+        // A callee may owe its value to an amount the entry itself carries into a call before it — a deposit's value,
+        // which the callee that runs after it spends — so the entry's own close is read for that value first.
+        candidate.learnUnstatedViews();
+        const owedReading = readComputedDeclaration({
+          vm: machine, program: candidate.programFor(MASTER_ID), maximumCommitmentBytes,
+        });
+        if (owedReading.ok && learnTypedValue(candidate, owedReading.declared, owedReading.computed)) continue;
         settled = true;
         break;
       }
@@ -2623,7 +3375,53 @@ async function callInShape(
       // answered, so the site's earlier results are decoded from what they returned and the call is planned again
       // from them. Each stop learns a result no earlier one did, so the stops end.
       const stop = calleePlan.blocked;
-      if (stop !== undefined) {
+      // The frames before the refused site have settled. A frame waiting on a view they left is planned again from the
+      // end views they learned, once per new set of views; otherwise the run is judged as it stands, below.
+      if (stop?.reads === 'refusal' && (refusedPlanning !== undefined || stop.refusal !== undefined)) {
+        if (refusedPlanning instanceof WrittenValueAwaited && calleeValues.views.size > 0
+          && !sameEndViews(calleeValues.views, prior.calleeWriteViews)) {
+          return callInShape(options, shape, { ...prior, calleeWriteViews: calleeValues.views });
+        }
+        settled = true;
+        break;
+      }
+      // A stop before a visit whose arguments the body computes in a way no published expression states is read from a
+      // run of the body up to that visit: the site hashes the arguments it computed before it binds its record, so
+      // the run's last digest of the callee's selector that agrees with what the caller's facts state is that
+      // visit's, and the call is planned again from it. Each stop reads a visit no earlier one did, so the stops end.
+      const computed = stop?.reads === 'computed' ? stop.computed : undefined;
+      if (stop !== undefined && computed !== undefined) {
+        const { key, selector, arity, resolved } = computed;
+        if (prior.hashedArguments?.has(key) === true) {
+          throw new FramedCallError(
+            `entry "${functionName}": ${stop.where} was planned from the arguments a run of the body hashed for it, `
+            + 'and the plan still stops there',
+          );
+        }
+        candidate.learnUnstatedViews();
+        // The run is of the frame that makes the call: the entry's own, or the callee frame the stop is inside, whose
+        // body (not a proxy's fallback, which only forwards) computes the arguments.
+        const caller = stop.path === '' ? MASTER_ID
+          : calleePlan.callees.find((callee) => callee.path === stop.path && callee.retvalFrom === undefined)?.master;
+        const runs = caller === undefined
+          ? [] : hashedCallArguments(provider, candidate.programFor(caller), selector, arity);
+        const hashed = runs
+          .filter((values) => resolved.every((known, at) => known === undefined || bytesEqual(known, values[at]!)));
+        const learned = hashed[hashed.length - 1];
+        if (learned !== undefined) {
+          return callInShape(options, shape, {
+            ...prior, hashedArguments: new Map([...prior.hashedArguments ?? [], [key, learned]]),
+          });
+        }
+        // A callee frame whose run hashes nothing for the call meets the refusal its site states, as a refused site is.
+        if (stop.path !== '' && stop.refusal !== undefined) {
+          settled = true;
+          break;
+        }
+        // A run that stops before it reaches the call hashes nothing for it. What it stopped on is learned below as any
+        // run's close is (the value a typed call carries, a view it writes), and a body that refuses there, on an
+        // expired deadline or a path or amount it rejects, names its own reason.
+      } else if (stop !== undefined) {
         const reached = decodedCalleeResults(
           candidate, calleeValues.retvals, (retvals) => reachedCallResults(calleePlan, stop, retvals));
         if ('unlearned' in reached) {
@@ -2640,6 +3438,22 @@ async function callInShape(
           );
         }
         return callInShape(options, shape, { ...prior, reached: new Map([...prior.reached, ...results]) });
+      }
+      // A mapping key the entry reads back through one of its own calls is planned under a placeholder until that
+      // call answered. Once its frame has, the call is planned again from what it returned, once per such result.
+      const keyProducers = producerKeyCallsites(artifact, functionName).filter((id) => !prior.returns.has(id));
+      if (keyProducers.length > 0) {
+        const produced = decodedCalleeResults(candidate, calleeValues.retvals,
+          (retvals) => producedCallResults({ ...calleePlan, conditionalProducers: keyProducers }, retvals));
+        if ('unlearned' in produced) {
+          unlearnedResult = produced.unlearned;
+          settled = true;
+          break;
+        }
+        const learned = [...produced.results].filter(([id]) => keyProducers.includes(id));
+        if (learned.length > 0) {
+          return callInShape(options, shape, { ...prior, returns: new Map([...prior.returns, ...learned]) });
+        }
       }
       // A call the entry guards on an earlier call's result is stated as the results the plan was made from decide
       // it: the first plan holds none and states no such call. Once the callees answered, what they returned decides
@@ -2771,23 +3585,8 @@ async function callInShape(
         if (sharesPayee) calleeValues = NO_CALLEE_VALUES;
         continue;
       }
-      // A typed call's value is compared the same way, the record's eight bytes stating none until learned. The site
-      // is the last payable typed call the run bound, since a call is bound before its site's check runs, and the
-      // callees answer again: a frame computed from the value its call was planned with.
-      const typedAmount = vmNumberToBigInt(reading.declared, { requireMinimalEncoding: false });
-      if (typeof typedAmount === 'bigint' && typedAmount > 0n && reading.declared.length === 8
-        && bytesEqual(reading.computed, recordValueBytes(0n))) {
-        const calls = candidate.blockOf(MASTER_ID).calls;
-        const valued = learnedTypedValues;
-        const bound = payableCalls.filter((at) => !valued.has(at)
-          && (calls[typedCallPosition(at)]?.calleeRef ?? UNFILLED_CALLEE_REF) !== UNFILLED_CALLEE_REF);
-        const site = bound[bound.length - 1];
-        if (site !== undefined) {
-          learnedTypedValues = new Map([...learnedTypedValues, [site, typedAmount]]);
-          calleeValues = NO_CALLEE_VALUES;
-          continue;
-        }
-      }
+      // A typed call's value is compared the same way (`learnTypedValue`).
+      if (learnTypedValue(candidate, reading.declared, reading.computed)) continue;
       const amountPosition = sendAmountSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
       const amount = vmNumberToBigInt(reading.computed);
       if (amountPosition >= 0 && typeof amount === 'bigint') {
@@ -2824,7 +3623,15 @@ async function callInShape(
     // are on branches it did not take, and the plan drops them.
     const made = learnedSends.findIndex((send) => send.lock === undefined || send.amount === undefined);
     const callAmounts = learnedCallAmounts;
-    const unpaid = payees.filter((_payee, index) => callAmounts[index] === undefined);
+    // A paid contract whose own body refused on its own reason was reached, not passed by: the send is a low-level
+    // call that fails there (the EVM's returns `false`, and the payer's own check over it names the reason), so it
+    // stays in the plan for that refusal to be named, as an unconditional send's does.
+    const refusedPayees = payees.some((_payee, index) => callAmounts[index] === undefined)
+      ? new Set(reportCompositionRefusal({ draft: candidate, artifacts: frameArtifacts, vm: machine }).refusals
+        .filter((frame) => frame.reason?.message !== undefined).map((frame) => frame.master))
+      : new Set<string>();
+    const unpaid = payees.filter((_payee, index) => callAmounts[index] === undefined
+      && !refusedPayees.has(receiveMasterId(index)));
     const listedShort = made >= unconditionalSends
       && learnedSends.slice(made).every((send) => send.lock === undefined && send.amount === undefined);
     const payeesShort = unpaid.length > 0 && unpaid.every((payee) => payee.onBranch)
@@ -2924,7 +3731,32 @@ async function callInShape(
     );
   }
 
-  const program = draft.programFor(MASTER_ID);
+  // Once every job is known, the call is planned again with a side-car only for each keccak256 call whose job no other
+  // side-car holds (`keccakJobsToShare`), and that plan is kept when every participant accepts it: a master that reads
+  // its side-car at its own offset alone refuses it, and the call stands as planned. An entry that hashes in a loop
+  // shares the same way: each hash is one call, in the order the body makes them.
+  if (prior.keccakJobs === undefined) {
+    const jobs = keccakJobsToShare(sideCars, draft, MASTER_ID);
+    if (jobs !== undefined) {
+      try {
+        const sharing = await callInShape(options, shape, { ...prior, keccakJobs: jobs });
+        if (sharing.accepted) return sharing;
+      } catch (error) {
+        // A call the shared side-cars cannot be planned for keeps the side-car each call planned. One that sends below
+        // dust sends the same with its own side-cars.
+        if (error instanceof FramedSendBelowDustError || endsPlanSearch(error)) throw error;
+      }
+    }
+  }
+
+  // Each validator's census facet carries what its head's walk computed, then each contract input pads itself to the
+  // budget its own execution spends in this transaction. Every record's first declaration is bound to the commitment
+  // its input spends first: the plan's stated view and the input can come from two reads of the deployment.
+  draft.bindRecordChainStarts();
+  const program = padForBudget(
+    fillCensusCheckpoints(draft.programFor(MASTER_ID), draft.layout.participants), draft.layout.participants, machine,
+    provider.consensusLimits,
+  );
   const transaction = program.transaction;
   if (transaction === undefined) {
     throw new FramedCallError('the composer built no transaction for the call frame');
@@ -2937,15 +3769,21 @@ async function callInShape(
     index, learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index),
     learnedPayees[index]!.sends.map((send) => send.amount),
   ).spent.map((utxo, position) => ({ id: receiveContainerId(index, position), utxo }))));
+  // The containers each paying callee spends, in the place the plan gave them.
+  const calleePayings = calleePayingsOf(calleePlan, calleeFunds, calleeValues, calleeEnteredWith(learnedTypedValues));
+  const calleeSpentFinal = calleePayings.flatMap((calleePaying) => calleePaying.spent
+    .map((utxo, position) => ({ id: calleeContainerInputId(calleePaying.master, position), utxo })));
   const placedInputs = placeUserInputs([
     CALLER_ID,
     ...fillerCoins.map((_utxo, index) => fillerCoinInputId(index)),
     ...rootSpent.map((_utxo, position) => containerInputId(position)),
+    ...calleeSpentFinal.map((spent) => spent.id),
     ...payeeSpentFinal.map((spent) => spent.id),
     ...tokenDeposits.map((_deposit, index) => tokenDepositInputId(index)),
   ]);
   const containerInputs = [
     ...rootSpent.map((utxo, position) => ({ id: containerInputId(position), utxo })),
+    ...calleeSpentFinal,
     ...payeeSpentFinal,
   ].map((spent) => ({ ...spent, index: placedInputs.get(spent.id)! }));
   const tokenContainerInputs = tokenRuns.flatMap((run, index) => run.containers.map((utxo, position) => ({
@@ -2954,10 +3792,10 @@ async function callInShape(
   const rawVerdicts: FramedCallVerdict[] = [
     ...draft.layout.participants, ...tokenContainerInputs, ...containerInputs,
   ].map((placed) => {
-    const state = machine.evaluate({
+    const state = judging.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction,
     });
-    return machine.stateSuccess(state) === true
+    return judging.stateSuccess(state) === true
       ? { id: placed.id, index: placed.index, accepted: true }
       : {
         id: placed.id, index: placed.index, accepted: false,
@@ -2968,13 +3806,46 @@ async function callInShape(
       };
   });
   const accepted = rawVerdicts.every((verdict) => verdict.accepted);
+  // An accepted plan is the execution's own, so a payment it makes below its output's dust threshold is an amount the
+  // body computed, which no plan can change: on a network that enforces dust the call is refused for it here, by the
+  // frame that pays it, before the broadcast's builder refuses the output with no frame to name.
+  if (accepted && (provider.policy?.enforceDust ?? true)) {
+    const short = firstNativePaymentBelowDust(transaction.outputs, draft.layout.participantCount);
+    if (short !== undefined) {
+      throw sendBelowDustRefusal({
+        draft, outputs: transaction.outputs, short, network: provider.network,
+        rootFrame: `${artifact.contractName}.${entry.name}()`,
+        containerOwners: new Map([
+          [categoryId, artifact.contractName],
+          ...(calleePlan?.callees ?? []).map((callee) => [callee.categoryId, callee.artifact.contractName] as const),
+          ...payees.map((payee) => [payee.categoryId, payee.artifact.contractName] as const),
+        ].map(([owned, contract]) => [binToHex(satoshiContainerLockingBytecode(owned)), contract])),
+      });
+    }
+  }
 
   // A refused frame is attributed to the reason its own artifact publishes for the entry it ran, so the objection
   // names the entry's own message rather than the opcode the machine stopped on. A frame with nothing published
   // falls back to its bare objection, which still names where it stopped. A refusal on a participant that is not a
   // frame (the validator, a record) carries no source reason and is left to the bare verdict.
   const report = accepted ? undefined : reportCompositionRefusal({ draft, artifacts: frameArtifacts, vm: machine });
-  const refusal = report !== undefined && report.refusals.length > 0 ? report : undefined;
+  let refusal = report !== undefined && report.refusals.length > 0 ? report : undefined;
+  const namesReason = (frame: RefusedFrame): boolean => frame.reason.message !== undefined
+    || frame.reason.error !== undefined;
+  // A plan stopped before a low-level call the planner found failing: a run that reached the site meets the entry's
+  // own check over the call's success there, which refuses with its message, as the EVM's failed call does.
+  const failedSite = refusedPlanning instanceof FramedPlanningRefusal ? refusedPlanning.failedCallMessage : undefined;
+  const entryStop = refusal?.refusals.find((frame) => frame.master === MASTER_ID);
+  if (failedSite !== undefined && refusal !== undefined && entryStop !== undefined
+    && (refusal.innermost === undefined || !namesReason(refusal.innermost))) {
+    const caught: RefusedFrame = {
+      ...entryStop, objection: `the low-level call it made failed: ${refusedPlanning!.message}`,
+      reason: { message: failedSite },
+    };
+    refusal = {
+      ...refusal, refusals: refusal.refusals.map((frame) => (frame === entryStop ? caught : frame)), innermost: caught,
+    };
+  }
   const reasons = new Map(
     (refusal?.refusals ?? []).map((frame) => [frame.master, describeRefusedFrame(frame)]),
   );
@@ -2985,9 +3856,28 @@ async function callInShape(
   // A call whose execution stops on a contract's own reason reports it, so a result left unlearned, which only a frame
   // past that stop recorded, does not stand in for it; with no such reason the undecodable bytes are what the call
   // cannot get past.
-  const reverted = refusal?.innermost !== undefined && (refusal.innermost.reason.message !== undefined
-    || refusal.innermost.reason.error !== undefined);
+  const reverted = refusal?.innermost !== undefined && namesReason(refusal.innermost);
   if (unlearnedResult !== undefined && !reverted) throw unlearnedResult;
+  // A batch that writes one slot twice was planned with the later write kept, so a body that refuses before the batch
+  // names its own reason; a run refused with none reached that write, which no plan declares, and is refused for it.
+  const repeated = mappingRecords?.repeatedSlots?.[0];
+  if (repeated !== undefined && !accepted && !reverted) throw mappingBatchRepeatsSlot(repeated);
+  // A callee frame's batch keeps a repeated slot the same way, and a run refused with no reason is refused for it.
+  if (calleePlan?.repeatedSlotRefusal !== undefined && !accepted && !reverted) throw calleePlan.repeatedSlotRefusal;
+  // So is one whose frames touch a node in an order the plan does not settle, which a frame that stops first never meets.
+  if (calleePlan?.chainRefusal !== undefined && !accepted && !reverted) throw calleePlan.chainRefusal;
+  // A plan stopped before a site the planner refused: a run that reached the site meets the refusal there.
+  if (refusedPlanning !== undefined && !accepted && !reverted) {
+    throw refusedPlanning instanceof WrittenValueAwaited
+      ? new FramedCallError(`entry "${functionName}": ${refusedPlanning.message}`) : refusedPlanning;
+  }
+  // So does one stopped inside a callee frame, before a site of that frame's own the planner refused.
+  const calleeSiteRefusal = calleePlan?.blocked?.reads === 'refusal'
+    || (calleePlan?.blocked?.reads === 'computed' && calleePlan.blocked.path !== '')
+    ? calleePlan.blocked.refusal : undefined;
+  if (calleeSiteRefusal !== undefined && !accepted && !reverted) {
+    throw new FramedPlanningRefusal(`entry "${functionName}": ${calleeSiteRefusal.message}`);
+  }
 
   // The entry's own answer is the bytes the derived call records in the frame's `retval`, decoded through the same
   // shipped decoder the read path uses. A call the entry refused never reached its return, so no value was recorded,
@@ -3017,7 +3907,7 @@ async function callInShape(
     [MASTER_ID, master],
     [VALIDATOR_ID, validator],
     ...declared.map((record) => [record.id, record.utxo] as const),
-    ...(mappingRecords?.spentUtxos ?? []),
+    ...[...(mappingRecords?.spentUtxos ?? [])].map(([id, utxo]) => [sharedNodeIds.get(id) ?? id, utxo] as const),
     ...Object.entries(sideCars.utxos),
     ...(blockOracle === undefined ? [] : [[BLOCK_ORACLE_INPUT, blockOracle.utxo] as const]),
     ...(calleePlan?.utxos ?? []),
@@ -3039,7 +3929,9 @@ async function callInShape(
     program,
     draft,
     liveUtxos,
+    poolOrder,
     callerIndex: placedInputs.get(CALLER_ID)!,
+    value: options.value ?? 0n,
     fillerCoins: fillerCoins.map((utxo, index) => ({ utxo, index: placedInputs.get(fillerCoinInputId(index))! })),
     containerInputs,
     tokenContainerInputs,
@@ -3061,7 +3953,133 @@ async function callInShape(
     value: values[0] ?? 0n,
     ...(refusal === undefined ? {} : { refusal }),
     ...(broadcast === undefined ? {} : { broadcast }),
+    ...(mappingRecords?.undecidedSlots === undefined ? {} : { undecidedSlots: mappingRecords.undecidedSlots }),
+    // A value the body's own close handed back is a fact about the execution, so a plan that assumes an undecided
+    // write or call runs again from the values learned here.
+    plannedFrom: carried(),
+    ...(() => {
+      const calleeUndecidedSlots = new Map((calleePlan?.callees ?? []).flatMap((callee) => {
+        const slots = callee.entryWrites?.undecidedSlots ?? [];
+        return slots.length === 0 ? [] : [[callee.master, slots] as const];
+      }));
+      return calleeUndecidedSlots.size === 0 ? {} : { calleeUndecidedSlots };
+    })(),
   };
+}
+
+/** The most guarded writes whose activations a call searches, two ways each. */
+const MAXIMUM_ASSUMED_WRITES = 4;
+
+/** The most conditional calls no fact of the caller decides that a call searches, two ways each. */
+const MAXIMUM_ASSUMED_CALLS = 4;
+
+/**
+ * A call planned with each way its undecided conditional calls may go, until the machine accepts one.
+ *
+ * A conditional call no fact of the caller decides (a guard the artifact does not state, or one over a value the
+ * evaluator cannot compute) is planned one way, and the body is the authority on which it was: a frame binds each call
+ * record by the calls it has made, so a plan that places a call the execution skips, or skips one it makes, binds
+ * every later record a place off, which the frame's call check refuses with no reason of the source's. Such a plan is
+ * planned again with the calls it met assumed one way or the other, the earliest met the other way first and each one
+ * before it the way it was planned, so every assignment is planned once and a site only an assumption reaches is
+ * searched below it. Each plan learns its results afresh: what one learned may be another site's, its record bound a
+ * place off. The first accepted plan is the call, and so is the first whose refusal carries the body's own reason,
+ * since a frame refuses that way only past the checks of every record it bound. With neither, the first plan's
+ * refusal is.
+ */
+async function callAssumingCalls(options: FramedCallOptions, shape: SendShape): Promise<FramedCallResult> {
+  let failure: unknown;
+  let fallback: FramedCallResult | undefined;
+  const search = async (assumed: ReadonlyMap<string, boolean>): Promise<FramedCallResult | undefined> => {
+    // Each site the plan met unassumed, in the order met, and the way it was planned.
+    const met = new Map<string, boolean>();
+    let result: FramedCallResult | undefined;
+    try {
+      result = await callAssumingActivations({
+        ...options,
+        ...(assumed.size === 0 ? {} : { assumedCalls: assumed }),
+        noteUndecidedCall: (key, taken) => {
+          if (!met.has(key)) met.set(key, taken);
+        },
+      }, shape);
+    } catch (error) {
+      // A plan the machine accepted that sends below dust is the call's: another assumption would plan calls the
+      // execution does not make, and its refusal would stand in for this one.
+      if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment
+        || error instanceof FramedSendBelowDustError || endsPlanSearch(error)) throw error;
+      if (assumed.size === 0 && met.size === 0) throw error;
+      if (assumed.size === 0) failure = error;
+    }
+    if (result !== undefined) {
+      if (result.accepted || result.refusal?.innermost?.reason.message !== undefined) return result;
+      if (assumed.size === 0) fallback = result;
+    }
+    const fixed = new Map(assumed);
+    for (const [key, planned] of met) {
+      if (assumed.has(key)) continue;
+      if (fixed.size >= MAXIMUM_ASSUMED_CALLS) break;
+      const found = await search(new Map([...fixed, [key, !planned]]));
+      if (found !== undefined) return found;
+      fixed.set(key, planned);
+    }
+    return undefined;
+  };
+  const found = await search(new Map());
+  if (found !== undefined) return found;
+  if (fallback !== undefined) return fallback;
+  throw failure;
+}
+
+/**
+ * A call planned with each way its undecided guarded writes may run, until the machine accepts one.
+ *
+ * A write a branch guards under a condition the frame's facts do not decide is planned as written where its node
+ * exists and as skipped where it does not; the body is the authority on which it was. A plan the machine refuses is
+ * planned again with the writes assumed each way, the fewest written first. The first accepted plan is the call; with
+ * none accepted, the refusal that carries the body's own reason is, since a wrong assumption stops at the write's
+ * structural check rather than at a check of the source's.
+ */
+async function callAssumingActivations(options: FramedCallOptions, shape: SendShape): Promise<FramedCallResult> {
+  const first = await callInShape(options, shape);
+  // Each undecided write, the root's under the master `''` and each callee's under its own.
+  const bits = [
+    ...(first.undecidedSlots ?? []).map((slot) => ({ master: '', slot })),
+    ...[...(first.calleeUndecidedSlots ?? [])].flatMap(([master, slots]) => slots.map((slot) => ({ master, slot }))),
+  ];
+  if (first.accepted || bits.length === 0 || bits.length > MAXIMUM_ASSUMED_WRITES) return first;
+  const masks = Array.from({ length: 1 << bits.length }, (_unused, mask) => mask)
+    .sort((left, right) => popcount(left) - popcount(right) || left - right);
+  let reasoned = first.refusal?.innermost?.reason.message === undefined ? undefined : first;
+  for (const mask of masks) {
+    const byMaster = new Map<string, Map<number, boolean>>();
+    bits.forEach(({ master, slot }, bit) => {
+      const assumed = byMaster.get(master) ?? new Map<number, boolean>();
+      assumed.set(slot, (mask & (1 << bit)) !== 0);
+      byMaster.set(master, assumed);
+    });
+    const assumedActivations = byMaster.get('') ?? new Map<number, boolean>();
+    byMaster.delete('');
+    let result: FramedCallResult;
+    try {
+      result = await callInShape({
+        ...options, assumedActivations, ...(byMaster.size === 0 ? {} : { calleeAssumedActivations: byMaster }),
+      }, shape);
+    } catch (error) {
+      if (error instanceof TokenRunShortfall || error instanceof TokenNftAssignment
+        || error instanceof FramedSendBelowDustError || endsPlanSearch(error)) throw error;
+      continue;
+    }
+    if (result.accepted) return result;
+    if (reasoned === undefined && result.refusal?.innermost?.reason.message !== undefined) reasoned = result;
+  }
+  return reasoned ?? first;
+}
+
+/** The number of set bits of a small mask. */
+function popcount(mask: number): number {
+  let count = 0;
+  for (let rest = mask; rest > 0; rest >>= 1) count += rest & 1;
+  return count;
 }
 
 /**
@@ -3117,8 +4135,12 @@ interface BroadcastCallOptions {
   readonly draft: CompositionDraft;
   /** The live UTXO each participant sits on, read back by category. */
   readonly liveUtxos: ReadonlyMap<string, Utxo>;
+  /** The order the call takes pools in, which picks the UTXO of each facet. */
+  readonly poolOrder: PoolOrder;
   /** The caller's coin's index among the user inputs. */
   readonly callerIndex: number;
+  /** The value the call carries into the root's containers, which the caller's coins pay. */
+  readonly value: bigint;
   /** More coins at the caller's lock that fill the indices between token runs, signed as the caller's coin is. */
   readonly fillerCoins: readonly { readonly index: number; readonly utxo: Utxo }[];
   /** The containers the call's sends are paid from. */
@@ -3161,13 +4183,10 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   const consumesRecord = options.callerUtxo.token === undefined && draft.layout.participants.some((placed) =>
     program.sourceOutputs[placed.index]?.token?.nft !== undefined
     && program.transaction?.outputs[placed.index]?.token === undefined);
-  const builder = new TransactionBuilder({
-    provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
-  });
-  // The derived locktime is what every frame that reads `block.timestamp` was evaluated against, so the broadcast
-  // carries that same one.
-  builder.setLocktime(program.transaction?.locktime ?? 0);
+  type Builder = InstanceType<typeof TransactionBuilder>;
   const derivedInputs = program.transaction?.inputs ?? [];
+  // Each participant's live UTXO, resolved once: the broadcast can be laid out more than once.
+  const participantInputs: { readonly index: number; readonly utxo: Utxo; readonly lockingBytecode: Uint8Array }[] = [];
   for (const placed of draft.layout.participants) {
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = derivedInputs[placed.index]?.unlockingBytecode;
@@ -3176,7 +4195,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     }
     // A facet holds no token and pins no category, so any live UTXO at its lock serves the input.
     const facetUtxos = placed.kind === 'facet'
-      ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
+      ? facetPool(await provider.getUtxosForLockingBytecode(source.lockingBytecode), options.poolOrder)
       : [];
     const real = options.liveUtxos.get(placed.id)
       ?? facetUtxos.find((utxo) => utxo.satoshis === source.valueSatoshis)
@@ -3216,11 +4235,23 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     }
     const token = derivedToken === undefined ? {} : { token: derivedToken };
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
-    const sequence = derivedInputs[placed.index]?.sequenceNumber;
-    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode),
-      sequence === undefined ? undefined : { sequence });
+    participantInputs.push({ index: placed.index, utxo, lockingBytecode: source.lockingBytecode });
   }
-  const addContainer = ({ index, utxo }: { readonly index: number; readonly utxo: Utxo }): void => {
+  // One coin is one input. Two participants the plan names apart but that resolve to one live UTXO are one node or
+  // record placed twice, which the derivation evaluated as two inputs; the broadcast refuses it by naming both.
+  const spentBy = new Map<string, string>();
+  for (const { index, utxo } of participantInputs) {
+    const id = draft.layout.participants.find((placed) => placed.index === index)?.id ?? `input ${index}`;
+    const outpoint = `${utxo.txid}:${utxo.vout}`;
+    const earlier = spentBy.get(outpoint);
+    if (earlier !== undefined) {
+      throw new FramedCallError(
+        `the call places one UTXO (${outpoint}) as both "${earlier}" and "${id}", so its transaction would spend it twice`,
+      );
+    }
+    spentBy.set(outpoint, id);
+  }
+  const addContainer = (builder: Builder, { index, utxo }: { readonly index: number; readonly utxo: Utxo }): void => {
     const source = program.sourceOutputs[index];
     const unlockingBytecode = derivedInputs[index]?.unlockingBytecode;
     if (source === undefined || unlockingBytecode === undefined) {
@@ -3231,37 +4262,85 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   // The user inputs, in the order the composer placed them. The caller's own coin funds the call and is the frame's
   // root caller; its signature is a real one over the real transaction, which the root's `msg.sender` binding and the
   // provider both check.
-  const userInputs: { readonly index: number; readonly add: () => void }[] = [
-    { index: options.callerIndex, add: (): void => { builder.addInput(options.callerUtxo, options.funder); } },
+  const userInputs: { readonly index: number; readonly add: (builder: Builder) => void }[] = [
+    { index: options.callerIndex, add: (builder): void => { builder.addInput(options.callerUtxo, options.funder); } },
     ...options.fillerCoins.map(({ index, utxo }) => ({
-      index, add: (): void => { builder.addInput(utxo, options.funder); },
+      index, add: (builder: Builder): void => { builder.addInput(utxo, options.funder); },
     })),
     ...[...options.tokenContainerInputs, ...options.containerInputs].map((input) => ({
-      index: input.index, add: (): void => addContainer(input),
+      index: input.index, add: (builder: Builder): void => addContainer(builder, input),
     })),
     ...options.tokenDepositInputs.map(({ index, utxo, unlocker }) => ({
-      index, add: (): void => { builder.addInput(utxo, unlocker); },
+      index, add: (builder: Builder): void => { builder.addInput(utxo, unlocker); },
     })),
   ];
-  for (const input of userInputs.sort((left, right) => left.index - right.index)) input.add();
+  userInputs.sort((left, right) => left.index - right.index);
 
   // Every participant recreates in place, so anything the composer placed after them is trailing. The caller's
-  // recreated output is replaced by its change below, which is the only non-participant the plan has.
+  // recreated output is replaced by its change below, which is the only non-participant the plan has. That makes the
+  // transaction's widths its own, so its census facets lead with checkpoints taken over it.
   const settled = draft.layout.participantCount + draft.trailingOutputs.length;
-  for (const output of (program.transaction?.outputs ?? []).slice(0, settled)) {
-    builder.addOutput(libauthOutputToSolidCashOutput(output));
-  }
-  builder.addBchChangeOutputIfNeeded({
-    to: options.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
+  const { builder, transaction: judged, change } = withRestatedCensus(draft.layout.participants, (restated) => {
+    const laid = new TransactionBuilder({
+      provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
+    });
+    // The derived locktime is what every frame that reads `block.timestamp` was evaluated against, so the broadcast
+    // carries that same one.
+    laid.setLocktime(program.transaction?.locktime ?? 0);
+    for (const { index, utxo, lockingBytecode } of participantInputs) {
+      const sequence = derivedInputs[index]?.sequenceNumber;
+      laid.addInput(utxo, rawUnlocker(lockingBytecode, restated.get(index) ?? derivedInputs[index]!.unlockingBytecode),
+        sequence === undefined ? undefined : { sequence });
+    }
+    for (const input of userInputs) input.add(laid);
+    for (const output of (program.transaction?.outputs ?? []).slice(0, settled)) {
+      laid.addOutput(libauthOutputToSolidCashOutput(output));
+    }
+    const outputsBeforeChange = laid.outputs.length;
+    laid.addBchChangeOutputIfNeeded({
+      to: options.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
+    });
+    return {
+      builder: laid,
+      change: laid.outputs.length > outputsBeforeChange ? laid.outputs[laid.outputs.length - 1]!.amount : 0n,
+      transaction: laid.buildLibauthTransaction(),
+      sourceOutputs: generateLibauthSourceOutputs(laid.inputs),
+    };
   });
+  // What the caller's own coins paid beyond the value the call carries: the fee and the dust of every output the call
+  // creates. The receipt states it as gas at one satoshi a unit, so `gasUsed * gasPrice` is what the call itself cost
+  // the caller, and a payment a contract makes back to the caller is no part of it.
+  const funding = options.fillerCoins.reduce((sum, { utxo }) => sum + utxo.satoshis, options.callerUtxo.satoshis);
+  const gasUsed = funding - change - options.value;
 
-  const transaction = builder.buildLibauthTransaction();
   const { hash256 } = await import('@bitauth/libauth/build/lib/crypto/combinations.js');
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  // A caller whose wallet holds its key signs its coins now, over the transaction the call was judged as with its
+  // placeholder (../../external-signing.ts); the broadcast carries the wallet's signatures.
+  const { applyExternalSignatures } = await import('../../external-signing.js');
+  const transaction = await applyExternalSignatures(
+    builder.inputs.map((input) => input.unlocker), judged, generateLibauthSourceOutputs(builder.inputs),
+  );
 
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
   traceBroadcast(builder.inputs, builder.outputs, transaction.inputs, rawBytes.length);
+  if (surveyOn()) {
+    // The survey names the entry and the frames the call runs, and what each input is.
+    const frameOf = (master: string): string => draft.runs.find((run) => run.master === master)?.functionName ?? master;
+    const roles = transaction.inputs.map(() => 'user');
+    for (const placed of draft.layout.participants) {
+      roles[placed.index] = placed.kind === 'master' ? `master ${frameOf(placed.id)}` : `${placed.kind} ${placed.contract}`;
+    }
+    roles[options.callerIndex] = 'caller';
+    for (const { index } of options.fillerCoins) roles[index] = 'filler';
+    for (const { index } of options.containerInputs) roles[index] = 'container';
+    for (const { index } of options.tokenContainerInputs) roles[index] = 'token container';
+    for (const { index } of options.tokenDepositInputs) roles[index] = 'token deposit';
+    const frames = draft.layout.participants.filter((placed) => placed.kind === 'master')
+      .map((placed) => frameOf(placed.id));
+    labelNextBroadcast(frames.join(' > '), roles);
+  }
   const submitPrepared = provider.sendPreparedTransaction?.bind(provider);
   const txid = submitPrepared !== undefined
     ? await submitPrepared({ rawHex, rawBytes, transaction })
@@ -3273,5 +4352,5 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
     );
   }
   const { attachWait } = await import('../../wait.js');
-  return attachWait({ ...transaction, txid, hex: rawHex } as TransactionDetails, provider);
+  return attachWait({ ...transaction, txid, hex: rawHex, gasUsed, gasPrice: 1n } as TransactionDetails, provider);
 }

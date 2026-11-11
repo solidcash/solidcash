@@ -7,9 +7,9 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
-  isOpReturnLockingBytecode,
+  isFillerLockingBytecode,
   isPredOutReusableHole,
-  redirectViewTailOffOpReturn,
+  redirectViewTailOffFiller,
 } from './mutable-output-reassert.js';
 import { packTailReturnPlacements, writerReturnSlotReservations } from './physical-return-layout.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
@@ -167,10 +167,10 @@ export function placeTailReturnAfterSwappedTokenBlock(
       const coordinate = parseExternalCallReturnCoordinate(event.identity);
       const groupIdx = coordinate?.groupIndex ?? -1;
       const group = groupIdx >= 0 ? host.externalCallUtxoGroups[groupIdx] : undefined;
-      // OP_RETURN is never a data carrier. Prefer the live separator index;
+      // A filler is never a data carrier. Prefer the live separator index;
       // fall back to the reserved value-chunk suffix slot when it is not materialized yet.
       const liveOpReturn = builder.outputs.findIndex((out) => (
-        isOpReturnLockingBytecode(
+        isFillerLockingBytecode(
           out?.to instanceof Uint8Array ? out.to
             : typeof out?.to === 'string' ? out.to : undefined,
         )
@@ -182,7 +182,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
         : (fallbackSuffixChunkCount > 0
           ? builder.outputs.length - fallbackSuffixChunkCount - 1
           : undefined);
-      let redirected = redirectViewTailOffOpReturn({
+      let redirected = redirectViewTailOffFiller({
         placedIndex,
         plannedIndex: group?.plannedReturnOutputIndex,
         returnIndex: group?.returnOutputIndex,
@@ -198,8 +198,8 @@ export function placeTailReturnAfterSwappedTokenBlock(
         redirected = nextIndex;
       }
       placedIndex = redirected;
-      // Hard refuse: never write authenticated view data onto OP_RETURN.
-      if (isOpReturnLockingBytecode(
+      // Hard refuse: never write authenticated view data onto a filler.
+      if (isFillerLockingBytecode(
         builder.outputs[placedIndex]?.to instanceof Uint8Array
           ? builder.outputs[placedIndex]!.to as Uint8Array
           : typeof builder.outputs[placedIndex]?.to === 'string'
@@ -213,8 +213,13 @@ export function placeTailReturnAfterSwappedTokenBlock(
         placedIndex = nextIndex;
       }
       const rawCommitment = binToHex(event.commitment);
-      const commitment = rawCommitment === '' ? '0101'
-        : returnEventNftCommitment(event.commitment, host.callRecordDigest?.(event.identity));
+      // A direct call's carrier is its call record, and a raw call's *empty* returndata is still a record:
+      // `<31-byte digest> || form || <empty field>`. The compiler always splits the 31-byte digest (it only skips
+      // the comparison for a raw selector), so replacing an empty raw with the legacy `0101` sentinel made it
+      // split a 2-byte value. Keep the sentinel only where no record digest pins the call.
+      const recordDigest = host.callRecordDigest?.(event.identity);
+      const commitment = rawCommitment === '' && recordDigest === undefined ? '0101'
+        : returnEventNftCommitment(event.commitment, recordDigest);
       const output: Output = {
         to: Uint8Array.of(0x51),
         amount: 800n,
@@ -306,7 +311,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
 }
 
 /**
- * OP_RETURN is never a data carrier. Ensure each authenticated pending view
- * return sits on a non-OP_RETURN unlock pad (stamp zero pads; evacuate if the
+ * A filler is never a data carrier. Ensure each authenticated pending view
+ * return sits on a non-filler unlock pad (stamp zero pads; evacuate if the
  * bound index was turned into the separator).
  */

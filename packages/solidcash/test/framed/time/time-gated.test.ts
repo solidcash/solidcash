@@ -71,7 +71,7 @@ function freshClock(): MockNetworkProvider {
 
 /** The caller reaches the callee by address; both bodies gate on the same absolute time. */
 function sourceFor(gate: number): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface ICallee { function ping(); }'
     + ` contract Callee { function ping() { require(tx.time >= ${gate}); } }`
     + ' contract Caller {'
@@ -153,8 +153,8 @@ function buildComposition(gate: number, locktime: number): {
       { contract: 'Caller', masters: [CALLER_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
       { contract: 'Callee', masters: [CALLEE_MASTER], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: USER_ID, index: 4 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: USER_ID, index: 5 }],
     masters: [callerMaster, calleeMaster],
     locktime,
     sequenceNumber: NON_FINAL_SEQUENCE,
@@ -210,8 +210,8 @@ function verdict(vm: Vm, transaction: VmTransaction, sourceOutputs: VmSourceOutp
 }
 
 /** The composition's contract inputs: the caller, the validator and the callee. */
-// The caller, the validator, the facet it binds and the callee.
-const CONTRACT_INPUTS = [0, 1, 2, 3];
+// The caller, the validator, the two facets it binds and the callee.
+const CONTRACT_INPUTS = [0, 1, 2, 3, 4];
 
 describe('a framed composition whose rule is strictly after the payment block', () => {
   it('advances the mock clock strictly, so a later block time exists', () => {
@@ -292,8 +292,8 @@ describe('a framed composition whose rule is strictly after the payment block', 
     early.locktime = paymentTime;
 
     const caller = verdict(vm, early, sourceOutputs, 0);
-    // The facet the validator binds sits at 2, so the callee is at 3.
-    const callee = verdict(vm, early, sourceOutputs, 3);
+    // The two facets the validator binds sit at 2 and 3, so the callee is at 4.
+    const callee = verdict(vm, early, sourceOutputs, 4);
     expect(caller.accepted).toBe(false);
     expect(callee.accepted).toBe(false);
     expect(caller.objection).toContain('OP_CHECKLOCKTIMEVERIFY');
@@ -333,7 +333,7 @@ describe('a framed composition whose rule is strictly after the payment block', 
     const clock = freshClock();
     const gate = clock.getBlockTime() + 1;
     const artifact = compileStringMulti(
-      'pragma solidcash ^0.14.0;'
+      'pragma solidcash ^0.50.0;'
       + ' contract Vault {'
       + '   int public total;'
       + `   constructor() { require(tx.time >= ${gate}); this.total = 1; }`

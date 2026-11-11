@@ -547,7 +547,7 @@ export function registerCreateBuilderBuilderState(
   // Runtime-loop groups normally land as reverse-suffix late outputs (covenant addresses group i as
   // outputCount - chunksAlreadyVerified - groupSize). Under a composed balanced trailing band the same
   // chunks must occupy in-band trailing slots like fixed-key valueChunkMints: appending past blockSize
-  // overflows the layout (`participant N built X/Y slots`) and the OP_RETURN late-suffix anchor adds another.
+  // overflows the layout (`participant N built X/Y slots`) and the filler late-suffix anchor adds another.
   const composedTrailingLoopChunks = (effectiveBlockLayout?.slots ?? [])
     .some((slot: any) => slot.kind === 'trailing')
     && builder.getComposedBlockBase() !== 0;
@@ -571,9 +571,10 @@ export function registerCreateBuilderBuilderState(
   }
 
   // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.
+  // Any read, n = 0 included, needs this height locktime: the provider's time locktime fails the CLTV.
   // Otherwise ported `block.timestamp` is nLocktime: stamp the provider tip so publish writes a real
   // job.timestamp and later require(tx.time >= posted + 24h) can pass after evm_increaseTime.
-  if (maxBhLocktime > 0) builder.setLocktime(maxBhLocktime);
+  if (maxBhLocktime >= 0) builder.setLocktime(maxBhLocktime);
   else {
     const unixLocktime = providerUnixLocktime(host.inner.provider as { getBlockTime?: () => number });
     if (unixLocktime !== undefined) builder.setLocktime(unixLocktime);

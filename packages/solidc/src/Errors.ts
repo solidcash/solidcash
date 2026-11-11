@@ -69,6 +69,7 @@ export type SolidcDiagnosticCode =
   | 'CIRCULAR_CONTRACT_REFERENCE'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
+  | 'SPLIT_HELPER_CUT_DIVERGES'
   | 'SPLIT_ROOT_CAPACITY'
   | 'SPLIT_LAYOUT_CONFLICT'
   | 'SPLIT_FUNC_REQUIRES_FRAMED'
@@ -454,6 +455,23 @@ export class ConditionalDeployError extends SolidCashError {
       + 'is not yet emitted. The SDK auto-derivation already supplies the runtime genesis outputs, so this is a '
       + 'codegen gap, not a BCH limitation. Workaround: hoist a single deploy before the branch',
     );
+  }
+}
+
+export class UnfoldableChildConstructorError extends SolidCashError {
+  constructor(public node: InstantiationNode, contractName: string) {
+    super(node,
+      `Cannot deploy '${contractName}' with new: its constructor does not fold into the genesis the deploying `
+      + 'contract verifies. The child would be created with type defaults in the fields that constructor sets. '
+      + 'Only straight-line local and state assignments, branches over them and requires fold; a loop or a call '
+      + 'to a function that is not inlined does not. Assign those fields from constants or constructor '
+      + 'arguments, for example a precomputed constant in place of a value a loop builds');
+  }
+}
+
+export class DeployCodeError extends SolidCashError {
+  constructor(public node: InstantiationNode, message: string) {
+    super(node, message);
   }
 }
 
@@ -1283,6 +1301,19 @@ export class TransferArgumentTypeError extends TypeError {
   }
 }
 
+/** A `this.payMinerFee` the compiler cannot honour, named by what is wrong with it. */
+export class MinerFeeStatementError extends SolidCashError {
+  constructor(node: Node, reason: string) {
+    super(node, `this.payMinerFee() ${reason}`);
+  }
+}
+
+export class SingleContainersError extends SolidCashError {
+  constructor(node: Node, pragma: 'satoshicontainer' | 'tokencontainer', reason: string) {
+    super(node, `pragma ${pragma} single ${reason}`);
+  }
+}
+
 export class TokenContainerKeyMustBeParameterError extends SolidCashError {
   constructor(node: Node) {
     super(node, 'Token container key for \'this.tokens\' must be a function parameter, the contract\'s own category, '
@@ -1939,6 +1970,17 @@ export class DeployThenCallError extends SolidCashError {
   }
 }
 
+/**
+ * A direct creator folds the genesis of a child it creates (its constructor, state-variable initializers included,
+ * and a call made on it in the creating transaction) into its own check, and refuses by name what that fold cannot
+ * express rather than drop it.
+ */
+export class ChildGenesisFoldError extends SolidCashError {
+  constructor(node: Node, childName: string, detail: string) {
+    super(node, `A direct creator folds the genesis of the "${childName}" it creates, and ${detail}`);
+  }
+}
+
 export class UsingForUndefinedLibraryError extends SolidCashError {
   constructor(node: Node, libraryName: string) {
     super(node, `Library '${libraryName}' referenced in 'using for' directive is not defined or imported`);
@@ -2056,6 +2098,21 @@ export class UnboundReturnCallError extends SolidCashError {
           + 'or deploy), or drop the result and make the call a void tail call.'
         : 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
           + 'and make the call a void tail call.'),
+    );
+  }
+}
+
+/**
+ * A returning direct call reads a record bound to the arguments it passes (call records, D50), so an argument the
+ * source leaves out has nothing to bind. Only a signature may be absent: it is no argument of the digest.
+ */
+export class OmittedCallArgumentError extends SolidCashError {
+  constructor(node: Node, edge: string, passed: number, declared: number) {
+    super(
+      node,
+      `The external call '${edge}' passes ${passed} of the ${declared} arguments its interface declares. A returning `
+      + 'call reads a record bound to the arguments it passes, so every declared argument but a signature must be '
+      + 'spelled at the call.',
     );
   }
 }

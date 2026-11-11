@@ -7,6 +7,7 @@ import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript } from '../utils.js';
 import {
   findDeploymentByAddressValue,
+  listDeployments,
 } from './deployment-registry.js';
 import { logicalIdentityAddressVariants } from './logical-identity.js';
 
@@ -63,6 +64,11 @@ export function addressMappingKeyCandidates(
         if (deployed.address) add(addressToLockScript(deployed.address));
       } catch { /* */ }
     }
+  }
+  if ((globalThis as any).process?.env?.DEBUG_VMAP_SLOT) {
+    console.error('ADDR_KEY_CANDIDATES', String(addressValue),
+      keys.map((k) => (typeof k === 'string' ? k : `b${k.length}:${Array.from(k).map((b) => b.toString(16).padStart(2, '0')).join('')}`)),
+      'deployments', (listDeployments(host.provider) as any[]).map((d) => [d.contractName, d.address, d.lockingBytecode]));
   }
   return keys;
 }

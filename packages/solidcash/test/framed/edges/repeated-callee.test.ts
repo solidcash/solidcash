@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   FrameKind,
-  asmToScript,
   buildPushdataCommitment,
   encodeIntegerValue,
-  scriptToBytecode,
   type RecordEntry,
 } from '@solidcash/utils';
 import {
@@ -17,7 +15,6 @@ import {
   EMPTY, compileAndDeploy, hexOf, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, validatorFor, USER_LOCK,
 } from '../shapes/harness.js';
-import { FRAMED_MASTER_PADDING_BYTES } from '../../../../solidc/src/framed/master/master-program.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { layoutWithFacets } from '../shapes/harness.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
@@ -55,7 +52,7 @@ const RECORD_LOCK = stateRecordLockingBytecode(hexOf(LOG_CATEGORY));
 
 /** The source, with the number of turns the loop makes written as its bound. */
 function source(trips: number): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface ILog { function append(int item); }'
     + ' contract Log {'
     + '   int public total;'
@@ -96,11 +93,19 @@ function build(turns: number, sourceTurns: number = turns): Run {
   const log = contracts.Log!;
   const validator = validatorFor(HUB_CATEGORY);
 
-  // The layout places the hub's master and its validator, then one master per turn of the loop, then the record,
-  // then the user's signed input.
-  // The hub's master, its validator, the facet it binds, then one master per turn, then the record.
-  const recordIndex = 3 + turns;
-  const userIndex = recordIndex + 1;
+  const blocks = [
+    { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+    {
+      contract: 'Log',
+      masters: Array.from({ length: turns }, (_unused, index) => `log-${index + 1}`),
+      state: [RECORD_ID],
+    },
+  ];
+  // The layout places the hub's master, its validator and the two facets it binds, then one master per turn of the
+  // loop, then the record, then the user's signed input.
+  const layout = layoutWithFacets(blocks);
+  const recordIndex = participant(layout, RECORD_ID).index;
+  const userIndex = layout.participantCount;
   const recordOf = (total: bigint): Uint8Array =>
     new Uint8Array(Buffer.from(buildPushdataCommitment(artifacts.Log!.stateLayout!, { total }, 0), 'hex'));
 
@@ -147,17 +152,10 @@ function build(turns: number, sourceTurns: number = turns): Run {
     segments: [[kept(recordIndex, recordOf(ITEM * BigInt(turn - 1)), recordOf(ITEM * BigInt(turn)))]],
   });
 
-  const blocks = [
-    { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
-    {
-      contract: 'Log',
-      masters: Array.from({ length: turns }, (_unused, index) => `log-${index + 1}`),
-      state: [RECORD_ID],
-    },
-  ];
-  // Every turn rewrites the log's record, and the covenant's write path names one writer: the hub's master and
-  // validator precede the log's masters, so the first log master is the index the spend is authorized by.
-  const masterIndex = participant(layoutWithFacets(blocks), 'log-1').index;
+  // Every turn rewrites the log's record, and the covenant's write path names one writer: the hub's master, its
+  // validator and the facets precede the log's masters, so the first log master is the index the spend is
+  // authorized by.
+  const masterIndex = participant(layout, 'log-1').index;
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: [{ id: USER_ID, index: userIndex }],
@@ -367,9 +365,9 @@ describe('one entry that calls one callee from a loop', () => {
   it('settles three turns: the caller\'s own input pays for its own execution', () => {
     // The machine grants an input's execution 800 operation-cost units per byte of its unlocking bytecode, and the
     // caller's program makes one site check per turn — so the third turn's work costs more than the bytes its
-    // program alone pays for. The master program carries a trailing padding block for exactly that: it lengthens
-    // the bytecode the budget is measured over, so the same three turns settle where they previously ran out. The
-    // measured margin is asserted from the run rather than from a constant.
+    // program alone pays for. The program carries no padding of its own: its block ends with a padding field, which
+    // a builder grows to what the execution spends (`padForBudget`), so the same three turns settle where they once
+    // ran out. The composition here is decided on the relaxed machine, so what it asserts is that the three settle.
     const run = build(3);
     const { draft, completed } = derive(run);
 
@@ -379,10 +377,6 @@ describe('one entry that calls one callee from a loop', () => {
     }
     expect(verdictAt(draft, VALIDATOR_ID)).toStrictEqual({ accepted: true });
     expect(verdictAt(draft, RECORD_ID)).toStrictEqual({ accepted: true });
-    // The caller's own program is longer than one that carries no padding by the block its input is paid for.
-    const hubArtifact = run.artifacts.Hub!;
-    const program = scriptToBytecode(asmToScript(hubArtifact.bytecode));
-    expect(program.length).toBeGreaterThan(FRAMED_MASTER_PADDING_BYTES);
   });
 });
 
@@ -401,7 +395,9 @@ describe('the tables and the layout the shape publishes', () => {
   it('places one master per turn between the caller and its record, and chains that record', () => {
     const { run, derived: { draft } } = derivedTwoTurns();
     expect(draft.layout.participants.map((placed) => `${placed.id}@${placed.index}`))
-      .toStrictEqual(['hub-1@0', 'validator@1', 'validator/1@2', 'log-1@3', 'log-2@4', 'record-log@5']);
+      .toStrictEqual([
+        'hub-1@0', 'validator@1', 'validator/1@2', 'validator/2@3', 'log-1@4', 'log-2@5', 'record-log@6',
+      ]);
     expect(draft.blockOf('log-1').segments.map((segment) => segment.map((entry) => [entry.in, entry.out])))
       .toStrictEqual([[[run.recordIndex, run.recordIndex]]]);
     // The record's written commitment is the last declaration any frame made, which is the second turn's.

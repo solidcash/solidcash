@@ -10,6 +10,7 @@ import { addressToLockScript, randomUtxo } from '../utils.js';
 const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 import type NetworkProvider from './NetworkProvider.js';
 import type { ConsensusLimits, LedgerOutput, NetworkPolicy, PreparedTransaction } from './NetworkProvider.js';
+import { seedLogicalNonce } from './logical-nonce.js';
 import { runMockNetworkProviderResetHooks } from './mock-reset.js';
 import { TokenWebSocket } from './TokenWebSocket.js';
 
@@ -34,6 +35,12 @@ export interface MemCashProviderOptions {
   readonly controlMining?: boolean;
   /** Forward `hardhat_reset` to the shared node. Default false (no-op). */
   readonly controlChain?: boolean;
+  /**
+   * The limits the network is expected to enforce before the node's advertised profile arrives. A compile reads
+   * `consensusLimits` without connecting, so a project whose contracts need a wider commitment than the pre-connect
+   * default states them here.
+   */
+  readonly consensusLimits?: Partial<ConsensusLimits>;
   /** Category of the default oracle pool (display order); the node's advertised pool otherwise. */
   readonly oraclePoolCategory?: string;
 }
@@ -105,6 +112,7 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     operationCostBudgetPerByte: 800,
     hashDigestIterationsPerByte: 1,
   };
+
   policy: NetworkPolicy = { enforceDust: true };
   readonly simulator = true;
   /** Informational mirror of `server.features.devnet.evm_rpc`; `send()` never branches on it. */
@@ -130,6 +138,9 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     this.network = network ?? Network.MOCKNET;
     this.options = options;
     this.mnemonic = options.mnemonic ?? MEM_CASH_DEFAULT_MNEMONIC;
+    if (options.consensusLimits !== undefined) {
+      this.consensusLimits = { ...this.consensusLimits, ...options.consensusLimits };
+    }
     if (options.oraclePoolCategory !== undefined) this.oraclePoolCategory = options.oraclePoolCategory.toLowerCase();
   }
 
@@ -459,8 +470,11 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     return this.getBlockHeight();
   }
 
-  async getBlock(tag?: string | number): Promise<{ number: number; timestamp: number; hash?: string }> {
-    const height = tag === undefined ? await this.getBlockHeight() : quantity(tag);
+  async getBlock(tag?: string | number | bigint): Promise<{ number: number; timestamp: number; hash?: string }> {
+    // ethers' block tags: every finality tag names the tip on an instant-finality devnet.
+    const height = tag === undefined || tag === 'latest' || tag === 'safe' || tag === 'finalized'
+      ? await this.getBlockHeight()
+      : tag === 'earliest' ? 0 : quantity(typeof tag === 'bigint' ? Number(tag) : tag);
     const hex = await this.request<string>('blockchain.block.header', height);
     const { hashBlockHeader } = await import('@mem-cash/types');
     return {
@@ -704,43 +718,9 @@ export default class MemCashNetworkProvider implements NetworkProvider {
       + '`networks.localhost.mnemonic` in solidcash.config.ts.';
   }
 
-  /**
-   * Seed and advance the CREATE nonce from the chain.
-   *
-   * A no-op while the signer holds an active reservation; never lowers the local nonce; probes forward from the local
-   * nonce (or from 0 on the first call) to the smallest logical address with no identity anchor.
-   */
+  /** Seed and advance the CREATE nonce from the chain (`seedLogicalNonce`). */
   async prepareSigner(signer: Signer): Promise<void> {
-    if (signer.transactionNonceReserved) return;
-    const local = signer._getTransactionNonceState();
-    const firstSeed = !this.seeded.has(signer);
-    this.seeded.add(signer);
-    const { deriveLogicalCreateAddress, resolveLogicalIdentity } = await import('../stateful/logical-identity.js');
-    const deployer = signer.getAddress();
-    let candidate = firstSeed ? 0n : local;
-    const limit = candidate + 64n;
-    while (candidate < limit) {
-      const address = deriveLogicalCreateAddress(deployer, candidate);
-      const occupied = await this.logicalAddressOccupied(address, resolveLogicalIdentity);
-      if (!occupied) break;
-      candidate += 1n;
-    }
-    if (candidate > local) signer._setTransactionNonceState(candidate);
-  }
-
-  private async logicalAddressOccupied(
-    address: string,
-    resolve: (provider: NetworkProvider, address: string) => Promise<unknown>,
-  ): Promise<boolean> {
-    try {
-      await resolve(this, address);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/ambiguous/.test(message)) return true;
-      if (/missing or invalid/.test(message)) return false;
-      throw error;
-    }
+    await seedLogicalNonce(this, signer, this.seeded);
   }
 
   private async refreshTip(): Promise<void> {
@@ -759,8 +739,8 @@ export default class MemCashNetworkProvider implements NetworkProvider {
   }
 
   private scriptHash(lockingBytecode: Uint8Array): string {
-    // sha256 via the same instance mem-cash uses, so the hash convention can never drift.
-    return binToHex(sha256Instance.hash(lockingBytecode));
+    // The Electrum protocol's script hash, as Fulcrum names it: SHA-256 of the locking bytecode in reversed byte order.
+    return binToHex(sha256Instance.hash(lockingBytecode).slice().reverse());
   }
 }
 

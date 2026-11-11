@@ -303,6 +303,9 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
     if (inp.name === '__internal__externalCallInputBase') fullArgs.push(1n);
     else if (inp.name.startsWith('__internal__extcallAnchorIdx')) fullArgs.push(-1n);
     else if (inp.name.startsWith('__internal__loopTargets')) fullArgs.push(targetsArg);
+    // Every target in this builder co-spends exactly one input (the target itself), so consecutive iterations are
+    // one input apart. A callee that also co-spends state data NFTs is composed through the stateful builder.
+    else if (inp.name.startsWith('__internal__loopTargetStride')) fullArgs.push(1n);
     else if (inp.name.startsWith('__internal__viewReturn')) {
       const vals = opts.viewReturns?.[viewCursor];
       viewCursor += 1;

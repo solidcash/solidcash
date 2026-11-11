@@ -298,9 +298,11 @@ describe('one entry reaching two deployments of one contract', () => {
       .flatMap((entry) => [binToHex(entry.viewIn), binToHex(entry.viewOut)]);
     expect(declared('callee-master-1', recordA)).toStrictEqual(declared('callee-master-2', recordB));
     // Each token's frame is handed the other deployment's supply record, at the views that record really holds: each
-    // token's own master refuses a record of another category, and the honest transaction is accepted throughout.
+    // token's own master refuses a record of another category, the validator, which settles both deployments (V8),
+    // refuses the chains that no longer match at its census facet, with which the machine decides its head, and the
+    // honest transaction is accepted throughout.
     expect(refusedParticipants(result, swappedRecords(result, recordA, recordB)))
-      .toStrictEqual(['callee-master-1', 'callee-master-2']);
+      .toStrictEqual(['validator', 'validator/2', 'callee-master-1', 'callee-master-2']);
     expect(refusedParticipants(result, result.transaction)).toStrictEqual([]);
   }, 300_000);
 

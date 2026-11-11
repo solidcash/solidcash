@@ -18,7 +18,7 @@ import { hydrateExternalPredicateState } from '../stateful/sc-hydrate-external-p
 import { evaluateExternalExpression } from '../stateful/sc-evaluate-external-expression.js';
 import { discoveredReturnFollowsParticipantWrite } from '../stateful/sc-materialize-create-builder-return-emit.js';
 import { encodeExternalReturnValue } from '../stateful/external-return-encoding.js';
-import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
+import { externalResultUsesEvmWords } from '../stateful/solidityAbi.js';
 import { deriveValueChunkProducerChildPath } from '../stateful/ValueChunkProducerIdentity.js';
 import { addressToLockScript } from '../utils.js';
 import {
@@ -784,7 +784,7 @@ async function rebuildCallTopology(
             const seededChild = viewSeed === undefined || onlyOutput === undefined ? child : rebuildPreparedInvocation(
               child, childArgs, binToHex(encodeExternalReturnValue(
                 viewSeed, onlyOutput.type, childArtifact.structs,
-                artifactUsesSolidityAbi(childArtifact), childArtifact.enums,
+                externalResultUsesEvmWords(childArtifact, [onlyOutput.type]), childArtifact.enums,
               )),
             );
             selected.push({ call: seededChild });

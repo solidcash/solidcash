@@ -46,7 +46,7 @@ const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
 
 /** The store answers its count and, per element, ten times the index plus one; the pager walks a page of them. */
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IStore { function count() view returns (int); function at(int i) view returns (int); }'
   + ' contract Store {'
   + '   int public n;'
@@ -211,11 +211,13 @@ describe('a read whose call sits in a loop bounded by an earlier call\'s result'
     expect(elementFrames(result)).toBe(0);
   });
 
-  it('refuses by name a loop whose bound neither the arguments nor a learned result fixes', async () => {
-    // The bound is the pager's own stored field, which a read holds no live record of while it plans.
-    await expect(read(await chain(), 'walk')).rejects.toThrow(
-      /the call to "IStore\.at\(\)" in entry "Pager\.walk\(\)" runs a loop whose bound is not fixed/,
-    );
+  it('runs as many turns as the pager\'s own stored bound holds', async () => {
+    // The bound is the pager's own stored field, read from its live record before the loop's calls are planned: a cap
+    // of two runs the first two elements, one and eleven.
+    const result = await read(await chain(), 'walk');
+    expect(result.accepted).toBe(true);
+    expect(result.value).toBe(12n);
+    expect(elementFrames(result)).toBe(2);
   });
 });
 
@@ -235,7 +237,7 @@ const READER_HEX = bytesToHex(READER_CATEGORY);
 const SHELF_ADDRESS = validatorAddress(SHELF_CATEGORY, VALIDATOR_PROGRAM);
 const SHELF_IMPL_ADDRESS = validatorAddress(SHELF_IMPL_CATEGORY, VALIDATOR_PROGRAM);
 
-const PROXIED_SOURCE = 'pragma solidcash ^0.14.0;'
+const PROXIED_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IShelf { function count() external view returns (uint); function at(uint i) external view returns (uint); }'
   + ' contract Shelf {'
   + '   address public implementation;'

@@ -5,6 +5,8 @@
 
 export { default as SignatureTemplate } from './SignatureTemplate.js';
 export { default as Signer } from './Signer.js';
+export type { ExternalSignerIdentity } from './Signer.js';
+export type { ExternalTransactionSigner } from './external-signing.js';
 export { Contract } from './Contract.js';
 export { TransactionBuilder } from './TransactionBuilder.js';
 
@@ -30,6 +32,6 @@ export {
   type ConsensusLimits,
   type NetworkPolicy,
 } from './network/index.js';
-export { randomUtxo, randomToken, randomNFT } from './utils.js';
+export { randomUtxo, randomToken, randomNFT, addressToLockScript, scriptToLockingBytecode } from './utils.js';
 export { gatherBchUtxos, gatherFungibleTokenUtxos, type GatherUtxosResult } from './transaction-utils.js';
 export type { ExtractEventNames, EventMatcherArgs, EmittingContract } from './types/event-inference.js';

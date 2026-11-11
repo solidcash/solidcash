@@ -28,6 +28,7 @@ import {
   TokenCapability,
   TRANSCRIPT_VERSION,
   TRANSCRIPT_VERSION_MINTED,
+  KEPT_VIEW_LENGTH,
   WITNESS_BLOCK_MAGIC,
   WITNESS_BLOCK_VERSION,
   argsHash,
@@ -186,6 +187,11 @@ class ReferenceRun {
       for (const stateInput of settled.stateInputs) {
         if (inputByIndex(this.transaction, stateInput) === undefined) {
           this.reject('V2', 'SETTLE_LISTS_AN_INDEX_THAT_IS_NOT_AN_INPUT', stateInput);
+        }
+      }
+      for (const output of settled.createdOutputs ?? []) {
+        if (outputByIndex(this.transaction, output) === undefined) {
+          this.reject('V2', 'SETTLE_LISTS_AN_INDEX_THAT_IS_NOT_AN_OUTPUT', output);
         }
       }
     }
@@ -435,6 +441,29 @@ class ReferenceRun {
       seen.add(keyOf(settled.category));
       this.settleOne(settled.category, settled.stateInputs);
     }
+    this.checkOutputOwners();
+  }
+
+  /** A record's index belongs to one contract, and so does an output: two contracts' frames cannot both name one. */
+  private checkOutputOwners(): void {
+    const slots = new Map<number, string>();
+    const outputs = new Map<number, string>();
+    for (const settled of this.transcript!.settles) {
+      const owner = keyOf(settled.category);
+      for (const master of this.framesFor(settled.category)) {
+        const block = this.master(master);
+        for (const entry of block.segments.flat()) {
+          const index = entry.in === INDEX_NONE ? entry.out : entry.in;
+          if ((slots.get(index) ?? owner) !== owner) this.reject('V7', 'A_RECORD_INDEX_BELONGS_TO_TWO_CONTRACTS', index);
+          slots.set(index, owner);
+        }
+        const records = block.segments.flat().map((entry) => entry.out).filter((output) => output !== INDEX_NONE);
+        for (const output of [...records, ...block.events, ...block.sends]) {
+          if ((outputs.get(output) ?? owner) !== owner) this.reject('V7', 'AN_OUTPUT_BELONGS_TO_TWO_CONTRACTS', output);
+          outputs.set(output, owner);
+        }
+      }
+    }
   }
 
   private settleOne(category: Uint8Array, listedStateInputs: readonly number[]): void {
@@ -452,6 +481,9 @@ class ReferenceRun {
       spent.add(input.index);
     }
     const listed = new Set(listedStateInputs);
+    if (listed.size !== listedStateInputs.length) {
+      this.reject('V7', 'A_STATE_INPUT_IS_LISTED_TWICE', this.context.validatorInputIndex);
+    }
     for (const index of listed) if (!spent.has(index)) this.reject('V7', 'A_LISTED_STATE_INPUT_IS_NOT_A_STATE_UTXO', index);
     for (const index of spent) if (!listed.has(index)) this.reject('V7', 'A_STATE_UTXO_IS_NOT_LISTED', index);
 
@@ -501,7 +533,10 @@ class ReferenceRun {
     for (const step of this.order) {
       if (!eq(this.contextOf(step.master), category)) continue;
       for (const entry of this.master(step.master).segments[step.segment] ?? []) {
-        const slot = entry.in === INDEX_NONE ? `out:${entry.out}` : `in:${entry.in}`;
+        // One chain per index: a created record stays `out:` whichever way a later declaration names it.
+        const index = entry.in === INDEX_NONE ? entry.out : entry.in;
+        const slot = chains.has(`out:${index}`) || (entry.in === INDEX_NONE && !chains.has(`in:${index}`))
+          ? `out:${index}` : `in:${index}`;
         const chain = chains.get(slot) ?? [];
         chain.push({ entry, master: step.master });
         chains.set(slot, chain);
@@ -532,9 +567,25 @@ class ReferenceRun {
         if (input === undefined || !eq(chain[0]!.entry.viewIn, input.token.nftCommitment)) {
           this.reject('V7', 'A_CHAIN_DOES_NOT_START_AT_THE_INPUT_COMMITMENT', Number(slot.slice(3)));
         }
-      } else if (chain[0]!.entry.viewIn.length !== 0) {
-        // A record the transaction creates starts from nothing.
-        this.reject('V7', 'A_CREATED_RECORD_DOES_NOT_START_EMPTY', Number(slot.slice(4)));
+        if (chain.some(({ entry }) => entry.in === INDEX_NONE)) {
+          this.reject('V7', 'A_SPENT_RECORD_IS_NAMED_BY_ITS_OUTPUT_ALONE', Number(slot.slice(3)));
+        }
+      } else {
+        // A record the transaction creates starts from nothing, over no input of the contract's, and is not deleted here.
+        const index = Number(slot.slice(4));
+        if (chain[0]!.entry.viewIn.length !== 0) this.reject('V7', 'A_CREATED_RECORD_DOES_NOT_START_EMPTY', index);
+        const over = inputByIndex(this.transaction, index);
+        if (over !== undefined && eq(over.token.category, category)) {
+          this.reject('V7', 'A_CREATED_RECORD_SITS_OVER_AN_INPUT_OF_ITS_CONTRACT', index);
+        }
+        if (chain.some(({ entry }) => entry.out === INDEX_NONE)) {
+          this.reject('V7', 'A_CREATED_RECORD_IS_DELETED', index);
+        }
+      }
+      for (const { entry } of chain) {
+        if (entry.out !== INDEX_NONE && outputByIndex(this.transaction, entry.out) === undefined) {
+          this.reject('V7', 'A_RECORD_OUTPUT_IS_NOT_AN_OUTPUT', entry.out);
+        }
       }
       for (let at = 1; at < chain.length; at += 1) {
         if (!eq(chain[at]!.entry.viewIn, chain[at - 1]!.entry.viewOut)) {
@@ -567,8 +618,10 @@ class ReferenceRun {
     }
 
     const allowedMutable = new Set<number>();
-    for (const chain of chains.values()) {
+    const deleted = new Set<number>();
+    for (const [slot, chain] of chains) {
       for (const { entry } of chain) if (entry.out !== INDEX_NONE) allowedMutable.add(entry.out);
+      if (chain[chain.length - 1]!.entry.out === INDEX_NONE) deleted.add(Number(slot.slice(slot.indexOf(':') + 1)));
     }
     for (const input of this.transaction.inputs) {
       if (isValidator(this.transaction, input, this.context.validatorTemplate) && eq(input.token.category, category)) {
@@ -590,10 +643,19 @@ class ReferenceRun {
         if (!intact) this.reject('V7', 'A_MINTING_NFT_IS_NOT_RECREATED_IN_PLACE', index);
       }
     }
+    // An index past the inputs holds an output alone, so a master there is one the transaction mints: only a minted
+    // master the transcript lists is (R2b, T53).
+    for (let index = this.transaction.inputs.length; index < this.transaction.outputs.length; index += 1) {
+      const output = this.transaction.outputs[index]!;
+      if (masterToken(output.token) && eq(output.token.category, category)
+        && !this.mintedMasters.some((minted) => minted.output === index)) {
+        this.reject('V7', 'A_MINTING_NFT_IS_NOT_RECREATED_IN_PLACE', index);
+      }
+    }
 
     for (const output of this.transaction.outputs) {
       if (!eq(output.token.category, category)) continue;
-      if (mutableToken(output.token) && !allowedMutable.has(output.index)) {
+      if (mutableToken(output.token) && (!allowedMutable.has(output.index) || deleted.has(output.index))) {
         this.reject('V7', 'A_MUTABLE_NFT_IS_NOT_AT_A_RECORD_OR_A_VALIDATOR', output.index);
       }
       if (immutableToken(output.token) && !listedEvents.has(output.index)) {
@@ -618,18 +680,11 @@ class ReferenceRun {
   }
 
   checkV8(): void {
-    // A contract's masters are counted over the whole transaction: one that is not its category's only master leaves
-    // its records to a validator, whichever validator covers the others.
-    const counts = new Map<string, number>();
-    for (const input of this.transaction.inputs) {
-      if (!masterToken(input.token)) continue;
-      const key = keyOf(input.token.category);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
+    // Every spent covered master's contract is settled here: a master a validator covers never settles its own
+    // records. A minted master runs nothing, so it asks for no settlement of its own contract.
     const needed = new Set<string>();
     for (const master of this.masters) {
-      const key = keyOf(this.ownCategory(master));
-      if ((counts.get(key) ?? 0) >= 2) needed.add(key);
+      if (!isMintedRef(master)) needed.add(keyOf(this.ownCategory(master)));
     }
     for (const master of this.masters) {
       const kind = this.master(master).kind;
@@ -799,7 +854,8 @@ function splitPushFrames(unlockingBytecode: Uint8Array): Uint8Array[] {
 
 /**
  * Reads a master's witness block in section 16's layout:
- * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call, and a trailing value list.
+ * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call, each segment led by its byte
+ * length, and a trailing value list.
  *
  * This is an independent restatement of the frozen codec's layout for differential checks: the codec's encoder and
  * decoder agree on that exact field order, so the model reader and the codec are kept in lockstep rather than one
@@ -836,22 +892,32 @@ function readBlock(payload: Uint8Array): WitnessBlock {
     };
   });
 
-  const segments = reader.readCounted16((inner): RecordEntry[] =>
-    inner.readCounted16((entries): RecordEntry => {
+  // Each segment is led by its byte length, and each record by its indices and its views' lengths; a kept record's
+  // `viewOut` is its `viewIn`, which the wire does not repeat.
+  const segments = reader.readCounted16((inner): RecordEntry[] => {
+    const segment = new ByteReader(inner.readLp16());
+    const entries = segment.readCounted16((recordReader): RecordEntry => {
+      const index = { in: recordReader.readUint16(), out: recordReader.readUint16() };
+      const inLength = recordReader.readUint16();
+      const outLength = recordReader.readUint16();
+      if (inLength === KEPT_VIEW_LENGTH) throw new FramedEncodingError('a record view is the kept sentinel long');
+      const viewIn = recordReader.readBytes(inLength);
       const entry: RecordEntry = {
-        in: entries.readUint16(),
-        out: entries.readUint16(),
-        viewIn: entries.readLp32(),
-        viewOut: entries.readLp32(),
+        ...index, viewIn, viewOut: outLength === KEPT_VIEW_LENGTH ? viewIn : recordReader.readBytes(outLength),
       };
       assertRecordEntry(entry);
       return entry;
-    }));
+    });
+    segment.assertEnd();
+    return entries;
+  });
 
   const events = reader.readCounted16((inner): number => inner.readUint16());
   const sends = reader.readCounted16((inner): number => inner.readUint16());
-  // The values a body reads are bound by the master against its records, so the validator only reads past them.
+  // The values a body reads are bound by the master against its records, so the validator only reads past them, and
+  // past the padding, which nothing reads.
   reader.readCounted16((inner): Uint8Array => inner.readLp32());
+  reader.readLp16();
   reader.assertEnd();
   if (segments.length !== calls.length + 1) throw new FramedEncodingError('segment and call counts disagree');
   return { kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends };

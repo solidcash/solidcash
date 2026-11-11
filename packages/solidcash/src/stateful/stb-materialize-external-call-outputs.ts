@@ -24,7 +24,11 @@ import { addressToLockScript, calculateDust, scriptToLockingBytecode } from '../
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { selectBalancedEntryOutputIdentity } from './collection-lock-strip.js';
 import { stateUpdatesTouchNft } from './early-value-chunk-helpers.js';
-import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import {
+  calleeWitnessesDynamicRun,
+  type EntryNftInfo,
+  type ExternalCallUtxoGroup,
+} from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { cloneToken } from './stb-output-utils.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
@@ -54,6 +58,7 @@ export interface MaterializeExternalCallOutputsHost {
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly pendingReturnEventOutputs: readonly PendingReturnEventLike[];
   readonly categoryId: string;
+  readonly composedParticipant: boolean;
   readonly builderOptions: TransactionBuilderOptions;
   readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly delegateDynamicChunksAtSuffix: boolean;
@@ -73,6 +78,19 @@ export interface MaterializeExternalCallOutputsHost {
   callRecordDigest?(identity: string): Uint8Array | undefined;
 }
 
+/** Slots a direct callee's dynamic run can follow: its covenant places the run past the fixed block. */
+const RUN_FOLLOWS_SLOT_KINDS: ReadonlySet<string> = new Set([
+  'master', 'dataNft', 'event', 'eventChunk', 'returnEvent',
+]);
+
+/** What keeps a direct callee's dynamic run from following its block; nothing when the run can follow it. */
+function directRunBlocker(group: ExternalCallUtxoGroup, layout: FunctionBlockLayout): string | undefined {
+  const slot = layout.slots.find(({ kind }) => !RUN_FOLLOWS_SLOT_KINDS.has(kind));
+  if (slot !== undefined) return `the ${slot.kind} slot`;
+  if ((group.plannedEntryInserts?.length ?? 0) > 0) return "a sorted insert's trailing outputs";
+  return (group.valueChunkOutputCount ?? 0) > 0 ? 'mapping value chunks' : undefined;
+}
+
 /**
  * Materialize external-call participant output blocks (master/data/entries/events/returns)
  * and any deferred delegate-adjacent external return channels. Returns the set of owner
@@ -84,6 +102,7 @@ export function materializeExternalCallOutputs(
   addReturnOutput: (builder: TransactionBuilder, identity: string, output: Output) => void,
   appendDelegateGroupOutputs: (groupIndex: number) => void,
   deferredDelegateReturnEvents: PendingReturnEventLike[],
+  deferredCalleeDynamicChunks: Output[],
   debugOwnMutableOutputs: (stage: string) => void,
 ): Set<number> {
 // Create external call outputs (B's master preserved + B's data NFTs with updated state)
@@ -210,6 +229,10 @@ export function materializeExternalCallOutputs(
         externalDynamicChunks.push(output);
       }
     }
+    // A witnessed run goes past every input-bound output, so a following block keeps its master's coordinate.
+    if (!host.composedParticipant && calleeWitnessesDynamicRun(group)) {
+      deferredCalleeDynamicChunks.push(...externalDynamicChunks.splice(0));
+    }
 
     const displacedRouteStateOutputs: Output[] = [];
     // Create B's data NFT outputs with updated commitments
@@ -256,7 +279,17 @@ export function materializeExternalCallOutputs(
 
     // Full block: output B's remaining slots (entries, SC, TCs, transfers, events, etc.)
     if (group.blockInputs && group.blockLayout) {
-      if (externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
+      // Only a compiler route reserves a trailing band, so only a route can run out of capacity.
+      const runBlocker = group.compilerRoute === undefined ? directRunBlocker(group, group.blockLayout) : undefined;
+      const chunksFollowBlock = group.compilerRoute === undefined && runBlocker === undefined;
+      if (runBlocker !== undefined && externalDynamicChunks.length > 0) {
+        throw new Error(
+          `External dynamic state of '${group.functionName}' has no output coordinate: `
+        + `a direct callee's run follows its block, and the SDK cannot place one beside ${runBlocker}`,
+        );
+      }
+      if (group.compilerRoute !== undefined
+        && externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
         throw new Error(
           'External dynamic state exceeds balanced trailing capacity '
         + `(${externalDynamicChunks.length} > ${group.blockLayout.trailingCapacity ?? 0})`,
@@ -607,11 +640,13 @@ export function materializeExternalCallOutputs(
           // default to false so a missing precompute cannot admit an unregistered party.
           // A fused zero seed is unset, not false — SafeERC20 abi.decode(00) fails VERIFY.
           const identity = re?.identity ?? returnIdentity;
+          const writerPendingHex = re && re.commitment.length > 0 ? binToHex(re.commitment) : '';
           const returnCommitment = returnEventNftCommitment(hexToBin(canonicalWriterReturnCommitment({
-            pendingHex: re && re.commitment.length > 0 ? binToHex(re.commitment) : '',
+            pendingHex: writerPendingHex,
             writesState: writerAbi?.writesState === true,
             evmBool,
             returnsBool: writerReturnsBool,
+            authenticated: re?.provisional === false,
           })), host.callRecordDigest?.(identity));
           addReturnOutput(builder, identity, {
             to: new Uint8Array([0x51]),
@@ -624,6 +659,9 @@ export function materializeExternalCallOutputs(
           });
           continue;
         }
+
+        // A record no one reads compacts: the slot's funder holds the loop entries' input coordinate only.
+        if (slot?.kind === 'returnEvent' && group.entryLoopStart !== undefined) continue;
 
         // Event slots: use auto-derived event NFT output or placeholder
         if (slot?.kind === 'event') {
@@ -723,6 +761,7 @@ export function materializeExternalCallOutputs(
           });
         }
       }
+      if (chunksFollowBlock) for (const output of externalDynamicChunks) builder.addOutput(output);
     } else {
     // Legacy/unbalanced external calls place their runtime chunk run immediately after the fixed
     // master+data group. The callee covenant derives the same master-relative base.

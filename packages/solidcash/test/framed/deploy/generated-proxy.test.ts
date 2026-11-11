@@ -31,7 +31,7 @@ const PROXY_CATEGORY = '22'.repeat(31) + 'dd';
 // The implementation declares the field the fallback forwards to, beside the state its entry writes: the
 // implementation's write rebuilds the record from its own declaration, so the address has to be one of its fields
 // to survive it.
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   uint public initialized;'
@@ -45,7 +45,7 @@ const SOURCE = 'pragma solidcash ^0.14.0;'
   + ' }';
 
 // An implementation that does not declare the field the fallback forwards to has no record a proxy can agree on.
-const NO_IMPLEMENTATION_FIELD = 'pragma solidcash ^0.14.0;'
+const NO_IMPLEMENTATION_FIELD = 'pragma solidcash ^0.50.0;'
   + ' contract Impl {'
   + '   int public version;'
   + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; }'
@@ -137,10 +137,10 @@ describe('a generated proxy', () => {
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
-    // The derived hop spends the proxy's master, its validator and facet, the implementation's master and the
+    // The derived hop spends the proxy's master, its validator and two facets, the implementation's master and the
     // record, then the deployer's own coin. It is never broadcast: the proxy's genesis mints what it wrote.
     expect(deployment.initialize.broadcast.txid).toBe(deployment.proxy.tx.txid);
-    expect(deployment.initialize.transaction.inputs.length).toBe(6);
+    expect(deployment.initialize.transaction.inputs.length).toBe(7);
 
     // The entry computed the state it wrote: the flag set and the version written, with the address still there.
     const written = commitment(artifacts.Impl!.stateLayout!, {
@@ -164,7 +164,7 @@ describe('a generated proxy', () => {
   });
 
   it('settles an initialize that emits, and lists the payload the entry computed', async () => {
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' contract Impl {'
       + '   address public implementation;'
       + '   uint public initialized;'
@@ -208,7 +208,7 @@ describe('a generated proxy', () => {
   });
 
   it('mirrors struct-typed fields, carrying the struct definitions they reference', () => {
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' struct Inner { int a; }'
       + ' struct Outer { Inner x; int t; }'
       + ' contract Impl {'
@@ -233,7 +233,7 @@ describe('a generated proxy', () => {
     // A field the compiler registers as a record of its own is not packed beside its neighbours, and the published
     // layout says so only through the coordinates: a proxy that declared it beside them would put it in the
     // previous record and every field after it would land somewhere the implementation does not read.
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' contract Impl {'
       + '   address public implementation;'
       + '   int public version;'
@@ -252,7 +252,7 @@ describe('a generated proxy', () => {
     // The shape both marketplace roots have: the implementation declares its state and nothing about its proxy,
     // and one of its own records is one the compiler isolated. The proxy declares the implementation's records
     // plus one for the address, and the deployment plans every one of them.
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' contract Impl {'
       + '   uint public initialized;'
       + '   int public version;'
@@ -315,7 +315,7 @@ describe('a generated proxy', () => {
   });
 
   it('settles a tagged singleton implementation through its generated proxy and refuses a substituted record tag', async () => {
-    const source = 'pragma solidcash ^0.14.0; contract Impl {'
+    const source = 'pragma solidcash ^0.50.0; contract Impl {'
       + ' int public version;'
       + ' function initialize(address expected) {'
       + '   require(msg.sender == expected); require(this.version == 0); this.version = 7;'

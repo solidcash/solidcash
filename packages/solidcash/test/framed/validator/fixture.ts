@@ -30,11 +30,12 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
-import type {
-  InputView,
-  OutputView,
-  FramedTransaction,
-  TokenShape,
+import {
+  validatorFacetUnlockingBytecode,
+  type InputView,
+  type OutputView,
+  type FramedTransaction,
+  type TokenShape,
 } from '../../../../solidc/src/framed/validator/index.js';
 
 /** The validator program fixtures run against. Only its bytes matter: every contract address derives from it. */
@@ -207,7 +208,7 @@ export interface CompositionInput {
     redeemScript: Uint8Array;
   };
   validator?: { transcript: Transcript; redeemScript: Uint8Array };
-  facet?: { redeemScript: Uint8Array };
+  facet?: { redeemScript: Uint8Array; k: number };
   state?: { redeemScript: Uint8Array };
   user?: { signature: Uint8Array; publicKey: Uint8Array };
 }
@@ -322,10 +323,9 @@ export function planComposition(plan: CompositionPlan): Composition {
   if (firstRoot === undefined) throw new CompositionPlanError('a validated composition needs a root');
   const validatorContract = firstRoot.contract;
 
+  // A validator settles every contract a covered master belongs to, and the context each borrowed frame runs on.
   const settleIds = new Set<string>();
-  for (const [contractId, masters] of mastersOfContract) {
-    if (masters.length >= 2) settleIds.add(contractId);
-  }
+  for (const master of covered) settleIds.add(master.contract);
   for (const master of covered) {
     if (master.kind !== FrameKind.DELEGATE && master.kind !== FrameKind.INTERNAL) continue;
     const context = frames.get(master.id)!.context;
@@ -405,13 +405,6 @@ export function planComposition(plan: CompositionPlan): Composition {
   for (const slot of plan.createdSlots) createdIndex.set(slot.id, cursor++);
   const changeIndex = cursor++;
 
-  for (const contractId of settleIds) {
-    const spendsSomething = plan.stateSlots.some((slot) => slot.contract === contractId && touchedSlots.has(slot.id));
-    if (!spendsSomething) {
-      throw new CompositionPlanError(`${contractId} is settled but spends no state: M cannot list an empty state set`);
-    }
-  }
-
   // 5. The derived execution order, which the record chains follow.
   const order: { master: string; segment: number }[] = [];
   const visit = (masterId: string): void => {
@@ -455,7 +448,7 @@ export function planComposition(plan: CompositionPlan): Composition {
       }
       if (created !== undefined) {
         const viewIn = chains.get(touch.slot) ?? EMPTY;
-        const viewOut = touch.viewOut ?? created.commitment;
+        const viewOut = touch.viewOut ?? (viewIn.length > 0 ? viewIn : created.commitment);
         chains.set(touch.slot, viewOut);
         entries.push({ in: INDEX_NONE, out: createdIndex.get(touch.slot)!, viewIn, viewOut });
         continue;
@@ -508,7 +501,7 @@ export function planComposition(plan: CompositionPlan): Composition {
         value: 10_000n,
         lockingBytecode: encodeLockingBytecodeP2sh32(hash256(code)),
         token: emptyToken(),
-        facet: { redeemScript: code },
+        facet: { redeemScript: code, k: planned.facet! },
       };
     }
     if (planned.kind === 'state') {
@@ -695,8 +688,9 @@ export function materialise(composition: Composition): FramedTransaction {
         encodeDataPush(input.validator.redeemScript),
       ]);
     } else if (input.facet !== undefined) {
-      // A facet's unlocking bytecode is its own code and nothing else: it reads the transcript from the head.
-      unlockingBytecode = encodeDataPush(input.facet.redeemScript);
+      // A facet's unlocking bytecode is its padding, empty here, and its own code, led by the census checkpoint's
+      // placeholder for the census facet: it reads the transcript from the head.
+      unlockingBytecode = validatorFacetUnlockingBytecode(input.facet.k, input.facet.redeemScript);
     } else if (input.state !== undefined) {
       unlockingBytecode = encodeDataPush(input.state.redeemScript);
     } else if (input.user !== undefined) {

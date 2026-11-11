@@ -18,6 +18,9 @@
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   FrameKind,
+  IntType,
+  decodeIntegerValue,
+  parseType,
   type ArgSource,
   type Artifact,
   type ExternalCallAbi,
@@ -71,6 +74,8 @@ export interface HopCallInputs {
   readonly stateValues: Readonly<Record<string, unknown>>;
   /** The caller's own locking bytecode, i.e. `address(this)` as the frame observes it. */
   readonly selfAddress?: Uint8Array;
+  /** The category of the deployment the frame runs from, whose per-entry bundle its internal cuts are in. */
+  readonly categoryId?: string;
   /** The frame's own `msg.sender`. */
   readonly senderAddress?: Uint8Array;
   /** The caller's constructor arguments, when a routing forwards one. */
@@ -100,6 +105,8 @@ export interface ResolvedCall {
   /** The argument values in parameter order, before encoding, which a nested callee's own plan reads. */
   readonly argumentValues: readonly FunctionArgument[];
   readonly kind: FrameKindValue;
+  /** The site's `ExternalCallAbi.failedCallMessage`, for a low-level call its caller checks. */
+  readonly failedCallMessage?: string;
 }
 
 /**
@@ -184,11 +191,33 @@ function isZeroAddress(value: FunctionArgument | undefined): boolean {
  * expression means the same thing here as on a direct call: an inline pure helper, a struct constructor, a packed
  * encoding, a state read, or arithmetic over them.
  */
-export function makeCallResolver(inputs: HopCallInputs): CallResolver {
-  const callerInputs = entryRowOf(inputs.artifact, inputs.functionName)
+export function makeCallResolver(given: HopCallInputs): CallResolver {
+  const callerInputs = entryRowOf(given.artifact, given.functionName)
     .inputs.map((input) => ({ type: input.type }));
+  // An `address` argument, alone or as an array's element, is read as the lock the entry receives: a caller may
+  // state it as a CashAddress, and an expression that orders, packs or hashes it computes over the bytes the body does.
+  const asLock = (arg: FunctionArgument): FunctionArgument => {
+    if (typeof arg !== 'string') return arg;
+    try {
+      const encoded = encodeFunctionArgument(arg, 'address');
+      return encoded instanceof Uint8Array ? encoded : arg;
+    } catch {
+      return arg;
+    }
+  };
+  const inputs: HopCallInputs = {
+    ...given,
+    args: given.args.map((arg, index) => {
+      const type = callerInputs[index]?.type;
+      if (type === 'address' || type === 'address payable') return asLock(arg);
+      if ((type === 'address[]' || type === 'address payable[]') && Array.isArray(arg)) {
+        return (arg as FunctionArgument[]).map(asLock) as FunctionArgument;
+      }
+      return arg;
+    }),
+  };
 
-  // `externalReturns` is the earlier results an argument may read; a target is resolved without them.
+  // `externalReturns` is the earlier results an argument, or a target computed from them, may read.
   const resolve = (
     source: ArgSource, occurrence: number, externalReturns?: ReadonlyMap<string, FunctionArgument>,
   ): FunctionArgument | undefined => {
@@ -219,9 +248,15 @@ export function makeCallResolver(inputs: HopCallInputs): CallResolver {
         return index < 0 || index >= array.length ? undefined : array[index] as FunctionArgument;
       }
       case 'loopIndex': {
-        if (source.initialValue === undefined) return undefined;
-        const step = source.stepValue === undefined ? 1n : BigInt(source.stepValue);
-        return BigInt(source.initialValue) + step * BigInt(occurrence);
+        // A counter whose start or step the body computes carries them as expressions of the call's own facts.
+        const initial = source.initialValue !== undefined ? BigInt(source.initialValue)
+          : source.initialExpression === undefined ? undefined
+            : evaluate(source.initialExpression, 0, undefined, externalReturns);
+        const step = source.stepValue !== undefined ? BigInt(source.stepValue)
+          : source.stepExpression === undefined ? 1n
+            : evaluate(source.stepExpression, 0, undefined, externalReturns);
+        if (typeof initial !== 'bigint' || typeof step !== 'bigint') return undefined;
+        return initial + step * BigInt(occurrence);
       }
       case 'expression':
         return source.expression === undefined
@@ -304,8 +339,13 @@ export function resolveCallTarget(
     );
   }
   if (row.addressSource !== undefined) {
-    const resolved = resolver.resolve(row.addressSource, occurrence);
+    // A target computed from an earlier call's result is resolved from the results the plan waited for.
+    const resolved = resolver.resolveArgument(row.addressSource, occurrence);
     if (isZeroAddress(resolved)) return undefined;
+    // A 20-byte value the caller computes is an identity, which the planner names a contract by: a deployment whose
+    // address projects to it, or a CREATE2 child, whose address it is. A call never reaches a key's P2PKH lock.
+    const raw = addressRawBytes(resolved);
+    if (raw !== undefined && raw.length === 20) return raw;
     const bytes = addressBytes(resolved);
     if (bytes !== undefined) return bytes;
     throw new FramedProxyDeployError(
@@ -357,13 +397,48 @@ function addressArgument(
 }
 
 /**
+ * The positions of one call's arguments that no source resolves from the caller's own facts or the earlier results
+ * it was handed: none for a call the planner states alone.
+ */
+export function unresolvedCallArguments(row: ExternalCallAbi, resolver: CallResolver, occurrence: number): number[] {
+  return (row.argSources ?? []).flatMap((source, index) =>
+    (resolver.resolveArgument(source, occurrence) === undefined ? [index] : []));
+}
+
+/**
+ * An argument a run of the caller's own body hashed (`hashedCallArguments`), read in its declared type: an integer
+ * or `bool` as its minimal script number, a `string` as its UTF-8 text, and any other value as its bytes. An address
+ * the body held as a 20-byte identity is the lock that identity names, which is what the call data carries.
+ */
+function hashedArgument(
+  item: Uint8Array | undefined, type: string, lockOf?: IdentityLock,
+): FunctionArgument | undefined {
+  if (item === undefined) return undefined;
+  if (/^u?int\d*$/.test(type) || type === 'bool') {
+    let value: bigint;
+    try {
+      value = decodeIntegerValue(item);
+    } catch {
+      return undefined;
+    }
+    return type === 'bool' ? value !== 0n : value;
+  }
+  if (type === 'string') return new TextDecoder().decode(item);
+  if ((type === 'address' || type === 'address payable') && item.length === 20 && lockOf !== undefined) {
+    return lockOf(item);
+  }
+  return item;
+}
+
+/**
  * The argument pushes one call carries: the selector, then each argument's canonical push, the last parameter's
  * first.
  *
  * The pushes become the record's digest and the callee's call data alike, so each is encoded the way the callee's
  * own ABI decodes it: against the declared input type, with the artifact's structs. An argument no source resolves
- * from the caller's own facts, or from the earlier results the caller handed over, is refused, because the plan
- * would have no value to state. An `address` argument is stated as the lock the callee receives (`addressArgument`).
+ * from the caller's own facts, or from the earlier results the caller handed over, is the one a run of the caller's
+ * body hashed (`hashed`, in parameter order) where one was read, and is refused otherwise, because the plan would
+ * have no value to state. An `address` argument is stated as the lock the callee receives (`addressArgument`).
  */
 export function resolveCallArguments(
   row: ExternalCallAbi,
@@ -372,6 +447,7 @@ export function resolveCallArguments(
   resolver: CallResolver,
   occurrence: number,
   lockOf?: IdentityLock,
+  hashed?: readonly Uint8Array[],
 ): { readonly pushes: readonly Uint8Array[]; readonly values: readonly FunctionArgument[] } {
   const where = `the call to "${row.interfaceName}.${row.functionName}"`;
   const visible = calleeEntry.inputs.filter((input) => !input.name.startsWith('__internal__'));
@@ -389,7 +465,12 @@ export function resolveCallArguments(
     );
   }
   const values = sources.map((source, index): FunctionArgument => {
-    const value = resolver.resolveArgument(source, occurrence);
+    const resolved = resolver.resolveArgument(source, occurrence);
+    if (resolved === undefined) {
+      const learned = hashedArgument(hashed?.[index], visible[index]!.type, lockOf);
+      if (learned !== undefined) return learned;
+    }
+    const value = resolved;
     if (value === undefined) {
       throw new FramedProxyDeployError(
         `${where} passes argument ${index} from a "${source.kind}"${source.expression === undefined ? '' : ' '
@@ -400,7 +481,18 @@ export function resolveCallArguments(
     return addressArgument(value, visible[index]!.type, source, lockOf);
   });
   const encoded = values.map((value, index): Uint8Array => {
-    const push = encodeFunctionArgument(value, visible[index]!.type, calleeArtifact.structs);
+    const type = visible[index]!.type;
+    // A value the caller's facts resolve outside its parameter's integer type is one no run of the frame passes: the
+    // frame's own arithmetic stops on it, or wraps it, before the call, so the call the frame makes there is unstated.
+    const declared = parseType(type);
+    if (declared instanceof IntType && typeof value === 'bigint'
+      && (value < declared.minValue || value > declared.maxValue)) {
+      throw new FramedProxyDeployError(
+        `${where} passes ${value} as argument ${index}, which its type ${type} cannot hold, so the hop cannot state `
+        + 'the call the frame makes there',
+      );
+    }
+    const push = encodeFunctionArgument(value, type, calleeArtifact.structs);
     if (!(push instanceof Uint8Array)) {
       throw new FramedProxyDeployError(
         `${where} passes a signature as argument ${index}, which a record's digest cannot state`,
@@ -425,9 +517,11 @@ export function resolvePublishedCall(
   resolver: CallResolver,
   occurrence: number,
   lockOf?: IdentityLock,
+  hashed?: readonly Uint8Array[],
 ): ResolvedCall {
   const calleeEntry = entryRowOf(calleeArtifact, row.functionName);
-  const { pushes, values } = resolveCallArguments(row, calleeArtifact, calleeEntry, resolver, occurrence, lockOf);
+  const { pushes, values } = resolveCallArguments(
+    row, calleeArtifact, calleeEntry, resolver, occurrence, lockOf, hashed);
   const target = resolveCallTarget(row, inputs, resolver, occurrence);
   if (target === undefined) {
     // A site whose target names the zero address is stated for nothing, so no caller reaches here for one.
@@ -440,5 +534,6 @@ export function resolvePublishedCall(
     argumentPushes: pushes,
     argumentValues: values,
     kind: frameKindOf(calleeEntry),
+    ...(row.failedCallMessage === undefined ? {} : { failedCallMessage: row.failedCallMessage }),
   };
 }

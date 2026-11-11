@@ -13,13 +13,15 @@ import { compileString } from '../../../src/compiler.js';
  * became one classifying pass per side that also counts minting uniqueness; and again when the token container
  * covenant lost its merge path and the keep of an unnamed container refused a minting NFT (the master pin's destroy
  * arm moved them only while every contract carried it); and again when the own-category count pinned each record
- * beside a count-path call at its own index (C3). A framed compile may add artifacts, but it may not make these two
- * directs disagree.
+ * beside a count-path call at its own index (C3); and again when the data-record covenant, whose lock the master
+ * rebuilds to check its records, defined its authority bind and its category once; and again when a drained container
+ * left a sweepable filler in place of a zero-value output (c2d8ed7ea). A framed compile may add artifacts, but it may
+ * not make these two directs disagree.
  */
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-const STATE_CONTRACT = 'pragma solidcash ^0.14.0;'
+const STATE_CONTRACT = 'pragma solidcash ^0.50.0;'
   + ' contract Counter(pubkey admin) {'
   + '   int public counter;'
   + '   function increment(sig s) {'
@@ -28,7 +30,7 @@ const STATE_CONTRACT = 'pragma solidcash ^0.14.0;'
   + '   }'
   + ' }';
 
-const SENDER_CONTRACT = 'pragma solidcash ^0.14.0;'
+const SENDER_CONTRACT = 'pragma solidcash ^0.50.0;'
   + ' contract Gate(address owner) {'
   + '   int public hits;'
   + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'
@@ -36,9 +38,9 @@ const SENDER_CONTRACT = 'pragma solidcash ^0.14.0;'
 
 const CASES = [
   { name: 'a stateful contract with a signature check', source: STATE_CONTRACT,
-    pinnedSha256: 'dbaa241ac5105ae9d12568965e2ba562e3f895779047fb706b7503f0e85304eb' },
+    pinnedSha256: 'c171ab35b400868894f3855a05d351f8a2dd247dcad61751261ae2ebd101d609' },
   { name: 'a stateful contract that reads msg.sender', source: SENDER_CONTRACT,
-    pinnedSha256: '3d287d589dad35e4567d3a108c32d02a4a2b9941da3e9fcafd7b0e22e9908283' },
+    pinnedSha256: '0af68169c82dd2c15a74995ee5539506173f29892b57cc1cc65a87e4d7c60780' },
 ] as const;
 
 describe('the direct convention is unchanged', () => {

@@ -10,10 +10,9 @@ import {
  * from one source reads both. The hop and the plain call path serve the calls (`call/two-deployments-one-contract`):
  * each deployment is its own block, its masters, records and validator coverage told apart by category.
  *
- * The off-chain read path plans its frames on its own (`read/read.ts`). It resolves a call's target from the address
- * the site bakes in or from the interface the site names, never from the address the caller's own state holds, so
- * two deployments held in state behind one interface are refused by name; past that, its blocks and record ids are
- * still keyed by the contract's name (`calleeRecordId`, the block loop of `readFramedEntry`).
+ * The off-chain read path plans its frames on its own (`read/read.ts`), from each calling frame's live records, so a
+ * call reaches the address the caller's own state holds: two deployments held in state behind one interface are each
+ * reached at their own address, each its own block (`reads/per-turn-callee-read`).
  *
  * The file runs only under `FRAMED_AHEAD=1`.
  */
@@ -54,24 +53,18 @@ function chain(): Promise<Chain> {
 }
 
 describe.runIf(process.env.FRAMED_AHEAD === '1')('ahead: one entry reaching two deployments of one contract', () => {
-  it('through the read path: refuses a view over both deployments by name (should read 304 once served)', async () => {
+  it('through the read path: reads a view over both deployments, each at the address the caller\'s state holds', async () => {
     const c = await chain();
     // Each token under its own name, so each call could be matched to its deployment by address.
     const externals = {
       TokenA: { artifact: c.tokenA.artifact, categoryId: c.tokenA.categoryId },
       TokenB: { artifact: c.tokenB.artifact, categoryId: c.tokenB.categoryId },
     };
-    let error: Error | undefined;
-    try {
-      await readFramedEntry({
-        provider: c.world.network, artifact: c.basket.artifact, categoryId: c.basket.categoryId,
-        functionName: 'supplies', externals, vm: compositionMachine(),
-      });
-    } catch (caught) {
-      error = caught as Error;
-    }
-    recordMet('two-deployments-one-artifact/read', error?.message ?? 'accepted');
-    expect(error?.message).toBe('entry "Basket.supplies()" makes 2 external call(s): "IToken.supplyOf()" at 0x is not '
-      + 'supplied in externals');
+    const result = await readFramedEntry({
+      provider: c.world.network, artifact: c.basket.artifact, categoryId: c.basket.categoryId,
+      functionName: 'supplies', externals, vm: compositionMachine(),
+    });
+    recordMet('two-deployments-one-artifact/read', result.accepted ? 'accepted' : result.objection ?? 'refused');
+    expect(result.value).toBe(304n);
   }, 600_000);
 });

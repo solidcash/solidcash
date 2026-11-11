@@ -4,3 +4,4 @@
  */
 
 export * from './read.js';
+export * from './static.js';

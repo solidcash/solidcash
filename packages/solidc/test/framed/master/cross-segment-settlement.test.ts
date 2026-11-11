@@ -12,7 +12,8 @@ import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, dataRecordLock, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
@@ -45,7 +46,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -106,12 +107,20 @@ interface Options {
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array, index = STATE_INDEX): RecordEntry =>
   ({ in: index, out: index, viewIn, viewOut });
 
+/** Which index each role takes, the validator's facets right after its head. */
+function layout(options: Options): { caller: number; state: number; validator: number; user: number; callee: number } {
+  // The record sits right after its master by default, and last when a case moves it away from the master that reads
+  // it.
+  return options.recordLast === true
+    ? {
+      caller: 0, validator: 1, user: 1 + VALIDATOR_INPUT_SPAN, callee: 2 + VALIDATOR_INPUT_SPAN,
+      state: 3 + VALIDATOR_INPUT_SPAN,
+    }
+    : { caller: 0, state: 1, validator: 2, user: 2 + VALIDATOR_INPUT_SPAN, callee: 3 + VALIDATOR_INPUT_SPAN };
+}
+
 function build(options: Options = {}): Omit<VmProgram, 'inputIndex'> {
-  // Which index each role takes. The record sits right after its master by default, and last when a case moves it
-  // away from the master that reads it.
-  const at = options.recordLast === true
-    ? { caller: 0, validator: 1, user: 2, callee: 3, state: 4 }
-    : { caller: 0, state: 1, validator: 2, user: 3, callee: 4 };
+  const at = layout(options);
   const fill = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
     const artifact = artifacts[name]!;
     return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
@@ -120,8 +129,11 @@ function build(options: Options = {}): Omit<VmProgram, 'inputIndex'> {
   };
   const callerProgram = fill('Caller', CATEGORY_CALLER, ADDRESS_CALLER);
   const calleeProgram = fill('Callee', CATEGORY_CALLEE, ADDRESS_CALLEE);
+  // The validator settles both covered masters' contracts: the caller's record, and the callee, which holds none.
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [at.caller], masters: [at.caller, at.callee], settles: [],
+    roots: [at.caller],
+    masters: [at.caller, at.callee],
+    settles: [{ category: CATEGORY_CALLER, stateInputs: [at.state] }, { category: CATEGORY_CALLEE, stateInputs: [] }],
   });
   const callerLock = encodeLockingBytecodeP2sh32(hash256(callerProgram));
   const calleeLock = encodeLockingBytecodeP2sh32(hash256(calleeProgram));
@@ -219,6 +231,10 @@ function build(options: Options = {}): Omit<VmProgram, 'inputIndex'> {
   inputs[at.validator] = validatorInput;
   outputs[at.validator] = validatorOutput;
   sourceOutputs[at.validator] = validatorOutput;
+  validatorFacetPlacements().forEach((facet, offset) => {
+    const index = at.validator + 1 + offset;
+    inputs[index] = facet.input; outputs[index] = facet.output; sourceOutputs[index] = facet.output;
+  });
   inputs[at.user] = userInput; outputs[at.user] = userOutput; sourceOutputs[at.user] = userOutput;
   inputs[at.callee] = calleeInput; outputs[at.callee] = calleeOutput; sourceOutputs[at.callee] = calleeOutput;
 
@@ -233,6 +249,17 @@ function verdict(options: Options = {}): { accepted: boolean; objection?: string
     inputIndex: CALLER_INDEX, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
   });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
+}
+
+/** Whether the validator's head and every facet it binds accept. */
+function validatorAccepts(options: Options = {}): boolean {
+  const program = build(options);
+  const vm = compositionMachine();
+  const at = layout(options);
+  return Array.from({ length: VALIDATOR_INPUT_SPAN }, (_, offset) => at.validator + offset).every((inputIndex) =>
+    vm.stateSuccess(vm.evaluate({
+      inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    })) === true);
 }
 
 describe('a compiled master whose execution is split at a call', () => {
@@ -262,8 +289,12 @@ describe('a compiled master whose execution is split at a call', () => {
   });
 
   it('is refused when a state UTXO is spent that no segment declares', () => {
-    expect(verdict({ undeclaredState: true }).accepted).toBe(false);
+    // The master reads its declarations, not the spent commitment: the validator, which settles its contract, is what
+    // holds the first declaration to the record the transaction spends (V7).
+    expect(verdict({ undeclaredState: true }).accepted).toBe(true);
+    expect(validatorAccepts({ undeclaredState: true })).toBe(false);
     expect(verdict({ undeclaredState: false }).accepted).toBe(true);
+    expect(validatorAccepts({ undeclaredState: false })).toBe(true);
   });
 
   it('is accepted when the layout puts the record away from its master', () => {

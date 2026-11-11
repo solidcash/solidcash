@@ -23,7 +23,8 @@ import {
  * with its run of chunk records unstated. The book's own chunk pin then stops on the count its body computed, with
  * the value and its digest beside it: the call reads the value there and plans the write again from it, as the hop
  * plans its callee's (`planCalleeWrites`). A filing and a touch settle and are read back through the views, and a
- * plan whose book frame declares a chunk record of the value otherwise is refused by the book's own frame.
+ * plan whose book frame declares a chunk record of the value otherwise is refused by the validator, which settles
+ * the book's contract beside the desk's (V8).
  *
  * A book that stamps with the clock reads a block-info coin of its oracle pool, which a framed body finds by its
  * category and flags, so the planner co-spends one beside the callee's master. The root and every later callee
@@ -62,7 +63,7 @@ const source = (stamp: string): string => [
 
 const artifacts = compileFramed(source('uint64(id + 1)'));
 const clockArtifacts = compileFramed(source('uint64(block.timestamp)'));
-const sharedClockArtifacts = compileFramed(source('uint64(block.timestamp)').replace(
+const rootClockArtifacts = compileFramed(source('uint64(block.timestamp)').replace(
   '    last = book.open(id, note);', '    require(block.timestamp > 0); last = book.open(id, note);',
 ));
 
@@ -162,7 +163,7 @@ describe('a plain root whose callee writes a record its own body computes part o
     expect(namesContract(await view(c, c.book, 'ownerOf', [ID]), c.desk.address)).toBe(true);
   }, 600_000);
 
-  it('refuses at the book\'s frame a plan that declares a chunk record of the value otherwise', async () => {
+  it('refuses at the validator a plan that declares a chunk record of the value otherwise', async () => {
     const c = await chain();
     const settled = await enter(c, 'file', [OTHER_ID, OTHER_NOTE], ['Book.open()', 'Desk.file()']);
     expect(await view(c, c.book, 'noteOf', [OTHER_ID])).toBe(OTHER_NOTE);
@@ -179,12 +180,14 @@ describe('a plain root whose callee writes a record its own body computes part o
     const last = declared.length - 1;
     declared[last] = declared[last]! ^ 0x01;
     chunk!.viewOut = declared;
-    expect(refusedOn(settled, withBlock(settled, book!.master, block))).toContain(book!.master);
+    // The book's master leaves its contract's settlement to the validator that covers it (V8), whose census facet
+    // holds the declaration to the record the transaction creates; the machine decides the head with that facet.
+    expect(refusedOn(settled, withBlock(settled, book!.master, block))).toStrictEqual(['validator', 'validator/2']);
   }, 600_000);
 
-  it.each([false, true])('co-spends the callee clock once when the root also reads it: %s', async (rootReads) => {
+  it.each([false, true])('co-spends each reader\'s own clock once, the root\'s when it reads: %s', async (rootReads) => {
     const world = await newWorld(rootReads ? 0x64 : 0x63);
-    const selected = rootReads ? sharedClockArtifacts : clockArtifacts;
+    const selected = rootReads ? rootClockArtifacts : clockArtifacts;
     const book = await deployPlain(world, selected.Book!);
     const desk = await deployPlain(world, selected.Desk!, [book.address]);
     const result = await enter({ world, book, desk }, 'file', [ID, NOTE], ['Book.open()', 'Desk.file()']);

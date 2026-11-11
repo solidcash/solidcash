@@ -38,7 +38,7 @@ import { fundShippedFacets } from '../shapes/harness.js';
 const DAY = 86_400n;
 
 const SOURCE = [
-  'pragma solidcash ^0.14.0;',
+  'pragma solidcash ^0.50.0;',
   'contract Clock {',
   '  address public implementation;',
   '  int public stamp;',
@@ -55,7 +55,7 @@ const SOURCE = [
 const clock = compileStringMulti(SOURCE, { composition: 'framed' }).Clock!;
 const proxyArtifact = buildProxyArtifact(clock);
 
-/** The direct convention's control: a stateless reader of the same oracle, gated the same way. */
+/** The direct convention's control: a reader gated the same way, stateful by rule with no state of its own. */
 const timed = compileString([
   'contract Timed() {',
   '  function gated(int started) {',
@@ -211,6 +211,7 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
     const genesis = await proxyState(world);
     await world.network.send('evm_mine', []);
     expect(BigInt(world.network.getBlockTime())).toBeGreaterThan(DAY);
+    // A hop reads a coin of the pool its implementation binds.
     expect(await oracleClock(world.network)).toBe(tipClock(world.network));
     // The record decodes as it did: the mined block writes only the pool.
     expect(await proxyState(world)).toStrictEqual(genesis);
@@ -221,12 +222,14 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
     const marked = await enter(world, 'mark');
     expect(marked.error).toBeUndefined();
     expect(marked.result!.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    // The entry stamps the clock it read; the block that confirms it moves the pool on to that block's time.
+    // The entry stamps the clock it read. The mock's automine executes the transaction at the tip's own timestamp
+    // (the Hardhat model), so the block that confirms it carries that same time: the clock moves on `evm_increaseTime`
+    // below, not on the confirming block.
     const stamped = await proxyState(world);
     expect(stamped.stamp).toBe(read);
     const confirmed = await oracleClock(world.network);
     expect(confirmed).toBe(tipClock(world.network));
-    expect(confirmed).toBeGreaterThan(read);
+    expect(confirmed).toBeGreaterThanOrEqual(read);
 
     const early = await enter(world, 'later');
     expect(early.error).toBeInstanceOf(FramedProxyDeployError);
@@ -250,10 +253,10 @@ describe('the mock chain\'s clock in a proxied framed contract', () => {
 });
 
 describe('the mock chain\'s clock in a plain framed contract, with a direct one beside it', () => {
-  it('a mined block moves the one clock both read, and the gated entry settles after the day', async () => {
+  it('a mined block moves the clock each reads, and the gated entry settles after the day', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signer = new Signer(alicePriv, network);
-    for (const seed of ['c9', 'da', 'eb']) await network.addUtxo(signer.getAddress(), funding(category(seed)));
+    for (const seed of ['c9', 'da', 'eb', 'fc']) await network.addUtxo(signer.getAddress(), funding(category(seed)));
     await fundShippedFacets(network);
     const plain = await new ContractFactory(clock, signer).deploy() as unknown as StatefulContract;
     const plainState = (): Promise<Record<string, unknown>> => stateOf(network, plain.categoryId, clock.stateLayout!);

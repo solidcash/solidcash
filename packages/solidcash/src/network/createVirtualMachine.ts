@@ -12,6 +12,8 @@ import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import { AuthenticationErrorBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-errors.js';
 import { createInstructionSetBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-instruction-set.js';
 import { OpcodesBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
+import { encodeTransactionBch } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
+import { verifyTransactionTokens } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2023/bch-2023-tokens.js';
 import type NetworkProvider from './NetworkProvider.js';
 import { bumpFramedCounter } from '../framed/composer/counters.js';
 
@@ -126,7 +128,9 @@ NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
 
 function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
   const simulator = provider.simulator === true ? 's' : '';
-  return `${standard ? '1' : '0'}${simulator}:${JSON.stringify(provider.consensusLimits ?? null)}`;
+  // A limit may be a bigint (`maximumMoney`), which JSON has no form for.
+  return `${standard ? '1' : '0'}${simulator}:${JSON.stringify(provider.consensusLimits ?? null,
+    (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value))}`;
 }
 
 function decodeCachedP2sh(
@@ -883,6 +887,136 @@ export function createVirtualMachineBch2026ForProvider(
   return buildVirtualMachineBch2026ForProvider(provider, observer, standard);
 }
 
+/**
+ * The operation-cost and hash-iteration allowance a derivation run gives each byte: as good as none. A composer pads
+ * each input to the budget its final transaction needs only once every view and value has been learned, so a run that
+ * learns them must not fail for cost alone; the final transaction is judged on the provider's own machine.
+ */
+const DERIVATION_ALLOWANCE_PER_BYTE = 10_000_000;
+
+/** The input, stack-item and transaction size a derivation run is allowed, past any program a compile publishes. */
+const DERIVATION_SIZE_CEILING = 10_000_000;
+
+/** The provider seen through lifted budgets, one per provider, so the machine built over it is cached with it. */
+const derivationProviders = new WeakMap<NetworkProvider, NetworkProvider>();
+
+/**
+ * The provider's machine with its operation-cost and hash-iteration budgets and its size ceilings lifted, for the runs
+ * that learn what a composition computes: a constructor probe runs a contract's whole program, which only its shards
+ * have to fit a real input, and a run that pads an input measures it before the padding. Every other limit is the
+ * provider's own, or the chain's when the provider states none; what is broadcast is judged by the provider's own
+ * machine. An `observer` watches the run, as a run that reads what the body hashed does.
+ */
+export function createDerivationVirtualMachineForProvider(
+  provider: NetworkProvider,
+  observer?: ProviderVmObserver,
+): ReturnType<typeof createVirtualMachineBch2026> {
+  let lifted = derivationProviders.get(provider);
+  if (lifted === undefined) {
+    const limits = provider.consensusLimits ?? {
+      maximumInputBytes: ConsensusBch2026.maximumBytecodeLength,
+      maximumStackItemBytes: ConsensusBch2026.maximumStackItemLength,
+      maximumTransactionBytes: ConsensusBch2026.maximumStandardTransactionSize,
+      maximumNftCommitmentBytes: ConsensusBch2026.maximumTokenCommitmentLength,
+      operationCostBudgetPerByte: ConsensusBch2026.operationCostBudgetPerByte,
+      hashDigestIterationsPerByte: ConsensusBch2026.hashDigestIterationsPerByteStandard,
+    };
+    lifted = Object.create(provider, {
+      consensusLimits: {
+        value: {
+          ...limits,
+          maximumInputBytes: Math.max(limits.maximumInputBytes, DERIVATION_SIZE_CEILING),
+          maximumStackItemBytes: Math.max(limits.maximumStackItemBytes, DERIVATION_SIZE_CEILING),
+          maximumTransactionBytes: Math.max(limits.maximumTransactionBytes, DERIVATION_SIZE_CEILING),
+          operationCostBudgetPerByte: DERIVATION_ALLOWANCE_PER_BYTE,
+          hashDigestIterationsPerByte: DERIVATION_ALLOWANCE_PER_BYTE,
+          hashDigestIterationsPerByteStandard: DERIVATION_ALLOWANCE_PER_BYTE,
+          hashDigestIterationsPerByteNonstandard: DERIVATION_ALLOWANCE_PER_BYTE,
+        },
+      },
+    }) as NetworkProvider;
+    derivationProviders.set(provider, lifted);
+  }
+  return createVirtualMachineBch2026ForProvider(lifted, observer);
+}
+
+/** The supply libauth's transaction verification holds every transaction to: BCH's 21 million coins. */
+const LIBAUTH_MAXIMUM_MONEY = 2_100_000_000_000_000n;
+
+/**
+ * Holds a transaction's values to a development network's own money limit rather than libauth's fixed supply.
+ *
+ * libauth's `verify` refuses any transaction whose inputs or outputs together exceed BCH's 21 million coins, a constant
+ * it does not take from the consensus it is given. A provider that raises the limit (`ConsensusLimits.maximumMoney`)
+ * verifies such a transaction with the same consensus checks in the same order, the supply check reading its limit:
+ * a transaction within BCH's supply is verified by libauth's own function, unchanged. Standard (relay) policy is not
+ * reapplied past the supply, which a development network's own policy decides.
+ */
+function installMoneyLimit(
+  instructionSet: ReturnType<typeof createInstructionSetBch2026>,
+  consensus: typeof ConsensusBch2026,
+  maximumMoney: bigint,
+  standard: boolean,
+): void {
+  type Verify = NonNullable<typeof instructionSet.verify>;
+  const libauthVerify = instructionSet.verify as Verify;
+  instructionSet.verify = ((program, operations) => {
+    const { sourceOutputs, transaction } = program;
+    const inputValue = sourceOutputs.reduce((sum, utxo) => sum + utxo.valueSatoshis, 0n);
+    const outputValue = transaction.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+    if (inputValue <= LIBAUTH_MAXIMUM_MONEY && outputValue <= LIBAUTH_MAXIMUM_MONEY) {
+      return libauthVerify(program, operations);
+    }
+    const fail = (reason: string): string => `Unable to verify transaction: ${reason}`;
+    if (transaction.inputs.length === 0) return fail('the transaction has no inputs.');
+    if (transaction.outputs.length === 0) return fail('the transaction has no outputs.');
+    if (transaction.inputs.length !== sourceOutputs.length) {
+      return fail(`the transaction has ${transaction.inputs.length} inputs and ${sourceOutputs.length} source outputs.`);
+    }
+    const length = encodeTransactionBch(transaction).length;
+    if (length < consensus.minimumTransactionLengthBytes || length > consensus.maximumTransactionLengthBytes) {
+      return fail(`the transaction is ${length} bytes, outside the consensus length limits.`);
+    }
+    if (inputValue > maximumMoney) {
+      return fail(`the sum of source output values exceeds the network's maximum satoshi value. Maximum: ${maximumMoney}, `
+        + `cumulative input value: ${inputValue}.`);
+    }
+    if (outputValue > maximumMoney) {
+      return fail(`the sum of output values exceeds the network's maximum satoshi value. Maximum: ${maximumMoney}, `
+        + `cumulative output value: ${outputValue}.`);
+    }
+    if (outputValue > inputValue) {
+      return fail(`the outputs spend more than the inputs. Cumulative input value: ${inputValue}, cumulative output `
+        + `value: ${outputValue}.`);
+    }
+    const outpoints = transaction.inputs.map((input) => `${binToHex(input.outpointTransactionHash)}:${input.outpointIndex}`);
+    if (new Set(outpoints).size !== outpoints.length) return fail('the transaction spends a source output twice.');
+    if (transaction.version < consensus.minimumConsensusVersion
+      || transaction.version > consensus.maximumConsensusVersion) {
+      return fail(`the transaction's version ${transaction.version} is outside the consensus range.`);
+    }
+    if (standard && length > consensus.maximumStandardTransactionSize) {
+      return fail(`the transaction is ${length} bytes, past the standard size.`);
+    }
+    const tokens = verifyTransactionTokens(transaction, sourceOutputs, {
+      maximumTokenCommitmentLength: consensus.maximumTokenCommitmentLength,
+    });
+    if (tokens !== true) return tokens;
+    let signatureChecks = 0;
+    for (const inputIndex of transaction.inputs.keys()) {
+      const state = operations.evaluate({ inputIndex, sourceOutputs, transaction });
+      signatureChecks += state.metrics.signatureCheckCount;
+      if (signatureChecks > consensus.maximumTransactionSignatureChecks) {
+        return fail(`the transaction exceeded the maximum of ${consensus.maximumTransactionSignatureChecks} signature `
+          + `checks while evaluating input index ${inputIndex}.`);
+      }
+      const result = operations.success(state);
+      if (typeof result === 'string') return fail(`error in evaluating input index ${inputIndex}: ${result}`);
+    }
+    return true;
+  }) as Verify;
+}
+
 function buildVirtualMachineBch2026ForProvider(
   provider: NetworkProvider | undefined,
   observer: ProviderVmObserver | undefined,
@@ -918,6 +1052,9 @@ function buildVirtualMachineBch2026ForProvider(
   const instructionSet = createInstructionSetBch2026(standard, {
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
+  if (limits?.maximumMoney !== undefined && limits.maximumMoney > LIBAUTH_MAXIMUM_MONEY) {
+    installMoneyLimit(instructionSet, consensus, limits.maximumMoney, standard);
+  }
   let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   let closes: { last: FailedClose | undefined } | undefined;
   if (limits !== undefined && usesFastVmPaths(provider)) {

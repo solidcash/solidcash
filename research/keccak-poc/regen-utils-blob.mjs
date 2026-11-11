@@ -1,5 +1,5 @@
 // Regenerate the @solidcash/utils keccak library constants from genvar.mjs (the re-entrant registrar).
-// Run after changing the keccak generator: node keccak-poc/regen-utils-blob.mjs
+// Run after changing the keccak generator: node research/keccak-poc/regen-utils-blob.mjs
 import { readFileSync, writeFileSync } from 'node:fs';
 import { asm, binToHex } from './vm.mjs';
 import { genKeccakRegistrar } from './genvar.mjs';
@@ -14,7 +14,7 @@ const blobHex = binToHex(blob);
 const blobHash = binToHex(hash256(blob));
 const length = blob.length;
 
-const path = new URL('../packages/utils/src/keccak-library.ts', import.meta.url);
+const path = new URL('../../packages/utils/src/keccak-library.ts', import.meta.url);
 let src = readFileSync(path, 'utf8');
 src = src.replace(/(KECCAK256_LIBRARY_BLOB = ')[0-9a-f]*(';)/, `$1${blobHex}$2`);
 src = src.replace(/(KECCAK256_LIBRARY_BLOB_HASH = ')[0-9a-f]*(';)/, `$1${blobHash}$2`);

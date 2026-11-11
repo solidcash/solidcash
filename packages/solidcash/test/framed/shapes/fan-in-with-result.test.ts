@@ -118,7 +118,7 @@ const SPENDER_KEY = new Uint8Array(32).fill(0xb1);
 const ROOT_ACCOUNT = new Uint8Array(32).fill(0xb2);
 const ESCROW_ACCOUNT = new Uint8Array(32).fill(0xb3);
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' struct Rec { string tag; int amount; }'
   + ' interface IStore { function getFee() view returns (int); }'
   + ' interface IArbiter { function setArbitrator(address who); }'
@@ -636,7 +636,7 @@ function buildOnePullPlan(order: 'published' | 'written' = 'published'): {
   const escrowAddress = seededAddress(escrowLabel);
   const tokenAddress = seededAddress(tokenLabel);
 
-  const source = 'pragma solidcash ^0.14.0;'
+  const source = 'pragma solidcash ^0.50.0;'
     + ' interface IStore { function getFee() view returns (int); }'
     + ' interface IToken {'
     + '   function approve(address spender, int amount);'
@@ -896,7 +896,7 @@ describe('the obstacles this flow replica works around', () => {
     // The site's digest visits the arguments last first, so the fee's final use is the second argument's read; the
     // site keeps the fee for the struct's read as well. The machine cases are in
     // `solidc/test/framed/master/composed-arguments.test.ts`, and the settled edge in `edges/struct-argument-edge`.
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' struct Rec { string tag; int amount; }'
       + ' interface IStore { function getFee() view returns (int); }'
       + ' interface IEscrow { function pay(Rec r, int fee); }'
@@ -927,13 +927,14 @@ describe('the obstacles this flow replica works around', () => {
 
   it('refuses the same pull when its groups are declared in the body\'s write order', () => {
     // The derivation walks the groups in the published target order, so the recipient's walk reads the holder's
-    // node, takes it for an insert's predecessor, and the holder's walk then reads past the segment.
+    // node, takes it for an insert's predecessor, and the holder's walk then reads past the segment: it asks the
+    // exhausted segment for a record's eight-byte header.
     const written = buildOnePullPlan('written');
     expect(derivationRefusal(written.plan, written.artifacts, 'pull-1')).toStrictEqual({
       message: 'FRAMED_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
         + '(close of segment 0)',
       objection: 'Program called an OP_SPLIT operation with an invalid index. '
-        + 'stack item length: 2; requested split index: 4.',
+        + 'stack item length: 0; requested split index: 8.',
     });
   });
 });

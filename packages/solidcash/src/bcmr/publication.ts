@@ -10,6 +10,7 @@ import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { sha256 } from '@solidcash/utils';
 import type { Output } from '../interfaces.js';
+import type { EncodedRegistry } from './registry.js';
 
 /** Raised when metadata cannot be published as asked. */
 export class BcmrError extends Error {
@@ -113,4 +114,24 @@ function base32(bytes: Uint8Array): string {
  */
 export function ipfsCidV1Raw(content: Uint8Array): string {
   return `b${base32(concat([Uint8Array.of(0x01, 0x55, 0x12, 0x20), sha256(content)]))}`;
+}
+
+/**
+ * The URIs a publication offers: stated, named by a function of the encoded registry, or `ipfs://<CIDv1 of the
+ * registry>` when omitted. A function is called once, before the transaction is built, so an issuer can upload the
+ * bytes to a pinning service and publish the address that service gives them, which is not known beforehand.
+ */
+export type PublicationUris =
+  | readonly string[]
+  | ((registry: EncodedRegistry) => readonly string[] | Promise<readonly string[]>);
+
+export async function resolvePublicationUris(
+  stated: PublicationUris | undefined, encoded: EncodedRegistry,
+): Promise<readonly string[]> {
+  if (typeof stated !== 'function') return stated ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`];
+  const uris = await stated(encoded);
+  if (!Array.isArray(uris) || uris.length === 0 || uris.some((uri) => typeof uri !== 'string' || uri.length === 0)) {
+    throw new BcmrError('publicationUris named no URI: a publication needs at least one');
+  }
+  return uris;
 }

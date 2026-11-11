@@ -63,15 +63,16 @@ describe('if/else entry writes: an arm that writes one entry twice', () => {
   });
 
   it('leaves a single write per arm byte-identical', () => {
-    // Bytecode of the pre-fix build (958fb0120) as e3d85e0b4 encodes it: with its shared helpers expanded, every entry
-    // runs the pre-fix instructions. The default and direct conventions compile these alike.
+    // Bytecode of the pre-fix build (958fb0120) as the 2026-11-05 landing encodes it, void records and filler locks
+    // included: every entry still runs the pre-fix instructions. The default and direct conventions compile these
+    // alike.
     const before: Record<string, string> = {
       'k = k + 1; if (c) { m[k] = a; } else { m[k] = 5; }':
-        'c6c26833838e01031123d97f9041258962cfb5a840bda3d75f2bedfc6f583693',
+        '2c01f1ff7cf256a9ded66cc4b701078460cfdf5e833a1917dd878198edbb6fad',
       'if (c) { m[k] = a; } else { n[k] = 5; }':
-        '87a29a67b4daac2b82efd0255285131a83bb8b36ac3f7c0683f8ae519e19a18e',
+        '05f639980f015a2070aa5185137c8124c7b228c73d2fc23323f70b33d7ad24b6',
       'k = k + 1; if (c) { m[k] = a; n[k] = 1; } else { m[k] = 5; }':
-        'fd05a8d0308b02bc0d4c29d0b15b01b31374d37f4f1cb77879dd1149db07a593',
+        '09d9095801bb5232baba78f7dbfb994fcb988ce3c40d414936aca462d377b5e9',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);
@@ -109,17 +110,18 @@ describe('if entry writes: the condition runs once, each arm in its own order', 
   });
 
   it('leaves the shapes that converted soundly byte-identical', () => {
-    // Bytecode of the build before this fix (6bb226632) as e3d85e0b4 encodes it: with its shared helpers expanded,
-    // every entry runs that build's instructions. The default and direct conventions compile these alike.
+    // Bytecode of the build before this fix (6bb226632) as the 2026-11-05 landing encodes it, void records and filler
+    // locks included: every entry still runs that build's instructions. The default and direct conventions compile
+    // these alike.
     const before: Record<string, string> = {
       // The condition reads no mapping, or only the one the last write mutates.
-      'if (c) { m[k] = a; n[k] = 1; }': '3f26a01a8a88b5dc5adaf67e89b612eab247af39d46f2f4a75a98931fefbee89',
-      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'e1f050802029d476d73bdfab4ac6538ca87bd722229da7d8f17bd928836f2d29',
+      'if (c) { m[k] = a; n[k] = 1; }': '5ad0a5c594f2d123fdce971c6b7cf457743c833895bba03606cdefcc847395e6',
+      'if (m[k] == 0) { n[k] = 2; m[k] = 1; }': 'a5e7cf2990578e93906531cb2b08e516fb2814b96dd41b1f11f5a4fc3727ce22',
       // The merge runs n[k] ahead of the else arm's m[k]; neither write observes the other.
       'k = k + 1; if (c) { n[k] = 3; } else { m[k] = 1; n[k] = 2; }':
-        '32c752d6c9b40a48fbbf22fadbf3bda82741e15ab3cd1524e709c4db87550a93',
+        'a3a35f9f5954030bc36fba4b5c1bda94ff069dfd4299b8f978ed9fbed9098039',
       'k = k + 1; if (c) { n[k] = 3; m[k] = 4; } else { m[k] = 1; n[k] = 2; }':
-        '3ee29aae26c971b5853d5969e2eb916d159bce8123ea0855d51e096fbdb89393',
+        '120c4324cd3618dc647388a59e2f6b5640df1a2b0339fceee43aa3558ccacc58',
     };
     for (const [body, hash] of Object.entries(before)) {
       expect(sha(body, {}), body).toBe(hash);

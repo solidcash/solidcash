@@ -205,7 +205,8 @@ describe('a plain root that pulls a token through its allowance, then records th
     expect(await holdings(c)).toStrictEqual([81n, 19n, 11n, 19n]);
     expect(refusedOn(joined, structuredClone(joined.transaction) as VmTransaction)).toStrictEqual([]);
     // The allowance's node, which the token's frame rewrites in place in its only segment.
-    const slot = binToHex(keyToSlotMulti([USER_LOCK, c.pool.address]));
+    const allowances = artifacts.Token!.stateLayout!.collections!.find((collection) => collection.name === '_allowances');
+    const slot = binToHex(keyToSlotMulti([USER_LOCK, c.pool.address], allowances));
     const node = joined.draft.layout.participants.find((placed) => placed.id.endsWith(`-_allowances-${slot}`));
     expect(node).toBeDefined();
     const master = frameOf(joined, 'transferFrom');

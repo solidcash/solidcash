@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { asmToScript, scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import {
-  declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript,
+  declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript, keptSegmentsSkipRuntimeScript, keptSegmentsSkipScript,
 } from '../../../src/framed/master/declared-view.js';
 
 /**
@@ -35,7 +35,7 @@ const PING = 'interface IOther { function ping(); }'
 const OTHER = '0x' + '11'.repeat(31) + 'ee';
 
 /** The write precedes the entry's only call, so it lands in the segment the frame opens with. */
-const WRITE_FIRST_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const WRITE_FIRST_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   mapping(address => uint) balances;'
@@ -47,7 +47,7 @@ const WRITE_FIRST_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' }';
 
 /** The write follows an unconditional call, so it lands in the second segment the run opens. */
-const WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   mapping(address => uint) balances;'
@@ -59,7 +59,7 @@ const WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' }';
 
 /** A call the source does not fix precedes the write, so no segment index names it and every call precedes it. */
-const WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   mapping(address => uint) balances;'
@@ -71,7 +71,7 @@ const WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + ' }';
 
 /** The same three positions for a write that lands on the entry's own record rather than a mapping node. */
-const RECORD_WRITE_FIRST_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const RECORD_WRITE_FIRST_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   function bump() {'
@@ -81,7 +81,7 @@ const RECORD_WRITE_FIRST_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + '   }'
   + ' }';
 
-const RECORD_WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const RECORD_WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   function bump() {'
@@ -91,7 +91,7 @@ const RECORD_WRITE_AFTER_ONE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + '   }'
   + ' }';
 
-const RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   uint public count;'
   + '   function bump(bool go) {'
@@ -105,7 +105,7 @@ const RECORD_WRITE_AFTER_GUARDED_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}
  * A write to a field the record only sizes: the bytes live in a chunk run the epilogue pins, so the record is
  * declared written in the run's last segment wherever the source makes the write relative to the calls.
  */
-const SIZED_FIELD_BEFORE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const SIZED_FIELD_BEFORE_CALL_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   string[] public names;'
   + '   function push() {'
@@ -115,7 +115,7 @@ const SIZED_FIELD_BEFORE_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
   + '   }'
   + ' }';
 
-const SIZED_FIELD_AFTER_CALL_SOURCE = `pragma solidcash ^0.14.0;${PING}`
+const SIZED_FIELD_AFTER_CALL_SOURCE = `pragma solidcash ^0.50.0;${PING}`
   + ' contract Ledger {'
   + '   string[] public names;'
   + '   function push() {'
@@ -145,6 +145,9 @@ const sizedFieldAfterCall =
 
 const RUNTIME_SKIP = Buffer.from(declaredSegmentsSkipRuntimeScript()).toString('hex');
 const SKIP_ONE = Buffer.from(declaredSegmentsSkipScript(1)).toString('hex');
+// A read of the entry's own record steps over the segments the head keeps, one split each.
+const KEPT_RUNTIME_SKIP = Buffer.from(keptSegmentsSkipRuntimeScript()).toString('hex');
+const KEPT_SKIP_ONE = Buffer.from(keptSegmentsSkipScript(1)).toString('hex');
 
 describe('the segment a derived mapping write lands in, as an artifact publishes it', () => {
   it('publishes the frame\'s opening segment for a write that precedes the entry\'s calls', () => {
@@ -172,12 +175,12 @@ describe('the segment a write to the entry\'s own record lands in, as an artifac
   it('publishes the fixed index a call precedes the record write in', () => {
     expect(publishedWriteSegment(recordWriteAfterOneCall, 'Ledger', 'bump')).toBe(1);
     // The record is rebuilt and compared against the declaration of the segment its write landed in.
-    expect(emittedProgram(recordWriteAfterOneCall)).toContain(SKIP_ONE);
+    expect(emittedProgram(recordWriteAfterOneCall)).toContain(KEPT_SKIP_ONE);
   });
 
   it('publishes the run\'s last segment for a record write every call precedes', () => {
     expect(publishedWriteSegment(recordWriteAfterGuardedCall, 'Ledger', 'bump')).toBe('last');
-    expect(emittedProgram(recordWriteAfterGuardedCall)).toContain(RUNTIME_SKIP);
+    expect(emittedProgram(recordWriteAfterGuardedCall)).toContain(KEPT_RUNTIME_SKIP);
   });
 });
 

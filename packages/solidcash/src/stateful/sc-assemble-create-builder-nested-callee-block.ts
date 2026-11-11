@@ -98,6 +98,8 @@ export interface AssembleCreateBuilderNestedCalleeBlockCtx {
   slotIndex: number;
   loopIdxRanges: readonly { start: number; count: number }[];
   publicSelfIdentity: { categoryId: string; lockingBytecode: string };
+  /** The caller's slot reads this call's record. */
+  callerReadsRecord: boolean;
 }
 
 /**
@@ -290,7 +292,13 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                 ?? (typeof rawKeyValue === 'string' && (bCollection?.keyTypes?.[0] ?? bCollection?.keyType) === 'string'
                   ? utf8ToBin(rawKeyValue) : undefined)
                 ?? (rawKeyValue instanceof Uint8Array || typeof rawKeyValue === 'bigint'
-                  || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined);
+                  || typeof rawKeyValue === 'boolean' ? rawKeyValue : undefined)
+                // A key the compiler states as an expression rather than a visible parameter (a literal
+                // address, `address(this)`, a sorted local) has no argument value; resolve it the same way
+                // the per-key encoding below does, or the slot's batch witnesses are never published.
+                ?? (bEntryAccess.keySources?.[0]?.kind === 'expression'
+                  ? evalComputedKey(bEntryAccess.keySources[0].expressionLabel, bRouteArgs, bAbiFunc!.inputs)
+                  : undefined);
               // The callee reconstructs msg.sender from the authenticated caller identity anchor. Its entry
               // witness must use that same locking bytecode, even when the caller executes at another lock.
               const callerAddress = hexToBin(publicSelfIdentity.lockingBytecode);
@@ -637,10 +645,13 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
         // The builder emits B's outputs as master + one per requiredDataNftIndices + one per remaining
         // block input, so the two extents only line up when the layout declares exactly those data slots.
         const layoutDataSlots = bBlockLayout.slots.filter((s) => s.kind === 'dataNft').length;
-        if (ctx.bBlockInputs.length === physicalFixedSize && bReturnFunderOffset === reOffset
+        // A void callee whose caller reads no record names none: its slot compacts, as in a standalone run.
+        const namesNoRecord = !ctx.callerReadsRecord && (bAbiFunc?.outputs?.length ?? 0) === 0;
+        if (!namesNoRecord && ctx.bBlockInputs.length === physicalFixedSize && bReturnFunderOffset === reOffset
           && layoutDataSlots === bRequiredNftIndices.length) {
           ctx.bReturnEventInBlock = true;
-        } else {
+        } else if (!namesNoRecord || !bHasLoop) {
+          // Only outputs compact: a loop's entry inputs stay past the whole block, so its funder stays too.
           ctx.bBlockInputs.splice(bReturnFunderOffset, 1);
           if (!hadFullBlockKinds && !bHasLoop) ctx.bBlockInputs = undefined;
         }

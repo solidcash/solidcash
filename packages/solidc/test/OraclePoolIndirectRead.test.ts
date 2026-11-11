@@ -32,7 +32,7 @@ interface Coin {
   readonly unlocking: Uint8Array;
 }
 
-const P = 'pragma solidcash ^0.14.0;';
+const P = 'pragma solidcash ^0.50.0;';
 // `p()` reaches the read only through a pointer, so its target is entered by an indirect call.
 const INDIRECT = `${P} contract R {`
   + ' function stamp() internal view returns (uint32) { return block.timestamp; }'
@@ -141,6 +141,7 @@ describe('a block.* read in a function-pointer target', () => {
 
   it('compiles, and no input its caller fills carries a binding or a coin index', () => {
     expect(artifact.usesBlockOracle).toBe(true);
+    expect(fnOf(artifact, 'read').indirectPoolReads).toEqual({ blockInfo: true });
     expect(artifact.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
     expect(fnOf(artifact, 'read').inputs.map((entry) => entry.name))
       .not.toContain('__internal__blockOracleInputIndex');
@@ -174,6 +175,7 @@ describe('an ordinary reader', () => {
     expect(artifact.constructorInputs).toEqual([{ name: ORACLE_POOL_PARAMETER, type: 'bytes32' }]);
     expect(fnOf(artifact, 'read').inputs.map((entry) => entry.name)).toContain('__internal__blockOracleInputIndex');
     expect(artifact.bytecode).not.toMatch(BINDING_DEFINE);
+    expect(artifact.abi.every((fn) => fn.indirectPoolReads === undefined)).toBe(true);
     expect(artifact.bytecode).not.toContain('OP_BEGIN');
   });
 

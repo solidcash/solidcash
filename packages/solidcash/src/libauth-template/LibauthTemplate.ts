@@ -562,13 +562,25 @@ const generateTemplateScenarioTransaction = (
         csOutput, libauthOutput, contract, lockingBytecodeParamsMapping,
       ),
       token: serialiseTokenDetails(libauthOutput.token),
-      valueSatoshis: Number(libauthOutput.valueSatoshis),
+      valueSatoshis: scenarioValueSatoshis(libauthOutput.valueSatoshis),
     };
   });
 
   const version = libauthTransaction.version;
 
   return { inputs, locktime, outputs, version };
+};
+
+/**
+ * A scenario's `valueSatoshis`: a number while it is exact, else the 16-hex-digit little-endian uint64 the template
+ * format takes for the full range, since a value past `Number.MAX_SAFE_INTEGER` would round and break the signatures
+ * the scenario checks.
+ */
+const scenarioValueSatoshis = (value: bigint): number | string => {
+  if (value <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(value);
+  let hex = '';
+  for (let rest = value, byte = 0; byte < 8; byte += 1, rest >>= 8n) hex += (rest & 0xffn).toString(16).padStart(2, '0');
+  return hex;
 };
 
 const generateTemplateScenarioSourceOutputs = (
@@ -580,7 +592,7 @@ const generateTemplateScenarioSourceOutputs = (
   return zippedInputs.map(([csInput, libauthInput], inputIndex) => {
     return {
       lockingBytecode: generateTemplateScenarioBytecodeForSourceOutputs(csInput, libauthInput, inputIndex, 'p2pkh_placeholder_lock', inputIndex === slotIndex),
-      valueSatoshis: Number(csInput.satoshis),
+      valueSatoshis: scenarioValueSatoshis(csInput.satoshis),
       token: serialiseTokenDetails(csInput.token),
     };
   });
@@ -964,7 +976,7 @@ const generateBodyScenarioTransaction = (
       csOutput, libauthOutput, contract, bodyLockingBytecodeParamsMapping,
     ),
     token: serialiseTokenDetails(libauthOutput.token),
-    valueSatoshis: Number(libauthOutput.valueSatoshis),
+    valueSatoshis: scenarioValueSatoshis(libauthOutput.valueSatoshis),
   }));
 
   return { inputs, locktime: libauthTransaction.locktime, outputs, version: libauthTransaction.version };

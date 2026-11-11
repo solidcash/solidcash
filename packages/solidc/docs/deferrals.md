@@ -3273,6 +3273,24 @@ run the solc corpus negatives and the `.sol` fixtures once.
 
 **Revisit if:** the corpus strictness work resumes, or a port relies on solc rejecting a missing visibility.
 
+## `OP_RETURN` outputs in framed and the message bus (2026-11-03)
+
+The user's rule (2026-11-03): no `OP_RETURN` output signals anything or fills a slot; a filler is an event-like
+output anyone may sweep after 144 blocks. Asked which shipped uses to remove: "bus is going to be retired so we leave
+it be. fillers should not use OP_RETURN, use the same 144 blocks maturing event-like outputs to stay consistent.
+framed will be retired after tre too, so leave op_returns for it in place. but mark my comments".
+
+- Done: the direct convention, the shared stateful SDK and upgrades leave a token-less filler at
+  `fillerLockingBytecode()` (576 sat, swept after 144 blocks) where they left a zero-value `OP_RETURN`: drained
+  containers, first-deposit and upgrade pads, the value-chunk suffix anchor. The container covenant pins it, and the
+  master counts it as no kept balance (`emitSatoshiContainerKeptValue`). A sub-dust change that later outputs follow
+  now asks for more funding; as the last output it is dropped. The message-bus verifier's drain rule takes the filler
+  too, as bus participants share the direct container covenant.
+- Deferred: framed keeps its `OP_RETURN` run-lead marker (spec 4b), its creation digest and its container
+  placeholder until it retires; each site carries a comment. User data (`createOpReturnOutput`, Solidity `nullData`)
+  and BCMR's publication output are not fillers.
+
+**Revisit if:** framed outlives TRE's release, or BCHN's single-`OP_RETURN` relay rule bites a framed transaction.
 
 ## A message-bus handler whose entry calls an internal function reading a constructor parameter (2026-11-04)
 
@@ -3289,3 +3307,74 @@ shape and run its test once.
 
 **Revisit if:** a message-bus port calls internal functions that read immutables or constructor arguments.
 
+## A child genesis a direct creator cannot fold (2026-11-05)
+
+**What:** a direct creator folds its child's constructor into its own check rather than running it. A statement the
+fold could not express used to vanish: `genesisState` came out null and the covenant pinned type defaults, so a child
+whose constructor says `require(tx.locktime > 4000000000)` deployed, and a write the fold could not express stayed 0.
+Each such statement is now refused by name (`ChildGenesisFoldError`, `ChildGenesisReadRefusals.test.ts`). Framed keeps
+its own replay refusals. The user's rule of 2026-11-04: a silently miscompiled shape gets a named refusal now, then a
+follow-up stream builds each shape and lifts its refusal.
+
+**Why deferred:** each shape below is a build of its own. They were silently wrong before the refusal, so nothing that
+worked stopped working; contracts that compiled by accident now say why they do not.
+
+**What it'd take, in order:**
+- nested `new` in a folded constructor (a three-contract chain left `B.a` at 0);
+- the requires and writes the fold misses: state, `msg.value`, `tx.*`, `checkSig`, branches the state join cannot
+  express, `emit`, transfers, and mapping writes whose keys may be one key;
+- the `DOMAIN_SEPARATOR` hash: `keccak256`, `abi.encode`, `block.chainid` and `address(this)`;
+- a chain read in a child's genesis, which `fix/child-chainread` folds to the creator's own read on per-contract
+  oracles and which now reads the creator's pool.
+
+**Revisit if:** a port needs a direct creator for a child with such a constructor; the framed convention creates it
+today.
+
+
+## A call argument computed from `block.number` (2026-11-05)
+
+**Deferred:** a published call argument that reads `block.*` describes that read as `unsupported`, so the SDK refuses
+the call by name ("expression-based argSources that cannot be auto-resolved") and `withExternalCall()` must state it.
+MasterChef's `updatePool` mints from `block.number`, so a fresh compile of it stops at `deposit`.
+
+**Why now:** oracle pools removed the `__block_number` register the argument used to name. Prebuilt 0.13.1 fixtures hid
+the gap until the landing regenerated them. It fails closed.
+
+**What it'd take:** a `block.*` argument source in the compiler's published expressions, and the SDK evaluator reading
+it from the info coin the transaction co-spends. The evaluator is synchronous and a pool read is not, so the read
+belongs in the caller state snapshot taken before the arguments resolve.
+
+**Revisit if:** a port's call argument reads the chain; `MasterChefDeposit` pins the refusal and flips when this lands.
+
+
+## A compat call that cannot attest its edge (2026-11-05)
+
+**Deferred:** a callee reading a contract `msg.sender` requires its caller's edge record (F1). A Solidity-compat call
+attests one only when it runs straight-line from an entry and its payload is a visible `abi.encode*` the covenant reads.
+An opaque `bytes` payload, a call in a loop or a branch, and a call a helper keeps behind `OP_INVOKE` carry none, so such
+a caller is refused at the callee's edge check. A nested proxy's delegated call and a late-discovered transitive call
+carry none either: the SDK tags only the root delegate's calls. A return probe of a raw call into a returning callee that
+reads `msg.sender` runs without the edge, so it reads as a failed call. All of them fail closed.
+
+**Why deferred:** the digest needs the method and the callee's argument pushes, which only the visible forms give.
+
+**What it'd take:** a per-iteration edge index for loops; a caller-side digest of an opaque payload's own bytes, with the
+callee's digest over its calldata to match; edge tags in the nested-proxy and late-transitive planners, and an edge in the
+return probe's transaction.
+
+**Revisit if:** a port's raw call into a `msg.sender` reader is refused at the callee's edge check.
+
+## A direct callee's dynamic write beside an entry update (2026-11-05)
+
+**Deferred:** a direct callee whose run updates a mapping entry and writes dynamic state is refused by name (`... beside
+the entry slot`), as are one with a sorted insert and one with mapping value chunks. A leaf writer whose run grows,
+followed by another callee block, is refused at its caller's record pin, and sorted inserts in a callee beside a dynamic
+write are untested. All of them fail closed.
+
+**Why deferred:** a run can follow the block, as it does past events and records, but with an entry beside it the caller's
+input fails on its call record: the trial placed the callee's learned data commitment on the record slot.
+
+**What it'd take:** the trace-learned outputs of such a callee sited past its entry slot, then a loop of input pads for a
+run that outgrows the inputs behind it.
+
+**Revisit if:** a port's callee writes a mapping and a string in one call and meets this refusal.

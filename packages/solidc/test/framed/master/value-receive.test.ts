@@ -45,11 +45,11 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
 /** A contract whose only entry is `receive()`, so the master has no dispatcher. */
-const RECEIVE_SOURCE = 'pragma solidcash ^0.14.0;'
+const RECEIVE_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Vault { receive() external payable { require(true); } }';
 
 /** `receive()` beside a payable and a non-payable function, behind the dispatcher. */
-const MIXED_SOURCE = 'pragma solidcash ^0.14.0;'
+const MIXED_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Vault {'
   + '   receive() external payable { require(true); }'
   + '   function deposit() public payable { require(msg.value > 0); }'
@@ -57,11 +57,11 @@ const MIXED_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' }';
 
 /** No payable body at all. */
-const PLAIN_SOURCE = 'pragma solidcash ^0.14.0;'
+const PLAIN_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Plain { function ping(int x) public { require(x >= 0); } }';
 
 /** `receive()` that books what it receives in a record. */
-const LEDGER_SOURCE = 'pragma solidcash ^0.14.0;'
+const LEDGER_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Ledger {'
   + '   int public received;'
   + '   receive() external payable { this.received = this.received + msg.value; }'
@@ -231,14 +231,14 @@ describe('receive(), compiled framed', () => {
     })).toStrictEqual({ accepted: true });
   });
 
-  it('leaves the value to the validator when another master of its contract shares the transaction', () => {
-    const alone = { source: RECEIVE_SOURCE, containersOut: [AMOUNT], validator: { secondMaster: false } };
-    expect(verdict({ ...alone, value: AMOUNT })).toStrictEqual({ accepted: true });
-    expect(verdict({ ...alone, value: AMOUNT, containersOut: [] }).accepted).toBe(false);
-    // Shared, the frame is weighed with every other frame of its contract by the validator (V7), not by itself.
-    const shared = { ...alone, validator: { secondMaster: true } };
-    expect(verdict({ ...shared, value: AMOUNT })).toStrictEqual({ accepted: true });
-    expect(verdict({ ...shared, value: AMOUNT, containersOut: [] })).toStrictEqual({ accepted: true });
+  it('leaves the value to the validator whenever one covers the frame', () => {
+    // A covered frame is weighed with every other frame of its contract by the validator (V7), not by itself, whether
+    // or not another master of its contract shares the transaction.
+    for (const secondMaster of [false, true]) {
+      const covered = { source: RECEIVE_SOURCE, containersOut: [AMOUNT], validator: { secondMaster } };
+      expect(verdict({ ...covered, value: AMOUNT })).toStrictEqual({ accepted: true });
+      expect(verdict({ ...covered, value: AMOUNT, containersOut: [] })).toStrictEqual({ accepted: true });
+    }
   });
 });
 

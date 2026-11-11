@@ -25,7 +25,7 @@ import {
   getEntryNftAddress,
   getSatoshiContainerAddress,
 } from './covenant-helpers.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { voidRecordUnread, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   assertAcyclicExternalCallPath,
   snapshotExternalCallFrontier,
@@ -817,7 +817,7 @@ export async function expandCreateBuilderLateTransitive(
         physicalOwner.batchEntryLockingBytecodes = lateBatchEntryLockingBytecodes;
         physicalOwner.callerIdentity = parentCallerIdentity;
         physicalOwner.returnEventInBlock = lateLayout?.slots
-          .some((slot) => slot.kind === 'returnEvent');
+          .some((slot) => slot.kind === 'returnEvent') && !voidRecordUnread(groupSlot, selectedFn);
         // Hidden sender identity is derived from the physical edge's parent. Once a later writer owns the
         // carrier, retaining the provisional edge would make C observe A as msg.sender in A -> B -> C.
         allGroupEcSlots[physicalOwnerIndex] = groupSlot;
@@ -903,7 +903,8 @@ export async function expandCreateBuilderLateTransitive(
           // Late-discovered callees own the same compiler-declared return slot as
           // eagerly prepared callees. Keep ownership with the physical block so
           // materialization and both producer/consumer witnesses use that slot.
-          returnEventInBlock: lateLayout?.slots.some((slot) => slot.kind === 'returnEvent'),
+          returnEventInBlock: lateLayout?.slots.some((slot) => slot.kind === 'returnEvent')
+            && !voidRecordUnread(groupSlot, selectedFn),
         }),
         ...(latePlannedEntryInserts.length > 0 && {
           plannedEntryInserts: latePlannedEntryInserts,

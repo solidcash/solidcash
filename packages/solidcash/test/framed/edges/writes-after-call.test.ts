@@ -29,7 +29,7 @@ const tokenWith = (
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment } });
 
-const stateful = (post: string): string => 'pragma solidcash ^0.14.0;'
+const stateful = (post: string): string => 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Ledger {'
@@ -56,8 +56,8 @@ const BEFORE = commitment(5n);
 const MIDDLE = commitment(6n);
 const AFTER = commitment(8n);
 
-// The record sits one participant on: the caller, the validator's head, the facet it binds, then the record.
-const RECORD_INDEX = 3;
+// The record sits after the caller, the validator's head and the two facets it binds.
+const RECORD_INDEX = 4;
 
 /** The record kept in place: read where the transaction spends it and written where the body leaves it. */
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
@@ -106,8 +106,8 @@ function planFor(source: string): { plan: CompositionDraftPlan; artifacts: Retur
   };
   const plan: CompositionDraftPlan = {
     blocks,
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: 'user', index: 5 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: 'user', index: 6 }],
     masters: [ledgerMaster, calleeMaster],
     inputs: {
       'ledger-1': { source: { lockingBytecode: ledger.lockingBytecode, valueSatoshis: 20_000n, token: tokenWith(ledger.category, 'minting', new Uint8Array(0)) } },

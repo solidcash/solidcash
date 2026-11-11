@@ -44,7 +44,7 @@ export default {
   fingerprint: '94e416504230dbd4ab77bfbe23a6518120a6575169e598e6ed4e864fa417f8e4',
   compiler: {
     name: 'solidc',
-    version: '0.14.0-beta.1',
+    version: '0.50.0',
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
@@ -54,7 +54,7 @@ export default {
       messageBus: false,
     },
   },
-  updatedAt: '2026-10-23T08:18:14.252Z',
+  updatedAt: '2026-11-06T20:18:19.180Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

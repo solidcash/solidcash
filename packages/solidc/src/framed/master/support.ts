@@ -30,6 +30,7 @@ import {
   isChunkableValueType,
   isDynamicStorageType,
   isOutputOnlyBlockSlot,
+  EVENT_CHUNK_BYTES,
 } from '@solidcash/utils';
 import type { CompilerOptions, PublishedLoopEffects, Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -65,6 +66,7 @@ import {
   HexLiteralNode,
   IdentifierNode,
   IndirectCallNode,
+  InstantiationNode,
   InterfaceNode,
   IntLiteralNode,
   LiteralNode,
@@ -102,9 +104,38 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../../ast/Operat
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
 import { singleLiteralElement } from '../../analysis/InitializedArrayElement.js';
 import { isDirectOwnerTransferNode } from '../../semantic/branchOps.js';
+import { getEventChunkCount } from '../../semantic/maxEncodedSize.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
 import { bodyLoopEffects, loopEffectKinds } from './loop-effects.js';
+
+/**
+ * How many listed outputs a framed emit takes: one commitment, or as many as its event's widest payload needs in
+ * pieces of `commitmentLimit`, the first under the event covenant and each further one under its continuation covenant
+ * (the direct convention's wide-event layout). An emit whose event the compiler has not resolved takes one.
+ */
+export function framedEmitChunks(
+  info: { readonly eventDefinition?: { readonly parameters: readonly { readonly type: Type }[] } },
+  commitmentLimit: number = EVENT_CHUNK_BYTES,
+): number {
+  const parameters = info.eventDefinition?.parameters;
+  return parameters === undefined ? 1 : getEventChunkCount(parameters, commitmentLimit);
+}
+
+/** The event outputs a framed body lists: its emits' chunks (`framedEmitChunks`), in emit order. */
+export function framedEventOutputCount(
+  body: Pick<FunctionDefinitionNode, 'emitInfos'>, commitmentLimit: number = EVENT_CHUNK_BYTES,
+): number {
+  return (body.emitInfos ?? []).reduce((total, info) => total + framedEmitChunks(info, commitmentLimit), 0);
+}
+
+/** The position among a framed body's listed event outputs of emit `emitIndex`'s first chunk. */
+export function framedEventPosition(
+  body: Pick<FunctionDefinitionNode, 'emitInfos'>, emitIndex: number, commitmentLimit: number = EVENT_CHUNK_BYTES,
+): number {
+  return (body.emitInfos ?? []).filter((info) => info.emitIndex < emitIndex)
+    .reduce((total, info) => total + framedEmitChunks(info, commitmentLimit), 0);
+}
 
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
@@ -255,6 +286,12 @@ function isExternalCallParameter(name: string): boolean {
     || /^__internal__extcallAnchorIdx\d+$/.test(name)
     || /^__internal__extcallMasterIdx\d+$/.test(name)
     || /^__internal__loopTargets\d+$/.test(name)
+    // The direct path multiplies a computed loop index by the physical width of one co-spent occurrence. A framed
+    // body co-spends its callees through the frame's records, so it takes no such operand.
+    || /^__internal__loopTargetStride\d+$/.test(name)
+    // The direct path pins a straight-line computed target against this lock witness. A framed body takes the
+    // callee from its frame records instead.
+    || /^__internal__computedCallTarget\d+$/.test(name)
     // The direct path names the output that carries a call's return event through this operand, one per returning
     // slot (the bare name when there is one, an indexed name per slot when there are several). It reads the value
     // back from that output, which a framed master does not write: its frame records the returned value in
@@ -311,6 +348,40 @@ export interface FramedBatchKey {
    * group yields, so the derivation emits the key once that target is derived (`framedBatchDerivationRounds`).
    */
   readonly targetReads?: readonly number[];
+  /**
+   * A value the body reads back through one of its own calls: the record the call at that fixed position binds,
+   * whose `result` the master reads from its own witness block where the derivation runs, decoded as the call's
+   * declared return. The call site later requires the result it uses to be that record's.
+   */
+  readonly callResult?: { readonly recordIndex: number; readonly returnTypes: readonly Type[] };
+}
+
+/**
+ * The call record a key's value is read back through, when the key is exactly one external call's single result
+ * and that call sits at a position the source fixes: not in a loop, and behind the same number of calls on every
+ * path, as the only call of its statement.
+ */
+function callResultKey(
+  expression: ExpressionNode,
+  entry: FunctionDefinitionNode,
+): { readonly recordIndex: number; readonly returnTypes: readonly Type[] } | undefined {
+  let current: ExpressionNode = expression;
+  while (current instanceof CastNode) current = current.expression;
+  if (!(current instanceof ExternalFunctionCallNode)) return undefined;
+  const returnTypes = current.callInfo?.returnTypes ?? [];
+  if (returnTypes.length !== 1) return undefined;
+  const places = bodyReadPlaces(entry);
+  const range = places.calls.get(current);
+  if (range === undefined || range.least !== range.most || places.repeating.has(current)) return undefined;
+  // Another call in the same statement ahead of this one would shift its record by one.
+  const position = places.positions.get(current);
+  let callsInStatement = 0;
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof ExternalFunctionCallNode && node.foldedIntoDeploy !== true
+      && places.positions.get(node) === position) callsInStatement += 1;
+  });
+  if (position === undefined || position < 0 || callsInStatement !== 1) return undefined;
+  return { recordIndex: range.least, returnTypes };
 }
 
 /**
@@ -398,13 +469,16 @@ function resolveBatchKey(
         + 'compile-time value',
     };
   }
+  const fromCall = callResultKey(expression, entry);
+  if (fromCall !== undefined) return { kind: 'key', key: { callResult: fromCall } };
   const unavailable = keyOperandUnavailable(expression, constants, entry);
   if (unavailable !== undefined) {
     return {
       kind: 'refusal',
       reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' reads `
         + `${unavailable}, and a master derives a target slot only from a bare parameter, the frame's sender, a `
-        + 'value of its own record, or a compile-time value the body holds at its start',
+        + 'value of its own record, a call result at a fixed position, or a compile-time value the body holds at '
+        + 'its start',
     };
   }
   const derived = deriveKeyExpression(expression, entry, constants);
@@ -514,9 +588,35 @@ function resolveKeyIdentifier(
   seen.add(name);
   let definition: ExpressionNode | undefined;
   let reassigned = false;
+  // A local declared without a value and assigned once, by a statement every path runs, holds that value: the
+  // shape an inlined returning helper leaves (`T x; ...; x = value;`). An assignment in a branch or a loop does not
+  // bind it, since a path that skips it leaves the default.
+  let declaredBare = false;
+  const assigns: AssignNode[] = [];
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof VariableDefinitionNode && node.name === name && node.expression === undefined) {
+      declaredBare = true;
+    }
+    if (node instanceof AssignNode && node.identifier.name === name) assigns.push(node);
+  });
+  if (declaredBare && assigns.length === 1 && topLevelStatements(entry.body).includes(assigns[0]!)) {
+    const bound = assigns[0]!.expression;
+    if (bound instanceof IdentifierNode && !constants.has(bound.name)
+      && !entry.parameters.some((parameter) => parameter.name === bound.name)) {
+      return resolveKeyIdentifier(bound.name, entry, constants, seen);
+    }
+    return bound;
+  }
   walkInvocationAst(entry.body, (node) => {
     if (node instanceof VariableDefinitionNode && node.name === name && node.expression !== undefined) {
       definition = definition ?? node.expression;
+    }
+    // A tuple declaration `(T a, T b) = (x, y)` binds each name it declares to its own element; one that assigns an
+    // existing name is a reassignment.
+    if (node instanceof TupleAssignmentNode && node.tupleExpressions !== undefined) {
+      const at = node.elements.findIndex((element) => element.name === name && element.skip !== true);
+      if (at >= 0 && node.elements[at]!.existing === true) reassigned = true;
+      else if (at >= 0) definition = definition ?? node.tupleExpressions[at];
     }
     if (node instanceof AssignNode && node.identifier.name === name) reassigned = true;
   });
@@ -529,6 +629,20 @@ function resolveKeyIdentifier(
     return bound;
   }
   return resolveKeyIdentifier(bound.name, entry, constants, seen);
+}
+
+/** The statements every path through a body runs, its nested plain blocks flattened; a branch or loop is one. */
+function topLevelStatements(body: BlockNode | undefined): Node[] {
+  const statements: Node[] = [];
+  const flatten = (block: BlockNode | undefined): void => {
+    for (const statement of block?.statements ?? []) {
+      if (statement instanceof BlockNode) flatten(statement);
+      else if (statement instanceof UncheckedNode) flatten(statement.block);
+      else statements.push(statement);
+    }
+  };
+  flatten(body);
+  return statements;
 }
 
 /**
@@ -553,6 +667,11 @@ function keyOperandUnavailable(
   const walk = (current: ExpressionNode, underField: boolean): string | undefined => {
     if (current instanceof LiteralNode) return undefined;
     if (current instanceof CastNode) return walk(current.expression, underField);
+    // `address(this)` is the frame's own `self`, a value the head leaves where the body starts.
+    if (current instanceof UnaryOpNode && current.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && current.expression instanceof NullaryOpNode && current.expression.operator === NullaryOperator.INPUT_INDEX) {
+      return undefined;
+    }
     if (current instanceof UnaryOpNode) return walk(current.expression, underField);
     if (current instanceof BinaryOpNode) return walk(current.left, underField) ?? walk(current.right, underField);
     if (current instanceof TernaryOpNode) {
@@ -1518,6 +1637,51 @@ export function framedSendCallsBefore(entry: FunctionDefinitionNode): readonly n
 }
 
 /**
+ * For each value send of the entry, in transfer order, whether the entry makes no call after it: the call a send to a
+ * contract makes then follows every call the entry makes, however many a loop before it makes (`sendCallsBefore` is
+ * open there). A send whose own statement also calls, one inside a loop that calls, and one a later statement may call
+ * after, on any arm, are not known to follow the calls. Absent means the entry makes no send.
+ */
+export function framedSendsAfterCalls(entry: FunctionDefinitionNode): readonly boolean[] | undefined {
+  const count = entry.transferInfos?.length ?? 0;
+  if (count === 0) return undefined;
+  const follows = Array.from({ length: count }, () => true);
+  const seen: number[] = [];
+  const sendsOf = (value: unknown): number[] => {
+    const found: number[] = [];
+    walkInvocationAst(value, (node) => {
+      if (!isDirectOwnerTransferNode(node)) return;
+      const index = (node as { readonly transferIndex?: number }).transferIndex;
+      if (index !== undefined) found.push(index);
+    });
+    return found;
+  };
+  // A value walked as one step: its calls follow every send seen before it, and its own sends, whose order against
+  // its calls the walk does not follow.
+  const step = (value: unknown): void => {
+    const own = sendsOf(value);
+    if (reachesAnyCall(value)) for (const index of [...seen, ...own]) follows[index] = false;
+    seen.push(...own);
+  };
+  const walk = (statement: Node | undefined): void => {
+    if (statement === undefined) return;
+    if (statement instanceof BlockNode) {
+      for (const inner of statement.statements ?? []) walk(inner);
+    } else if (statement instanceof UncheckedNode) {
+      walk(statement.block);
+    } else if (statement instanceof BranchNode) {
+      step(statement.condition);
+      walk(statement.ifBlock);
+      walk(statement.elseBlock);
+    } else {
+      step(statement);
+    }
+  };
+  walk(entry.body);
+  return follows;
+}
+
+/**
  * True when every one of a body's derivable batch writes runs after every call the body reaches.
  *
  * A call closes the segment the code before it runs in, so a write no call follows lands in the last segment the
@@ -1952,6 +2116,95 @@ export function framedWriteSegments(
     if (!admit(`turns:${turns.slot}`, { segment: offset, turns })) return undefined;
   }
   return facts.length > 0 ? facts : (writesOwnRecord(entry) ? undefined : []);
+}
+
+/**
+ * The segments an entry's own code reads its records in, one fact per record and segment (`PublishedReadSegment`).
+ *
+ * The walk is the one `framedWriteSteps` takes: a statement runs after the calls the walk has reached, and a read
+ * inside a statement that makes a call can run on either side of it, so the read is placed in every segment from the
+ * calls before the statement to the calls after it. A branch's arms start where its condition ends, and a call-free
+ * loop or switch runs in the segment it starts in. A data record is named by its NFT index; a mapping's node or a
+ * dynamic value's chunk run by its collection or variable name, which a builder reads as the segment's whole
+ * declaration list being in use. A read the walk cannot bound, inside a construct whose body makes calls, publishes
+ * nothing, and a builder declares every record in every segment.
+ */
+export function framedReadSegments(entry: FunctionDefinitionNode): readonly FramedReadSegmentFact[] | undefined {
+  const facts = new Map<string, FramedReadSegmentFact>();
+  let bounded = true;
+  const place = (node: Node | undefined, before: CallRange, after: CallRange): void => {
+    if (node === undefined) return;
+    if (before === undefined || after === undefined) {
+      bounded = false;
+      return;
+    }
+    const { records, collections } = recordReadsIn(node);
+    for (let segment = before.least; segment <= after.most; segment += 1) {
+      for (const record of records) facts.set(`record:${record}@${segment}`, { record, segment });
+      for (const collection of collections) facts.set(`collection:${collection}@${segment}`, { collection, segment });
+    }
+  };
+  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
+    let range = incoming;
+    for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
+    return range;
+  };
+  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
+    if (statement instanceof BranchNode) {
+      const afterCondition = advanceCallRange(incoming, statement.condition);
+      place(statement.condition, incoming, afterCondition);
+      const thenRange = walkBlock(statement.ifBlock, afterCondition);
+      const elseRange = statement.elseBlock === undefined
+        ? afterCondition
+        : walkBlock(statement.elseBlock, afterCondition);
+      return joinCallRanges(thenRange, elseRange);
+    }
+    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof UncheckedNode) return walkBlock(statement.block, incoming);
+    if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
+      || statement instanceof WhileNode || statement instanceof DoWhileNode) {
+      if (callFreeNestedBlocks(statement) === undefined) {
+        bounded = false;
+        return undefined;
+      }
+      place(statement, incoming, incoming);
+      return incoming;
+    }
+    if (statement instanceof TryCatchNode) {
+      const afterCall = advanceCallRange(incoming, statement.expression);
+      place(statement.expression, incoming, afterCall);
+      return walkBlock(statement.tryBlock, afterCall);
+    }
+    const after = advanceCallRange(incoming, statement);
+    place(statement, incoming, after);
+    return after;
+  };
+  walkBlock(entry.body, { least: 0, most: 0 });
+  return bounded ? [...facts.values()] : undefined;
+}
+
+/** A segment an entry's own code reads one of its records in, as `framedReadSegments` publishes it. */
+export interface FramedReadSegmentFact {
+  readonly record?: number;
+  readonly collection?: string;
+  readonly segment: number;
+}
+
+/** The records a node's evaluation reads: its data records by NFT index, and the collections and dynamic values. */
+function recordReadsIn(node: Node): { readonly records: ReadonlySet<number>; readonly collections: ReadonlySet<string> } {
+  const records = new Set<number>();
+  const collections = new Set<string>();
+  walkSyntax(node, (visited) => {
+    if (visited instanceof StateAccessNode && visited.stateVariable !== undefined
+      && visited.storagePointerOnly !== true) {
+      if (visited.stateVariable.isDynamic) collections.add(visited.stateVariable.name);
+      else records.add(visited.stateVariable.nftIndex);
+    } else if (visited instanceof MappingAccessNode) {
+      collections.add(visited.collection?.name ?? visited.name);
+    }
+    return true;
+  });
+  return { records, collections };
 }
 
 /** The identity one published write is keyed by, as `framedWriteSegments` builds it. */
@@ -2427,8 +2680,12 @@ export interface FramedEntryCallSites {
    * segment is not fixed, which the builder refuses by name.
    */
   readonly writeSegments?: readonly FramedWriteSegmentFact[];
+  /** The segments the entry's own code reads its records in (`framedReadSegments`), when the walk bounds them. */
+  readonly readSegments?: readonly FramedReadSegmentFact[];
   /** For each value send, in transfer order, how many external calls the entry makes before it, when fixed. */
   readonly sendCallsBefore?: readonly number[];
+  /** For each value send, in transfer order, whether the entry makes no call after it (`framedSendsAfterCalls`). */
+  readonly sendsAfterCalls?: readonly boolean[];
   /** The effects the entry makes once per turn of a loop, as runs a builder expands by the turns. */
   readonly loopEffects?: PublishedLoopEffects;
 }
@@ -2474,6 +2731,13 @@ export function isOwnAddress(expression: ExpressionNode): boolean {
     && current.expression instanceof NullaryOpNode && current.expression.operator === NullaryOperator.INPUT_INDEX;
 }
 
+/** True for `this.outState`, the contract's own output-side satoshi container. */
+function isOwnOutState(expression: ExpressionNode): boolean {
+  let current: ExpressionNode = expression;
+  while (current instanceof CastNode) current = current.expression;
+  return current instanceof StateAccessNode && current.name === 'outState' && current.stateVariable === undefined;
+}
+
 /** Whether a body reads its own contract's balance, and whether it reads another address's. */
 function balanceReads(body: BlockNode | undefined): { readonly own: boolean; readonly other: boolean } {
   let own = false;
@@ -2482,7 +2746,9 @@ function balanceReads(body: BlockNode | undefined): { readonly own: boolean; rea
     if (node instanceof StateAccessNode && node.name === 'balance' && node.stateVariable === undefined) own = true;
     if (node instanceof FieldAccessNode && node.name === 'balance' && node.expression.type instanceof AddressType) {
       if (isOwnAddress(node.expression)) own = true;
-      else other = true;
+      // `this.outState.balance` sums the outputs at the contract's own satoshi container. It reads no foreign
+      // input, so it is neither another address's balance nor a reason to spend the contract's containers.
+      else if (!isOwnOutState(node.expression)) other = true;
     }
   });
   return { own, other };
@@ -2585,7 +2851,21 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     ...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []), ...fallback,
   ];
   if (input.hasContractInstantiation) {
-    return refuse('contract creation needs the witness `CREATE` checks, which are not emitted yet');
+    // A direct-convention deploy-then-call is folded into the deploy genesis by the semantic pass. The framed
+    // convention has no CREATE frame, and the child's entry cannot run in a spent master of its own, so name both
+    // facts: the entry point the caller wanted is the part a witness-check patch alone would not supply.
+    let foldedDeployCall = false;
+    const noteFoldedDeployCall = (node: Node): void => {
+      if (node instanceof InstantiationNode && node.hasFoldedChildCall === true) foldedDeployCall = true;
+    };
+    for (const body of [contract.constructorDef, ...input.contract.functions]) {
+      if (!body) continue;
+      walkInvocationAst(body.body, noteFoldedDeployCall);
+    }
+    return refuse(foldedDeployCall
+      ? 'contract creation needs the witness `CREATE` checks, which are not emitted yet; a call on the new '
+        + "contract would need the child's entry to run in a spent master's script"
+      : 'contract creation needs the witness `CREATE` checks, which are not emitted yet');
   }
   if (input.hasFunctionPointers) {
     return refuse('a function pointer needs a call kind the frame does not carry yet');
@@ -2661,6 +2941,8 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     const loopEffects = bodyLoopEffects(fn, input.compilerOptions ?? {});
     if (loopEffects.reason !== undefined) refuseBody(fn, loopEffects.reason);
     if (loopEffects.effects !== undefined) loopEffectsByEntry.set(fn.name, loopEffects.effects);
+    // A hash a loop makes through a function it invokes is one the body's own survey does not see inside the loop.
+    if (loopEffects.effects?.hashes?.some((run) => run.iterationDomain !== undefined) === true) fn.keccakInLoop = true;
     // A hash a loop reaches only through another function's body is one this body's own walk does not count.
     if (fn.keccakCompute && fn.keccakInLoop === true && loopEffects.effects?.hashes === undefined) {
       refuseBody(fn, 'a keccak256 call a loop reaches through another function reads one side-car per turn, which '
@@ -2674,10 +2956,10 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     if (fn.usesBlockhash || contract.usesBlockhash) {
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
     }
-    // A recovery loop reads its pair per iteration from a run-time counter, which the head would have to place a
-    // variable number of inputs for; the straight-line framed pair is what the head locates.
+    // A recovery loop reads its side-car per iteration from a run-time counter, which the head would have to place a
+    // variable number of inputs for; the straight-line framed side-car is what the head locates.
     if (fn.ecrecoverLoopReads === true) {
-      refuseBody(fn, 'an ecrecover loop reads one recovery side-car pair per iteration, which the master head does '
+      refuseBody(fn, 'an ecrecover loop reads one recovery side-car per iteration, which the master head does '
         + 'not locate a run-time number of');
     }
     if ((fn.externalCalls?.length ?? 0) > 0 && invoked.has(fn.name)) {
@@ -2810,6 +3092,7 @@ export function assessFramedMasterShape(input: FramedMasterShapeInput): FramedMa
     // An emit the survey found belongs to a body; the bodies the master serves are the ones whose emits it has to
     // account for, since a refused body's emit is part of what refuses it.
     bodies.some((body) => (body.emitInfos?.length ?? 0) > 0),
+    input.compilerOptions?.commitmentLimit,
   );
   if (tail.reason !== undefined) return refuse(tail.reason);
   const entryCalls = calls.entryCalls.filter((entry) => !refusals.has(entry.entryName)).map((entry) => {
@@ -3057,6 +3340,7 @@ export function deriveFramedTailShape(
   entryPoints: readonly FunctionDefinitionNode[],
   constructorDef: FunctionDefinitionNode | undefined,
   emitsEvent: boolean,
+  commitmentLimit: number = EVENT_CHUNK_BYTES,
 ): FramedTailDerivation {
   const bodies = constructorDef === undefined ? entryPoints : [...entryPoints, constructorDef];
   let maxEventCount = 0;
@@ -3065,7 +3349,7 @@ export function deriveFramedTailShape(
       return { reason: 'a loop lowered into a counted trailing stream journals its events and sends for the direct '
         + 'convention, which a master does not read' };
     }
-    maxEventCount = Math.max(maxEventCount, body.emitInfos?.length ?? 0);
+    maxEventCount = Math.max(maxEventCount, framedEventOutputCount(body, commitmentLimit));
   }
   if (emitsEvent && maxEventCount === 0) {
     return { reason: 'the contract emits an event that is not attributed to a body, so the master cannot fix '
@@ -3124,7 +3408,9 @@ function deriveFramedMasterCallSites(
     }
     const writeSegment = framedWriteSegment(entry);
     const writeSegments = framedWriteSegments(entry);
+    const readSegments = framedReadSegments(entry);
     const sendCallsBefore = framedSendCallsBefore(entry);
+    const sendsAfterCalls = framedSendsAfterCalls(entry);
     entryCalls.push({
       entryName: entry.name,
       calls: derived.calls,
@@ -3132,7 +3418,9 @@ function deriveFramedMasterCallSites(
       ...(callsRepeat(entry.body) ? { repeats: true } : {}),
       ...(writeSegment === undefined ? {} : { writeSegment }),
       ...(writeSegments === undefined ? {} : { writeSegments }),
+      ...(readSegments === undefined ? {} : { readSegments }),
       ...(sendCallsBefore === undefined ? {} : { sendCallsBefore }),
+      ...(sendsAfterCalls === undefined ? {} : { sendsAfterCalls }),
     });
   }
   // The bound the head holds is how many records the body with the most calls declares, which is a path count
@@ -3300,6 +3588,37 @@ function loopNestedCallNodes(block: BlockNode | undefined): ReadonlySet<Node> {
         nested.add(inner);
       }
     });
+  });
+  return nested;
+}
+
+/**
+ * The external-call source nodes a body reaches on some of its paths only: in an arm of a branch or of a conditional
+ * expression, or in the right operand of `&&` or `||`.
+ *
+ * The source does not fix whether such a call runs, whether or not the artifact can state the guard that decides it,
+ * so an execution may pass the site by without binding a record there. A loop's own calls are marked as repeating
+ * instead (`loopNestedCallNodes`).
+ */
+function branchNestedCallNodes(block: BlockNode | undefined): ReadonlySet<Node> {
+  const nested = new Set<Node>();
+  const collect = (value: unknown): void => walkInvocationAst(value, (inner) => {
+    if (inner instanceof ExternalFunctionCallNode
+      || inner instanceof LowLevelCallStatementNode || inner instanceof LowLevelCallNode) {
+      nested.add(inner);
+    }
+  });
+  walkInvocationAst(block, (node) => {
+    if (node instanceof BranchNode) {
+      collect(node.ifBlock);
+      collect(node.elseBlock);
+    } else if (node instanceof TernaryOpNode) {
+      collect(node.ifTrue);
+      collect(node.ifFalse);
+    } else if (node instanceof BinaryOpNode
+      && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR)) {
+      collect(node.right);
+    }
   });
   return nested;
 }
@@ -3588,6 +3907,9 @@ function deriveEntryCallSites(
   // Only a loop's own calls repeat. A body may make fixed calls beside a loop, and those keep the positions the
   // head checks them at; marking every site of a looping body would make the fixed ones unresumable.
   const loopNested = loopNestedCallNodes(entry.body);
+  // A call reached on some paths only is conditional whether or not its guard is published: a guard over a value no
+  // published expression states (a local a helper computes) still decides whether the execution binds a record there.
+  const branchNested = branchNestedCallNodes(entry.body);
   let descriptor = 0;
   for (const slot of entry.externalCalls ?? []) {
     if (slot.callMode === ExternalCallMode.DELEGATECALL) {
@@ -3633,9 +3955,8 @@ function deriveEntryCallSites(
     // A call value is carried by the site's own record, not by a transfer of the body's: the caller's code computes
     // the amount where it calls and the site holds the record's `value` to it, the validator holds the callee's frame
     // value to the record (V5), and the value rule charges it to the caller's containers and credits the callee's (V7,
-    // or the head of a frame that settles alone). A read takes no value; an amount computed by another call would bind
-    // that call's record out of the order the calls run in; and a value send of the body's own beside it is numbered
-    // over arms that still count the call's value, so each is refused by name.
+    // or the head of a frame that settles alone). A read takes no value, and an amount computed by another call would
+    // bind that call's record out of the order the calls run in, so each is refused by name.
     const carriesValue = slot.callValueEffect === true;
     if (carriesValue && isReadCall(slot, interfaces)) {
       return { calls: [], reason: `the call to '${slot.functionName}' carries a value into a read, which a static `
@@ -3644,10 +3965,6 @@ function deriveEntryCallSites(
     if (carriesValue && reachesAnyCall(slot.sourceCallNode?.callOptions?.value)) {
       return { calls: [], reason: `the call to '${slot.functionName}' computes its value with another call, whose `
         + 'record would be bound out of the order the calls run in' };
-    }
-    if (carriesValue && (entry.transferInfos?.length ?? 0) > 0) {
-      return { calls: [], reason: `the call to '${slot.functionName}' carries a value beside a value send of the `
-        + 'body\'s own, whose numbering a framed body does not reconcile with the call\'s yet' };
     }
     const target = siteTarget(slot);
     if ('reason' in target) return { calls: [], reason: target.reason };
@@ -3669,7 +3986,8 @@ function deriveEntryCallSites(
         : (isReadCall(slot, interfaces) ? FrameKind.STATIC : FrameKind.CALL),
       selector,
       target: target.bytes,
-      ...(slot.condition === undefined ? {} : { conditional: true }),
+      ...(slot.condition !== undefined
+        || (slot.sourceCallNode !== undefined && branchNested.has(slot.sourceCallNode)) ? { conditional: true } : {}),
       ...(target.fromStack === true ? { targetFromStack: true } : {}),
       ...(carriesValue ? { valueFromStack: true } : {}),
       ...(slot.sourceCallNode !== undefined && loopNested.has(slot.sourceCallNode) ? { repeats: true } : {}),
@@ -3716,13 +4034,15 @@ function siteTarget(
     // `self`, so the site binds its record to that value as it does any computed target.
     return { bytes: new Uint8Array(0), fromStack: true };
   }
-  if (slot.addressIsMsgSender === true) {
-    return { reason: `the call to '${slot.functionName}' targets the transaction's own sender, whose category the `
-      + 'site would have to bind to a callee of the same category, which its target check cannot do' };
-  }
-  if (slot.addressStateVar !== undefined || slot.addressParam !== undefined) {
+  // The frame's sender is a value its own code holds (the head leaves it as a slot), so a call back to it binds its
+  // record to that value as it does any computed target. A sender no contract master presents — a user — has no
+  // callee frame to bind, so the execution refuses the call, as an EVM call to an account without code reverts.
+  if (slot.addressStateVar !== undefined || slot.addressParam !== undefined || slot.addressIsMsgSender === true) {
     return { bytes: new Uint8Array(0), fromStack: true };
   }
+  // A target the body computes in place, on a loop's turn from its counter (`pairFor(factory, path[i], ..)`), is
+  // the value the site's own code evaluates where it calls, which the record is bound to as any computed target.
+  if (slot.sourceCallNode?.addressExpression !== undefined) return { bytes: new Uint8Array(0), fromStack: true };
   return { reason: `the call to '${slot.functionName}' targets an address the caller's own code does not hold as `
     + 'one value, which the site cannot check its record against' };
 }

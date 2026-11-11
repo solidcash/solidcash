@@ -108,7 +108,7 @@ const SHARES = 1n;
  * rather than compares the payout, so it too embeds no count.
  */
 function source(): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface IClaimer { function claim() returns (int); }'
     + ' interface IEscrow {'
     + '   function release();'
@@ -564,17 +564,17 @@ describe('a claimer that pays once per share, driven through the shipped path', 
   });
 
   it('refuses a store record output no frame computed, on the same composition', () => {
-    // The root runs on one master, so no validator settles its record: the head the root's own input runs holds its
-    // last declaration to the transaction's output, and that is the input the mutation is refused at. The validator
-    // does not settle the store record, so it is unaffected by the same mutation.
+    // The root runs on one master, which the validator covers, so the validator settles the root's record (V8): it
+    // holds the last declaration to the transaction's output, and that is the input the mutation is refused at. The
+    // root's own master leaves that settlement to the validator, so it is unaffected by the same mutation.
     const { run, outcome: { draft } } = derived(2);
     const program = draft.programFor(ROOT_MASTER);
     const wrong = commitmentOf(run.artifacts.Root!.stateLayout!, { score: 7n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.rootRecordIndex
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
       : output));
-    expect(verdictAtIndex(draft, participant(draft.layout, ROOT_MASTER).index, outputs))
+    expect(verdictAtIndex(draft, participant(draft.layout, VALIDATOR_ID).index, outputs))
       .toBe('refused: Program failed an OP_VERIFY operation.');
-    expect(verdictAtIndex(draft, participant(draft.layout, VALIDATOR_ID).index, outputs)).toBe('accepted');
+    expect(verdictAtIndex(draft, participant(draft.layout, ROOT_MASTER).index, outputs)).toBe('accepted');
   });
 });

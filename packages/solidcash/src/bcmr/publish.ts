@@ -20,7 +20,7 @@ import {
 import type { PublishedRegistry } from './deployment.js';
 import { lockOf, type IdentityRecord } from './identity.js';
 import {
-  BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
+  BcmrError, dataCarrierBytes, publicationOutput, resolvePublicationUris, type PublicationUris,
 } from './publication.js';
 import { encodeRegistry } from './registry.js';
 
@@ -46,8 +46,11 @@ export interface PublishMetadataOptions {
    * registry (R2); an update needs one when there is nothing to carry over, and a burn publishes nothing.
    */
   readonly registry?: MetadataRegistry;
-  /** The URIs the publication offers; `ipfs://<CIDv1 of the registry>` when omitted. */
-  readonly publicationUris?: readonly string[];
+  /**
+   * The URIs the publication offers, or a function of the encoded registry that names them once it has placed the
+   * bytes (an upload); `ipfs://<CIDv1 of the registry>` when omitted.
+   */
+  readonly publicationUris?: PublicationUris;
   /** What the spend does; an update when omitted. */
   readonly action?: IdentityAction;
   readonly changeAddress: string;
@@ -102,7 +105,7 @@ export async function publishMetadata(options: PublishMetadataOptions): Promise<
 
   const encoded = options.registry === undefined ? undefined : await encodeRegistry(options.registry);
   const published: PublishedRegistry | undefined = encoded === undefined ? undefined : {
-    ...encoded, uris: options.publicationUris ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`],
+    ...encoded, uris: await resolvePublicationUris(options.publicationUris, encoded),
   };
   const carried = published !== undefined || action.kind === 'burn'
     ? null : await currentPublication(options.provider, identity.txid);

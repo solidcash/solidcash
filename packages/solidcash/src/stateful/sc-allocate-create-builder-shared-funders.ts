@@ -49,7 +49,8 @@ export async function allocateCreateBuilderSharedFunders(
     const ecSlot = externalCalls[si];
     const ci = resolvedExternalCalls[si];
     if (!ci?.externalContract) continue;
-    const bArt = ci.externalContract.inner.artifact;
+    const bArt = ci.externalContract.inner?.artifact;
+    if (bArt === undefined) continue;
     // Lifted route events have no fixed event slots. Retain the full signer snapshot for their trailing
     // heads and for continuation records learned from the callee's effect-verifier trace.
     if (bArt.messageBus?.handlers.some((handler) => (handler.runtimeLoopEvents?.length ?? 0) > 0)) {

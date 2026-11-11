@@ -248,7 +248,7 @@ export function reassertReverseSuffixDynamicChunks(
   if (builder.outputs.length < 2) return 0;
   let placed = 0;
   let stripped = 0;
-  let cursor = builder.outputs.length - 1; // trailer (OP_RETURN / sidecar)
+  let cursor = builder.outputs.length - 1; // trailer (filler / sidecar)
   const authoritative = new Set<number>();
   for (let varIndex = host.dynamicChunkVars.length - 1; varIndex >= 0; varIndex -= 1) {
     const dv = host.dynamicChunkVars[varIndex]!;

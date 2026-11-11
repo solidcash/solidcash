@@ -6,35 +6,18 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { encodeCashAddress } from '@bitauth/libauth/build/lib/address/cash-address.js';
-import { hash160 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
-import { SigningKey as EthersSigningKey } from 'ethers/crypto';
-import { hashMessage as hashEvmMessage, verifyMessage as verifyEvmMessage } from 'ethers/hash';
-import { getBytes as getEthersBytes } from 'ethers/utils';
-import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
-import type { Network, NetworkProvider, ConstructorArgument, Utxo, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
-import type {
-  ContractRunner, ConnectedStatefulContract, SplitContract, SplitDeployOptions,
-  DeployedContract, DeployContractOptions,
-} from '@solidcash/solidcash/stateful';
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import type { Artifact, FunctionSplitBundle, SplitArtifactBundle } from '@solidcash/utils';
+import { asmToBytecode } from '@solidcash/utils';
+import type { Network, NetworkProvider, ConsensusLimits, NetworkPolicy } from '@solidcash/solidcash';
+import type { ContractRunner } from '@solidcash/solidcash/stateful';
 import { Network as Networks } from '@solidcash/solidcash/dist/interfaces.js';
 import MockNetworkProvider, { MOCK_CONSENSUS_LIMITS } from '@solidcash/solidcash/dist/network/MockNetworkProvider.js';
 import RegtestNetworkProvider from '@solidcash/solidcash/dist/network/RegtestNetworkProvider.js';
 import ElectrumNetworkProvider from '@solidcash/solidcash/dist/network/ElectrumNetworkProvider.js';
 import BitcoinRpcNetworkProvider from '@solidcash/solidcash/dist/network/BitcoinRpcNetworkProvider.js';
 import MemCashNetworkProvider from '@solidcash/solidcash/dist/network/MemCashNetworkProvider.js';
-import Signer from '@solidcash/solidcash/dist/Signer.js';
-import { HDSigner, signersFromMnemonic } from '@solidcash/solidcash/hdsigner';
-import {
-  ContractFactory, getContractFactory as sdkGetContractFactory, deployContract as sdkDeployContract, fanOutPlainUtxos,
-} from '@solidcash/solidcash/dist/stateful/ContractFactory.js';
-import type { SplitContractBundle } from '@solidcash/solidcash/dist/stateful/SplitContractBundle.js';
-import { randomUtxo } from '@solidcash/solidcash/dist/utils.js';
 
-/** Plain coins each regtest signer holds; mock accounts hold 128. */
-const REGTEST_PLAIN_COINS = 64;
-import * as ethersUtils from './ethers-utils.js';
-import { getCreateAddressForComposition } from './ethers-shim.js';
 import * as nh from './network-helpers.js';
 import { setActiveProvider } from './network-helpers.js';
 import {
@@ -44,11 +27,16 @@ import {
   runTask, getTasks, getTask, type TaskArguments, type TaskDefinition,
 } from './tasks.js';
 import { solidcashArtifactsPath } from './artifact-paths.js';
+import {
+  buildEthers, loadStatefulContract, DEFAULT_MNEMONIC, HARDHAT_ACCOUNT_BRANCH, PRODUCTION_MAXIMUM_INPUT_BYTES,
+  type ArtifactSource, type EthersOptions, type SolidcashEthers,
+} from './ethers-runtime.js';
 
-const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
-// BCH's per-input unlocking bytecode limit, which the relaxed mock defaults lift.
-const PRODUCTION_MAXIMUM_INPUT_BYTES = 10_000;
-const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
+export type {
+  ArtifactSource, SolidcashEthers, SolidcashArtifactMap, ArtifactForName, EthersOptions,
+} from './ethers-runtime.js';
+export { buildEthers } from './ethers-runtime.js';
+
 
 function liveSigningChain(name: string, netCfg: NetworkConfig | undefined): string | undefined {
   const type = netCfg?.type;
@@ -79,18 +67,6 @@ function assertLiveMnemonicIsChainSpecific(config: ResolvedConfig, selected: str
   }
 }
 
-// StatefulContract is the single heaviest SDK module (~759 KB and its transitive graph). The HRE only needs it
-// when a contract is attached/deployed (`Contract`/`getContractAt`), so it is loaded lazily and cached. `initHre`
-// awaits this before publishing the HRE, keeping the module out of the entry package's import graph.
-type StatefulContractCtor = typeof import('@solidcash/solidcash/dist/stateful/StatefulContract.js').StatefulContract;
-let statefulContractCtor: StatefulContractCtor | undefined;
-async function loadStatefulContract(): Promise<StatefulContractCtor> {
-  if (!statefulContractCtor) {
-    statefulContractCtor = (await import('@solidcash/solidcash/dist/stateful/StatefulContract.js')).StatefulContract;
-  }
-  return statefulContractCtor;
-}
-
 /** Build a network provider from a resolved network config. */
 export function createProvider(
   name: string,
@@ -119,16 +95,18 @@ export function createProvider(
         );
       }
       const network = configuredNetwork;
-      if (network === Networks.REGTEST) {
-        throw new Error('ElectrumNetworkProvider does not support regtest; use type "regtest" or "bitcoin-rpc".');
+      const server = netCfg?.electrum;
+      // A regtest chain has no public server, so a local one is named, on whatever port it serves.
+      if (network === Networks.REGTEST && !server?.host) {
+        throw new Error('An Electrum network on regtest names its server: set electrum.host.');
       }
-      if (netCfg?.electrum?.port !== undefined) {
-        throw new Error('Custom Electrum ports are not supported; configure a hostname using its standard port.');
-      }
-      return new ElectrumNetworkProvider(
-        network,
-        netCfg?.electrum?.host ? { hostname: netCfg.electrum.host } : {},
-      );
+      return new ElectrumNetworkProvider(network, {
+        ...(server?.host ? { hostname: server.host } : {}),
+        ...(server?.port === undefined ? {} : { port: server.port }),
+        ...(server?.encrypted === undefined ? {} : { encrypted: server.encrypted }),
+        ...(server?.manualConnectionManagement === undefined
+          ? {} : { manualConnectionManagement: server.manualConnectionManagement }),
+      });
     }
     case 'mem-cash': {
       const memCash = netCfg?.memCash;
@@ -145,6 +123,8 @@ export function createProvider(
         // Undefined lets the provider adopt the node's advertised branch, which is the value that must agree.
         ...(config?.accounts?.path === undefined ? {} : { derivationPath: config.accounts.path }),
         ...(config?.accounts?.initialIndex === undefined ? {} : { initialIndex: config.accounts.initialIndex }),
+        // Before the socket connects, the compile reads these limits. The node's advertised profile replaces them.
+        ...(netCfg?.consensus === undefined ? {} : { consensusLimits: netCfg.consensus as ConsensusLimits }),
       });
     }
     case 'bitcoin-rpc': {
@@ -172,92 +152,14 @@ export function createProvider(
   }
 }
 
-/** Augmented by generated TypeChain registries so literal contract names retain their artifact type. */
-export interface SolidcashArtifactMap {}
-export type ArtifactForName<Name extends string> = Name extends keyof SolidcashArtifactMap
-  ? SolidcashArtifactMap[Name]
-  : Artifact;
-
-/** The BCH-native `hre.ethers` object: forwarded utils + network-bound signer/contract helpers. */
-export interface SolidcashEthers {
-  provider: NetworkProvider;
-  getSigners(count?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer[]>;
-  getSigner(index?: number, opts?: { satoshis?: bigint; mnemonic?: string }): Promise<Signer>;
-  /** Recover using the projection selected by `compiler.ecrecover` (`p2pkh` for native BCH identity). */
-  verifyMessage(message: string | Uint8Array, signature: Parameters<typeof verifyEvmMessage>[1]): string;
-  /** Recover the native BCH P2PKH CashAddress on the active network. */
-  verifyMessageP2pkh(message: string | Uint8Array, signature: Parameters<typeof verifyEvmMessage>[1]): string;
-  /** Recover the conventional ethers/Solidity 20-byte EVM address. */
-  verifyMessageEvm(message: string | Uint8Array, signature: Parameters<typeof verifyEvmMessage>[1]): string;
-  // Accept a compiled artifact object OR a contract name (hardhat `getContractFactory("Name")`).
-  getContractFactory<Value extends Artifact | SplitArtifactBundle | string>(artifactOrName: Value,
-    runner?: ContractRunner): Value extends SplitArtifactBundle ? HardhatSplitContractFactory
-    : ContractFactory<Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>;
-  getContractAt<Value extends Artifact | SplitArtifactBundle | string>(artifactOrName: Value, addressOrCategory: string,
-    runner?: ContractRunner): Promise<Value extends SplitArtifactBundle ? SplitContract : ConnectedStatefulContract<
-  Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
-  deployContract<Value extends Artifact | SplitArtifactBundle | string>(artifactOrName: Value,
-    args?: ConstructorArgument[], runner?: ContractRunner, overrides?: DeployContractOptions): Promise<
-  Value extends SplitArtifactBundle ? SplitContract : DeployedContract<
-  Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
-  // classes (BCH-native)
-  Contract: StatefulContractCtor;
-  ContractFactory: typeof ContractFactory;
-  Signer: typeof Signer;
-  // ethers `Wallet` (`new Wallet(wif, provider)`) plus a BCH `createRandom` that returns a funded ad-hoc HDSigner.
-  Wallet: typeof Signer & { createRandom(provider?: NetworkProvider): HDSigner };
-  HDSigner: typeof HDSigner;
-  HDNodeWallet: typeof HDSigner & {
-    fromMnemonic(mnemonic: string | { phrase: string }, path?: string): HDSigner;
-  };
-  [k: string]: unknown; // forwarded ethers utils (parseEther, keccak256, AbiCoder, constants, ...)
-}
-
-function isSplitBundle(value: unknown): value is SplitArtifactBundle {
-  return typeof value === 'object' && value !== null
-    && (value as { format?: string }).format === 'solidcash-split-v1';
-}
-
-/** Positional ethers deploy facade over the SDK's explicit split-bundle deployment API. */
-class HardhatSplitContractFactory {
-  private splitInstance?: SplitContractBundle;
-  constructor(readonly bundle: SplitArtifactBundle, readonly runner: ContractRunner) {}
-
-  private async loadSplit(): Promise<SplitContractBundle> {
-    if (!this.splitInstance) {
-      const { SplitContractBundle: SplitContractBundleValue } = await import('@solidcash/solidcash/dist/stateful/SplitContractBundle.js');
-      this.splitInstance = SplitContractBundleValue.from(this.bundle, this.runner);
-    }
-    return this.splitInstance;
-  }
-
-  get artifact(): Artifact { return this.bundle.root; }
-  connect(runner: ContractRunner): Promise<HardhatSplitContractFactory> {
-    return Promise.resolve(new HardhatSplitContractFactory(this.bundle, runner));
-  }
-
-  async deploy(...values: unknown[]): Promise<SplitContract> {
-    const split = await this.loadSplit();
-    let options: SplitDeployOptions = {};
-    const last = values.at(-1);
-    if (typeof last === 'object' && last !== null && !(last instanceof Uint8Array) && !Array.isArray(last)) {
-      options = values.pop() as SplitDeployOptions;
-    }
-    return split.deploy(values as ConstructorArgument[], options);
-  }
-
-  async at(address: string, constructorArgs: ConstructorArgument[] = []): Promise<SplitContract> {
-    const split = await this.loadSplit();
-    return split.at(address, constructorArgs);
-  }
-}
-
 export interface NetworkConnection {
   name: string;
   provider: NetworkProvider;
   config: NetworkConfig | undefined;
   ethers: SolidcashEthers;
   networkHelpers: typeof nh;
+  /** Hardhat 3 `connection.close()`: drop a devnet provider's socket. An in-process provider holds none. */
+  close(): Promise<void>;
 }
 
 export interface HardhatNetwork extends NetworkConnection {
@@ -265,15 +167,31 @@ export interface HardhatNetwork extends NetworkConnection {
   create(networkName?: string): Promise<NetworkConnection>;
   /** Hardhat 3 spelling for creating and selecting a connection. */
   connect(networkName?: string): Promise<NetworkConnection>;
+  /** Close the active connection and every one `create()` opened, as a Hardhat process exiting does. */
+  closeAll(): Promise<void>;
 }
 
 export interface HardhatRuntimeEnvironment {
   config: ResolvedConfig;
   network: HardhatNetwork;
+  /** Hardhat 3 `hre.artifacts`: a compiled contract by name, its bytecode as hex. */
+  artifacts: { readArtifact(name: string): Promise<Record<string, unknown>> };
+  /** Hardhat 3 `hre.globalOptions`: the options the CLI was given, the selected `--network` among them. */
+  globalOptions: { network: string };
   ethers: SolidcashEthers;
   networkHelpers: typeof nh;
   tasks: { getTask: typeof getTask; getTasks: typeof getTasks };
   run(taskName: string, args?: TaskArguments): Promise<unknown>;
+}
+
+/**
+ * hardhat `artifacts.readArtifact("Name")`: the artifact `loadArtifactByName` finds, its bytecode as hex. SolidCash
+ * publishes the contract script as ASM; Hardhat callers (and `keccak256(artifact.bytecode)`) expect hex.
+ */
+export async function readHexArtifact(artifactsDir: string, name: string): Promise<Record<string, unknown>> {
+  const artifact = loadArtifactByName(artifactsDir, name);
+  const bytecode = `0x${binToHex(asmToBytecode(artifact.bytecode))}`;
+  return { ...artifact, bytecode, deployedBytecode: bytecode };
 }
 
 /**
@@ -325,6 +243,15 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
   );
 }
 
+/**
+ * The per-entry bundle a `split: 'func'` compile published for a framed contract (`<Contract>.func.json`), or
+ * undefined when the contract is published as one program.
+ */
+export function loadFunctionSplitByName(artifactsDir: string, name: string): FunctionSplitBundle | undefined {
+  const bundlePath = path.join(solidcashArtifactsPath(artifactsDir), `${name}.func.json`);
+  return fs.existsSync(bundlePath) ? JSON.parse(fs.readFileSync(bundlePath, 'utf-8')) as FunctionSplitBundle : undefined;
+}
+
 export function loadArtifactOrSplitByName(artifactsDir: string, name: string): Artifact | SplitArtifactBundle {
   const base = solidcashArtifactsPath(artifactsDir);
   const splitPath = path.join(base, `${name}.split.json`);
@@ -332,304 +259,13 @@ export function loadArtifactOrSplitByName(artifactsDir: string, name: string): A
   return loadArtifactByName(artifactsDir, name);
 }
 
-interface EthersOptions {
-  artifactsDir: string;
-  composition?: 'direct' | 'framed';
-  accountsPath?: string;
-  /** `accounts.initialIndex`: the first derived account, so signer i is wallet initialIndex + i. */
-  accountsInitialIndex?: number;
-  accountSatoshis?: bigint;
-  recoveryProjection: 'p2pkh' | 'evm';
-  /** False binds every deploy to the address its own transaction produces instead of a stable CREATE identity. */
-  logicalIdentity: boolean;
-}
-
-/** Hardhat signers use EIP-191 message signatures; the BCH SDK signer intentionally uses Bitcoin Signed Message. */
-function withEthersMessageSigning<T extends Signer>(signer: T): T {
-  const connect = signer.connect.bind(signer);
-  Object.defineProperty(signer, 'signingKey', {
-    configurable: true,
-    get: (): EthersSigningKey => new EthersSigningKey(signer.privateKey),
-  });
-  Object.defineProperty(signer, 'signMessage', {
-    configurable: true,
-    value: async (message: string | Uint8Array): Promise<string> =>
-      new EthersSigningKey(signer.privateKey).sign(hashEvmMessage(message)).serialized,
-  });
-  Object.defineProperty(signer, 'connect', {
-    configurable: true,
-    value: (nextProvider: NetworkProvider): Signer => withEthersMessageSigning(connect(nextProvider)),
-  });
-  return signer;
-}
-
-function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOptions): SolidcashEthers {
-  const { artifactsDir, accountsPath, accountsInitialIndex = 0 } = opts;
-  // Every deploy in the project starts from this convention; a call's own trailing overrides refine it.
-  const deployDefaults: DeployContractOptions = opts.logicalIdentity ? {} : { logicalNonce: false };
-  const fundRegtestSigner = async (
-    signer: Signer, satoshis: bigint, desiredCount: number,
-  ): Promise<void> => {
-    if (!(provider instanceof RegtestNetworkProvider)) return;
-    // No local cache: a fixture snapshot restore rewinds the chain, so an address that was funded when
-    // this provider was first seen can be empty again. Re-checking the node is the source of truth.
-    // Each `addUtxo` is its own transaction with the requested output at vout 0, which is the geometry
-    // CREATE look-ahead reserves. Fund serially because every call spends a shared wallet coin.
-    const existing = await provider.getUtxos(signer.getAddress());
-    // Mock accounts come pre-split into 128 coins so compiler-owned funder slots never meet an artificial wallet
-    // limit. A regtest signer gets the same room from one fan-out, fed by one extra coin so the vout-0 coins above
-    // stay intact; with four coins a nested oracle slot found the shared funder pool empty.
-    const fanOut = existing.filter((utxo) => !utxo.token).length < REGTEST_PLAIN_COINS;
-    for (let index = existing.length; index < desiredCount + (fanOut ? 1 : 0); index += 1) {
-      await provider.addUtxo(signer.getAddress(), randomUtxo({ satoshis }));
-    }
-    if (fanOut) await fanOutPlainUtxos(signer, REGTEST_PLAIN_COINS);
+/** The project's artifacts directory as the runtime's artifact source. */
+export function fsArtifactSource(artifactsDir: string): ArtifactSource {
+  return {
+    artifact: (name) => loadArtifactByName(artifactsDir, name),
+    functionSplit: (name) => loadFunctionSplitByName(artifactsDir, name),
+    artifactOrSplit: (name) => loadArtifactOrSplitByName(artifactsDir, name),
   };
-  const resolveArtifact = <T extends Artifact>(a: T | SplitArtifactBundle | string): T | SplitArtifactBundle =>
-    (typeof a === 'string' ? loadArtifactOrSplitByName(artifactsDir, a) : a) as T | SplitArtifactBundle;
-
-  // hardhat `getContractFactory("Name")` binds to the default deployer = signers[0]. Derive it synchronously
-  // (same identity `getSigners()` funds), so `factory.deploy(...)` funds the genesis from that account.
-  let cachedSigner: Signer | undefined;
-  const defaultRunner = (): ContractRunner => {
-    const anyProvider = provider as unknown as { getSigners?: unknown };
-    // Regtest has local HD signers even though its provider has no `getSigners` fast path. Live networks
-    // (Electrum, Bitcoin RPC) do not, and a factory without a signer needs the provider as its runner.
-    if (typeof anyProvider.getSigners !== 'function' && provider.network !== Networks.REGTEST) return provider;
-    const cacheable = provider as unknown as { getCachedSigner?: (index: number, opts: object) => Signer };
-    cachedSigner ??= typeof cacheable.getCachedSigner === 'function'
-      ? cacheable.getCachedSigner(accountsInitialIndex, { mnemonic, path: accountsPath })
-      : signersFromMnemonic(mnemonic, provider, { count: 1, path: accountsPath, initialIndex: accountsInitialIndex })[0];
-    return cachedSigner;
-  };
-
-  const getSigners = async (
-    count = 20, o: { satoshis?: bigint; mnemonic?: string; fundingUtxos?: number } = {},
-  ): Promise<Signer[]> => {
-    const anyProvider = provider as unknown as { getSigners?: (c: number, x: object) => Promise<Signer[]> };
-    if (typeof anyProvider.getSigners === 'function') {
-      // A read-only CREATE look-ahead reserves four existing vout-0 coins without broadcasting. Partition
-      // mock prefunding across distinct transactions so nonce-relative predictions have those coins ready,
-      // while the nonzero outputs stay available for fees and compiler-owned block slots. This changes the
-      // account's coin geometry, never its configured coin count or per-coin value.
-      return (await anyProvider.getSigners(count, {
-        // Bounded message-bus participant blocks can require dozens of
-        // category-neutral filler inputs in one call. Keep the Hardhat-style
-        // mock accounts generously pre-split so those compiler-owned slots do
-        // not turn into an artificial wallet-funding limit.
-        satoshis: opts.accountSatoshis ?? 100_000_000n,
-        fundingUtxos: 128, genesisFundingUtxos: 4, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
-      })).map(withEthersMessageSigning);
-    }
-    const signers = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
-      count, path: accountsPath, initialIndex: accountsInitialIndex,
-    })
-      .map(withEthersMessageSigning);
-    const satoshis = o.satoshis ?? opts.accountSatoshis ?? 100_000_000n;
-    const fundingUtxos = o.fundingUtxos ?? 4;
-    for (const [index, signer] of signers.entries()) {
-      // The default deployer performs every CREATE in a fixture. Give it enough genesis-eligible vout-0
-      // coins for the child contracts; the other participants only spend.
-      await fundRegtestSigner(signer, satoshis, index === 0 ? Math.max(fundingUtxos, 16) : fundingUtxos);
-    }
-    return signers;
-  };
-
-  const verifyMessageP2pkh: SolidcashEthers['verifyMessageP2pkh'] = (message, signature) => {
-    const recovered = EthersSigningKey.recoverPublicKey(hashEvmMessage(message), signature);
-    const compressed = getEthersBytes(EthersSigningKey.computePublicKey(recovered, true));
-    const prefix = provider.network === 'mainnet' ? 'bitcoincash'
-      : provider.network === 'regtest' ? 'bchreg'
-        : 'bchtest';
-    return encodeCashAddress({
-      prefix, type: 'p2pkh', payload: hash160(compressed), throwErrors: true,
-    }).address;
-  };
-  const verifyMessageEvm: SolidcashEthers['verifyMessageEvm'] = (message, signature) =>
-    verifyEvmMessage(message, signature);
-
-  // ethers `Wallet.createRandom()` returns a fresh HDNodeWallet with no provider; ported tests then
-  // `.connect(provider)` and use it as an unauthorized signer. Bind the active provider and, on a mock network,
-  // fund it (fire-and-forget: MockNetworkProvider.addUtxo mutates the in-memory indexer synchronously) so the
-  // covenant call can be built and reach its owner check. Live/regtest providers have no addUtxo - funding is the
-  // caller's job there, matching getSigners.
-  class Wallet extends Signer {
-    static createRandom(providerOverride?: NetworkProvider): HDSigner {
-      const p = providerOverride ?? provider;
-      const s = HDSigner.createRandom(p);
-      const fundable = p as unknown as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> };
-      if (typeof fundable.addUtxo === 'function') {
-        // Fund lazily, when the wallet is actually read. A suite may restore a fixture between createRandom()
-        // and the call; eager funding would land above that snapshot and be invalidated. Re-checking also
-        // re-funds a wallet whose previous coin was spent by an earlier call.
-        const ensureFunded = async (): Promise<void> => {
-          if ((await p.getUtxos(s.getAddress())).length === 0) {
-            await fundable.addUtxo!(s.getAddress(), randomUtxo({ satoshis: 1_000_000n }));
-          }
-        };
-        const originalGetUtxos = s.getUtxos.bind(s);
-        (s as unknown as { getUtxos: () => Promise<Utxo[]> }).getUtxos = async () => {
-          await ensureFunded();
-          return originalGetUtxos();
-        };
-      }
-      return withEthersMessageSigning(s);
-    }
-  }
-  // ethers v6 keeps this compatibility constructor on HDNodeWallet. Unlike `HDSigner.fromPhrase`, its
-  // provider is supplied later with `.connect(provider)`, so bind the active HRE provider temporarily.
-  const HDNodeWallet = Object.assign(HDSigner, {
-    fromMnemonic(mnemonicValue: string | { phrase: string }, derivationPath?: string): HDSigner {
-      const phrase = typeof mnemonicValue === 'string' ? mnemonicValue : mnemonicValue.phrase;
-      return withEthersMessageSigning(HDSigner.fromPhrase(phrase, provider, derivationPath));
-    },
-  });
-
-  // After a factory deploys, auto-register every deployTarget child whose artifact is already compiled
-  // into `artifactsDir`. Hardhat/MistSwap suites call `factory.createPair(...)` without an explicit
-  // `registerChild(UniswapV2Pair)` — the multi-contract compile already produced both artifacts, so
-  // looking them up by the ABI's deployTargets is the least-surprise path (see createPair wall).
-  type Registerable = {
-    registerChild?: (a: Artifact) => unknown;
-    inner?: { artifact?: Artifact };
-    artifact?: Artifact;
-  };
-  const registerDeployTargetChildren = (deployed: Registerable): void => {
-    if (typeof deployed.registerChild !== 'function') return;
-    const art = deployed.inner?.artifact ?? deployed.artifact;
-    const targets = (art?.abi ?? [])
-      .flatMap((fn) => fn.deployTargets ?? [])
-      .map((t) => t.contractName)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0);
-    for (const name of new Set(targets)) {
-      try {
-        const child = loadArtifactByName(artifactsDir, name);
-        deployed.registerChild(child);
-      } catch {
-        // Child not compiled yet / name mismatch — leave unresolved; deployFrom will still error clearly.
-      }
-    }
-  };
-
-  const wrapFactoryDeploy = <T extends Artifact>(factory: ContractFactory<T>): ContractFactory<T> => {
-    const original = factory.deploy.bind(factory);
-    factory.deploy = (async (...args: Parameters<ContractFactory<T>['deploy']>) => {
-      const deployed = await original(...args);
-      registerDeployTargetChildren(deployed as Registerable);
-      return deployed;
-    }) as ContractFactory<T>['deploy'];
-    return factory;
-  };
-
-  const contractFactory = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
-    runner?: ContractRunner): ContractFactory<T> | HardhatSplitContractFactory => {
-    const loaded = resolveArtifact(artifactOrName);
-    const boundRunner = runner ?? defaultRunner();
-    if (isSplitBundle(loaded)) {
-      return new HardhatSplitContractFactory(loaded, boundRunner);
-    }
-    return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner, deployDefaults));
-  }) as SolidcashEthers['getContractFactory'];
-  const contractAt = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
-    addressOrCategory: string, runner?: ContractRunner) => {
-    const loaded = resolveArtifact(artifactOrName);
-    if (isSplitBundle(loaded)) {
-      return new HardhatSplitContractFactory(loaded, runner ?? defaultRunner())
-        .at(addressOrCategory);
-    }
-    return (async () => {
-      const SC = await loadStatefulContract();
-      const connected = SC.at(addressOrCategory, loaded as T, runner ?? defaultRunner());
-      registerDeployTargetChildren(connected as Registerable);
-      return connected;
-    })();
-  }) as SolidcashEthers['getContractAt'];
-  const contractDeploy = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
-    args: ConstructorArgument[] = [], runner?: ContractRunner, overrides?: DeployContractOptions) => {
-    const loaded = resolveArtifact(artifactOrName);
-    if (isSplitBundle(loaded)) {
-      return new HardhatSplitContractFactory(loaded, runner ?? defaultRunner())
-        .deploy(...args, ...(overrides ? [overrides] : []));
-    }
-    return (async () => {
-      const deployed = await sdkDeployContract(
-        loaded as T, args, runner ?? defaultRunner(), { ...deployDefaults, ...overrides },
-      );
-      registerDeployTargetChildren(deployed as Registerable);
-      return deployed;
-    })();
-  }) as SolidcashEthers['deployContract'];
-
-  // ethers-compatible block surface used by Hardhat-era helpers (MistSwap `test/utilities/time.ts`):
-  //   ethers.provider.getBlockNumber() / getBlock("latest") / send("evm_mine", ...)
-  // MockNetworkProvider already implements `send` for the common evm_* methods; layer the missing
-  // getBlock* shims without mutating the underlying NetworkProvider instance.
-  const ethersProvider = provider as NetworkProvider & {
-    getBlockNumber?: () => Promise<number>;
-    getBlock?: (tag?: string | number) => Promise<{ number: number; timestamp: number; hash?: string }>;
-    getBlockHeight: () => Promise<number>;
-    getBlockTime?: () => number;
-    getBlockHash?: (height: number) => Promise<string>;
-  };
-  if (typeof ethersProvider.getBlockNumber !== 'function') {
-    ethersProvider.getBlockNumber = async (): Promise<number> => ethersProvider.getBlockHeight();
-  }
-  if (typeof ethersProvider.getBlock !== 'function') {
-    ethersProvider.getBlock = async (
-      _tag: string | number = 'latest',
-    ): Promise<{ number: number; timestamp: number; hash?: string }> => {
-      const number = await ethersProvider.getBlockHeight();
-      const timestamp = typeof ethersProvider.getBlockTime === 'function'
-        ? ethersProvider.getBlockTime()
-        : Math.floor(Date.now() / 1000);
-      const hash = typeof ethersProvider.getBlockHash === 'function'
-        ? await ethersProvider.getBlockHash(number)
-        : undefined;
-      return { number, timestamp, hash };
-    };
-  }
-
-  const ethers: SolidcashEthers = {
-    ...ethersUtils,
-    getCreateAddress: (tx: { from: string; nonce: number | bigint }) =>
-      getCreateAddressForComposition(tx, opts.composition),
-    provider: ethersProvider,
-    getSigners,
-    verifyMessage: opts.recoveryProjection === 'p2pkh' ? verifyMessageP2pkh : verifyMessageEvm,
-    verifyMessageP2pkh,
-    verifyMessageEvm,
-    getSigner: async (index = 0, o = {}): Promise<Signer> => {
-      const anyProvider = provider as unknown as { getSigner?: (i: number, x: object) => Promise<Signer> };
-      if (typeof anyProvider.getSigner === 'function') {
-        return withEthersMessageSigning(await anyProvider.getSigner(index, {
-          satoshis: opts.accountSatoshis, mnemonic, path: accountsPath, initialIndex: accountsInitialIndex, ...o,
-        }));
-      }
-      const [signer] = signersFromMnemonic(o.mnemonic ?? mnemonic, provider, {
-        initialIndex: accountsInitialIndex + index, count: 1, path: accountsPath,
-      });
-      const connected = withEthersMessageSigning(signer);
-      await fundRegtestSigner(
-        connected, o.satoshis ?? opts.accountSatoshis ?? 100_000_000n, index === 0 ? 16 : 4,
-      );
-      return connected;
-    },
-    getContractFactory: contractFactory,
-    getContractAt: contractAt,
-    deployContract: contractDeploy,
-    get Contract(): StatefulContractCtor {
-      if (!statefulContractCtor) {
-        throw new Error('SolidCash HRE: StatefulContract is not loaded yet; await initHre() before using ethers.Contract.');
-      }
-      return statefulContractCtor;
-    },
-    ContractFactory,
-    Signer,
-    Wallet,
-    HDSigner,
-    HDNodeWallet,
-  };
-  return ethers;
 }
 
 function buildConnection(
@@ -641,7 +277,14 @@ function buildConnection(
 ): NetworkConnection {
   const provider = createProvider(name, netCfg, resolvedConfig);
   const ethers = buildEthers(provider, mnemonic, opts);
-  return { name, provider, config: netCfg, ethers, networkHelpers: nh };
+  const close = async (): Promise<void> => {
+    try {
+      await (provider as { disconnect?: () => Promise<void> }).disconnect?.();
+    } catch {
+      // A socket that is already closed is the desired state.
+    }
+  };
+  return { name, provider, config: netCfg, ethers, networkHelpers: nh, close };
 }
 
 /** Create an HRE from a resolved config, selecting `networkName` (defaults to config.defaultNetwork). */
@@ -670,9 +313,10 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     netCfg?.mnemonic ?? config.mnemonic ?? DEFAULT_MNEMONIC;
   const mnemonic = mnemonicFor(selectedConfig);
   const ethersOpts: EthersOptions = {
-    artifactsDir: config.paths.artifacts,
+    artifacts: fsArtifactSource(config.paths.artifacts),
     composition: config.composition ?? (config.compiler?.composition === 'framed' ? 'framed'
       : 'direct'),
+    ...(config.create2Templates === undefined ? {} : { create2Templates: config.create2Templates }),
     // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
     // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
     // A devnet may fund a different branch than the default; leave it undefined so the provider adopts the
@@ -688,14 +332,36 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
           : 'p2pkh',
     logicalIdentity: config.logicalIdentity,
   };
-  const base = buildConnection(name, selectedConfig, mnemonic, ethersOpts, config);
+  // ethers v6 exposes the chain id through provider.getNetwork(). The covenant's `block.chainid` is the
+  // compiler's configured selector (masked to one byte), so report the same value the compiled contracts use.
+  const attachEthersNetwork = <C extends { provider: unknown }>(conn: C): C => {
+    const target = conn.provider as { getNetwork?: unknown } | undefined;
+    if (target !== undefined && typeof target.getNetwork !== 'function') {
+      (target as { getNetwork?: () => Promise<{ chainId: bigint; name: string }> }).getNetwork =
+        async () => ({ chainId: BigInt((config.compiler as { chainId?: number } | undefined)?.chainId ?? 0), name });
+    }
+    const exposed = (conn as unknown as { ethers?: { provider?: unknown } }).ethers?.provider;
+    if (exposed !== undefined && exposed !== target && typeof (exposed as { getNetwork?: unknown }).getNetwork !== 'function') {
+      (exposed as { getNetwork?: () => Promise<{ chainId: bigint; name: string }> }).getNetwork =
+        (target as { getNetwork?: () => Promise<{ chainId: bigint; name: string }> } | undefined)?.getNetwork;
+    }
+    return conn;
+  };
+  const base = attachEthersNetwork(buildConnection(name, selectedConfig, mnemonic, ethersOpts, config));
   // The active provider backs the module-global network helpers (loadFixture/time/...).
   setActiveProvider(base.provider as unknown as nh.TestNetworkProvider);
 
+  // Every connection a script opens holds a devnet socket until the task closes it.
+  const opened: NetworkConnection[] = [];
   const connect = async (n?: string): Promise<NetworkConnection> => {
     const cn = n ?? name;
     const cnCfg = validateNetwork(cn);
-    const conn = buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts, config);
+    const conn = attachEthersNetwork(buildConnection(cn, cnCfg, mnemonicFor(cnCfg), ethersOpts, config));
+    opened.push(conn);
+    // A network that keeps one socket for the run opens it here, where a connection first needs it.
+    if (cnCfg.electrum?.manualConnectionManagement === true) {
+      await (conn.provider as unknown as { connect(): Promise<void> }).connect();
+    }
     await conn.ethers.getSigners(config.accounts?.count ?? 20);
     setActiveProvider(conn.provider as unknown as nh.TestNetworkProvider);
     return conn;
@@ -704,11 +370,16 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
     ...base,
     create: connect,
     connect,
+    closeAll: async () => {
+      for (const conn of [base, ...opened.splice(0)]) await conn.close();
+    },
   };
 
   const hre: HardhatRuntimeEnvironment = {
     config,
     network,
+    artifacts: { readArtifact: async (contractName) => readHexArtifact(config.paths.artifacts, contractName) },
+    globalOptions: { network: name },
     ethers: base.ethers,
     networkHelpers: nh,
     tasks: { getTask, getTasks },

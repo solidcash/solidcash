@@ -27,11 +27,20 @@ export interface AbiFunctionReference {
  *
  * A fixed-width EVM ABI *word* (`abi.encode(<address>)`) is the one surface that cannot follow `'bytecode'`: a
  * 32-byte word cannot carry a variable-length lock, so it keeps projecting the 20-byte identity and the compiler
- * warns. Omitted follows the compile mode: `'hash'` under `evmCompat`, `'bytecode'` otherwise.
+ * warns. A function's result is no such word under `'bytecode'`: one that carries an address travels as compact
+ * pushdata under `evmCompat` too, so a getter returns the whole lock (DECISIONS D56). Omitted follows the compile
+ * mode: `'hash'` under `evmCompat`, `'bytecode'` otherwise.
  */
 export type AddressForm = 'bytecode' | 'hash';
 
 export interface CompilerOptions {
+  /**
+   * Framed composition: contracts a framed contract creates without naming them in source (a CREATE2 over a code
+   * value it holds, which the project's template table maps to a contract). A contract a source does name, by
+   * `type(C).creationCode` or `new C`, is found by the compiler. Each is compiled with constant master locks, which its
+   * creator checks the child's genesis against (docs/framed/CREATE2_IDENTITY.md).
+   */
+  framedCreationTargets?: readonly string[];
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
   /** Skip speculative message-bus admission rungs and compile the conservative route directly. */
@@ -168,6 +177,19 @@ export interface CompilerOptions {
   // Omitted means all eligible entry points. This avoids cloning dozens of unrelated external handlers when one
   // atomic DAG needs a few.
   messageBusHandlers?: readonly (string | AbiFunctionReference)[];
+  /**
+   * Per-contract override of `messageBusHandlers`, keyed by contract name. A project whose participants need
+   * different atomic methods can select each contract's handlers separately; a contract with no entry falls back
+   * to `messageBusHandlers`. Selecting a subset also changes the route's shape, so a contract whose collection
+   * getters would otherwise claim the route can publish a scalar-only route for just its state reader.
+   */
+  messageBusHandlersByContract?: Readonly<Record<string, readonly (string | AbiFunctionReference)[]>>;
+  /**
+   * Per-contract opt-out of route synthesis, keyed by contract name. Only the listed contract skips the route;
+   * every other participant keeps its route. Use this for a participant whose direct entry points must keep the
+   * lowering they had before the project enabled `messageBus`.
+   */
+  messageBusByContract?: Readonly<Record<string, boolean>>;
   // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.
@@ -246,6 +268,12 @@ export interface EmitAbi {
    * `{ kind: 'unsupported' }` marks an emit whose condition those facts do not decide, learned from that close.
    */
   activation?: ExternalCallExpression;
+  /**
+   * The event outputs a framed frame lists for this emit when its payload can outgrow one NFT commitment: chunk `c`
+   * at the emit's `c`-th output, the first under the event covenant and each further one under its continuation
+   * covenant, a chunk past the payload with the empty commitment. Absent for an emit that takes one output.
+   */
+  chunks?: number;
 }
 
 /** One segment of the source-ordered runtime event plan. Exactly one repeat source is present. */
@@ -348,6 +376,8 @@ export type LibraryCallArg =
 
 export interface AbiOutput {
   type: string;
+  /** The output's name, as a framed entry's source declares it (`returns (uint amountA, ...)`). */
+  name?: string;
 }
 
 /** Versioned tuple-wide wire representation for authenticated external-call results. */
@@ -399,6 +429,12 @@ export interface BlockLayoutSlot {
 /** 1:1 input/output block layout for a stateful function. */
 export interface FunctionBlockLayout {
   blockSize: number;         // total number of slots in this contract's block
+  /** The satoshis `this.payMinerFee` lets the container lose with no output, as a decimal string. */
+  minerFee?: string;
+  /** `pragma satoshicontainer single`: a call keeps the satoshi container in one coin and opens no other. */
+  singleSatoshiContainer?: boolean;
+  /** `pragma tokencontainer single`: a call keeps each token container in one coin and opens no other. */
+  singleTokenContainer?: boolean;
   slots: readonly BlockLayoutSlot[];
   /** First local slot of the bounded runtime-variable resource region. */
   trailingBase?: number;
@@ -480,7 +516,18 @@ export interface FixedBchTransferAbi {
   callOption?: 'value';
   /** Exact source-path predicate. Null explicitly means that source reachability is not reproducible. */
   condition?: ExternalCallExpression | null;
+  /** For a send made as a low-level call (`to.call{value: v}("")`), its `ExternalCallAbi.failedCallMessage`. */
+  failedCallMessage?: string;
 }
+
+/** Where a `new C{code: c}` child's code comes from: a deploy-function parameter it forwards, or an expression. */
+export type DeployCodeSourceAbi = { kind: 'parameter'; name: string; index: number } | { kind: 'expression' };
+
+/**
+ * The sha256 the code of a `new C{code: c}` child must have, which the creator checks before building the child's
+ * address from that code: the hash of C's compiled body (`compiled`), or a value chosen at run time.
+ */
+export type DeployTemplateAbi = { kind: 'compiled'; hash: string } | DeployCodeSourceAbi;
 
 /** Completely folded, constructor-only initial state for one child deployment site. */
 export interface ChildDeploymentGenesisStateAbi {
@@ -502,6 +549,8 @@ export interface ChildDeploymentGenesisEntryAbi {
   valueType: string;
   key: ChildDeploymentValueRecipe;
   value: ChildDeploymentValueRecipe;
+  /** The collection's empty-map HEAD sentinel, minted at genesis with an all-zero entry commitment. */
+  head?: true;
 }
 
 export interface ChildDeploymentSiteAbi {
@@ -704,6 +753,13 @@ export interface AbiFunction {
     collection: string;
     keyParams: readonly string[];
   };
+  /** Compiler proof that the complete function body is exactly `return <state>;` (or `return (a, b, ...);` over
+   * state variables, or named returns each assigned one), in the declared output order. SDKs may answer the read
+   * from the data-NFT records and the dynamic chunks without executing a derivation transaction. A `null` names a
+   * named return the body never assigns: that output is its type's zero (an integer or bool output). */
+  directStateReturn?: {
+    variables: readonly (string | null)[];
+  };
   /** Exact read-only `return mapping[keys...].length` over an authenticated mapping-array entry. */
   directCollectionLengthReturn?: {
     collection: string;
@@ -717,6 +773,11 @@ export interface AbiFunction {
   /** Local call-result values forwarded as arguments into later external callsites. */
   resultConsumers?: readonly ExternalResultConsumerAbi[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
+  /**
+   * A framed entry's top-level state writes, each a variable the body assigns once on no branch, with the value as its
+   * frame's own facts state it. A planner reads a later frame of the contract in the same transaction against them.
+   */
+  stateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
   emits?: readonly EmitAbi[];
   runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
   runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
@@ -731,8 +792,14 @@ export interface AbiFunction {
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
-    /** Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. */
+    /**
+     * Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. With `code` the
+     * factory embeds nothing, and this is C's compiled body: the code a `compiled` template requires.
+     */
     creationBytecode?: string;
+    /** `new C{code: c}`: the child runs the bytes `c`, whose sha256 the factory requires to be `template`. */
+    code?: DeployCodeSourceAbi;
+    template?: DeployTemplateAbi;
     /** The deploy covenant folds a same-transaction child call and its post-call genesis must be VM-derived. */
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -1248,6 +1315,8 @@ export interface KeySourceAbi {
   postWriteExpressionLabel?: string;
   /** Authenticated mapping snapshots this key reads before the handler's first mutation. */
   preWriteMappingCollections?: readonly string[];
+  /** The key is a component of another call's return: the SDK resolves the producer's value before hashing. */
+  producer?: { callsiteId?: number; resultIndex: number; functionName?: string };
 }
 
 export interface EntryAccessAbi {
@@ -1259,6 +1328,12 @@ export interface EntryAccessAbi {
   operations: readonly string[];
   /** Compiler-authored mutation identities; not a control-flow reachability or terminality proof. */
   mutationEffectOrdinals?: readonly number[];
+  /**
+   * A merged entry's other write sites: a runtime key and the (decidable) condition it runs under, both in the
+   * SDK's key-label language (`producer:<callsite>:<result>`, `state:`, `call:sqrt`, `binop:`). The SDK uses the
+   * alternative key when its activation evaluates true; otherwise the primary `keyParams` key applies.
+   */
+  alternatives?: readonly { key: string; activation?: string }[];
   /** Compiler proof that this entry stores a dynamic-array value in authenticated continuation chunks. */
   chunkableArrayValue?: true;
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
@@ -1320,6 +1395,8 @@ export interface ArgSource {
   indexValue?: number;     // for 'arrayElement': fixed index, or the index at occurrence zero when indexStepValue is present
   indexStepValue?: number; // for 'arrayElement': per-occurrence index delta of a loop induction variable index
   initialValue?: string;   // for 'loopIndex': value at occurrence zero
+  // for 'loopIndex' with no literal start: the counter's value at occurrence zero, where its loop opens
+  initialExpression?: ExternalCallExpression;
   stepValue?: string;      // for 'loopIndex': delta per reached occurrence
   stepExpression?: ExternalCallExpression; // for 'loopIndex': runtime delta from public arguments
   counterName?: string;  // compiler-bound induction variable for nested-domain coordinate selection
@@ -1333,6 +1410,11 @@ export interface ExternalCallExpression {
   kind: string;
   /** Source-site identity for compiler-owned compute ordinal checks; has no replay semantics. */
   computeSourceSite?: string;
+  /**
+   * On an `unsupported` node, the contract whose `type(C).creationCode` it stands for. The compiler folds a
+   * `keccak256` of it to the digest of the child's program before publishing, so a builder never reads this.
+   */
+  creationCodeOf?: string;
   /** Closed typed fixed-effect predicate; callers without authenticated entry context must leave it unknown. */
   fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
@@ -1349,6 +1431,11 @@ export interface ExternalCallExpression {
   sourceCallsiteId?: number;
   /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
   resultIndex?: number;
+  /**
+   * On a `stateAccess`, true when the read runs where the frame starts: it is a local's value declared before any
+   * statement of the entry writes the mapping, so a builder reads it from the frame's own nodes.
+   */
+  readAtEntry?: boolean;
   /** Authenticated receiver expression for a returning external call. */
   target?: ExternalCallExpression;
   type?: string;
@@ -1367,6 +1454,9 @@ export interface ExternalCallExpression {
   parameters?: readonly string[];
   /** Bounded statement program for a compiler-published pure helper body. */
   statements?: readonly ExternalCallStatement[];
+  /** Declared result types of the helper; names are present when the source named every result. */
+  returnTypes?: readonly string[];
+  returnNames?: readonly string[];
 }
 
 /**
@@ -1468,8 +1558,8 @@ export interface AffineRecursiveFrameV1Abi {
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block'
-  | 'require';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'tupleAssign' | 'while' | 'branch' | 'return'
+  | 'expression' | 'block' | 'require';
   name?: string;
   type?: string;
   index?: ExternalCallExpression;
@@ -1477,6 +1567,12 @@ export interface ExternalCallStatement {
   condition?: ExternalCallExpression;
   statements?: readonly ExternalCallStatement[];
   elseStatements?: readonly ExternalCallStatement[];
+  /** One slot per tuple component; `null` is a discarded `(, x)` slot. */
+  names?: readonly (string | null)[];
+  /** Declared component types for a tuple that introduces its names, one slot per component. */
+  types?: readonly (string | null)[];
+  /** Per-slot right-hand sides when the source wrote `(a, b) = (x, y)` instead of a tuple-valued call. */
+  args?: readonly ExternalCallExpression[];
 }
 
 /**
@@ -1609,6 +1705,12 @@ export interface ExternalCallAbi {
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
   rawSelector?: string; // decoded abi.encodeWithSelector selector when the source function name is unavailable
   rawArgSources?: readonly ArgSource[];
+  /**
+   * The message of the caller's own `require` over this low-level call's success: what the EVM reports when the call
+   * fails, since a low-level call returns `false` to its caller rather than reverting it. Absent for a typed call,
+   * whose failure is the callee's own, and for a low-level call no `require` checks.
+   */
+  failedCallMessage?: string;
   batchInvocations?: readonly {
     selector: string;
     /**
@@ -1949,9 +2051,23 @@ export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
  * known once the contract exists. The offsets are authoritative and are checked before a fill, because a wrong fill
  * would overwrite live script bytes.
  */
-export interface CompositionPlaceholders {
+export type CompositionPlaceholders = SlottedPlaceholders | ConstantLockPlaceholders;
+
+/**
+ * A master that reserves no deployment slot: its contract is one another contract creates, so it reads its category
+ * from its own token and leaves `address(this)` to the validator, and every master of the program has one lock
+ * whatever its category, which the creator checks its child's genesis against (docs/framed/CREATE2_IDENTITY.md).
+ */
+export interface ConstantLockPlaceholders {
+  version: 1;
+  constantLock: true;
+}
+
+/** The slots a master's deployment fills: its category, its address and, for a master reached by calls, more. */
+export interface SlottedPlaceholders {
   /** Schema version, so a script and its descriptor cannot be paired across a format change. */
   version: 1;
+  constantLock?: undefined;
   /** Byte offset of the 32-byte state category slot within the script. */
   categoryOffset: number;
   /** Byte offset of the 35-byte contract address slot within the script. */
@@ -1965,6 +2081,12 @@ export interface CompositionPlaceholders {
    * the expected program, and the expected program's hash is only known once the validator is deployed.
    */
   templateHashOffset?: number;
+  /**
+   * Byte offset of the 20-byte identity slot, which follows the address slot. Zero for a contract that presents its
+   * category's address; a CREATE2 child presents the EVM identity its creator derived, which deployment fills here.
+   * Absent on a master compiled before the slot existed.
+   */
+  identityOffset?: number;
 }
 
 /**
@@ -2004,6 +2126,15 @@ export interface PublishedCallSite {
  * `collection` names the verified mapping a batch write targets, `variable` names the dynamic value whose run
  * of chunk records the write occupies, and `turns` names a mapping write a run-time loop makes once per turn.
  */
+/** A segment a framed entry's own code reads a record in: see `PublishedEntryStopSites.readSegments`. */
+export interface PublishedReadSegment {
+  /** One of the entry's data records, by its NFT index. */
+  readonly record?: number;
+  /** A collection the read reaches a node of, or a dynamic value whose chunk run it reads, by name. */
+  readonly collection?: string;
+  readonly segment: number;
+}
+
 export interface PublishedWriteSegment {
   readonly record?: number;
   readonly collection?: string;
@@ -2068,6 +2199,11 @@ export interface PublishedLoopEffectRun {
   readonly ids: readonly number[];
   /** The loop's recurrence for a run a loop repeats once per turn; absent for a run the body makes once. */
   readonly iterationDomain?: ExternalCallIterationDomainAbi;
+  /**
+   * For a run some of whose effects are on a branch, the predicate each is made under on a turn, aligned with `ids`:
+   * read with the loop's counter bound, as its `continueCondition` is. `null` is an effect made on every turn.
+   */
+  readonly conditions?: readonly (ExternalCallExpression | null)[];
 }
 
 /**
@@ -2112,6 +2248,16 @@ export interface PublishedEntryStopSites {
    */
   readonly writeSegments?: readonly PublishedWriteSegment[];
   /**
+   * The segments the entry's own code reads its records in, one fact per record and segment.
+   *
+   * A read runs in the segment the calls before it close, so a read whose calls vary with the arms taken is in each
+   * segment its range of calls names. With `writeSegments` it says which records a segment's code touches: a builder
+   * may leave out of a segment a record the code neither reads nor writes there, which keeps its view across that
+   * segment for the frames around it. Absent means a read's segment is not bounded, and the builder declares every
+   * record in every segment.
+   */
+  readonly readSegments?: readonly PublishedReadSegment[];
+  /**
    * For each value send of the entry, in transfer order, how many external calls the entry makes before it.
    *
    * A send to a contract is a call into its `receive()` made where the send is, so its record follows those calls
@@ -2119,6 +2265,12 @@ export interface PublishedEntryStopSites {
    * Absent means the entry makes no send, or makes one whose place among its calls the source does not fix.
    */
   readonly sendCallsBefore?: readonly number[];
+  /**
+   * For each value send of the entry, in transfer order, whether the entry makes no external call after it: a send
+   * to a contract then makes its call after every call the entry makes, however many a loop before it makes, which
+   * places it where `sendCallsBefore` leaves its place open. Absent means the entry makes no send.
+   */
+  readonly sendsAfterCalls?: readonly boolean[];
   /** The effects the entry makes once per turn of a loop, when it makes any. */
   readonly loopEffects?: PublishedLoopEffects;
   /** The sites in the order the driver reaches them, validated before publication. */
@@ -2158,12 +2310,24 @@ export interface PublishedFramedLifecycle {
   readonly merge?: PublishedLifecycleEntry;
 }
 
+/**
+ * A contract creation argument a framed deployment baked into the program: the value is no longer readable from
+ * `constructorInputs`, but a runtime view may name it (for example a token-container key).
+ */
+export interface CreationArgumentBinding {
+  readonly name: string;
+  readonly type: string;
+  readonly value: string | bigint | boolean | Uint8Array;
+}
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
   abi: readonly AbiFunction[];
   bytecode: string;
   source: string;
+  /** Set by a framed deployment that baked its creation arguments into `bytecode`. */
+  creationArguments?: readonly CreationArgumentBinding[];
   debug?: DebugInformation;
   functionBodies?: Record<string, string>; // selector hex -> hex-encoded function body bytecode
   fingerprint?: string; // SHA256 of the normalized bytecode pattern (BCH bytecode fingerprinting standard)
@@ -2241,6 +2405,27 @@ export interface Artifact {
      * lock. Absent when the master calls no cut helper.
      */
     internalHelperLocks?: readonly InternalHelperLockSlot[];
+    /**
+     * The contracts the master's bodies create with CREATE2, each addressed by its EVM identity
+     * `keccak256(0xff ++ creator ++ salt ++ keccak256(code))[12:]`. A builder stands such a child up at that identity
+     * before the creating transaction. A creation from `type(C).creationCode` (`new C{salt: s}()`) names the child
+     * contract; one from a code value the contract holds names the state variable holding it, and the builder
+     * stands up the artifact its template table names for the value's keccak256. Absent when the master creates
+     * nothing.
+     */
+    creates?: readonly {
+      readonly contractName?: string;
+      readonly codeStateVariable?: string;
+      /**
+       * The initializer the creator calls on the child it just created, folded into the child's genesis: a builder
+       * evaluates `argumentSources` over the creating entry's own arguments and derives the child's state with it.
+       */
+      readonly foldedCall?: {
+        readonly interfaceName: string;
+        readonly functionName: string;
+        readonly argumentSources: readonly ArgSource[];
+      };
+    }[];
   };
   messageBus?: {
     version: 1;
@@ -2667,6 +2852,11 @@ export interface FunctionSplitInternalCut {
   wholeSpendBytes: number;
   /** Selectors of the entries whose call record names this helper. */
   callerSelectors: readonly string[];
+  /**
+   * The helper's own ABI row: the parameters a call into it carries and the results it hands back. The helper's
+   * artifact publishes no entry for it, so nothing reaches it but its callers' INTERNAL frames.
+   */
+  entry?: AbiFunction;
 }
 
 /**

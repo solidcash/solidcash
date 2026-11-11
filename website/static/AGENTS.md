@@ -1,7 +1,7 @@
 # SolidCash -- AI Agent Reference
 
 Reference for AI coding agents that write SolidCash contracts or port Solidity contracts to Bitcoin Cash. It
-covers SolidCash 0.14.0-beta.1. This file is served at https://solidcash.org/AGENTS.md; the full documentation is
+covers SolidCash 0.50.0. This file is served at https://solidcash.org/AGENTS.md; the full documentation is
 at https://solidcash.org/docs.
 
 SolidCash is a smart-contract language for Bitcoin Cash (BCH) with Solidity syntax. The `solidc` compiler turns
@@ -31,7 +31,7 @@ it, so CashScript examples do not apply.
    a transaction is valid on mainnet. See "Limits and Costs".
 8. Experimental profiles are outside the stable promise: composed external state mutation, custom delegate
    forwarding beyond the built-in proxy, and message-bus kernel composition. Say so when a design depends on one.
-9. 0.14.0-beta.1 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
+9. 0.50.0 is a beta and security hardening is ongoing. Do not advise putting significant value behind a contract
    without an independent review.
 
 ## Key Differences from Solidity
@@ -64,7 +64,7 @@ There are two routes, and both target the same compiler.
   switches `abi.*`, selectors, `interfaceId` and event selectors to EVM encoding and keccak256. Without the flag,
   `pragma solidity` is a diagnostic that names the option. New SolidHat projects set `compiler: { evmCompat: true }`
   in `solidcash.config.ts`; it applies to `.scash` sources too, so remove it explicitly for native ABI and selectors.
-- **Rewrite as native `.scash`** with `pragma solidcash ^0.14.0;`. Native mode uses compact Script ABI framing and
+- **Rewrite as native `.scash`** with `pragma solidcash ^0.50.0;`. Native mode uses compact Script ABI framing and
   sha256-derived selectors, and gives the most control over bytecode size. Prefer it for new BCH-only contracts.
 
 Both modes accept bare state access (`balanceOf[a] += x`) as well as the explicit `this.balanceOf[a]` form.
@@ -122,7 +122,7 @@ __gap arrays                 omitted under evmCompat; they reserve nothing on BC
 
 ## Toolchain
 
-Six npm packages, all versioned 0.14.0-beta.1. They ship as ESM only and target Node.js 22 or newer. The commands
+Six npm packages, all versioned 0.50.0. They ship as ESM only and target Node.js 22 or newer. The commands
 below resolve these names from npm; a 404 means that release is not published yet.
 
 ```text
@@ -211,10 +211,14 @@ is why generated SolidHat projects use EVM ABI encoding until you remove the opt
 unless marked (native) or (evmCompat). Solidity shapes the parser accepts beyond the documented subset are
 (experimental): https://solidcash.org/docs/basics/solidity-parity
 
+Compile contracts that call each other in one mode: a `.sol` source is always evmCompat and a `.scash` source follows
+the config. A selector is hashed by its compile's mode (`int` is `int256` in both), so a fixed-method call between the
+modes never matches its callee, and the SDK refuses it by name (`MixedCompileModeCallError`).
+
 ### Source File Structure
 
 ```solidity
-pragma solidcash ^0.14.0;                    // native: only `solidcash`; `pragma solidity` needs evmCompat
+pragma solidcash ^0.50.0;                    // native: only `solidcash`; `pragma solidity` needs evmCompat
 import "./Base.scash";                       // wildcard: every file-level declaration
 import "./Types.scash" as T;                 // namespace: qualified types (T.Point, T.Color.Red)
 import { Pair, helper } from "./Lib.scash";  // selective; an `as` rename resolves only for enums
@@ -619,7 +623,9 @@ bytes32 blobhash(int i)        -- always zero
   index; the SDK adds it. A reader checks the coin's category and kind, not its lock.
 - A reader takes a hidden last constructor input, `__oraclePool`, that the SDK fills from the `oraclePool` option
   (a category in display order) or else `provider.oraclePoolCategory`. It is part of the address, so a deployed
-  reader keeps its pool, and a contract passes its own to the contracts it creates.
+  reader keeps its pool, and a contract passes its own to the contracts it creates. A framed master carries its pool
+  in its bytecode; a framed child a factory creates with `create2` carries the pool its constants were computed with
+  (`framedDeploy.framedChildConstants({ ..., oraclePool })`), so every creation binds that pool.
 - `MockNetworkProvider` mints its pool on first use and refreshes it on every mined block. `solidhat node` mints a
   pool, keeps it current and advertises it, so devnet readers bind it by default. On a live network pass
   `oraclePoolCategory` to `ElectrumNetworkProvider`, or mint a pool with `createOraclePool` and keep it current with
@@ -628,13 +634,13 @@ bytes32 blobhash(int i)        -- always zero
 - A stateful or factory deployment with `oraclePool: 'new'`, or `{ create: { infoCoins?, ringDepth?, slotReplicas?,
   ownerKey? } }`, mints a pool before its genesis, shaped by what the contract and the contracts it creates read:
   block-info coins (one per master) only for `block.*`, ring slots (depth 256, or 1 for `'now'`) only for
-  `blockhash`. Its children bind the same pool. The owner defaults to `provider.oraclePoolOwnerKey` (mock, regtest);
-  elsewhere pass `ownerKey`.
+  `blockhash`. Its children on the direct path bind the same pool. The owner defaults to
+  `provider.oraclePoolOwnerKey` (mock, regtest); elsewhere pass `ownerKey`.
 - A reader trusts its pool's genesis and owner key: the owner writes every field and hash and can stop or sweep
   coins, but cannot over-report the height or time or rewind them.
 - `blockhash(n)` makes the contract stateful. It returns the hash a slot holds for n, zero when the slot of n's
-  residue holds a block at least 256 newer, and fails for a block the pool has not written. A message-bus build
-  refuses a `block.*` or `blockhash` read reached through a function pointer
+  residue holds a block at least 256 newer, and fails for a block the pool has not written. Framed contracts do not
+  serve it. A message-bus build refuses a `block.*` or `blockhash` read reached through a function pointer
   (`MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`). See https://solidcash.org/docs/guides/block-oracles
 
 ### Time Locks
@@ -802,6 +808,10 @@ bytes code = type(Child).creationCode;         // redeem script (runtimeCode ali
 - `new` of a stateful child works only in a stateful contract's function. The child is an output, so the same
   transaction cannot call it beyond a folded initializer (`DeployThenCallError`), and a `require` inside that
   initializer does not run. Deploy sites in branches or loops must create the same child (`ConditionalDeployError`).
+- A direct creator folds a child's constructor, state-variable initializers included, into its own check instead of
+  running it. Arguments, straight-line locals, writes and a `require` over them fold. Anything else is refused by name
+  (`ChildGenesisFoldError`): reads of `tx.*`, `msg.value`, child state, signatures, `block.*` or `blockhash`, a nested
+  `new`, an `emit`, a transfer, or a branch the fold cannot join. Pass the value in as an argument, or set it later.
 - SDK: `await factory.call.create(sig)` deploys with the connected signer; `.deploy({ fundingUtxo, funder,
   changeAddress })` funds it explicitly (the vout-0 funding UTXO becomes the child's category); `.send()` takes the
   non-deploying path. `StatefulContract.deployFrom({...})` is the static form.
@@ -889,7 +899,7 @@ contract Forwarder(pubkey admin) {
   delegate's first push to be that exact four-byte selector. The built-in proxy publishes both and `deployProxy`
   fills them in. A forwarder with only `__proxyBlockSize` uses that one distance for every call.
 - Deployed libraries (`L.f(...)` on a library function touching library state) use the same delegate co-spend
-  (experimental). Not supported in 0.14.0-beta.1: fallback-only transparent proxies, value or token movement in
+  (experimental). Not supported in 0.50.0: fallback-only transparent proxies, value or token movement in
   delegate mode.
 
 ### Cross-Contract Calls

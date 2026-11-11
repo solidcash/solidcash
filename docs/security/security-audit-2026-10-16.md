@@ -5,8 +5,13 @@ Status: complete for the 2026-10-16/17 pass. The findings are kept in discovery 
 
 Fix status: DYN-1, ECR-1, FRAMED-CONT-1, MERGE-1, CONT-1, WT-1 and WT-2 are fixed with the tests named below.
 KCHAIN-1, the C3 residual, AUTHHEAD-1's contract paths, G0 and the 2026-07/2026-10 LOWs still open in code were
-fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1, -2 and -5 (ids of
-sushi-port-node's ledger) are fixed on `feat/oracle-pools`; see "Oracle pools (2026-11-04)" at the end.
+fixed on 2026-10-22; MIG-1 stays open (privileged). See "Fix pass 2026-10-22". ORACLE-1 (CRITICAL) to ORACLE-4
+are fixed on `fix/oracle-hardening`, ORACLE-4 for created children on `fix/oracle-child`, and GENESIS-1, the item
+that branch recorded about a creation's genesis, on `fix/genesis-replay`; ORACLE-6 on `fix/blockhash-ring` removes the
+keeper baton (CRYPTO-4, ORACLE-5), ORACLE-7 gives an expired block the EVM's zero, and ORACLE-8 infers a reader's
+ring depth; see "Block oracle hardening (2026-11-03)" at the end. Oracle pools (2026-11-04, `feat/oracle-pools` and
+`feat/oracle-pools-sushi`) supersede the per-contract mechanisms of ORACLE-2, -4 and -6 to -8, and fix ORACLE-1, -2
+and -5 on master; see "Oracle pools (2026-11-04)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -40,6 +45,35 @@ precondition that is common), MEDIUM (needs an uncommon shape or privileged part
 "Confirmed" means traced in source to the missing refusal; no VM run was made unless stated.
 
 ## Findings
+
+### CALLER-EDGE-1 (HIGH, VM-confirmed 2026-11-05; FIXED on the sushi landing; direct convention and bus routes) A caller edge did not have to name a call its run made
+
+F1 binds a callee's contract `msg.sender` to an own-category immutable NFT carrying the call's digest, so a contract
+has to have made the call rather than merely be co-spent. Nothing tied that NFT to a call the run made:
+
+- e01859f89 moved edges from a `callEdge` block slot to a witnessed output, and `declaresEvents` in
+  GenerateTargetTraversal kept testing `slot.kind === 'callEdge'`, a slot nothing generates. An entry of a contract with
+  no events took no census, so any public entry could carry a forged edge. Master has the same line.
+- The census admits an output because a witness names it, and a witness says nothing about the call. An early return
+  that skips a call still names its edge, so `if (skip) { return; } IVault(vault).pay();` forged the edge in a contract
+  with events too.
+- The callee matched category and commitment, never the carrier lock, so a carrier the count does not take in served.
+- A message-bus route took neither the census, without events, nor the record count.
+
+Attack: anyone able to run any public entry of A co-spends A's master, appends `digest || 0x03` in A's category, and
+runs a callee that trusts A. An old edge under its anyone-can-spend lock replays the same way.
+
+Fix: the record count takes in both carrier locks, and a run expects what it pinned: each pin adds to a tally on the
+stack, so a skipped call adds nothing. Two pins may not name one output, since that would free a carrier for a forgery.
+A void run that settles no record counts at zero, a proxy path that reached no delegate does too, a delegate refuses an
+edge of its own category, a route refuses any edge of its category, and the callee reads an edge only under its lock.
+A route refuses in its output pass, which reaches each token through a short test: a count of its own priced a whole walk
+on each of the 500-odd pads a kernel block keeps, which put a one-row NFT transfer over the operation density limit.
+`AuditCallerEdgeForgery.test.ts` and `AuditCallerEdgeRoute.test.ts` run each shape on the VM.
+
+Residual: a proxy that does not pin its delegate co-spend keeps this hole with the rest of its state (C1). A framed
+master takes no such count: framed callers attest through their own records and pin no F1 edge, so a direct callee that
+trusts a framed contract has no honest path.
 
 ### DYN-1 (CRITICAL, source-traced; direct and route builds) A dynamic write skips all chunk verification when the spender passes a base below -1
 
@@ -1419,41 +1453,248 @@ Design: `docs/wip/call-records/DESIGN.md`.
 - A loop iteration's result must fit 96 bytes inline: there is no per-iteration preimage witness, so a hashed record
   fails the read (fail closed).
 
+## Block oracle hardening (2026-11-03)
+
+The user's request "harden the block oracle security", with the rule that a block oracle is always of the master
+contract's category. Read from the code; each finding then ran once on the BCH 2026 VM before and after its fix, with
+master's compiler as the pre-fix build (`packages/solidc/test/AuditBlockhashPairForgery.test.ts`).
+
+**Superseded in part, 2026-11-04.** Oracle pools (`feat/oracle-pools-sushi`, "Oracle pools (2026-11-04)" below)
+replace the per-contract oracles this section hardens. Block data now sits in coins of a pool category `P`, which no
+contract's minting NFT can mint, so:
+
+- Gone: ORACLE-2's pair-lock pin; ORACLE-4's own-category block-info oracle, with its genesis mint, output pin, split
+  copies, message-bus and validator admissions, and a created child's derived lock and genesis oracle; ORACLE-6's
+  per-contract ring; ORACLE-7's depth-256 zero; ORACLE-8's depth inference (`3148c0cac`, `7c24b63b0`, `a3396494e`,
+  `aca6fae8a`, `1a7850973`). A pool's ring slots and their zero (any depth, once the residue's slot is 256 blocks
+  newer) replace ORACLE-6 and -7, and a pool's depth is its own. Dropping the validator admission changed the
+  template, and with it every framed address, again.
+- ORACLE-5's keeper baton is gone, since ORACLE-6 (`2f6f4df1d`). A pool's baton is a minting NFT of `P`, which no
+  container takes for authority.
+- Still holding: ORACLE-1's flag inheritance (the body sub-traversals and the helper-use probe copy
+  `currentContractUsesBlockhash`, `currentContractUsesBlockOracle` and `currentContractReadsBlockhash`). ORACLE-4's
+  rule that any block read makes a contract stateful served the per-contract oracles and went with them when the two
+  lines merged: a `blockhash` reader stays stateful, a `block.*` reader need not be (`BlockReadStateful.test.ts`).
+  GENESIS-1's replay holds without its oracle: a child's masters carry their pool in their locks, which the replay
+  checks.
+- Not holding: ORACLE-3's event-pin arm. `55af13b07` (ORACLE-6) removed it when the pairs became mutable slots, which
+  the census of immutable own-category NFTs does not count, and none is needed: a pool coin is of `P`, never the
+  reader's category, so the event pin does not see it.
+- ORACLE-8's open item is closed: a direct child takes its creator's `__oraclePool`, and a framed child's
+  constant-lock masters carry the pool its creator's constants were computed with (`OraclePoolBlockInfo.test.ts`,
+  `OraclePoolBlockhash.test.ts`, `child-genesis-replay.test.ts`). A framed master still refuses `blockhash`.
+- The per-contract tests named below are deleted (`AuditBlockInfoOracleOwnCategory`, `AuditBlockhashPairForgery`,
+  `BlockhashDepthInference`, `BlockOracleCommitment`, `BlockOracleOwnCategory`, `BlockOraclePerMaster`,
+  `BlockOracleSplitCopies`, `BlockhashRing`, `child-block-oracle` and testing's `block-oracle`).
+  `AuditCrypto4KeeperAuthority`, `BlockhashKeeperDeployment`, `BlockOracle`, `BlockOracleValue` and
+  `child-genesis-replay` test the pool now.
+
+- **ORACLE-1** (CRITICAL; direct builds with two or more functions, and message-bus builds). A function body compiled
+  in a sub-traversal did not inherit `currentContractUsesBlockhash`. In a contract whose only stateful feature is
+  `blockhash` (no state variable, collection or event), `isStatefulContract` was then false there and the body carried
+  no master covenant: a call of `read` moved the master's minting NFT to an anyone-can-spend lock. Accepted on a
+  message-bus build and on a two-function direct build; refused on a one-function direct build, whose body the main
+  traversal compiles. The three body sub-traversals now inherit the flag.
+- **ORACLE-2** (HIGH). A `blockhash(n)` reader accepts any capability-none NFT of its category at the category's pair
+  lock whose commitment starts with `n`. The own-category immutable output pin ran only in contracts that declare
+  events, so beside any call of a reader without events a caller minted a pair with a hash of its choosing (accepted
+  beside a read on direct and message-bus builds, and beside a permissionless `split`). On the message-bus build a
+  caller also replaced an expired pair, whose wipe path constrains no output, with a forged one. In every function of
+  a contract that reads `blockhash`, `split`, `merge` and `unsafe(1..)` included, an output at the pair lock is now
+  admitted only as an unchanged recreation of the input at its index (same lock, category, commitment and amount):
+  `emitBlockhashPairOutputPin`, or an arm of the event pin where that runs.
+- **ORACLE-3** (MEDIUM, liveness). In a contract that declares events, the event pin took the honest pair recreation
+  for a stray event and refused every `blockhash` read (`OP_VERIFY` at the master). The same arm admits it.
+- Not changed: `unsafe(0)` stays the escape hatch and pins nothing. Framed masters and compiler routes take the same
+  epilogue (read, not run on the VM). Not checked: a proxy whose implementation reads `blockhash`, as the proxy's own
+  functions do not know it.
+- **ORACLE-4** (the user's rule, 2026-11-03: "any access to block.* or blockhash should mark a contract mandatorily
+  stateful"). `block.*` read one shared block-info oracle of its own category (`2aeaee406`), where every oracle must be
+  of the master contract's category. Now any `block.*` or `blockhash` read makes a contract stateful, its genesis mints
+  its own oracle (a mutable NFT of its category at `blockOracleLockingBytecode(category)`, naming
+  `blockOracleOwnerPublicKey` or the mock's or devnet's own key), every SDK path co-spends the reading contract's own
+  oracle, and no provider carries a shared one. The reader's masters hold the minting NFT that could mint a look-alike
+  with forged fields, so every function admits an output at that lock only as an unchanged recreation of the input
+  at its index (`emitOracleOutputPin`). Tests: `packages/solidc/test/AuditBlockInfoOracleOwnCategory.test.ts` (VM:
+  honest reads in four build shapes, forged oracle refused beside a read, a non-reading function and a permissionless
+  `split`, master kept), `packages/solidcash/test/e2e/BlockOracleOwnCategory.test.ts` (mock: genesis mint, own reads,
+  two readers apart, owner-only keeper). Regtest and devnet keep their readers' oracles by the same rule (types only;
+  not run).
+- ORACLE-4 follow-ups. The message-bus verifier counted a reader's own oracle, a mutable NFT of its category, as two
+  state endpoints, so it refused a reader without resource rows (an all-staticcall composition). The oracle's sidecar
+  row now exempts it from that count while it is recreated unchanged; a kind-1 preservation row could already claim
+  any unchanged own-category NFT, so a composer gains nothing. The oracle pin is one shared helper per contract where
+  the compiler shares per-entry checks. The framed validator's census (V7) took an own-category oracle for an
+  undeclared record and refused a validator-settled transaction with a `block.*` reader. It now derives each settled
+  contract's oracle lock from its category, counts the oracle as no state UTXO, and admits an output at that lock
+  only as the unchanged recreation of the input at its index (program, derivation and reference model alike). The
+  validator template changed, and with it every framed contract address (the user, 2026-11-03).
+- Lead, not checked: the body sub-traversal for defined subroutines (created after the
+  `SIGNATURE_CHECK_IN_SUBROUTINE` check in `GenerateTargetTraversal.ts`) copies neither
+  `currentContractSettlesCallRecords` nor `currentContractCarriesCallBatch`, which the other two copy.
+- ORACLE-4 for created children (`fix/oracle-child`). A contract another contract creates in its own transaction
+  (a CREATE2 child, a Uniswap pair) has constant-lock masters: its creator names their locks as deployment
+  constants. Pinning each category's oracle lock gave those masters a lock per category, so no creator could name
+  them, and a child's genesis minted no oracle. Now:
+  - a constant-lock master derives its oracle's lock from its own token (`OP_INPUTINDEX OP_UTXOTOKENCATEGORY`,
+    `blockOracleLockDerivationScript`) for its reads and its output pin, carries no sentinel, and publishes no
+    `blockOracleLockSlots`; the compiler refuses one that still carries the sentinel;
+  - the child's genesis, which the creating transaction mints, mints its oracle (owner: the provider's key, or
+    `creates.blockOracleOwnerPublicKey` / `registerFramedCreatedChild`), and the child's output count includes it;
+  - the creator's check of the outputs of `K` admits the lock the oracle covenant gives `K`, derived in script from
+    the outpoint hash, which is the token category the child's masters derive from;
+  - the framed validator weighed every category's oracle-lock output as a recreation in place, while V7, the
+    derivation model (`checkCensus`) and the SDK reference model weigh only settled contracts' outputs: the program
+    refused the creating transaction of a child that reads block.*. It now weighs only settled contracts' oracle
+    outputs, as the models do. The validator template changed again, and with it every framed address (v1 is not
+    yet on a real chain, D9).
+  Tests: `packages/solidcash/test/framed/deploy/child-block-oracle.test.ts` (mock: constant locks, two creations of
+  a reader from one set of constants, each child reading its own oracle; a creation with a second oracle and a call
+  minting a look-alike beside a read are refused), `packages/testing/test/block-oracle.test.ts` (devnet: the keeper
+  finds and keeps a child's oracle minted after the node started, and the child reads it).
+- **GENESIS-1** (HIGH for a child any caller may create, as `createPair` is; found while landing the children fix,
+  fixed on `fix/genesis-replay`). The creator's check bounded which locks the outputs of `K` sat at and how many
+  there were in all, not how many sat at each lock or what they committed to. Its digest loop compared the outputs'
+  digest with the `OP_RETURN` the same transaction carried, so it bound the two but not the commitments to anything
+  the creator computed (CREATE2_IDENTITY.md, "Lock membership is not enough"), and no validator weighs `K`, whose
+  category no input carries. So whoever composed a creating transaction chose the child's genesis: its records'
+  commitments (a wrong token, unbacked `totalSupply`, `unlocked = 0`, which bricks a pair), which outputs it omitted
+  or doubled in place of others (its validator, a master, an LP node at a collection's lock in place of a spare
+  master), and its oracle: the owner key, the starting fields, none, or two. Fixed by the genesis replay
+  (CREATE2_IDENTITY.md, "The genesis replay"): the creating body folds every output of `K` into two chains and
+  requires the minting NFTs' to equal the child's masters as its deployment filled them (entry locks and pool), and
+  the rest's to equal the genesis it computes from `K`, its own address and its folded construction (constructor,
+  state-variable initializers, the folded initializer over its own arguments): the oracle when the child reads
+  block.* (owner hash a deployment constant, fields unset), each empty head, each record's exact commitment, the
+  validators the deployment counts, and the authhead naming the creation's own coin. Both chains start from 32 zero
+  bytes, so no composer can write two outputs as one; and the creation's coin must be output 0 of its transaction, so
+  `K` is minted by the creating transaction alone (a coin at another output may name a category an earlier genesis
+  minted to the composer, which the earlier check did not refuse either). Tests:
+  `packages/solidc/test/framed/master/child-category-check.test.ts` (VM: the fold over a synthetic transaction),
+  `packages/solidcash/test/framed/deploy/child-genesis-replay.test.ts` (mock: a pair-shaped creator refuses a forged
+  `token0`, `token1`, `totalSupply`, `factory`, `unlocked = 0` and `kLast`, an LP node in place of a master, a missing
+  or doubled validator, a doubled or missing master, a foreign authhead owner and an origin coin that is not output 0;
+  a block.* child refuses two oracles, none, chosen fields and a foreign owner; the honest creations are accepted),
+  `test-app-bch`
+  `AtomicPairCreateHostile.test.ts` (the shipped `UniswapV2Factory.createPair` on a production-consensus devnet: the
+  same rewrites of the shipped pair's genesis refused, the honest one accepted). Not covered: the outputs' satoshi
+  amounts (a sub-dust output needs a miner to include it), and the folded initializer's own `require`s, which the
+  replay does not re-evaluate (it requires the state they would leave; the SDK refuses a creation they refuse).
+- **ORACLE-5** (HIGH; framed contracts that read `blockhash` and were deployed with a keeper key; found by reading,
+  2026-11-03). The CRYPTO-4 keeper baton holds a minting NFT of the contract's category at a P2SH32 lock with a 162-byte
+  redeem, so it passes the category-only container covenant's authority test (`bindMintingAuthorityLock()`: a P2SH32
+  input whose redeem passes 128 bytes and that holds the category's minting NFT), which framed's BCH containers use.
+  The baton admitted one token-less co-input and a free token-less output, so the keeper key could spend one framed
+  BCH container per baton transaction to any output. The baton now admits as its one co-input only a P2PKH coin
+  carrying no token, the fee top-up it exists for (`buildBlockhashKeeperBatonScript`). Its lock changed, so a baton
+  minted before the fix stays exposed until it is replaced; none is on a real chain. Test:
+  `packages/solidcash/test/e2e/AuditCrypto4KeeperAuthority.test.ts` (mock: a container riding along the baton is
+  refused at the baton; the P2PKH fee input is accepted). Not run: the pre-fix acceptance.
+- ORACLE-4, one coin per master on `split` (`fix/oracle-split-copies`, 2026-11-03). A direct genesis mints one oracle
+  coin per master (`dbdf804d7`); a direct `split(n)` of a reader now co-spends one coin on its read path, recreates it
+  at its index and mints n copies the caller funds, and its pin (`emitSplitOracleCopyPin`) admits at the lock exactly
+  n outputs besides that recreation, each with the spent coin's category and capability, commitment and amount; a
+  split that spends no coin is refused. Every other function, `merge` included, keeps `emitOracleOutputPin`, and framed
+  and message-bus compiles keep one coin. Tests: `packages/solidcash/test/e2e/BlockOracleSplitCopies.test.ts` (mock),
+  `packages/solidc/test/AuditBlockInfoOracleOwnCategory.test.ts` (VM).
+- **ORACLE-6** (the keeper baton goes; `fix/blockhash-ring`, 2026-11-03). `blockhash(n)` reads a ring of owner-keyed
+  slots in place of `(n -> hash)` pairs. A reader's genesis, direct or framed, mints `blockhashDepth` mutable NFTs of
+  its category (1 to 256, `'now'` for 1, default 256) at `blockhashOracleLockingBytecode(category)`, each committing
+  `n (4 LE) | hash | owner hash160 | depth (2 LE)`. The slot covenant reads (flag 0), takes the stored owner's signed
+  update (flag 1: owner and depth kept, `n` up by a positive multiple of the depth to a height not ahead of
+  nLockTime) and the owner's signed retire (flag 2: no output carries a token); a read or an update keeps the slot's
+  value. The owner is `blockhashKeeperPublicKey`, else the provider's block oracle key. The baton covenant, its pair
+  mint, sweep and wipe, and `blockhashKeeperAmount` are removed, so CRYPTO-4's root cause, a second minting authority
+  of the contract's category, no longer exists, and ORACLE-5's container exposure goes with the baton. Slots are
+  mutable, so the reader's oracle output pin, not the immutable-NFT census, refuses a slot minted beside any reader
+  call, in every function (ORACLE-2 holds). The SDK sets a height locktime for any blockhash read, `n = 0` included.
+  A message-bus route's verifier counted a mutable slot as two resource endpoints, as it once did a block-info oracle
+  (ORACLE-4 follow-ups); a slot's sidecar row now exempts it while it is recreated unchanged (unverified: the
+  atomic-compose blockhash case failed before this change and was not run after it).
+  Tests: `packages/solidcash/test/e2e/BlockhashRing.test.ts` (mock: genesis ring, write and read, a non-owner,
+  backward, off-residue or premature update refused, retire, a slot minted beside a master call refused),
+  `AuditCrypto4KeeperAuthority.test.ts` (mock: no coin but the master holds the category's minting NFT),
+  `BlockhashKeeperDeployment.test.ts` (mock: a named owner's ring, direct and framed), `BlockOracle.test.ts` (mock: an
+  owner-only retire), `BlockOracleValue.test.ts` (mock: a slot keeps its value on a read and through a sync past the
+  depth) and `packages/solidc/test/AuditBlockhashPairForgery.test.ts` (VM: a forged or second slot beside a read and a
+  forged recreation of the read slot refused). Not run: regtest or a node.
+- **ORACLE-7** (EVM parity; `fix/blockhash-expired`, 2026-11-03). `blockhash(n)` of a block older than the last 256
+  threw in the SDK, where the EVM gives zero and ported contracts test `blockhash(n) == 0` for an expired commitment.
+  The reader now reads the slot's `n'` and depth: `n' == n` gives the hash; otherwise it requires depth 256, `n' > n`
+  and `(n' - n) mod 256 == 0`, and gives 32 zero bytes. Such a slot proves the EVM's answer: its owner wrote `n'`
+  under a nLockTime of at least `n'`, so the reading transaction is at a height of at least `n' + 1 >= n + 257`. A
+  slot of another residue, an older slot, or a newer slot of a ring under 256 deep is refused, so no builder gets
+  zero for a block inside the window, and an omitted slot still fails. The SDK takes the slot of `n`'s residue
+  (`resolveBlockhashCoSpend`); when none answers, `requireBlockhashCoSpend` throws one error, at all three call sites,
+  naming the category, the depth and the blocks held, and whether `n` is older than the ring keeps or not yet
+  written. Tests: `packages/solidcash/test/e2e/BlockhashRing.test.ts` (mock: a 256-slot ring reads zero once its
+  keeper writes `n + 256`, and `blockhash(n) == 0` holds; a depth-4 ring gives the precise errors; VM: the honest zero
+  read handed a slot of another residue, an older slot or a depth-4 commitment is refused at the master) and
+  `BlockOracle.test.ts` (the new error text). Not run: regtest or a node.
+- **ORACLE-8** (the ring's inferred depth; `fix/blockhash-depth`, 2026-11-03). The compiler infers the depth a
+  reader's reads need: K for `blockhash(block.number - K)` with K a compile-time constant (1 for K = 0), the most over
+  the reads, published as `artifact.blockhashDepth` only when every read is such an offset; K > 256 is refused
+  (`BlockhashDepthError`). A deployment that names no depth mints the inferred depth, else 256; one that names fewer
+  than an inferred depth is refused, and a reader of an unbounded block takes any depth its deployer names. Created
+  children still get no ring: a framed master refuses every body that reads blockhash, and a direct `new C()`
+  creation mints its child no block oracle of either kind, its child pinning its oracle lock at deployment, so a
+  created child reads neither `blockhash` nor `block.*` yet (ORACLE-4 for direct children, open). Tests:
+  `packages/solidc/test/BlockhashDepthInference.test.ts` (inference, the unbounded case, the K > 256 refusal) and
+  `BlockhashRing`, `BlockhashKeeperDeployment`, `BlockOracleValue`, `AuditCrypto4KeeperAuthority` (mock). Not run:
+  regtest or a node.
+
 ## Oracle pools (2026-11-04)
 
-Branch `feat/oracle-pools` (`docs/wip/oracle-pools/PLAN.md`) replaces the single network block-info oracle, the
-per-contract `(n -> hash)` pairs and the per-contract keeper baton with oracle pools: one token category `P` of
-block-info coins and blockhash ring slots that any contract may read, at three covenants in
-`packages/utils/src/oracle-pool.ts` (design: `packages/solidc/docs/block-and-transaction-properties.md`, sections
-3, 4 and 11). The ORACLE ids are those of sushi-port-node's ledger ("Block oracle hardening (2026-11-03)"), whose
-holes master shared. Evidence is the BCH 2026 VM and mocknet; nothing ran on BCHN or a live network.
+Branch `feat/oracle-pools` (`docs/wip/oracle-pools/PLAN.md`) replaces master's single network block-info oracle,
+per-contract `(n -> hash)` pairs and keeper baton with oracle pools, and `feat/oracle-pools-sushi`
+(`docs/wip/oracle-pools/SUSHI-PORT.md`) replaces the framed line's per-contract oracles with them: one token category
+`P` of block-info coins and blockhash ring slots that any contract may read, at three covenants in
+`packages/utils/src/oracle-pool.ts` (design: `packages/solidc/docs/block-and-transaction-properties.md`, sections 3,
+4 and 11). A `blockhash` reader is stateful and a `block.*` reader need not be (section 8.1 there): when the two lines
+merged, this replaced the framed line's rule that every block read makes a contract stateful, which served the
+per-contract oracles (ORACLE-4). The ORACLE ids are this ledger's ("Block oracle hardening (2026-11-03)", whose
+2026-11-04 note names what the pools supersede). Evidence is the BCH 2026 VM and mocknet; nothing ran on BCHN or a
+live network, except the regtest run under "Open".
 
 ### Fixed
 
-- **ORACLE-1** (CRITICAL; `d8eed60a3`). An entry or invoked body compiled on its own sub-traversal, and the
-  helper-use probe, did not inherit the contract's blockhash and block-oracle flags (`currentContractUsesBlockhash`,
-  `currentContractUsesBlockOracle`). In a contract whose only stateful feature is `blockhash`, such a body compiled
-  as stateless and carried no master covenant, so a call could move the contract's minting NFT to an
-  anyone-can-spend lock. Both sub-traversals and the probe now inherit both flags. Test: the ORACLE-1 cases of
+- **ORACLE-1** (CRITICAL; `c7e56eb80` here, `d8eed60a3` on master). An entry or invoked body compiled on its own
+  sub-traversal, and the helper-use probe, did not inherit the contract's blockhash and block-oracle flags
+  (`currentContractUsesBlockhash`, `currentContractUsesBlockOracle`). In a contract whose only stateful feature is
+  `blockhash`, such a body compiled as stateless and carried no master covenant, so a call could move the contract's
+  minting NFT to an anyone-can-spend lock. Both sub-traversals and the probe inherit both flags, and
+  `currentContractReadsBlockhash`, which carries the statefulness rule. Test: the ORACLE-1 cases of
   `packages/solidc/test/OraclePoolRead.test.ts` (a two-function blockhash-only contract keeps its master covenant in
   a body that reads nothing).
-- **ORACLE-2** (HIGH; gone with the pairs). A `blockhash(n)` reader trusted any capability-none NFT of its own
-  category at the category's pair lock, so the contract's own minting NFT could mint a forged `(n -> hash)` pair
-  beside a read. No contract mints oracle coins now: a read checks the pool category (`P || 0x01`) and the slot kind
-  (`flags == 0x80`), and only the pool's covenants admit a coin of `P` (below). The pair covenant and its binder are
-  deleted (`b2ec3b973`, `756c6e2b2`). Test: `packages/solidcash/test/e2e/OraclePoolBlockhash.test.ts` (a slot of
-  another pool, a block-info coin given as a slot, a stopped slot and a slot that moved past the block are refused
-  at the reader's own input).
+- **ORACLE-2** (HIGH; gone with the per-contract oracles). A `blockhash(n)` reader trusted a coin of its own
+  category at the category's pair or slot lock, which the contract's own minting NFT could mint beside a read, so
+  every reader function carried an output pin. No contract mints oracle coins now: a read checks the pool category
+  (`P || 0x01`) and the slot kind (`flags == 0x80`), and only the pool's covenants admit a coin of `P` (below). The
+  pins and the per-contract ring covenant are deleted (`3148c0cac`, `a3396494e`, `1a7850973`). Test:
+  `packages/solidcash/test/e2e/OraclePoolBlockhash.test.ts` (a slot of another pool, a block-info coin given as a
+  slot, a stopped slot and a slot that moved past the block are refused at the reader's own input).
+- **ORACLE-4's look-alike** (gone with the per-contract oracles). A reader's own block-info oracle was a mutable NFT
+  of its category, which its masters' minting NFT could mint with forged fields, so every function pinned the oracle
+  lock and a split copied the coin per master. A `block.*` read checks `P || 0x01` and `flags == 0x00` instead; the
+  pins, the split copies, the census and message-bus admissions and a created child's oracle are deleted
+  (`3148c0cac`, `7c24b63b0`). Test: `OraclePoolRead.test.ts` (a ring slot, a stopped coin and a coin of another
+  category refused as the block-info coin, on the VM).
 - **ORACLE-5** (HIGH; gone with the baton). The keeper baton, a minting NFT of the reading contract's own category,
-  passed the category-only container covenant's authority test, so its key could drain framed BCH containers. No
-  genesis mints a keeper baton (`09bcabbae`), and its covenant and deploy options are deleted (`119f2e58c`,
-  `756c6e2b2`). A pool's baton is a minting NFT of `P`, not of any contract's category, so no container takes it
-  for authority. Test: `BlockhashKeeperDeployment.test.ts` (a blockhash reader's genesis holds one minting NFT of
-  its category, its master).
+  passed the category-only container covenant's authority test, so its key could drain framed BCH containers. The
+  ring removed it here (`2f6f4df1d`, ORACLE-6). A pool's baton is a minting NFT of `P`, not of any contract's
+  category, so no container takes it for authority. Test: `BlockhashKeeperDeployment.test.ts` (a blockhash reader's
+  genesis holds one minting NFT of its category, its master).
+- **Function-pointer reads** (fail closed; found while writing master's docs, fixed on master by `617b8fb81`,
+  `8e5ebe10e`, `3d5e9ea0d` and `651f0f025`, here by `a3396494e` and `aca6fae8a`). A `blockhash` read in a
+  function-pointer target answered only a slot holding exactly `n`, and no SDK path co-spent its slot, nor the info
+  coin of an entry that reaches a reader only through a pointer. The walk gives the direct read's answer, zero
+  included, each entry publishes `indirectPoolReads`, and a stateful call co-spends what its entry names. Test:
+  `OraclePoolIndirectSdk.test.ts`.
 
 ### The pool's own rules
 
-Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM unless another test is named.
+Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM unless another test is named. The
+module is master's as of `aed65ad16` (`b6fcf05bc`).
 
 - **PIN.** Every covenant starts with `PIN(P, capability)`, so a coin of another category or capability at a pool
   lock cannot be spent, and each path that reads the coin's own category reads `P`. PIN also salts each pool's
@@ -1492,6 +1733,9 @@ Each rule is run by `packages/utils/test/oracle-pool.test.ts` on the BCH 2026 VM
 - Trust: no covenant constrains a pool's genesis, which may mint NFTs of `P` at any lock. A pool is sound only when
   its genesis put every NFT at a pool lock and minted one baton, as `buildOraclePoolGenesis` does; nothing checks
   the genesis of a pool someone else made.
+- A framed child binds the pool its creator's constants were computed with, for every creation: moving such
+  children to another pool takes a creator deployed with new constants.
 - The regtest, Electrum and MemCash pool code ran on BCHN regtest and the devnet (16a7cc23f), which found and
   fixed two bugs: a young chain's ring lacked slots (208c8dd5a), and Electrum's concurrent requests failed
-  (d3fbbfea9). The port to sushi-port-node lands with this.
+  (d3fbbfea9). `docs/framed/SPEC_FRAMED_TRANSACTION.md` and `docs/framed/CREATE2_IDENTITY.md` still describe the
+  validator's oracle admission and the replay's oracle.

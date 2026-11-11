@@ -62,6 +62,16 @@ export function createPreparedBch2026TxVerifier(
 
   const maximumTokenCommitmentLength = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? ConsensusBch2026.maximumTokenCommitmentLength;
+  // A provider's own money limit, or BCH's 21 million coins.
+  const maximumMoney = provider.consensusLimits?.maximumMoney ?? MAX_MONEY;
+  const inputValuesInRange = (values: readonly bigint[]): boolean => {
+    let sum = 0n;
+    for (const value of values) {
+      sum += value;
+      if (value < 0n || value > maximumMoney || sum > maximumMoney) return false;
+    }
+    return true;
+  };
   const vm = createVirtualMachineBch2026ForProvider(provider, undefined, { standard });
   const consensusVm = standard
     ? createVirtualMachineBch2026ForProvider(provider, undefined, { standard: false })
@@ -97,20 +107,24 @@ export function createPreparedBch2026TxVerifier(
     if (!maturity.ok) return { success: false, ...maturity };
     const spendable = checkUnspendableInputs(sourceOutputs);
     if (!spendable.ok) return { success: false, ...spendable };
-    const values = checkInputValueRanges(sourceOutputs.map((output) => output.valueSatoshis));
+    const values = maximumMoney === MAX_MONEY
+      ? checkInputValueRanges(sourceOutputs.map((output) => output.valueSatoshis))
+      : inputValuesInRange(sourceOutputs.map((output) => output.valueSatoshis))
+        ? { ok: true as const }
+        : { ok: false as const, code: REJECT_INVALID, error: 'bad-txns-inputvalues-outofrange' };
     if (!values.ok) return { success: false, ...values };
 
     const inputSum = sourceOutputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
     let outputSum = 0n;
     for (const output of decoded.outputs) {
-      if (output.valueSatoshis < 0n || output.valueSatoshis > MAX_MONEY) {
+      if (output.valueSatoshis < 0n || output.valueSatoshis > maximumMoney) {
         return {
           ok: false, success: false, code: REJECT_INVALID,
           error: 'bad-txns-outputvalues-outofrange',
         };
       }
       outputSum += output.valueSatoshis;
-      if (outputSum > MAX_MONEY) {
+      if (outputSum > maximumMoney) {
         return {
           ok: false, success: false, code: REJECT_INVALID,
           error: 'bad-txns-outputvalues-outofrange',

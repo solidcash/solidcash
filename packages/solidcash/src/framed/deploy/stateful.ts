@@ -28,7 +28,7 @@ import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { decodeTransaction } from '@bitauth/libauth/build/lib/message/transaction-encoding.js';
 import { framedValidator } from '@solidcash/solidc/runtime';
-import { bytesEqual, type Artifact } from '@solidcash/utils';
+import { asmToScript, bytecodeToAsm, bytesEqual, scriptToBytecode, validatorAddress, type Artifact } from '@solidcash/utils';
 import type { TransactionDetails } from '../../interfaces.js';
 import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
@@ -38,6 +38,10 @@ import { leadingOutputs, type PreparedMetadata } from '../../bcmr/deployment.js'
 import { identityRecord, isP2pkhLock, planGenesisIdentity } from '../../bcmr/identity.js';
 import { FACET_SATOSHIS } from '../composer/index.js';
 import { satoshisAtLeastDust, widestRecordCommitmentBytes } from '../composer/dust.js';
+import {
+  childGenesisReservation, patchChildCollectionSentinels, patchChildGenesisSlots, patchChildLockSentinels,
+  patchChildOutputCount, type ChildGenesisSlots,
+} from './child-locks.js';
 import { bindFramedOraclePool } from '../call/block-oracle.js';
 import { oraclePoolCategoryOption } from '../../oracle/pool/deployment.js';
 import { deriveFramedGenesis } from './genesis.js';
@@ -46,6 +50,8 @@ import { MasterPoolDeployment, resolveMasterPoolSize } from './pool.js';
 import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 import { ownCoinRefusal } from './own-coin.js';
 import { loadFramedCallHandle } from '../../stateful/framed-call-loader.js';
+import { registerFunctionSplit } from './split-registry.js';
+import { labelNextBroadcast } from '../../tx-survey.js';
 
 /** Raised when a framed deployment cannot be built from the artifact or the options. */
 export class FramedDeployError extends Error {
@@ -73,6 +79,20 @@ async function measuredFee(builder: { buildLibauthTransaction: () => unknown }):
 }
 
 /**
+ * A framed deployment's own address, `addrV(category)`: the lock its frames present as `address(this)` and that a
+ * contract storing its address holds. A handle attached in another process than the deploying one derives it here.
+ */
+export function framedContractAddress(network: string, categoryId: string): string {
+  const address = lockingBytecodeToCashAddress({
+    bytecode: validatorAddress(hexToBin(categoryId), framedValidator.buildValidatorProgram()),
+    prefix: getNetworkPrefix(network),
+    tokenSupport: true,
+  });
+  if (typeof address === 'string') throw new FramedDeployError(`The contract's own address is not encodable: ${address}`);
+  return address.address;
+}
+
+/**
  * Deploys a framed stateful contract: derives the genesis state from the constructor frame (or takes a supplied
  * `mintedState`), funds the master and validator pools, mints the state, and returns the connected contract handle.
  */
@@ -82,7 +102,98 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   options: DeployOptions,
   prepared: PreparedMetadata = {},
 ): Promise<DeployResult<T>> {
-  if (artifact.stateLayout === undefined) {
+  // A creator replays its child's genesis, and names the parts its compile could not know by placeholders: the chain
+  // over the child's masters, the validators a creation funds and the child's collection hashes. They exist only
+  // now: fill them from the child's constants, on the artifact and on every shard and cut of its bundle
+  // (docs/framed/CREATE2_IDENTITY.md, "The genesis replay").
+  const childLocks = options.childLocks;
+  const childOutputCount = options.childOutputCount;
+  const childPool = options.childPool;
+  const replaySlots: ChildGenesisSlots | undefined = childLocks === undefined || childLocks.length === 0
+    || childPool === undefined
+    ? undefined
+    : {
+      locks: childLocks,
+      pool: childPool,
+      ...(options.childCollections === undefined ? {} : { collections: options.childCollections }),
+    };
+  const programs = [artifact, ...(options.functionSplit?.shards.map((shard) => shard.artifact) ?? []),
+    ...(options.functionSplit?.internalCuts.map((cut) => cut.artifact) ?? [])];
+  if (replaySlots === undefined && programs.some((program) => childGenesisReservation(program).replays)) {
+    throw new FramedDeployError(
+      `"${artifact.contractName}" creates a child and replays its genesis: deploy it with the child's constants `
+      + '(`framedDeploy.framedChildConstants`): its entry locks (`childLocks`), the pool each creation funds '
+      + '(`childPool`) and its collection hashes (`childCollections`)',
+    );
+  }
+  // Contract creation arguments are encoded into the redeem program, not into the constructor frame. The
+  // constructor block's own arguments are `options.initArgs` (or the tail after the creation args for callers
+  // that pass one list). Split them before deriving genesis, and bake the creation args into the program.
+  const creationCount = artifact.constructorInputs.length;
+  const creationValues = constructorArgs.slice(0, creationCount);
+  const constructorTail = constructorArgs.slice(creationCount);
+  const constructorValues = constructorTail.length > 0 ? constructorTail : (options.initArgs ?? []);
+  let framedArtifact = artifact as Artifact;
+  if (creationValues.length > 0) {
+    const templateContract = new Contract(artifact as never, creationValues as never, { provider: options.provider });
+    const fullScript = hexToBin(templateContract.bytecode);
+    const codeLength = scriptToBytecode(asmToScript(artifact.bytecode)).length;
+    const prefixLength = fullScript.length - codeLength;
+    const placeholders = artifact.composition?.placeholders;
+    // A constant-lock program names no category or address slot, so there is no offset to move.
+    const shifted = placeholders === undefined || placeholders.constantLock !== undefined
+      ? placeholders
+      : {
+        ...placeholders,
+        categoryOffset: placeholders.categoryOffset + prefixLength,
+        addressOffset: placeholders.addressOffset + prefixLength,
+        ...(placeholders.templateHashOffset === undefined
+          ? {}
+          : { templateHashOffset: placeholders.templateHashOffset + prefixLength }),
+        ...(placeholders.identityOffset === undefined ? {} : { identityOffset: placeholders.identityOffset + prefixLength }),
+      };
+    framedArtifact = {
+      ...artifact,
+      bytecode: bytecodeToAsm(fullScript),
+      constructorInputs: [],
+      // The handle reads these when a view names a creation argument (such as a token-container key); the program
+      // already carries them, so they are never encoded again.
+      creationArguments: artifact.constructorInputs.map((input, index) => ({
+        name: input.name, type: input.type, value: creationValues[index]!,
+      })) as Artifact['creationArguments'],
+      stateLayout: artifact.stateLayout === undefined ? undefined : {
+        ...artifact.stateLayout, constructorInputs: [],
+      },
+      composition: artifact.composition === undefined ? undefined : {
+        ...artifact.composition,
+        ...(shifted === placeholders ? {} : { placeholders: shifted! }),
+      },
+    } as Artifact;
+  }
+  const withChildSlots = (target: Artifact): Artifact => {
+    if (childGenesisReservation(target).replays) return patchChildGenesisSlots(target, replaySlots!);
+    // A creator compiled before the replay reserves its child's master locks and output count instead.
+    const withLocks = childLocks === undefined || childLocks.length === 0
+      ? target : patchChildLockSentinels(target, childLocks);
+    const withCount = childOutputCount === undefined ? withLocks : patchChildOutputCount(withLocks, childOutputCount);
+    return options.childCollections === undefined
+      ? withCount : patchChildCollectionSentinels(withCount, options.childCollections);
+  };
+  const patchesChild = (childLocks !== undefined && childLocks.length > 0)
+    || childOutputCount !== undefined || options.childCollections !== undefined;
+  const shippedArtifact = withChildSlots(framedArtifact) as typeof artifact;
+  const split = !patchesChild
+    ? options.functionSplit
+    : options.functionSplit === undefined ? undefined : {
+      ...options.functionSplit,
+      shards: options.functionSplit.shards.map((shard) => ({
+        ...shard, artifact: withChildSlots(shard.artifact),
+      })),
+      internalCuts: options.functionSplit.internalCuts.map((cut) => ({
+        ...cut, artifact: withChildSlots(cut.artifact),
+      })),
+    };
+  if (shippedArtifact.stateLayout === undefined) {
     throw new FramedDeployError(`Contract ${artifact.contractName} is not a stateful contract`);
   }
   if (options.fundingUtxo.vout !== 0) {
@@ -99,8 +210,11 @@ export async function deployFramedStatefulContract<T extends Artifact>(
       + 'default pool',
     );
   }
-  for (const part of [...options.functionSplit?.shards ?? [], ...options.functionSplit?.internalCuts ?? []]) {
-    bindFramedOraclePool(options.provider, part.artifact, oraclePool ?? oraclePoolCategoryOption(options.oraclePool));
+  // The shipped programs, whose child slots are filled in clones, carry the same pool.
+  for (const part of [shippedArtifact, ...[options.functionSplit, split].flatMap((bundle) => [
+    ...bundle?.shards.map((shard) => shard.artifact) ?? [], ...bundle?.internalCuts.map((cut) => cut.artifact) ?? [],
+  ])]) {
+    bindFramedOraclePool(options.provider, part, oraclePool ?? oraclePoolCategoryOption(options.oraclePool));
   }
 
   const funderLock = options.funder.generateLockingBytecode();
@@ -131,10 +245,6 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // A framed handle's sync call surface needs the framed call engine loaded before the deployment returns; start
   // the load now so it overlaps the genesis derivation and funding below, and await it before building the handle.
   const framedCallEngine = loadFramedCallHandle();
-  // A framed artifact publishes no `constructorInputs`, so the factory path that splits a call's arguments
-  // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
-  // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
-  const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
   // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
   // splices beside it and a head is minted only at genesis. A collection the constructor's own plan writes carries
   // the head that plan relinked, and the genesis filters that one out; a caller that names extra collections (a
@@ -147,7 +257,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
   // A supplied state (a proxy's, as its derived `initialize` left it) replaces the constructor frame's derivation.
   const minted = options.mintedState;
   const genesis = minted !== undefined ? undefined : deriveFramedGenesis({
-    artifact,
+    artifact: shippedArtifact,
     category,
     validatorProgram,
     provider: options.provider,
@@ -159,7 +269,7 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     ...(options.provider.consensusLimits?.maximumNftCommitmentBytes === undefined
       ? {} : { maximumNftCommitmentBytes: options.provider.consensusLimits.maximumNftCommitmentBytes }),
   });
-  const master = genesis?.master ?? deployMaster(artifact, category, validatorProgram);
+  const master = genesis?.master ?? deployMaster(shippedArtifact, category, validatorProgram);
 
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
@@ -177,18 +287,18 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     throw new FramedDeployError(`validatorCount must be a positive integer, got ${options.validatorCount}`);
   }
   const pool = resolveMasterPoolSize({ masters: options.threadCount, validators: options.validatorCount });
-  if (options.functionSplit !== undefined && options.functionSplit.logicalContractName !== artifact.contractName) {
+  if (split !== undefined && split.logicalContractName !== shippedArtifact.contractName) {
     throw new FramedDeployError(
-      `function split bundle is ${options.functionSplit.logicalContractName}, not ${artifact.contractName}`,
+      `function split bundle is ${split.logicalContractName}, not ${shippedArtifact.contractName}`,
     );
   }
   // A function-split genesis mints one pool per entry lock. A monolith genesis mints the one filled master.
-  const splitPools = options.functionSplit === undefined ? undefined : MasterPoolDeployment.createFunctionSplit({
-    bundle: options.functionSplit, category, validatorProgram, size: pool,
+  const splitPools = split === undefined ? undefined : MasterPoolDeployment.createFunctionSplit({
+    bundle: split, category, validatorProgram, size: pool,
   });
   if (splitPools !== undefined && !bytesEqual(splitPools.getAddress(), master.address)) {
     throw new FramedDeployError(
-      `function split shards of ${artifact.contractName} do not share the genesis addrV`,
+      `function split shards of ${shippedArtifact.contractName} do not share the genesis addrV`,
     );
   }
   const entryLocks = splitPools?.getEntryLocks() ?? [master.lockingBytecode];
@@ -362,11 +472,14 @@ export async function deployFramedStatefulContract<T extends Artifact>(
     builder.outputs.pop();
   }
 
+  labelNextBroadcast(`deploy ${artifact.contractName}`);
   const tx = options.broadcast === false ? unbroadcastGenesis(builder) : await builder.send();
+  // Every later frame of this category runs the shard its selector names, at that shard's lock.
+  if (split !== undefined) registerFunctionSplit(options.provider, categoryId, split);
 
   // A framed artifact bakes its constructor arguments into the filled program the genesis published rather than
   // into the handle's redeem script, so the handle is built without repeating them.
-  const contract = new Contract(artifact, [] as never, {
+  const contract = new Contract(framedArtifact as T, [] as never, {
     provider: options.provider,
     ...(options.addressType === undefined ? {} : { addressType: options.addressType }),
     category,

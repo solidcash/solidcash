@@ -188,4 +188,26 @@ contract Factory(pubkey deployer) {
     expect(target).toMatchObject({ hasFoldedChildCall: true });
     expect(() => compileString(source('bytes'))).toThrow(/in the transaction that deploys it/);
   });
+
+  // The fold replays a straight-line body (including a conditional scalar write) into the child's genesis. A body
+  // that writes a mapping entry, reads another contract, or emits is outside that replay, so the pair's first
+  // `mint` cannot be folded into the pair genesis `UniswapV2Factory.createPair` mints: `mint` does all three
+  // (token `balanceOf`, `balanceOf` rows, `Transfer`/`Sync`). These pin the refusal, which keeps the compiler from
+  // emitting an unsatisfiable deploy-then-call transaction (the Router's `addLiquidity` shape).
+  const FOLD_BOUNDARY: Array<[string, string, string]> = [
+    ['writes a mapping entry', 'mapping(address => uint) m; function act(address k, uint v) public { m[k] = v; }',
+      'c.act(a, v)'],
+    ['reads another contract', 'uint seen; function act(address o) public { seen = IOracle(o).value(); }',
+      'c.act(a)'],
+    ['emits an event', 'uint n; event Poked(uint n); function act() public { n = n + 1; emit Poked(n); }',
+      'c.act()'],
+  ];
+  it.each(FOLD_BOUNDARY)('refuses a deploy-then-call whose callee %s', (_name, member, call) => {
+    const artifactOwner = member.includes('IOracle')
+      ? 'interface IOracle { function value() external view returns (uint); }\n' : '';
+    expect(() => compileString(`${artifactOwner}
+contract Child { ${member} }
+contract Factory { function make(address a, uint v) public { Child c = new Child(); ${call}; } }`))
+      .toThrow(/a UTXO cannot be both created and spent in one transaction/);
+  });
 });

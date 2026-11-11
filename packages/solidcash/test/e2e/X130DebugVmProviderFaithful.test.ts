@@ -21,12 +21,12 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * `debugging.ts` DECIDES: `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows,
  * so its VM is the accept/reject gate for `.build()` on a `recursiveStateHandler`. It built a bare
  * `createVirtualMachineBch2026()`, which diverges from the decider in BOTH directions at every sanctioned
- * version (0.0.8 and 0.0.10). X121 rows 2/4/6 measured the divergence and pinned the fail-open half as a KNOWN
+ * version (0.0.8, 0.0.10 and 0.0.11). X121 rows 2/4/6 measured the divergence and pinned the fail-open half as a KNOWN
  * GAP because the repair needed a hunk in `libauth-template/LibauthTemplate.ts`. Both halves are landed now,
  * together: an optional parameter nobody supplies would read as provider-aware while behaving bare.
  *
- * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.10 (re-measured there on 2026-10-11, all green) and row 0 asserts
- * it, for the reason X121 row 0 gives: at 0.0.7
+ * EVERY BEHAVIOURAL CLAIM IS PINNED TO 0.0.11 (re-measured at 0.0.10 on 2026-10-11 and at 0.0.11 on 2026-11-07, all
+ * green) and row 0 asserts it, for the reason X121 row 0 gives: at 0.0.7
  * `TxVerifierConfig` has no `consensus` field, the published overrides are silently dropped, and every verdict
  * here inverts.
  *
@@ -36,7 +36,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *   while the decider refuses that shape. It is now refused, quoting 150 x 687 = 103,050.
  * - FAIL-CLOSED, now OPEN (row 2). The bare VM applied the stock 800 x density whatever the provider published.
  *   `decrement(40)` fits that budget since the October covenant hardening (by 210,081 units), so row 2b refuses
- *   it at a published 400; `SELF_DENSE` depth 30 is refused at the stock 800 (row 5) and builds on a relaxed
+ *   it at a published 400; `SELF_DENSE` depth 36 is refused at the stock 800 (row 5) and builds on a relaxed
  *   budget. NEWLY BUILDABLE, and reported rather than hidden.
  *
  * NEWLY BUILDABLE IS NOT A NEW WITNESS PATH. Nothing about the covenant scripts, the state derivation or the
@@ -69,7 +69,7 @@ contract C() {
 
 /**
  * SELF with nine more subtractions per frame (StatefulRecursion's handler). SELF fits the stock 800 x density at
- * every depth the 100-entry control stack allows (48 by 31,728 units); this one exceeds it from depth 30.
+ * every depth the 100-entry control stack allows; this one exceeds it from depth 34 (measured 2026-11-05).
  */
 const SELF_DENSE = `pragma solidcash >=0.8.0;
 contract C() {
@@ -171,16 +171,16 @@ async function p2pkhSpend(provider: MockNetworkProvider): Promise<TransactionBui
   return builder;
 }
 
-describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.10)', () => {
-  it('0. VERSION GATE: the installed decider is 0.0.10, which every row below is pinned to', () => {
+describe('X130 - the debug VM decides on the published limits (@mem-cash/validation 0.0.11)', () => {
+  it('0. VERSION GATE: the installed decider is 0.0.11, which every row below is pinned to', () => {
     expect(
       MEM_CASH_VALIDATION_VERSION,
-      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.10 - the version `
-      + 'packages/solidcash/package.json declares (^0.0.10 means exactly 0.0.10 for a 0.0.x range) and yarn.lock '
+      `@mem-cash/validation ${MEM_CASH_VALIDATION_VERSION} is installed. This file pins 0.0.11 - the version `
+      + 'packages/solidcash/package.json declares (^0.0.11 means exactly 0.0.11 for a 0.0.x range) and yarn.lock '
       + 'resolves. At 0.0.7 TxVerifierConfig has no `consensus` field, MockNetworkProvider consensusLimits are '
       + 'silently dropped, and every verdict below is inverted. Reinstall the workspace rather than relaxing '
       + 'a row.',
-    ).toBe('0.0.10');
+    ).toBe('0.0.11');
   });
 
   it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 30 x density, and so does the decider', async () => {
@@ -287,14 +287,14 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
   it('5. NOT WIDENED for a provider that publishes no limits: the stock 800 comes straight back', async () => {
     // Every live network (Electrum, regtest, FullStack, Bitcoin RPC) publishes no `consensusLimits`, so this is
     // the behaviour they all get: `createVirtualMachineBch2026ForProvider` early-returns libauth's own factory
-    // and the debug VM is byte-identical to the pre-repair one. On SELF_DENSE, depth 30 is the smallest the stock
-    // 800 refuses (measured: 29 fits by 15,443 units, 30 is 23,571 over, about 39,000 per frame), and row 2's
-    // relaxed profile builds it, so the published limits are the only thing that changed.
+    // and the debug VM is byte-identical to the pre-repair one. On SELF_DENSE, depth 34 is the smallest the stock
+    // 800 refuses (measured 2026-11-05; the boundary moves with codegen), and row 2's relaxed profile builds depth
+    // 36, two frames past it, so the published limits are the only thing that changed.
     const provider = new MockNetworkProvider();
     const sc = await recursionContract(provider, SELF_DENSE) as unknown as Recursor;
     (provider as unknown as { consensusLimits: unknown }).consensusLimits = undefined;
     let error: string | undefined;
-    try { await sc.decrement(30n).build(); } catch (e) { error = (e as Error).message; }
+    try { await sc.decrement(36n).build(); } catch (e) { error = (e as Error).message; }
     expect(error, 'a limits-less provider must decide exactly as the bare VM did').toBeDefined();
     assertDensityCeiling(error!, STOCK_BUDGET_PER_BYTE);
   });

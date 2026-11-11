@@ -7,7 +7,9 @@ import type { FunctionArgument } from '../Argument.js';
 import type { Contract } from '../Contract.js';
 import type { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import type { AbiToFunctionMap } from '../types/type-inference.js';
-import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+import { findDeploymentByAddressValue } from './deployment-registry.js';
+import { selectMappingEntryByKeys, type MappingKey } from './mapping-key-lookup.js';
+import { addressMappingKeyCandidates } from './sc-address-mapping-key-candidates.js';
 import {
   canonicalAbiFunctionSignature,
   visibleHandlerInputs,
@@ -75,6 +77,15 @@ export function buildNamespaces<TArtifact extends Artifact>(
   host: BuildNamespacesHost<TArtifact>,
   contract: Contract<TArtifact>,
 ): void {
+  // A stored `address` is the 20-byte Solidity identity under `addressForm: 'hash'`. Public getters present the
+  // deployed contract's own address when one is registered, so a source comparison against `getAddress()` names
+  // the same value. Raw state/entry APIs keep the identity.
+  const provider = (contract as { provider?: import('../network/NetworkProvider.js').default }).provider;
+  const resolveDeployedAddress = provider === undefined ? undefined : (identity: Uint8Array): string | undefined => {
+    const deployment = findDeploymentByAddressValue(provider, identity);
+    return deployment?.address !== undefined && deployment.address.includes(':')
+      ? deployment.address : undefined;
+  };
   host.state = {} as StateGetterMap<TArtifact>;
   for (const variable of contract.stateLayout!.variables) {
     // @ts-ignore - dynamic property assignment for type-safe getters
@@ -82,7 +93,9 @@ export function buildNamespaces<TArtifact extends Artifact>(
     // whose declared type is address. The raw getState() snapshot must not acquire public-result metadata.
     host.state[variable.name] = async (...indices: Array<bigint | number | string>): Promise<any> => {
       const value = indexStateAccessorValue((await host.getState())[variable.name], indices, variable.name);
-      return decorateStateAccessorResult(value as StateValue | undefined, variable.name, indices.length, contract.artifact);
+      return decorateStateAccessorResult(
+        value as StateValue | undefined, variable.name, indices.length, contract.artifact, resolveDeployedAddress,
+      );
     };
   }
   // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
@@ -91,13 +104,33 @@ export function buildNamespaces<TArtifact extends Artifact>(
   for (const coll of contract.stateLayout!.collections ?? []) {
     if (coll.kind !== 'mapping') continue;
     // @ts-ignore - dynamic property assignment (mapping getter takes key args, unlike the scalar getters)
-    host.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
+    host.state[coll.name] = async (...keys: Array<MappingKey>): Promise<any> => {
       const entries = await host.getEntries(coll.name);
       const keyTypes = coll.keyTypes ?? [coll.keyType];
-      const match = selectMappingEntryByKeys(entries, keys.slice(0, keyTypes.length), keyTypes, coll);
+      const mappingKeys = keys.slice(0, keyTypes.length);
+      // A stored address key is the peer's value identity (a plain contract's physical locking bytecode, or a
+      // kernel participant's public CREATE identity). A caller may name the same contract by its logical address,
+      // so expand each address key into its authenticated deployment aliases before comparing slots.
+      const candidateRows = keyTypes.reduce<Array<Array<MappingKey>>>(
+        (rows, keyType, index) => rows.flatMap((row) => {
+          const key = mappingKeys[index]!;
+          const candidates = keyType === 'address' || keyType?.startsWith('address ') === true
+            ? addressMappingKeyCandidates(contract, key)
+            : [key];
+          return candidates.map((candidate) => [...row, candidate]);
+        }),
+        [[]],
+      );
+      let match: (typeof entries)[number] | undefined;
+      for (const candidate of candidateRows) {
+        match = selectMappingEntryByKeys(entries, candidate, keyTypes, coll);
+        if (match) break;
+      }
       if (match) {
         const value = indexStateAccessorValue(match.value, keys.slice(keyTypes.length), coll.name);
-        return decorateStateAccessorResult(value as StateValue, coll.name, keys.length, contract.artifact);
+        return decorateStateAccessorResult(
+          value as StateValue, coll.name, keys.length, contract.artifact, resolveDeployedAddress,
+        );
       }
       // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
       // rather than an SDK-level missing value. Strings/bytes must be empty sequences so

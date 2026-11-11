@@ -45,6 +45,45 @@ export function scanKeccakPreimageReads(
   return reads;
 }
 
+/**
+ * Every keccak256 side-car read grouped by the side-car it names and the member inside that side-car's batch.
+ *
+ * A dynamic loop reads one side-car per iteration, so the slot ordinal is the iteration. A straight-line call
+ * inside an outlined body that a loop reaches reads the SAME slot for each call of its batch: the compiler pushes
+ * a 1-based emission ordinal under the index, and the body slices that member (`ordinal - 1 - 3 * slot`) out of
+ * the side-car's committed digest list. Grouping by index (not by ordinal) is what tells the SDK how many
+ * side-cars one reached body consumes, and the member is where its preimage belongs.
+ */
+export function scanKeccakBatchReads(
+  trace: unknown[], base: number, slotCount: number,
+): Array<{ slot: number; member: number; preimage: Uint8Array }> {
+  const reads: Array<{ slot: number; member: number; preimage: Uint8Array }> = [];
+  for (const s of trace) {
+    const step = s as { ip: number; stack: Uint8Array[]; instructions?: { opcode: number }[]; controlStack?: unknown[] };
+    if (step.controlStack?.some((c) => c === false)) continue;
+    if (step.instructions?.[step.ip]?.opcode !== OP_INPUTBYTECODE) continue;
+    if (step.stack.length < 2) continue;
+    const idx = leSmallNumber(step.stack[step.stack.length - 1]);
+    if (idx < base || idx >= base + slotCount) continue;
+    const slot = idx - base;
+    // A dynamic-loop call leaves no ordinal: its index already names the side-car and the preimage sits directly
+    // under it. A straight-line call pushes its 1-based emission ordinal, and the batch member is that ordinal
+    // minus the three calls each earlier side-car of the same body owns (`3 * slot`). A preimage that happens to
+    // be a one- or two-byte small number is the only ambiguity; the range test rejects everything else.
+    const candidate = step.stack.length >= 3 ? step.stack[step.stack.length - 2] : undefined;
+    const ordinal = candidate !== undefined && candidate.length <= 2 ? leSmallNumber(candidate) : 0;
+    const member = ordinal - 1 - 3 * slot;
+    const hasOrdinal = member >= 0 && member <= 2;
+    const argIndex = hasOrdinal ? step.stack.length - 3 : step.stack.length - 2;
+    reads.push({
+      slot,
+      member: hasOrdinal ? member : 0,
+      preimage: Uint8Array.from(step.stack[argIndex] ?? new Uint8Array(0)),
+    });
+  }
+  return reads;
+}
+
 // The LAST keccak256 side-car read in the trace: the call the probe aborted at (its binding OP_EQUALVERIFY failed
 // on a placeholder). Shared by the stateless (base TransactionBuilder) and stateful (block-layout-slot) probes.
 export function extractKeccakPreimageFromTrace(
@@ -96,10 +135,34 @@ export function pushDataBytes(data: Uint8Array): Uint8Array {
   return Uint8Array.from([0x4d, n & 0xff, (n >> 8) & 0xff, ...data]);
 }
 
-// The maximum keccak256 preimage a single side-car input can fund (~3 blocks of 136 bytes; the per-input op
-// budget tops out near ~8M, ~2.26M op/block).
+// The maximum keccak256 blocks a single side-car input funds. The original three-block figure is conservative;
+// the mock/consensus profile accepts six, which covers a long constructor preimage plus its small siblings.
+export const KECCAK_MAX_BLOCKS_PER_SIDECAR = 6;
 export function keccakComputeBlocks(preimageLength: number): number {
   return Math.floor(preimageLength / 136) + 1;
+}
+
+/** Group preimages so each side-car stays within its three-block budget. A resolved preimage costs its
+ * actual block count; an unresolved one is budgeted as one block. */
+export function groupKeccakPreimages(
+  preimages: readonly (Uint8Array | null)[], legacy = false,
+): Array<Array<Uint8Array | null>> {
+  if (legacy) return preimages.map((preimage) => [preimage]);
+  const groups: Array<Array<Uint8Array | null>> = [];
+  let current: Array<Uint8Array | null> = [];
+  let blocks = 0;
+  for (const preimage of preimages) {
+    const cost = preimage ? keccakComputeBlocks(preimage.length) : 1;
+    if (current.length > 0 && (current.length >= 3 || blocks + cost > KECCAK_MAX_BLOCKS_PER_SIDECAR)) {
+      groups.push(current);
+      current = [];
+      blocks = 0;
+    }
+    current.push(preimage);
+    blocks += cost;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
 }
 
 /**
@@ -137,8 +200,9 @@ export function buildKeccakComputeSidecar(
     ? keccakComputeLockingBytecodeShifted(salt)
     : legacy ? keccakComputeLockingBytecodeLegacy(salt, stateful) : keccakComputeLockingBytecode(salt, stateful);
   const blocks = preimages.reduce((sum, preimage) => sum + keccakComputeBlocks(preimage.length), 0);
-  if (blocks > 3) {
-    throw new Error(`keccak256 batch too large (${blocks} total blocks); a single side-car input funds at most `
+  if (blocks > KECCAK_MAX_BLOCKS_PER_SIDECAR) {
+    console.error('KECCAK_STACK', new Error().stack);
+    throw new Error(`keccak256 batch too large (${blocks} total blocks; preimages ${preimages.length}: ${preimages.map((p) => p.length).join(',')}); a single side-car input funds at most `
       + '3 keccak blocks. Use a smaller batch or multiple side-cars.');
   }
   // Size the op-budget pad by the block count (~2900 unlocking bytes fund one block); the redeem + preimage

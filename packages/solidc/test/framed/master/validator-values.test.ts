@@ -30,7 +30,7 @@ const CONTAINER_LOCK = encodeLockingBytecodeP2sh32(
   hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(CATEGORY))),
 );
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Till {'
   + '   int public total;'
   + '   function deposit() payable { this.total = this.total + msg.value; }'
@@ -50,12 +50,14 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-/** Inputs: the two masters, the validator with its facet, the record, the user, then the containers spent. */
+/** Inputs: the two masters, the validator with its facets, the record, the user, then the containers spent. */
 const FIRST = 0;
 const SECOND = 1;
 const VALIDATOR = 2;
 const RECORD = VALIDATOR + VALIDATOR_INPUT_SPAN;
 const USER = RECORD + 1;
+/** The outputs recreate the inputs up to the record, then pay the user, then the trailing outputs follow. */
+const TRAILING = USER + 1;
 
 const token = (capability: 'minting' | 'mutable', commitment: Uint8Array = new Uint8Array(0)): VmOutput['token'] =>
   ({ category: CATEGORY, amount: 0n, nft: { capability, commitment } });
@@ -147,8 +149,8 @@ describe('a contract entered twice, weighed by the validator that settles it', (
   const pay = (amount: bigint, views: readonly [bigint, bigint], send: number): Frame => ({
     entry: 'pay', args: [encodeIntegerValue(amount)], value: 0n, views, sends: [send],
   });
-  // Outputs from 6: a container, the first send, a container, the second send.
-  const payments: [Frame, Frame] = [pay(7_000n, [0n, 1n], 7), pay(4_000n, [1n, 2n], 9)];
+  // The trailing outputs: a container, the first send, a container, the second send.
+  const payments: [Frame, Frame] = [pay(7_000n, [0n, 1n], TRAILING + 1), pay(4_000n, [1n, 2n], TRAILING + 3)];
 
   it('accepts two sends each after a container, paid from the containers together', () => {
     const trailing = [container(20_000n), payment(7_000n), container(19_000n), payment(4_000n)];
@@ -161,13 +163,13 @@ describe('a contract entered twice, weighed by the validator that settles it', (
   });
 
   it('is refused by the validator when both frames list the same send', () => {
-    // Two equal sends listed once: each master pins its send to output 7, and the containers keep what paying both
-    // would leave, so only counting the output once shows that one of the sends was never paid.
-    const shared: [Frame, Frame] = [pay(7_000n, [0n, 1n], 7), pay(7_000n, [1n, 2n], 7)];
+    // Two equal sends listed once: each master pins its send to the same output, and the containers keep what paying
+    // both would leave, so only counting the output once shows that one of the sends was never paid.
+    const shared: [Frame, Frame] = [pay(7_000n, [0n, 1n], TRAILING + 1), pay(7_000n, [1n, 2n], TRAILING + 1)];
     const trailing = [container(36_000n), payment(7_000n)];
     expect(verdicts(shared, [50_000n], trailing)).toStrictEqual({ ...ACCEPTED, validator: false });
     // The control: the same two sends listed at their own outputs.
-    const own: [Frame, Frame] = [pay(7_000n, [0n, 1n], 7), pay(7_000n, [1n, 2n], 9)];
+    const own: [Frame, Frame] = [pay(7_000n, [0n, 1n], TRAILING + 1), pay(7_000n, [1n, 2n], TRAILING + 3)];
     const honest = [container(20_000n), payment(7_000n), container(16_000n), payment(7_000n)];
     expect(verdicts(own, [50_000n], honest)).toStrictEqual(ACCEPTED);
   });

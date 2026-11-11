@@ -98,12 +98,16 @@ compiler are:
 
 | script | artifact bytes | role |
 | --- | --: | --- |
-| `nusdt.scash` | 9,254 | master, token container, first-touch rows |
-| `nusdt_facet.scash` | 6,484 | administration and deposit claims |
-| `nusdt_transfer_facet.scash` | 6,253 | transfer and transferFrom |
-| `nusdt_supply_facet.scash` | 4,314 | issue, redeem, destroyBlackFunds |
+| `nusdt.scash` | 9,508 | master, token container, first-touch rows |
+| `nusdt_facet.scash` | 9,286 | initialize, administration and deposit claims |
+| `nusdt_transfer_facet.scash` | 7,941 | transfer and transferFrom |
+| `nusdt_supply_facet.scash` | 8,984 | issue, redeem, destroyBlackFunds, blacklist and freeze |
 
-The four artifacts sum to **26,305 B**. The monolith remains above 10,000 B and unspendable.
+The four artifacts sum to **35,719 B**. The monolith remains above 10,000 B and unspendable.
+
+The master has no constructor: a constructor body ships in every spend of the script, so the one-shot `initialize`
+runs in `UsdtFacet` for the `initialOwner` the master pins. State order is a size decision too: the fields the reserve
+paths read share one data NFT, so `withdraw`, `cancelDeposit` and `deposit` co-spend fewer of them.
 
 Splitting still multiplies the available budget rather than compressing code, and that is still the reason
 the contract exists at all - but the margin is now 2,612 B over the cap, not 22,644 B.
@@ -136,8 +140,8 @@ this SDK preflight diagnostic:
 > compiler's script-size check passes can still be unspendable`
 
 Each additional facet costs the master one constructor argument, so the artifact figure alone is not a
-spendability proof. The current master is 9,254 B before those links; exact VM spends exercise the deployed
-byte limit on the covered routes. Other routes still require focused validation before a release claim.
+spendability proof. The current master is 9,508 B before those links. The mock admits larger inputs than mainnet, so
+`NativeUsdt.test.ts` holds every spend it makes to the 10,000 B limit; the widest, `openSelf`, stands at about 9,930 B.
 
 The port's own size test asserts the artifact figure, which is the number that rots quietly. What actually
 proved this was the SDK preflight refusing a built transaction, so the check that matters is a spend, not a

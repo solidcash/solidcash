@@ -344,8 +344,8 @@ describe('a payout per loop turn, and of the whole balance, behind a proxy', () 
     expect(refused(swept)).toBeUndefined();
     expect(paid(swept)).toStrictEqual([`${binToHex(CALLER)}:100000`]);
     expect(swept.verdicts.filter((verdict) => verdict.id.startsWith('proxy-container-'))).toHaveLength(2);
-    // The container the send follows keeps only what the caller put in to stand it up.
-    expect(await held(proxied, proxied.proxyCategoryId)).toBe(1_000n);
+    // The sweep keeps nothing, so its send follows the drained run's marker and no container is left (D51).
+    expect(await held(proxied, proxied.proxyCategoryId)).toBe(0n);
   }, 300_000);
 });
 
@@ -411,8 +411,9 @@ describe('a forged value through the proxy', () => {
       output.valueSatoshis -= 1n;
       change(transaction).valueSatoshis += 1n;
     });
-    expect(verdicts.get('validator')).toBe(false);
-    // Neither frame settles the proxy alone, so neither weighs its containers: the validator does (V7).
+    // Neither frame settles the proxy alone, so neither weighs its containers: the validator does (V7), in its census
+    // facet, which weighs every settled contract's value totals.
+    expect(verdicts.get('validator/2')).toBe(false);
     expect(verdicts.get(PROXY)).toBe(true);
     expect(verdicts.get(IMPLEMENTATION)).toBe(true);
   });
@@ -421,8 +422,8 @@ describe('a forged value through the proxy', () => {
     const verdicts = forged(deposit, ({ block }) => {
       block.value = 40_000n;
     });
-    // The facet walks the call edges (V5), which bind a delegate frame's value to its caller's; the head's value
-    // rule counts no delegate frame's value as brought in, so it is not what refuses.
+    // The first facet walks the call edges (V5), which bind a delegate frame's value to its caller's; the value totals
+    // the head gathers count no delegate frame's value as brought in, so the head is not what refuses.
     expect(verdicts.get('validator/1')).toBe(false);
     expect(verdicts.get('validator')).toBe(true);
   });
@@ -432,7 +433,8 @@ describe('a forged value through the proxy', () => {
       transaction.outputs[sendOutput() - 1]!.valueSatoshis -= 1_000n;
       change(transaction).valueSatoshis += 1_000n;
     });
-    expect(verdicts.get('validator')).toBe(false);
+    // The census facet weighs the proxy's containers against what its frames receive less what they pay (V7).
+    expect(verdicts.get('validator/2')).toBe(false);
     expect(verdicts.get(IMPLEMENTATION)).toBe(true);
   });
 

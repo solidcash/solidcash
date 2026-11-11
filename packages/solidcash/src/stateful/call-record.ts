@@ -8,8 +8,12 @@ import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
   bigIntToVmNumber, vmNumberToBigInt,
 } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
-import { sha256, type AbiFunction, type EnumDefinitionAbi, type StructDefinitionInfo } from '@solidcash/utils';
+import {
+  sha256, type AbiFunction, type Artifact, type EnumDefinitionAbi, type ExternalCallAbi, type StructDefinitionInfo,
+} from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { MixedCompileModeCallError } from '../Errors.js';
+import { artifactUsesSolidityAbi } from './solidityAbi.js';
 
 export const CALL_RECORD_DIGEST_BYTES = 31;
 
@@ -49,6 +53,23 @@ export function callRecordDigest(
     parts.push(bytes.length & 0xff, (bytes.length >> 8) & 0xff, ...bytes);
   }
   return sha256(Uint8Array.from(parts)).slice(0, CALL_RECORD_DIGEST_BYTES);
+}
+
+/**
+ * Refuses a call whose caller and callee were compiled in different modes when it binds the selector its caller
+ * compiled: a selector check, or a record whose digest carries it. Every selector is hashed by its compile's mode, so
+ * the two never match, and no compile sees both. A pointer, a selector table or a raw call binds no compiled selector.
+ */
+export function assertCallSelectorScheme(
+  call: ExternalCallAbi, caller: Pick<Artifact, 'compiler'>, callee: Pick<Artifact, 'compiler'>,
+): void {
+  const fixedMethod = call.interfaceName !== '__raw__' && call.callMode === undefined && call.fnPtrCall !== true
+    && call.selectorArrayVar === undefined && call.opaqueReturn !== true && call.batchInvocations === undefined;
+  if (!fixedMethod || (call.needsSelectorVerification !== true && call.hasReturnValues !== true)) return;
+  const callerEvmCompat = artifactUsesSolidityAbi(caller);
+  if (callerEvmCompat !== artifactUsesSolidityAbi(callee)) {
+    throw new MixedCompileModeCallError(call.interfaceName, call.functionName, callerEvmCompat);
+  }
 }
 
 /** A record's commitment: the digest, then the result inline or its SHA256. */

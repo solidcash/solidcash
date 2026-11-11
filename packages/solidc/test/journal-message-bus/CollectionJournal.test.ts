@@ -158,8 +158,11 @@ describe('Release 3 collection journal lowering', () => {
     expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
   });
 
-  it('rejects a returning chunk-array writer whose multiple exits cannot be inlined', () => {
-    expect(() => compileString(`pragma solidcash >=0.8.0;
+  it('inlines a returning chunk-array writer whose exits are guarded', () => {
+    // The guarded-early-return normalization folds `if (once) return a; ...; return b;` into one result temp with
+    // the continuation nested in the guard's else, so this writer reaches the single-tail-return shape the dynamic
+    // array journal requires. It used to be refused because the multiple exits could not be inlined.
+    const artifact = compileString(`pragma solidcash >=0.8.0;
       contract ReturningArrayJournal() {
         bigint[] scores;
         function append(bigint value, bool once) internal returns (bigint) {
@@ -173,9 +176,10 @@ describe('Release 3 collection journal lowering', () => {
           require(length > 0);
         }
       }
-    `, { forceStateful: true })).toThrow(
-      "Returning dynamic-array state helper 'append' must have one tail return so it can be inlined",
-    );
+    `, { forceStateful: true });
+    // The helper was inlined into `apply`; no OP_INVOKE subroutine remains.
+    expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'append')).toBeUndefined();
+    expect(artifact.abi.find((entry) => entry.name === 'apply')?.writesState).toBe(true);
   });
 
   it('does not mark mutually recursive journal closures after tail-cycle lowering', () => {

@@ -11,9 +11,31 @@ import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 const isCashAddr = (x: unknown): x is string =>
   typeof x === 'string' && /^(bitcoincash|bchtest|bchreg):[0-9a-z]+$/i.test(x);
 
+/**
+ * Resolver for the value a registered contract presents as an ABI `address`. A stateful deployment may expose a
+ * logical address whose emitted locking bytecode differs from the physical execution lock the covenant sees, and
+ * the SDK feeds that same value to the contract. Test-side ethers coding must derive the identity from the same
+ * bytes, or an EVM-style `pairFor` expectation hashes a different address than the contract.
+ */
+let cashAddressLockResolver: ((addr: string) => Uint8Array | undefined) | undefined;
+
+export function setCashAddressLockResolver(
+  resolver: ((addr: string) => Uint8Array | undefined) | undefined,
+): void {
+  cashAddressLockResolver = resolver;
+}
+
 /** Map a BCH CashAddress to a synthetic 20-byte ETH-style hex address for ethers ABI coding. */
-function cashAddressToEthHex(addr: string): string {
-  const decoded = cashAddressToLockingBytecode(addr);
+export function cashAddressToEthHex(addr: string): string {
+  // A P2SH20 address names its 20-byte identity outright, as a P2PKH one does: a CREATE2 child's is the EVM address
+  // its own body holds as `address(this)`, whichever lock its frames execute under.
+  const named = cashAddressToLockingBytecode(addr);
+  if (typeof named !== 'string' && named.bytecode.length === 23 && named.bytecode[0] === 0xa9
+    && named.bytecode[1] === 0x14 && named.bytecode[22] === 0x87) {
+    return `0x${binToHex(named.bytecode.slice(2, 22))}`;
+  }
+  const resolved = cashAddressLockResolver?.(addr);
+  const decoded = resolved === undefined ? cashAddressToLockingBytecode(addr) : { bytecode: resolved };
   if (typeof decoded === 'string') return addr;
   const bc = decoded.bytecode;
   if (bc.length === 25 && bc[0] === 0x76 && bc[1] === 0xa9 && bc[2] === 0x14) {

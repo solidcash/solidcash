@@ -23,6 +23,12 @@ export enum NullaryOperator {
   BLOCK_GASLIMIT = 'block.gaslimit',
   BLOCK_PREVRANDAO = 'block.prevrandao',
   BLOCK_COINBASE = 'block.coinbase',
+  /**
+   * The address a framed creator's child will present: `addrV(K)` of the genesis-eligible coin the creating
+   * transaction spends (docs/framed/CREATE2_IDENTITY.md). Emitted only by the framed `create2` lowering; a source
+   * cannot name it.
+   */
+  CHILD_ADDRESS = 'this.framedChildAddress',
 }
 
 export enum UnaryOperator {

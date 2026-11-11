@@ -59,14 +59,15 @@ import {
 } from '../../bcmr/identity.js';
 import type { Output, TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import type { ConsensusLimits } from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
 import { registerDeployment } from '../../stateful/deployment-registry.js';
 import { decodeEntryCommitment, encodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
 import { providerUnixLocktime } from '../../stateful/soft-state-overlays.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import {
-  addressToLockScript, libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails,
-  scriptToLockingBytecode,
+  addressToLockScript, generateLibauthSourceOutputs, libauthOutputToSolidCashOutput,
+  libauthTokenDetailsToSolidCashTokenDetails, scriptToLockingBytecode,
 } from '../../utils.js';
 import {
   FramedComposerError, INDEX_NONE_REFERENCE, UNFILLED_CALLEE_REF, createComposedDerivationHost, deriveComposition,
@@ -77,6 +78,9 @@ import {
   type RecoverySideCars, type ShippedVmProgram,
 } from '../composer/index.js';
 import { bumpFramedCounter } from '../composer/counters.js';
+import { padForBudget } from '../composer/budget.js';
+import { fillCensusCheckpoints, withRestatedCensus } from '../composer/census.js';
+import { eventFundedAtLeastDust, firstNativePaymentBelowDust } from '../composer/dust.js';
 import { eventCloseOf, readComputedDeclaration, type DeclarationReading } from '../deploy/declaration.js';
 import {
   adjacentRecordOrder, frameDataRecordIndices, loopRecordSpans, namedDataRecordIndices, orderLoopKeyArgs,
@@ -91,14 +95,16 @@ import {
   FramedLoopTurnsError, entryLoopTurns, publishedLoopEffects, type EntryLoopTurns,
 } from '../call/loop-turns.js';
 import type { HopCallInputs } from './call-resolution.js';
-import { eventLockingBytecode, eventSentinel } from '../deploy/genesis.js';
+import { eventChunkLockingBytecode, eventSentinel } from '../deploy/genesis.js';
 import { masterForEntry, requireFunctionSplitShard } from '../deploy/entry-pool.js';
+import { facetPool, inPoolOrder, poolOrderFor, type PoolOrder } from '../deploy/pool-order.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import { ownCoinRefusal } from '../deploy/own-coin.js';
 import {
-  classifyFramedDeployment, readFramedDeployment, entryRecordReadUnlock, stateRecordLockingBytecode,
-  stateRecordUnlockingBytecode,
+  classifyFramedDeployment, readFramedDeployment, entryRecordReadUnlock, satoshiContainerLockingBytecode,
+  stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
+import { sendBelowDustRefusal } from '../call/send-dust.js';
 import { decodeReturnValues } from '../read/index.js';
 import { FramedProxyDeployError } from './errors.js';
 import { hopTrace, hopTraceError, hopTraceOn } from './hop-trace.js';
@@ -106,11 +112,12 @@ import { learnedReachedValue } from './reached-values.js';
 import { stageBroadcasts } from './staged-broadcasts.js';
 import { skippedEmits, type WriteActivationFacts } from './write-activation.js';
 import {
-  hopEntryWrites, mappingHeadCollection, mappingNodeSlot, sharedNodeId,
+  hopEntryWrites, mappingHeadCollection, mappingNodeSlot, producerKeyCallsites, sharedNodeId,
   type HopEntryWrites, type LaidHopEntryWrites,
 } from './entry-writes.js';
 import {
   calleeReadNodesOrNone,
+  calleeRepeatsSlot,
   chainedNodeIds,
   deploymentStateValues,
   liveMappingValueReader,
@@ -688,10 +695,22 @@ function placeLaidWrites(
       }
       // A run read apart from its batch keeps nothing in its own segments and is kept in no other.
       if (inApartRun || (apartRun !== undefined && write.variable !== undefined)) continue;
-      if (entry.in === INDEX_NONE || declared.has(entry.in)) continue;
+      // A record no input holds is one this frame creates, which exists nowhere outside its span, or one an earlier
+      // frame of the call created and this one continues: that one has a view to start from, and is kept outside
+      // its span as a spent record is, at the output that carries it, so a read before the write finds it.
+      const continued = entry.in === INDEX_NONE && entry.out !== INDEX_NONE
+        && entry.viewIn instanceof Uint8Array && entry.viewIn.length > 0;
+      if ((entry.in === INDEX_NONE && !continued) || declared.has(continued ? -1 - entry.out : entry.in)) continue;
       // A record the write consumes is held kept before its segments and declared nowhere after them.
       if (entry.out === INDEX_NONE && segmentIndex > span.most) continue;
-      declared.add(entry.in);
+      declared.add(continued ? -1 - entry.out : entry.in);
+      if (continued) {
+        // Kept at the view it starts with before its span, and carried on from what the span left after it.
+        segment.push(segmentIndex < span.least
+          ? { in: INDEX_NONE, out: entry.out, viewIn: entry.viewIn, viewOut: entry.viewIn }
+          : { in: INDEX_NONE, out: entry.out, viewIn: 'carried', viewOut: 'carried' });
+        continue;
+      }
       segment.push(segmentIndex < span.least
         ? { in: entry.in, out: entry.in, viewIn: entry.viewIn, viewOut: entry.viewIn }
         : { in: entry.in, out: entry.in, viewIn: entry.viewOut, viewOut: entry.viewOut });
@@ -999,7 +1018,7 @@ function callPushes(
  */
 async function implementationFrameSideCars(
   provider: NetworkProvider, artifact: Artifact, functionName: string, args: readonly FunctionArgument[],
-  loopHashes?: number,
+  loopHashes?: number, poolOrder?: PoolOrder,
 ): Promise<ReadonlyMap<string, RecoverySideCars>> {
   const abiFunction = artifact.abi.find((candidate) => candidate.name === functionName);
   if (abiFunction === undefined) return new Map();
@@ -1013,6 +1032,7 @@ async function implementationFrameSideCars(
     provider, master: IMPLEMENTATION_MASTER_ID, abiFunction,
     argumentPushes: callPushes(artifact, functionName, args), leadingPushes: 1,
     ...(loopHashes === undefined ? {} : { hashes: loopHashes }),
+    ...(poolOrder === undefined ? {} : { poolOrder }),
   });
   return frame.ids.length === 0 ? new Map() : new Map([[IMPLEMENTATION_MASTER_ID, frame]]);
 }
@@ -1240,7 +1260,7 @@ export async function deployFramedProxy(
     return hexToBin(commitment);
   });
 
-  const vm = options.vm ?? await providerMachine(options.provider);
+  const vm = options.vm ?? await derivationMachine(options.provider);
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
@@ -1282,6 +1302,7 @@ export async function deployFramedProxy(
     funderLockingBytecode?: Uint8Array,
   ): SettleHopOptions => ({
     vm,
+    ...(provider.consensusLimits === undefined ? {} : { budgetLimits: provider.consensusLimits }),
     proxyArtifact,
     implementationArtifact,
     // The genesis mints the proxy master rather than running it, so the derivation starts from the implementation
@@ -1322,6 +1343,7 @@ export async function deployFramedProxy(
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
       ...(externalPlan.callBases.length === 0 ? {} : { callBases: externalPlan.callBases }),
+      ...(externalPlan.callPositions === undefined ? {} : { callPositions: externalPlan.callPositions }),
       ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
       ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
       ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
@@ -1701,6 +1723,8 @@ interface SettledHop {
 /** Everything one attempt at a hop reads, and how to rebuild the plan once a record's computed value is learned. */
 interface SettleHopOptions {
   readonly vm: Machine;
+  /** The limits the finished transaction is padded to, the provider's own; the chain's when it states none. */
+  readonly budgetLimits?: ConsensusLimits;
   readonly proxyArtifact: Artifact;
   readonly implementationArtifact: Artifact;
   readonly root: FrameRequest;
@@ -2225,8 +2249,12 @@ export async function settleCallees(options: {
             .map((entry) => `${entry.length}:${binToHex(entry.slice(-4))}`).join(',')}]`);
         hopTrace(`callee-stop ${callee.master} ${traceStopInstructions(options.vm, program)}`);
       }
+      // A run refused with no reason of its own made the later write of a slot its batch writes twice, which the
+      // batch kept as a skipped target: the batch is refused by name, as the planner refuses one it cannot declare.
+      const unreasoned = refusal.innermost === undefined
+        || (refusal.innermost.reason.message === undefined && refusal.innermost.reason.error === undefined);
       // The refusal carries the values the reported frame's custom error was raised with, as the entry's own does.
-      const failure = new FramedProxyDeployError(
+      const failure = (unreasoned ? calleeRepeatsSlot(callee) : undefined) ?? new FramedProxyDeployError(
         `the call's callee "${callee.functionName}" did not settle through the proxy: ${failing}`,
         refusal.innermost?.reason.arguments,
       );
@@ -2737,6 +2765,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     throw error;
   }
   requireLearnedViews(draft);
+  // Every record's first declaration is bound to the commitment its input spends: the plan's stated view and the
+  // input can come from two reads of the deployment, and the validator compares them at that declaration.
+  draft.bindRecordChainStarts();
   if (trace) {
     hopTrace(`stop root=${PROXY_MASTER_ID} reason=derived `
       + `refs-after=[${traceCallRefs(draft, PROXY_MASTER_ID)}]`);
@@ -2744,7 +2775,14 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
 
   // The genesis mints the proxy master rather than running it, so its program is read from the implementation
   // master, whose evaluation carries the whole transaction including the minted output.
-  const program = draft.programFor(options.genesis === true ? IMPLEMENTATION_MASTER_ID : PROXY_MASTER_ID);
+  // Each validator's census facet carries what its head's walk computed, then each contract input pads itself to the
+  // budget its own execution spends in this transaction.
+  const program = padForBudget(
+    fillCensusCheckpoints(
+      draft.programFor(options.genesis === true ? IMPLEMENTATION_MASTER_ID : PROXY_MASTER_ID), draft.layout.participants,
+    ),
+    draft.layout.participants, vm, options.budgetLimits,
+  );
   // The proxy's containers the implementation's sends are paid from follow the caller's coin, and the machine is
   // asked about them too.
   const containerInputs = options.value === undefined ? []
@@ -2943,7 +2981,8 @@ function withNodeWriters(frames: Set<number>, callees: readonly HopCallee[]): Se
  * delegate frame's), decoded the way that entry declares its returns.
  */
 export function reachedCallResults(
-  externalPlan: Pick<HopExternalPlan, 'callees'>, block: HopPlanBlock, calleeRetvals: ReadonlyMap<string, Uint8Array>,
+  externalPlan: Pick<HopExternalPlan, 'callees'>, block: Pick<HopPlanBlock, 'path' | 'producers'>,
+  calleeRetvals: ReadonlyMap<string, Uint8Array>,
 ): Map<string, FunctionArgument> {
   const results = new Map<string, FunctionArgument>();
   for (const callee of externalPlan.callees) {
@@ -2961,6 +3000,27 @@ export function reachedCallResults(
     if (values.length === 0) continue;
     results.set(
       reachedResultKey(block.path, origin.callsiteId), (values.length === 1 ? values[0] : values) as FunctionArgument);
+  }
+  return results;
+}
+
+/**
+ * The results the calls of callee frames returned where those frames' own mapping keys read them, keyed by
+ * `reachedResultKey` under each frame's path.
+ *
+ * A callee's write keyed by what one of its own calls returned is planned under a placeholder until that call has
+ * answered (`producerKeyValue`), as the entry's own is; once its frame has, the write is planned from the result.
+ */
+export function calleeKeyCallResults(
+  externalPlan: Pick<HopExternalPlan, 'callees'>, calleeRetvals: ReadonlyMap<string, Uint8Array>,
+): Map<string, FunctionArgument> {
+  const results = new Map<string, FunctionArgument>();
+  for (const frame of externalPlan.callees) {
+    const producers = producerKeyCallsites(frame.artifact, frame.entry);
+    if (producers.length === 0) continue;
+    for (const [key, value] of reachedCallResults(externalPlan, { path: frame.path, producers }, calleeRetvals)) {
+      results.set(key, value);
+    }
   }
   return results;
 }
@@ -3166,6 +3226,14 @@ async function planAndSettleHop(options: {
   for (let pass = 0; ;) {
     const block = externalPlan.blocked;
     if (block !== undefined) {
+      // A visit whose arguments the body computes is read back from a run of the entry's own body, which a direct call
+      // does (`hashedCallArguments`) and the hop does not yet: no producer it could settle states those arguments.
+      if (block.reads === 'computed') {
+        throw new FramedProxyDeployError(
+          `${block.where} passes arguments the body computes in a way no published expression states, which the hop `
+          + 'cannot resolve from the caller\'s own arguments and state',
+        );
+      }
       if (stops >= MAXIMUM_PLAN_STOPS) {
         throw new FramedProxyDeployError(
           `the hop stopped its plan ${stops} time(s) to learn earlier calls' results and still waits on `
@@ -3333,6 +3401,8 @@ interface HopPlanOptions {
   readonly calls?: readonly DraftCall[];
   /** For each published call site of the entry, the position of its first call in `calls`, or `-1` for none. */
   readonly callBases?: readonly number[];
+  /** Each site's calls' positions in `calls`, for an entry whose loop sites' calls interleave (`HopCallee`). */
+  readonly callPositions?: readonly (readonly number[])[];
   readonly callees?: readonly HopCallee[];
   /**
    * The end commitment learned for each callee frame's value-dependent write record, keyed by master, in that
@@ -3452,8 +3522,8 @@ function hopEventOutputs(
 ): readonly HopEventOutput[] {
   const definitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
   return hopEmits(artifact, functionName, emits).map((emit, position) => ({
-    lockingBytecode: eventLockingBytecode(
-      category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true,
+    lockingBytecode: eventChunkLockingBytecode(
+      category, emit.eventSignature, definitions.get(emit.eventSignature)?.anonymous === true, emit.chunk,
     ),
     commitment: commitments[position] ?? new Uint8Array(0),
   }));
@@ -3482,8 +3552,13 @@ function hopEventSentinels(
  */
 function hopEmits(
   artifact: Artifact, functionName: string, emits: readonly number[] | undefined,
-): readonly NonNullable<Artifact['abi'][number]['emits']>[number][] {
+): readonly (NonNullable<Artifact['abi'][number]['emits']>[number] & { readonly chunk: number })[] {
   const rows = artifact.abi.find((candidate) => candidate.name === functionName)?.emits ?? [];
+  // A wide emit lists one output per chunk of its payload (`EmitAbi.chunks`).
+  const chunked = (
+    row: NonNullable<Artifact['abi'][number]['emits']>[number],
+  ): (NonNullable<Artifact['abi'][number]['emits']>[number] & { readonly chunk: number })[] =>
+    Array.from({ length: row.chunks ?? 1 }, (_unused, chunk) => ({ ...row, chunk }));
   if (emits === undefined) {
     if (publishedLoopEffects(artifact, functionName)?.events !== undefined) {
       throw new FramedProxyDeployError(
@@ -3491,14 +3566,14 @@ function hopEmits(
         + 'for the implementation\'s own entry only',
       );
     }
-    return [...rows].sort((left, right) => left.emitIndex - right.emitIndex);
+    return [...rows].sort((left, right) => left.emitIndex - right.emitIndex).flatMap(chunked);
   }
-  return emits.map((emitIndex) => {
+  return emits.flatMap((emitIndex) => {
     const row = rows.find((candidate) => candidate.emitIndex === emitIndex);
     if (row === undefined) {
       throw new FramedProxyDeployError(`the ${entryLabelFor(functionName)} publishes no emit ${emitIndex}`);
     }
-    return row;
+    return chunked(row);
   });
 }
 
@@ -3644,8 +3719,10 @@ function calleeDeclaredRecordsOfCategory(
  * makes it and the next. The walk restates the declarations in that order: a kept one keeps the view the last write
  * before it left, and a write continues from that view to the one its own frame computed, which the hop learns from
  * that frame. A relink (`relinks`) keeps the slot and the value of the view it continues from and takes the
- * successor its plan states, since a value an earlier frame wrote is that frame's to compute. `ends` is the view
- * each written node's chain ends at, which its output carries.
+ * successor its plan states, since a value an earlier frame wrote is that frame's to compute. A node write whose plan
+ * states its end and keeps the successor it planned from (`valueWrites`) takes the successor the view it continues
+ * from carries, since a link an earlier frame's insert made is that frame's. `ends` is the view each written node's
+ * chain ends at, which its output carries.
  */
 export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
   masters: readonly T[],
@@ -3655,6 +3732,7 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
   learned: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
   held = false,
   relinks: ReadonlySet<DraftRecordEntry> = new Set(),
+  valueWrites: ReadonlySet<DraftRecordEntry> = new Set(),
 ): {
     readonly masters: readonly T[];
     readonly ends: ReadonlyMap<number, Uint8Array>;
@@ -3718,11 +3796,15 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
         if (!nodes.has(entry.in)) return entry;
         const end = entry.viewOut ?? unstatedViewPlaceholder(master.master, at, entryIndex);
         const view = continued.get(entry.in) ?? views.get(entry.in) ?? entry.viewIn;
-        if (!writes.has(entry) || bytesEqual(entry.viewIn, end)) {
+        // A write whose plan states no change keeps the node only where its plan saw the view the chain holds: a frame
+        // planned against the deployment's view of a node an earlier frame rewrote states its end from the value it
+        // read, so an end that happens to equal that stale view is still a write from the view the chain carries.
+        if (!writes.has(entry) || (bytesEqual(entry.viewIn, end) && bytesEqual(entry.viewIn, view))) {
           if (hopTraceOn()) {
             hopTrace(`chain-kept-write ${master.master} in=${String(entry.in)} `
-              + `viewIn=${String(entry.viewIn.length)} viewOut=${String(entry.viewOut?.length ?? -1)} `
-              + `write=${String(writes.has(entry))} view=${String(view.length)}`);
+              + `viewIn=${String(entry.viewIn.length)}:${binToHex(entry.viewIn.slice(-4))} `
+              + `viewOut=${String(entry.viewOut?.length ?? -1)}:${entry.viewOut === undefined ? '' : binToHex(entry.viewOut.slice(-4))} `
+              + `write=${String(writes.has(entry))} view=${String(view.length)}:${binToHex(view.slice(-4))}`);
           }
           return { ...entry, viewIn: view, viewOut: view };
         }
@@ -3737,6 +3819,12 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
           views.set(entry.in, relinked);
           continued.set(entry.in, relinked);
           return { ...entry, viewIn: view, viewOut: relinked };
+        }
+        if (valueWrites.has(entry) && entry.viewOut !== undefined && keepsSuccessor(entry.viewIn, entry.viewOut)) {
+          const written = rewrittenView(view, entry.viewOut);
+          views.set(entry.in, written);
+          continued.set(entry.in, written);
+          return { ...entry, viewIn: view, viewOut: written };
         }
         if (entry.viewOut !== undefined) views.set(entry.in, entry.viewOut);
         continued.set(entry.in, end);
@@ -3761,6 +3849,18 @@ export function chainSharedNodeViews<T extends DraftMaster | DraftMintedMaster>(
 function relinkedView(view: Uint8Array, planned: Uint8Array): Uint8Array {
   const reached = decodeEntryCommitment(view);
   return encodeEntryCommitment(reached.slot, decodeEntryCommitment(planned).nextKey, reached.value);
+}
+
+/** True when a planned write of a node leaves its successor as it planned from: it rewrites only the value. */
+function keepsSuccessor(viewIn: DraftRecordEntry['viewIn'], viewOut: Uint8Array): boolean {
+  if (!(viewIn instanceof Uint8Array)) return false;
+  return bytesEqual(decodeEntryCommitment(viewIn).nextKey, decodeEntryCommitment(viewOut).nextKey);
+}
+
+/** A value write's end view: the slot and the value its plan states, and the successor of the view it continues from. */
+function rewrittenView(view: Uint8Array, planned: Uint8Array): Uint8Array {
+  const written = decodeEntryCommitment(planned);
+  return encodeEntryCommitment(written.slot, decodeEntryCommitment(view).nextKey, written.value);
 }
 
 /** The created outputs, each carrying the view the chain of declarations of the node it holds ends at. */
@@ -4118,8 +4218,13 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     : { in: INDEX_NONE, out: authhead.out, viewIn: new Uint8Array(0), viewOut: authhead.owner };
   const authheadKept: RecordEntry[] = authhead === undefined ? []
     : [{ in: INDEX_NONE, out: authhead.out, viewIn: authhead.owner, viewOut: authhead.owner }];
+  // The genesis creates the proxy's records, so the minted root's first segment declares each one from nothing to
+  // the state it is minted with, which is where every later declaration of it continues from.
+  const recordStart = genesis
+    ? recordKept.map((entry) => ({ ...entry, viewIn: new Uint8Array(0) }))
+    : recordKept;
   const proxySegments: RecordEntry[][] = [
-    [...recordKept, ...(authheadCreated === undefined ? [] : [authheadCreated])],
+    [...recordStart, ...(authheadCreated === undefined ? [] : [authheadCreated])],
     [...recordKept.map((_entry, nftIndex) => at(recordAfter, nftIndex)), ...authheadKept],
   ];
   // A call closes the segment the code before it runs in, so a frame that makes `k` calls declares `k + 1`
@@ -4213,8 +4318,10 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // writes and the callees' have to be in it before either is chained.
   const writeTransitions = new Set<DraftRecordEntry>();
   for (const entry of rootRecordWrites) writeTransitions.add(entry);
-  // The minted root creates the authhead, so the walk keeps the owner's lock it writes there.
+  // The minted root creates the authhead and, in the genesis, the proxy's records, so the walk keeps the view each
+  // is created with.
   if (authheadCreated !== undefined) writeTransitions.add(authheadCreated);
+  if (genesis) for (const entry of recordStart) writeTransitions.add(entry);
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
   const createdBase = trailingCursor;
@@ -4326,6 +4433,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // whose result is what the callee frame's own body computed.
     calls,
     ...(options.callBases === undefined ? {} : { callBaseBySite: options.callBases }),
+    ...(options.callPositions === undefined ? {} : { callPositionsBySite: options.callPositions }),
     // The value the entry returns, which the plan stated and the derivation learned; empty for a void entry, which
     // the body requires the slot to be.
     retval: options.implementationRetval,
@@ -4657,6 +4765,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       origin: genesis ? INDEX_NONE_REFERENCE : USER_ID,
       calls: callee.calls,
       ...(callee.callBases.length === 0 ? {} : { callBaseBySite: callee.callBases }),
+      ...(callee.callPositions === undefined ? {} : { callPositionsBySite: callee.callPositions }),
       // A proxy's fallback records the delegate frame's own `retval`, so the value a caller reads for a call
       // through the proxy is the implementation entry's; every other frame records what its own body computed.
       retval: callee.returns
@@ -4856,7 +4965,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category at
     // the covenant the body rebuilds, carrying the payload the entry computed. A created mapping node follows them.
     trailingOutputs: [
-      ...options.eventOutputs.map((output): DraftSourceOutput => ({
+      ...options.eventOutputs.map((output): DraftSourceOutput => eventFundedAtLeastDust({
         lockingBytecode: output.lockingBytecode,
         valueSatoshis: EVENT_OUTPUT_SATOSHIS,
         token: {
@@ -4867,7 +4976,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       // Every callee frame's events follow the root entry's, in master order, which is the order the assembler
       // allocates the event region in.
       ...calleeEventPlan.flatMap((planned): DraftSourceOutput[] => planned.eventOutputs.map(
-        (output): DraftSourceOutput => ({
+        (output): DraftSourceOutput => eventFundedAtLeastDust({
           lockingBytecode: output.lockingBytecode,
           valueSatoshis: EVENT_OUTPUT_SATOSHIS,
           token: {
@@ -4919,6 +5028,15 @@ async function providerMachine(provider: NetworkProvider): Promise<Machine> {
   return createVirtualMachineBch2026ForProvider(provider);
 }
 
+/**
+ * The provider's machine with its budgets lifted, which a derivation learns on: the finished transaction pads each
+ * input to its budget and the broadcast judges it on {@link providerMachine}.
+ */
+async function derivationMachine(provider: NetworkProvider): Promise<Machine> {
+  const { createDerivationVirtualMachineForProvider } = await import('../../network/createVirtualMachine.js');
+  return createDerivationVirtualMachineForProvider(provider);
+}
+
 /** An input the composer already assembled: its lock and unlocking bytecode are the hop's, not re-derived here. */
 function rawUnlocker(lockingBytecode: Uint8Array, unlockingBytecode: Uint8Array): Unlocker {
   return {
@@ -4939,6 +5057,8 @@ interface BroadcastHopOptions {
   /** The derived hop: the specification every input's unlocking bytecode and every output is taken from. */
   readonly program: ShippedVmProgram;
   readonly draft: CompositionDraft;
+  /** The order the call planned its pools in. Absent, the hop takes pools in an order of its own. */
+  readonly poolOrder?: PoolOrder;
   /**
    * The UTXO each participant the entry spends sits on, when its id does not name one the pools can be searched for.
    *
@@ -5234,10 +5354,21 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
 
   // The pools the two geneses published, read back by category and classified the way a framed deployment mints
   // them, so a participant is placed on the outpoint it actually sits on rather than a genesis output index.
-  const proxyPools = await readFramedDeployment(
-    provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!);
-  const implementationPools = await readFramedDeployment(
-    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!);
+  const hopValidator = framedValidator.buildValidatorProgram();
+  const hopMasterLocks = (artifact: Artifact, categoryId: string): readonly Uint8Array[] => [
+    deployMaster(artifact, hexToBin(categoryId), hopValidator).lockingBytecode,
+  ];
+  const poolOrder = options.poolOrder ?? poolOrderFor(provider);
+  const proxyPools = inPoolOrder(await readFramedDeployment(
+    provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!, {
+      masterLocks: hopMasterLocks(options.proxyArtifact, options.proxyCategoryId),
+    },
+  ), poolOrder);
+  const implementationPools = inPoolOrder(await readFramedDeployment(
+    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!, {
+      masterLocks: hopMasterLocks(options.implementationArtifact, options.implementationCategoryId),
+    },
+  ), poolOrder);
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
   // The hop's own shape is fixed - the composer assembled every contract input and there is no oracle or side-car
@@ -5247,22 +5378,19 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   const consumesRecord = callerFunding.utxo.token === undefined && draft.layout.participants.some((placed) =>
     program.sourceOutputs[placed.index]?.token?.nft !== undefined
     && program.transaction.outputs[placed.index]?.token === undefined);
-  const builder = new TransactionBuilder({
-    provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
-  });
-  // The builder defaults to locktime 0, which would serialize a different transaction than the one derived: the
-  // hop's signature and every frame that reads `block.timestamp` were made over the derived locktime, so the
-  // broadcast carries that same one.
-  builder.setLocktime(program.transaction.locktime ?? 0);
+  type Builder = InstanceType<typeof TransactionBuilder>;
   // The outpoint every participant resolves to, so a hop that cannot broadcast a duplicated outpoint names the two
   // participants that share it instead of only the transaction's input index.
   const resolved = new Map<string, string>();
+  // Each input in the order the hop lays it out, resolved once: the broadcast can be laid out more than once. A
+  // participant carries the unlocking bytecode of the derived hop, or the census facet's push restated over this one.
+  const addInputs: ((builder: Builder, restated: ReadonlyMap<number, Uint8Array>) => void)[] = [];
   // A genesis's funding coin is the caller's coin and leads the transaction, signed like it over the real one.
   const leads = draft.layout.participants.some((placed) => placed.kind === 'leading');
   for (const placed of draft.layout.participants) {
     if (placed.kind === 'leading') {
       hopTrace(`leading input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
-      builder.addInput(callerFunding.utxo, callerFunding.funder);
+      addInputs.push((builder) => { builder.addInput(callerFunding.utxo, callerFunding.funder); });
       continue;
     }
     const source = program.sourceOutputs[placed.index];
@@ -5274,7 +5402,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     // A validator's facet holds no token and pins no category, so any live UTXO of its code serves the input; the
     // composer supplies its source, so the lookup is by the lock the plan states.
     const facetUtxos = placed.kind === 'facet'
-      ? await provider.getUtxosForLockingBytecode(source.lockingBytecode)
+      ? facetPool(await provider.getUtxosForLockingBytecode(source.lockingBytecode), poolOrder)
       : [];
     const real = options.spentUtxos?.get(placed.id)
       ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id,
@@ -5311,8 +5439,10 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     // The sequence the derived hop carries, so the broadcast is the same transaction the frames were evaluated
     // against rather than one the builder's own default rewrites.
     const sequence = program.transaction.inputs[placed.index]?.sequenceNumber;
-    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode),
-      sequence === undefined ? undefined : { sequence });
+    addInputs.push((builder, restated) => {
+      builder.addInput(utxo, rawUnlocker(source.lockingBytecode, restated.get(placed.index) ?? unlockingBytecode),
+        sequence === undefined ? undefined : { sequence });
+    });
   }
   // The deployer's own coin funds the hop and is the frame's root caller; its signature is a real one over the
   // real transaction, which is what the root's `msg.sender` binding and the provider both check. Its sequence is
@@ -5323,7 +5453,7 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   }
   if (!leads) {
     hopTrace(`caller input ${callerFunding.utxo.txid}:${callerFunding.utxo.vout} ${callerFunding.utxo.satoshis}`);
-    builder.addInput(callerFunding.utxo, callerFunding.funder);
+    addInputs.push((builder) => { builder.addInput(callerFunding.utxo, callerFunding.funder); });
   }
   // The proxy's containers follow the caller's coin, each with the unlocking the derived hop carries.
   for (const { index, utxo } of options.containerInputs ?? []) {
@@ -5332,28 +5462,47 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
     if (source === undefined || unlockingBytecode === undefined) {
       throw new FramedProxyDeployError(`the derived hop carries no container input at ${index}`);
     }
-    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
+    addInputs.push((builder) => { builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode)); });
   }
 
   // Every participant recreates in place, so its output index is its input index; anything the composer placed
   // after them (events, sends, created records) is trailing. The funders' recreations are replaced by the
-  // caller's change below, which is the only non-participant the plan has.
-  const settled = draft.layout.participantCount + draft.trailingOutputs.length;
-  for (const output of program.transaction.outputs.slice(0, settled)) {
-    builder.addOutput(libauthOutputToSolidCashOutput(output));
-  }
-  if (options.publication !== undefined) builder.addOutput(options.publication);
-  builder.addBchChangeOutputIfNeeded({
-    to: callerFunding.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
-  });
-
+  // caller's change below, which is the only non-participant the plan has, and a genesis adds its publication. That
+  // makes the transaction's widths its own, so its census facets lead with checkpoints taken over it.
+  //
   // A composition's assembled unlocking bytecodes are wider than the production per-input ceiling (the validator's
   // alone is over 10,000 bytes), which the composition profile the hop runs under widens. `TransactionBuilder.send`
   // judges its bytes against the production ceiling and would refuse the hop the provider's own profile accepts, so
   // the hop is materialized by the builder and handed to the provider directly. The provider stays the decider.
-  const transaction = builder.buildLibauthTransaction();
+  const settled = draft.layout.participantCount + draft.trailingOutputs.length;
+  const { builder, transaction: judged } = withRestatedCensus(draft.layout.participants, (restated) => {
+    const laid = new TransactionBuilder({
+      provider, skipAutomaticCoSpends: true, ...(consumesRecord ? { allowImplicitNftBurn: true } : {}),
+    });
+    // The builder defaults to locktime 0, which would serialize a different transaction than the one derived: the
+    // hop's signature and every frame that reads `block.timestamp` were made over the derived locktime, so the
+    // broadcast carries that same one.
+    laid.setLocktime(program.transaction.locktime ?? 0);
+    for (const add of addInputs) add(laid, restated);
+    for (const output of program.transaction.outputs.slice(0, settled)) {
+      laid.addOutput(libauthOutputToSolidCashOutput(output));
+    }
+    if (options.publication !== undefined) laid.addOutput(options.publication);
+    laid.addBchChangeOutputIfNeeded({
+      to: callerFunding.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
+    });
+    return {
+      builder: laid, transaction: laid.buildLibauthTransaction(), sourceOutputs: generateLibauthSourceOutputs(laid.inputs),
+    };
+  });
   if (hopTraceOn()) await traceAssembledHop(builder, provider, program);
   const { encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  // A deployer whose wallet holds its key signs its coins now, over the hop as it was judged with its placeholder.
+  const { applyExternalSignatures } = await import('../../external-signing.js');
+  const { generateLibauthSourceOutputs: sourceOutputsOf } = await import('../../utils.js');
+  const transaction = await applyExternalSignatures(
+    builder.inputs.map((input) => input.unlocker), judged, sourceOutputsOf(builder.inputs),
+  );
 
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
@@ -5498,7 +5647,11 @@ export async function callFramedProxyEntry(
   const proxyLayout = proxyArtifact.stateLayout!;
   const classificationLayout = implementationArtifact.stateLayout?.collections === undefined ? proxyLayout
     : { ...proxyLayout, collections: implementationArtifact.stateLayout.collections };
-  const proxyPools = await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout);
+  const poolOrder = poolOrderFor(provider);
+  const proxyPools = inPoolOrder(await readFramedDeployment(provider, options.proxyCategoryId, classificationLayout, {
+    masterLocks: [deployMaster(proxyArtifact, hexToBin(options.proxyCategoryId), framedValidator.buildValidatorProgram())
+      .lockingBytecode],
+  }), poolOrder);
   if (proxyPools.records.length !== proxyLayout.dataNftCount) {
     throw new FramedProxyDeployError(
       `category ${options.proxyCategoryId} holds ${proxyPools.records.length} record(s) for a proxy whose layout `
@@ -5524,8 +5677,16 @@ export async function callFramedProxyEntry(
     state: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools) as
       Readonly<Record<string, StateValue>>,
   });
-  const implementationPools = await readFramedDeployment(
-    provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
+  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
+  const oraclePool = framedOraclePool(provider, implementationProgram);
+  const validatorProgram = framedValidator.buildValidatorProgram();
+  const implementationCategory = hexToBin(options.implementationCategoryId);
+  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
+  const implementationPools = inPoolOrder(await readFramedDeployment(
+    provider, options.implementationCategoryId, implementationArtifact.stateLayout!, {
+      masterLocks: [implementationMaster.lockingBytecode], validatorProgram,
+    },
+  ), poolOrder);
   const recordCommitments = proxyPools.records.map((record, nftIndex) => {
     const commitment = record.token?.nft?.commitment;
     if (commitment === undefined) {
@@ -5536,13 +5697,8 @@ export async function callFramedProxyEntry(
     return hexToBin(commitment);
   });
 
-  const validatorProgram = framedValidator.buildValidatorProgram();
   const proxyCategory = hexToBin(options.proxyCategoryId);
-  const implementationCategory = hexToBin(options.implementationCategoryId);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
-  // The implementation's masters carry the pool its deployment bound, so its master is found under that lock.
-  const oraclePool = framedOraclePool(provider, implementationProgram);
-  const implementationMaster = deployMaster(implementationProgram, implementationCategory, validatorProgram);
   let implementationMasterUtxo = implementationPools.masters[0];
   if (splitShard !== undefined) {
     try {
@@ -5561,7 +5717,7 @@ export async function callFramedProxyEntry(
       + 'runs from',
     );
   }
-  const vm = options.vm ?? await providerMachine(provider);
+  const vm = options.vm ?? await derivationMachine(provider);
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
@@ -5672,6 +5828,7 @@ export async function callFramedProxyEntry(
   // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
   const settleOptionsFor = (externalPlan: HopExternalPlan, seed?: CalleeSettlement): SettleHopOptions => ({
     vm,
+    ...(provider.consensusLimits === undefined ? {} : { budgetLimits: provider.consensusLimits }),
     proxyArtifact,
     implementationArtifact,
     root: rootOn(proxyArtifact),
@@ -5701,6 +5858,7 @@ export async function callFramedProxyEntry(
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
       ...(externalPlan.callBases.length === 0 ? {} : { callBases: externalPlan.callBases }),
+      ...(externalPlan.callPositions === undefined ? {} : { callPositions: externalPlan.callPositions }),
       ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
       ...(calleeWriteViews.size === 0 ? {} : { calleeWriteViews }),
       ...(calleeWriteValues.size === 0 ? {} : { calleeWriteValues }),
@@ -5726,7 +5884,7 @@ export async function callFramedProxyEntry(
   });
   // The compute side-cars the implementation's own entry reads, built once over the live pool for the whole hop.
   const implementationSideCars = withBlockOracle(await implementationFrameSideCars(
-    provider, implementationArtifact, options.functionName, args, loopTurns.hashes,
+    provider, implementationArtifact, options.functionName, args, loopTurns.hashes, poolOrder,
   ), blockOracle);
   // A frame below the entry may call back into the root, a receiver's hook or a borrower's repayment: it runs on
   // the root's own records, which the root's frames name as the proxy's record participants.
@@ -5745,6 +5903,7 @@ export async function callFramedProxyEntry(
         args, externals: options.externals ?? {}, validatorProgram,
         stateValues: executionState,
         entryDeployment: { categoryId: options.proxyCategoryId, deployment: proxyPools, layout: classificationLayout },
+        poolOrder,
         reentrantRoot,
         selfAddress: proxyMaster.address,
         senderAddress: options.callerLockingBytecode,
@@ -5762,6 +5921,23 @@ export async function callFramedProxyEntry(
     settleCallees: (stated, only, seed) => settleHopCallees(settleOptionsFor(stated, seed), only),
   });
 
+  // A settled hop that pays native value below its output's dust threshold is refused for it, by the frame that pays
+  // it, on a network that enforces dust, as a direct call is (`../call/send-dust.ts`).
+  if (settled.accepted && (provider.policy?.enforceDust ?? true)) {
+    const outputs = settled.program.transaction?.outputs ?? [];
+    const short = firstNativePaymentBelowDust(outputs, settled.draft.layout.participantCount);
+    if (short !== undefined) {
+      throw sendBelowDustRefusal({
+        draft: settled.draft, outputs, short, network: provider.network,
+        rootFrame: `${implementationArtifact.contractName}.${options.functionName}()`,
+        containerOwners: new Map([
+          [options.proxyCategoryId, implementationArtifact.contractName],
+          ...externalPlan.callees.map((callee) => [callee.categoryId, callee.artifact.contractName] as const),
+        ].map(([owned, contract]) => [binToHex(satoshiContainerLockingBytecode(owned)), contract])),
+      });
+    }
+  }
+
   // A hop a participant refused has no transaction to broadcast, the validator's refusal as much as a frame's: the
   // verdicts name the refusal, as a direct call's do, and nothing reaches the network.
   const broadcast = !settled.accepted || options.publish === false ? undefined : await broadcastHop({
@@ -5778,6 +5954,7 @@ export async function callFramedProxyEntry(
     implementationCategoryId: options.implementationCategoryId,
     program: settled.program,
     draft: settled.draft,
+    poolOrder,
     ...(settled.entryWrites === undefined && externalPlan.utxos.size === 0 && readNodes.length === 0
       ? {}
       : {

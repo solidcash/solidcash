@@ -38,6 +38,30 @@ export type AllocateCreateBuilderFundersHost = {
   markSharedFunder: (utxo: UnlockableUtxo) => void;
 };
 
+/** What a low-level group's function publishes about its sender. */
+type LowLevelRunSender = {
+  usesMsgSender?: boolean;
+  externalCalls?: readonly { addressIsMsgSender?: boolean }[];
+  entryAccesses?: readonly { keySources?: readonly { kind?: string; senderOp?: string }[] }[];
+};
+
+/**
+ * Whether a low-level run at the top level reads the signer's native P2PKH input, through emitTxOrigin. A tx.origin
+ * key does in any call mode. A `call` or `staticcall` runs its callee as itself, so that callee's msg.sender is this
+ * contract's co-spent master; only a delegate keeps its caller's, the signer. `usesMsgSender` alone does not decide
+ * it: it counts no tx.origin key and no sender key a route clone takes as a parameter.
+ */
+export function lowLevelRunNeedsSignerInput(fn: LowLevelRunSender, callMode: string | undefined): boolean {
+  const senderKeys = (fn.entryAccesses ?? []).flatMap((access) => access.keySources ?? [])
+    .filter((source) => source.kind === 'msgSender');
+  if (senderKeys.some((source) => source.senderOp === 'tx.origin')) return true;
+  if (callMode !== 'delegatecall') return false;
+  const directUse = !!fn.usesMsgSender && !(fn.externalCalls ?? []).some((call) => call.addressIsMsgSender);
+  // A msg.sender-KEYED mapping write in the delegate (users[msg.sender]=v) also needs the sender's native
+  // P2PKH input so the covenant's emitTxOrigin resolves the on-chain key to the same address the SDK used.
+  return directUse || senderKeys.length > 0;
+}
+
 /** Inputs which balance sorted-loop outputs that do not consume their own predecessor. */
 export function sortedLoopSurplusFunderCount(
   outputCount: number,
@@ -130,6 +154,10 @@ export async function allocateCreateBuilderFunders(
     builder.setInsertBandPadUtxos(pads);
   }
 
+  // An entry that pays the miner from the contract's balance takes nobody's coin, even when that fee falls short: a
+  // withdrawal must not link the connected wallet to it.
+  if (host.signer && effectiveBlockLayout?.minerFee === undefined) builder.setFeeSigner(host.signer);
+
   // Auto-fund block-layout slots that need funder inputs (output-only slots
   // like transfers/events, non-existing entries/TCs). These are WITHIN the
   // block range - the covenant requires them at specific positions.
@@ -159,13 +187,22 @@ export async function allocateCreateBuilderFunders(
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
       || (iterationEntryInputs.length > 0 && overrides?.omitLocalFeeTail === true)
-      || dynamicChunkInputs.length > 0
+      // A void entry's slot is its call record: the covenant steps its chunk coordinates down when no record runs.
+      || (dynamicChunkInputs.length > 0 && (entryAbiFunction?.outputs?.length ?? 0) > 0)
       || trailingDisposalInputs.length > 0
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
       || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
+    // Pre-record geometry: a funder this slot would take for another reason shifts every block behind it.
+    const entryFunction = abiFunction as AbiFunction | undefined;
+    builder.setVoidRecordSlotCompacted((entryFunction?.outputs?.length ?? 0) === 0
+      && entryFunction?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true
+      && returnEmitOutputIndex < 0 && !trailingGeometryNeedsReturnSlot && !overrides?.omitLocalFeeTail);
+    // An entry that pays the miner fee from the contract's balance funds its own output-only slots out of that fee,
+    // so it takes nobody's coin: a withdrawal from a pool needs no BCH of its own.
+    const paysOwnFee = effectiveBlockLayout.minerFee !== undefined;
     let neededFunders = effectiveBlockLayout.slots.filter(
-      (s) => outputOnlyKinds.has(s.kind)
+      (s) => outputOnlyKinds.has(s.kind) && !paysOwnFee
         // An atomic participant is assembled against its published fixed-width block. Even when this
         // invocation emits no return blob, retain the return-event input as an inactive balanced slot so
         // executor/identity inputs following the route cannot shift left. The composition replaces all local
@@ -256,26 +293,16 @@ export async function allocateCreateBuilderFunders(
     // to tx.origin (the caller/deployer signer), same as a direct call - so `upgrades.deployProxy` of an
     // `initialize` that sets `host.owner = msg.sender` needs the signer's native P2PKH input in the tx. (The
     // proxy forward connects the runner, so `host.signer` is set and the funder below is a real P2PKH input.)
-    type DelegAbiFn = {
-      name: string; usesMsgSender?: boolean; externalCalls?: readonly { addressIsMsgSender?: boolean }[];
-      entryAccesses?: readonly { keySources?: readonly { kind?: string }[] }[];
-    };
     const delegateUsesMsgSender = lowLevelCallUtxoGroups.some((group, groupIndex) => {
       // A nested proxy implementation observes the immediate calling contract via its authenticated category.
       // Only a delegate executing in this top-level call context falls back to tx.origin and therefore requires
       // a native signer input. Inspect every such delegate, not only the subset promoted to entryAbiFunction
       // because it happens to access a mapping.
       if (nestedDelegateProxyGroupByLowLevel.has(groupIndex)) return false;
-      const gFn = (group.compilerRoute?.abiFunction
-        ?? (group.externalContract.inner.artifact.abi as readonly DelegAbiFn[])
-          .find((candidate) => candidate.name === group.functionName)) as DelegAbiFn | undefined;
-      if (!gFn) return false;
-      const directUse = !!gFn.usesMsgSender && !(gFn.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
-      // A msg.sender-KEYED mapping write in the delegate (users[msg.sender]=v) also needs the sender's native
-      // P2PKH input so the covenant's emitTxOrigin resolves the on-chain key to the same address the SDK used.
-      const keyUse = (gFn.entryAccesses ?? []).some((ea) => (ea.keySources ?? [])
-        .some((ks) => ks.kind === 'msgSender'));
-      return directUse || keyUse;
+      const gFn = group.compilerRoute?.abiFunction
+        ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((candidate) => candidate.name === group.functionName);
+      return gFn !== undefined && lowLevelRunNeedsSignerInput(gFn, group.callMode);
     });
     timing?.('sender-delegate-scan');
     if (usesMsgSenderKey || usesTxOriginSender || delegateUsesMsgSender) neededFunders = Math.max(neededFunders, 1);

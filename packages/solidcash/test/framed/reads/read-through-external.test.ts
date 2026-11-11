@@ -100,7 +100,7 @@ async function fund(
 
 describe('a read whose callee only the provider\'s registrations name', () => {
   it('serves a view root that calls a bare contract, with nothing broadcast', async () => {
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface IB { function value() view returns (int); }'
       + ' contract B { int public v; function value() view returns (int) { return this.v; } }'
       + ' contract A {'
@@ -141,7 +141,7 @@ describe('a read whose callee only the provider\'s registrations name', () => {
 
 /** Deploys an implementation behind its generated proxy, running `initialize` so the proxy's records hold state. */
 async function deployProxied(network: MockNetworkProvider): Promise<{ readonly proxyAddress: Uint8Array }> {
-  const source = 'pragma solidcash ^0.14.0;'
+  const source = 'pragma solidcash ^0.50.0;'
     + ' contract Impl {'
     + '   uint public initialized;'
     + '   int public total;'
@@ -186,7 +186,7 @@ describe('a read whose callee sits behind its own proxy', () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { proxyAddress } = await deployProxied(network);
 
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface IJob { function peek() view returns (int); }'
       + ' contract A {'
       + `   function job() view returns (int) { return IJob(0x${hex(proxyAddress)}).peek(); }`
@@ -233,7 +233,7 @@ describe('a read whose callee sits behind its own proxy', () => {
  * is `reads/proxied-delegate-reads.test.ts`.
  */
 describe('a read that states a callee\'s arguments', () => {
-  const ECHO_SOURCE = 'pragma solidcash ^0.14.0;'
+  const ECHO_SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface IEcho { function echo(int x) view returns (int); }'
     + ' contract Echo { function echo(int x) view returns (int) { return x; } }'
     + ' contract Root {'
@@ -286,10 +286,10 @@ describe('a read that states a callee\'s arguments', () => {
     expect(result.value).toBe(11n);
   });
 
-  it('refuses an argument the caller\'s own live state records hold', async () => {
-    // The read holds no live record of the caller's own state, so it names the source rather than reading a value.
-    await expect(readRoot('fromState')).rejects.toThrow(
-      'whose argument 0 comes from a "expression" of kind "state"',
-    );
+  it('states an argument the caller\'s own live state records hold', async () => {
+    // The read plans the call from the root's live record, so the callee answers with the seed that record holds.
+    const result = await readRoot('fromState');
+    expect(result.accepted).toBe(true);
+    expect(result.value).toBe(4n);
   });
 });

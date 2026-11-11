@@ -99,10 +99,12 @@ describe('an external call beside a delegatecall', () => {
     const fire = (): ReturnType<StatefulContract['call']['fire']> => (proxy.sc.call as any).fire(input, 3n)
       .withDelegatecall(impl.sc, 'increment', []);
 
-    // Another deployment of the callee, the callee running another function, and no callee at all.
+    // Another deployment of the callee, the callee running another function, and no callee at all. The covenant
+    // refuses the first two at input 0; the third never reaches it, as the planner names a callee it cannot pin
+    // rather than build on default topology witnesses (3db59ad6b).
     await expect(fire().withExternalCall(other.sc, 'inc', [3n]).send()).rejects.toThrow(/input 0/);
     await expect(fire().withExternalCall(foo.sc, 'dec', [3n]).send()).rejects.toThrow(/input 0/);
-    await expect(fire().send()).rejects.toThrow(/input 0/);
+    await expect(fire().send()).rejects.toThrow(/could not pin the callee/);
 
     const tx = await fire().withExternalCall(foo.sc, 'inc', [3n]).send();
     expect(field(tx, proxy.category, proxyArtifact, 'counter')).toBe(6n);

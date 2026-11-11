@@ -207,6 +207,14 @@ export interface TransactionDetails extends Transaction {
   // for `confirmations > 1` it additionally waits that many blocks. Instant on MockNetworkProvider (mined on
   // send). Present on results from `.send()` / a deploy; optional so hand-built TransactionDetails stay valid.
   wait?: (confirmations?: number) => Promise<TransactionDetails>;
+  // ethers receipt fields, set by `wait()`: a transaction the chain accepted always succeeded (`status` 1), and
+  // `blockNumber` is the height the provider reached once it knew the transaction.
+  status?: number;
+  blockNumber?: number;
+  // What the sender's own coins paid beyond the value the transaction carries, as gas at `gasPrice` satoshis a unit.
+  // Set by a builder that knows the sender's funding; absent elsewhere.
+  gasUsed?: bigint;
+  gasPrice?: bigint;
   // Decoded event logs emitted by this tx (ethers v5 `receipt.events` / `receipt.logs`), populated on a stateful
   // `.send()` result by decoding this tx's own event NFT outputs against the artifact's event ABI.
   events?: ReceiptEvent[];

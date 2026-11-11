@@ -103,6 +103,9 @@ export class SourceFileNode extends Node {
   // Explicit source-unit ABI coder selection. Undefined means the compiler/default coder; only explicit v1
   // requires the legacy ABI type restrictions.
   abiCoderVersion?: 'v1' | 'v2';
+  // `pragma satoshicontainer single;` and `pragma tokencontainer single;`, for every contract of this source unit.
+  singleSatoshiContainer = false;
+  singleTokenContainer = false;
   importedContracts: ContractNode[] = [];
   isLibrary: boolean = false;
   libraryName?: string;
@@ -164,6 +167,10 @@ export class ContractNode extends Node implements Named {
   // Evaluated `layout at <base>` slot (solc 0.8.29 custom storage layout). Shifts the EVM-visible slot of every
   // persistent state var (inherited ones included), not transient ones. Absent = slot 0.
   storageLayoutBase?: bigint;
+  // `pragma satoshicontainer single;`: a call keeps the satoshi container in one coin and opens no other.
+  singleSatoshiContainer: boolean = false;
+  // `pragma tokencontainer single;`: a call keeps each token container in one coin and opens no other.
+  singleTokenContainer: boolean = false;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.
@@ -181,15 +188,24 @@ export class ContractNode extends Node implements Named {
   // A per-entry function shard keeps the logical state declarations and must not regain them as extra
   // dispatchable getters. The logical artifact owns that surface.
   suppressSynthesizedGetters: boolean = false;
-  // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
-  // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
-  // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
+  // The one public state getter a per-entry getter shard serves: synthesized although the rest are suppressed.
+  synthesizedGetterOnly?: string;
+  // Set by SynthesizeBlockOracle when any function reads blockhash(n), from a ring slot of the bound oracle pool.
   usesBlockhash: boolean = false;
-  // A function reads block.number/timestamp/.... The data is a separate covenant's commitment, not this
-  // contract's state, and this contract does not grow an update entry.
+  // A function reads block.number/timestamp/.... The data is the commitment of a block-info coin of the bound oracle
+  // pool, not this contract's state, and this contract does not grow an update entry.
   usesBlockOracle: boolean = false;
   // Set on a contract another one embeds: the pool coin kinds it and the bound contracts it creates read.
   poolTreeReads?: { readonly blockInfo?: true; readonly blockhash?: true };
+  // Set by SynthesizeBlockOracle when anything reads blockhash(n). The mark stays once set: a re-run on a split root
+  // sees forwarders, not the reads.
+  blockhashReadMarked: boolean = false;
+
+  /** Whether a blockhash read makes this contract stateful. A block.* read slices a pool coin and does not. */
+  get readsBlockhash(): boolean {
+    return this.blockhashReadMarked || this.usesBlockhash;
+  }
+
   // Set by SymbolTableTraversal once block layouts are known: any entry reserves the satoshi container slot, so an
   // in-place upgrade must migrate (or drain) that container. Read by the upgrade codegen.
   keepsSatoshiContainer: boolean = false;
@@ -266,6 +282,11 @@ export interface KeySourceInfo {
   // native P2PKH input's lockscript, so the SDK computes slot = keyToSlot(76a914<pkh>88ac) of the sender.
   senderOp?: 'msg.sender' | 'tx.origin';
   canonical: string;       // canonical string for deduplication (all kinds)
+  /** The key is a component of another call's return (`(a, b) = f()`): the SDK resolves the producer's
+   * authenticated value before hashing the slot. */
+  producer?: {
+    callsiteId?: number; resultIndex: number; sourceEffectOrdinal?: number; functionName?: string;
+  };
   /** SDK-only key expression after a proven adjacent, unconditional mapping write. */
   postWriteExpressionLabel?: string;
   /** Mapping collections this key reads before any mutation in the source handler. */
@@ -485,6 +506,8 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** A framed entry's top-level state writes, as its frame's own facts state them (`framedStateWrites`). */
+  framedStateWrites?: readonly { readonly name: string; readonly value: ExternalCallExpression }[];
   /** Set only on compiler-synthesized helpers whose source/require maps may be rewritten by helper optimization. */
   compilerGeneratedHelper?: boolean;
   /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
@@ -596,6 +619,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
     // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
     creationBytecode?: string;
+    // `new C{code: c}`: where the child's code comes from and the sha256 it must have.
+    code?: import('@solidcash/utils').DeployCodeSourceAbi;
+    template?: import('@solidcash/utils').DeployTemplateAbi;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -1962,6 +1988,9 @@ export class CastNode extends ExpressionNode implements Typed {
   // to its width as two's complement (the EVM cleans the word on use); under evmCompat a bytesN follows the EVM
   // word layout too (compileEvmWordCast in generation/utils.ts). Native bytesN keeps the checked conversion.
   evmWord?: boolean;
+  // Set by the Yul lowering on the address a `create2` over a runtime code value takes: the salt and the code it was
+  // given, which a framed compile derives the EVM identity from instead (`LowerFramedCreate2Address`).
+  runtimeCreate2?: { readonly salt: ExpressionNode; readonly code: ExpressionNode };
   constructor(
     public type: Type,
     public expression: ExpressionNode,
@@ -2054,6 +2083,8 @@ export class InstantiationNode extends ExpressionNode {
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;
   deployedEntryNftCount: number = 0;
+  /** Sorted child collections whose empty HEAD sentinel the deploy mints (no constructor write). */
+  deployedHeadCollections?: Array<{ name: string; signature: string }>;
   deployedStateVars: StateVariableNode[] = [];
   // Deploy-then-call fold: a same-tx `a.foo(x)` on this deploy result is folded into the genesis - the
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
@@ -2203,6 +2234,19 @@ export class NullaryOpNode extends ExpressionNode {
   // Solidity 0.6 admitted assembly chainid() inside pure functions even though a
   // source-level block.chainid read is rejected by the compatibility checker.
   fromInlineAssembly: boolean = false;
+
+  /**
+   * On a framed `create2` (`NullaryOperator.CHILD_ADDRESS`): the contract it creates, by name, or the state variable
+   * holding the code it creates from, as `LowerFramedCreate2Address` found them.
+   */
+  framedCreation?: { readonly contractName?: string; readonly codeStateVariable?: string };
+
+  /**
+   * On a framed `create2` whose child this compile unit holds: the child's genesis as the creating body replays it,
+   * filled after semantic analysis (`FoldFramedCreate2Initializer`). Code generation requires the transaction's
+   * outputs of the child's category to be exactly that genesis.
+   */
+  framedGenesis?: import('../framed/child-genesis-replay.js').FramedChildGenesisReplay;
 
   constructor(
     public operator: NullaryOperator,
@@ -2650,6 +2694,11 @@ export class StringConcatNode extends ExpressionNode {
 export class AbiDecodeNode extends ExpressionNode {
   /** The data comes from the compiler's own encoder, so its words are not re-validated (a split forwarder). */
   trustedEncoding?: boolean;
+  /**
+   * The data is a function's result in the wire it published rather than an `abi.encode` (a split forwarder): compact
+   * pushdata where `externalResultEncoding` says so, which this decodes as pushdata under `evmCompat` too.
+   */
+  resultWire?: 'evm-abi-v1' | 'compact-pushdata-v1';
 
   constructor(
     public data: ExpressionNode,
@@ -2928,6 +2977,13 @@ export enum ExternalCallMode {
 export interface LowLevelRoute {
   readonly mode: 'call' | 'staticcall';
   readonly fallback?: { readonly selector: Uint8Array };
+  /**
+   * Set for a payload named by its selector alone, on a target the source types as a bare address: the callee's
+   * own return data is the call's, whatever the callee declares, so the site keeps the record's result as bytes.
+   */
+  readonly opaqueResult?: true;
+  /** The local the call's success is bound to (`(bool ok, bytes data) = target.call(..)`), which its check reads. */
+  readonly successLocal?: string;
 }
 
 export interface ExternalFunctionCallInfo {
@@ -2945,6 +3001,13 @@ export interface CallOptions {
   value?: ExpressionNode;
   gas?: ExpressionNode;
   salt?: ExpressionNode;
+  /**
+   * `new C{code: c}(...)`: the child's code is the bytes `c` rather than C's compiled body embedded in the creator.
+   * The creator requires `sha256(c)` to equal `template`, or C's own compiled code when no template is named.
+   */
+  code?: ExpressionNode;
+  /** `new C{code: c, template: t}(...)`: the sha256 of the code the child runs, chosen at run time. */
+  template?: ExpressionNode;
 }
 
 export class ExternalFunctionCallNode extends ExpressionNode {
@@ -3017,6 +3080,8 @@ export interface ExternalCallArgSource {
   indexValue?: number;
   indexStepValue?: number;
   initialValue?: string;
+  /** For a `loopIndex` with no literal start: the counter's value where its loop opens, from the loop's domain. */
+  initialExpression?: ExternalCallExpression;
   stepValue?: string;
   stepExpression?: ExternalCallExpression;
   counterName?: string;
@@ -3029,6 +3094,8 @@ export interface ExternalCallArgSource {
 }
 
 export interface ExternalCallExpression {
+  /** On an `unsupported` node, the contract whose `type(C).creationCode` it stands for (folded before publishing). */
+  creationCodeOf?: string;
   kind: string;
   /** Compiler-internal source identity for compute-call association; ignored by SDK expression replay. */
   computeSourceSite?: string;
@@ -3056,11 +3123,14 @@ export interface ExternalCallExpression {
   fields?: string[];
   parameters?: string[];
   statements?: ExternalCallStatement[];
+  /** Declared result types of the helper; names are present when the source named every result. */
+  returnTypes?: string[];
+  returnNames?: string[];
 }
 
 export interface ExternalCallStatement {
-  kind: 'variable' | 'assign' | 'arrayAssign' | 'while' | 'branch' | 'return' | 'expression' | 'block'
-  | 'require';
+  kind: 'variable' | 'assign' | 'arrayAssign' | 'tupleAssign' | 'while' | 'branch' | 'return'
+  | 'expression' | 'block' | 'require';
   name?: string;
   type?: string;
   index?: ExternalCallExpression;
@@ -3068,6 +3138,12 @@ export interface ExternalCallStatement {
   condition?: ExternalCallExpression;
   statements?: ExternalCallStatement[];
   elseStatements?: ExternalCallStatement[];
+  /** One slot per tuple component; `null` is a discarded `(, x)` slot. */
+  names?: (string | null)[];
+  /** Declared component types for a tuple that introduces its names, one slot per component. */
+  types?: (string | null)[];
+  /** Per-slot right-hand sides when the source wrote `(a, b) = (x, y)` instead of a tuple-valued call. */
+  args?: ExternalCallExpression[];
 }
 
 export interface ExternalCallSlot {
@@ -3490,6 +3566,8 @@ export class TransferStatementNode extends StatementNode {
 
   /** Relative source order among all runtime effects in this repeated segment. */
   runtimeLoopEffectOrder?: number;
+  /** The local a low-level value call lowered to this send bound its success to (`(bool ok, ) = to.call{...}("")`). */
+  successLocal?: string;
 
   constructor(
     public lockingBytecode: ExpressionNode,
@@ -3500,6 +3578,19 @@ export class TransferStatementNode extends StatementNode {
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitTransferStatement(this);
+  }
+}
+
+// `this.payMinerFee(amount)`: the contract's satoshi container may lose `amount` beyond what its sends pay, with no
+// output for it. That value is the transaction's input-output delta, so the contract pays the miner by omission. The
+// amount is a compile-time constant, so a composer can take no more of the contract's balance than its source names.
+export class MinerFeeStatementNode extends StatementNode {
+  constructor(public amount: ExpressionNode) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitMinerFeeStatement(this);
   }
 }
 

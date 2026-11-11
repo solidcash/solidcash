@@ -44,7 +44,7 @@ const IMPL_B_MASTER = 'impl-b-1';
 const VALIDATOR_ID = 'validator';
 const RECORD_ID = 'record';
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract ImplA { function answer() pure { require(true); } }'
   + ' contract ImplB { function answer() pure { require(true); } }'
   + ' contract Proxy {'
@@ -260,12 +260,13 @@ describe('a delegate callee is the implementation the proxy\'s record names', ()
     // The edge rule runs in the validator's facet, at the input after the head, so that is the failing verdict.
     expect(refused[0]!.participant).toBe(`${VALIDATOR_ID}/1`);
     expect(refused[0]!.objection).toBeTruthy();
-    // The proxy frame and the callee's own input stay admissible, so the refusal is the edge rule alone.
+    // The proxy frame and the callee's own input stay admissible, so the refusal is the edge rule alone. The census
+    // facet, the second input after the head, weighs no edge, and accepts too.
     const accepted = composed.outcome.verdicts
       .filter((row) => row.accepted)
       .map((row) => row.participant)
       .sort();
-    expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_B_MASTER, VALIDATOR_ID, RECORD_ID].sort());
+    expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_B_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/2`, RECORD_ID].sort());
     // The mutated callee still ran, so the composition reached the frame whose code the record does not name.
     expect(composed.outcome.completed.map((frame) => frame.functionName))
       .toStrictEqual([entryName('ImplB', 'answer'), entryName('Proxy', '__fallback')]);

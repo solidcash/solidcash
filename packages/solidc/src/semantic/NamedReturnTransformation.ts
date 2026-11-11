@@ -10,7 +10,10 @@ import {
   IdentifierNode,
   RequireNode,
   BoolLiteralNode,
+  TupleAssignmentNode,
+  AssemblyStatementNode,
 } from '../ast/AST.js';
+import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { blockEndsWithReturn } from './EarlyReturnTransformation.js';
 import { fallsOffEndCheck } from './EnsureFinalRequireTraversal.js';
@@ -51,6 +54,46 @@ export function synthesizeEmptyVoidBodies(ast: SourceFileNode): void {
   const { contract } = ast;
   for (const fn of [...ast.freeFunctions, ...contract.functions, contract.fallbackDef, contract.receiveDef]) {
     if (fn) synthesizeEmptyVoidBody(fn);
+  }
+}
+
+/** Whether a body holds a node `matches` accepts, anywhere. */
+function bodyHolds(body: Node, matches: (node: Node) => boolean): boolean {
+  const seen = new Set<object>();
+  const visit = (value: unknown): boolean => {
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    if (matches(value)) return true;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'location' || key === 'symbolTable' || key === 'definition') continue;
+      if (child instanceof Node && visit(child)) return true;
+      if (Array.isArray(child) && child.some((item) => visit(item))) return true;
+    }
+    return false;
+  };
+  return visit(body);
+}
+
+/**
+ * Warn on a named return the body never names, as Solidity warns "Unused function parameter" for it: the function
+ * returns that output's zero value. A name counts as used where an identifier or a tuple assignment's target names
+ * it, and, as Solidity counts it, a `return <values>;` uses every named return. Compiler-generated functions (a
+ * generated source, or a `__` name such as a message-bus handler's copy of an entry) are left alone, and so is a body
+ * with inline assembly, whose Yul can name the variable where this walk does not look.
+ */
+function warnUnusedNamedReturns(node: FunctionDefinitionNode): void {
+  const { body, location } = node;
+  if (!body || generatedOriginOf(location) !== undefined || node.name.startsWith('__')) return;
+  if (bodyHolds(body, (child) => child instanceof AssemblyStatementNode
+    || (child instanceof ReturnNode && child.expressions.length > 0))) return;
+  const line = location?.start?.line;
+  const file = sourceFileOf(location);
+  const where = line === undefined ? '' : ` at line ${line}${file ? ` of imported "${file}"` : ''}`;
+  for (const name of node.returnNames) {
+    if (!name || bodyHolds(body, (child) => (child instanceof IdentifierNode && child.name === name)
+      || (child instanceof TupleAssignmentNode && child.elements.some((element) => element.name === name)))) continue;
+    emitCompilerWarning(`Warning: unused return variable '${name}' of '${node.name}'${where}. Nothing assigns it, `
+      + 'so the function returns its zero value.');
   }
 }
 
@@ -135,6 +178,8 @@ export default class NamedReturnTransformation extends AstTraversal {
     if (node.returnNames.length === 0 || !node.body) {
       return node;
     }
+
+    warnUnusedNamedReturns(node);
 
     // Prepend an uninitialized local for each named return. An uninitialized declaration zero-inits via the
     // same path as `delete`, which is correct for EVERY type - including address/pubkey/sig/datasig, which have

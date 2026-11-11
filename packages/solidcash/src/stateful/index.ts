@@ -247,9 +247,15 @@ export {
 } from './KernelDelegateForwarding.js';
 export {
   registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
-  findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot,
+  findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot, listDeployments,
+  registeredValueAddressLockingBytecode, findDeploymentByAddressValue,
   type RegisteredDeployment, type DeploymentRegistrySnapshot,
 } from './deployment-registry.js';
+// A coin whose txid a caller has already named a category or an address by: reserve it before a call, and no funding
+// the SDK selects will spend it, so a hand-added genesis coin keeps the position the caller gave it.
+export {
+  genesisOutpointKey, isReservedGenesisOutpoint, releaseGenesisOutpoint, reserveGenesisOutpoint,
+} from './genesis-reservations.js';
 export {
   getDataNftAddress,
   getMessageBusVerifierAddress,

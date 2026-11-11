@@ -9,7 +9,7 @@ import type { FunctionArgument } from '../../../src/Argument.js';
 import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
-import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../../src/utils.js';
+import { addressToLockScript } from '../../../src/utils.js';
 import { callFramedEntry, type FramedCallResult } from '../../../src/framed/call/index.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';
 import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
@@ -27,7 +27,8 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * address, so the stored address is the one the caller's frame states: its call settles, and a user who calls the
  * guarded entry directly is still refused by the guard.
  *
- * Every surface that hands the address back names that same lock: the record's read answers its identity, and an
+ * Every surface that hands the address back names that same lock: the record's read answers it whole (under
+ * `addressForm: 'bytecode'` an address result travels as compact pushdata, not as a 20-byte ABI word), and an
  * event carries the whole lock, both the caller's `msg.sender` in the callee's event and a bare address argument
  * packed into a long payload past 128 bytes (`abi.encodePacked(a)`), each read from the composition's receipt and
  * from the chain's event outputs. The artifact compiles with `addressForm: 'bytecode'` (DECISIONS D29), so the bare
@@ -138,11 +139,6 @@ async function view(world: Chain, artifact: Artifact, deployed: StatefulContract
   return read.value;
 }
 
-/** The 20-byte identity the read path answers for an address, as hex. */
-function identityOf(lock: Uint8Array): string {
-  return binToHex(lockingBytecodeToSolidityAddressPayload(lock)!);
-}
-
 /** A decoded event value's bytes, as hex. */
 function hexOf(value: unknown): string {
   return value instanceof Uint8Array ? binToHex(value) : String(value).replace(/^0x/, '').toLowerCase();
@@ -170,7 +166,8 @@ describe('a plain contract guards an entry with the address of the plain contrac
     const world = await chain();
     const callerLock = addressToLockScript(world.callerAddress);
     expect(callerLock.length).toBe(35);
-    expect(binToHex((await view(world, GUARDED, world.guarded, 'root')) as Uint8Array)).toBe(identityOf(callerLock));
+    // An address result travels whole under 'bytecode' (compact pushdata), so the read answers the stored lock.
+    expect(binToHex((await view(world, GUARDED, world.guarded, 'root')) as Uint8Array)).toBe(binToHex(callerLock));
 
     const guardedLock = addressToLockScript(await world.guarded.getAddress());
     const result = await enter(world, CALLER, world.caller, 'poke', [guardedLock, 7n]);

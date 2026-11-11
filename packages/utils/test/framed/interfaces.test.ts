@@ -26,7 +26,7 @@ import { LOADER_CODE_A } from './vectors/identity.js';
 describe('witness block constants', () => {
   it('carries the frozen magic, version and hash length', () => {
     expect(toHex(WITNESS_BLOCK_MAGIC)).toBe('5057');
-    expect(WITNESS_BLOCK_VERSION).toBe(1);
+    expect(WITNESS_BLOCK_VERSION).toBe(2);
     expect(ARGS_HASH_LENGTH).toBe(32);
     expect(INDEX_NONE).toBe(0xffff);
   });

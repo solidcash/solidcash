@@ -15,6 +15,9 @@ Choose native time locks when all you need is a deadline. Read a block field whe
 and `blockhash(n)` only when the actual header hash is required. Shims such as `block.prevrandao`,
 `block.gaslimit` and `blobhash()` are covered in [Global Variables](../language/globals.md#block-properties).
 
+Any `block.*` property, the shims included, or `blockhash(n)` makes a contract stateful, so a reader is deployed and
+called through `StatefulContract`. A contract that needs no state can use the native time locks below.
+
 ## Prefer native time locks for deadlines
 
 ```solidity
@@ -110,16 +113,16 @@ await new TransactionBuilder({ provider })
 ```
 
 The binding is part of the bytecode, so a reader's address depends on its pool, and a deployed reader keeps it.
-Building a reader with neither an `oraclePool` nor a provider pool fails. A contract passes its own binding to every
-contract it creates, so a child reads its creator's pool, whatever pool the provider names. A framed master carries
-the pool in its bytecode rather than as an input, and its deployment writes it in.
+Building a reader with neither an `oraclePool` nor a provider pool fails. A framed master carries the pool in its
+bytecode rather than as an input, and its deployment writes it in.
 
 The SDK co-spends the coins on every call path: a `Contract` with `TransactionBuilder`, `StatefulContract` calls,
-delegate calls, [framed entries](/docs/guides/framed-composition) and
-[message-bus routes](/docs/guides/message-bus) (both experimental), where the readers of one pool share one coin.
-A function that reads `block.*` takes the coin's input index from its caller as a hidden argument. A call that
-cannot forward it is refused at compile time with `BlockOracleIndexNotForwardedError`: read `block.*` in the caller
-as well, or pass the value in as an argument.
+[framed entries](/docs/guides/framed-composition) and [framed proxies](/docs/guides/framed-composition#proxies)
+(experimental), delegate calls, and [message-bus routes](/docs/guides/message-bus) (experimental), where the readers
+of one pool share one coin. A direct function that reads `block.*` takes the coin's input index from its caller as a
+hidden argument. A call that cannot forward it is refused at compile time with `BlockOracleIndexNotForwardedError`:
+read `block.*` in the caller as well, or pass the value in as an argument. A framed body takes no index: it reads the
+first block-info coin of its pool among the inputs.
 
 A body reached through a function pointer takes no index: it reads the first block-info coin of its pool among the
 inputs, and for `blockhash(n)` the first slot there that answers n, with the hash or the zero a direct read gives.
@@ -127,6 +130,34 @@ The artifact marks each entry that may reach such a body (`indirectPoolReads`), 
 reads on every call of that entry. A call of it from another contract, a delegate call included, gets the
 block-info coin but no slot. A message-bus route cannot carry such a body, so a message-bus build that reaches one
 is refused with `MESSAGE_BUS_ORACLE_POOL_INDIRECT_READ`. Call the reader directly.
+
+### A reader another contract creates
+
+A created contract reads its creator's pool, whatever pool the provider names:
+
+- **Direct.** A contract passes its own binding as `__oraclePool` to every contract it creates, in the lock it checks
+  and in the arguments `StatefulContract.deployFrom` deploys the child with.
+- **Framed.** A contract a factory creates with `create2` in its own transaction (a framed child, such as a Uniswap
+  pair) has constant-lock masters: the factory is deployed with the child's entry locks as constants, and checks the
+  child's genesis against them. A child that reads `block.*` carries its pool in those masters, so the constants fix
+  the pool, and every creation binds the one they were computed with. The child's genesis mints no oracle coin.
+
+Compute a framed child's constants from the compiled child, once, naming its pool:
+
+```ts
+import { framedDeploy } from '@solidcash/solidcash/framed';
+
+const constants = framedDeploy.framedChildConstants({
+  artifact: pairBundle.logical, split: pairBundle, provider, pool: { masters: 2, validators: 1 },
+  oraclePool: poolCategory, // the provider's pool when omitted
+});
+// childLocks, childCollections and childOutputCount go to the factory's deployment; childPool is the master pool
+// every creation must fund.
+const filledFactoryBundle = framedDeploy.fillFramedChildSlots(factoryBundle, constants);
+```
+
+A project that registers the child for its creator's calls,
+`framedDeploy.registerFramedCreatedChild(provider, name, artifact, split, { oraclePool })`, names the same pool.
 
 ## Create a pool
 
@@ -176,11 +207,12 @@ reads in the creator's artifact as `createdPoolReads`.
   `ringDepth` blocks (default 256, or 1 for `'now'`).
 - The baton holds `ringDepth`.
 
-The deployment and every contract it creates bind the new pool. `ownerKey` signs the pool's owner paths, and its
-P2PKH pays for the pool unless `funder` is given. It defaults to `provider.oraclePoolOwnerKey`, which the mock and
-regtest providers have. On any other provider, `'new'` without `ownerKey` is refused, and a live network also needs
-`tip`, and `blockHash` where the provider has no `getBlockHash`, as `createOraclePool` does. A tree that reads no
-block data mints no pool.
+The deployment and every contract it creates on the direct path bind the new pool. A framed creator publishes no
+`createdPoolReads`: its children carry the pool their constants were computed with (above), so a pool it mints
+serves its own reads. `ownerKey` signs the pool's owner paths, and its P2PKH pays for the pool unless `funder` is
+given. It defaults to `provider.oraclePoolOwnerKey`, which the mock and regtest providers have. On any other
+provider, `'new'` without `ownerKey` is refused, and a live network also needs `tip`, and `blockHash` where the
+provider has no `getBlockHash`, as `createOraclePool` does. A tree that reads no block data mints no pool.
 
 ## Run the keeper
 
@@ -277,8 +309,9 @@ reads of every contract bound to it, and one with no live slots halts their `blo
 
 `MockNetworkProvider` mints its pool the first time `provider.oraclePoolCategory` is read, which building a reader
 without `oraclePool` does, so a test that reads no block field pays for no pool. The pool has two block-info coins
-at the tip's fields, a depth-256 ring with one slot per block, and the baton, owned by `provider.oraclePoolOwnerKey`.
-Block n hashes to the SHA-256 of its 4-byte little-endian height, which `provider.getBlockHash(n)` returns.
+at the tip's height and the second before the tip's time, a depth-256 ring with one slot per block, and the baton,
+owned by `provider.oraclePoolOwnerKey`. Block n hashes to the SHA-256 of its 4-byte little-endian height, which
+`provider.getBlockHash(n)` returns.
 
 After every mined block (`mine()`, `mineUpTo()`, `time.increase()`, `evm_increaseTime`, and each send, which mines
 one), the mock's keeper moves every live block-info coin to the tip's height and the tip time less one second, and

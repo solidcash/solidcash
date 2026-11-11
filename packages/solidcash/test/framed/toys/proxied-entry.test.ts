@@ -54,7 +54,7 @@ const COUNTER_AFTER = 6n;
  */
 function source(): string {
   const callee = hexOf(seededAddress(PING_LABEL));
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface IPing { function ping(); }'
     + ' contract Impl {'
     + '   address public implementation;'
@@ -285,7 +285,7 @@ describe('a proxied entry that writes state and calls another contract', () => {
       .map(([participantId]) => participantId)
       .sort();
     expect(accepted).toStrictEqual(
-      [PROXY_MASTER, IMPL_MASTER, PING_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID].sort(),
+      [PROXY_MASTER, IMPL_MASTER, PING_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID].sort(),
     );
   });
 

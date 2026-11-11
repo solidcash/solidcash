@@ -1,10 +1,11 @@
 /**
- * phase-boundary extract: Mutable/output reassert + OP_RETURN / view-tail relocation helpers.
+ * phase-boundary extract: Mutable/output reassert + filler / view-tail relocation helpers.
  * (phase-boundary extract from StatefulTransactionBuilder.ts).
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { isContractUnlocker, type Output, type UnlockableUtxo } from '../interfaces.js';
+import { isFillerLockingBytecode } from './filler.js';
 import {
   cloneToken,
   commitmentHexOf,
@@ -146,26 +147,18 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
   return changed;
 }
 
-/** True when `to` is a bare OP_RETURN (reverse-indexed suffix separator). */
-export function isOpReturnLockingBytecode(to?: Uint8Array | string): boolean {
-  if (to instanceof Uint8Array) return to.length === 1 && to[0] === 0x6a;
-  if (typeof to === 'string') {
-    const hex = to.startsWith('0x') ? to.slice(2) : to;
-    return hex.toLowerCase() === '6a';
-  }
-  return false;
-}
+export { isFillerLockingBytecode };
 
 /**
- * Packer ranks can land a view return on the value-chunk OP_RETURN separator slot
- * (current 0x6a, or the reserved suffixStart index before materialize writes
- * 0x6a). Prefer an already-unlocked view/disposable pad (planned, then current,
- * then the pad immediately before the separator). Never host after OP_RETURN:
+ * Packer ranks can land a view return on the value-chunk filler separator slot
+ * (current filler, or the reserved suffixStart index before materialize writes
+ * the filler). Prefer an already-unlocked view/disposable pad (planned, then current,
+ * then the pad immediately before the separator). Never host after the separator:
  * reverse-indexed value chunks require the separator to be the unique trailer
  * (`TXOUTPUTCOUNT - 1 - nNew`). Returns undefined when no safe host exists —
  * caller may insert one before the value-chunk suffix.
  */
-export function redirectViewTailOffOpReturn(parts: {
+export function redirectViewTailOffFiller(parts: {
   placedIndex: number;
   plannedIndex?: number;
   returnIndex?: number;
@@ -178,16 +171,16 @@ export function redirectViewTailOffOpReturn(parts: {
 }): number | undefined {
   const { placedIndex, outputs } = parts;
   if (placedIndex < 0 || placedIndex >= outputs.length) return placedIndex;
-  const isSeparatorSlot = isOpReturnLockingBytecode(outputs[placedIndex]?.to)
+  const isSeparatorSlot = isFillerLockingBytecode(outputs[placedIndex]?.to)
     || parts.reservedIndices?.has(placedIndex)
     || (parts.suffixStart !== undefined && placedIndex === parts.suffixStart);
   if (!isSeparatorSlot) return placedIndex;
   const usable = (index: number | undefined): index is number => {
     if (index === undefined || index < 0 || index >= outputs.length || parts.reservedIndices?.has(index)) return false;
-    if (isOpReturnLockingBytecode(outputs[index]?.to)) return false;
+    if (isFillerLockingBytecode(outputs[index]?.to)) return false;
     if (parts.suffixStart !== undefined && index === parts.suffixStart) return false;
-    // Anything at/after the live OP_RETURN is past the reverse-index trailer.
-    const liveOpReturn = outputs.findIndex((output) => isOpReturnLockingBytecode(output?.to));
+    // Anything at/after the live separator is past the reverse-index trailer.
+    const liveOpReturn = outputs.findIndex((output) => isFillerLockingBytecode(output?.to));
     if (liveOpReturn >= 0 && index >= liveOpReturn) return false;
     return isViewReturnTailOutput(outputs[index])
       || isDisposableAlignmentPad(outputs[index]);
@@ -199,7 +192,7 @@ export function redirectViewTailOffOpReturn(parts: {
 }
 
 /**
- * Move every output after OP_RETURN in front of the mutable value-chunk run so
+ * Move every output after the separator in front of the mutable value-chunk run so
  * the separator is the unique trailer for `TXOUTPUTCOUNT - 1 - nNew`.
  *
  * Only contiguous outputs that match `suffixLock` immediately before the separator
@@ -210,7 +203,7 @@ export function moveTrailingOutputsBeforeValueChunkSuffix<T extends {
   to?: Uint8Array | string;
   token?: { nft?: { capability?: string } };
 }>(outputs: T[], suffixLock?: Uint8Array): number {
-  const opReturn = outputs.findIndex((output) => isOpReturnLockingBytecode(output?.to));
+  const opReturn = outputs.findIndex((output) => isFillerLockingBytecode(output?.to));
   if (opReturn < 0 || opReturn === outputs.length - 1) return 0;
   const wanted = suffixLock && suffixLock.length === 35 && suffixLock[0] === 0xaa
     ? binToHex(suffixLock) : undefined;
@@ -226,7 +219,7 @@ export function moveTrailingOutputsBeforeValueChunkSuffix<T extends {
   }
   const trailing = outputs.splice(opReturn + 1);
   if (trailing.length === 0) return 0;
-  // No matched chunks yet: park pads immediately before OP_RETURN (not deep in the block).
+  // No matched chunks yet: park pads immediately before the separator (not deep in the block).
   const insertAt = Math.max(0, opReturn - chunksBefore);
   outputs.splice(insertAt, 0, ...trailing);
   return trailing.length;
@@ -234,7 +227,7 @@ export function moveTrailingOutputsBeforeValueChunkSuffix<T extends {
 
 /**
  * Final-layout repair: build() may append a reverse-indexed resource run, then late
- * derived outputs, then OP_RETURN — so TXOUTPUTCOUNT-1-nNew lands on the late outputs.
+ * derived outputs, then the separator — so TXOUTPUTCOUNT-1-nNew lands on the late outputs.
  * Lift the early resource run to sit immediately before the trailer.
  * Probe builds must not call this (late-before-suffix during derivation hung).
  */
@@ -249,8 +242,8 @@ export function moveLateOutputsBeforeReverseSuffix<T extends {
   if (suffixCount <= 0 || suffixLock.length !== 35 || suffixLock[0] !== 0xaa) return 0;
   if (outputs.length < suffixCount + 2) return 0;
   const trailer = outputs.length - 1;
-  // Reverse-index math needs a dedicated OP_RETURN trailer.
-  if (!isOpReturnLockingBytecode(outputs[trailer]?.to)) return 0;
+  // Reverse-index math needs a dedicated separator trailer.
+  if (!isFillerLockingBytecode(outputs[trailer]?.to)) return 0;
   const wanted = binToHex(suffixLock);
   const windowStart = trailer - suffixCount;
   if (windowStart < 0) return 0;

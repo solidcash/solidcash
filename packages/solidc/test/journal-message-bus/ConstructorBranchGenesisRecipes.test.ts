@@ -75,10 +75,9 @@ describe('conditional child-constructor genesis recipes', () => {
     ['a branch return', 'if (choose) { return; } this.selected = seed;'],
     ['a repeated branch update', 'if (choose) { while (seed > 0) { this.selected = seed; } }'],
     ['a branch resource effect', 'if (choose) { emit Seen(seed); }'],
-  ])('keeps %s fenced', (_label, constructorBody) => {
-    expect(selectedHandler(constructorBody)).toMatchObject({
-      eligible: false,
-      rejectionReason: 'KERNEL_LAYOUT',
-    });
+  // The direct creator's fold cannot express these, and they used to deploy with the statements dropped.
+  ])('refuses %s', (_label, constructorBody) => {
+    expect(() => selectedHandler(constructorBody))
+      .toThrow(/A direct creator folds the genesis of the "Unit" it creates/);
   });
 });

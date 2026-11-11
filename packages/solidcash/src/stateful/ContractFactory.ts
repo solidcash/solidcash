@@ -36,6 +36,19 @@ export interface DeployContractOptions {
   threadCount?: number;
   /** Number of validator UTXOs a framed genesis mints; defaults to the composing pool size. */
   validatorCount?: number;
+  /** The entry locks of the child a creating contract mints (docs/framed/CREATE2_IDENTITY.md, "The genesis replay"). */
+  childLocks?: readonly Uint8Array[];
+  /** The pool each creation of the child funds, which the creator's replay requires. */
+  childPool?: { readonly masters: number; readonly validators: number };
+  /** How many outputs of the child's category a creation mints, for a creator compiled before the replay. */
+  childOutputCount?: number;
+  /** The hashes of the child's sorted collections, whose empty heads its genesis mints. */
+  childCollections?: readonly Uint8Array[];
+  /**
+   * The lock a constructor that reads `msg.sender` sees. Defaults to the runner's own lock; a contract another contract
+   * creates states its creator's, which is the `factory` a pair records.
+   */
+  senderLockingBytecode?: Uint8Array;
   /** `split: 'func'` bundle. Genesis mints a master pool at each shard lock, and funding counts those pools. */
   functionSplit?: FunctionSplitBundle;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
@@ -450,7 +463,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
         changeAddress,
         // The deployer is the runner: its constructor reads the Signer's own lock as `msg.sender`, the lock every call
         // it makes carries, whichever coin or funder pays for the genesis.
-        ...(signer === undefined ? {} : { senderLockingBytecode: signer.getLockingBytecode() }),
+        ...(overrides.senderLockingBytecode !== undefined
+          ? { senderLockingBytecode: overrides.senderLockingBytecode }
+          : signer === undefined ? {} : { senderLockingBytecode: signer.getLockingBytecode() }),
         initialState: overrides.initialState as DeployOptions['initialState'],
         fee: overrides.fee,
         addressType: overrides.addressType,
@@ -458,6 +473,10 @@ export class ContractFactory<T extends Artifact = Artifact> {
         threadCount: overrides.threadCount,
         validatorCount: overrides.validatorCount,
         ...(overrides.functionSplit === undefined ? {} : { functionSplit: overrides.functionSplit }),
+        ...(overrides.childLocks === undefined ? {} : { childLocks: overrides.childLocks }),
+        ...(overrides.childPool === undefined ? {} : { childPool: overrides.childPool }),
+        ...(overrides.childOutputCount === undefined ? {} : { childOutputCount: overrides.childOutputCount }),
+        ...(overrides.childCollections === undefined ? {} : { childCollections: overrides.childCollections }),
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),

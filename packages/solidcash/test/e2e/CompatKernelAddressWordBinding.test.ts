@@ -3,6 +3,7 @@ import {
 } from '@bitauth/libauth';
 import { compileStringMulti } from '@solidcash/solidc';
 import { describe, expect, it } from 'vitest';
+import { sha256 } from '@solidcash/utils';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
@@ -53,6 +54,14 @@ async function setup(): Promise<{ relay: StatefulContract; sink: StatefulContrac
   expect('data' in argument && argument.data).toEqual(nativeLock);
   const beforeArgument = encodeAuthenticationInstructions(instructions.slice(0, -2));
   const redeem = encodeAuthenticationInstructions(instructions.slice(-1));
+  const record = nativeSink.abi.find((entry) => entry.name === 'record')!;
+  const carrier = original.outputs.findIndex((output) => binToHex(output.lockingBytecode) === '51'
+    && output.token?.nft?.capability === 'none');
+  expect(carrier).toBeGreaterThan(0);
+  // A funder's signature covers the record each spelling rewrites, so the covenant inputs alone are evaluated.
+  const covenantInputs = sourceOutputs.flatMap((output, index) => (
+    binToHex(output.lockingBytecode).startsWith('76a914') ? [] : [index]));
+  expect(covenantInputs).toContain(calleeIndex);
   const vm = createVirtualMachineBch2026ForProvider(provider);
   return {
     relay, sink,
@@ -61,7 +70,10 @@ async function setup(): Promise<{ relay: StatefulContract; sink: StatefulContrac
       transaction.inputs[calleeIndex].unlockingBytecode = Uint8Array.from([
         ...beforeArgument, ...encodeDataPush(arg), ...redeem,
       ]);
-      return transaction.inputs.map((_, inputIndex) => vm.stateSuccess(vm.evaluate({
+      // The callee's void record digests the exact push it ran on: another spelling of one address is another record.
+      const digest = sha256(Uint8Array.of(0, 0, ...hexToBin(record.selector!), arg.length, 0, ...arg)).slice(0, 31);
+      transaction.outputs[carrier].token!.nft!.commitment = Uint8Array.of(...digest, 1);
+      return covenantInputs.map((inputIndex) => vm.stateSuccess(vm.evaluate({
         inputIndex, sourceOutputs, transaction,
       })) === true);
     },

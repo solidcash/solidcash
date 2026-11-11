@@ -3,7 +3,7 @@
  */
 
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { isContractUnlocker } from '../interfaces.js';
+import { isContractUnlocker, type Output } from '../interfaces.js';
 import {
   appendDynamicChunks as appendDynamicChunksImpl,
   appendValueChunks as appendValueChunksImpl,
@@ -36,6 +36,7 @@ export function materializeLateBuildChunkFrame(
   builder: TransactionBuilder,
   associatedDelegateOutputs: ReadonlySet<number>,
   appendDelegateGroupOutputs: (groupIndex: number) => void,
+  deferredCalleeDynamicChunks: readonly Output[],
   debugOwnMutableOutputs: (label: string) => void,
   debugAtomicOutputStage: (label: string) => void,
 ): void {
@@ -71,6 +72,8 @@ export function materializeLateBuildChunkFrame(
 
   repairNestedCalleeOutputs(host.nestedCalleeHost, builder, debugAtomicOutputStage);
 
+  // Ahead of the root's run, which a delegate's suffix convention keeps last.
+  for (const output of deferredCalleeDynamicChunks) builder.addOutput(output);
   if (deferDynamicChunks) appendDynamicChunks();
   debugAtomicOutputStage('deferred-dynamic-chunks');
 }

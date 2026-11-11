@@ -20,14 +20,14 @@ import { callerUnlockingBytecode } from './framed/master/caller-input.js';
 
 const FRAMED = { composition: 'framed' as const, suppressWarnings: true };
 
-const LEDGER = `pragma solidcash ^0.14.0;
+const LEDGER = `pragma solidcash ^0.50.0;
 contract Ledger {
   mapping(int => int) seen;
   function f(int k) { this.seen[k] = 1; require(this.seen[k] == 1); }
   function g(int k) { f(k); require(this.seen[k] == 1); }
 }`;
 
-const OVERLOADS = `pragma solidcash ^0.14.0;
+const OVERLOADS = `pragma solidcash ^0.50.0;
 contract Pair {
   int x;
   function set(int v) { this.x = v; require(this.x == v); }
@@ -37,7 +37,7 @@ contract Pair {
   function ext(int v) external { this.x = v; require(this.x == v); }
 }`;
 
-const WITH_HELPER = `pragma solidcash ^0.14.0;
+const WITH_HELPER = `pragma solidcash ^0.50.0;
 contract Cap {
   int x;
   function pub() { hidden(); require(this.x == 1); }
@@ -321,7 +321,7 @@ describe('split: off | size | func', () => {
 
   it('cuts a legal over-cap helper into an INTERNAL shard and leaves the validator template', () => {
     const blob = 'ab'.repeat(4000);
-    const source = `pragma solidcash ^0.14.0;
+    const source = `pragma solidcash ^0.50.0;
 contract Cap {
   int x;
   function pub() { pad(); require(this.x == this.x); }
@@ -410,7 +410,7 @@ contract Cap {
   });
 
   it('copies a bare call and turns this.f() into a call on that entry', () => {
-    const source = `pragma solidcash ^0.14.0;
+    const source = `pragma solidcash ^0.50.0;
 contract Ledger {
   int x;
   function f(int k) { this.x = k; require(this.x == k); }
@@ -496,7 +496,7 @@ contract Ledger {
     expect(Object.keys(bundle.facets).length).toBeGreaterThan(0);
   });
 
-  it('keeps the historical head unless INTERNAL or DELEGATE is admitted', () => {
+  it('keeps the historical head unless INTERNAL is admitted', () => {
     const head = (frameKinds: number[]): Buffer => Buffer.from(buildMasterHeadScript({
       blockOnTop: false, frameKinds, reservesValidatorHashSlot: true, calls: [],
     }).script);
@@ -506,8 +506,8 @@ contract Ledger {
     const withInternal = head([0, 1, 2, 3, 4]);
     const onlyInternal = head([4]);
     expect(narrow.equals(withStatic)).toBe(true);
-    // G0: a master that admits DELEGATE frames settles its own category on a delegate frame.
-    expect(four.equals(withStatic)).toBe(false);
+    // V8: the validator settles the context a delegate frame runs on, so admitting DELEGATE leaves the head as it is.
+    expect(four.equals(withStatic)).toBe(true);
     expect(withInternal.equals(four)).toBe(false);
     expect(onlyInternal.equals(four)).toBe(false);
   });

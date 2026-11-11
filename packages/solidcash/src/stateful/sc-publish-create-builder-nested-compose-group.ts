@@ -5,7 +5,7 @@
 import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { voidRecordUnread, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { OnChainState } from './StateReader.js';
 
 export type PublishCreateBuilderNestedComposeGroupParams = {
@@ -166,6 +166,8 @@ export function publishCreateBuilderNestedComposeGroup(
         ? (callee.inner.artifact.abi as readonly AbiFunction[])
           .find((fn: any) => fn.name === childFunctionName)?.blockLayout
         : selectedLayout)?.slots.some((slot: any) => slot.kind === 'returnEvent')
+        && !voidRecordUnread(nested, (callee.inner.artifact.abi as readonly AbiFunction[])
+          .find((fn: any) => fn.name === childFunctionName))
         && { returnEventInBlock: true }),
     }),
     ...(!proxyCallee && childPlannedEntryInserts.length > 0 && {

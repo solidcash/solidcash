@@ -15,8 +15,17 @@ import {
   p2pkhLockingBytecode,
 } from './legacy-job-event-wire.js';
 
+/** A mapping key as a caller names it. A JS number is an ethers-style integer index, as `factory.allPairs(2)` passes. */
+export type MappingKey = bigint | number | boolean | Uint8Array | string;
+
+/** The integer a JS number key names, refused when the number is not an exact integer. */
+export function integerKey(value: number): bigint {
+  if (!Number.isSafeInteger(value)) throw new Error(`mapping key ${value} is not a safe integer`);
+  return BigInt(value);
+}
+
 export function mappingKeySlotCandidates(
-  keys: Array<bigint | boolean | Uint8Array | string>,
+  keys: Array<MappingKey>,
   keyTypes?: readonly string[],
   collection?: Parameters<typeof keyToSlotMulti>[1],
 ): Uint8Array[] {
@@ -33,6 +42,9 @@ export function mappingKeySlotCandidates(
       } else encoded = utf8ToBin(arg);
     } else if (arg instanceof Uint8Array) encoded = arg;
     else if (typeof arg === 'bigint') encoded = bigIntToVmNumber(arg);
+    // An ethers-style caller names an index as a JS number (`factory.allPairs(2)`): it is that integer, not a
+    // truthy flag, which would read every key above 0 as key 1.
+    else if (typeof arg === 'number') encoded = bigIntToVmNumber(integerKey(arg));
     else encoded = bigIntToVmNumber(arg ? 1n : 0n);
 
     return keyType === 'address' && encoded.length === 20
@@ -61,13 +73,14 @@ export type MappingEntryLookup = {
 
 export function mappingEntryMatchesLegacyKeys(
   entry: MappingEntryLookup,
-  keys: Array<bigint | boolean | Uint8Array | string>,
+  keys: Array<MappingKey>,
 ): boolean {
   const entryKeys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
   if (entryKeys.length !== keys.length) return false;
   return entryKeys.every((stored, index) => {
     const arg = keys[index];
-    const supplied = typeof arg === 'string' ? new TextEncoder().encode(arg) : arg;
+    const supplied = typeof arg === 'string' ? new TextEncoder().encode(arg)
+      : typeof arg === 'number' ? integerKey(arg) : arg;
     if (stored instanceof Uint8Array) {
       return supplied instanceof Uint8Array && binsAreEqual(stored, supplied);
     }
@@ -78,7 +91,7 @@ export function mappingEntryMatchesLegacyKeys(
 /** Select a mapping entry deterministically: exact spelling first, compatibility aliases only as fallback. */
 export function selectMappingEntryByKeys<T extends MappingEntryLookup>(
   entries: readonly T[],
-  keys: Array<bigint | boolean | Uint8Array | string>,
+  keys: Array<MappingKey>,
   keyTypes?: readonly string[],
   collection?: Parameters<typeof keyToSlotMulti>[1],
 ): T | undefined {

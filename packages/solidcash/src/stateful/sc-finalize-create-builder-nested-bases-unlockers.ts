@@ -310,6 +310,23 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           }
           bReturningSlotIdx++;
         }
+      } else if (paramName.startsWith('__internal__loopTargetStride')) {
+        // A computed-target loop's occurrences are this caller's child groups. One occurrence's physical width is
+        // the width of the block the SDK composed for it (master + the state data NFTs the call reads); the next
+        // iteration's master starts that far past the previous one. The compiler cannot know a callee's private
+        // footprint, so it multiplies the loop index by this witness.
+        const witnessName = `__internal__loopTargets${paramName.slice('__internal__loopTargetStride'.length)}`;
+        const slot = (bAbiFunc?.externalCalls ?? []).findIndex((call) => call.loopArrayVar === witnessName);
+        const published = slot < 0 ? undefined : bAbiFunc?.externalCalls?.[slot];
+        const children = getChildGroupIndices().map((idx) => externalCallUtxoGroups[idx]);
+        const matching = published?.callsiteId === undefined ? []
+          : children.filter((child) => child.sourceCallsiteId === published.callsiteId);
+        const candidate = matching.find((child) => (child.blockInputs?.length ?? 0) > 0)
+          ?? matching[0] ?? children[0];
+        const physical = candidate?.sharedGroupIndex === undefined ? candidate
+          : externalCallUtxoGroups[candidate.sharedGroupIndex] ?? candidate;
+        bFinalArgs.push(physical === undefined ? 1n
+          : BigInt(physical.blockInputs ? physical.blockInputs.length : 1 + physical.dataNftUtxos.length));
       } else if (paramName.startsWith('__internal__externalCallSelector')) {
         // Resolve selector for child group's target function
         const children = getChildGroupIndices();

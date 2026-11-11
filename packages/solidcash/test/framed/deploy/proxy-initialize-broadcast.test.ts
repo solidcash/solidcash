@@ -33,7 +33,7 @@ const SHARED_STATE = ' address public implementation;'
   + ' uint public initialized;'
   + ' int public version;';
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ` contract Impl {${SHARED_STATE}`
   + '   function initialize(address expected) {'
   + '     require(msg.sender == expected);'
@@ -129,19 +129,22 @@ describe('a broadcast framed proxy initialization', () => {
     for (const txid of txids) expect(await network.getRawTransaction(txid)).toMatch(/^[0-9a-f]+$/);
 
     // Every convention participant, then the caller's own input, recreate in place, then the caller's change.
-    expect(hop.inputs.length).toBe(6);
-    expect(hop.outputs.length).toBe(6);
+    const { layout } = deployment.initialize.draft;
+    expect(hop.inputs.length).toBe(layout.participantCount + 1);
+    expect(hop.outputs.length).toBe(layout.participantCount + 1);
     // The hop places each participant on the outpoint its genesis actually created: the proxy's master, validator
     // and record come from the proxy's genesis, the implementation's master from the implementation's, and the
     // caller's own coin from the coin it funded.
-    const at = (index: number): string => binToHex(hop.inputs[index]!.outpointTransactionHash);
-    // The validator's facet sits at 2, so the record follows at 3; the facet is a standalone coin, not a genesis UTXO.
-    expect([at(0), at(1), at(3)]).toStrictEqual(
+    const at = (id: string): string => binToHex(hop.inputs[participant(layout, id).index]!.outpointTransactionHash);
+    expect([at('proxy-master'), at('validator'), at(proxyRecordParticipantId(0))]).toStrictEqual(
       [deployment.proxy.tx.txid, deployment.proxy.tx.txid, deployment.proxy.tx.txid]);
-    // The facet comes from the facet pool a genesis published, so its outpoint is one of the geneses'.
-    expect([deployment.proxy.tx.txid, deployment.implementation.tx.txid]).toContain(at(2));
-    expect(at(4)).toBe(deployment.implementation.tx.txid);
-    expect(at(5)).toBe(CALLER_TXID);
+    // The validator's two facets follow its head; each comes from the facet pool a genesis published, so its
+    // outpoint is one of the geneses'.
+    for (const facet of ['validator/1', 'validator/2']) {
+      expect([deployment.proxy.tx.txid, deployment.implementation.tx.txid]).toContain(at(facet));
+    }
+    expect(at('implementation-master')).toBe(deployment.implementation.tx.txid);
+    expect(binToHex(hop.inputs[layout.participantCount]!.outpointTransactionHash)).toBe(CALLER_TXID);
 
     // The machine still accepts the hop the deployment settled, on its real shape.
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);

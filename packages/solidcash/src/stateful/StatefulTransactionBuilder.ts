@@ -29,7 +29,9 @@ import { assertFinalizedTransactionCovenants } from '../message-bus/preflight.js
 import { parseEventCommitment } from './StateReader.js';
 import { eventContinuationLockingBytecode, joinEventContinuations } from './event-chunks.js';
 import { type Utxo, type UnlockableUtxo, type TransactionDetails, isContractUnlocker, type Unlocker } from '../interfaces.js';
-import { callRecordDigest, callRecordHashesResult, parseCallRecord } from './call-record.js';
+import {
+  CALL_RECORD_DIGEST_BYTES, callRecordCommitment, callRecordDigest, callRecordHashesResult, parseCallRecord,
+} from './call-record.js';
 import { isCallBatchMember } from './direct-call-batch.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
@@ -300,8 +302,8 @@ export {
 export {
   isPredOutReusableHole,
   reassertBatchPredecessorOutputsAtDeclaredSlots,
-  isOpReturnLockingBytecode,
-  redirectViewTailOffOpReturn,
+  isFillerLockingBytecode,
+  redirectViewTailOffFiller,
   moveTrailingOutputsBeforeValueChunkSuffix,
   moveLateOutputsBeforeReverseSuffix,
   hasEquivalentMutableNftOutput,
@@ -313,7 +315,7 @@ export {
   clearMutableCollectionOutputsOutsideAuthoritativeRun,
 } from './mutable-output-reassert.js';
 import {
-  isOpReturnLockingBytecode,
+  isFillerLockingBytecode,
   clearMutableCollectionOutputsOutsideAuthoritativeRun,
 } from './mutable-output-reassert.js';
 
@@ -576,6 +578,7 @@ import {
   getLoopEntryOutputIndex as getLoopEntryOutputIndexImpl,
   type GetLoopEntryOutputIndexHost,
 } from './stb-get-loop-entry-output-index.js';
+import type Signer from '../Signer.js';
 import { measureAndFundCovenantFee, type MeasureAndFundCovenantFeeHost } from './stb-measure-and-fund-covenant-fee.js';
 import { type ReassertSendFinalBuilderHost } from './stb-reassert-send-final-builder.js';
 import { type PlaceSendChangeAndSidecarHost } from './stb-place-send-change-and-sidecar.js';
@@ -760,6 +763,9 @@ import {
   type TokenContainerTransferNftData,
   type RuntimeLoopTransferOutput,
   type ExternalCallUtxoGroup,
+  calleeConsumedInputs,
+  calleeOutputSpan,
+  calleePinsNoRecord,
 } from './external-call-utxo-group.js';
 
 export {
@@ -850,6 +856,7 @@ export class StatefulTransactionBuilder {
   private satoshiContainerUtxo?: UnlockableUtxo;
   private satoshiContainerLockingBytecode?: Uint8Array;
   private containerDepositAmount: bigint = 0n;
+  private feeSigner?: Signer;
   private pendingTokenContainerDeposits: Map<string, bigint> = new Map();
   private pendingTokenContainerTransfers: TokenContainerTransferData[] = [];
   private pendingTokenContainerTransferNfts: TokenContainerTransferNftData[] = [];
@@ -893,6 +900,7 @@ export class StatefulTransactionBuilder {
   private lowLevelCallInputBase?: number;
   private compilerRouteDelegateBlock: boolean;
   private preserveBlockLayoutWidth: boolean;
+  private voidRecordSlotCompacted = false;
   private loopEntriesBeforeDynamicChunks: boolean;
   private iterationEntryInputs: UnlockableUtxo[];
   private iterationEntriesPlacedAtDelegateBase = false;
@@ -912,8 +920,7 @@ export class StatefulTransactionBuilder {
     const abiFunction = (this.masterUtxo?.unlocker as {
       abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
     })?.abiFunction;
-    return this.keccakLoopSideCars.length > 0
-      && (abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true);
+    return abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true;
   }
 
   private blockLayout?: FunctionBlockLayout;
@@ -963,7 +970,7 @@ export class StatefulTransactionBuilder {
   /**
    * Authenticated view-return commitments captured at place time. Pending return
    * events may be cleared before the final stamp, but unlock witnesses still
-   * need these values on non-OP_RETURN pads.
+   * need these values on non-filler pads.
    */
   private authenticatedViewReturnByGroup = new Map<number, { categoryId: string; commitment: string }>();
 
@@ -1266,8 +1273,10 @@ export class StatefulTransactionBuilder {
   private _padOutputsToIndex(builder: TransactionBuilder, index: number): void {
     // A consumed storage input (a written value's old chunk, a reclaimed continuation chunk) is not copied: its
     // replacement goes in the trailing band, and a copy here is a second chunk the covenant's count refuses.
-    const consumed = new Set([...this.dynamicChunkInputs, ...this.trailingDisposalInputs]
-      .map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
+    const consumed = new Set([
+      ...this.dynamicChunkInputs, ...this.trailingDisposalInputs,
+      ...this.externalCallUtxoGroups.flatMap(calleeConsumedInputs),
+    ].map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
     while (builder.outputs.length < index) {
       const occupant = this.allInputs[builder.outputs.length];
       if (occupant?.unlocker && !consumed.has(`${occupant.txid.toLowerCase()}:${occupant.vout}`)) {
@@ -1283,6 +1292,11 @@ export class StatefulTransactionBuilder {
   }
 
   /** Set the change address for funder excess (returned after fee deduction). */
+  /** The signer that pays the fee and any `.withValue()` amount when the provider cannot mint a funder. */
+  setFeeSigner(signer: Signer): void {
+    this.feeSigner = signer;
+  }
+
   setFunderChangeAddress(address: Uint8Array): void {
     this.funderChangeAddress = address;
   }
@@ -1566,6 +1580,7 @@ export class StatefulTransactionBuilder {
       applyDerivedValueChunks: (builder) => {
         this._applyDerivedValueChunks(builder);
       },
+      callRecordDigest: (identity: string) => this.callRecordDigestFor(identity),
     };
   }
 
@@ -1908,6 +1923,7 @@ export class StatefulTransactionBuilder {
       derivedChunkOutputs: this.derivedChunkOutputs,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       categoryId: this.categoryId,
+      composedParticipant: this.composedParticipant,
       builderOptions: this.builderOptions,
       messageBusConvention: this.messageBusConvention,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
@@ -2284,7 +2300,14 @@ export class StatefulTransactionBuilder {
       sidecarUtxo: this.sidecarUtxo,
       lateValueChunkOutputs: this.lateValueChunkOutputs,
       checkMinRelayFee: this._checkMinRelayFee,
+      feeSigner: this.feeSigner,
       accountingFunderUtxos: () => this._accountingFunderUtxos(),
+      adoptAccountingFunders: (funders) => {
+        const held = new Set(this.embeddedFunderUtxos.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));
+        for (const funder of funders) {
+          if (!held.has(`${funder.txid.toLowerCase()}:${funder.vout}`)) this.embeddedFunderUtxos.push(funder);
+        }
+      },
       computeMinFee: (size) => this.computeMinFee(size),
     };
   }
@@ -2910,6 +2933,7 @@ export class StatefulTransactionBuilder {
       get lowLevelCallInputBase() { return self.lowLevelCallInputBase; },
       get compilerRouteDelegateBlock() { return self.compilerRouteDelegateBlock; },
       get preserveBlockLayoutWidth() { return self.preserveBlockLayoutWidth; },
+      get voidRecordSlotCompacted() { return self.voidRecordSlotCompacted; },
       get externalIdentityAnchorUtxos() { return self.externalIdentityAnchorUtxos; },
       get logicalIdentityUtxo() { return self.logicalIdentityUtxo; },
       get loopEntriesBeforeDynamicChunks() { return self.loopEntriesBeforeDynamicChunks; },
@@ -3369,6 +3393,8 @@ export class StatefulTransactionBuilder {
 
   private _tagEmptyP2sh32ImmutablesAsScid(builder: TransactionBuilder): void {
     const eventDests = new Set(this._emitDestinationIndices());
+    // A token container keeps what it holds: an empty immutable NFT on one is a coin's, not an anchor.
+    const containerLocks = new Set([...this.tokenContainerLockingBytecodes.values()].map((lock) => binToHex(lock)));
     for (const [index, output] of builder.outputs.entries()) {
       if (eventDests.has(index)) continue;
       if (output.token?.nft?.capability !== 'none') continue;
@@ -3379,6 +3405,7 @@ export class StatefulTransactionBuilder {
         ? output.to
         : addressToLockScript(output.to);
       if (lock.length < 2 || lock[0] !== 0xaa || lock[1] !== 0x20) continue;
+      if (containerLocks.has(binToHex(lock))) continue;
       output.token = {
         ...output.token,
         nft: { capability: 'none', commitment: '53434944' },
@@ -3844,6 +3871,11 @@ export class StatefulTransactionBuilder {
   /** Keep async-planned disposable inputs out of layout until a dynamic band actually needs them. */
   setRelocationFunderUtxos(funders: UnlockableUtxo[]): void {
     this.relocationFunderUtxos = [...funders];
+  }
+
+  /** A void entry's call names no record: input assembly leaves its returnEvent slot empty. */
+  setVoidRecordSlotCompacted(compacted: boolean): void {
+    this.voidRecordSlotCompacted = compacted;
   }
 
   /** Neutral pads the legacy delegate insert band can take; see `insertBandPadDemand`. */
@@ -4759,7 +4791,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * Runtime-loop value chunks occupy the region immediately before one terminal suffix output. The builder
-   * guarantees that suffix is either the required external-library sidecar recreation or a zero-value OP_RETURN
+   * guarantees that suffix is either the required external-library sidecar recreation or a filler
    * anchor, and inserts fee change before this region.
    */
   addLateValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
@@ -5109,7 +5141,7 @@ export class StatefulTransactionBuilder {
   }
 
   /**
-   * Probe-local: if a ReturnOutputIdx on this builder's unlockers names OP_RETURN (or was
+   * Probe-local: if a ReturnOutputIdx on this builder's unlockers names the filler (or was
    * shifted by a late-suffix insert onto the separator), bump the param to the next pad and
    * re-encode via syncEncodedArgsFromParams. Does not mutate persistent carrier state.
    */
@@ -5127,7 +5159,7 @@ export class StatefulTransactionBuilder {
       while (host >= builder.outputs.length) {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
       }
-      while (isOpReturnLockingBytecode(lockAt(host))) {
+      while (isFillerLockingBytecode(lockAt(host))) {
         host += 1;
         while (host >= builder.outputs.length) {
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 800n });
@@ -5159,7 +5191,7 @@ export class StatefulTransactionBuilder {
         let index: number = original;
         if (/ReturnOutputIdx/i.test(name)) {
           if (original >= builder.outputs.length) continue;
-          if (isOpReturnLockingBytecode(lockAt(index))) {
+          if (isFillerLockingBytecode(lockAt(index))) {
             index = nextHost(index);
           } else if (
             options.insertAt !== undefined
@@ -5431,12 +5463,24 @@ export class StatefulTransactionBuilder {
         return undefined;
       }
     };
+    // A raw low-level call reads the callee's `bytes` returndata, and a void function with no record
+    // returns none: the caller reads that from the absence of one. Seeding a placeholder carrier would both
+    // give it a byte to ABI-decode and make the callee refuse an unpinned record of its own category.
+    const emptyReturn = (group: ExternalCallUtxoGroup, identity?: string): Uint8Array => {
+      if (!calleePinsNoRecord(group)) return new Uint8Array([0]);
+      // The direct reader always strips a 31-byte call-record digest (it only skips the comparison for a raw
+      // selector), so a void callee's empty returndata is carried as a record whose field is empty. A zero digest
+      // is never compared; a real one (when the callee pins a record) is re-wrapped on materialization.
+      return callRecordCommitment(new Uint8Array(),
+        this.callRecordDigestFor(identity ?? '') ?? new Uint8Array(CALL_RECORD_DIGEST_BYTES));
+    };
     const initialized = new Set<number>();
     for (const [groupIdx, group] of this.externalCallUtxoGroups.entries()) {
       const returns = returning[groupIdx]?.hasReturnValues === true
         || group.precomputedReturnCommitment !== undefined
         || (group.loopReturnCommitments?.length ?? 0) > 0;
-      if (!returns || isCallBatchMember(group, groupIdx)) continue;
+      // A callee that pins no record gets none, whatever its caller's slot declares.
+      if (!returns || calleePinsNoRecord(group) || isCallBatchMember(group, groupIdx)) continue;
       const physicalGroupIdx = group.sharedGroupIndex ?? groupIdx;
       if (initialized.has(physicalGroupIdx)) continue;
       initialized.add(physicalGroupIdx);
@@ -5452,7 +5496,7 @@ export class StatefulTransactionBuilder {
       const physical = this.externalCallUtxoGroups[physicalGroupIdx];
       const complete = family.every(({ candidate }) => candidate.precomputedReturnCommitment !== undefined);
       const fallback = physical.precomputedReturnCommitment
-        ?? typedArrayPlaceholder(physical) ?? new Uint8Array([0]);
+        ?? typedArrayPlaceholder(physical) ?? emptyReturn(physical, `external-call:${physicalGroupIdx}`);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_RETURN === '1') {
         console.error('seed-precomputed-returns', {
@@ -5468,7 +5512,8 @@ export class StatefulTransactionBuilder {
             loopWidth: candidate.loopReturnCommitments?.length,
             parts: (candidate.loopReturnCommitments?.length
               ? candidate.loopReturnCommitments
-              : [candidate.precomputedReturnCommitment ?? typedArrayPlaceholder(candidate) ?? fallback]
+              : [candidate.precomputedReturnCommitment
+                ?? typedArrayPlaceholder(candidate) ?? emptyReturn(candidate, `external-call:${candidateIdx}`)]
             ).map((part) => ({
               bytes: part.length,
               hasDigital: binToHex(part).includes('44494749'),
@@ -5480,14 +5525,17 @@ export class StatefulTransactionBuilder {
       for (const { candidate, candidateIdx } of family) {
         const parts = candidate.loopReturnCommitments?.length
           ? candidate.loopReturnCommitments
-          : [candidate.precomputedReturnCommitment ?? typedArrayPlaceholder(candidate) ?? fallback];
+          : [candidate.precomputedReturnCommitment
+            ?? typedArrayPlaceholder(candidate) ?? emptyReturn(candidate, `external-call:${candidateIdx}`)];
         for (const [partIndex, part] of parts.entries()) {
           this.setReturnEventOutput(
             physical.categoryId,
             part,
             `external-call:${candidateIdx}:${partIndex}`,
+            // A void callee's empty returndata is exact, not a provisional guess.
             candidate.precomputedReturnCommitment === undefined
-              && !(candidate.loopReturnCommitments?.length),
+              && !(candidate.loopReturnCommitments?.length)
+              && !calleePinsNoRecord(candidate),
           );
         }
       }
@@ -5817,8 +5865,8 @@ export class StatefulTransactionBuilder {
     // different: their authenticated trailing indices begin after the complete fixed block, so they keep the
     // inactive slot and the padding pass below materializes it before the effect stream.
     const hasReturnEventSlot = this.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
-    if (this.blockLayout?.trailingBase === undefined
-      && hasReturnEventSlot && this.pendingReturnEventOutputs.length === 0
+    if (this.blockLayout?.trailingBase === undefined && !this.keccakSideCarsFollowBlock
+      && hasReturnEventSlot && (this.pendingReturnEventOutputs.length === 0 || this._voidRecordSlotIsAbsent())
       && this.runtimeLoopEventOutputs.length === 0 && this.runtimeLoopTransferOutputs.length === 0) base -= 1;
     // build() preserves low-level-call UTXOs before the trailing dynamic region.
     // Delegate bytecode likewise anchors trailing storage after its own co-spent
@@ -5869,6 +5917,21 @@ export class StatefulTransactionBuilder {
       + (this.loopEntriesBeforeDynamicChunks ? this._trailingLoopEntryOutputCount() : 0)
       + this.runtimeLoopEventOutputs.length
       + this.runtimeLoopTransferOutputs.length;
+  }
+
+  /**
+   * Whether a direct void entry's return slot, its call record, is absent beside its callees' pending records: no
+   * record of its own runs and no funder holds the coordinate, so the first callee block starts there.
+   */
+  private _voidRecordSlotIsAbsent(): boolean {
+    const master = this.masterUtxo.unlocker;
+    if (!isContractUnlocker(master) || (master.abiFunction.outputs?.length ?? 0) > 0
+      || this.lowLevelCallUtxoGroups.length > 0 || this.externalOutStateUtxoGroups.length > 0) return false;
+    if ((returnOutputIdxFromUnlocker(master) ?? -1) >= 0
+      || this.pendingReturnEventOutputs.some(({ identity }) => !identity.startsWith('external-call:'))) return false;
+    const offset = this.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent')?.offset;
+    const holder = offset === undefined ? undefined : this.allInputs[offset];
+    return !this.funderUtxos.some((funder) => funder.txid === holder?.txid && funder.vout === holder?.vout);
   }
 
   private _dynamicChunkOutputCount(): number {
@@ -6302,7 +6365,7 @@ export class StatefulTransactionBuilder {
         // recreations occupy those compacted coordinates, matching the delegate path's mapPredToCompactedOutput.
         const returnEventOffset = this.blockLayout?.slots
           .find((slot) => slot.kind === 'returnEvent')?.offset;
-        const compact = this._unmaterializedReturnEventCompact(this.blockLayout);
+        const compact = this.keccakSideCarsFollowBlock ? 0 : this._unmaterializedReturnEventCompact(this.blockLayout);
         const base = firstPredecessor - writtenChunksBefore;
         return compact > 0 && base > (returnEventOffset ?? 0) ? base - compact : base;
       }
@@ -6498,8 +6561,7 @@ export class StatefulTransactionBuilder {
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
       if (g.sharedGroupIndex !== undefined) continue;
-      // Use full block size when available
-      base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      base += calleeOutputSpan(g);
       // A proxied participant's implementation output follows that participant block in both the legacy and
       // compiler-route layouts. Compiler routes move the implementation INPUT into a leading band, but their
       // outputs remain interleaved; omitting it makes every later participant output base one slot too low.
@@ -6699,6 +6761,7 @@ export class StatefulTransactionBuilder {
     appendCallerEdges({
       categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, result);
     return result;
@@ -6813,7 +6876,8 @@ export class StatefulTransactionBuilder {
       .reduce((sum, t) => sum + t.amount, 0n)
       + this.runtimeLoopTransferOutputs
         .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
-        .reduce((sum, transfer) => sum + transfer.amount, 0n);
+        .reduce((sum, transfer) => sum + transfer.amount, 0n)
+      + BigInt(this.blockLayout?.minerFee ?? 0);
     return total >= this.satoshiContainerUtxo.satoshis + this.containerDepositAmount;
   }
 
@@ -7209,7 +7273,7 @@ export class StatefulTransactionBuilder {
    * The satoshi container output is placed after entries, before transfers.
    */
   getSatoshiContainerOutputIndex(): number {
-    // With OP_RETURN placeholders for drained containers, the output always
+    // With fillers for drained containers, the output always
     // exists at the block layout position (even when drained).
     const layoutOffset = this.getBlockSlotOffset('satoshiContainer');
     if (layoutOffset !== undefined) return layoutOffset;
@@ -7390,6 +7454,7 @@ export class StatefulTransactionBuilder {
     appendCallerEdges({
       categoryId: this.categoryId,
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, finalBuilder);
 

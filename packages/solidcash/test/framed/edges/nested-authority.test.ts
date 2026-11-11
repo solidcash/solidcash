@@ -19,7 +19,7 @@ const CAL_ADDRESS = seededAddress('nested authority cal');
 
 /** Compiles a Caller -> Cal composition whose callee entry is guarded by `guard`, and settles it. */
 function settleGuard(guard: string): ReturnType<typeof composeAndDerive> {
-  const source = 'pragma solidcash ^0.14.0;'
+  const source = 'pragma solidcash ^0.50.0;'
     + ' interface ICal { function check(); }'
     + ` contract Cal { function check() { ${guard} require(true); } }`
     + ' contract Caller { function start() {'
@@ -59,8 +59,8 @@ function settleGuard(guard: string): ReturnType<typeof composeAndDerive> {
       { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
       { contract: 'Cal', masters: ['cal-1'], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: [{ id: 'user', index: 4 }],
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: [{ id: 'user', index: 5 }],
     masters: [callerMaster, calMaster],
     inputs: {
       'caller-1': { source: { lockingBytecode: caller.lockingBytecode, valueSatoshis: 20_000n, token: token(caller.category, 'minting') } },

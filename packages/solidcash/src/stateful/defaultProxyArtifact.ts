@@ -118,7 +118,7 @@ export const defaultProxyArtifact: Artifact = {
   },
   "compiler": {
     "name": "solidc",
-    "version": "0.14.0-beta.1",
+    "version": "0.50.0",
     "options": {
       "enforceFunctionParameterTypes": true,
       "enforceLocktimeGuard": true,

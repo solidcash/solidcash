@@ -384,7 +384,7 @@ export async function assembleAtomicComposition(
     participant: number; variable: string; resolved: number; total: number;
   }> = [];
   const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
-  // Block-oracle lock -> the one aggregate input every reader slices (see compose-block-oracle.ts).
+  // Oracle pool -> the one aggregate input every reader of it slices (see compose-block-oracle.ts).
   const keptBlockOracleInputs = new Map<string, number>();
   const registerAggregateInput = (
     input: Pick<Utxo, 'txid' | 'vout'>, participant: number, localIndex: number, role: string,

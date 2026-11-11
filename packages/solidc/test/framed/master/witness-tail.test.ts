@@ -19,9 +19,11 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './val
  * The variable-length tail of a witness block, walked by a master.
  *
  * After the frame fields and the call records, the block carries a segment, an event and a send section. The
- * master's head requires the counts the entry fixes, checks the shape of every record entry, checks that each
+ * master's head requires the counts the entry fixes, steps over each segment by its length, checks that each
  * listed event output carries the contract's category with no capability, leaves each listed send's output index
- * for the body that computed the send, and requires nothing to follow the last field. This file drives a compiled
+ * for the body that computed the send, and requires nothing to follow the padding. A record entry's shape is held
+ * where the records are settled: by the validator of a covered frame, and by a standalone frame's own walk.
+ * This file drives a compiled
  * head through the BCH-2026 virtual machine so the machine's own verdict is the assertion, and pairs every refusal
  * with the shape it does not touch, so the refusal is the check under test rather than a malformed block.
  *
@@ -134,22 +136,28 @@ function encodeBlockWithSegmentCount(block: WitnessBlock, segmentCount: number):
     })
     .pushUint16(segmentCount);
   for (const segment of block.segments) {
-    writer.pushCounted16(segment, (entries, entry) => {
+    // Each segment leads with its length; each record with both views' lengths, its views written in full.
+    writer.pushLp16(new ByteWriter().pushCounted16(segment, (entries, entry) => {
       entries.pushUint16(entry.in)
         .pushUint16(entry.out)
-        .pushLp32(entry.viewIn)
-        .pushLp32(entry.viewOut);
-    });
+        .pushUint16(entry.viewIn.length)
+        .pushUint16(entry.viewOut.length)
+        .pushBytes(entry.viewIn)
+        .pushBytes(entry.viewOut);
+    }).finish());
   }
   return writer
     .pushCounted16(block.events, (out, output) => { out.pushUint16(output); })
     .pushCounted16(block.sends, (out, output) => { out.pushUint16(output); })
     .pushCounted16(block.values ?? [], (out, value) => { out.pushLp32(value); })
+    .pushLp16(new Uint8Array(0))
     .finish();
 }
 
 interface Execution {
   readonly tail: MasterTailShape;
+  /** True when the master settles its own records standing alone, which is where a record's shape is held. */
+  readonly settlesOwnRecords?: boolean;
   readonly block: WitnessBlock;
   /** The outputs after the master's own recreation at index 0. */
   readonly outputs: readonly VmOutput[];
@@ -159,7 +167,9 @@ interface Execution {
 
 /** Evaluates the master's own input and returns the machine's verdict. */
 function verdict(execution: Execution): { accepted: boolean; objection?: string } {
-  const { program, lock } = masterProgram({ blockOnTop: true, tail: execution.tail });
+  const { program, lock } = masterProgram({
+    blockOnTop: true, tail: execution.tail, ...(execution.settlesOwnRecords === true ? { settlesOwnRecords: true } : {}),
+  });
   const blockBytes = execution.blockBytes ?? encodeWitnessBlock(execution.block);
   const masterValue = MASTER_VALUE;
   const masterOutput: VmOutput = { lockingBytecode: lock, valueSatoshis: masterValue, token: token(CATEGORY, 'minting') };
@@ -385,49 +395,39 @@ describe('a master whose tail carries a segment section', () => {
     expect(verdict({ tail: NO_EVENTS, block, outputs: [] }).accepted).toBe(true);
   });
 
-  it('is refused when a record names an index the transaction does not have', () => {
-    // Two inputs and one output: 2 names neither, and 0x8001 reads as -1. Settlement visits neither.
-    for (const index of [2, 0x8001]) {
-      const shapes: [number, number][] = [[index, 0xffff], [0xffff, index], [index, index]];
-      for (const [inIndex, outIndex] of shapes) {
-        const block = baseBlock({
-          segments: [[{ in: inIndex, out: outIndex, viewIn: new Uint8Array([1]), viewOut: new Uint8Array([1]) }]],
-        });
-        expect(verdict({ tail: NO_EVENTS, block, outputs: [] }).accepted, `${inIndex} ${outIndex}`).toBe(false);
-      }
+  it('leaves a record that names an index the transaction does not have to the settlement, which refuses it', () => {
+    // Two inputs and one output: 2 names neither. The head steps over a segment by its length and reads no record:
+    // a covered frame's records are its validator's to hold to the codec and settle (V2, V7), and a standalone
+    // frame's are its own settlement walk's, whose table holds an entry per index the transaction has.
+    const shapes: [number, number][] = [[2, 0xffff], [0xffff, 2], [2, 2]];
+    for (const [inIndex, outIndex] of shapes) {
+      const block = baseBlock({
+        segments: [[{ in: inIndex, out: outIndex, viewIn: new Uint8Array([1]), viewOut: new Uint8Array([1]) }]],
+      });
+      expect(verdict({ tail: NO_EVENTS, block, outputs: [] }).accepted, `${inIndex} ${outIndex}`).toBe(true);
+      expect(verdict({ tail: NO_EVENTS, block, outputs: [], settlesOwnRecords: true }).accepted, `${inIndex} ${outIndex}`)
+        .toBe(false);
     }
   });
 
-  it('is refused when a kept record moves its index', () => {
-    // The published codec refuses to encode this entry, so the bytes are written as declared: the master's own
-    // shape check is what is under test.
+  it('is refused when a kept record moves its index, by the settlement that holds its shape', () => {
+    // The published codec refuses to encode this entry, so the bytes are written as declared: the head reads no
+    // record, and the standalone settlement's shape check is what is under test.
     const block = baseBlock({
       segments: [[{ in: MASTER_INDEX, out: USER_INDEX, viewIn: new Uint8Array(0), viewOut: new Uint8Array(0) }]],
     });
-    expect(verdict({
-      tail: { segmentRecordCounts: [1], maxEventCount: 0, sendCount: 0 },
-      block,
-      blockBytes: encodeBlockWithSegmentCount(block, 1),
-      outputs: [],
-    }).accepted).toBe(false);
-    expect(verdict({
-      tail: NO_EVENTS,
-      block,
-      blockBytes: encodeBlockWithSegmentCount(block, 1),
-      outputs: [],
-    }).accepted).toBe(false);
+    const blockBytes = encodeBlockWithSegmentCount(block, 1);
+    expect(verdict({ tail: NO_EVENTS, block, blockBytes, outputs: [] }).accepted).toBe(true);
+    expect(verdict({ tail: NO_EVENTS, block, blockBytes, outputs: [], settlesOwnRecords: true }).accepted).toBe(false);
   });
 
-  it('is refused when a record is created and deleted by the same segment', () => {
+  it('is refused when a record is created and deleted by the same segment, by the settlement that holds its shape', () => {
     const block = baseBlock({
       segments: [[{ in: 0xffff, out: 0xffff, viewIn: new Uint8Array(0), viewOut: new Uint8Array(0) }]],
     });
-    expect(verdict({
-      tail: NO_EVENTS,
-      block,
-      blockBytes: encodeBlockWithSegmentCount(block, 1),
-      outputs: [],
-    }).accepted).toBe(false);
+    const blockBytes = encodeBlockWithSegmentCount(block, 1);
+    expect(verdict({ tail: NO_EVENTS, block, blockBytes, outputs: [] }).accepted).toBe(true);
+    expect(verdict({ tail: NO_EVENTS, block, blockBytes, outputs: [], settlesOwnRecords: true }).accepted).toBe(false);
   });
 
   it('is refused when the segment count is not the call count plus one', () => {

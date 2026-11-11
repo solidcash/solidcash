@@ -40,6 +40,12 @@ contract AddressBook() {
   function poke() { require(true); }
 }`;
 
+const INDEX_SRC = `pragma solidcash >=0.8.0;
+contract Registry() {
+  mapping(int => bigint) public byIndex;
+  function poke() { require(true); }
+}`;
+
 interface EntrySpec { collection: string; commitment: string; }
 
 async function setupWithEntries(
@@ -197,5 +203,29 @@ describe('Solidity-getter sugar (sc.<name>() / sc.<mapping>(key))', () => {
     expect(() => selectMappingEntryByKeys(
       [partiallyWrapped, wrappedPair], [alicePkh, bobPkh], ['address', 'address'],
     )).toThrow(/multiple entries for compatibility key aliases/);
+  });
+
+  // UniswapV2Factory's `allPairs(index)`: an ethers-style caller names the index as a JS number. Read as a truthy
+  // flag, every index above 0 named key 1, so the third pair read as the second.
+  it('reads a uint-keyed mapping at a JS number index as that integer', async () => {
+    const indexArtifact = compileString(INDEX_SRC);
+    const indexLayout = indexArtifact.stateLayout!;
+    const provider = createTestProvider();
+    const contract = new Contract(indexArtifact, [], { provider });
+    const byIndex = indexLayout.collections!.find((collection) => collection.name === 'byIndex')!;
+    const zero = slotValueToBytes(0n);
+    const categoryId = await setupWithEntries(provider, contract, indexLayout, {}, [0n, 1n, 2n, 3n].map((key) => ({
+      collection: byIndex.signature,
+      commitment: binToHex(encodeEntryCommitment(
+        keyToSlotMulti([bigIntToVmNumber(key)]), zero, bigIntToVmNumber(10n + key),
+      )),
+    })));
+    const sc = StatefulContract.withCategory(contract, categoryId) as any;
+
+    for (const index of [0, 1, 2, 3]) {
+      expect(BigInt(await sc.byIndex(index))).toBe(10n + BigInt(index));
+      expect(BigInt(await sc.byIndex(BigInt(index)))).toBe(10n + BigInt(index));
+    }
+    await expect(sc.byIndex(1.5)).rejects.toThrow(/not a safe integer/);
   });
 });

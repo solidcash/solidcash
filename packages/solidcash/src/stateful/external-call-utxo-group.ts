@@ -263,6 +263,10 @@ export interface ExternalCallUtxoGroup {
   /** F1: the external-call slot index, within the caller named by edgeParentIndex, that this call occupies - i.e.
    * which `__internal__callEdgeOutputIdx<slot>` witness on the caller the edge for this call is pinned at. */
   edgeEcSlot?: number;
+  /** F1: the low-level group whose delegated implementation makes this call and so holds its edge witness. */
+  edgeDelegateGroupIndex?: number;
+  /** F1: this low-level group answers call `i` of the entry, whose `__internal__lowLevelCallEdgeOutputIdx<i>` it fills. */
+  edgeLowLevelCallIndex?: number;
   /** One reached call of a direct multi-call (direct-call-batch.ts): the frame its record answers. */
   callBatchUnit?: DirectCallBatchUnit;
   /** The unit spending the callee master through its multi-call entry: the frames that spend runs. */
@@ -433,4 +437,61 @@ export interface ExternalCallUtxoGroup {
   dynamicChunkResources?: Array<{
     blockSlot: number; name: string; type: string; write: boolean;
   }>;
+}
+
+/**
+ * Whether an ordinary callee's unlocker publishes its dynamic run's output coordinate. The covenant then follows the
+ * witness, so the run need not follow the callee's block.
+ */
+export function calleeWitnessesDynamicRun(group: ExternalCallUtxoGroup): boolean {
+  return group.compilerRoute === undefined && group.callBatch === undefined
+    && group.delegateCallGroupIndex === undefined
+    && group.internalArgNames?.includes('__internal__dynamicChunkOutputBase') === true;
+}
+
+/** Outputs a callee block spans up to the next one, whose master keeps its input index past the old chunks. */
+export function calleeOutputSpan(group: ExternalCallUtxoGroup): number {
+  return (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
+    + (group.ordinaryDynamicChunkInputs?.length ?? 0);
+}
+
+/**
+ * A callee's loop entry inputs. Each is replaced in the run the callee's covenant pins, which a compacted record
+ * moves off its input coordinate, so none is ever mirrored at its own index.
+ */
+function calleeLoopEntryInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
+  return group.entryLoopStart === undefined ? [] : group.blockInputs?.slice(group.entryLoopStart) ?? [];
+}
+
+/**
+ * A void callee settles the universal record only for a caller that reads one: any other run names none (witness -1),
+ * so no carrier is planned and its reserved slot stays a balancing pad.
+ */
+export function voidRecordUnread(
+  call: { hasReturnValues?: boolean },
+  callee: { inputs: readonly { name: string }[]; outputs?: readonly unknown[] } | undefined,
+): boolean {
+  return call.hasReturnValues !== true && (callee?.outputs?.length ?? 0) === 0
+    && callee?.inputs.some((input) => input.name === '__internal__returnOutputIdx') === true;
+}
+
+/** A callee's inputs no output mirrors: the old chunks its write consumes and its loop entries. */
+export function calleeConsumedInputs(group: ExternalCallUtxoGroup): readonly UnlockableUtxo[] {
+  return [...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo), ...calleeLoopEntryInputs(group)];
+}
+
+/**
+ * Whether the group's logical callee pins no call record. A raw low-level call's slot always declares returndata
+ * (`bool success, bytes data`), so the *callee* ABI decides whether a record for it can exist. A void entry that
+ * takes `__internal__returnOutputIdx` settles the universal void record (fix B); any other void entry pins no
+ * carrier, and the caller reads its (empty) returndata from the absence of one.
+ */
+export function calleePinsNoRecord(group: ExternalCallUtxoGroup): boolean {
+  const artifact = (group.logicalArtifact
+    ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
+  if (artifact === undefined) return false;
+  const functionName = group.logicalFunctionName ?? group.functionName;
+  return artifact.abi.some((candidate) => candidate.name === functionName
+    && (candidate.outputs?.length ?? 0) === 0
+    && !candidate.inputs.some((input) => input.name === '__internal__returnOutputIdx'));
 }

@@ -4,19 +4,21 @@
  * discovery, bases/unlockers, direct-call arg witnesses, and outState reads.
  */
 
-import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   encodePushdataValue,
   parseChunkCommitment,
   type AbiFunction,
-  type Artifact,
   type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { assertCallSelectorScheme } from './call-record.js';
+import { calleeOutputSpan, calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
@@ -26,8 +28,12 @@ import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { sortedAddressPairPacked } from './solidityAbi.js';
 import { ensureOrdinarySelfIdentityBand } from './ordinary-self-identity.js';
-import { findDeploymentByAddressValue } from './deployment-registry.js';
+import {
+  findDeploymentByAddress, findDeploymentByAddressValue, isCreate2ProjectedAddressValue, listDeployments,
+  registeredExecutionLockingBytecode,
+} from './deployment-registry.js';
 import {
   deriveValueChunkProducerChildPath,
   type ValueChunkProducerPathDisposition,
@@ -53,6 +59,7 @@ import {
 import {
   discoverCreateBuilderTransitiveExternalCalls as discoverCreateBuilderTransitiveExternalCallsImpl,
 } from './sc-discover-create-builder-transitive-external-calls.js';
+import { buildSharedMethodExternalBatch } from './sc-build-shared-method-external-batch.js';
 import {
   finalizeCreateBuilderNestedBasesUnlockers as finalizeCreateBuilderNestedBasesUnlockersImpl,
 } from './sc-finalize-create-builder-nested-bases-unlockers.js';
@@ -67,14 +74,12 @@ const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYT
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
 
 /**
- * A raw call into a function that returns nothing answers with no record (D50), so its group plans no carrier and
- * the caller's return witness stays -1, as late expansion plans it.
+ * A raw call into a function that pins no record (D50) plans no carrier, so the caller's return witness stays -1,
+ * as late expansion plans it.
  */
 function directGroupEcSlot(ec: ExternalCallAbi, group: ExternalCallUtxoGroup | undefined): ExternalCallAbi {
   if (ec.interfaceName !== '__raw__' || !ec.hasReturnValues || !group || group.compilerRoute) return ec;
-  const artifact = (group.logicalArtifact ?? group.externalContract?.inner?.artifact) as Artifact | undefined;
-  const selected = artifact?.abi.find((entry) => entry.name === (group.logicalFunctionName ?? group.functionName));
-  return selected !== undefined && (selected.outputs?.length ?? 0) === 0 ? { ...ec, hasReturnValues: false } : ec;
+  return calleePinsNoRecord(group) ? { ...ec, hasReturnValues: false } : ec;
 }
 
 export type OrchestrateCreateBuilderExternalCallsHost = {
@@ -156,6 +161,9 @@ export async function orchestrateCreateBuilderExternalCalls(
     [key: string]: any;
   },
 ): Promise<OrchestrateCreateBuilderExternalCallsResult> {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+    console.error('extcall-enter', JSON.stringify({ name: params.abiFunction?.name, calls: (params.abiFunction as any)?.externalCalls?.length }));
+  }
   let {
     finalArgs,
     outStateInputCount,
@@ -263,6 +271,132 @@ export async function orchestrateCreateBuilderExternalCalls(
     categoryId: string;
   }[] = [];
 
+  // A computed loop target (`IFoo(pairFor(.., path[i], ..)).m()`) is rewritten by the compiler to a synthesized
+  // `__internal__loopTargets<n>[i]` witness the SDK fills from the interface's registered instances. A legacy
+  // caller (an original EVM test, a plain `getContractAt` user) never calls registerExternalArray, so without a
+  // fallback the witness stays empty and every reached iteration fails its bounds check with an opaque
+  // `OP_VERIFY`. Derive the candidates from the computed shape itself: a factory-created pair's CREATE2 salt is
+  // `keccak256(sort(tokenA, tokenB))`, so each adjacent pair of the loop's source array names exactly one child.
+  // Selecting by salt (rather than "every pair ever deployed") keeps a session with several factories and pairs
+  // from silently feeding a later test's loop with an earlier test's pairs.
+  // The loop's source array: the iteration domain's continue condition measures the forwarded `path`. Fall back to
+  // the only `address[]` input when the domain is elided.
+  const forwardedParams = new Set<number>();
+  const collectForwardedParams = (value: unknown, depth = 0): void => {
+    if (depth > 8 || !value || typeof value !== 'object') return;
+    const record = value as { kind?: unknown; paramIndex?: unknown; [key: string]: unknown };
+    if (record.kind === 'forward' && typeof record.paramIndex === 'number') {
+      forwardedParams.add(record.paramIndex);
+    }
+    for (const [key, child] of Object.entries(record)) {
+      if (key === 'kind') continue;
+      if (Array.isArray(child)) child.forEach((entry) => collectForwardedParams(entry, depth + 1));
+      else if (child && typeof child === 'object') collectForwardedParams(child, depth + 1);
+    }
+  };
+  const addressArrayInputs = (abiFunction?.inputs ?? [])
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => String(input.type).replace(/\s/gu, '').startsWith('address[]'));
+  for (const loopSlot of abiFunction?.externalCalls ?? []) {
+    if (!loopSlot.loopArrayVar?.startsWith('__internal__loopTargets')
+      || host.inner.getExternalTargetEntriesByInterface(loopSlot.interfaceName).length > 0) continue;
+    const iface = host.inner.artifact?.externalInterfaces?.find(
+      (entry: { name?: string }) => entry.name === loopSlot.interfaceName,
+    );
+    const required = new Set<string>((iface?.abi ?? [])
+      .map((fn: { selector?: string }) => fn.selector)
+      .filter((selector: string | undefined): selector is string => typeof selector === 'string'));
+    if (required.size === 0) continue;
+    const implementsInterface = (deployment: (ReturnType<typeof listDeployments>)[number]): boolean => {
+      const instance = deployment.contract as {
+        inner?: { artifact?: { abi?: Array<{ selector?: string }> } };
+      } | undefined;
+      const available = new Set((instance?.inner?.artifact?.abi ?? [])
+        .map((fn) => fn.selector)
+        .filter((selector): selector is string => typeof selector === 'string'));
+      return [...required].every((selector) => available.has(selector));
+    };
+    const deployments = listDeployments(host.inner.provider)
+      .filter((deployment) => deployment.parentAddress !== undefined && implementsInterface(deployment));
+
+    // Adjacent pairs of the source array, in path order, are the order the compiler indexes the witness by.
+    forwardedParams.clear();
+    collectForwardedParams(loopSlot.iterationDomain);
+    const sourceInput = addressArrayInputs.find(({ index }) => forwardedParams.has(index))
+      ?? (addressArrayInputs.length === 1 ? addressArrayInputs[0] : undefined);
+    const sourceValues = sourceInput === undefined ? undefined : args?.[sourceInput.index];
+    const nativeLock = (value: unknown): Uint8Array | undefined => {
+      if (value instanceof Uint8Array) return value;
+      if (typeof value !== 'string') return undefined;
+      // A Solidity `address` argument minted from a contract handle names that deployment's LOGICAL identity. The
+      // factory hashed the callee's execution lock when it salted the child (the scalar address encoder resolves
+      // the handle the same way), so use the registered execution lock here rather than the identity lock the
+      // cashaddr string spells.
+      const deployment = findDeploymentByAddress(host.inner.provider, value);
+      const execution = deployment === undefined ? undefined : registeredExecutionLockingBytecode(deployment);
+      if (execution !== undefined) return hexToBin(execution.replace(/^0x/iu, ''));
+      try {
+        return /^(bchtest|bitcoincash|bchreg|chipnet):/iu.test(value)
+          ? addressToLockScript(value) : hexToBin(value.replace(/^0x/iu, ''));
+      } catch {
+        return undefined;
+      }
+    };
+    const pairSaltSets: Set<string>[] | undefined = (() => {
+      if (!Array.isArray(sourceValues) || sourceValues.length < 2) return undefined;
+      const locks = sourceValues.map(nativeLock);
+      if (locks.some((lock) => lock === undefined)) return undefined;
+      const sets: Set<string>[] = [];
+      for (let index = 0; index + 1 < locks.length; index += 1) {
+        const left = locks[index]!;
+        const right = locks[index + 1]!;
+        const salts = new Set<string>();
+        // `createPair` salts `keccak256(abi.encodePacked(token0, token1))`. The covenant sorts the native
+        // addresses and packs them by the factory artifact's address form; try both forms so this resolution does
+        // not have to guess which factory variant deployed the child.
+        for (const hashAddresses of [true, false]) {
+          const packed = sortedAddressPairPacked(left, right, hashAddresses);
+          if (packed !== undefined) salts.add(binToHex(keccak_256(packed)));
+        }
+        sets.push(salts);
+      }
+      return sets;
+    })();
+
+    const bySalt = new Map<string, (typeof deployments)[number]>();
+    for (const deployment of deployments) {
+      const salt = deployment.salt?.replace(/^0x/iu, '').toLowerCase();
+      if (salt !== undefined) bySalt.set(salt, deployment);
+    }
+    const ordered = pairSaltSets?.map((salts) => {
+      for (const salt of salts) {
+        const deployment = bySalt.get(salt);
+        if (deployment !== undefined) return deployment;
+      }
+      return undefined;
+    }).filter((deployment): deployment is (typeof deployments)[number] => deployment !== undefined)
+      ?? [];
+    const candidates = pairSaltSets === undefined || ordered.length === 0 ? deployments : ordered;
+
+    const seenLocks = new Set<string>();
+    const instances: unknown[] = [];
+    for (const deployment of candidates) {
+      const instance = deployment.contract as {
+        inner?: { lockingBytecode?: Uint8Array | string };
+      } | undefined;
+      const lock = instance?.inner?.lockingBytecode;
+      const lockHex = typeof lock === 'string'
+        ? lock
+        : lock === undefined ? deployment.lockingBytecode : binToHex(lock);
+      if (lockHex === undefined || seenLocks.has(lockHex)) continue;
+      seenLocks.add(lockHex);
+      instances.push(instance);
+    }
+    if (instances.length > 0) {
+      host.callerContract.registerExternalArray(loopSlot.interfaceName, instances as never);
+    }
+  }
+
   const expandedExternal = await expandResolveCreateBuilderExternalCallsImpl(
     {
       getExternalTargetEntriesByInterface: (interfaceName) =>
@@ -279,7 +413,11 @@ export async function orchestrateCreateBuilderExternalCalls(
       getExternalRegistryEntry: (interfaceName) => host.externalRegistry.get(interfaceName),
       getExternalDeploymentByAddressValue: (value) =>
         findDeploymentByAddressValue(host.inner.provider, value)?.contract,
+      isCreate2ProjectedAddressValue: (value) =>
+        isCreate2ProjectedAddressValue(host.inner.provider, value),
       getFullState: () => host.getFullState(),
+      probeRawCallee: host.probeRawCallee === undefined
+        ? undefined : (...a: any[]) => host.probeRawCallee!(...a),
     },
     abiFunction,
     args,
@@ -289,6 +427,14 @@ export async function orchestrateCreateBuilderExternalCalls(
     overrides?.returnProbeOnly === true,
   );
   let externalCalls = expandedExternal.externalCalls;
+  const absentCalleeSlots = expandedExternal.absentCalleeSlots;
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+    console.error('extcall-expanded', JSON.stringify({
+      calls: externalCalls?.length, resolved: expandedExternal.resolvedExternalCalls?.length,
+      resolvedKeys: expandedExternal.resolvedExternalCalls?.map((c: any) => c && Object.keys(c).slice(0, 6)),
+      overridesCalls: params.overrides?.externalCalls?.length,
+    }));
+  }
   const loopIdxRanges = expandedExternal.loopIdxRanges;
   let callerStateSnapshot = expandedExternal.callerStateSnapshot;
   let resolvedExternalCalls = expandedExternal.resolvedExternalCalls as ExternalCallInfo[] | undefined;
@@ -318,6 +464,23 @@ export async function orchestrateCreateBuilderExternalCalls(
   resolvedExternalCalls = directBatches.resolvedExternalCalls as ExternalCallInfo[] | undefined;
   callerStateSnapshot = directBatches.callerState;
 
+  // A published callsite that the planner reaches but cannot pin has no co-spendable callee. Building anyway
+  // leaves its topology witnesses at their defaults (every master index 0), which the caller covenant rejects
+  // with an unrelated `OP_VERIFY`. A probe intentionally tolerates unresolved groups; a real build must not.
+  if (externalCalls && externalCalls.length > 0 && !resolvedExternalCalls) {
+    const reached = externalCalls.filter((call) => call.occurrence !== 'conditional');
+    if (reached.length > 0) {
+      const names = reached.slice(0, 4).map((call) => `${call.interfaceName}.${call.functionName}`).join(', ');
+      throw new Error(
+        `External call planning could not pin the callee for ${names}`
+        + `${reached.length > 4 ? ` and ${reached.length - 4} more` : ''}. Each callee needs a live, `
+        + 'co-spendable deployment whose locking bytecode projects to the published address; a target created '
+        + 'in this same transaction has no spendable UTXO yet, and an EVM CREATE2 identity has no BCH lock '
+        + 'projection. Supply the callees with withExternalCall() only when a real co-spend exists.',
+      );
+    }
+  }
+
   let externalCallUtxoGroups: ExternalCallUtxoGroup[] = [];
   // Total return event count including transitive chains (updated in external call block)
   // Combined metadata for all groups (direct + transitive); used by _deriveFullTransactionState
@@ -339,7 +502,10 @@ export async function orchestrateCreateBuilderExternalCalls(
     embeddedFunderUtxos.set(key, utxo);
   };
 
-  if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
+  // A raw call with no co-spent callee still publishes witnesses (its negative sentinels and, for a value
+  // transfer, the transfer's output coordinate), so the witness fill must run even when no group exists.
+  const hasAbsentCalleeSlots = (absentCalleeSlots?.size ?? 0) > 0;
+  if (externalCalls && (externalCalls.length > 0 || hasAbsentCalleeSlots) && resolvedExternalCalls) {
 
     // Count total funders needed across all B blocks and snapshot the signer pool once.
     if (host.signer) {
@@ -359,6 +525,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
       const ec = externalCalls[slotIndex];
       const callInfo = resolvedExternalCalls[slotIndex];
+      if (callInfo) assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {
@@ -414,6 +581,7 @@ export async function orchestrateCreateBuilderExternalCalls(
 
       if (bBlockLayout && callInfo) {
         const nestedBlockCtx = {
+          callerReadsRecord: ec.hasReturnValues === true,
           bBlockInputs,
           bStreamedEventPlan,
           bReturnEventInBlock,
@@ -535,6 +703,32 @@ export async function orchestrateCreateBuilderExternalCalls(
               ec.argSources, args, host.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
               undefined, occurrenceIndex, false, publicSelfAddress,
             ),
+            // The loop's published domain, with the results it reads from earlier calls (`size() - offset`).
+            // An unresolved domain leaves the count unknown: the group then keeps its one-record plan.
+            planLoopOccurrenceCount: async (call: ExternalCallAbi): Promise<number | undefined> => {
+              const domain = call.iterationDomain;
+              if (!domain) return undefined;
+              try {
+                const state = callerStateSnapshot ?? (await host.getFullState()).state;
+                const externalReturns = await host.callerContract._resolveExternalExpressionReturns(
+                  [domain.initialValue, domain.stepValue, domain.continueCondition]
+                    .map((expression) => ({ kind: 'expression', expression })),
+                  args, host.callerContract, state, abiFunction?.inputs, publicSelfAddress,
+                  abiFunction?.externalCalls ?? [], false,
+                );
+                const occurrences = await host.callerContract._planExternalCallOccurrences(call, {
+                  functionArgs: args,
+                  artifact: host.inner.artifact,
+                  state,
+                  callerInputs: abiFunction?.inputs,
+                  executionSelfAddress: publicSelfAddress,
+                  externalReturns,
+                });
+                return occurrences.length;
+              } catch {
+                return undefined;
+              }
+            },
             callerCategoryId: host.categoryId,
             callerContract: host.callerContract,
             valueChunkWriteStagingSession,
@@ -645,6 +839,19 @@ export async function orchestrateCreateBuilderExternalCalls(
       externalCallUtxoGroups,
       groupMetas,
       directGroupCount,
+      async (shared, next, callee) => buildSharedMethodExternalBatch(
+        { buildRepeatedExternalBatch: (...a: any[]) => host.buildRepeatedExternalBatch(...a) },
+        shared,
+        next,
+        callee,
+        {
+          artifact: host.inner.artifact,
+          state: callerStateSnapshot ?? onChainState?.state,
+          inputs: abiFunction?.inputs ?? [],
+          selfAddress: publicSelfAddress,
+          identity: publicSelfIdentity,
+        },
+      ),
     );
 
     // _externalCallInputBase: runtime param (needed for mutual A<->B calls)
@@ -698,6 +905,41 @@ export async function orchestrateCreateBuilderExternalCalls(
     // target array is read on-chain, but this synthesized witness is a param the SDK derives and fills here.
     // Ordered by the ABI (externalCallInputBase then loopTargets<n> then selectors), matching the covenant.
     for (const inp of abiFunction?.inputs ?? []) {
+      if (inp.name.startsWith('__internal__loopTargetStride')) {
+        // One occurrence's physical input width: a pair's getReserves() co-spends its master and the data NFT that
+        // holds the reserves, so the next occurrence's master is this far past the previous one. The compiler cannot
+        // see a callee's private state footprint, so it multiplies the loop index by this witness instead.
+        const witnessName = `__internal__loopTargets${inp.name.slice('__internal__loopTargetStride'.length)}`;
+        const wSlot = abiFunction?.externalCalls?.find((ec) => ec.loopArrayVar === witnessName);
+        const callsiteGroups = wSlot?.callsiteId === undefined ? []
+          : externalCallUtxoGroups.filter((group) => group.sourceCallsiteId === wSlot.callsiteId);
+        const candidate = callsiteGroups.find((group) => (group.blockInputs?.length ?? 0) > 0)
+          ?? callsiteGroups[0];
+        const physical = candidate?.sharedGroupIndex === undefined ? candidate
+          : externalCallUtxoGroups[candidate.sharedGroupIndex] ?? candidate;
+        const stride = physical === undefined
+          ? 1 + (wSlot?.requiredDataNftIndices?.length ?? 0)
+          : physical.blockInputs ? physical.blockInputs.length
+            : 1 + physical.dataNftUtxos.length;
+        finalArgs = [...finalArgs, BigInt(stride)];
+        continue;
+      }
+      if (inp.name.startsWith('__internal__computedCallTarget')) {
+        // A straight-line computed target (`IFoo(pairFor(..)).m()`) evaluates on-chain to an EVM identity (a keccak
+        // CREATE2 address for pairFor), which no BCH locking bytecode projects to. The compiler therefore pins the
+        // co-spent callee against this witness; supply the resolved deployment's exact lock. The callee itself was
+        // resolved from the same callsite's address source above, so this is the deployment the call names.
+        const slotIndex = Number(inp.name.slice('__internal__computedCallTarget'.length));
+        const ec = abiFunction?.externalCalls?.[slotIndex];
+        const group = ec?.callsiteId === undefined ? undefined
+          : externalCallUtxoGroups.find((candidate) => candidate.sourceCallsiteId === ec.callsiteId);
+        const physical = group?.sharedGroupIndex === undefined ? group
+          : externalCallUtxoGroups[group.sharedGroupIndex] ?? group;
+        const lock = physical?.externalContract?.inner?.lockingBytecode;
+        finalArgs = [...finalArgs, typeof lock === 'string' ? hexToBin(lock)
+          : lock instanceof Uint8Array ? lock : new Uint8Array()];
+        continue;
+      }
       if (!inp.name.startsWith('__internal__loopTargets')) continue;
       const wSlot = abiFunction?.externalCalls?.find((ec) => ec.loopArrayVar === inp.name);
       const wEntries = wSlot ? host.inner.getExternalTargetEntriesByInterface(wSlot.interfaceName) : [];
@@ -723,9 +965,7 @@ export async function orchestrateCreateBuilderExternalCalls(
     // Where the co-spent callees' own output blocks begin (X13: a callee's return event lives inside its block).
     let externalCallOutputStart = -1;
     if (allReturningGroupIndices.length > 0) {
-      const externalCallOutputCount = externalCallUtxoGroups.reduce(
-        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
-      );
+      const externalCallOutputCount = externalCallUtxoGroups.reduce((sum, g) => sum + calleeOutputSpan(g), 0);
 
       // Pre-compute low-level call output count (LLC outputs sit between external calls and entries)
       const llcCalls = abiFunction?.lowLevelCalls;
@@ -764,12 +1004,23 @@ export async function orchestrateCreateBuilderExternalCalls(
         (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.blockhashCoSpendRecreates?.length ?? 0)
           + (g.keccakRecreates?.length ?? 0), 0,
       );
+      // Fixed block slots realized as outputs between the caller's data NFTs and the participant region: a keccak
+      // side-car recreation, an ecrecover side-car, and the caller's own return event. The master + data-NFT
+      // prefix below does not count them, so a caller that hashes before its external calls used to place the
+      // callee blocks - and the planned return-event index - early enough to collide with a callee's data NFT.
+      // A void entry's returnEvent slot is its call record, which a plain send compacts.
+      const returnsValues = (abiFunction?.outputs?.length ?? 0) > 0;
+      const fixedExtraBlockSlotCount = (abiFunction?.blockLayout?.slots ?? []).filter((slot) => (
+        slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
+        || (slot.kind === 'returnEvent' && returnsValues)
+      )).length;
       const baseOutputOffset = 1 + requiredNftIndices.length
-      + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount;
+      + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount
+      + fixedExtraBlockSlotCount;
       returnEventOutputBase = baseOutputOffset + entryOutputCount + iterationEntryInputs.length
       + satoshiContainerOutputCount + transferCount + tokenContainerTransferCount + emitCount;
       externalCallOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
-      + outStateOutputCount + chunkRunBeforeCallees;
+      + outStateOutputCount + chunkRunBeforeCallees + fixedExtraBlockSlotCount;
     }
 
     // Build return-event-index map: groupIndex -> return event output index.
@@ -795,14 +1046,30 @@ export async function orchestrateCreateBuilderExternalCalls(
           returnEventIndexMap.set(i, batchCursors.get(batchUnit.physical!)! + batchPhysical.callBatch.recordOffset
             + batchUnit.witnessOffset);
         } else if (groupMetas[i].ecSlot.hasReturnValues) {
-          returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
-            ? cursor + offset
-            : returnEventOutputBase + tailRank++);
+          // A callee that pins no record carries none, even though a raw call's slot declares
+          // `(bool, bytes)`. State the absent coordinate so the caller reads empty returndata; it must not claim
+          // a tail slot another group's carrier occupies.
+          if (calleePinsNoRecord(g)) returnEventIndexMap.set(i, -1);
+          else {
+            returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
+              ? cursor + offset
+              : returnEventOutputBase + tailRank++);
+          }
         }
-        cursor += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+        cursor += calleeOutputSpan(g);
       }
     }
 
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+      console.error('extcall-groups', JSON.stringify({
+        externalCallOutputStart, returnEventOutputBase,
+        groups: externalCallUtxoGroups.map((g, i) => ({
+          i, name: g.functionName, hasReturn: groupMetas[i]?.ecSlot.hasReturnValues,
+          inBlock: isInBlockGroup(i), offset: g.blockLayout?.slots.find((s) => s.kind === 'returnEvent')?.offset,
+        })),
+        map: [...returnEventIndexMap.entries()],
+      }));
+    }
     const nestedBasesUnlockers = await finalizeCreateBuilderNestedBasesUnlockersImpl(
       {
         provider: host.inner.provider,
@@ -858,6 +1125,7 @@ export async function orchestrateCreateBuilderExternalCalls(
         topLevelAnchorFillPositions,
         topLevelReturnWitnessPlan,
         topLevelReturnWitnessGroups,
+        absentCalleeSlots,
       },
     );
   }
@@ -886,15 +1154,16 @@ export async function orchestrateCreateBuilderExternalCalls(
 
 
   // F1: tag each co-spent call with its caller and the slot it occupies in that caller, so the builder pins each
-  // caller's edge in the caller's own category. A top-level call's slot is its group index (groups map 1:1 to the
-  // entry's external-call slots); a nested call's slot is its position among its parent's co-spent callees.
+  // caller's edge in the caller's own category. A top-level call's slot is its published callsite: a skipped
+  // conditional call or a loop's reached calls part groups from slots. A nested call's slot is its position among
+  // its parent's co-spent callees.
   {
     const siblingSlot = new Map<number, number>();
     for (let i = 0; i < externalCallUtxoGroups.length; i++) {
       const parent = allGroupParentIndices[i] ?? -1;
       externalCallUtxoGroups[i].edgeParentIndex = parent;
       if (parent < 0) {
-        externalCallUtxoGroups[i].edgeEcSlot = i;
+        externalCallUtxoGroups[i].edgeEcSlot = externalCallUtxoGroups[i].sourceCallsiteId ?? i;
       } else {
         const next = siblingSlot.get(parent) ?? 0;
         externalCallUtxoGroups[i].edgeEcSlot = next;

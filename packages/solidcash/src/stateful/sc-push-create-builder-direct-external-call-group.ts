@@ -15,7 +15,7 @@ import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { DirectCallBatchCall } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
-import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { encodeExternalReturnValue, encodeExternalReturnValues } from './external-return-encoding.js';
 import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
 import {
   isRepeatedTypedLoopCallsite,
@@ -50,6 +50,8 @@ export function directVmapBatchTrailingCount(
 export interface PushCreateBuilderDirectExternalCallGroupHost {
   deriveReturnValue(...args: any[]): Promise<unknown>;
   resolveLoopArgs(occurrenceIndex: number): FunctionArgument[] | undefined;
+  /** How many times the caller's frame reaches a loop callsite, when its published domain resolves. */
+  planLoopOccurrenceCount?(call: ExternalCallAbi): Promise<number | undefined>;
   readonly callerCategoryId: string;
   readonly callerContract: unknown;
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -208,7 +210,11 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   let directPrecomputedReturn: Uint8Array | undefined;
   let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
   let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
-  if (returnProbeOnly === true && bReturnEventInBlock) {
+  let loopReturnCommitments: Uint8Array[] | undefined;
+  // The probe is the only frame that reads the callee's return without executing its covenant, so its result must
+  // be precomputed whether the return event lives inside the callee's block (a state-writing callee) or in the
+  // caller's dedicated return-output band (a view callee such as `pair.getReserves()`).
+  if (returnProbeOnly === true) {
     const precomputeArtifact = callInfo.externalContract.inner.artifact as Artifact;
     const rawCall = ec as { rawFunctionName?: string; rawSelector?: string };
     const precomputeName = callInfo.functionName === '__raw__'
@@ -221,19 +227,34 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     const precomputeAbi = precomputeName === undefined ? undefined
       : (precomputeArtifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === precomputeName);
-    if (precomputeAbi?.outputs?.length === 1 && precomputeName !== undefined) {
-      const encode = (value: StateValue): Uint8Array => encodeExternalReturnValue(
-        value,
-        precomputeAbi.outputs![0].type,
-        precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
-        resolveExternalResultEncoding(
-          precomputeAbi.resultEncoding,
+    if ((precomputeAbi?.outputs?.length ?? 0) >= 1 && precomputeName !== undefined) {
+      const returnAbi = precomputeAbi!;
+      const returnTypes = returnAbi.outputs!.map((output) => output.type);
+      // A lone output is encoded as one native value; a tuple decode (`(uint,uint,uint32) = pair.getReserves()`)
+      // takes the whole ABI result vector, so encode every declared output.
+      const encode = (value: StateValue): Uint8Array => {
+        const solidityAbi = resolveExternalResultEncoding(
+          returnAbi.resultEncoding,
           precomputeArtifact,
-          precomputeAbi.outputs!.map((output) => output.type),
-          `function '${precomputeAbi.name}' result`,
-        ) === 'evm-abi-v1',
-        precomputeArtifact.enums,
-      );
+          returnTypes,
+          `function '${returnAbi.name}' result`,
+        ) === 'evm-abi-v1';
+        if (returnTypes.length === 1) {
+          return encodeExternalReturnValue(
+            value, returnTypes[0],
+            precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
+            solidityAbi,
+            precomputeArtifact.enums,
+          );
+        }
+        return encodeExternalReturnValues(
+          value as StateValue[],
+          returnTypes,
+          precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
+          solidityAbi,
+          precomputeArtifact.enums,
+        );
+      };
       try {
         // This frame is the CALLER of `callInfo.externalContract`, so the callee's `msg.sender` is exactly
         // this frame's authenticated identity. Without it the nested probe keys every `msg.sender`-derived
@@ -248,7 +269,11 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       } catch {
         directPrecomputedReturn = undefined;
       }
-      if (ec.occurrence === 'loop' && ec.resultArrayOutput !== undefined) {
+      if (ec.occurrence === 'loop') {
+        // Every iteration of a returning loop needs its OWN result in a probe: the callee's covenant does not
+        // execute there, so its return event keeps the neutral placeholder. Resolve the per-iteration arguments
+        // and derive that iteration's return value. This is not limited to a result array (`r[i] = f[i]()`):
+        // `(a, b) = pair.getReserves()` in `getAmountsOut` feeds its iteration's array write the same way.
         resolveLoopReturnValue = async (occurrenceIndex: number): Promise<StateValue> => {
           const occurrenceArgs = host.resolveLoopArgs(occurrenceIndex);
           if (!occurrenceArgs) {
@@ -267,6 +292,18 @@ export async function pushCreateBuilderDirectExternalCallGroup(
             ? directPrecomputedReturn
             : encode(await resolveLoopReturnValue!(occurrenceIndex))
         );
+        // The caller reads iteration k's record k past its return index, and each record digests its own
+        // iteration's arguments. Lay every reached iteration's record before the probe runs: a probe holding only
+        // the first stops at the second iteration's read, before it yields the result array this group fills.
+        const reached = ec.resultArrayOutput === undefined ? undefined
+          : await host.planLoopOccurrenceCount?.(ec);
+        if (reached !== undefined && reached > 1
+          && (ec.maximumOccurrences === undefined || reached <= ec.maximumOccurrences)) {
+          loopReturnCommitments = [];
+          for (let occurrence = 0; occurrence < reached; occurrence += 1) {
+            loopReturnCommitments.push(await resolveLoopReturnCommitment(occurrence));
+          }
+        }
       }
     }
   }
@@ -355,6 +392,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(bReturnEventInBlock && { returnEventInBlock: true }),
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
+    ...(loopReturnCommitments && { loopReturnCommitments }),
     ...(resolveLoopReturnCommitment && {
       loopResultArrayOutput: ec.resultArrayOutput,
       ...(ec.maximumOccurrences !== undefined && { loopMaximumOccurrences: ec.maximumOccurrences }),

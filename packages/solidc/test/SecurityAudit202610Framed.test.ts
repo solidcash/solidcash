@@ -34,7 +34,7 @@ describe('FM-1 a bare-lock mutable NFT is not the validator', () => {
   const USER_LOCK = encodeLockingBytecodeP2pkh(label('fm1 user').slice(0, 20));
   const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
   const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
@@ -73,7 +73,11 @@ describe('FM-1 a bare-lock mutable NFT is not the validator', () => {
   const CALLEE = USER + 1;
 
   function spend(fake: boolean): { caller: boolean; validator: boolean } {
-    const validator = validatorSpend(CATEGORY_CALLER, { roots: [CALLER], masters: [CALLER, CALLEE], settles: [] });
+    // Every covered contract is settled: the caller from its record, the callee with none.
+    const validator = validatorSpend(CATEGORY_CALLER, {
+      roots: [CALLER], masters: [CALLER, CALLEE],
+      settles: [{ category: CATEGORY_CALLER, stateInputs: [STATE] }, { category: CATEGORY_CALLEE, stateInputs: [] }],
+    });
     const outpoint = (index: number): Uint8Array => label(`fm1 outpoint ${index}`);
     const input = (index: number, unlockingBytecode: Uint8Array): VmTransaction['inputs'][number] => ({
       outpointIndex: 0, outpointTransactionHash: outpoint(index), sequenceNumber: 0xffffffff, unlockingBytecode,
@@ -162,7 +166,7 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
   const ADDRESS_COUNTER = validatorAddress(CATEGORY_COUNTER, REAL_VALIDATOR_PROGRAM);
   const ADDRESS_POKER = validatorAddress(CATEGORY_POKER, REAL_VALIDATOR_PROGRAM);
   const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ICounter { function bump(); }'
     + ' contract Counter { int public counter; function bump() { this.counter = this.counter + 1; } }'
     + ' contract Poker { address public target; function poke() { ICounter(this.target).bump(); } }';
@@ -191,8 +195,13 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
   const POKER_ROOT = 1;
   const COUNTER_CALLED = 2;
   const COUNTER_VALIDATOR = 3;
-  const COUNTER_FACET = 4;
-  const COUNTER_RECORD = 7;
+  // The head binds every facet at the inputs that follow it; the user's coins, the records and the caller come after.
+  const FACETS = validatorFacetPlacements();
+  const COUNTER_FACET = COUNTER_VALIDATOR + 1;
+  const AFTER_FACETS = COUNTER_FACET + FACETS.length;
+  const COUNTER_RECORD = AFTER_FACETS + 2;
+  const POKER_RECORD = AFTER_FACETS + 3;
+  const USER = AFTER_FACETS + 4;
   const token = (category: Uint8Array, capability: 'minting' | 'mutable', commitment: Uint8Array = new Uint8Array(0)): VmOutput['token'] =>
     ({ category, amount: 0n, nft: { capability, commitment } });
 
@@ -200,7 +209,11 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
     const counterValidator = validatorSpend(CATEGORY_COUNTER, {
       roots: [COUNTER_ROOT, POKER_ROOT],
       masters: [COUNTER_ROOT, POKER_ROOT, COUNTER_CALLED],
-      settles: [{ category: CATEGORY_COUNTER, stateInputs: [COUNTER_RECORD] }],
+      // Both covered contracts are settled, each from its own record.
+      settles: [
+        { category: CATEGORY_COUNTER, stateInputs: [COUNTER_RECORD] },
+        { category: CATEGORY_POKER, stateInputs: [POKER_RECORD] },
+      ],
     });
     const rootEntry = mode === 'reset'
       ? { in: INDEX_NONE, out: COUNTER_RECORD, viewIn: ZEROS, viewOut: counterView(1n) }
@@ -213,31 +226,30 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
       : [calledHonest];
     const written = mode === 'reset' ? counterView(2n) : mode === 'delete' ? counterView(1000n) : counterView(7n);
     const rootBlock: WitnessBlock = {
-      kind: 0, callerRef: 9, originRef: 9, validatorRef: COUNTER_VALIDATOR,
+      kind: 0, callerRef: USER, originRef: USER, validatorRef: COUNTER_VALIDATOR,
       sender: USER_LOCK, self: ADDRESS_COUNTER, value: 0n, retval: new Uint8Array(0), calls: [],
       segments: [[rootEntry]], events: [], sends: [],
     };
     const pokerBlock: WitnessBlock = {
-      kind: 0, callerRef: 9, originRef: 9, validatorRef: COUNTER_VALIDATOR,
+      kind: 0, callerRef: USER, originRef: USER, validatorRef: COUNTER_VALIDATOR,
       sender: USER_LOCK, self: ADDRESS_POKER, value: 0n, retval: new Uint8Array(0),
       calls: [{
         kind: 1, target: ADDRESS_COUNTER, value: 0n, calleeRef: COUNTER_CALLED,
         argsHash: argsHash(BUMP_SELECTOR, new Uint8Array(0)), result: new Uint8Array(0),
       }],
       segments: [
-        [{ in: 8, out: 8, viewIn: POKER_VIEW, viewOut: POKER_VIEW }],
-        [{ in: 8, out: 8, viewIn: POKER_VIEW, viewOut: POKER_VIEW }],
+        [{ in: POKER_RECORD, out: POKER_RECORD, viewIn: POKER_VIEW, viewOut: POKER_VIEW }],
+        [{ in: POKER_RECORD, out: POKER_RECORD, viewIn: POKER_VIEW, viewOut: POKER_VIEW }],
       ],
       events: [], sends: [],
     };
     const calledBlock: WitnessBlock = {
-      kind: 1, callerRef: POKER_ROOT, originRef: 9, validatorRef: COUNTER_VALIDATOR,
+      kind: 1, callerRef: POKER_ROOT, originRef: USER, validatorRef: COUNTER_VALIDATOR,
       sender: ADDRESS_POKER, self: ADDRESS_COUNTER, value: 0n, retval: new Uint8Array(0), calls: [],
       segments: [calledEntries], events: [], sends: [],
     };
     const counterLock = encodeLockingBytecodeP2sh32(hash256(COUNTER_PROGRAM));
     const pokerLock = encodeLockingBytecodeP2sh32(hash256(POKER_PROGRAM));
-    const facet = validatorFacetPlacements()[0]!;
     const input = (fill: number, unlockingBytecode: Uint8Array): VmTransaction['inputs'][number] => ({
       outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(fill), sequenceNumber: 0xffffffff,
       unlockingBytecode,
@@ -250,7 +262,7 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
         ...encodeDataPush(COUNTER_PROGRAM),
       ])),
       input(4, counterValidator.unlockingBytecode),
-      input(5, facet.input.unlockingBytecode),
+      ...FACETS.map((facet, at) => input(0x40 + at, facet.input.unlockingBytecode)),
       input(6, encodeDataPush(new Uint8Array([1]))),
       input(7, encodeDataPush(new Uint8Array([1]))),
       input(8, encodeDataPush(new Uint8Array([1]))),
@@ -262,7 +274,7 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
       { lockingBytecode: pokerLock, valueSatoshis: 20_000n, token: token(CATEGORY_POKER, 'minting') },
       { lockingBytecode: counterLock, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'minting') },
       { lockingBytecode: counterValidator.lock, valueSatoshis: 20_000n, token: token(CATEGORY_COUNTER, 'mutable') },
-      { lockingBytecode: facet.output.lockingBytecode, valueSatoshis: 20_000n },
+      ...FACETS.map((facet): VmOutput => ({ lockingBytecode: facet.output.lockingBytecode, valueSatoshis: 20_000n })),
       { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n },
       { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n },
     ];
@@ -286,7 +298,7 @@ describe('FW-1 and FW-2 against the genuine validator', () => {
       counterRoot: accepted(COUNTER_ROOT),
       counterCalled: accepted(COUNTER_CALLED),
       counterValidator: accepted(COUNTER_VALIDATOR),
-      counterFacet: accepted(COUNTER_FACET),
+      counterFacet: FACETS.every((_, at) => accepted(COUNTER_FACET + at)),
     };
   }
 

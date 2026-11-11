@@ -72,11 +72,14 @@ export function deriveFullPhase1ProgressiveEntries(
     // The initial trace commonly stops at the data-NFT placeholder. Compiler routes derive entry
     // outputs progressively, so begin that process from a fresh transaction after the data commitment
     // above has been installed; otherwise an empty first map terminates the loop before any entry write
-    // (for example ERC20 approve's allowance update) can be revealed.
+    // (for example ERC20 approve's allowance update) can be revealed. A direct callee checks its data
+    // records ahead of its entries too, and a void call's record is only learned past them.
     let entryTrace = fullTrace;
     let entryTransaction = transaction;
+    const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
     const requiresFreshEntryProbe = group.compilerRoute !== undefined
-      || group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined;
+      || group.delegateEmbeddedInBlock === true || valueChunkWitness !== undefined
+      || (entrySlotCount > 0 && group.requiredDataNftIndices.length > 0);
     if (requiresFreshEntryProbe) {
       const entryProbe = stb.build();
       entryTransaction = entryProbe.buildLibauthTransaction();
@@ -100,7 +103,6 @@ export function deriveFullPhase1ProgressiveEntries(
         transaction: entryTransaction,
       });
     }
-    const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
     const embeddedDelegate = group.delegateCallGroupIndex === undefined
       ? undefined : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex];
     const repairableEntryCoordinateCount = routeProbeRepairableEntryCoordinateCount(

@@ -45,6 +45,11 @@ export const network = lazy<HardhatNetwork>((h) => h.network);
 export const config = lazy<Record<string, unknown>>((h) => hardhatCompatConfig(h.config));
 /** `hre.run(taskName, args?)`. */
 export const run = (taskName: string, args?: TaskArguments): Promise<unknown> => getActiveHre().run(taskName, args);
+
+/** hardhat `artifacts.readArtifact` parity for ported suites: the active HRE's `artifacts`. */
+export const artifacts = {
+  readArtifact: (name: string): Promise<Record<string, unknown>> => getActiveHre().artifacts.readArtifact(name),
+};
 /** OpenZeppelin-style upgradeable-proxy deploy/upgrade helpers. */
 export { upgrades };
 

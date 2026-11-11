@@ -73,22 +73,22 @@ function deploy(name: string, source: string): Contract {
   };
 }
 
-const LEDGER = deploy('ledger', 'pragma solidcash ^0.14.0;'
+const LEDGER = deploy('ledger', 'pragma solidcash ^0.50.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   function put(address who, uint amount) { balances[who] = amount; }'
   + ' }');
-const PAIR = deploy('pair', 'pragma solidcash ^0.14.0;'
+const PAIR = deploy('pair', 'pragma solidcash ^0.50.0;'
   + ' contract Pair {'
   + '   mapping(address => uint) balances;'
   + '   function putTwo(address a, address b, uint amount) { balances[a] = amount; balances[b] = amount; }'
   + ' }');
-const CREDIT = deploy('credit', 'pragma solidcash ^0.14.0;'
+const CREDIT = deploy('credit', 'pragma solidcash ^0.50.0;'
   + ' contract Credit {'
   + '   mapping(address => uint) balances;'
   + '   function credit(address who, uint amount) { balances[who] = balances[who] + amount; }'
   + ' }');
-const MOVER_SOURCE = 'pragma solidcash ^0.14.0;'
+const MOVER_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Mover {'
   + '   mapping(address => uint) balances;'
   + '   function move(address from, address to, uint amount) {'
@@ -431,10 +431,11 @@ describe('mapping nodes created and relinked across frames', () => {
     expect(verdicts(PAIR, composition)).toStrictEqual(ACCEPTED);
   });
 
-  it('refuses a created head as the predecessor, which the settlement alone would admit', () => {
+  it('refuses a created head as the predecessor', () => {
     // Frame two splices K3 through a head it declares at an output alone, starting from the empty list's own view.
-    // A created record starts from nothing and the validator pads views to the same zero bytes the head carries,
-    // so the chain settles; the frame's own refusal of the zero slot is what stands.
+    // A created record starts from nothing, and the validator compares views exactly, so the head's zero bytes are not
+    // the nothing a created record starts from and the settlement refuses the chain; the frame refuses the zero slot
+    // on its own as well.
     const composition: Composition = {
       frames: [
         K1_THROUGH_HEAD,
@@ -447,7 +448,7 @@ describe('mapping nodes created and relinked across frames', () => {
         { commitment: node(K1, undefined, 11) }, { commitment: head(K3) }, { commitment: node(K3, undefined, 33) },
       ],
     };
-    expect(verdicts(LEDGER, composition)).toStrictEqual({ frameOne: true, frameTwo: false, settlement: true });
+    expect(verdicts(LEDGER, composition)).toStrictEqual({ frameOne: true, frameTwo: false, settlement: false });
     // The same splice through the node frame one created settles.
     expect(verdicts(LEDGER, createdPredecessor())).toStrictEqual(ACCEPTED);
   });

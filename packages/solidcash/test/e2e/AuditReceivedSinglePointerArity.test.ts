@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeDataPush, encodeTransaction, flattenBinArray,
+  hexToBin,
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import { compileString } from '../direct-compile.js';
@@ -212,5 +213,60 @@ describe('a single received PARAMETER pointer whose runtime selector names a hig
     const r = runVm(await spliceInc(fire, h.sc, 10n));
     expect(r.success).toBe(false);
     expect(r.error ?? '').toMatch(/OP_VERIFY|OP_EQUALVERIFY|OP_NUMEQUALVERIFY|failed/i);
+  }, 300_000);
+});
+
+// An unsafe entry takes no record witness, so its second parameter sits where an ordinary callee's witness does: the
+// first push after the selector, one more push than the pointer's arguments and redeem, the count a witness makes.
+const UNWITNESSED = `pragma solidcash >=0.8.0;
+contract Handler() {
+  bigint counter;
+  function inc(uint256 v) { require(int(v) >= 0 && this.counter >= 0); }
+  function incRaw(uint256 a, int b) unsafe { require(int(a) >= 0 && b != 0 && this.counter >= 0); }
+}`;
+
+describe('a single received pointer whose runtime selector names a wider method with no record witness (VM)', () => {
+  /** The honest `inc(3)` call through the pointer, its callee's unlocking replaced by `incRaw(3, b)`'s pushes. */
+  async function spliced(b: bigint): Promise<{ success: boolean; error?: string }> {
+    const provider = createTestProvider();
+    const art = compileString(UNWITNESSED);
+    const base = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, base, art.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const callee = StatefulContract.withCategory(base, categoryId) as any;
+    const incRaw = hexToBin(art.abi.find((entry) => entry.name === 'incRaw')!.selector!);
+    const inc = hexToBin(art.abi.find((entry) => entry.name === 'inc')!.selector!);
+    const caller = compileString(PARAM);
+    const contract = new Contract(caller, [], { provider });
+    const { categoryId: callerCategory } = await setupStatefulUtxos(
+      provider, contract, caller.stateLayout!, { bumps: 0n }, { saltContract: true },
+    );
+    const fire = await (StatefulContract.withCategory(contract, callerCategory) as any)
+      .fireWith(hexToBin(base.withCategory(hexToBin(categoryId)).lockingBytecode), incRaw, 3n)
+      .withExternalCall(callee, 'inc', [3n]).build();
+
+    const target = selectorInput(fire, inc);
+    const honest = decodeAuthenticationInstructions(fire.buildLibauthTransaction().inputs[target].unlockingBytecode);
+    const redeem = (honest.at(-1) as { data: Uint8Array }).data;
+    const unlocking = flattenBinArray([incRaw, bigIntToVmNumber(b), bigIntToVmNumber(3n), redeem]
+      .map((push) => encodeDataPush(push)));
+    const original = fire.inputs[target].unlocker;
+    fire.inputs[target].unlocker = {
+      generateLockingBytecode: (): Uint8Array => original.generateLockingBytecode(),
+      generateUnlockingBytecode: (): Uint8Array => unlocking,
+    };
+    return runVm(fire);
+  }
+
+  it('refuses it on a value the spender chose: the caller binds that push as the witness of no record', async () => {
+    const r = await spliced(10n);
+    expect(r.success).toBe(false);
+    expect(r.error ?? '').toMatch(/input index 0/);
+  }, 300_000);
+
+  it('lets the caller past on the constant alone, so no spender-chosen value reaches the method', async () => {
+    const r = await spliced(-1n);
+    expect(r.error ?? '').not.toMatch(/input index 0/);
   }, 300_000);
 });

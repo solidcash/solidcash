@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, utf8ToBin } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hash160, hexToBin, secp256k1, utf8ToBin } from '@bitauth/libauth';
 import { bytesEqual, bytesToHex, sha256, validatorAddress, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -130,7 +130,12 @@ const ADMIN = signer(alicePkh, alicePriv);
 /** A caller no list holds. */
 const CAROL = signer(carolPkh, carolPriv);
 
-const slotOf = (...keys: Uint8Array[]): Uint8Array => keyToSlotMulti(keys);
+/** How a members list keys an account, and the gate its role and account, each address by its 20-byte identity. */
+const MEMBER_KEYS = members.stateLayout!.collections!.find((collection) => collection.name === 'members')!;
+const ROLE_MEMBER_KEYS = gate.stateLayout!.collections!.find((collection) => collection.name === '_roles__members')!;
+const slotOf = (...keys: Uint8Array[]): Uint8Array => keyToSlotMulti(
+  keys, keys.length === 2 ? ROLE_MEMBER_KEYS : MEMBER_KEYS,
+);
 const slotHex = (...keys: Uint8Array[]): string => bytesToHex(slotOf(...keys));
 /** Where the node of `keys` sits in its list, which is ordered by slot. */
 const at = (...keys: Uint8Array[]): bigint => bytesToSlotValue(slotOf(...keys));
@@ -154,6 +159,17 @@ const DEFAULT_ADMIN_ROLE = new Uint8Array(32);
 const ROLE = new Uint8Array(32).fill(0x01);
 /** The admin's own member node, which every admin check reads. */
 const ADMIN_NODE = at(DEFAULT_ADMIN_ROLE, ADMIN.lock);
+/**
+ * A caller no list holds whose default-admin key sorts above the admin's node, so its absent key is bracketed by that
+ * node. It is derived from a seed, since the fixture's other signers both sort below it.
+ */
+const OUTSIDER = ((): Caller => {
+  for (let index = 0; ; index += 1) {
+    const priv = sha256(utf8ToBin(`read node spent by insert outsider ${index}`));
+    const caller = signer(hash160(secp256k1.derivePublicKeyCompressed(priv) as Uint8Array), priv);
+    if (at(DEFAULT_ADMIN_ROLE, caller.lock) > ADMIN_NODE) return caller;
+  }
+})();
 const ABOVE_ADMIN_NODE = ACCOUNTS.filter((account) => at(ROLE, account) > ADMIN_NODE)
   .sort((left, right) => (at(ROLE, left) < at(ROLE, right) ? -1 : 1));
 /** Two grantees of ROLE whose member nodes the admin's node precedes, the higher first. */
@@ -454,10 +470,10 @@ describe('a proxied entry that reads a node its own insert splices through', () 
 
   it('refuses a caller without the admin role by the body\'s check, at the node the grant splices through', async () => {
     const world = await deployed();
-    // CAROL's own default-admin node is absent, so her check is bracketed by the admin's node, which her grant's
-    // insert splices through: one input, proving her key absent and the new key's gap.
-    expect(at(DEFAULT_ADMIN_ROLE, CAROL.lock)).toBeGreaterThan(ADMIN_NODE);
-    expect(await expectRefused(world, gate, 'grantRole', [ROLE, GRANTEE], CAROL,
+    // The outsider's own default-admin node is absent, so its check is bracketed by the admin's node, which its
+    // grant's insert splices through: one input, proving its key absent and the new key's gap.
+    expect(at(DEFAULT_ADMIN_ROLE, OUTSIDER.lock)).toBeGreaterThan(ADMIN_NODE);
+    expect(await expectRefused(world, gate, 'grantRole', [ROLE, GRANTEE], OUTSIDER,
       unsettled('grantRole', 'Gate', lineOf('"grant needs the admin role"'), 'grant needs the admin role')))
       .toBeInstanceOf(FramedProxyDeployError);
     expect(await view(world, gate, 'hasRole', [ROLE, GRANTEE])).toBe(false);

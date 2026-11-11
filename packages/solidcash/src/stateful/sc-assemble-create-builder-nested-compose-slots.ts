@@ -37,7 +37,7 @@ import {
   getEntryNftAddress,
   getValueChunkAddress,
 } from './covenant-helpers.js';
-import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { voidRecordUnread, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
@@ -1437,7 +1437,8 @@ export async function assembleCreateBuilderNestedComposeSlots(
     } else if (!proxyCallee) {
       primary.blockInputs = childBlockInputs;
       primary.blockLayout = selectedLayout;
-      if (selectedLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
+      if (selectedLayout?.slots.some((slot) => slot.kind === 'returnEvent')
+        && !voidRecordUnread(nested, selectedFn)) {
         primary.returnEventInBlock = true;
       }
       primary.plannedEntryInserts = childPlannedEntryInserts;

@@ -4,7 +4,7 @@ description: The experimental framed calling convention. Every entry into a cont
 ---
 
 :::caution Experimental
-The framed convention is experimental in 0.14.0-beta.1. Composed external state mutation, a call that changes another
+The framed convention is experimental in 0.50.0. Composed external state mutation, a call that changes another
 contract's state, is outside the release's stability promise. The framed artifact fields, the SDK entry points and
 the source shapes the compiler accepts can change between releases. Do not put significant value behind a framed
 deployment without an independent review.
@@ -222,7 +222,7 @@ The examples below use this contract. Compiled with the defaults it is a direct 
 `composition: 'framed'` it is a framed one.
 
 ```solidity
-pragma solidcash ^0.14.0;
+pragma solidcash ^0.50.0;
 
 contract Tally {
     int public total;
@@ -494,7 +494,9 @@ See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) for the 
 
 - `block.timestamp` and `block.number` read a block-info coin of an oracle pool, as on the direct path. Deployment
   writes the pool (the `oraclePool` option, else the provider's) into the masters, and a call whose entry reads it
-  co-spends a live coin of that pool. See [Block Data & Oracles](/docs/guides/block-oracles).
+  co-spends a live coin of that pool. A contract another contract creates carries the pool its creator's child
+  constants were computed with, so every creation binds that pool. See
+  [Block Data & Oracles](/docs/guides/block-oracles#a-reader-another-contract-creates).
 - `blockhash(n)` is not served: every entry of a contract that reads it is refused.
 - `tx.time` is the transaction's locktime. The SDK fixes it once, before it derives any frame, so every frame of a
   transaction reads the same value. A constructor that gates on `tx.time` is refused at deployment.
@@ -545,8 +547,16 @@ The chain's limits apply to every input of a framed transaction:
   how many compositions can start at it at once. A transaction that needs more is refused with
   `FRAMED_POOL_EXHAUSTED`.
 - **Providers.** Calls and reads find a deployment's masters, validators and records by listing its category's
-  UTXOs, which needs a provider that implements `getUtxosByTokenCategory`. The mock and regtest providers do. The
-  Electrum provider does not, so framed contracts cannot be called or read through it yet.
+  UTXOs where the provider implements `getUtxosByTokenCategory`, as the mock and regtest providers do. An Electrum
+  server has no index by category, so there each is listed at the lock it derives: validators at the contract's
+  address, records, nodes and chunks at their covenants, and masters at the lock of each entry a call runs. One lock
+  holds every coin of its kind: all the holders of a mapping, and all the children of a creator for each entry of a
+  constant-lock master. A read of one of them lists them all: 271 bytes a coin with no commitment, so 34 MB at 125,000
+  coins. Past its `max_history`, 125,000 by default, Fulcrum answers an empty list rather than an error, and anyone can
+  pay a lock, so a contract that matters needs a server configured for it.
+- **Side-cars.** An entry that hashes through `keccak256` co-spends a side-car, a mutable NFT at a shared covenant
+  lock. The mock and a devnet mint them when a call asks; a real network holds what a deployment left, so run
+  `framedDeploy.deployComputeSideCarPool` once on it.
 - **Mock limits.** A green run on the mock under relaxed limits does not prove a framed transaction is valid on chain.
   Test under the real limits; see [BCH Script & Transaction Limits](/docs/compiler/script-limits).
 

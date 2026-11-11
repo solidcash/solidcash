@@ -78,16 +78,15 @@ describe('an input the plan does not list', () => {
     expect(accepted(modelled, composition.validatorIndex)).toBe(false);
   });
 
-  test('accepts a state UTXO of a contract the transcript does not settle: no rule refuses it', () => {
-    // `B` has one master and is a context no frame borrows, so the transcript does not settle it. Nothing in the
-    // transaction requires `B`'s records to be settled here, so the extra one passes: a finding, not a defect of
-    // these bytes. Bounds on it come from outside the scripts (the signed input).
+  test('refuses a state UTXO of a covered contract with one master', () => {
+    // `B` has one master, which the validator covers, so the transcript settles `B` too (V8) and its extra record is
+    // a state UTXO the settlement does not list.
     const composition = laidOut(abbaPlan());
     const modelled = appended(
       materialise(composition), mutableTokenShape(categoryOf('B'), seedBytes('extra-b-record', 6)),
     );
-    expect(decisionOf(modelled, composition.validatorIndex).accepted).toBe(true);
-    expect(accepted(modelled, composition.validatorIndex)).toBe(true);
+    expect(decisionOf(modelled, composition.validatorIndex).rejection?.reason).toBe('V7_STATE_INPUTS_MISMATCH');
+    expect(accepted(modelled, composition.validatorIndex)).toBe(false);
   });
 
   test('accepts a stranger contract\'s minting input: no rule refuses it', () => {

@@ -3,32 +3,35 @@ pragma solidcash >=0.8.0;
 // Update-only supply and owner-policy operations run as a branded delegate against the proxy.
 // State slot order MUST match nusdt_state.inc and the master exactly.
 library UsdtSupplyFacet {
+    event Unfrozen(address indexed user);
+    event RemovedBlackList(address indexed user);
     event Issue(int amount);
     event Redeem(int amount);
     event DestroyedBlackFunds(address indexed blackListedUser, int balance);
     event AddedBlackList(address indexed user);
     event Frozen(address indexed user);
 
+    bool backingSet;
+    bytes32 backingCategory;
+    bool paused;
+    bool deprecated;
+    int backedSupply;
+    int containerSeen;
     address owner;
+    int quarantineBlocks;
+    int clock;
+    address upgradedAddress;
+    bool initialized;
+    uint8 decimals;
+    bytes32 name;
+    bytes32 symbol;
     int totalSupply;
     mapping(address => int) balances;
     mapping(address => mapping(address => uint256)) allowed;
-    bool paused;
     mapping(address => bool) isBlackListed;
-    bytes32 name;
-    bytes32 symbol;
-    uint8 decimals;
-    bool deprecated;
-    address upgradedAddress;
     mapping(address => bool) frozen;
     mapping(address => int) pendingAmount;
     mapping(address => int) pendingUnlockAt;
-    int quarantineBlocks;
-    bytes32 backingCategory;
-    bool backingSet;
-    int containerSeen;
-    int backedSupply;
-    int clock;
 
     function redeem(int amount) public {
         require(msg.sender == this.owner);
@@ -72,5 +75,17 @@ library UsdtSupplyFacet {
         require(msg.sender == this.owner);
         this.frozen[user] = true;
         emit Frozen(user);
+    }
+
+    function removeBlackList(address clearedUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[clearedUser] = false;
+        emit RemovedBlackList(clearedUser);
+    }
+
+    function unfreeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = false;
+        emit Unfrozen(user);
     }
 }

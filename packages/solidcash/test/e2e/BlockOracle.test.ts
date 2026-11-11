@@ -315,12 +315,13 @@ describe('blobhash / blockhash', () => {
 
   // block.gaslimit + gasleft() are fixed shims (1000000): BCH has no gas metering. A constant (not 0/revert)
   // keeps ported gas-budget checks running; the compiler warns. 1000000 = 0x40420f.
-  it('block.gaslimit and gasleft() lower to the fixed shim 1000000 (no oracle state)', () => {
+  it('block.gaslimit and gasleft() lower to the fixed shim 1000000 (no oracle)', () => {
     const gl = compileString('contract A(){ function f(int e){ require(block.gaslimit == e); } }');
     const gf = compileString('contract B(){ function f(int e){ require(gasleft() == e); } }');
     expect(gl.bytecode).toContain('40420f'); // 1000000 little-endian
     expect(gf.bytecode).toContain('40420f');
-    expect(gl.stateLayout).toBeUndefined(); // pure constant - not oracle-backed, no state
+    expect(gl.usesBlockOracle).toBeUndefined(); // pure constant - not oracle-backed
+    expect(gl.stateLayout).toBeUndefined(); // not oracle-backed, no state
     expect(gf.stateLayout).toBeUndefined();
   });
 
@@ -330,7 +331,8 @@ describe('blobhash / blockhash', () => {
   it('block.prevrandao lowers to abs(int(sha256(input[0] prevout txid))), no oracle', () => {
     const p = compileString('contract A(){ function f(uint256 e){ require(block.prevrandao % 6 == e); } }');
     expect(p.bytecode).toContain('OP_0 OP_OUTPOINTTXHASH OP_SHA256 OP_BIN2NUM OP_ABS');
-    expect(p.stateLayout).toBeUndefined(); // transaction-local - no oracle register
+    expect(p.usesBlockOracle).toBeUndefined(); // transaction-local - no oracle co-spend
+    expect(p.stateLayout).toBeUndefined(); // no oracle register
   });
 
   it('blobhash rejects a non-zero expectation', async () => {

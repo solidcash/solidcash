@@ -62,8 +62,9 @@ describe('transcript rejection', () => {
   });
 
   it('rejects a trailing byte', () => {
+    // The padding length comes last, so a byte after it is padding the length does not count.
     const bytes = concatBytes([toBytes(TRANSCRIPT_ABBA.hex), Uint8Array.of(0x00)]);
-    expectFramedRejection(() => decodeTranscript(bytes), /trailing byte/);
+    expectFramedRejection(() => decodeTranscript(bytes), /padding length is 0, but 1 byte/);
   });
 
   it('rejects a truncated field', () => {
@@ -97,7 +98,8 @@ describe('transcript rejection', () => {
     expect(toHex(encoded)).toBe(
       '50433702000001'
       + CATEGORY_A
-      + '0103020607',
+      + '0103020607'
+      + '0000',
     );
     expect(decodeTranscript(encoded)).toEqual(transcript);
   });
@@ -144,13 +146,17 @@ describe('minted transcript codec', () => {
   });
 
   it('rejects a trailing byte', () => {
+    // The padding length comes last, so a byte after it is padding the length does not count.
     const bytes = concatBytes([encodeMintedTranscript(mintedTranscript()), Uint8Array.of(0x00)]);
-    expectFramedRejection(() => decodeMintedTranscript(bytes), /trailing byte/);
+    expectFramedRejection(() => decodeMintedTranscript(bytes), /padding length is 0, but 1 byte/);
   });
 
   it('rejects a truncated inline witness block', () => {
+    // Cut inside the minted master's block, which its 25-byte sender and 35-byte self alone outlast, and keep the
+    // padding length a transcript ends with.
     const bytes = encodeMintedTranscript(mintedTranscript());
-    expectFramedRejection(() => decodeMintedTranscript(bytes.subarray(0, bytes.length - 1)), /truncated/);
+    const cut = concatBytes([bytes.subarray(0, 20), Uint8Array.of(0x00, 0x00)]);
+    expectFramedRejection(() => decodeMintedTranscript(cut), /truncated/);
   });
 
   it('rejects a minted master output index above the one-byte range', () => {

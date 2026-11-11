@@ -874,6 +874,9 @@ export class Contract<
         const synthArgs = internalsProvided ? [] : [
           ...this.resolveBlockhashIndexArgs(abiFunction, sourceOutputs),
           ...this.resolveBlockOracleIndexArgs(abiFunction, sourceOutputs),
+          // A spend no caller made names no record.
+          ...(abiFunction.inputs.some((input) => input.name === '__internal__returnOutputIdx')
+            ? [bigIntToVmNumber(-1n)] : []),
         ];
 
         // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),

@@ -54,6 +54,12 @@ CONTROL_DELTAS[Op.OP_ENDIF] = -1;
 CONTROL_DELTAS[Op.OP_UNTIL] = -1;
 const BARRIER_FLAGS = new Uint8Array(256);
 for (const opcode of BARRIER_OPS) BARRIER_FLAGS[opcode] = 1;
+// Property (5) is a compiler convention, not a VM rule: OP_INVOKE leaves the alternate stack as it is. A caller
+// whose script nothing reads for that handoff afterwards, such as a finished framed master, may relocate both
+// halves of it.
+const BARRIER_FLAGS_RELOCATABLE_ALT_STACK = BARRIER_FLAGS.slice();
+BARRIER_FLAGS_RELOCATABLE_ALT_STACK[Op.OP_TOALTSTACK] = 0;
+BARRIER_FLAGS_RELOCATABLE_ALT_STACK[Op.OP_FROMALTSTACK] = 0;
 
 /**
  * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
@@ -201,10 +207,11 @@ const isAllowedNestedInvoke = (
 
 const isBarrier = (
   elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+  barrierFlags: Uint8Array,
 ): boolean => {
   const element = elements[index];
   return typeof element === 'number'
-    && BARRIER_FLAGS[element] !== 0
+    && barrierFlags[element] !== 0
     && !isAllowedNestedInvoke(elements, index, allowedNestedInvokeIds);
 };
 
@@ -235,7 +242,7 @@ interface BalanceScratch {
 function longestBalancedSpan(
   elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
-  allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+  allowedNestedInvokeIds: ReadonlySet<number> | undefined, barrierFlags: Uint8Array,
 ): BalanceScratch {
   let bestStart = 0;
   let bestEnd = 0;
@@ -247,7 +254,7 @@ function longestBalancedSpan(
   firstIndexAtDepth[0] = 0;
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
-    if (isBarrier(elements, regionStart + i, allowedNestedInvokeIds)
+    if (isBarrier(elements, regionStart + i, allowedNestedInvokeIds, barrierFlags)
       || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
       depth = 0;
       generation = ++scratch.generation;
@@ -1091,7 +1098,7 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
 function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
-  allowedNestedInvokeIds?: ReadonlySet<number>,
+  allowedNestedInvokeIds?: ReadonlySet<number>, barrierFlags: Uint8Array = BARRIER_FLAGS,
 ): Candidate[] {
   const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, bodySortedAnchors, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
@@ -1350,7 +1357,7 @@ function findCandidates(
     }
     const balanced = longestBalancedSpan(
       headScript, anchoredIndices, firstStart, length, bodyBytePrefixes[firstBody], balanceScratch,
-      allowedNestedInvokeIds,
+      allowedNestedInvokeIds, barrierFlags,
     );
     if (balanced.bestBytes === 0) continue;
 
@@ -1431,6 +1438,11 @@ export function outlineSharedSpans(
    * that barrier, and the id/OP_INVOKE pair is never split across an outlined-body boundary.
    */
   allowedNestedInvokeIds?: ReadonlySet<number>,
+  /**
+   * True when a span may carry OP_TOALTSTACK and OP_FROMALTSTACK (property 5), for a caller whose finished script
+   * nothing reads for its alternate-stack handoff.
+   */
+  relocatableAltStack = false,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -1448,7 +1460,8 @@ export function outlineSharedSpans(
   const nestedInvokePolicy = allowedNestedInvokeIds === undefined
     ? undefined
     : new Set(allowedNestedInvokeIds);
-  const nestedInvokePolicyKey = nestedInvokeCacheKey(allowedNestedInvokeIds);
+  const barrierFlags = relocatableAltStack ? BARRIER_FLAGS_RELOCATABLE_ALT_STACK : BARRIER_FLAGS;
+  const nestedInvokePolicyKey = `${nestedInvokeCacheKey(allowedNestedInvokeIds)}${relocatableAltStack ? ':alt' : ''}`;
   const intern: OutlineIntern = (initialCandidateCache?.get('intern') as OutlineIntern | undefined) ?? {
     keyIds: new Map(),
     bodyByScript: new WeakMap(),
@@ -1498,7 +1511,7 @@ export function outlineSharedSpans(
     const candidates = cached === undefined
       ? findCandidates(
         corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared,
-        nestedInvokePolicy,
+        nestedInvokePolicy, barrierFlags,
       )
       : costCandidates(cached, idPushBytes, ranking);
     if (round === 0 && cached === undefined) {

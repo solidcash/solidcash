@@ -66,6 +66,7 @@ import {
 import type { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, type WcSourceOutput, type WcTransactionOptions } from './walletconnect-utils.js';
+import { applyExternalSignatures } from './external-signing.js';
 import semver from 'semver';
 import type { WcTransactionObject } from './walletconnect-utils.js';
 import { attachWait } from './wait.js';
@@ -1487,7 +1488,7 @@ export class TransactionBuilder {
 
     // Build the transaction, then debug (for script-level errors), then check fees.
     // This order ensures FailedRequireError takes precedence over fee validation errors.
-    const transaction = this.buildLibauthTransaction();
+    const built = this.buildLibauthTransaction();
 
     const allStandard = this.inputs.every((input) => isStandardUnlockableUtxo(input));
     const hasCovenant = this.inputs.some((input) => isUnlockableUtxo(input) && isCovenantUnlocker(input.unlocker));
@@ -1502,6 +1503,12 @@ export class TransactionBuilder {
       }
     }
 
+    // A wallet that holds an input's key signs it now, over the transaction the debug step judged with its
+    // placeholder; everything after reads the signed bytes (./external-signing.ts).
+    const transaction = await applyExternalSignatures(
+      this.inputs.map((input) => input.unlocker), built,
+      this.lastBuiltSourceOutputs ?? generateLibauthSourceOutputs(this.inputs),
+    );
     this.checkMaxFee(transaction);
     const txBin = encodeTransaction(transaction);
     const tx = binToHex(txBin);
@@ -1530,7 +1537,8 @@ export class TransactionBuilder {
     // `standard: false` and `dustRelayFeePerKb: 0n`, which is a harness that models no relay policy at all.
     // `MockNetworkProvider` is also the only provider in `src/network/` that publishes `policy`, so wiring it
     // in here would soften the gate on the test harness and on nothing else. Only an exact preflight receipt
-    // from a protocol composer may carry a different destination profile into this second, final byte check.
+    // from a protocol composer may suppress a relay rule in this second, final byte check; a send without one
+    // judges consensus by the provider's published limits (see below) and relay by the rules themselves.
     //
     // X158. THE OVER-LIMIT REFUSAL LIVES HERE, and this is the only place it can. `solidc` warns when the
     // un-constructed script passes 10,000 bytes and cannot do better: it does not know the constructor
@@ -1548,12 +1556,17 @@ export class TransactionBuilder {
     // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
-    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, finalizedByteGateReceiptOf } = await import('./message-bus/preflight.js');
+    const { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } = await import('./message-bus/preflight.js');
+    const { finalizedByteGateReceiptOf } = await import('./message-bus/finalized-byte-gate.js');
+    // A send that never ran an exact message-bus preflight has no receipt. The destination provider's consensus
+    // limits are then the only consensus profile available, and they are the authority a real provider would judge
+    // the bytes against; a provider that publishes none gets the empty profile, BCH's own limits. Its limits reach
+    // the consensus rules only: the relay rules stay on, because a provider's profile says nothing about relay.
     assertFinalizedBytesWithCovenant(
       this,
       transaction,
       inputSubjectsOfBuilder(this),
-      finalizedByteGateReceiptOf(this),
+      finalizedByteGateReceiptOf(this) ?? { consensusLimits: this.provider.consensusLimits },
     );
 
     let txid: string;

@@ -106,12 +106,18 @@ export async function deployStatefulContract<T extends Artifact>(
   // lock is published, though the genesis puts nothing there.
   const reserveLockingBytecode = options.nativeToken?.reserve === undefined && wrapped === undefined ? undefined
     : addressToLockScript(getTokenContainerAddress(
-      new Contract(artifact, (framed ? [] : constructorArgs) as any, {
-        provider: options.provider,
-        addressType: options.addressType,
-        category: hexToBin(options.fundingUtxo.txid),
-        salt: options.salt,
-      }),
+      // A framed container's covenant is the artifact's own: only the creation args are part of the program, and
+      // they are needed here to build a valid handle (the constructor-block args are not).
+      new Contract(
+        artifact,
+        (framed ? constructorArgs.slice(0, artifact.constructorInputs.length) : constructorArgs) as any,
+        {
+          provider: options.provider,
+          addressType: options.addressType,
+          category: hexToBin(options.fundingUtxo.txid),
+          salt: options.salt,
+        },
+      ),
       options.fundingUtxo.txid.toLowerCase(),
       tokenCategory,
     ));
@@ -252,10 +258,25 @@ export async function deployStatefulContract<T extends Artifact>(
   });
   const leading = leadingOutputs(identity, prepared);
   const leadingTotal = leading.reduce((sum, output) => sum + output.amount, 0n);
-  const genesisInputs = prepared.nativeInput === undefined ? [] : [prepared.nativeInput];
+  const tokenContainerCoins = options.tokenContainers ?? [];
+  for (const { utxo } of tokenContainerCoins) {
+    if (utxo.token === undefined || utxo.token.amount <= 0n || utxo.token.nft !== undefined) {
+      throw new Error(`Token container coin ${utxo.txid}:${utxo.vout} must hold fungible tokens and no NFT.`);
+    }
+  }
+  const genesisInputs = [...(prepared.nativeInput === undefined ? [] : [prepared.nativeInput]), ...tokenContainerCoins];
   const inputTotal = genesisInputs.reduce((sum, input) => sum + input.utxo.satoshis, options.fundingUtxo.satoshis);
 
   const initialBalance = options.initialBalance ?? 0n;
+  // A call under `pragma satoshicontainer single` cannot open the satoshi container, so the deployment has to.
+  const needsSatoshiContainer = artifact.abi.some((fn) => fn.blockLayout?.singleSatoshiContainer === true
+    && fn.blockLayout.slots.some((slot) => slot.kind === 'satoshiContainer'));
+  if (needsSatoshiContainer && initialBalance <= 0n) {
+    throw new Error(
+      'Under pragma satoshicontainer single a call cannot open the satoshi container: pass initialBalance.',
+    );
+  }
+  const tokenContainerTotal = tokenContainerCoins.reduce((sum, { utxo }) => sum + utxo.satoshis, 0n);
   const totalMaster = masterAmount * BigInt(threadCount);
   const totalDataNft = delegateOnly ? 0n : dataNftAmount * BigInt(stateLayout.dataNftCount);
   const totalEntryNft = dataNftAmount * BigInt(entryOutputCount + trailingEntryOutputCount);
@@ -268,7 +289,8 @@ export async function deployStatefulContract<T extends Artifact>(
   const totalReserve = (prepared.reserveOutput?.amount ?? 0n) + (prepared.bearerOutput?.amount ?? 0n);
   const totalRequired = totalMaster + totalDataNft + totalEntryNft
     + totalEventNft + totalDynamicNft
-    + totalMessageBusVerifiers + totalIdentity + initialBalance + leadingTotal + totalReserve + estimatedFee;
+    + totalMessageBusVerifiers + totalIdentity + initialBalance + tokenContainerTotal + leadingTotal + totalReserve
+    + estimatedFee;
   const changeAmount = inputTotal - totalRequired;
 
   if (changeAmount < 0n) {
@@ -276,7 +298,8 @@ export async function deployStatefulContract<T extends Artifact>(
       `Insufficient funding: ${inputTotal} satoshis provided, `
       + `but ${totalRequired} needed `
       + `(master: ${totalMaster} (${threadCount}x${masterAmount}), data NFTs: ${totalDataNft}, `
-      + `entry NFTs: ${totalEntryNft}, event NFTs: ${totalEventNft}, fee estimate: ${estimatedFee}).`,
+      + `entry NFTs: ${totalEntryNft}, event NFTs: ${totalEventNft}, `
+      + `fee estimate: ${estimatedFee}).`,
     );
   }
 
@@ -534,6 +557,15 @@ export async function deployStatefulContract<T extends Artifact>(
   if (initialBalance > 0n) {
     const satoshiContainerAddress = getSatoshiContainerAddress(contract, categoryId);
     builder.addOutput({ to: satoshiContainerAddress, amount: initialBalance });
+  }
+
+  // A token coin moves whole into its container, so the genesis opens both containers.
+  for (const { utxo } of tokenContainerCoins) {
+    addFunded({
+      to: getTokenContainerAddress(contract, categoryId, utxo.token!.category),
+      amount: utxo.satoshis,
+      token: { category: utxo.token!.category, amount: utxo.token!.amount },
+    });
   }
 
   // The premint: the token's fungible amount, which only a genesis can create, held in the contract's token

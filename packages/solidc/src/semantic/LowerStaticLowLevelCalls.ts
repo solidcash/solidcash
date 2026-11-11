@@ -52,7 +52,12 @@ interface NamedCall {
   readonly args: ExpressionNode[];
   /** Set when no function of the target's interface has the payload's selector, which its fallback then runs. */
   readonly fallback?: LowLevelRoute['fallback'];
+  /** Set for a call named by its selector alone, whose return data is the callee's own (`LowLevelRoute`). */
+  readonly opaqueResult?: true;
 }
+
+/** The interface a selector-named call is typed through: one method of the payload's signature, returning bytes. */
+const SELECTOR_INTERFACE_PREFIX = '__lowLevelSelector_';
 
 /** A low-level call site, with the value the callee is addressed by and the spelling that chose its frame. */
 interface LowLevelSite {
@@ -98,6 +103,10 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   /** Every function, state variable and collection name a contract or an interface of the unit declares. */
   private declaredNames = new Set<string>();
   private counter = 0;
+  /** The unit being lowered, which a selector-named call's interface is declared in. */
+  private sourceFile: SourceFileNode | undefined;
+  /** The constants the unit binds, by name, which a selector operand may name. */
+  private constants = new Map<string, ExpressionNode>();
   /** The locals currently being followed, so a chain that names itself stops instead of recursing. */
   private resolving = new Set<string>();
   // One map per lexical block, innermost last. A name present here shadows any outer binding; a value that is not
@@ -121,6 +130,9 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFile = node;
+    this.constants = new Map([...node.constantDefinitions, ...(node.contract?.constantDefinitions ?? [])]
+      .map((constant) => [constant.name, constant.expression]));
     this.interfaces = new Map(node.interfaceDefinitions.map((iface) => [iface.name, iface]));
     this.declaredInterfaces = new Set(this.interfaces.keys());
     // A contract the unit declares is a call target too, typed as the semantic pass types it: by its entry points.
@@ -314,6 +326,11 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       if (!site) return undefined;
       const lowered = this.lower(site);
       if (!lowered) return undefined;
+      // The success local stays the one the body's own check reads, so the check can be published with the call.
+      const [success] = statement.elements;
+      if (success !== undefined && success.skip !== true && success.name !== undefined) {
+        lowered.call.lowLevelRoute = { ...lowered.call.lowLevelRoute!, successLocal: success.name };
+      }
       const values = [lowered.success, lowered.retval];
       statement.elements.forEach((element, index) => {
         if (element.skip) return;
@@ -389,7 +406,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   }
 
   private lower(site: LowLevelSite, discardResult = false): {
-    stmts: StatementNode[]; success: () => ExpressionNode; retval: () => ExpressionNode;
+    stmts: StatementNode[]; success: () => ExpressionNode; retval: () => ExpressionNode; call: MethodCallNode;
   } | undefined {
     const named = this.resolveNamedCall(site.payload, site.target);
     if (!named) return undefined;
@@ -404,7 +421,11 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     receiver.location = loc;
     const typedCall = new MethodCallNode(receiver, named.functionName, named.args);
     typedCall.location = loc;
-    typedCall.lowLevelRoute = { mode: site.mode, ...(named.fallback === undefined ? {} : { fallback: named.fallback }) };
+    typedCall.lowLevelRoute = {
+      mode: site.mode,
+      ...(named.fallback === undefined ? {} : { fallback: named.fallback }),
+      ...(named.opaqueResult === true ? { opaqueResult: true as const } : {}),
+    };
 
     const success = (): ExpressionNode => {
       const literal = new BoolLiteralNode(true);
@@ -438,19 +459,26 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
         tuple.location = loc;
         stmts.push(tuple);
       }
-      retval = (): ExpressionNode => {
-        const reads = names.map((name) => {
-          const read = new IdentifierNode(name);
+      retval = named.opaqueResult === true
+        // The callee's own return data, as the record carries it.
+        ? (): ExpressionNode => {
+          const read = new IdentifierNode(names[0]!);
           read.location = loc;
           return read;
-        });
-        const encoded = new AbiEncodeNode(reads);
-        encoded.location = loc;
-        encoded.type = new BytesType();
-        return encoded;
-      };
+        }
+        : (): ExpressionNode => {
+          const reads = names.map((name) => {
+            const read = new IdentifierNode(name);
+            read.location = loc;
+            return read;
+          });
+          const encoded = new AbiEncodeNode(reads);
+          encoded.location = loc;
+          encoded.type = new BytesType();
+          return encoded;
+        };
     }
-    return { stmts, success, retval };
+    return { stmts, success, retval, call: typedCall };
   }
 
   private resolveNamedCall(payload: ExpressionNode, target: ExpressionNode): NamedCall | undefined {
@@ -477,7 +505,9 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     }
     if (payload instanceof AbiEncodeWithSelectorNode) {
       const selector = payload.selector;
-      if (!(selector instanceof FieldAccessNode) || selector.name !== 'selector') return undefined;
+      if (!(selector instanceof FieldAccessNode) || selector.name !== 'selector') {
+        return this.resolveSelectorCall(selector, payload.parameters);
+      }
       const declaration = selector.expression;
       if (!(declaration instanceof FieldAccessNode) || !(declaration.expression instanceof IdentifierNode)) {
         return undefined;
@@ -528,6 +558,75 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       computeFunctionSelector(canonical(fn), this.evmCompat).every((byte, index) => byte === selector[index]));
     if (answered) return undefined;
     return { interfaceName, functionName: FALLBACK_ENTRY, args, fallback: { selector } };
+  }
+
+  /**
+   * The call a payload names by its selector alone: a 4-byte literal, or a constant bound to one or to
+   * `bytes4(keccak256(bytes("f(T1,..)")))`. The method is the one of that selector some interface or contract of the
+   * unit declares with as many parameters as the payload passes, or the signature the constant hashes. The target is
+   * a bare address, so nothing types its return data: the call is typed through an interface of that one method
+   * returning bytes, and keeps the callee's own result (`opaqueResult`).
+   */
+  private resolveSelectorCall(selectorExpression: ExpressionNode, args: ExpressionNode[]): NamedCall | undefined {
+    const resolved = this.selectorOf(selectorExpression, new Set());
+    if (resolved === undefined || this.sourceFile === undefined) return undefined;
+    const matches = (name: string, types: readonly Type[]): boolean => {
+      const selector = computeFunctionSelector(canonicalSelectorSignature(name, [...types]), true);
+      return selector.length === 4 && selector.every((byte, index) => byte === resolved.selector[index]);
+    };
+    let method: { readonly name: string; readonly parameters: readonly ParameterNode[] } | undefined;
+    for (const iface of this.interfaces.values()) {
+      const found = iface.functions.find((fn) => fn.parameters.length === args.length
+        && matches(fn.name, fn.parameters.map((parameter) => parameter.type)));
+      if (found !== undefined) {
+        method = found;
+        break;
+      }
+    }
+    if (method === undefined) return undefined;
+    const interfaceName = `${SELECTOR_INTERFACE_PREFIX}${[...resolved.selector]
+      .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    if (!this.interfaces.has(interfaceName)) {
+      const parameters = method.parameters.map((parameter, index) => new ParameterNode(
+        parameter.type, parameter.name || `arg${index}`));
+      const declared = new InterfaceNode(interfaceName, [], [], [
+        new InterfaceFunctionNode(method.name, parameters, [new BytesType()]),
+      ]);
+      this.sourceFile.interfaceDefinitions.push(declared);
+      this.interfaces.set(interfaceName, declared);
+      this.declaredInterfaces.add(interfaceName);
+    }
+    return { interfaceName, functionName: method.name, args, opaqueResult: true };
+  }
+
+  /** The 4-byte selector an operand names at compile time, or undefined for one only the running code holds. */
+  private selectorOf(
+    expression: ExpressionNode, seen: Set<string>,
+  ): { readonly selector: Uint8Array } | undefined {
+    if (expression instanceof HexLiteralNode) {
+      if (expression.value.length === 4) return { selector: expression.value };
+      if (expression.numericValue !== undefined && expression.numericValue < (1n << 32n)) {
+        const value = expression.numericValue;
+        return { selector: Uint8Array.of(Number((value >> 24n) & 0xffn), Number((value >> 16n) & 0xffn),
+          Number((value >> 8n) & 0xffn), Number(value & 0xffn)) };
+      }
+      return expression.value.length >= 4 ? { selector: expression.value.slice(0, 4) } : undefined;
+    }
+    if (expression instanceof CastNode) return this.selectorOf(expression.expression, seen);
+    if (expression instanceof FunctionCallNode && expression.identifier.name === 'keccak256'
+      && expression.parameters.length === 1) {
+      let argument = expression.parameters[0]!;
+      while (argument instanceof CastNode) argument = argument.expression;
+      if (!(argument instanceof StringLiteralNode)) return undefined;
+      return { selector: computeEvmFunctionSelector(argument.value) };
+    }
+    if (expression instanceof IdentifierNode && !seen.has(expression.name)) {
+      const bound = this.constants.get(expression.name);
+      if (bound === undefined) return undefined;
+      seen.add(expression.name);
+      return this.selectorOf(bound, seen);
+    }
+    return undefined;
   }
 
   /** The interface a call's target is typed as, through the address casts around it, or undefined. */

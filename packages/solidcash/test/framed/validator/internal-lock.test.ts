@@ -9,6 +9,7 @@
 import { test, expect } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import {
   MOCK_RELAXED_OPERATION_COST,
   MockNetworkProvider,
@@ -35,9 +36,9 @@ import {
 import { userPlan } from './plans.js';
 
 const relaxedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvider> =>
-  createVirtualMachineBch2026ForProvider(
+  settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
 
 type VmProgram = Parameters<ReturnType<typeof relaxedMachine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -222,4 +223,48 @@ test('accepts an internal call whose target is the helper lock and refuses a swa
   expect(swappedDecision.rejection?.check).toBe('V5');
   expect(swappedReference).toMatchObject({ accepted: false, check: 'V5' });
   expect(machineVerdict(swappedTx, swapped.validatorIndex, facets.length).accepted).toBe(false);
+}, 600_000);
+
+/**
+ * The same shape, with `A.right` a master of another contract at the helper's own lock. Every pair of a factory shares
+ * its master locks, so the lock alone cannot tell two pairs' helpers apart: a helper runs on its caller's records, and
+ * it must be a master of the contract those records belong to.
+ */
+function foreignHelperPlan(): CompositionPlan {
+  const plan = twoHelperPlan();
+  const foreign: ContractPlan = {
+    id: 'B',
+    category: categoryOf('internal-lock-B'),
+    masterLock: contractLockOf(seedBytes('code:internal-root-B', 8)),
+    stateLock: contractLockOf(seedBytes('state:internal-lock-B', 8)),
+    eventLock: contractLockOf(seedBytes('event:internal-lock-B', 8)),
+  };
+  return {
+    ...plan,
+    contracts: [...plan.contracts, foreign],
+    masters: plan.masters.map((master) => (master.id === 'A.right' ? { ...master, contract: 'B' } : master)),
+  };
+}
+
+test('refuses an internal helper of another contract at the same lock', () => {
+  const program = buildValidatorProgram();
+  const facets = buildValidatorFacets();
+  const composition = planComposition({ ...foreignHelperPlan(), validatorTemplate: program, validatorFacets: facets });
+  const honest = planComposition({ ...twoHelperPlan(), validatorTemplate: program, validatorFacets: facets });
+  // The helper's lock is the one the honest call names, so only the category differs.
+  const rightAt = composition.masterIndex.get('A.right')!;
+  const honestRightAt = honest.masterIndex.get('A.right')!;
+  expect(Buffer.from(composition.inputs[rightAt]!.lockingBytecode)
+    .equals(Buffer.from(honest.inputs[honestRightAt]!.lockingBytecode))).toBe(true);
+  expect(Buffer.from(composition.inputs[rightAt]!.token.category)
+    .equals(Buffer.from(honest.inputs[honestRightAt]!.token.category))).toBe(false);
+
+  const transaction = materialise(composition);
+  const options = { validatorTemplate: program, validatorInputIndex: composition.validatorIndex };
+  const decision = decideValidator(transaction, options);
+  expect(decision.accepted).toBe(false);
+  expect(decision.rejection?.reason).toBe('V5_INTERNAL_CATEGORY_MISMATCH');
+  expect(decideReference(transaction, options)).toMatchObject({ accepted: false, check: 'V5' });
+  const verdict = machineVerdict(transaction, composition.validatorIndex, facets.length);
+  expect(verdict.accepted).toBe(false);
 }, 600_000);

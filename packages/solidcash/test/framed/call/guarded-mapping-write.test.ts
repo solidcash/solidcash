@@ -210,8 +210,11 @@ async function heldCount(shared: World): Promise<number> {
   return (await shared.network.getUtxosByTokenCategory(shared.records)).length;
 }
 
+/** How the registry's mappings key an address: by the 20-byte identity, as a Solidity collection does. */
+const ADDRESS_KEYS = plain.stateLayout!.collections!.find((collection) => collection.name === 'members')!;
+
 /** The slot of `who`'s node: a flat mapping's slot is the key's own. */
-const slotOf = (who: Uint8Array): string => bytesToHex(keyToSlotMulti([who]));
+const slotOf = (who: Uint8Array): string => bytesToHex(keyToSlotMulti([who], ADDRESS_KEYS));
 
 /**
  * The master's verdict on a settled call that kept `who`'s node, and on the same call restated with the node
@@ -324,22 +327,34 @@ describe('a verified-mapping write a branch guards, entered taken and skipped', 
       expectRestatedSkipRefused(shared, skipped, D);
     }, 600_000);
 
-    it(`plans an undecided guard from the frame's own stop where the node exists, refused where not, ${path}`, async () => {
+    it(`plans an undecided guard from the frame's own stop where the node exists, and where not ${path}`, async () => {
       const shared = await world(behindProxy);
       const held = await heldCount(shared);
-      // The key holds no node, so whether the write creates one is the body's to say, and the call is refused.
-      const refused = await shared.enter('bump', [C, 9n]).then(() => undefined, (error: unknown) => error as Error);
-      expect(refused?.message).toMatch(new RegExp(`${behindProxy ? 'the implementation\'s "bump" entry' : 'entry "bump"'} `
-        + 'writes mapping "balances" under a condition this (hop|call) cannot decide from the frame\'s facts, at a key '
-        + 'the collection does not hold, so it cannot declare whether the write creates the key\'s node$'));
+      // The key holds no node, so whether the write creates one is the body's to say. The plain call plans it skipped
+      // and, refused, written: the body skips it here. The hop plans no other way, so it refuses the call by name.
+      if (behindProxy) {
+        const refused = await shared.enter('bump', [C, 9n]).then(() => undefined, (error: unknown) => error as Error);
+        expect(refused?.message).toMatch(new RegExp('the implementation\'s "bump" entry writes mapping "balances" '
+          + 'under a condition this hop cannot decide from the frame\'s facts, at a key the collection does not hold, '
+          + 'so it cannot declare whether the write creates the key\'s node$'));
+      } else {
+        await settle(shared, 'bump', [C, 9n]);
+        expect([await view(shared, 'balanceOf', [C]), await view(shared, 'bumps')]).toStrictEqual([0n, 1n]);
+      }
       expect(await heldCount(shared)).toBe(held);
-      // A held key's node: skipped twice, its value learned from the check of the arm not taken, then written.
+      // A held key's node: skipped, its value learned from the check of the arm not taken, then written.
       await settle(shared, 'top', [D, 3n, true]);
-      await settle(shared, 'bump', [D, 9n]);
+      if (behindProxy) await settle(shared, 'bump', [D, 9n]);
       await settle(shared, 'bump', [D, 9n]);
       expect([await view(shared, 'balanceOf', [D]), await view(shared, 'bumps')]).toStrictEqual([3n, 2n]);
       await settle(shared, 'bump', [D, 9n]);
       expect([await view(shared, 'balanceOf', [D]), await view(shared, 'bumps')]).toStrictEqual([9n, 3n]);
+      // The key holds no node and the body writes it: the plain call's frame refuses the skip, and the write creates
+      // the node.
+      if (!behindProxy) {
+        await settle(shared, 'bump', [C, 4n]);
+        expect([await view(shared, 'balanceOf', [C]), await view(shared, 'bumps')]).toStrictEqual([4n, 4n]);
+      }
     }, 600_000);
   }
 });

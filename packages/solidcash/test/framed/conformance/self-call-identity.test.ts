@@ -62,8 +62,6 @@ const ROWS: readonly Row[] = [
   },
   {
     label: 'IA(address(this)).g()', entry: 'viaInterfaceSelf', evm: 'A',
-    // A call to its own address needs a second master of the root's contract, which the planner does not give it.
-    refusal: /the call to "IA\.whoExt" reaches "A", which this hop already places/,
     members: `${WHO} function viaInterfaceSelf() external returns (address) { marker += 1;`
       + ' return IA(address(this)).whoExt(); }',
   },

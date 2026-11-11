@@ -585,6 +585,12 @@ export async function orchestrateCreateBuilderNestedComposeCallsite(
       externalCallUtxoGroups,
       lowLevelCallUtxoGroups,
     });
+    // F1: the delegated implementation pins this call's edge, in its state owner's category.
+    const published = externalCallUtxoGroups[childExternalGroupIndex];
+    if (published !== undefined && delegateFn?.externalCalls?.includes(nested)) {
+      published.edgeDelegateGroupIndex = delegateGroupIndex;
+      published.edgeEcSlot = delegateFn.externalCalls.indexOf(nested);
+    }
     {
       const finished = finishCreateBuilderNestedComposeImpl(
         {

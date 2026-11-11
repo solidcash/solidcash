@@ -174,4 +174,26 @@ describe('FramedNativeToken', () => {
     expect(outcome).not.toBe('ACCEPTED');
     expectScriptRejection(outcome, masterIndex);
   }, 900_000);
+
+  it('deploys as the wrapper of an existing category, its registry read from the framed views', async () => {
+    const provider = new MockNetworkProvider();
+    const fundingUtxo = { txid: 'f3'.repeat(32), vout: 0, satoshis: 5_000_000n };
+    await provider.addUtxo(binToHex(alice.lock), fundingUtxo);
+    await fundShippedFacets(provider);
+    // A category its issuer created before any wrapper: the deployment names it and mints nothing.
+    const category = 'e4'.repeat(32);
+    const timestamp = '2026-11-01T12:00:00.000Z';
+    // No field is stated, so the probe reads name(), symbol() and decimals(), and totalSupply() must read 0: each
+    // through the framed read, on the entry's own shard, since the genesis mints no monolithic master.
+    const deployed = await deployStatefulContract(bundle.logical, [], {
+      provider, fundingUtxo, funder: alice.signer.unlockP2PKH(), changeAddress: aliceAddress,
+      functionSplit: bundle, initArgs: [hexToBin(category)],
+      bcmr: { timestamp }, nativeToken: { category },
+    });
+    const snapshot = deployed.registry!.registry.identities![deployed.categoryId]![timestamp]!;
+    expect(snapshot.name).toBe('Framed Native Token');
+    expect(snapshot.token).toEqual({ category: deployed.categoryId, symbol: 'FNT', decimals: 8 });
+    expect(deployed.tx.outputs.some((output) => output.token !== undefined
+      && binToHex(output.token.category) === category)).toBe(false);
+  }, 900_000);
 });

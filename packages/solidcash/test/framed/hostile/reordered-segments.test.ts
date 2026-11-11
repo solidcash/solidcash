@@ -44,7 +44,7 @@ const RECORD_ID = 'record';
 const USER_ID = 'user';
 const READER_USER_ID = 'reader';
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ` contract B { function g() { IA(0x${hexOf(seededAddress(A_LABEL))}).k.call(); require(true); } }`
@@ -291,7 +291,9 @@ describe('a master whose declared segments are out of order (T9, T30)', () => {
     expect(decisionOf(composed).accepted).toBe(true);
     // The control is a spend every input accepts, so the swap below is the only difference from an honest spend.
     expect(composed.outcome.verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`))
-      .toStrictEqual(['a-f:true', 'a-k:true', 'validator:true', 'validator/1:true', 'record:true', 'b-g:true']);
+      .toStrictEqual([
+        'a-f:true', 'a-k:true', 'validator:true', 'validator/1:true', 'validator/2:true', 'record:true', 'b-g:true',
+      ]);
   });
 
   it('refuses the swapped spend by name, and the machine refuses it at the validator', () => {

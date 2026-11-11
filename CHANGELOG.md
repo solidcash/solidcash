@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.50.1
+
+`@solidcash/solidcash` only; the other packages stay at 0.50.0, whose `^0.50.0` ranges take it.
+
+- A deployment's metadata probe signs with placeholders. The probe genesis, which reads a token's name, symbol, decimals
+  and supply before the registry is built, is held and never broadcast, yet it asked a wallet that funds the deployment
+  to sign it, so the wallet saw two geneses for one. A wallet now signs once, for the genesis that goes out; a local key
+  signs the probe as before.
+
+## 0.50.0
+
+SolidCash's version numbers now depart from CashScript's: 0.50.0 follows 0.14.0-beta.1 and tracks no CashScript release.
+Source files need `pragma solidcash ^0.50.0`, and all six packages move together.
+
+- The framed validator is 4,906 bytes. Every framed address differs from an earlier build's, so deploy a new category.
+- A facet recreates itself, so a stranger cannot sweep the coins every composition of a build shares.
+- A record is named by its input if it is spent, and by its output, or kept at its index, if it is created.
+- An internal helper must be of the caller's context category.
+- A call takes a deployment's pools in an order of its own, and a frame leaves unspent the data records it only counts.
+- A slow server or a node's refusal ends a call's plan search with that error, rather than another plan's refusal.
+- A send keeps the relay rules when its provider publishes relaxed limits, as a mock and a devnet do. It had lost them, so
+  a below-dust output settled there.
+- A returning call that omits an argument its record binds is refused by name, where it crashed the compiler.
+- A parent's local no longer resolves into a child's body when a deploy folds, and the direct path orders address keys as
+  framed does.
+- An external call's arguments and guards can read `block.number` on a root call.
+
+### Known issues
+
+- On the direct convention, a nested callee's external call under a false guard on `block.number` or `block.timestamp`
+  spends the callee anyway and lands the wrong state, because the guard is not published on those paths. A false guard on
+  state or a constant fails closed there. Root calls and the framed convention are not affected.
+- `block.number` in a nested callee's external-call arguments is still unresolved on the direct convention.
+
 ## 0.14.0-beta.1
 
 Release-candidate notes: see [`docs/release/0.14.0/RELEASE_NOTES_0.14.0.md`](docs/release/0.14.0/RELEASE_NOTES_0.14.0.md).

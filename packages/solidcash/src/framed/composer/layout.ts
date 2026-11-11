@@ -22,7 +22,7 @@ export interface ContractBlock {
   readonly state: readonly string[];
   /**
    * The recovery side-car inputs each master co-spends, keyed by master id, in the order that master's body reads
-   * them: the A/B pair of each recovery call, then one keccak side-car per EVM projection. Each listed input is
+   * them: the side-car of each recovery call, then one keccak side-car per EVM projection. Each listed input is
    * placed immediately after its own master's input, so the master's body can address it at that offset, and is
    * recreated at its own index like every other participant. A master not named here, and a block that states no
    * recovery at all, lay out exactly as before.

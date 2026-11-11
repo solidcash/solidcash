@@ -43,7 +43,7 @@ const DEPOSIT_SELECTOR = computeFunctionSelector(computeFunctionSignature('depos
 const AMOUNT = 10_000n;
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IWrapper { function deposit(); }'
   + ' contract Wrapper { function deposit() payable { require(msg.value > 0); } }'
   + ' contract Payer { function forward(int amount) {'
@@ -85,8 +85,11 @@ interface Deposit {
 function verdicts(deposit: Deposit = {}): Record<'payer' | 'wrapper' | 'validator', boolean> {
   const payerProgram = program('Payer', CATEGORY_PAYER, ADDRESS_PAYER);
   const wrapperProgram = program('Wrapper', CATEGORY_WRAPPER, ADDRESS_WRAPPER);
+  // The validator settles both covered masters' contracts, and so weighs both contracts' containers (V7).
   const validator = validatorSpend(CATEGORY_PAYER, {
-    roots: [PAYER_INDEX], masters: [PAYER_INDEX, WRAPPER_INDEX], settles: [],
+    roots: [PAYER_INDEX],
+    masters: [PAYER_INDEX, WRAPPER_INDEX],
+    settles: [{ category: CATEGORY_PAYER, stateInputs: [] }, { category: CATEGORY_WRAPPER, stateInputs: [] }],
   });
   const facets = validatorFacetPlacements();
   const recordValue = deposit.recordValue ?? AMOUNT;
@@ -187,12 +190,12 @@ describe('a typed call carrying value, compiled framed', () => {
     expect(verdicts({ payerIn: [], payerOut: [] })).toStrictEqual({ payer: true, wrapper: true, validator: true });
   });
 
-  it('is refused by the wrapper when its containers receive less than its frame value', () => {
-    expect(verdicts({ wrapperOut: [AMOUNT - 1n] }).wrapper).toBe(false);
+  it('is refused by the validator when the wrapper\'s containers receive less than its frame value (V7)', () => {
+    expect(verdicts({ wrapperOut: [AMOUNT - 1n] })).toStrictEqual({ payer: true, wrapper: true, validator: false });
   });
 
-  it('is refused by the payer when its containers give up more than its call carries', () => {
-    expect(verdicts({ payerOut: [30_000n] }).payer).toBe(false);
+  it('is refused by the validator when the payer\'s containers give up more than its call carries (V7)', () => {
+    expect(verdicts({ payerOut: [30_000n] })).toStrictEqual({ payer: true, wrapper: true, validator: false });
   });
 
   it('is refused by the payer when the record carries another value than the amount its code computed', () => {

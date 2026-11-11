@@ -101,7 +101,7 @@ export function deriveFullPhase2ApplyDynamicChunks(
     if (chunkVars.length === 0) return stb.getChunkOutputBase();
     const suffixVar = chunkVars.find((variable) => variable.delegateSuffix === true);
     if (suffixVar) {
-      // Delegate writes use TXOUTPUTCOUNT-1-nNew (one trailing OP_RETURN/change).
+      // Delegate writes use TXOUTPUTCOUNT-1-nNew (one trailing filler/change).
       const nNew = Math.max(1, stb.getChunkRawCommitments(suffixVar.name).length);
       return Math.max(0, probeBuilder2.outputs.length - 1 - nNew);
     }

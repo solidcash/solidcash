@@ -22,12 +22,16 @@
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
+  PUSHDATA2_OPCODE,
   WITNESS_BLOCK_HEADER_LENGTH,
   dropPrefix,
   readOwnWitnessBlockScript,
+  skipRecordScript,
+  skipSegmentScript,
   takeFixedWidthField,
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
+  takeRecordFieldsScript,
 } from './witness-reader.js';
 
 /** The u16 index the codec reserves for a record with no input or no output. */
@@ -44,7 +48,7 @@ export type RecordSide = 'in' | 'out';
  * as many call records as it makes, so the walk takes the segment index from the stack beneath the record it reads
  * and the call count from the block as it walks it; its entry gains one item: `[..., segmentIndex, coordinate]`.
  */
-export type DeclaredViewCounts =
+export type DeclaredViewCounts = (
   | {
     /** The segment the body is running in, as the number of its external calls already executed. */
     readonly segmentIndex: number;
@@ -52,7 +56,15 @@ export type DeclaredViewCounts =
     readonly callCount: number;
     readonly runtimeCounts?: false;
   }
-  | { readonly runtimeCounts: true };
+  | { readonly runtimeCounts: true }
+) & {
+  /**
+   * True when the caller has put the frame's segments, which the head keeps each led by its length
+   * (`segmentsSlotName`), on top of the read's own entry, so the read steps to its segment from there instead of
+   * reading the block and stepping over the frame's header, its call records and the earlier segments' records.
+   */
+  readonly segmentsOnTop?: boolean;
+};
 
 export type DeclaredViewOptions = DeclaredViewCounts & {
   /** Which index field selects the record, and therefore which view is returned. */
@@ -75,16 +87,13 @@ export type DeclaredRecordOrdinalOptions = DeclaredViewCounts & {
  * segment's declared count fails the read rather than selecting a record the frame did not declare.
  */
 export function declaredRecordOrdinalViewScript(options: DeclaredRecordOrdinalOptions): Uint8Array {
-  return buildOrdinalWalk(options, ({ op, skipField, takeView }) => {
+  return buildOrdinalWalk(options, ({ op, raw }) => {
     // The target record leads. Read its view for this side and leave only that view.
-    skipField(takeFixedWidthField(2)); // in
-    skipField(takeFixedWidthField(2)); // out
-    if (options.side === 'in') {
-      takeView(takeLengthPrefixedField32()); // viewIn, dropping the record's remaining fields
-    } else {
-      skipField(takeLengthPrefixedField32()); // viewIn
-      takeView(takeLengthPrefixedField32()); // viewOut
-    }
+    raw(takeRecordFieldsScript()); // [count, ordinal, in, out, viewIn, viewOut, rest]
+    op(Opcodes.OP_DROP);
+    if (options.side === 'in') op(Opcodes.OP_DROP);
+    else op(Opcodes.OP_NIP);
+    op(Opcodes.OP_NIP, Opcodes.OP_NIP); // the indices
     op(Opcodes.OP_TOALTSTACK); // park the view while the walk's own items go
     op(Opcodes.OP_2DROP); // count, ordinal
     op(Opcodes.OP_FROMALTSTACK);
@@ -122,14 +131,13 @@ export function declaredRecordOrdinalIndexScript(options: DeclaredRecordOrdinalO
  * count fails the read.
  */
 export function declaredRecordOrdinalFieldsScript(options: DeclaredViewCounts): Uint8Array {
-  return buildOrdinalWalk({ ...options, side: 'in' }, ({ op, raw }) => {
-    raw(takeFixedWidthField(2)); // in
-    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
-    raw(takeFixedWidthField(2)); // out
-    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
-    raw(takeLengthPrefixedField32()); // viewIn
-    raw(takeLengthPrefixedField32()); // viewOut
+  return buildOrdinalWalk({ ...options, side: 'in' }, ({ op, raw, num }) => {
+    raw(takeRecordFieldsScript());
     op(Opcodes.OP_DROP); // [count, ordinal, in, out, viewIn, viewOut]
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM);
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM); // [count, ordinal, viewIn, viewOut, in, out]
+    num(3); op(Opcodes.OP_ROLL);
+    num(3); op(Opcodes.OP_ROLL); // [count, ordinal, in, out, viewIn, viewOut]
     op(Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK);
     op(Opcodes.OP_2DROP); // count, ordinal
     op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK);
@@ -148,17 +156,9 @@ export function declaredSegmentRecordCountScript(options: DeclaredViewCounts): U
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
-  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK); // the segment index, taken as the walk reaches it
-  raw(readOwnWitnessBlockScript());
-  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  skipField(takeLengthPrefixedField()); // sender
-  skipField(takeLengthPrefixedField()); // self
-  skipField(takeFixedWidthField(8)); // value
-  skipField(takeLengthPrefixedField32()); // retval
-  stepDeclaredCallRecords(bytes, options, op, raw, num);
-  skipField(takeFixedWidthField(2)); // declared segment count
+  // The segment index, taken as the walk reaches it.
+  walkToSegments(bytes, options, options.runtimeCounts === true ? 1 : 0, op, raw, num);
   stepDeclaredSegments(options, op, raw, num);
   raw(takeFixedWidthField(2)); // [countBytes, rest]
   op(Opcodes.OP_DROP, Opcodes.OP_BIN2NUM);
@@ -173,6 +173,10 @@ export function declaredSegmentRecordCountScript(options: DeclaredViewCounts): U
  * another frame created: V7 then holds a created record's first view to nothing, so a declared view of such a
  * record is one an earlier frame wrote. A master settling alone holds no created view to anything, so without the
  * flag a declared view that no input carries is the declaration's word alone.
+ *
+ * A body asks it at every segment that keeps records, and the answer cannot change within the frame, so a master
+ * that asks more than once computes it once ({@link defineValidatorSettledScript}) and asks the definition
+ * ({@link validatorSettledFlagScript}).
  */
 export function validatorSettledScript(): Uint8Array {
   const bytes: number[] = [];
@@ -180,9 +184,7 @@ export function validatorSettledScript(): Uint8Array {
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
 
-  raw(readOwnWitnessBlockScript());
-  num(WITNESS_BLOCK_HEADER_LENGTH - 2); op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
-  num(2); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  raw(ownValidatorReferenceScript());
   raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_EQUAL, Opcodes.OP_NOT);
   op(Opcodes.OP_IF, Opcodes.OP_0, Opcodes.OP_0, Opcodes.OP_BEGIN);
   op(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_EQUAL);
@@ -193,11 +195,66 @@ export function validatorSettledScript(): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+/**
+ * The function identifier a master defines its {@link validatorSettledScript} answer under. Two bytes, so it is none
+ * of the one-byte identifiers the outliner draws first and no entry's four-byte selector.
+ */
+export const VALIDATOR_SETTLED_FUNCTION_ID = 0x5a5a;
+
+/**
+ * Entry `[...]`, exit `[..., flag]`: the frame's {@link validatorSettledScript} answer, as the master defined it before
+ * its body ran.
+ */
+export function validatorSettledFlagScript(): Uint8Array {
+  return new Uint8Array([
+    ...encodeDataPush(minimalNumber(VALIDATOR_SETTLED_FUNCTION_ID)), Opcodes.OP_INVOKE,
+  ]);
+}
+
+/**
+ * Computes the frame's {@link validatorSettledScript} answer once and defines a function that pushes it, under
+ * {@link VALIDATOR_SETTLED_FUNCTION_ID}. It reads only the transaction and the input's own unlocking bytecode, so it
+ * runs ahead of the program, and it leaves the stack as it found it.
+ */
+export function defineValidatorSettledScript(): Uint8Array {
+  return new Uint8Array([
+    ...validatorSettledScript(),
+    Opcodes.OP_IF, ...encodeDataPush(new Uint8Array([Opcodes.OP_1])),
+    Opcodes.OP_ELSE, ...encodeDataPush(new Uint8Array([Opcodes.OP_0])), Opcodes.OP_ENDIF,
+    ...encodeDataPush(minimalNumber(VALIDATOR_SETTLED_FUNCTION_ID)), Opcodes.OP_DEFINE,
+  ]);
+}
+
+/**
+ * Leaves the frame's `validatorRef` field, read from where it sits in the input's own unlocking bytecode.
+ *
+ * Entry `[...]`, exit `[..., validatorRef]`. The block is the unlocking bytecode's first push, in one of the two forms a
+ * real block takes, so the field is at a fixed offset past that push's own opcode and length: only the bytes up to it
+ * are cut from the unlocking bytecode rather than the whole block being read out.
+ */
+export function ownValidatorReferenceScript(): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { bytes.push(...script); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  // The reference ends `WITNESS_BLOCK_HEADER_LENGTH` bytes into the block, which a PUSHDATA2 opens three bytes in and
+  // a PUSHDATA1 two.
+  op(Opcodes.OP_INPUTINDEX, Opcodes.OP_INPUTBYTECODE);
+  num(WITNESS_BLOCK_HEADER_LENGTH + 3); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  op(Opcodes.OP_DUP); num(1); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  raw(encodeDataPush(new Uint8Array([PUSHDATA2_OPCODE]))); op(Opcodes.OP_EQUAL);
+  op(Opcodes.OP_IF); num(WITNESS_BLOCK_HEADER_LENGTH + 1); op(Opcodes.OP_ELSE); num(WITNESS_BLOCK_HEADER_LENGTH);
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+  num(2); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  return new Uint8Array(bytes);
+}
+
 interface OrdinalWalkEmitters {
   readonly op: (...opcodes: number[]) => void;
   readonly raw: (script: Uint8Array) => void;
+  readonly num: (value: number) => void;
   readonly skipField: (field: Uint8Array) => void;
-  readonly takeView: (field: Uint8Array) => void;
 }
 
 /**
@@ -213,21 +270,11 @@ function buildOrdinalWalk(
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
   const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
-  const takeView = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_SWAP, Opcodes.OP_NIP); };
 
   // The ordinal is parked for the walk and used once the target segment's record list is on top; a walk over the
   // running execution's own counts parks the segment index beside it, because the block's call count is read as the
   // walk reaches it.
-  op(Opcodes.OP_TOALTSTACK);
-  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK);
-  raw(readOwnWitnessBlockScript());
-  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  skipField(takeLengthPrefixedField()); // sender
-  skipField(takeLengthPrefixedField()); // self
-  skipField(takeFixedWidthField(8)); // value
-  skipField(takeLengthPrefixedField32()); // retval
-  stepDeclaredCallRecords(bytes, options, op, raw, num); // declared call count, then its records
-  skipField(takeFixedWidthField(2)); // declared segment count
+  walkToSegments(bytes, options, options.runtimeCounts === true ? 2 : 1, op, raw, num);
   stepDeclaredSegments(options, op, raw, num);
 
   // The target segment's record list. `[records, count]` with the records on top, then the ordinal below the count.
@@ -245,16 +292,13 @@ function buildOrdinalWalk(
   op(Opcodes.OP_IF);
   op(Opcodes.OP_ELSE);
   op(Opcodes.OP_BEGIN);
-  skipField(takeFixedWidthField(2)); // in
-  skipField(takeFixedWidthField(2)); // out
-  skipField(takeLengthPrefixedField32()); // viewIn
-  skipField(takeLengthPrefixedField32()); // viewOut
+  raw(skipRecordScript());
   op(Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP); // ordinal -= 1
   num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL); // repeat until it reaches zero
   op(Opcodes.OP_UNTIL);
   op(Opcodes.OP_ENDIF);
 
-  tail({ op, raw, skipField, takeView });
+  tail({ op, raw, num, skipField });
   return new Uint8Array(bytes);
 }
 
@@ -263,7 +307,7 @@ function buildOrdinalWalk(
  *
  * Entry `[..., coordinate]`, exit `[..., view]`. A record is:
  *
- *     in:u16 out:u16 viewIn:u32-len viewOut:u32-len
+ *     in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut
  *
  * A record the segment declares more than once, a predecessor several inserts share, is read at its first
  * declaration on the input side, its view when the segment began, and at its last on the output side.
@@ -275,21 +319,11 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
   // The coordinate is parked for the walk and recovered once the record is found; a walk over the running
   // execution's own counts parks the segment index beside it, because the block's call count is read as the walk
   // reaches it.
-  op(Opcodes.OP_TOALTSTACK);
-  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK);
-  raw(readOwnWitnessBlockScript());
-  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  skipField(takeLengthPrefixedField()); // sender
-  skipField(takeLengthPrefixedField()); // self
-  skipField(takeFixedWidthField(8)); // value
-  skipField(takeLengthPrefixedField32()); // retval
-  stepDeclaredCallRecords(bytes, options, op, raw, num); // declared call count, then its records
-  skipField(takeFixedWidthField(2)); // declared segment count
+  walkToSegments(bytes, options, options.runtimeCounts === true ? 2 : 1, op, raw, num);
   stepDeclaredSegments(options, op, raw, num);
 
   // The target segment's record list. The result starts empty and is replaced by the matching record's view; a
@@ -309,27 +343,21 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
   op(Opcodes.OP_ELSE);
   op(Opcodes.OP_BEGIN);
   {
-    // Read the field that selects the record, and compare it with the parked coordinate.
-    if (options.side === 'out') skipField(takeFixedWidthField(2)); // the `in` field leads the record
-    raw(takeFixedWidthField(2));
-    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM);
+    // The record, then the field that selects it compared with the parked coordinate, and the view this side names:
+    // `[result, count, cursor, in, out, viewIn, viewOut, rest]` to `[result, count, cursor, rest, view]`.
+    raw(takeRecordFieldsScript());
+    if (options.side === 'in') {
+      op(Opcodes.OP_NIP); // viewOut
+      num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM); // the `in` field selects it
+    } else {
+      num(2); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); // viewIn
+      num(2); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM); // the `out` field selects it
+    }
     raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK]));
     op(Opcodes.OP_EQUAL);
     op(Opcodes.OP_TOALTSTACK); // park the match while the view is read
-
-    // Advance to the view this side names, consuming the record's remaining fields.
-    if (options.side === 'in') {
-      skipField(takeFixedWidthField(2)); // out
-      raw(takeLengthPrefixedField32()); // viewIn
-      op(Opcodes.OP_SWAP);
-      op(Opcodes.OP_SWAP);
-      skipField(takeLengthPrefixedField32()); // viewOut
-      op(Opcodes.OP_SWAP);
-    } else {
-      skipField(takeLengthPrefixedField32()); // viewIn
-      raw(takeLengthPrefixedField32()); // viewOut
-      op(Opcodes.OP_SWAP);
-    }
+    num(2); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); // the other index
+    op(Opcodes.OP_SWAP);
 
     // newResult = match ? view : result. `result` is on top: the match arm drops it, the other drops the view.
     // The input side keeps the first match: a later one only counts while the result is still empty.
@@ -360,6 +388,37 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
   // A read that matched no declared record fails here rather than resolving to the spent commitment.
   op(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_VERIFY);
   return new Uint8Array(bytes);
+}
+
+/**
+ * Parks the read's `parked` entry items and leaves the frame's segments on top, at the first segment.
+ *
+ * The items are the ones the read selects by (its coordinate, ordinal or name, then the segment index of run-time
+ * counts), topmost first. With `segmentsOnTop` the head's kept segments are already on top of them, so each is taken
+ * from beneath them; otherwise the block is read from the transaction and stepped to its segment section.
+ */
+function walkToSegments(
+  bytes: number[],
+  options: DeclaredViewCounts,
+  parked: number,
+  op: (...opcodes: number[]) => void,
+  raw: (script: Uint8Array) => void,
+  num: (value: number) => void,
+): void {
+  if (options.segmentsOnTop === true) {
+    for (let item = 0; item < parked; item += 1) op(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
+    return;
+  }
+  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
+  for (let item = 0; item < parked; item += 1) op(Opcodes.OP_TOALTSTACK);
+  raw(readOwnWitnessBlockScript());
+  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  skipField(takeLengthPrefixedField()); // sender
+  skipField(takeLengthPrefixedField()); // self
+  skipField(takeFixedWidthField(8)); // value
+  skipField(takeLengthPrefixedField32()); // retval
+  stepDeclaredCallRecords(bytes, options, op, raw, num); // declared call count, then its records
+  skipField(takeFixedWidthField(2)); // declared segment count
 }
 
 /**
@@ -408,8 +467,28 @@ function stepDeclaredSegments(
   raw: (script: Uint8Array) => void,
   num: (value: number) => void,
 ): void {
+  if (options.segmentsOnTop === true) {
+    // The segments the head keeps lead each with its two-byte length, so one is stepped over with one split, and the
+    // one the read resolves against is cut out alone.
+    if (options.runtimeCounts !== true) {
+      raw(keptSegmentsSkipScript(options.segmentIndex));
+    } else {
+      op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP); // [segmentIndex, rest]
+      raw(keptSegmentsSkipRuntimeScript());
+    }
+    raw(takeFixedWidthField(2));
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+    return;
+  }
+  // The block's own segments lead each with its length, as the head keeps them, so the one the read resolves
+  // against is cut out alone here too.
+  const cutTarget = (): void => {
+    raw(takeFixedWidthField(2));
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  };
   if (options.runtimeCounts !== true) {
     for (let segment = 0; segment < options.segmentIndex; segment += 1) skipSegment(op, raw, num);
+    cutTarget();
     return;
   }
   op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP); // [segmentIndex, rest]
@@ -423,9 +502,48 @@ function stepDeclaredSegments(
   op(Opcodes.OP_UNTIL);
   op(Opcodes.OP_ENDIF);
   op(Opcodes.OP_NIP); // the segment index
+  cutTarget();
+}
+
+/** One kept segment, led by its two-byte length, stepped off the front of the head's kept run. */
+function skipKeptSegment(): number[] {
+  return [...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT, Opcodes.OP_NIP];
 }
 
 /**
+ * Builds the script that steps `count` of the segments the head keeps (`segmentsSlotName`) off the run on top.
+ *
+ * Entry `[..., run]`, exit `[..., run']`: one split a segment, whatever records it declares.
+ */
+export function keptSegmentsSkipScript(count: number): Uint8Array {
+  const bytes: number[] = [];
+  for (let segment = 0; segment < count; segment += 1) bytes.push(...skipKeptSegment());
+  return new Uint8Array(bytes);
+}
+
+/**
+ * Builds the script that steps a run-time number of the segments the head keeps off the run on top.
+ *
+ * Entry `[..., count, run]`, exit `[..., run']`, the count consumed; a count of zero steps over none.
+ */
+export function keptSegmentsSkipRuntimeScript(): Uint8Array {
+  const one = encodeDataPush(minimalNumber(1));
+  return new Uint8Array([
+    ...one, Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_BEGIN,
+    ...skipKeptSegment(),
+    Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP,
+    ...one, Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_NIP,
+  ]);
+}
+
+/**
+ * Builds the script that steps `count` whole segments off the tail on top, leaving the rest./**
  * Builds the script that steps `count` whole segments off the tail on top, leaving the rest.
  *
  * Entry `[..., tail]`, exit `[...]`, with the tail beginning at the first of the skipped segments' declared
@@ -480,35 +598,13 @@ function skipCallRecord(bytes: number[]): void {
   emit(takeLengthPrefixedField32()); // result
 }
 
-/** Steps one whole segment off the block on top: its declared count, then each of its records. */
+/** Steps one whole segment off the block on top, by the length it leads with. */
 function skipSegment(
-  op: (...opcodes: number[]) => void,
+  _op: (...opcodes: number[]) => void,
   raw: (script: Uint8Array) => void,
-  num: (value: number) => void,
+  _num: (value: number) => void,
 ): void {
-  const skipRecord = (): void => {
-    const emit = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
-    emit(takeFixedWidthField(2)); // in
-    emit(takeFixedWidthField(2)); // out
-    emit(takeLengthPrefixedField32()); // viewIn
-    emit(takeLengthPrefixedField32()); // viewOut
-  };
-  raw(takeFixedWidthField(2));
-  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
-  op(Opcodes.OP_0, Opcodes.OP_SWAP); // [rest, cursor, count]
-  // As in the target segment, a segment that declares no record must not run the skip body once.
-  num(2); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
-  op(Opcodes.OP_IF);
-  op(Opcodes.OP_ELSE);
-  op(Opcodes.OP_BEGIN);
-  skipRecord();
-  op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
-  num(1); op(Opcodes.OP_PICK);
-  num(3); op(Opcodes.OP_PICK);
-  op(Opcodes.OP_GREATERTHANOREQUAL);
-  op(Opcodes.OP_UNTIL);
-  op(Opcodes.OP_ENDIF);
-  op(Opcodes.OP_NIP, Opcodes.OP_NIP);
+  raw(skipSegmentScript());
 }
 
 /** A script number in its minimal push form; zero is the empty push. */
@@ -557,27 +653,24 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
   const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
-  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK); // the segment index, taken as the walk reaches it
-  raw(readOwnWitnessBlockScript());
   // Whether the frame shares a validator-settled transaction with another master of its contract: a validator is
   // referenced and another input holds the category's minting token.
-  op(Opcodes.OP_DUP); num(WITNESS_BLOCK_HEADER_LENGTH - 2); op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
-  num(2); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
-  raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_EQUAL, Opcodes.OP_NOT);
-  op(Opcodes.OP_IF, Opcodes.OP_0, Opcodes.OP_0, Opcodes.OP_BEGIN);
-  op(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_EQUAL);
-  op(Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP, Opcodes.OP_1ADD);
-  op(Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_UNTIL);
-  op(Opcodes.OP_DROP); num(2); op(Opcodes.OP_GREATERTHANOREQUAL);
-  op(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
-  op(Opcodes.OP_SWAP); // [shared, block]
-  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  skipField(takeLengthPrefixedField()); // sender
-  skipField(takeLengthPrefixedField()); // self
-  skipField(takeFixedWidthField(8)); // value
-  skipField(takeLengthPrefixedField32()); // retval
-  stepDeclaredCallRecords(bytes, options, op, raw, num);
-  skipField(takeFixedWidthField(2)); // declared segment count
+  if (options.segmentsOnTop === true) {
+    if (options.runtimeCounts === true) op(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // the segment index
+    raw(validatorSettledFlagScript());
+    op(Opcodes.OP_SWAP); // [shared, segments]
+  } else {
+    if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK); // the segment index, taken as the walk reaches it
+    raw(validatorSettledFlagScript());
+    raw(readOwnWitnessBlockScript()); // [shared, block]
+    raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+    skipField(takeLengthPrefixedField()); // sender
+    skipField(takeLengthPrefixedField()); // self
+    skipField(takeFixedWidthField(8)); // value
+    skipField(takeLengthPrefixedField32()); // retval
+    stepDeclaredCallRecords(bytes, options, op, raw, num);
+    skipField(takeFixedWidthField(2)); // declared segment count
+  }
   stepDeclaredSegments(options, op, raw, num);
 
   raw(takeFixedWidthField(2)); // [countBytes, rest]
@@ -587,10 +680,7 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
   op(Opcodes.OP_ELSE);
   op(Opcodes.OP_BEGIN);
   {
-    raw(takeFixedWidthField(2)); // in
-    raw(takeFixedWidthField(2)); // out
-    raw(takeLengthPrefixedField32()); // viewIn
-    raw(takeLengthPrefixedField32()); // viewOut: [shared, count, cursor, in, out, viewIn, viewOut, rest]
+    raw(takeRecordFieldsScript()); // [shared, count, cursor, in, out, viewIn, viewOut, rest]
     op(Opcodes.OP_TOALTSTACK);
     num(3); op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM); num(3); op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM);
     op(Opcodes.OP_0); // [shared, count, cursor, in, out, viewIn, viewOut, in#, out#, exempt]
@@ -656,18 +746,8 @@ export function declaredRecordFirstViewByNameScript(options: DeclaredViewCounts)
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
-  op(Opcodes.OP_TOALTSTACK);
-  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK);
-  raw(readOwnWitnessBlockScript());
-  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  skipField(takeLengthPrefixedField()); // sender
-  skipField(takeLengthPrefixedField()); // self
-  skipField(takeFixedWidthField(8)); // value
-  skipField(takeLengthPrefixedField32()); // retval
-  stepDeclaredCallRecords(bytes, options, op, raw, num);
-  skipField(takeFixedWidthField(2)); // declared segment count
+  walkToSegments(bytes, options, options.runtimeCounts === true ? 2 : 1, op, raw, num);
   stepDeclaredSegments(options, op, raw, num);
 
   // `[result, count, cursor, rest]` with the rest on top; the result stays empty until the named record is met.
@@ -683,18 +763,17 @@ export function declaredRecordFirstViewByNameScript(options: DeclaredViewCounts)
   op(Opcodes.OP_ELSE);
   op(Opcodes.OP_BEGIN);
   {
-    raw(takeFixedWidthField(2)); // in
-    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP);
-    raw(takeFixedWidthField(2)); // out
-    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_ROT); // [.., rest, out, in]
+    raw(takeRecordFieldsScript());
+    op(Opcodes.OP_NIP); // viewOut: [.., in, out, viewIn, rest]
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM);
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM); // [.., viewIn, rest, in, out]
+    op(Opcodes.OP_SWAP); // [.., viewIn, rest, out, in]
     // The record's name: its input, or -(out + 1) when it has none.
     op(Opcodes.OP_DUP); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL);
     op(Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_1ADD, Opcodes.OP_NEGATE);
     op(Opcodes.OP_ELSE, Opcodes.OP_NIP, Opcodes.OP_ENDIF);
     raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK]));
     op(Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK); // park the match while the view is read
-    raw(takeLengthPrefixedField32()); // viewIn
-    skipField(takeLengthPrefixedField32()); // viewOut
     op(Opcodes.OP_SWAP); // [result, count, cursor, rest, view]
     // The first match replaces the empty result; a later one leaves it.
     num(4); op(Opcodes.OP_ROLL);

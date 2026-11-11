@@ -17,6 +17,7 @@ import {
   bytesEqual,
   entryLeavesCommitmentUnchanged,
   frameKindName,
+  hash160,
   isMintedRef,
   mintedRef,
   mintedRefIndex,
@@ -43,6 +44,7 @@ import { CheckFailure, isValidatorInput, readCallData, readValidator, readWitnes
 import { ValidatorReason, type ExecutionStep } from './reasons.js';
 
 /** What the checks share: the transaction, what was parsed, and what was derived. */
+
 export interface DerivationState {
   readonly transaction: import('./model.js').FramedTransaction;
   readonly context: import('./model.js').ValidatorContext;
@@ -211,6 +213,11 @@ export function checkV2(state: DerivationState): void {
         check('V2', 'V2_STATE_INPUT_INDEX_OUT_OF_RANGE', stateInput);
       }
     }
+    for (const output of settled.createdOutputs ?? []) {
+      if (outputAt(state.transaction, output) === undefined) {
+        check('V2', 'V2_CREATED_OUTPUT_INDEX_OUT_OF_RANGE', output);
+      }
+    }
   }
 }
 
@@ -322,7 +329,11 @@ export function checkV5(state: DerivationState): void {
             check('V5', 'V5_VALUE_MISMATCH', callee);
           }
           if (!bytesEqual(calleeBlock.sender, callerBlock.self)) check('V5', 'V5_SENDER_MISMATCH', callee);
-          if (!bytesEqual(calleeBlock.self, call.target)) check('V5', 'V5_SELF_NOT_TARGET', callee);
+          // The recorded target is the callee's address, or the identity that address hashes to: a body that read
+          // the address back from a Solidity ABI call result holds it as that identity (DECISIONS D13).
+          if (!bytesEqual(calleeBlock.self, call.target) && !bytesEqual(hash160(calleeBlock.self), call.target)) {
+            check('V5', 'V5_SELF_NOT_TARGET', callee);
+          }
           break;
         }
         case FrameKind.DELEGATE: {
@@ -434,14 +445,20 @@ function framesOn(state: DerivationState, category: Uint8Array): number[] {
   return frames;
 }
 
-/** The record chains of a contract, grouped by the slot a record occupies, in V6 order. */
+/**
+ * The record chains of a contract, one per index, in V6 order. A chain is `in:` a record its first declaration read at
+ * an input, or `out:` one its first declaration created: a later declaration keeps a created record by its own index
+ * or names it by its output alone, and either continues the same chain.
+ */
 function buildChains(state: DerivationState, category: Uint8Array): Map<string, ChainEntry[]> {
   const groups = new Map<string, ChainEntry[]>();
   for (const step of state.order ?? []) {
     if (!sameCategory(contextCategory(state, step.master), category)) continue;
     const segment = blockOf(state, step.master).segments[step.segment] ?? [];
     for (const entry of segment) {
-      const key = entry.in !== INDEX_NONE ? `in:${entry.in}` : `out:${entry.out}`;
+      const index = entry.in !== INDEX_NONE ? entry.in : entry.out;
+      const key = groups.has(`out:${index}`) || (entry.in === INDEX_NONE && !groups.has(`in:${index}`))
+        ? `out:${index}` : `in:${index}`;
       const group = groups.get(key) ?? [];
       group.push({ entry, master: step.master });
       groups.set(key, group);
@@ -477,6 +494,33 @@ export function checkV7(state: DerivationState): void {
     seenCategories.add(key);
     checkSettlement(state, settled);
   }
+  checkOutputOwners(state);
+}
+
+/**
+ * An index a record sits at, and an output a frame names, are one contract's. The program keeps one slot per index, so a
+ * second contract's declaration at an index stops there, and it marks an output for the contract that names it first, so
+ * a record's output, an event or a send cannot count towards two. The per-contract rules above cannot see this.
+ */
+function checkOutputOwners(state: DerivationState): void {
+  const slots = new Map<number, string>();
+  const outputs = new Map<number, string>();
+  for (const settled of transcriptOf(state).settles) {
+    const owner = categoryKey(settled.category);
+    for (const master of framesOn(state, settled.category)) {
+      const block = blockOf(state, master);
+      for (const entry of block.segments.flat()) {
+        const index = entry.in !== INDEX_NONE ? entry.in : entry.out;
+        if ((slots.get(index) ?? owner) !== owner) check('V7', 'V7_RECORD_INDEX_OF_TWO_CONTRACTS', index);
+        slots.set(index, owner);
+      }
+      const records = block.segments.flat().map((entry) => entry.out).filter((output) => output !== INDEX_NONE);
+      for (const output of [...records, ...block.events, ...block.sends]) {
+        if ((outputs.get(output) ?? owner) !== owner) check('V7', 'V7_OUTPUT_OF_TWO_CONTRACTS', output);
+        outputs.set(output, owner);
+      }
+    }
+  }
 }
 
 function checkSettlement(state: DerivationState, settled: SettledContract): void {
@@ -489,9 +533,10 @@ function checkSettlement(state: DerivationState, settled: SettledContract): void
     if (!state.masterSet.has(input.index)) check('V7', 'V7_MASTER_NOT_COVERED', input.index);
   }
 
-  // The spent state UTXOs are exactly the ones the transcript lists.
+  // The spent state UTXOs are exactly the ones the transcript lists, each once.
   const spent = spentStateInputs(state, category);
   const declared = new Set(settled.stateInputs);
+  if (declared.size !== settled.stateInputs.length) check('V7', 'V7_STATE_INPUT_LISTED_TWICE', state.validatorIndex);
   requireSameIndexes('V7', 'V7_STATE_INPUTS_MISMATCH', declared, spent);
 
   // The chains: one per slot, in the derived order.
@@ -523,9 +568,23 @@ function checkSettlement(state: DerivationState, settled: SettledContract): void
       if (!bytesEqual(first.viewIn, input!.token.nftCommitment)) {
         check('V7', 'V7_CHAIN_START_MISMATCH', input!.index);
       }
-    } else if (first.viewIn.length !== 0) {
-      // A record the transaction creates starts from nothing.
-      check('V7', 'V7_CHAIN_START_MISMATCH', first.out);
+      // A spent record stays named by its input.
+      if (chain.some(({ entry }) => entry.in === INDEX_NONE)) {
+        check('V7', 'V7_SPENT_RECORD_NAMED_BY_OUTPUT', input!.index);
+      }
+    } else {
+      // A record the transaction creates starts from nothing, over no input of the contract's, and is not deleted here.
+      if (first.viewIn.length !== 0) check('V7', 'V7_CHAIN_START_MISMATCH', first.out);
+      const over = inputAt(state.transaction, first.out);
+      if (over !== undefined && sameCategory(over.token.category, category)) {
+        check('V7', 'V7_CREATED_OVER_OWN_INPUT', first.out);
+      }
+      if (chain.some(({ entry }) => entry.out === INDEX_NONE)) check('V7', 'V7_CREATED_RECORD_DELETED', first.out);
+    }
+    for (const { entry } of chain) {
+      if (entry.out !== INDEX_NONE && outputAt(state.transaction, entry.out) === undefined) {
+        check('V7', 'V7_RECORD_OUTPUT_OUT_OF_RANGE', entry.out);
+      }
     }
     for (let at = 1; at < chain.length; at += 1) {
       if (!bytesEqual(chain[at]!.entry.viewIn, chain[at - 1]!.entry.viewOut)) {
@@ -548,7 +607,12 @@ function checkSettlement(state: DerivationState, settled: SettledContract): void
     }
   }
 
-  checkCensus(state, category, eventOutputs);
+  // A deleted record leaves no record at its index.
+  const deleted = new Set<number>();
+  for (const [key, chain] of groups) {
+    if (chain[chain.length - 1]!.entry.out === INDEX_NONE) deleted.add(Number(key.slice(key.indexOf(':') + 1)));
+  }
+  checkCensus(state, category, eventOutputs, deleted);
   checkRecordValues(state, groups);
   checkContractValue(state, category);
 }
@@ -587,7 +651,9 @@ function checkContractValue(state: DerivationState, category: Uint8Array): void 
 }
 
 /** The census: where each category's minting, mutable and immutable NFTs may appear. */
-function checkCensus(state: DerivationState, category: Uint8Array, eventOutputs: ReadonlySet<number>): void {
+function checkCensus(
+  state: DerivationState, category: Uint8Array, eventOutputs: ReadonlySet<number>, deleted: ReadonlySet<number>,
+): void {
   const allowedMutable = new Set<number>();
   for (const step of state.order ?? []) {
     if (!sameCategory(contextCategory(state, step.master), category)) continue;
@@ -619,6 +685,15 @@ function checkCensus(state: DerivationState, category: Uint8Array, eventOutputs:
       if (!recreated) check('V7', 'V7_CENSUS_MINTING_NOT_RECREATED', index);
     }
   }
+  // An index past the inputs holds an output alone, so a master of the contract there is one the transaction mints:
+  // only a minted master the transcript lists is (R2b, T53).
+  for (let index = state.transaction.inputs.length; index < state.transaction.outputs.length; index += 1) {
+    const output = state.transaction.outputs[index]!;
+    if (isMasterToken(output.token) && sameCategory(output.token.category, category)
+      && !state.mintedMasters.some((minted) => minted.output === index)) {
+      check('V7', 'V7_CENSUS_MINTING_NOT_RECREATED', index);
+    }
+  }
 
   // A settled contract carries no fungible amount of its own category, and a CashToken may be semi-fungible: an NFT
   // and a fungible amount together. The rule is therefore about the amount, whatever the capability, and it is what
@@ -634,7 +709,7 @@ function checkCensus(state: DerivationState, category: Uint8Array, eventOutputs:
   for (const output of state.transaction.outputs) {
     if (!sameCategory(output.token.category, category)) continue;
     if (output.token.amount > 0n) check('V7', 'V7_CENSUS_OWN_FUNGIBLE', output.index);
-    if (isMutableNft(output.token) && !allowedMutable.has(output.index)) {
+    if (isMutableNft(output.token) && (!allowedMutable.has(output.index) || deleted.has(output.index))) {
       check('V7', 'V7_CENSUS_UNEXPECTED_MUTABLE', output.index);
     }
     if (isImmutableNft(output.token) && !eventOutputs.has(output.index)) {
@@ -658,21 +733,15 @@ function checkRecordValues(state: DerivationState, groups: ReadonlyMap<string, C
 }
 
 /**
- * V8. A contract is settled here exactly when a covered master of it is not its only master in the transaction, or a
- * frame runs on its records. The masters are counted over the whole transaction, so a contract split across two
+ * V8. A contract is settled here exactly when a covered master the transaction spends is one of it, or a covered
+ * `DELEGATE` or `INTERNAL` frame runs on its records: a master a validator covers never settles its own. A master
+ * the transaction mints runs nothing, so it asks for no settlement of its own contract. A contract split across two
  * validators' call trees is one both have to settle, and V7 then refuses the masters the other covers.
  */
 export function checkV8(state: DerivationState): void {
-  const counts = new Map<string, number>();
-  for (const input of state.transaction.inputs) {
-    if (!isMasterToken(input.token)) continue;
-    const key = categoryKey(input.token.category);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
   const needed = new Set<string>();
   for (const master of state.masterSet) {
-    const key = categoryKey(ownCategory(state, master));
-    if ((counts.get(key) ?? 0) >= 2) needed.add(key);
+    if (!isMintedRef(master)) needed.add(categoryKey(ownCategory(state, master)));
   }
   for (const master of state.masterSet) {
     const kind = blockOf(state, master).kind;
@@ -752,7 +821,12 @@ export function checkV10(state: DerivationState): void {
   }
 }
 
-/** V11. A frame whose `address(this)` comes from its code constant presents `addrV` of its own category. */
+/**
+ * V11. A frame whose `address(this)` comes from its code constant presents `addrV` of its own category.
+ *
+ * Every framed contract presents the address its category derives; a created child is no exception, and a 20-byte EVM
+ * identity is no address a framed frame may present (docs/framed/CREATE2_IDENTITY.md).
+ */
 export function checkV11(state: DerivationState): void {
   for (const master of state.masterSet) {
     const block = blockOf(state, master);

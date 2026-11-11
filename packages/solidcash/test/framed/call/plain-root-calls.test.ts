@@ -107,6 +107,9 @@ const SOURCE = [
 ].join('\n');
 
 const artifacts = compileFramed(SOURCE);
+/** How the vault keys a depositor and the token a holder: each address by its 20-byte identity. */
+const DEPOSIT_KEYS = artifacts.Vault!.stateLayout!.collections!.find((collection) => collection.name === 'deposits')!;
+const BALANCE_KEYS = artifacts.Token!.stateLayout!.collections!.find((collection) => collection.name === 'balances')!;
 
 /** The vault's fee recipient on the payout chain, a holder of its own. */
 const FEE_LOCK = Uint8Array.from([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x6f), 0x88, 0xac]);
@@ -304,7 +307,7 @@ describe('a plain root\'s own mapping write beside its call', () => {
     expect(refusedOn(settled, structuredClone(settled.transaction) as VmTransaction)).toStrictEqual([]);
     // The deposit's node, declared changed in the segment the pull closes and kept at that view past it.
     const node = settled.draft.layout.participants
-      .find((placed) => placed.id === `mapping-node-${binToHex(keyToSlotMulti([USER_LOCK]))}`)!;
+      .find((placed) => placed.id === `mapping-node-${binToHex(keyToSlotMulti([USER_LOCK], DEPOSIT_KEYS))}`)!;
     const block = structuredClone(settled.draft.blockOf('master')) as WitnessBlock;
     const before = block.segments[0]!.find((entry) => entry.in === node.index)!;
     const past = block.segments[1]!.find((entry) => entry.in === node.index)!;
@@ -332,7 +335,7 @@ describe('a plain root that pays out through one token twice', () => {
     expect(refusedOn(paid, structuredClone(paid.transaction) as VmTransaction)).toStrictEqual([]);
     expect(await balances(c, [c.vault.address, USER_LOCK, FEE_LOCK])).toStrictEqual([35n, 9n, 6n]);
     // The vault's own balance node, which both transfers debit: the second declares it from the view the first left.
-    const vaultSlot = binToHex(keyToSlotMulti([c.vault.address]));
+    const vaultSlot = binToHex(keyToSlotMulti([c.vault.address], BALANCE_KEYS));
     const node = paid.draft.layout.participants.find((placed) => placed.id.endsWith(`-balances-${vaultSlot}`))!;
     const [first, second] = paid.completed.filter((frame) => frame.functionName.endsWith('.transfer()'));
     const firstDeclared = paid.draft.blockOf(first!.master).segments[0]!.find((entry) => entry.in === node.index)!;

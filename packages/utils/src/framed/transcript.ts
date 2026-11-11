@@ -11,6 +11,11 @@
  *     rootCount:u8 root:u8[]
  *     masterCount:u8 master:u8[]
  *     settleCount:u8 { category:32 stateInputCount:u8 stateInput:u8[] createdCount:u8 created:u8[] }
+ *     padding:u8[] paddingLength:u16
+ *
+ * `padding` is zero bytes nothing reads: a builder lengthens the validator input's unlocking bytecode with it, which
+ * is what the machine's operation-cost budget is measured over. Its length comes last, so a reader cuts the padding
+ * off the end before it reads anything else, and the copies of the transcript it works on carry none of it.
  *
  * A settled contract names the state UTXOs the transaction spends and the records the transaction creates. A
  * created record has no input to name, so its commitment lives at a trailing output index, and the frames that
@@ -59,6 +64,11 @@ export interface Transcript {
   masters: number[];
   /** Contracts this validator settles, with the state inputs each one spends. */
   settles: SettledContract[];
+  /**
+   * How many zero bytes pad the transcript, its last field, which buy the validator input's operation-cost budget;
+   * omitted when there are none.
+   */
+  padding?: number;
 }
 
 /**
@@ -98,7 +108,7 @@ export function encodeTranscript(transcript: Transcript): Uint8Array {
     writer.pushByte(created.length);
     for (const output of created) writer.pushByte(output);
   }
-  return writer.finish();
+  return pushPadding(writer, transcript.padding ?? 0).finish();
 }
 
 /** Decodes a transcript, rejecting a bad magic, an unknown version, a truncated field, a bad category length and
@@ -134,8 +144,28 @@ export function decodeTranscript(payload: Uint8Array): Transcript {
     for (let inner = 0; inner < createdCount; inner += 1) createdOutputs.push(reader.readByte());
     settles.push({ category, stateInputs, createdOutputs });
   }
+  const padding = readPadding(reader);
   reader.assertEnd();
-  return { roots, masters, settles };
+  return { roots, masters, settles, ...(padding > 0 ? { padding } : {}) };
+}
+
+/** Writes the padding a transcript ends with: `padding` zero bytes, then their count. */
+function pushPadding(writer: ByteWriter, padding: number): ByteWriter {
+  return writer.pushBytes(new Uint8Array(padding)).pushUint16(padding);
+}
+
+/** Reads the padding a transcript ends with, requiring its bytes to be zero and its count to be what is left. */
+function readPadding(reader: ByteReader): number {
+  const rest = reader.readBytes(reader.remaining);
+  if (rest.length < 2) throw new FramedEncodingError('a transcript ends without its padding length');
+  const padding = rest[rest.length - 2]! | (rest[rest.length - 1]! << 8);
+  if (padding !== rest.length - 2) {
+    throw new FramedEncodingError(`a transcript's padding length is ${padding}, but ${rest.length - 2} byte(s) pad it`);
+  }
+  if (rest.subarray(0, padding).some((byte) => byte !== 0)) {
+    throw new FramedEncodingError('a transcript pads with a nonzero byte');
+  }
+  return padding;
 }
 
 /**
@@ -162,6 +192,8 @@ export interface MintedTranscript {
   readonly masters: number[];
   readonly mintedMasters: MintedMaster[];
   readonly settles: SettledContract[];
+  /** As {@link Transcript.padding}. */
+  readonly padding?: number;
 }
 
 /**
@@ -201,7 +233,7 @@ export function encodeMintedTranscript(transcript: MintedTranscript): Uint8Array
     writer.pushByte(created.length);
     for (const output of created) writer.pushByte(output);
   }
-  return writer.finish();
+  return pushPadding(writer, transcript.padding ?? 0).finish();
 }
 
 /**
@@ -246,8 +278,9 @@ export function decodeMintedTranscript(payload: Uint8Array): MintedTranscript {
     for (let inner = 0; inner < createdCount; inner += 1) createdOutputs.push(reader.readByte());
     settles.push({ category, stateInputs, createdOutputs });
   }
+  const padding = readPadding(reader);
   reader.assertEnd();
-  return { roots, masters, mintedMasters, settles };
+  return { roots, masters, mintedMasters, settles, ...(padding > 0 ? { padding } : {}) };
 }
 
 /** Encodes a transcript as the minimal push that introduces a validator's unlocking bytecode. */

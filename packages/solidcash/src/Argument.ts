@@ -151,6 +151,8 @@ export function encodeFunctionArgument(
   argument: FunctionArgument,
   typeStr: string,
   structs?: readonly StructDefinitionInfo[],
+  /** How the owning artifact materializes an address. `'hash'` keeps its 20-byte identity; `'bytecode'`
+   * (the BCH-native default) wraps a bare payload in a P2PKH lock. */
 ): EncodedFunctionArgument {
   // Struct-typed parameter (Solidity encodes a struct as an ABI tuple): accept an object keyed by field name
   // or a positional tuple array - both are valid Solidity/ethers forms. Delegate to the shared pushdata
@@ -294,6 +296,17 @@ export function encodeFunctionArgument(
     throw Error(`Value for type ${type} should be a Uint8Array or hex string`);
   }
 
+  // The same zero address handed over as bytes, as a resolved `address(0)` expression is, takes the same form.
+  if (type instanceof AddressType && argument.byteLength > 0 && argument.every((byte) => byte === 0)) {
+    argument = new Uint8Array(0);
+  }
+
+  // A CREATE2 child's address is its 20-byte EVM identity, which is what every contract that names it carries, and
+  // its P2SH20 address names the same identity.
+  if (type instanceof AddressType && argument.byteLength === 23 && argument[0] === 0xa9 && argument[1] === 0x14
+    && argument[22] === 0x87) {
+    argument = argument.slice(2, 22);
+  }
   // An `address` given in the 20-byte payload form an EVM ABI carries names its locking bytecode: the compiler's
   // `address` is a lock, so a value passed as the payload would otherwise reach the contract as an address no other
   // form of the same address equals (a mapping keyed by one reads under a different key than the body wrote).

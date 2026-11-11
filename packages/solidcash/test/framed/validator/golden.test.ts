@@ -39,10 +39,11 @@ describe('golden composition', () => {
     expect(composition.masterIndex.get('B.g')).toBe(4);
     expect(composition.slotIndex.get('DA')).toBe(3);
     expect(composition.slotIndex.get('DB')).toBe(5);
-    // One validator covering the masters of A and B: B's single master is covered because its frame is a call.
+    // One validator covering the masters of A and B: B's single master is covered because its frame is a call, so the
+    // validator settles B as well as A.
     expect(composition.transcript.roots).toEqual([0]);
     expect([...composition.transcript.masters].sort((left, right) => left - right)).toEqual([0, 1, 4]);
-    expect(composition.transcript.settles.map((settled) => settled.stateInputs)).toEqual([[3]]);
+    expect(composition.transcript.settles.map((settled) => settled.stateInputs)).toEqual([[3], [5]]);
   });
 
   test('a composition with a created record, a static frame and a send is accepted by both', () => {

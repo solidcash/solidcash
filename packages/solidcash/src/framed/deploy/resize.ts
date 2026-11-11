@@ -174,19 +174,23 @@ export async function resizeFramedPool(
   }
   const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
   let deployed = deployMaster(artifact, hexToBin(categoryId), validatorProgram);
-  const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout);
-  let pool = masters;
+  let shard;
   if (options.selector !== undefined || options.split !== undefined) {
     if (options.selector === undefined || options.split === undefined) {
       throw new FramedResizeError('a function split or merge names the entry selector and the split bundle');
     }
-    let shard;
     try {
       shard = requireFunctionSplitShardBySelector(options.split, options.selector);
     } catch (error) {
       throw new FramedResizeError((error as Error).message);
     }
     deployed = deployMaster(shard.artifact, hexToBin(categoryId), validatorProgram);
+  }
+  const { masters } = await readFramedDeployment(provider, categoryId, artifact.stateLayout, {
+    masterLocks: [deployed.lockingBytecode], validatorProgram,
+  });
+  let pool = masters;
+  if (shard !== undefined) {
     try {
       pool = mastersForEntry(masters, deployed.lockingBytecode, shard.function);
     } catch (error) {
@@ -226,8 +230,12 @@ export async function resizeFramedPool(
 
   // A master's program is wider than the standard per-input ceiling the builder's own send gate applies, so the
   // provider's BCH-2026 machine judges every input here instead, before anything is broadcast.
-  const transaction = builder.buildLibauthTransaction();
+  // A funder whose wallet holds its key signs first, so every input is judged as it will be broadcast.
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const { applyExternalSignatures } = await import('../../external-signing.js');
+  const transaction = await applyExternalSignatures(
+    builder.inputs.map((input) => input.unlocker), builder.buildLibauthTransaction(), sourceOutputs,
+  );
   const vm = createVirtualMachineBch2026ForProvider(provider);
   transaction.inputs.forEach((_input, inputIndex) => {
     const verdict = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));

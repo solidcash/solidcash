@@ -83,7 +83,10 @@ A direct return carrier becomes a call record (as built):
   through a witness index, and requires the record's category to be that input's.
 - Loops (as built): a loop over computed or array targets co-spends one callee per iteration; iteration i digests its
   own arguments and reads that callee's record. The SDK resolves each iteration's arguments (it used to give every
-  callee iteration 0's). An opaque loop read takes the record's inline result without a digest check.
+  callee iteration 0's). An opaque loop read takes the record's inline result without a digest check. A loop over
+  one fixed callee with no counted ordinal (a message-bus compile) reads iteration k's record k past its return
+  index, k being `(counter - start) / step` of the one canonical `for` around the call; a return probe of a
+  `resultArrayOutput` loop lays every reached iteration's record from the loop's published domain before it runs.
 - Conditional calls: an untaken call reads nothing. A taken one is bound like any other.
 - Identical readonly reads share the one run and its one record; the SDK lays one carrier for both.
 - Arguments are digested from copies of the call's argument expressions, so no final use is consumed.
@@ -164,7 +167,9 @@ A direct return carrier becomes a call record (as built):
   void run pins no record; a group reaching one returning call keeps the standalone spend with that call's own
   arguments. In a group whose calls change state, a loop bound, condition or argument that reads one of the group's
   own results is refused, since the frames are planned from standalone results. A callee without the entry is
-  refused, naming `callBatch: true` and the multi-contract compile. Bus gates (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
+  refused, naming `callBatch: true` and the multi-contract compile. A unit of a multi-call spend names no caller edge
+  (F1, witness -1, which pins nothing): a frame takes no `msg.sender`, so no callee reads one for it. Bus gates
+  (`isBusCompiledEntry`, `isDirectConventionArtifact`): a direct compile never
   builds a bus batch (`buildRepeatedExternalBatch`), never reads through the composer, and is never promoted at send.
 
 ## 8. Cost and compatibility

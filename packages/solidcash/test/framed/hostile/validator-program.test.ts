@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { FrameKind } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { settlingCensus } from '../../../../solidc/test/framed/machine.js';
 import {
   MOCK_RELAXED_OPERATION_COST,
   MockNetworkProvider,
@@ -46,9 +47,9 @@ type VmSourceOutput = NonNullable<VmProgram['sourceOutputs']>[number];
 
 /** The relaxed local machine: a case should decide what the program accepts, not what it costs. */
 function machine(): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
-  return createVirtualMachineBch2026ForProvider(
+  return settlingCensus(createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
-  );
+  ));
 }
 
 /** The fixture's token shape as the machine states it. */
@@ -192,6 +193,20 @@ describe('the shipped validator program refuses a covered master that is not at 
       validatorTemplate: PROGRAM, validatorInputIndex: composition.validatorIndex,
     }).accepted).toBe(true);
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
+  });
+
+  test('refuses a 20-byte identity presented in place of the derived address', () => {
+    const composition = planComposition({ ...delegateRootPlan(), validatorTemplate: PROGRAM, validatorFacets: FACETS });
+    const index = composition.validatorIndex;
+    // An EVM identity is 20 bytes. It used to be skipped by the address rule; every covered frame now presents
+    // `addrV` of its category, so the identity is refused like any other unrelated address.
+    const identity = Uint8Array.from({ length: 20 }, (_value, at) => 0x40 + at);
+    composition.blocks.get('A.go')!.self = identity;
+    composition.blocks.get('B.g')!.self = identity;
+    const modelled = materialise(composition);
+    expect(decideValidator(modelled, { validatorTemplate: PROGRAM, validatorInputIndex: index }).rejection?.reason)
+      .toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
+    expect(accepted(modelled, index)).toBe(false);
   });
 
   test('refuses a covered master whose presented address is not the one derived for its category', () => {

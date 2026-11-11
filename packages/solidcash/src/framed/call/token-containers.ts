@@ -202,6 +202,8 @@ export async function framedTokenAccesses(options: {
   readonly args: readonly FunctionArgument[];
   readonly stateLayout: StateLayout;
   readonly records: readonly Utxo[];
+  /** The artifact's baked creation arguments, for a key the contract declares at creation time. */
+  readonly creationArguments?: Artifact['creationArguments'];
 }): Promise<readonly FramedTokenAccess[]> {
   const accesses = options.entry?.tokenContainerAccesses ?? [];
   if (accesses.length === 0) return [];
@@ -210,7 +212,10 @@ export async function framedTokenAccesses(options: {
     : undefined;
   return Promise.all(accesses.map(async (access) => {
     const keyIndex = (options.entry?.inputs ?? []).findIndex((input) => input.name === access.keyParam);
-    const key = tokenContainerKeyValue(access, options.categoryId, options.args, keyIndex, state);
+    const creationValue = keyIndex < 0 && access.keySource !== 'own' && access.keySource !== 'state'
+      ? options.creationArguments?.find((argument) => argument.name === access.keyParam)?.value
+      : undefined;
+    const key = creationValue ?? tokenContainerKeyValue(access, options.categoryId, options.args, keyIndex, state);
     if (!(key instanceof Uint8Array) || key.length !== 32) {
       throw new Error(`token container key '${access.keyParam}' does not resolve to a 32-byte category`);
     }
@@ -262,5 +267,7 @@ export async function framedCalleeTokenAccesses(options: {
     args: options.args,
     stateLayout: options.artifact.stateLayout!,
     records,
+    ...(options.artifact.creationArguments === undefined
+      ? {} : { creationArguments: options.artifact.creationArguments }),
   });
 }

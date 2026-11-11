@@ -86,7 +86,7 @@ const rootUserId = (turn: number): string => `caller-${turn}`;
  * that call data is the selector push alone. `append` writes the dynamic array and emits; making no call of its own
  * is what keeps it admissible while a body that both touched the dynamic value and called would be refused by name.
  */
-const IMPL_SOURCE = 'pragma solidcash ^0.14.0;'
+const IMPL_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   int[] items;'
@@ -107,7 +107,7 @@ const IMPL_SOURCE = 'pragma solidcash ^0.14.0;'
  * the selector and argument pushes the hub's site recorded.
  */
 function hubSource(proxyAddress: Uint8Array, appends: number): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface IStore { function append(int item); }'
     + ' contract Hub {'
     + '   function go(int item) {'
@@ -128,7 +128,7 @@ function hubSource(proxyAddress: Uint8Array, appends: number): string {
  */
 function forwardHubSource(proxyAddress: Uint8Array, payload: Uint8Array, appends: number): string {
   const framed = bytesToHex(payload);
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface IProxy { function forward(bytes payload); }'
     + ' contract Hub {'
     + '   function go() {'
@@ -656,7 +656,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     expect([...asked].sort()).toStrictEqual([
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-      VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...built.records.map((record) => record.id),
+      VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID, ...built.records.map((record) => record.id),
     ].sort());
   });
 
@@ -768,7 +768,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
       HUB_MASTER,
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-      VALIDATOR_ID, `${VALIDATOR_ID}/1`, RECORD_ID, ...built.records.map((record) => record.id),
+      VALIDATOR_ID, `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID, ...built.records.map((record) => record.id),
     ].sort());
   });
 

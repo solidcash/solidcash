@@ -2,6 +2,7 @@
  * phase-boundary extract: STB build-phase extract — prelude through external-call outputs.
  */
 
+import type { Output } from '../interfaces.js';
 import type { TransactionBuilder, TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { CovenantTransactionBuilder } from './CovenantTransactionBuilder.js';
 import {
@@ -62,6 +63,7 @@ export type BuildEarlyFrontContext = {
   debugAtomicOutputStage: (stage: string) => void;
   debugOwnMutableOutputs: (stage: string) => void;
   deferredDelegateReturnEvents: DeferredDelegateReturnEvent[];
+  deferredCalleeDynamicChunks: Output[];
   relocatedDelegateOutputBases: ReturnType<typeof patchRelocatedDelegateOutputBases>;
   associatedDelegateOutputs: ReadonlySet<number>;
   appendDelegateGroupOutputs: (groupIndex: number) => void;
@@ -99,6 +101,7 @@ export function runBuildEarlyFront(host: RunBuildEarlyFrontHost): BuildEarlyFron
   // X56. Delegate return events held back until after the implementation's own event outputs. Empty unless
   // `delegateReturnEventAfterEvents` is set, i.e. unless the co-spent implementation emits AND returns.
   const deferredDelegateReturnEvents: DeferredDelegateReturnEvent[] = [];
+  const deferredCalleeDynamicChunks: Output[] = [];
   registerStatefulInputs(host.registerStatefulInputsHost(), builder);
 
   buildTiming('inputs-registered', builder);
@@ -140,6 +143,7 @@ export function runBuildEarlyFront(host: RunBuildEarlyFrontHost): BuildEarlyFron
     addReturnOutput,
     appendDelegateGroupOutputs,
     deferredDelegateReturnEvents,
+    deferredCalleeDynamicChunks,
     debugOwnMutableOutputs,
   );
 
@@ -151,6 +155,7 @@ export function runBuildEarlyFront(host: RunBuildEarlyFrontHost): BuildEarlyFron
     debugAtomicOutputStage,
     debugOwnMutableOutputs,
     deferredDelegateReturnEvents,
+    deferredCalleeDynamicChunks,
     relocatedDelegateOutputBases,
     associatedDelegateOutputs,
     appendDelegateGroupOutputs,

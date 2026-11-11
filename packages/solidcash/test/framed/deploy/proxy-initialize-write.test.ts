@@ -40,7 +40,7 @@ const SHARED_STATE = ' address public implementation;'
   + ' uint public initialized;'
   + ' int public version;';
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ` contract Impl {${SHARED_STATE}`
   + '   function initialize(address expected) {'
   + '     require(msg.sender == expected);'
@@ -89,8 +89,13 @@ describe('a proxied initialize that writes state', () => {
     const implContract = contracts.Impl!;
     const implementation = implContract.address;
     const selector = selectorOf(artifacts, 'Impl', 'initialize');
-    // The proxy master, its validator and the facet the validator binds precede the record.
-    const recordIndex = 3;
+    const blocks = [
+      { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
+      { contract: 'Impl', masters: ['impl-1'], state: [] },
+    ];
+    // The proxy master, its validator and the facets the validator binds precede the record.
+    const layout = layoutWithFacets(blocks);
+    const recordIndex = participant(layout, 'record').index;
     const state = (initialized: bigint, version: bigint): Uint8Array => new Uint8Array(Buffer.from(
       buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized, version }, 0), 'hex'));
     const written = state(1n, 7n);
@@ -127,14 +132,10 @@ describe('a proxied initialize that writes state', () => {
         argumentPushes: [selector, USER_LOCK],
       });
       const proxyCategoryHex = bytesToHex(proxyContract.category);
-      const blocks = [
-        { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
-        { contract: 'Impl', masters: ['impl-1'], state: [] },
-      ];
       // A record the entry rewrites is spent on the covenant's write path, which names a master of the record's
       // own category; a record it leaves alone needs no master.
       const writes = bytesToHex(before) !== bytesToHex(after);
-      const proxyMasterIndex = participant(layoutWithFacets(blocks), 'proxy-1').index;
+      const proxyMasterIndex = participant(layout, 'proxy-1').index;
       const recordSource = {
         lockingBytecode: stateRecordLockingBytecode(proxyCategoryHex), valueSatoshis: 20_000n,
         token: token(proxyContract.category, 'mutable', before),
@@ -142,8 +143,8 @@ describe('a proxied initialize that writes state', () => {
       const validator = validatorFor(proxyContract.category);
       return {
         blocks,
-        // The facet the validator binds is one participant ahead of the user.
-        userInputs: userInputs(['user'], 5),
+        // The user follows every participant the layout places, the facets the validator binds among them.
+        userInputs: userInputs(['user'], layout.participantCount),
         masters: [proxyMaster, implementationMaster],
         inputs: {
           'proxy-1': { source: masterInput(proxyContract) },
@@ -196,7 +197,7 @@ describe('a proxied initialize that writes state', () => {
   });
 
   it('refuses a proxy whose record does not declare the implementation\'s fields', async () => {
-    const mismatched = 'pragma solidcash ^0.14.0;'
+    const mismatched = 'pragma solidcash ^0.50.0;'
       + ' contract Impl { int public version;'
       + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; } }'
       + ' contract Proxy { address implementation;'
@@ -219,7 +220,7 @@ describe('a proxied initialize that writes state', () => {
   });
 
   it('refuses a proxy whose delegatecall target is a filled constant rather than a value the contract holds', () => {
-    const literal = 'pragma solidcash ^0.14.0;'
+    const literal = 'pragma solidcash ^0.50.0;'
       + ' contract Proxy {'
       + `   fallback(bytes input) external { address(0x${'ab'.repeat(35)}).delegatecall(input); require(true); }`
       + ' }';

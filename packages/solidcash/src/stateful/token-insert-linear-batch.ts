@@ -417,9 +417,16 @@ export function reorderLinearBatchProofSuccessor(
   const proofOffset = repair.proofInputOffset ?? repair.predecessorOffset;
   const proofCommitment = String(inputs[masterIndex + proofOffset]?.token?.nft?.commitment ?? '');
   const proofSlot = proofCommitment.slice(0, SLOT_HEX).toLowerCase();
-  if (!lockingBytecode || proofSlot.length !== SLOT_HEX || firstCommitment.length <= SLOT_HEX * 2
+  // `first` is a predecessor rewrite only when it points at the INSERTED slot. A mirrored co-spend of the
+  // proof input also starts with the proof slot, but its next key is whatever that entry already pointed at
+  // (a later UPDATE's slot); swapping it with that update installs the update in the NEW's coordinate and
+  // hides the INSERT from the next probe.
+  const insertedSlot = repair.insertedSlot.toLowerCase();
+  if (!lockingBytecode || proofSlot.length !== SLOT_HEX || insertedSlot.length !== SLOT_HEX
+    || firstCommitment.length <= SLOT_HEX * 2
     || first?.token?.category !== categoryId
-    || !firstCommitment.toLowerCase().startsWith(proofSlot)) return false;
+    || !firstCommitment.toLowerCase().startsWith(proofSlot)
+    || firstCommitment.slice(SLOT_HEX, SLOT_HEX * 2).toLowerCase() !== insertedSlot) return false;
   const candidates = repair.candidateInsertedOffsets.flatMap((offset) => {
     const output = outputs[masterIndex + offset];
     const commitment = String(output?.token?.nft?.commitment ?? '');

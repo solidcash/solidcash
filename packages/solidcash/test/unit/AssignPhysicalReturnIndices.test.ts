@@ -1,13 +1,14 @@
 import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
-  computeCollectionHash, sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
+  computeCollectionHash, FILLER_SATOSHIS, fillerLockingBytecode, sha256 as sha256Sync, VALUE_HEAD_SIZE,
+  VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
   type Artifact, type CollectionInfo, type EntryAccessAbi, type StateLayout,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import type { Output, UnlockableUtxo } from '../../src/interfaces.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBuildSessionPrelude } from '../../src/stateful/stb-create-build-session-prelude.js';
-import { redirectViewTailOffOpReturn } from '../../src/stateful/mutable-output-reassert.js';
+import { redirectViewTailOffFiller } from '../../src/stateful/mutable-output-reassert.js';
 import {
   adaptLegacyNestedJobEventArguments,
   vmapBatchWitnessFallback,
@@ -1247,9 +1248,9 @@ describe('assignPhysicalReturnIndices', () => {
 
   it('refuses a late return redirect onto an identity pad before another owned output', () => {
     const owned = { to: Uint8Array.of(0x51), token: { nft: { capability: 'mutable', commitment: '01' } } };
-    const marker = { to: Uint8Array.of(0x6a) };
+    const marker = { to: fillerLockingBytecode() };
     const outputs = [{ to: Uint8Array.of(0x51) }, owned, marker];
-    expect(redirectViewTailOffOpReturn({ placedIndex: 2, plannedIndex: 0, returnIndex: 1,
+    expect(redirectViewTailOffFiller({ placedIndex: 2, plannedIndex: 0, returnIndex: 1,
       suffixStart: 2, outputs, reservedIndices: new Set([0]),
     })).toBeUndefined();
     expect(outputs[1]).toBe(owned);
@@ -1826,6 +1827,24 @@ describe('assignPhysicalReturnIndices', () => {
         slots: [{ kind: 'returnEvent', offset: 3 }],
       },
     }))).toBe(4);
+  });
+
+  it('counts no coordinate for a record a compacted block does not carry', () => {
+    const compacted = {
+      categoryId: 'void-emitter',
+      dataNftUtxos: { length: 1 },
+      blockInputs: { length: 3 },
+      blockLayout: {
+        blockSize: 4,
+        slots: [
+          { kind: 'master' as const, offset: 0 }, { kind: 'dataNft' as const, offset: 1 },
+          { kind: 'event' as const, offset: 2 }, { kind: 'returnEvent' as const, offset: 3 },
+        ],
+      },
+    };
+    expect(physicalParticipantWidth(group(compacted))).toBe(3);
+    expect(physicalParticipantWidth(group({ ...compacted, returnEventInBlock: true }))).toBe(4);
+    expect(physicalParticipantWidth(group({ ...compacted, blockInputs: { length: 4 } }))).toBe(4);
   });
 
   it('detects a lane collision in output-only participant coordinates', () => {
@@ -3344,7 +3363,7 @@ describe('assignPhysicalReturnIndices', () => {
       index === 25
         ? { to: Uint8Array.of(0x76, 0xa9), amount: 500_000n }
         : index === 28
-          ? { to: Uint8Array.of(0x6a), amount: 0n }
+          ? { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS }
           : { to: Uint8Array.of(0x51), amount: 1000n }
     ));
     expect(legacyFillValueChunkBandHoles(changeOutputs, { start: 20, nNew: 6 }, {
@@ -3402,7 +3421,7 @@ describe('assignPhysicalReturnIndices', () => {
       [
         { token: { nft: { capability: 'mutable' } } },
         { token: { nft: { capability: 'mutable' } } },
-        { to: Uint8Array.of(0x6a), amount: 0n },
+        { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
       ],
       { to: Uint8Array.of(0x76, 0xa9), amount: 1n },
       0,
@@ -3415,24 +3434,24 @@ describe('assignPhysicalReturnIndices', () => {
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '00aa' } } },
       { to: Uint8Array.of(0x76, 0xa9), amount: 1000n },
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } } },
-      { to: Uint8Array.of(0x6a), amount: 0n },
+      { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
     ];
     expect(packMutableValueChunkRunAgainstSeparator(suffix, jobsLock, 0)).toBe(2);
     expect(suffix[1]?.token?.nft?.commitment).toBe('00aa');
     expect(suffix[2]?.token?.nft?.commitment).toBe('01bb');
-    expect(suffix[3]?.to).toEqual(Uint8Array.of(0x6a));
-    // Late value-chunks after jobs: lift the early jobs run against OP_RETURN so
+    expect(suffix[3]?.to).toEqual(fillerLockingBytecode());
+    // Late value-chunks after jobs: lift the early jobs run against the filler so
     // TXOUTPUTCOUNT-1-nNew matches the reverse-suffix covenant (post two jobs).
     const lateAfterJobs = [
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '00aa' } } },
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } } },
       { to: Uint8Array.of(0xaa, 0x20), token: { nft: { capability: 'mutable' as const, commitment: 'late' }, category: 'ff' } },
-      { to: Uint8Array.of(0x6a), amount: 0n },
+      { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
     ];
     expect(moveLateOutputsBeforeReverseSuffix(lateAfterJobs, jobsLock, 2)).toBe(2);
     expect(lateAfterJobs[1]?.token?.nft?.commitment).toBe('00aa');
     expect(lateAfterJobs[2]?.token?.nft?.commitment).toBe('01bb');
-    expect(lateAfterJobs[3]?.to).toEqual(Uint8Array.of(0x6a));
+    expect(lateAfterJobs[3]?.to).toEqual(fillerLockingBytecode());
     // Reverse-suffix orphans: mid-layout duplicate jobs locks must be stripped so
     // TXOUTPUTCOUNT-1-nNew stays unique after late growth reorders the trailer.
     const orphaned = [
@@ -3440,7 +3459,7 @@ describe('assignPhysicalReturnIndices', () => {
       { to: Uint8Array.of(0x76, 0xa9), amount: 1000n },
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '00aa' } }, amount: 1200n },
       { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } }, amount: 1200n },
-      { to: Uint8Array.of(0x6a), amount: 0n },
+      { to: fillerLockingBytecode(), amount: FILLER_SATOSHIS },
     ];
     expect(stripSurplusValueChunkLocks(orphaned, { start: 2, nNew: 2 }, jobsLock)).toBe(1);
     expect(orphaned[0]?.to).toEqual(Uint8Array.of(0x51));
@@ -5375,7 +5394,7 @@ describe('assignPhysicalReturnIndices', () => {
     inputs[master + 5] = { token: { nft: { commitment: `${proofSlot}${tailSlot}03` } } };
     const repair = {
       collection: 'ledger', predecessorOffset: 3, candidateInsertedOffsets: [7],
-      proofInputOffset: 5, insertedSlot: '',
+      proofInputOffset: 5, insertedSlot: successorSlot,
     };
     const ambiguousOutputs = outputs.map((output) => ({
       ...output,

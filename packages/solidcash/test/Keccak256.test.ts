@@ -199,6 +199,27 @@ describe('keccak256 builtin (stateful contracts)', () => {
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('provisions the dynamic keccak256 side-cars on a provider that supports it (mock)', async () => {
+    // The fixed-slot resolver mints deterministic stand-ins when the provider exposes addUtxo; the dynamic loop
+    // must do the same, because it learns its iteration count only after the probe and a mock build should not
+    // require a hand-deployed band that the fixed path would have synthesized.
+    const provider = createTestProvider();
+    const artifact = compileString(CHAIN_STATEFUL);
+    const contract = new Contract(artifact, [], { provider });
+    const seed = hexToBin(VECTORS.zeros.preimage);
+    let acc = seed; for (let i = 0; i < 4; i++) acc = keccak_256(acc);
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { acc: seed }, { saltContract: true },
+    );
+    const lock = binToHex(keccakComputeLockingBytecode(hexToBin(categoryId).slice().reverse(), true));
+    expect(await provider.getUtxosForLockingBytecode(hexToBin(lock))).toHaveLength(0);
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    const tx = await sc.chain(seed, 4n, acc).send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    // The recreated side-cars stay at the branded address: one per loop iteration.
+    expect((await provider.getUtxosForLockingBytecode(hexToBin(lock))).length).toBeGreaterThanOrEqual(4);
+  });
+
   it('rejects a DYNAMIC stateful keccak loop when the asserted chain result is wrong', async () => {
     const provider = createTestProvider();
     const artifact = compileString(CHAIN_STATEFUL);

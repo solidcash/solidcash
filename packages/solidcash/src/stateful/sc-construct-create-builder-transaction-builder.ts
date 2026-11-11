@@ -34,6 +34,7 @@ import {
   type RuntimeLoopTransferOutput,
 } from './StatefulTransactionBuilder.js';
 import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
+import { isFillerLockingBytecode } from './filler.js';
 
 export type ConstructCreateBuilderTransactionBuilderHost = {
   readonly categoryId: string;
@@ -614,9 +615,8 @@ export function constructCreateBuilderTransactionBuilder(
           && materialized.inputs[index]?.token === undefined
         ));
         // If every balanced pad is already a co-spent token's output, add a distinct mint output only when the
-        // transaction has no reverse-indexed OP_RETURN suffix to shift. The final conservation pass funds it.
-        if (free < 0 && materialized.outputs.some((output) => output.to instanceof Uint8Array
-          && output.to.length === 1 && output.to[0] === 0x6a)) continue;
+        // transaction has no reverse-indexed filler suffix to shift. The final conservation pass funds it.
+        if (free < 0 && materialized.outputs.some((output) => isFillerLockingBytecode(output.to))) continue;
         const destination = free >= 0 ? free : materialized.outputs.length;
         materialized.outputs[destination] = {
           to: required,

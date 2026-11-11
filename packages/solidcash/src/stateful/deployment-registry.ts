@@ -1,3 +1,4 @@
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -8,6 +9,13 @@ export interface RegisteredDeployment {
   address: string;
   lockingBytecode?: string;
   contract: unknown;
+  /** For a factory-created child: the deploying contract's logical and value identities. */
+  parentAddress?: string;
+  parentLockingBytecode?: string;
+  /** The CREATE2 salt the child address was composed with, when one was used. */
+  salt?: string;
+  /** A factory-created stateful child's token category (the genesis funding outpoint's txid). */
+  category?: string;
 }
 
 /** Exact covenant bytecode which executes calls made by a registered deployment. */
@@ -248,6 +256,47 @@ export function findDeploymentByLockingBytecode(
   return undefined;
 }
 
+/** Canonical Uniswap/SushiSwap pair init-code hashes used by an EVM `pairFor`. */
+const CANONICAL_PAIR_INIT_CODE_HASHES = [
+  'e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303',
+  '96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f',
+];
+
+/**
+ * EVM CREATE2 identities an unmodified `UniswapV2Library.pairFor(factory, tokenA, tokenB)` derives for a
+ * factory-created child. The child records its CREATE2 salt and parent, so the identity is a pure projection
+ * of data the session already holds: no on-chain value commits to it, and the pair covenant cannot know the
+ * funding category that a BCH address adds. Resolving the projection to the child lets a Solidity reader that
+ * computes `pairFor` reach the deployed pair (and lets a test compare the two presentations).
+ */
+function create2ChildIdentities(deployment: RegisteredDeployment): string[] {
+  const salt = deployment.salt?.replace(/^0x/i, '').toLowerCase();
+  if (salt === undefined || salt.length !== 64) return [];
+  const parentLocks = new Set<string>();
+  if (deployment.parentLockingBytecode) {
+    parentLocks.add(deployment.parentLockingBytecode.replace(/^0x/i, '').toLowerCase());
+  }
+  if (deployment.parentAddress) {
+    try {
+      parentLocks.add(binToHex(addressToLockScript(deployment.parentAddress)));
+    } catch { /* not a cashaddr parent */ }
+  }
+  const identities = new Set<string>();
+  for (const lock of parentLocks) {
+    const parentIdentity = lockingBytecodeToSolidityAddressPayload(hexToBin(lock));
+    if (parentIdentity === undefined) continue;
+    for (const initCodeHash of CANONICAL_PAIR_INIT_CODE_HASHES) {
+      const preimage = new Uint8Array(1 + 20 + 32 + 32);
+      preimage[0] = 0xff;
+      preimage.set(parentIdentity, 1);
+      preimage.set(hexToBin(salt), 21);
+      preimage.set(hexToBin(initCodeHash), 53);
+      identities.add(binToHex(keccak_256(preimage).slice(12)));
+    }
+  }
+  return [...identities];
+}
+
 /**
  * Enumerate deployments matching the canonical 20-byte address carried by imported-Solidity ABI values.
  *
@@ -265,13 +314,14 @@ export function matchingDeploymentsBySolidityAddressPayload(
       registeredExecutionLockingBytecode(deployment), deployment.lockingBytecode,
     ]);
     try { candidates.add(binToHex(addressToLockScript(deployment.address))); } catch { /* not a cashaddr */ }
-    return [...candidates].some((candidate) => {
+    if ([...candidates].some((candidate) => {
       if (!candidate) return false;
       let bytecode: Uint8Array;
       try { bytecode = hexToBin(candidate.replace(/^0x/, '')); } catch { return false; }
       const narrowed = lockingBytecodeToSolidityAddressPayload(bytecode);
       return narrowed !== undefined && binToHex(narrowed) === wanted;
-    });
+    })) return true;
+    return create2ChildIdentities(deployment).includes(wanted);
   });
 }
 
@@ -281,6 +331,33 @@ export function findDeploymentBySolidityAddressPayload(
 ): RegisteredDeployment | undefined {
   const matches = matchingDeploymentsBySolidityAddressPayload(provider, payload);
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
+ * True when a value names a child only through an off-chain CREATE2 projection that no single deployment owns.
+ *
+ * A BCH covenant authenticates a callee against the identity its locking bytecode projects to, or against a
+ * co-spent SCID identity anchor. No lock commits to a CREATE2 address derived from an EVM init-code hash, so the
+ * SDK substitutes the co-spent child's lock for the witness. That substitution is only sound when exactly one
+ * registered child projects to the value (the child records its salt and parent); with no owning child, or with
+ * several, there is no callee to authenticate and the caller reports the limit instead of assembling a doomed
+ * transaction.
+ */
+export function isCreate2ProjectedAddressValue(
+  provider: NetworkProvider, value: string | Uint8Array,
+): boolean {
+  const payload = typedSolidityAddressPayload(value);
+  if (!payload) return false;
+  const exact = typeof value === 'string'
+    ? findDeploymentByExactAddress(provider, value) ?? findDeploymentByLockingBytecode(provider, value)
+    : findDeploymentByLockingBytecode(provider, binToHex(value));
+  if (exact) return false;
+  // One unambiguous projection IS resolvable: `findDeploymentByAddressValue` returns that child, whose real BCH
+  // lock the witness carries and a co-spent input can present. Only zero or several matches are a dead end.
+  // A deployment whose own locking bytecode narrows to the payload is not a projection at all - the value is the
+  // lock-derived identity the covenant checks, which is how a factory-created pair is addressed through an
+  // interface that never saw its deployment. `matchingDeploymentsBySolidityAddressPayload` covers both forms.
+  return findDeploymentBySolidityAddressPayload(provider, payload) === undefined;
 }
 
 /** Resolve a compiler-typed address value, preserving exact BCH identities before Solidity ABI projection. */

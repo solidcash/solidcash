@@ -1,6 +1,6 @@
 {
   "name": "testing-suite",
-  "version": "0.14.0-beta.1",
+  "version": "0.50.0",
   "description": "Example project to develop and test SolidCash contracts",
   "main": "index.js",
   "type": "module",
@@ -12,15 +12,15 @@
     "test": "test"
   },
   "scripts": {
-    "compile": "tsx tasks/compile.ts",
+    "compile": "node ../../packages/testing/dist/cli.js compile",
     "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
     "test": "vitest run"
   },
   "dependencies": {
     "@bitauth/libauth": "git+https://github.com/mainnet-pat/libauth.git#1cf4b432864b3a4ed9f33d1992355d7286f3dab8",
-    "@solidcash/testing": "^0.14.0-beta.1",
-    "@solidcash/solidc": "^0.14.0-beta.1",
-    "@solidcash/solidcash": "^0.14.0-beta.1"
+    "@solidcash/testing": "^0.50.0",
+    "@solidcash/solidc": "^0.50.0",
+    "@solidcash/solidcash": "^0.50.0"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

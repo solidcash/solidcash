@@ -61,11 +61,11 @@ const OPEN = '   function move(uint amount, int turns) {\n';
 const LOOP = '     for (int i = 0; i < turns; i = i + 1) { this.total = amount + uint(i); }\n';
 
 /** The body under test: the call first, so the loop and the write it settles share the segment the call opened. */
-const CALL_THEN_LOOP_SOURCE = `pragma solidcash ^0.14.0;${HEAD()}`
+const CALL_THEN_LOOP_SOURCE = `pragma solidcash ^0.50.0;${HEAD()}`
   + OPEN + CALL + LOOP + '     require(turns > 0);\n   }\n }';
 
 /** The same body with the loop before the call, whose write lands in the segment the frame opens with. */
-const LOOP_THEN_CALL_SOURCE = `pragma solidcash ^0.14.0;${HEAD()}`
+const LOOP_THEN_CALL_SOURCE = `pragma solidcash ^0.50.0;${HEAD()}`
   + OPEN + LOOP + CALL + '     require(true);\n   }\n }';
 
 /** A mapping on the entry's state, entered with an `address` key, so the same loop writes a chain node per turn. */
@@ -76,7 +76,7 @@ const MAPPING_HEAD = (): string => HEAD() + '   mapping(address => uint) balance
  * which is the shape `updateJobWhitelist` has. The key is the frame's own, so this is the *served* variant of the
  * loop upsert except for the call the body also makes.
  */
-const MAPPING_WALL_SOURCE = `pragma solidcash ^0.14.0;${MAPPING_HEAD()}`
+const MAPPING_WALL_SOURCE = `pragma solidcash ^0.50.0;${MAPPING_HEAD()}`
   + '   function move(address to, uint amount, int turns) {\n'
   + '     for (int i = 0; i < turns; i = i + 1) { balances[to] = amount; }\n'
   + `     IOther(0x${hexOf(calleeAddress())}).ping.call();\n`
@@ -89,7 +89,7 @@ const MAPPING_WALL_SOURCE = `pragma solidcash ^0.14.0;${MAPPING_HEAD()}`
  * artifact publishes where each turn writes (`turns`), and the hop declares each record from the segment that mints
  * it on, which is what the machine's verdict below measures.
  */
-const LOOP_CALLS_SOURCE = 'pragma solidcash ^0.14.0;'
+const LOOP_CALLS_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IOther { function ping(address who); }'
   + ' contract Other { int public touched; function ping(address who) { require(this.touched == 0); } }'
   + ' contract Impl {'
@@ -300,8 +300,8 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
     expect(implementation?.accepted).toBe(true);
     // Every participant whose own verdict was accepted is asked again about the mutated spend. This second call writes
     // the value the record already holds, and the entry lands a write of it, so the record is spent on the write path
-    // whatever its end view: the validator, which ties every declared record's end to the output it creates, is the
-    // participant that has to refuse.
+    // whatever its end view: the validator's census facet, which ties every declared record's end to the output it
+    // creates, is the participant that has to refuse.
     const vm = compositionMachine();
     const refused = answered.verdicts
       .filter((verdict) => verdict.accepted)
@@ -312,7 +312,7 @@ describe('a run-time loop upsert beside a call, through the shipped proxy path',
         }).error ?? ''),
       }))
       .filter((verdict) => verdict.error !== '');
-    expect(refused.map((verdict) => verdict.id)).toContain('validator');
+    expect(refused.map((verdict) => verdict.id)).toContain('validator/2');
   });
 });
 
@@ -359,7 +359,7 @@ describe('a mapping loop whose own body reaches a call, through the same path', 
     const frame = draft.runs.find((execution) => execution.functionName.includes('Impl.move()'))!;
     const segments = draft.blockOf(frame.master).segments;
     expect(segments.map((segment) => segment.some((entry) => entry.in === INDEX_NONE))).toStrictEqual([false, true]);
-    // Every participant the hop derived accepts, the validator facet included: the loop's write is declared where
+    // Every participant the hop derived accepts, the validator's facets included: the loop's write is declared where
     // the turns can land it, and the records the write reaches are declared once each and kept at what it left.
     expect(run.deployment.initialize.verdicts.filter((verdict) => !verdict.accepted).map((verdict) => verdict.id))
       .toStrictEqual([]);

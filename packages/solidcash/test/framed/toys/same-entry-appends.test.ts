@@ -67,7 +67,7 @@ const APPENDS: readonly { readonly id: bigint; readonly item: bigint }[] = [
 
 /** The toy's source with `appends` as the Hub's unrolled calls. */
 function toySource(appends: readonly { readonly id: bigint; readonly item: bigint }[]): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface ILog { function append(int id, int item); }'
     + ' contract Log {'
     + '   int[] items;'
@@ -84,7 +84,7 @@ function toySource(appends: readonly { readonly id: bigint; readonly item: bigin
 
 /** The same shape without the event, which is the source the machine cases below run. */
 function runSource(items: readonly bigint[]): string {
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' interface ILog { function append(int item); }'
     + ' contract Log {'
     + '   int[] items;'
@@ -143,8 +143,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
   const validator = validatorFor(HUB_CATEGORY);
 
   const frames = appends.length;
-  // The hub, its validator, the facet it binds, then one log master per frame, then the header record.
-  const headerIndex = frames + 3;
+  // The hub, its validator, the two facets it binds, then one log master per frame, then the header record.
+  const headerIndex = frames + 4;
   // The run band sits one layout width past the frame's declared record block, so it does not move with the event
   // region, which is a trailing output the layout places after the participants.
   const base = headerIndex + layout.dataNftCount;
@@ -233,7 +233,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
     plan: planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[frames]! }),
     category: LOG_CATEGORY,
     base,
-    writer: frames + 1,
+    // The last append's master, just ahead of the header: the run the chunks carry is the one its write leaves.
+    writer: headerIndex - 1,
     valueSatoshis: 1_000n,
     removedLock: USER_LOCK,
   });
@@ -289,8 +290,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
         },
       },
       // The header is the log's data NFT, so it sits at the covenant its category derives; the composed spend
-      // carries that covenant's write path with a log master's index (the hub's master and validator precede the
-      // log's masters, so `log-1` is at index 2).
+      // carries that covenant's write path with a log master's index (the hub's master, its validator and the
+      // validator's two facets precede the log's masters, so `log-1` is at index 4).
       [HEADER_ID]: {
         source: {
           lockingBytecode: stateRecordLockingBytecode(bytesToHex(LOG_CATEGORY)), valueSatoshis: 20_000n,
@@ -300,8 +301,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
           lockingBytecode: stateRecordLockingBytecode(bytesToHex(LOG_CATEGORY)), valueSatoshis: 20_000n,
           token: token(LOG_CATEGORY, 'mutable', headers[frames]!),
         },
-        // The first log master sits after the hub, its validator and the facet the validator binds.
-        unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(LOG_CATEGORY), 3, 1),
+        // The first log master sits after the hub, its validator and the two facets the validator binds.
+        unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(LOG_CATEGORY), 4, 1),
       },
       ...Object.fromEntries(run.records.filter((record) => record.input !== undefined)
         .map((record) => [record.id, record.input!])),

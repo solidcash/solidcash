@@ -69,6 +69,7 @@ import {
   buildInitialStateCommitments,
   buildMasterUnlockingBytecode,
   bytesEqual,
+  computeEventContinuationHash,
   computeEventNameHash,
   concatBytes,
   hash256,
@@ -83,7 +84,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, encodeFunctionArguments, type FunctionArgument } from '../../Argument.js';
-import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
+import { createVirtualMachineBch2026ForProvider, createDerivationVirtualMachineForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { evaluateExternalExpression } from '../../stateful/sc-evaluate-external-expression.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
@@ -155,6 +156,19 @@ export interface FramedGenesisOptions {
   readonly maximumNftCommitmentBytes?: number;
   /** A bound on the learning iterations. Defaults to one per data NFT plus a convergence run. */
   readonly maximumIterations?: number;
+  /**
+   * An initializer the creating frame calls on the child it just made, folded into the child's genesis.
+   *
+   * The child's masters are outputs of the creating transaction, so its frames cannot run there. A builder runs the
+   * initializer's body here instead, after the constructor's state, and mints the state it computed.
+   */
+  readonly initializer?: FramedGenesisInitializer;
+}
+
+/** The initializer a creator folds into its child's genesis, with the arguments the creating call states. */
+export interface FramedGenesisInitializer {
+  readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
 }
 
 /**
@@ -309,18 +323,82 @@ export function deriveFramedGenesis(options: FramedGenesisOptions): FramedGenesi
     stateLayout, options.initialState ?? {}, options.maximumNftCommitmentBytes,
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');
-  if (constructorAbi === undefined) {
-    return {
+  // The collections the constructor's own writes plan; every other named collection gets its empty head from the
+  // constructor's frame.
+  let constructorCollections: readonly string[] = [];
+  const base: FramedGenesis = constructorAbi === undefined
+    ? {
       master, commitments: zeroCommitments, entries: headSentinelEntries(options, []),
       chunks: [], events: [],
-    };
-  }
+    }
+    : (() => {
+      refuseUnservedShape(artifact, constructorAbi);
+      refuseConstructorArguments(artifact, constructorAbi, options.constructorArgs);
+      const mappings = planConstructorMapping(artifact, constructorAbi, options);
+      constructorCollections = mappings.map((mapping) => mapping.collection);
+      const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
+      return deriveConstructorFrame(
+        options, master, zeroCommitments, constructorAbi, mappings, dynamic,
+        options.constructorArgs, constructorSelector(artifact),
+      );
+    })();
+  if (options.initializer === undefined) return base;
 
-  refuseUnservedShape(artifact, constructorAbi);
-  refuseConstructorArguments(artifact, constructorAbi, options.constructorArgs);
-  const mappings = planConstructorMapping(artifact, constructorAbi, options);
-  const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
-  return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mappings, dynamic);
+  // The initializer's frame runs on the constructor's state: the creator is its `msg.sender` (a contract, so the
+  // probe enters it as a message call), and its writes are the commitments the genesis mints.
+  const initializerAbi = artifact.abi.find((candidate) => candidate.name === options.initializer!.functionName);
+  if (initializerAbi?.selector === undefined) {
+    throw new FramedGenesisError(
+      `artifact "${artifact.contractName}" publishes no entry "${options.initializer.functionName}" for the folded `
+      + 'initializer',
+    );
+  }
+  const refusedInitializer = artifact.composition?.refusedEntries?.find((entry) =>
+    entry.functionName === publishedEntryName(artifact.contractName, options.initializer!.functionName));
+  if (refusedInitializer !== undefined) {
+    throw new FramedGenesisError(
+      `the folded initializer "${options.initializer.functionName}" of "${artifact.contractName}" is refused by the `
+      + `compiler: ${refusedInitializer.reason}`,
+    );
+  }
+  refuseUnservedShape(artifact, initializerAbi);
+  refuseConstructorArguments(artifact, initializerAbi, options.initializer.args);
+  // The initializer's frame runs on the genesis the constructor's frame already seeded, so it mints no empty head of
+  // its own: a second empty head of one collection is a second list head at the same lock, and a later insert that
+  // splices through the head may spend the copy no write ever relinked.
+  const initializerOptions: FramedGenesisOptions = {
+    ...options, constructorArgs: options.initializer.args, headCollections: [],
+  };
+  const mappings = planConstructorMapping(artifact, initializerAbi, initializerOptions);
+  // The initializer plans its writes against the empty list, which is the genesis's list only where the constructor
+  // wrote nothing to the collection.
+  const rewritten = mappings.map((mapping) => mapping.collection)
+    .filter((collection) => constructorCollections.includes(collection));
+  if (rewritten.length > 0) {
+    throw new FramedGenesisError(
+      `the folded initializer "${options.initializer.functionName}" of "${artifact.contractName}" writes `
+      + `${rewritten.map((collection) => `"${collection}"`).join(', ')}, which the constructor writes too; a genesis `
+      + 'plans the initializer\'s writes against the empty list only',
+    );
+  }
+  const dynamic = planConstructorDynamicWrites(artifact, initializerAbi, initializerOptions);
+  const initialized = deriveConstructorFrame(
+    initializerOptions, master, base.commitments, initializerAbi, mappings, dynamic,
+    options.initializer.args, new Uint8Array(hexToBin(initializerAbi.selector)),
+  );
+  // A collection the initializer writes keeps the head its plan relinked in place of the empty one the
+  // constructor's frame minted for it, so each collection still has exactly one head.
+  const initializedCollections = new Set(mappings.map((mapping) => mapping.collection));
+  const emptyHead = binToHex(headSentinelCommitment());
+  const baseEntries = base.entries.filter((entry) =>
+    !(initializedCollections.has(entry.collection) && entry.commitment === emptyHead));
+  return {
+    master: base.master,
+    commitments: initialized.commitments,
+    entries: [...baseEntries, ...initialized.entries],
+    chunks: [...base.chunks, ...initialized.chunks],
+    events: [...base.events, ...initialized.events],
+  };
 }
 
 /**
@@ -692,6 +770,7 @@ function planSingleMappingWrite(
   const headBefore = headSentinelCommitment();
   const plan = planMappingWrite({
     keys: [...resolved.keys],
+    keyEncoding: collection,
     value: seed.tail,
     inventory: [headBefore],
     encodeValue: (encoded) => encoded,
@@ -729,6 +808,7 @@ function planBatchMappingWrites(
   const headBefore = headSentinelCommitment();
   const seed = seedOf(artifact, collection);
   const plan = planMappingBatch({
+    keyEncoding: collection,
     writes: resolved.map((entry) => ({ keys: [...entry.keys], value: seed.tail })),
     inventory: [headBefore],
     encodeValue: (encoded) => encoded,
@@ -826,7 +906,8 @@ function planConstructorLoop(
   // reordered genesis would carry. A selected key below the one before it is refused by name, with the order that
   // serves (`orderLoopKeyArgs` hands a caller the array in that order).
   const walk = [...loop.turns].sort((left, right) => left.source - right.source);
-  const slotOf = (turn: CallLoopWriteTurn): bigint => bytesToSlotValue(keyToSlotMulti([...turn.keys]));
+  const keyEncoding = requireSortedCollection(artifact, loop.collection);
+  const slotOf = (turn: CallLoopWriteTurn): bigint => bytesToSlotValue(keyToSlotMulti([...turn.keys], keyEncoding));
   const below = walk.find((turn, at) => at > 0 && slotOf(turn) < slotOf(walk[at - 1]!));
   if (below !== undefined) {
     throw new FramedGenesisError(
@@ -847,6 +928,7 @@ function planConstructorLoop(
   let plan: MappingBatchPlan;
   try {
     plan = planMappingBatch({
+      keyEncoding: collection,
       writes: nodes.map((turn) => ({ keys: [...turn.keys], value })),
       inventory: [headBefore],
       encodeValue: (encoded) => encoded,
@@ -1091,6 +1173,19 @@ export function eventLockingBytecode(category: Uint8Array, signature: string, an
 }
 
 /**
+ * The lock a framed emit's `chunk`-th listed output carries (`EmitAbi.chunks`): the event's own for the first, and for
+ * each further chunk of a wide payload the event's continuation covenant, which the body rebuilds the same way and a
+ * reader joins the chunks by (`joinEventContinuations`).
+ */
+export function eventChunkLockingBytecode(
+  category: Uint8Array, signature: string, anonymous: boolean, chunk: number,
+): Uint8Array {
+  if (chunk === 0) return eventLockingBytecode(category, signature, anonymous);
+  const covenant = buildEventNftCovenantScript(category, computeEventContinuationHash(signature, anonymous));
+  return encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(covenant)));
+}
+
+/**
  * The placeholder commitment the derivation seeds an event's output with until it learns the payload.
  *
  * The body compares the payload it computed against this output's commitment, so the failing comparison leaves both
@@ -1211,19 +1306,20 @@ function deriveConstructorFrame(
   constructorAbi: Artifact['abi'][number],
   mappings: readonly ConstructorMapping[],
   dynamic: readonly ConstructorDynamicWrite[],
+  entryArgs: readonly FunctionArgument[] = options.constructorArgs,
+  entrySelector: Uint8Array = constructorSelector(options.artifact),
 ): FramedGenesis {
   const { artifact } = options;
   const stateLayout = artifact.stateLayout!;
   const dataNftCount = stateLayout.dataNftCount;
-  if (options.senderLockingBytecode !== undefined && options.senderLockingBytecode.length !== 25) {
-    throw new FramedGenesisError(
-      `a root frame's caller is a 25-byte P2PKH lock; got ${options.senderLockingBytecode.length} bytes`,
-    );
-  }
-  const selector = constructorSelector(artifact);
+  // A contract that creates this one is the sender its constructor sees. A root frame's sender is its caller's P2PKH
+  // lock, so a contract sender enters the constructor as a message call instead, which a validator covers: the head
+  // leaves `msg.sender` to the validator there, and the arm still runs only beside the category's genesis outpoint.
+  const contractSender = options.senderLockingBytecode !== undefined && options.senderLockingBytecode.length !== 25;
+  const selector = entrySelector;
   const structs = artifact.structs ?? stateLayout.structs;
   const encodedArgs = encodeFunctionArguments(
-    constructorAbi, [...options.constructorArgs], encodeFunctionArgument, structs,
+    constructorAbi, [...entryArgs], encodeFunctionArgument, structs,
   ) as Uint8Array[];
   // The call data carries the pushes with the first parameter's last, so the block's arguments are reversed.
   const argumentPushes = [selector, ...[...encodedArgs].reverse()];
@@ -1231,13 +1327,14 @@ function deriveConstructorFrame(
   // One output per event the constructor's body emits, in emit order, each carrying the covenant the body rebuilds.
   const eventDefinitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
   const eventCategory = Uint8Array.from(options.category);
-  const eventShapes: readonly EventShape[] = (constructorAbi.emits ?? []).map((emit) => {
+  // A wide emit takes one output per chunk of its payload (`EmitAbi.chunks`).
+  const eventShapes: readonly EventShape[] = (constructorAbi.emits ?? []).flatMap((emit) => {
     const anonymous = eventDefinitions.get(emit.eventSignature)?.anonymous === true;
-    return {
+    return Array.from({ length: emit.chunks ?? 1 }, (_unused, chunk) => ({
       eventName: emit.eventName,
       eventSignature: emit.eventSignature,
-      lockingBytecode: eventLockingBytecode(eventCategory, emit.eventSignature, anonymous),
-    };
+      lockingBytecode: eventChunkLockingBytecode(eventCategory, emit.eventSignature, anonymous, chunk),
+    }));
   });
   const totalChunks = dynamic.reduce((sum, write) => sum + write.plan.written.chunks.length, 0);
   const createdCount = mappings.reduce((sum, mapping) => sum + createdCountOf(mapping), 0);
@@ -1259,7 +1356,8 @@ function deriveConstructorFrame(
   // the loop replaces it with what the body computed.
   let viewOuts: readonly Uint8Array[] = preState.map((commitment) => Uint8Array.from(commitment));
 
-  const vm = createVirtualMachineBch2026ForProvider(options.provider);
+  // The probe learns what the constructor computes, so it runs on a machine with the budgets lifted.
+  const vm = createDerivationVirtualMachineForProvider(options.provider);
   const maximumCommitmentBytes = options.maximumNftCommitmentBytes
     ?? options.provider.consensusLimits?.maximumNftCommitmentBytes
     ?? stateLayout.commitmentLimit;
@@ -1274,7 +1372,7 @@ function deriveConstructorFrame(
     eventSentinel(Uint8Array.from(options.category), artifact.contractName, index, maximumCommitmentBytes));
 
   const callerLockingBytecode = options.senderLockingBytecode ?? rootCallerLockingBytecode();
-  const needsValidator = masterCannotStandAlone(artifact);
+  const needsValidator = contractSender || masterCannotStandAlone(artifact);
   const build = (
     outs: readonly Uint8Array[],
     events: readonly Uint8Array[],
@@ -1288,6 +1386,7 @@ function deriveConstructorFrame(
     master,
     argumentPushes,
     senderLockingBytecode: callerLockingBytecode,
+    contractSender,
     preState,
     viewOuts: outs,
     events: eventShapes.map((shape, index) => ({
@@ -1530,6 +1629,8 @@ interface ProbeProgramOptions {
   readonly master: DeployedMaster;
   readonly argumentPushes: readonly Uint8Array[];
   readonly senderLockingBytecode: Uint8Array;
+  /** True when the sender is a contract, whose constructor frame enters as a message call (`deriveConstructorFrame`). */
+  readonly contractSender: boolean;
   readonly preState: readonly Uint8Array[];
   readonly viewOuts: readonly Uint8Array[];
   /** One output per event the block lists: its covenant lock and the commitment it carries. */
@@ -1577,12 +1678,13 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   });
 
   const block: WitnessBlock = {
-    kind: FrameKind.ROOT,
-    callerRef: layout.caller,
+    kind: options.contractSender ? FrameKind.CALL : FrameKind.ROOT,
+    // A contract sender's frame is a message call, whose caller is another input; the origin stays the user.
+    callerRef: options.contractSender ? layout.spare : layout.caller,
     originRef: layout.caller,
     validatorRef: options.needsValidator ? layout.validator : INDEX_NONE,
     sender: options.senderLockingBytecode,
-    self: master.address,
+    self: master.self,
     value: 0n,
     retval: new Uint8Array(0),
     calls: [],
@@ -1599,7 +1701,7 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   };
 
   const unlockingBytecode = buildMasterUnlockingBytecode(block, options.argumentPushes, master.script);
-  const userLock = options.senderLockingBytecode;
+  const userLock = options.contractSender ? rootCallerLockingBytecode() : options.senderLockingBytecode;
 
   const slotCount = Math.max(
     layout.heads.at(-1) ?? -1, layout.created.at(-1) ?? -1, layout.events.at(-1) ?? layout.spare,

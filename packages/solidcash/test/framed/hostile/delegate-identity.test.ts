@@ -51,7 +51,7 @@ const RECORD_ID = 'record';
 /** A second user's P2PKH lock: the natural forgery for a delegate frame's `sender`. */
 const OTHER_USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x55));
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract Impl { function answer() pure { require(true); } }'
   + ' contract Other { function noop() pure { require(true); } }'
   + ' contract Proxy {'
@@ -311,8 +311,9 @@ describe('a DELEGATE frame inherits its caller\'s sender and self', () => {
         .filter((row) => row.accepted)
         .map((row) => row.participant)
         .sort();
-      // The head accepts and the refusal lands on its facet, which is what the machine run excludes here.
-      expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID].sort());
+      // The head accepts and the refusal lands on its first facet, which is what the machine run excludes here; the
+      // census facet weighs no edge, and accepts too.
+      expect(accepted).toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, `${VALIDATOR_ID}/2`, RECORD_ID].sort());
     }
   });
 });

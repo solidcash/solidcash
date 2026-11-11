@@ -1,6 +1,6 @@
 import {
-  AddressType, ArrayType, BytesType, EnumType, FixedType, IntType, PrimitiveType, StructType, type Type,
-  type CompilerOptions, type ExternalResultEncoding,
+  AddressType, ArrayType, BytesType, EnumType, FixedType, IntType, PrimitiveType, StructType, TupleType, type Type,
+  type CompilerOptions, type ExternalResultEncoding, resolveAddressForm,
 } from '@solidcash/utils';
 import { getMaxStateFieldBytes } from './maxEncodedSize.js';
 
@@ -124,7 +124,7 @@ export const namesCallRecordArguments = (parameterTypes: readonly Type[], argume
  * whose encoding may exceed the record's inline capacity.
  */
 export const externalResultMayNeedPreimage = (
-  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat'>,
+  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat' | 'addressForm'>,
 ): boolean => {
   if (externalResultEncoding(types, options) === 'evm-abi-v1') {
     const staticBytes = evmStaticResultBytes(types);
@@ -134,10 +134,29 @@ export const externalResultMayNeedPreimage = (
   return widest > CALL_RECORD_INLINE_RESULT_BYTES;
 };
 
-/** Tuple-wide wire representation emitted and expected by this exact compiler boundary. */
+/** Whether `type` holds an address anywhere: itself, an element, a field or a tuple member. */
+export const carriesAddress = (type: Type): boolean => type instanceof AddressType
+  || (type instanceof ArrayType && carriesAddress(type.elementType))
+  || (type instanceof StructType && type.fields.some((field) => carriesAddress(field.type)))
+  || (type instanceof TupleType && type.elements.some(carriesAddress));
+
+/**
+ * Tuple-wide wire representation emitted and expected by this exact compiler boundary.
+ *
+ * Under `evmCompat` a decodable result travels as EVM ABI words, except one that carries an address when the
+ * project's `addressForm` is `'bytecode'`: a 32-byte word holds only an address's 20-byte identity, so that result
+ * travels as compact pushdata, which carries each address as its whole locking bytecode (the same form the address
+ * has in storage and as an argument). Every producer and consumer of a result, and the artifact, decide through this.
+ */
 export const externalResultEncoding = (
-  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat'>,
+  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat' | 'addressForm'>,
 ): ExternalResultEncoding => (options.evmCompat)
   && isEvmExternalResultSchemaDecodable(types)
+  && !(resolveAddressForm(options) === 'bytecode' && types.some(carriesAddress))
   ? 'evm-abi-v1'
   : 'compact-pushdata-v1';
+
+/** Whether a result of `types` travels as EVM ABI words (`externalResultEncoding`). */
+export const usesEvmResultWords = (
+  types: readonly Type[], options: Pick<CompilerOptions, 'evmCompat' | 'addressForm'>,
+): boolean => externalResultEncoding(types, options) === 'evm-abi-v1';

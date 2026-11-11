@@ -338,11 +338,20 @@ export function assertKernelReadCarrierAuthenticatedRows(
 /** Fill missing trailing internal ABI slots with protocol defaults. */
 export function defaultInternalFunctionArg(input: { name: string; type?: string }): FunctionArgument {
   const { name, type = '' } = input;
+  // A witness-filled stride always advances by at least one co-spent input per occurrence. Keeping the sentinel at
+  // one reproduces the pre-witness assumption wherever no composed block pins the real width.
+  if (name.startsWith('__internal__loopTargetStride')) return 1n;
+  // A computed target's lock witness: an empty value matches no co-spent input, so an unreached call fails closed.
+  if (name.startsWith('__internal__computedCallTarget')) return new Uint8Array();
   if (name === '__internal__dynamicChunkOutputBase' || name === '__internal__graphSelfIdentityInput') return -1n;
   if (kernelEntryJournalRecordSegmentIndex(name) !== undefined) {
     return encodeKernelEntryJournalRecordSegment([]);
   }
   if (name === KERNEL_JOURNAL_ACCESS_STREAMS || name === KERNEL_JOURNAL_RECORDS) return [];
+  // A synthesized array witness (for example `__internal__loopTargets<n>` for a computed loop target) is
+  // carried pushdata-encoded, not as a host array. Its empty value is the zero-length array encoding, which
+  // keeps an unreachable call's unlocking script well formed so the covenant's own require can revert.
+  if (type.endsWith('[]')) return new Uint8Array([0]);
   if (name.includes('Selector') || type === 'bytes4') return new Uint8Array(4);
   if (name.includes('Category') || name.includes('BatchSlot')
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);

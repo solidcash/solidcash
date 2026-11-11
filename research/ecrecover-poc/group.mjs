@@ -17,18 +17,18 @@ const inv = (a, m = P) => { let [old_r, r] = [mod(a, m), m], [old_s, s] = [1n, 0
 const jToAffine = ([X, Y, Z]) => { const zi = inv(Z); const zi2 = mod(zi * zi); return [mod(X * zi2), mod(Y * zi2 * zi)]; };
 
 // --- Script bodies (emit straight-line formulas over named registers) ---
-// double: stack in [X Y Z] -> [..preserve, X3 Y3 Z3]
-export function emitJdbl(e, preserve = []) {
+// double: stack in [X Y Z] -> [..preserve, X3 Y3 Z3]; `lazy` keeps X3 Y3 Z3 unreduced (see emit.mjs)
+export function emitJdbl(e, preserve = [], lazy = false) {
   e.sqr('X', 'A'); e.sqr('Y', 'B'); e.sqr('B', 'C');
   e.add('X', 'B', 'XB'); e.sqr('XB', 'XB2'); e.sub('XB2', 'A', 't1'); e.sub('t1', 'C', 't2'); e.add('t2', 't2', 'D');
   e.add('A', 'A', 'A2'); e.add('A2', 'A', 'EE'); e.sqr('EE', 'F');
   e.add('D', 'D', 'D2'); e.sub('F', 'D2', 'X3');
   e.sub('D', 'X3', 'DmX3'); e.mul('EE', 'DmX3', 'ED'); e.add('C', 'C', 'C2'); e.add('C2', 'C2', 'C4'); e.add('C4', 'C4', 'C8'); e.sub('ED', 'C8', 'Y3');
   e.mul('Y', 'Z', 'YZ'); e.add('YZ', 'YZ', 'Z3');
-  e.keep([...preserve, 'X3', 'Y3', 'Z3']);
+  e.keep([...preserve, 'X3', 'Y3', 'Z3'], { reduce: !lazy });
 }
-// mixed add: stack in [.. X1 Y1 Z1 X2 Y2] (X2,Y2 affine) -> [..preserve, X3 Y3 Z3]  (madd-2007-bl)
-export function emitJaddMixed(e, preserve = []) {
+// mixed add: stack in [.. X1 Y1 Z1 X2 Y2] (X2,Y2 affine) -> [..preserve, X3 Y3 Z3]  (madd-2007-bl); `lazy` as for emitJdbl
+export function emitJaddMixed(e, preserve = [], lazy = false) {
   e.sqr('Z1', 'Z1Z1'); e.mul('X2', 'Z1Z1', 'U2');
   e.mul('Y2', 'Z1', 'YZ'); e.mul('YZ', 'Z1Z1', 'S2');
   e.sub('U2', 'X1', 'H'); e.sqr('H', 'HH'); e.add('HH', 'HH', 'I2'); e.add('I2', 'I2', 'I');
@@ -36,7 +36,7 @@ export function emitJaddMixed(e, preserve = []) {
   e.sqr('r', 'r2'); e.sub('r2', 'J', 'rj'); e.add('V', 'V', 'V2'); e.sub('rj', 'V2', 'X3');
   e.sub('V', 'X3', 'VmX3'); e.mul('r', 'VmX3', 'rV'); e.mul('Y1', 'J', 'YJ'); e.add('YJ', 'YJ', 'YJ2'); e.sub('rV', 'YJ2', 'Y3');
   e.add('Z1', 'H', 'ZH'); e.sqr('ZH', 'ZH2'); e.sub('ZH2', 'Z1Z1', 'z1'); e.sub('z1', 'HH', 'Z3');
-  e.keep([...preserve, 'X3', 'Y3', 'Z3']);
+  e.keep([...preserve, 'X3', 'Y3', 'Z3'], { reduce: !lazy });
 }
 
 // double-and-add ladder: acc = k*Pbase, Pbase affine in registers PX,PY. bits = MSB..LSB of k, top bit assumed 1.

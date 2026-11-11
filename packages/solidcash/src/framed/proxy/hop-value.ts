@@ -24,12 +24,15 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import type { DraftInput, DraftSourceOutput } from '../composer/index.js';
 import type { ReadDeclaration } from '../deploy/declaration.js';
 import {
-  readSatoshiContainers, satoshiContainerLockingBytecode, satoshiContainerUnlockingBytecode,
+  readSatoshiContainers, runLeadOutput, satoshiContainerLockingBytecode, satoshiContainerUnlockingBytecode,
 } from '../deploy/records.js';
 import { sendRecipient } from '../call/send-recipient.js';
 import { FramedProxyDeployError } from './errors.js';
 
-/** The least the container before the sends keeps; the caller tops it up past the change. */
+/**
+ * The least a container the proxy keeps value in holds; the caller tops a smaller balance up past the change. A hop
+ * that keeps nothing leaves no container, and its sends follow the drained run's marker (`runLeadOutput`).
+ */
 const CONTAINER_MINIMUM_SATOSHIS = 1_000n;
 
 /** The amount a send output carries until the body's own pin hands back the one it computed. */
@@ -190,7 +193,7 @@ export function madeHopSends(hop: HopValue, sends: readonly HopSend[]): readonly
  */
 export function hopPaying(hop: HopValue, sends: readonly HopSend[], proxyName: string): HopPaying {
   const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
-  const settle = (kept: bigint): bigint => (sends.length > 0 || kept > 0n ? atLeastMinimum(kept) : 0n);
+  const settle = (kept: bigint): bigint => (kept > 0n ? atLeastMinimum(kept) : 0n);
   const every = hop.readsBalance ? hop.containers : [];
   const everyTotal = every.reduce<bigint>((sum, utxo) => sum + utxo.satoshis, 0n);
   if (sends.some((send) => send.amount === undefined)) return { spent: every, kept: settle(everyTotal + hop.value) };
@@ -229,7 +232,7 @@ export function hopValueOutputs(
     : [];
   if (sends.length === 0) return { run: [], kept: container };
   return {
-    run: [...container, ...sends.map((send, position): DraftSourceOutput => ({
+    run: [runLeadOutput(hop.categoryId, paying.kept), ...sends.map((send, position): DraftSourceOutput => ({
       lockingBytecode: send.lock ?? hopSendLockSentinel(hop, position),
       valueSatoshis: send.amount ?? hopSendAmountSentinel(position),
     }))],

@@ -14,23 +14,25 @@ import { fillPlaceholders } from '../../../src/framed/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, categorySlotValue, dataRecordLock, seededCategory, validatorSpend,
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, dataRecordLock, seededCategory,
+  validatorFacetPlacements, validatorSpend,
 } from './validator-input.js';
 
 /**
- * Residual G0: a delegate frame's own category is settled by nobody when its master is its only one.
+ * Residual G0: a delegate frame's own category is settled even when its master is its only one.
  *
  * A forwarding proxy delegates into a victim contract X whose code runs on the proxy's records. Left open, the
- * builder could co-spend X's own records, containers and events in that transaction while nobody settles X's
- * category: X's master is a delegate frame (skips S), and X's category is not the one the validator's census needs
- * (V8), so its records could be rewritten (an owner takeover), its containers drained, events of it minted. The
- * guard in X's head requires X's category untouched when X is its only master - present on exactly one input and
- * one output, the recreated master - and a value-handling X's own satoshi containers not to shrink.
+ * builder could co-spend X's own records, containers and events in that transaction: X's master is a delegate
+ * frame, which runs on the proxy's records rather than its own, so its records could be rewritten (an owner
+ * takeover), its containers drained, events of it minted. The validator settles every covered master's contract
+ * (V8), X's among them, so its census holds X's category to what X's frames declare - none here - and its value
+ * rule holds X's containers.
  *
- * The verdict evaluated is the machine's on X's (the implementation's) own master input. The caller is a stand-in
- * master that carries the proxy's category and whose block delegates into X; the record the delegate frame runs on
- * carries the proxy's category, as a proxy's own records do. Each attack adds a UTXO of X's own category, or drains
- * a container at X's own container lock; the honest delegatecall adds none.
+ * The verdicts evaluated are the machine's on X's (the implementation's) own master input and on the validator's
+ * head and facet. The caller is a stand-in master that carries the proxy's category and whose block delegates into
+ * X; the record the delegate frame runs on carries the proxy's category, as a proxy's own records do. Each attack
+ * adds a UTXO of X's own category, or drains a container at X's own container lock; the honest delegatecall adds
+ * none.
  */
 
 const CATEGORY_PROXY = seededCategory('untouched proxy');
@@ -43,9 +45,9 @@ const EMPTY = new Uint8Array(0);
 const CALLER_INDEX = 0;
 const IMPL_INDEX = 1;
 const VALIDATOR_INDEX = 2;
-const RECORD_INDEX = 3;
-const USER_INDEX = 4;
-const ATTACK_INDEX = 5;
+const RECORD_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
+const USER_INDEX = RECORD_INDEX + 1;
+const ATTACK_INDEX = USER_INDEX + 1;
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -58,6 +60,8 @@ const token = (category: Uint8Array, capability: Capability, commitment: Uint8Ar
 /** A compiled victim contract deployed under its own category, reached as a delegate callee. */
 interface Victim {
   readonly category: Uint8Array;
+  /** The address of the victim's own category, which a delegate call into it names as its target (V5). */
+  readonly address: Uint8Array;
   readonly program: Uint8Array;
   readonly lock: Uint8Array;
   readonly selector: Uint8Array;
@@ -77,7 +81,7 @@ function deployVictim(label: string, source: string, entry: string, handlesValue
   const view = (counter: bigint): Uint8Array =>
     hexToBin(buildPushdataCommitment(artifact.stateLayout!, { counter }, 0));
   return {
-    category, program, lock: encodeLockingBytecodeP2sh32(hash256(program)),
+    category, address, program, lock: encodeLockingBytecodeP2sh32(hash256(program)),
     selector: hexToBin(artifact.abi.find((row) => row.name === entry)!.selector!),
     before: view(5n), after: view(6n), handlesValue,
   };
@@ -85,13 +89,13 @@ function deployVictim(label: string, source: string, entry: string, handlesValue
 
 const COUNTER = deployVictim(
   'untouched counter',
-  'pragma solidcash ^0.14.0; contract Counter { int public counter;'
+  'pragma solidcash ^0.50.0; contract Counter { int public counter;'
   + ' function increment() { this.counter = this.counter + 1; require(this.counter > 0); } }',
   'increment', false,
 );
 const VAULT = deployVictim(
   'untouched vault',
-  'pragma solidcash ^0.14.0; contract Vault { int public counter;'
+  'pragma solidcash ^0.50.0; contract Vault { int public counter;'
   + ' receive() external payable { this.counter = this.counter + 1; require(this.counter > 0); } }',
   '__receive', true,
 );
@@ -109,6 +113,8 @@ const callerProgram = ((): Uint8Array => {
   ]);
 })();
 const callerLock = encodeLockingBytecodeP2sh32(hash256(callerProgram));
+/** The proxy's address, which its frame and the delegate frame running on its records both present. */
+const PROXY_ADDRESS = validatorAddress(CATEGORY_PROXY, REAL_VALIDATOR_PROGRAM);
 const RECORD_LOCK = dataRecordLock(CATEGORY_PROXY);
 
 /** The satoshi container lock of a category: the direct convention's covenant, salted by the category. */
@@ -125,22 +131,27 @@ interface Attack {
   readonly containerDrain?: boolean;
 }
 
-/** Evaluates the victim's own master input in a transaction that delegates into it. */
-function evaluate(victim: Victim, attack: Attack = {}): boolean {
+/** Evaluates the victim's own master input, and the validator, in a transaction that delegates into it. */
+function evaluate(victim: Victim, attack: Attack = {}): { victim: boolean; validator: boolean } {
+  // The validator settles the proxy's record the delegate frame runs on, and the victim's own contract (V8).
   const validator = validatorSpend(CATEGORY_PROXY, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, IMPL_INDEX], settles: [],
+    roots: [CALLER_INDEX],
+    masters: [CALLER_INDEX, IMPL_INDEX],
+    settles: [{ category: CATEGORY_PROXY, stateInputs: [RECORD_INDEX] }, { category: victim.category, stateInputs: [] }],
   });
+  const facets = validatorFacetPlacements();
   const callerBlock: WitnessBlock = {
     kind: 0, callerRef: USER_INDEX, originRef: USER_INDEX, validatorRef: VALIDATOR_INDEX, sender: USER_LOCK,
-    self: callerLock, value: 0n, retval: EMPTY,
+    self: PROXY_ADDRESS, value: 0n, retval: EMPTY,
     calls: [{
-      kind: 3, target: victim.lock, value: 0n, calleeRef: IMPL_INDEX, argsHash: sha256(EMPTY), result: EMPTY,
+      kind: 3, target: victim.address, value: 0n, calleeRef: IMPL_INDEX, argsHash: sha256(victim.selector),
+      result: EMPTY,
     }],
     segments: [[], []], events: [], sends: [],
   };
   const implBlock: WitnessBlock = {
     kind: 3, callerRef: CALLER_INDEX, originRef: USER_INDEX, validatorRef: VALIDATOR_INDEX, sender: USER_LOCK,
-    self: callerLock, value: 0n, retval: EMPTY,
+    self: PROXY_ADDRESS, value: 0n, retval: EMPTY,
     calls: [], segments: [[{ in: RECORD_INDEX, out: RECORD_INDEX, viewIn: victim.before, viewOut: victim.after }]],
     events: [], sends: [],
   };
@@ -156,6 +167,7 @@ function evaluate(victim: Victim, attack: Attack = {}): boolean {
       ...encodeDataPush(victim.program),
     ])),
     input(VALIDATOR_INDEX, validator.unlockingBytecode),
+    ...facets.map((facet) => facet.input),
     input(RECORD_INDEX, encodeDataPush(new Uint8Array([1]))),
     input(USER_INDEX, callerUnlockingBytecode()),
   ];
@@ -163,6 +175,7 @@ function evaluate(victim: Victim, attack: Attack = {}): boolean {
     { lockingBytecode: callerLock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY_PROXY, 'minting') },
     { lockingBytecode: victim.lock, valueSatoshis: MASTER_VALUE, token: token(victim.category, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY_PROXY, 'mutable') },
+    ...facets.map((facet) => facet.output),
     { lockingBytecode: RECORD_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY_PROXY, 'mutable', commitment) },
     { lockingBytecode: USER_LOCK, valueSatoshis: USER_VALUE },
   ];
@@ -189,24 +202,32 @@ function evaluate(victim: Victim, attack: Attack = {}): boolean {
   }
   const transaction: VmTransaction = { version: 2, inputs, outputs, locktime: 0 };
   const vm = compositionMachine();
-  return vm.stateSuccess(vm.evaluate({ inputIndex: IMPL_INDEX, sourceOutputs, transaction })) === true;
+  const accepts = (inputIndex: number): boolean =>
+    vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })) === true;
+  return {
+    victim: accepts(IMPL_INDEX),
+    validator: Array.from({ length: VALIDATOR_INPUT_SPAN }, (_, offset) => VALIDATOR_INDEX + offset).every(accepts),
+  };
 }
 
 describe('a delegate callee whose own category has a single master', () => {
   it('settles the honest delegatecall: the callee runs on the proxy records, its own category untouched', () => {
-    expect(evaluate(COUNTER)).toBe(true);
-    expect(evaluate(VAULT)).toBe(true);
+    expect(evaluate(COUNTER)).toStrictEqual({ victim: true, validator: true });
+    expect(evaluate(VAULT)).toStrictEqual({ victim: true, validator: true });
   });
 
   it('refuses co-spending and rewriting a record of the callee category (an owner takeover)', () => {
-    expect(evaluate(COUNTER, { recordRewrite: true })).toBe(false);
+    // The validator's settlement of the callee's contract lists no state input, so the co-spent record is refused.
+    expect(evaluate(COUNTER, { recordRewrite: true })).toStrictEqual({ victim: true, validator: false });
   });
 
   it('refuses minting an event NFT of the callee category', () => {
-    expect(evaluate(COUNTER, { eventMint: true })).toBe(false);
+    // No frame runs in the callee's own context, so no event of its category is listed.
+    expect(evaluate(COUNTER, { eventMint: true })).toStrictEqual({ victim: true, validator: false });
   });
 
   it('refuses draining a satoshi container of a value-handling callee category', () => {
-    expect(evaluate(VAULT, { containerDrain: true })).toBe(false);
+    // No frame runs in the callee's own context, so its containers may not shrink.
+    expect(evaluate(VAULT, { containerDrain: true })).toStrictEqual({ victim: true, validator: false });
   });
 });

@@ -40,7 +40,7 @@ describe('a framed master with a fallback, entered by a user', () => {
   const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
   const OTHER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(7));
   // `bump` and the fallback require different facts, so a verdict names the body that ran.
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' contract Sink(address owner, bytes expected) {'
     + '   function bump() { require(msg.sender == owner); }'
     + '   fallback(bytes input) external { require(input == expected); }'
@@ -149,7 +149,7 @@ describe('a contract paying another contract that has a fallback, compiled frame
   const PAYER_CONTAINER = containerLock(CATEGORY_PAYER);
   const PAYEE_CONTAINER = containerLock(CATEGORY_PAYEE);
   const AMOUNT = 10_000n;
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' contract Tip { function note() { require(true); } fallback() external payable { require(msg.value > 0); } }'
     + ' contract Sole { fallback() external payable { require(msg.value > 0); } }'
     + ' contract Quiet { function note() { require(true); }'
@@ -173,7 +173,12 @@ describe('a contract paying another contract that has a fallback, compiled frame
   function verdicts(payee: string, payeeOut: bigint = AMOUNT): Record<'payer' | 'payee' | 'validator', boolean> {
     const payerProgram = program('Payer', CATEGORY_PAYER, ADDRESS_PAYER);
     const payeeProgram = program(payee, CATEGORY_PAYEE, ADDRESS_PAYEE);
-    const validator = validatorSpend(CATEGORY_PAYER, { roots: [0], masters: [0, 1], settles: [] });
+    // The validator settles both covered masters' contracts, and so weighs both contracts' containers (V7).
+    const validator = validatorSpend(CATEGORY_PAYER, {
+      roots: [0],
+      masters: [0, 1],
+      settles: [{ category: CATEGORY_PAYER, stateInputs: [] }, { category: CATEGORY_PAYEE, stateInputs: [] }],
+    });
     const facets = validatorFacetPlacements();
     // Inputs: the payer, the payee, the validator with its facet, then the user and the container.
     const userIndex = 2 + VALIDATOR_INPUT_SPAN;
@@ -275,9 +280,9 @@ describe('a contract paying another contract that has a fallback, compiled frame
     expect(verdicts('Quiet')).toStrictEqual({ payer: true, payee: true, validator: true });
   });
 
-  it('is refused by the payee when its containers receive less than the value', () => {
-    expect(verdicts('Tip', AMOUNT - 1n).payee).toBe(false);
-    expect(verdicts('Sole', AMOUNT - 1n).payee).toBe(false);
+  it('is refused by the validator when the payee\'s containers receive less than the value (V7)', () => {
+    expect(verdicts('Tip', AMOUNT - 1n)).toStrictEqual({ payer: true, payee: true, validator: false });
+    expect(verdicts('Sole', AMOUNT - 1n)).toStrictEqual({ payer: true, payee: true, validator: false });
   });
 
   it('is refused by a payee whose fallback is not payable', () => {

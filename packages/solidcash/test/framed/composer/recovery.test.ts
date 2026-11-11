@@ -3,7 +3,7 @@ import { layoutWithFacets } from '../shapes/harness.js';
 import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
-  FrameKind, SHARED_LIBRARY_SALT, asmToScript, buildPushdataCommitment, encodeIntegerValue, scriptToBytecode, sha256,
+  FrameKind, asmToScript, buildPushdataCommitment, encodeIntegerValue, scriptToBytecode, sha256,
   validatorAddress, type FrameKindValue,
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
@@ -12,8 +12,6 @@ import { fillPlaceholders } from '../../../../solidc/src/framed/master/placehold
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
 } from '../../../../solidc/test/framed/master/validator-input.js';
-import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
-import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/framed/deploy/index.js';
 import {
   buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, participant,
@@ -29,12 +27,12 @@ import {
  *
  * The entry takes the four scalars as arguments and compares the recovered key against a compile-time owner. The
  * master dispatches over two entries, so a user enters it with the call data `selector || h || v || r || s`; the
- * composer reads the scalars from those argument pushes, builds the recovery side-car pair (and, for the EVM
- * projection, the keccak side-car), and `layoutTransaction` places them immediately after the master's input. The
- * machine's verdict on every contract input - the master and each side-car - is the assertion; no coordinate is
- * supplied by the test. A digest the body computes, whose pair is learned from the body's bind, is driven through the
- * shipped call path in `call/side-car-call.test.ts`, and so is the placeholder pair the EVM invalid-input rule
- * co-spends (`master/ecrecover-invalid-input.test.ts` pins each range the body tests).
+ * composer reads the scalars from those argument pushes, builds the recovery side-car (and, for the EVM projection,
+ * the keccak side-car), and `layoutTransaction` places them immediately after the master's input. The machine's
+ * verdict on every contract input - the master and each side-car - is the assertion; no coordinate is supplied by
+ * the test. A digest the body computes, whose side-car is learned from the body's bind, is driven through the shipped
+ * call path in `call/side-car-call.test.ts`, and so is the placeholder side-car the EVM invalid-input rule co-spends
+ * (`master/ecrecover-invalid-input.test.ts` pins each range the body tests).
  */
 
 const CATEGORY = seededCategory('composer recovery');
@@ -42,7 +40,7 @@ const CONTRACT_ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
 const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
 const MASTER_ID = 'auth-1';
 
-/** A signature that decomposes into a two-covenant split, with the little-endian scalars the builtin takes. */
+/** A signature, with the little-endian scalars the builtin takes. */
 interface Signer {
   readonly h: Uint8Array;
   readonly v: number;
@@ -50,48 +48,27 @@ interface Signer {
   readonly s: Uint8Array;
   readonly owner: Uint8Array;
   readonly address: Uint8Array;
-  readonly witness: ReturnType<typeof computeEcrecoverWitness>;
 }
 
 const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
 
-/** A dummy side-car UTXO, used only to probe whether a signature has a valid two-covenant split. */
-const dummyUtxo = (odd: boolean): never => ({
-  txid: (odd ? 'bb'.repeat(31) + '44' : 'aa'.repeat(31) + '55'), vout: 1, satoshis: 100_000n,
-  token: { category: 'ee'.repeat(31) + '11', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-}) as never;
-
-/**
- * Signs one message, re-drawing fresh wallets until the shipped split probe accepts the signature. The first draw is
- * the key `firstKey` names, known to split, because a refused probe tries every split and costs seconds.
- */
-async function splittableSigner(firstKey: string): Promise<Signer> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const wallet = attempt === 0
-      ? new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes(firstKey))) : ethers.Wallet.createRandom();
-    const message = `composer recovery ${attempt}`;
-    const digest = ethers.hashMessage(message);
-    const signature = await wallet.signMessage(message);
-    const { r, s, v } = ethers.Signature.from(signature);
-    const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
-    const owner = hexToBin(ethers.SigningKey
-      .computePublicKey(ethers.SigningKey.recoverPublicKey(digest, signature), true).slice(2));
-    const witness = computeEcrecoverWitness(h, v, rLe, sLe);
-    try {
-      probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummyUtxo(false), dummyUtxo(true));
-    } catch {
-      continue;
-    }
-    return { h, v, r: rLe, s: sLe, owner, address: hexToBin(wallet.address.slice(2)), witness };
-  }
-  throw new Error('no signature with a two-covenant split after 200 draws');
+/** One message signed by the key `key` names. */
+async function signerOf(key: string): Promise<Signer> {
+  const wallet = new ethers.Wallet(ethers.sha256(ethers.toUtf8Bytes(key)));
+  const message = `composer recovery ${key}`;
+  const digest = ethers.hashMessage(message);
+  const signature = await wallet.signMessage(message);
+  const { r, s, v } = ethers.Signature.from(signature);
+  const owner = hexToBin(ethers.SigningKey
+    .computePublicKey(ethers.SigningKey.recoverPublicKey(digest, signature), true).slice(2));
+  return { h: leBytes(digest), v, r: leBytes(r), s: leBytes(s), owner, address: hexToBin(wallet.address.slice(2)) };
 }
 
 let signer: Signer;
 
 beforeAll(async () => {
-  signer = await splittableSigner('composer recovery key 1');
-}, 120_000);
+  signer = await signerOf('composer recovery key 1');
+});
 
 /** One recovery call the entry makes: the scalars, the value it compares against, and its projection. */
 interface CallSpec {
@@ -107,7 +84,7 @@ function recoverySource(calls: readonly CallSpec[]): string {
     const builtin = call.evm ? 'ecrecoverEvm' : 'ecrecoverPubKey';
     return `require(${builtin}(h${index}, v${index}, r${index}, s${index}) == ${call.comparison});`;
   });
-  return 'pragma solidcash ^0.14.0;'
+  return 'pragma solidcash ^0.50.0;'
     + ' contract Auth {'
     + `   function check(${params.join(', ')}) { ${body.join(' ')} }`
     + '   function idle() { require(true); }'
@@ -236,23 +213,19 @@ describe('a composed framed recovery', () => {
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
-    expect(test.ids).toHaveLength(3); // the A/B pair plus one keccak side-car
+    expect(test.ids).toHaveLength(2); // the recovery side-car plus one keccak side-car
   });
 
-  it('is accepted with one A/B pair per call when the entry makes two recoveries', async () => {
-    const second = await splittableSigner('composer recovery key 2');
+  it('is accepted with one side-car per call when the entry makes two recoveries', async () => {
+    const second = await signerOf('composer recovery key 2');
     const test = buildCase([
       { scalars: signer, comparison: `pubkey(0x${binToHex(signer.owner)})`, evm: false },
       { scalars: second, comparison: `pubkey(0x${binToHex(second.owner)})`, evm: false },
     ]);
-    expect(test.ids).toStrictEqual([
-      `${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`,
-      `${MASTER_ID}/recovery-A1`, `${MASTER_ID}/recovery-B1`,
-    ]);
+    expect(test.ids).toStrictEqual([`${MASTER_ID}/recovery-V0`, `${MASTER_ID}/recovery-V1`]);
     const { layout } = composeDraft(test.plan);
     expect(layout.participants.map((placed) => [placed.id, placed.index])).toStrictEqual([
-      [MASTER_ID, 0], [`${MASTER_ID}/recovery-A0`, 1], [`${MASTER_ID}/recovery-B0`, 2],
-      [`${MASTER_ID}/recovery-A1`, 3], [`${MASTER_ID}/recovery-B1`, 4],
+      [MASTER_ID, 0], [`${MASTER_ID}/recovery-V0`, 1], [`${MASTER_ID}/recovery-V1`, 2],
     ]);
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
@@ -263,9 +236,9 @@ describe('a composed framed recovery', () => {
 describe('a composed framed recovery in a frame that runs on its caller\'s records', () => {
   it('reads every side-car after its own input, not after the records\' owner', () => {
     // A proxy delegates into an implementation entry that hashes and recovers: the frame's records are the proxy's,
-    // and its recovery pair, the projection's keccak side-car and its own keccak side-car follow its own input.
+    // and its recovery side-car, the projection's keccak side-car and its own keccak side-car follow its own input.
     const data = new TextEncoder().encode('proxied side-cars');
-    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.14.0;'
+    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.50.0;'
       + ' contract Impl {'
       + '   address public implementation;'
       + '   int public counter;'
@@ -356,19 +329,17 @@ describe('a composed framed recovery in a frame that runs on its caller\'s recor
     const outcome = composeAndDerive(plan, [artifacts.Proxy!, artifacts.Impl!], [rootOf('Proxy', '__fallback', 'proxy-1')]);
     for (const verdict of outcome.verdicts) expect(verdict.accepted, verdict.participant).toBe(true);
     expect(outcome.verdicts.map((verdict) => verdict.participant)).toStrictEqual(
-      ['proxy-1', 'validator', 'validator/1', 'record', 'impl-1', ...ids]);
+      ['proxy-1', 'validator', 'validator/1', 'validator/2', 'record', 'impl-1', ...ids]);
   }, 120_000);
 });
 
-// One A/B pair per call, right after the master: the two-recovery case above and `layout.test.ts`.
+// One side-car per call, right after the master: the two-recovery case above and `layout.test.ts`.
 describe('the recovery side-cars the composer places', () => {
-  it('are a pair plus a keccak side-car for the EVM projection', () => {
+  it('are one side-car plus a keccak side-car for the EVM projection', () => {
     const test = signerCase();
-    expect(test.ids).toStrictEqual([
-      `${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`, `${MASTER_ID}/recovery-K0`,
-    ]);
+    expect(test.ids).toStrictEqual([`${MASTER_ID}/recovery-V0`, `${MASTER_ID}/recovery-K0`]);
     const { layout } = composeDraft(test.plan);
-    expect(layout.participants.map((placed) => placed.index)).toStrictEqual([0, 1, 2, 3]);
+    expect(layout.participants.map((placed) => placed.index)).toStrictEqual([0, 1, 2]);
   });
 });
 

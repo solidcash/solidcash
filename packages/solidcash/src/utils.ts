@@ -170,6 +170,10 @@ export function encodeOutput(output: Output): Uint8Array {
 }
 
 export function solidCashOutputToLibauthOutput(output: Output): LibauthOutput {
+  // A transaction rebuilt from a derived one (a broadcast) states its outputs exactly as the derivation did: the
+  // token category's byte order is part of the transaction, and a re-encoding must not change it.
+  const source = (output as { readonly [SOURCE_LIBAUTH_OUTPUT]?: LibauthOutput })[SOURCE_LIBAUTH_OUTPUT];
+  if (source !== undefined) return source;
   const cached = libauthOutputCache.get(output);
   if (cached
     && cached.to === output.to
@@ -212,12 +216,17 @@ export function solidCashOutputToLibauthOutput(output: Output): LibauthOutput {
   return converted;
 }
 
+/** Marks an SDK output that came from a libauth one, so the conversion back can return the same bytes. */
+const SOURCE_LIBAUTH_OUTPUT = Symbol('sourceLibauthOutput');
+
 export function libauthOutputToSolidCashOutput(output: LibauthOutput): Output {
-  return {
+  const converted: Output = {
     to: output.lockingBytecode,
     amount: output.valueSatoshis,
     token: output.token && libauthTokenDetailsToSolidCashTokenDetails(output.token),
   };
+  Object.defineProperty(converted, SOURCE_LIBAUTH_OUTPUT, { value: output, enumerable: false });
+  return converted;
 }
 
 export function libauthTokenDetailsToSolidCashTokenDetails(token: LibauthTokenDetails): TokenDetails {

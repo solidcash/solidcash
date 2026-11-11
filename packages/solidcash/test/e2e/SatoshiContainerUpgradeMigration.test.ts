@@ -14,6 +14,7 @@ import {
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { FILLER_SATOSHIS, fillerLockingBytecode } from '@solidcash/utils';
 
 // CRYPTO-4 binds the satoshi container to the master's exact lock, so an in-place upgrade would strand the BCH it
 // holds. The container is now migrated in the upgrade transaction: spent with its flag=1 master path (the old master
@@ -144,10 +145,10 @@ describe('StatefulContract.upgrade() satoshi-container migration (CRYPTO-4)', ()
     });
 
     const outputs = getTxOutputs(result.tx);
-    // out[0]=master, out[1]=zero-value drain, out[2]=container re-mint, out[3]=change.
+    // out[0]=master, out[1]=drain filler, out[2]=container re-mint, out[3]=change.
     expect(outputs[0].token?.nft?.capability).toBe('minting');
-    expect(binToHex(outputs[1].to as Uint8Array)).toBe('6a');
-    expect(outputs[1].amount).toBe(0n);
+    expect(binToHex(addressToLockScript(outputs[1].to as string))).toBe(binToHex(fillerLockingBytecode()));
+    expect(outputs[1].amount).toBe(FILLER_SATOSHIS);
     expect(outputs[1].token).toBeUndefined();
 
     expect(outputs[2].token).toBeUndefined();
@@ -178,8 +179,8 @@ describe('StatefulContract.upgrade() satoshi-container migration (CRYPTO-4)', ()
     // out[4]=container re-mint, out[5]=change.
     expect(outputs.map((output) => output.token?.nft?.capability))
       .toEqual(['minting', undefined, undefined, 'mutable', undefined, undefined]);
-    expect(binToHex(outputs[1].to as Uint8Array)).toBe('6a');
-    expect(binToHex(outputs[2].to as Uint8Array)).toBe('6a');
+    expect(binToHex(addressToLockScript(outputs[1].to as string))).toBe(binToHex(fillerLockingBytecode()));
+    expect(binToHex(addressToLockScript(outputs[2].to as string))).toBe(binToHex(fillerLockingBytecode()));
     expect(outputs[3].token?.category).toBe(categoryId);
     expect(outputs[4].amount).toBe(5_000n);
     expect(binToHex(result.tx.outputs[4].lockingBytecode))

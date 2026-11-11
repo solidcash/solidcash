@@ -96,7 +96,7 @@ const ZERO_SLOT = new Uint8Array(32);
 const LOCKTIME_AFTER_PAYMENT = Number(PAYMENT_BLOCK) + 1;
 const NON_FINAL_SEQUENCE = 0xfffffffe;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IJudge { function gate(); }'
   + ' interface IEscrow {'
   + '   function paidAt() view returns (int);'
@@ -345,7 +345,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
     expect(rejected).toStrictEqual([]);
     expect(outcome.verdicts.filter((verdict) => verdict.accepted).map((verdict) => verdict.participant).sort())
       .toStrictEqual([ROOT_MASTER, JUDGE_MASTER, PAID_AT_MASTER, CHALLENGE_MASTER, VALIDATOR_ID,
-        `${VALIDATOR_ID}/1`, PAY_NODE_ID, CHALLENGE_NODE_ID].sort());
+        `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, PAY_NODE_ID, CHALLENGE_NODE_ID].sort());
 
     // The transaction's one clock reaches every frame.
     expect(outcome.transaction.locktime).toBe(LOCKTIME_AFTER_PAYMENT);
@@ -399,7 +399,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
  * The case records where this geometry stands rather than papering over it.
  */
 
-const SINGLE_SOURCE = 'pragma solidcash ^0.14.0;'
+const SINGLE_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IJudge { function gate(); }'
   + ' interface IEscrow {'
   + '   function paidAt() view returns (int);'
@@ -581,7 +581,7 @@ describe('the same composition over one data-NFT state record', () => {
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
       .toStrictEqual([ROOT_MASTER, JUDGE_MASTER, PAID_AT_MASTER, CHALLENGE_MASTER, VALIDATOR_ID,
-        `${VALIDATOR_ID}/1`, RECORD_ID].sort());
+        `${VALIDATOR_ID}/1`, `${VALIDATOR_ID}/2`, RECORD_ID].sort());
 
     // The record the reading frame left carries the counted value the writing frame computed.
     const written = outcome.transaction.outputs[planRecordIndex(plan)]!.token!.nft!.commitment;

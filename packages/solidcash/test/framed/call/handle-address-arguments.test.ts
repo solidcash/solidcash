@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToHex, parsePushdataCommitment } from '@solidcash/utils';
+import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
+import { bytesToHex, parsePushdataCommitment, validatorAddress } from '@solidcash/utils';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/framed/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { HDSigner } from '../../../src/HDSigner.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { registerDeployment } from '../../../src/stateful/deployment-registry.js';
 import { readFramedDeployment } from '../../../src/framed/deploy/index.js';
 import type { FramedFunctionCall } from '../../../src/framed/call/index.js';
 import type { StatefulContract } from '../../../src/stateful/StatefulContract.js';
@@ -67,5 +69,39 @@ describe('a framed handle resolves a signer passed for an address argument', () 
     expect(await calls.holds(other.address)).toBe(true);
     expect(await calls.holds({ getAddress: async (): Promise<string> => other.address })).toBe(true);
     expect(await calls.holds(signer)).toBe(false);
+  });
+
+  it('names a contract given by the 20-byte identity a read returns as the contract\'s own lock', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signer = HDSigner.fromPhrase(PHRASE, provider);
+    const fundingUtxo = { txid: '5b'.repeat(32), vout: 0, satoshis: 500_000n };
+    const targetFunding = { txid: '5c'.repeat(32), vout: 0, satoshis: 500_000n };
+    for (const utxo of [fundingUtxo, targetFunding, { txid: '6b'.repeat(32), vout: 0, satoshis: 400_000n }]) {
+      await provider.addUtxo(signer.getAddress(), utxo);
+    }
+    await fundShippedFacets(provider);
+    const deployment = await deployStatefulContract(pin, [], {
+      provider, fundingUtxo, funder: signer.unlockP2PKH(), changeAddress: signer.getAddress(),
+    });
+    const target = await deployStatefulContract(pin, [], {
+      provider, fundingUtxo: targetFunding, funder: signer.unlockP2PKH(), changeAddress: signer.getAddress(),
+    });
+    const handle = (deployment.contract as StatefulContract).connect(signer);
+    const calls = handle.call as unknown as PinCalls;
+    const { framedValidator } = await import('@solidcash/solidc');
+    const targetLock = validatorAddress(hexToBin(target.categoryId), framedValidator.buildValidatorProgram());
+    // The target is registered with the provider as a project's deployment is (`ContractFactory`).
+    registerDeployment(provider, {
+      contractName: 'Pin', address: binToHex(targetLock), lockingBytecode: binToHex(targetLock), contract: target.contract,
+    });
+    // The identity an EVM ABI carries for the contract: the HASH160 of its own lock (D13).
+    const identity = `0x${binToHex(hash160(targetLock))}`;
+
+    await calls.hold(identity);
+    const commitment = (await readFramedDeployment(provider, handle.categoryId, pin.stateLayout!))
+      .records[0]!.token!.nft!.commitment;
+    expect(bytesToHex(parsePushdataCommitment(commitment, pin.stateLayout!, 0).holder as Uint8Array))
+      .toBe(bytesToHex(targetLock));
+    expect(await calls.holds(identity)).toBe(true);
   });
 });

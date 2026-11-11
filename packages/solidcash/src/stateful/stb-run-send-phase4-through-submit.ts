@@ -2,6 +2,9 @@
  * phase-boundary extract: STB send-phase extract — Phase-4 converge/serialize/fee-bytes through Phase-5 submit.
  */
 
+import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { applyExternalSignatures, isExternallySignedUnlocker } from '../external-signing.js';
+import { generateLibauthSourceOutputs } from '../utils.js';
 import type { TransactionDetails, UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -36,22 +39,30 @@ export async function runSendPhase4ThroughSubmit(
   neededFee: bigint,
   sendTiming: (label: string) => void,
 ): Promise<TransactionDetails> {
-  const {
-    finalizedTransaction,
-    rawTxBin,
-    rawTx,
-    totalInputSats,
-  } = convergeAndSerializeFinalTransaction(
+  const converged = convergeAndSerializeFinalTransaction(
     host.convergeAndSerializeFinalTransactionHost(),
     finalBuilder,
     serializedAccountingFunders,
     reassertFinalLayout,
     sendTiming,
   );
+  const { finalizedTransaction, totalInputSats } = converged;
+  let { rawTxBin, rawTx } = converged;
 
-  const { decodeTransactionUnsafe } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
+  const { decodeTransactionUnsafe, encodeTransaction } = await import('@bitauth/libauth/build/lib/message/transaction-encoding.js');
 
-  const decodedTx = finalizedTransaction;
+  // A wallet that holds an input's key signs it now, over the transaction the covenants judged with its placeholder.
+  // The signature has the placeholder's size, so the fee stands, and it changes the txid, so the provider judges the
+  // signed transaction in full (../external-signing.ts).
+  const unlockers = finalBuilder.inputs.map((input) => ('unlocker' in input ? input.unlocker : undefined));
+  let decodedTx = finalizedTransaction;
+  if (unlockers.some(isExternallySignedUnlocker)) {
+    decodedTx = await applyExternalSignatures(unlockers, finalizedTransaction, generateLibauthSourceOutputs(finalBuilder.inputs));
+    rawTxBin = encodeTransaction(decodedTx);
+    rawTx = binToHex(rawTxBin);
+    sendTiming('externally-signed');
+  }
+
   validateSendFeeCapsAndBytes(
     host.validateSendFeeCapsAndBytesHost(),
     finalBuilder,

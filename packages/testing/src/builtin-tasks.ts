@@ -4,10 +4,11 @@
  */
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { createRequire } from 'module';
+import { createRequire, register } from 'module';
 import { pathToFileURL } from 'url';
 import fs from 'fs';
 import path from 'path';
+import type { Artifact } from '@solidcash/utils';
 import { task } from './tasks.js';
 import type { HardhatRuntimeEnvironment } from './hre.js';
 import { artifactCompilerOptions, compileSolidityProject } from './project-compiler.js';
@@ -15,6 +16,8 @@ import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
 import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
 import { diagnoseProject } from './doctor.js';
+import type { ScriptHookData } from './script-hooks.js';
+import { hardhatAliases } from './hardhat-aliases.js';
 
 /**
  * Project artifacts depend on emitted JavaScript implementations, not only package versions. During local
@@ -29,12 +32,8 @@ import { diagnoseProject } from './doctor.js';
  * outlives the script. In-process providers have no `disconnect` and are unaffected.
  */
 async function disconnectProvider(hre: HardhatRuntimeEnvironment): Promise<void> {
-  const provider = hre.network.provider as unknown as { disconnect?: () => Promise<void> };
-  try {
-    await provider.disconnect?.();
-  } catch {
-    // A socket that is already closed is the desired state.
-  }
+  // The script's own `hre.network.create()` connections too: each holds a socket.
+  await hre.network.closeAll();
 }
 
 function compilerJavaScriptFingerprint(entryFile: string): string {
@@ -159,6 +158,9 @@ function copyArtifactTree(sourceDir: string, targetDir: string): void {
   }
 }
 
+
+/** The network a `test` run selected, which its Vitest workers' HRE adopts (`vitest-setup.ts`). */
+export const TEST_NETWORK_ENV = 'SOLIDCASH_NETWORK';
 task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, Hardhat-style layout)')
   .addFlag('quiet', 'Suppress per-file output')
   .addFlag('suppress-warnings', 'Suppress non-fatal compiler warnings')
@@ -179,7 +181,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   )
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const {
-      compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
+      compileFile, compileFileMulti, compileFileSplit,
       version: compilerVersion,
     } = await import('@solidcash/solidc');
     const compilerEntry = createRequire(import.meta.url).resolve('@solidcash/solidc');
@@ -213,8 +215,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // TODO(remove SOLIDC_COMPILE_CACHE): replace this environment check with a `--no-cache` flag once the
     // variable is gone from the compiler (`packages/solidc/src/compiler.ts`, `artifactCacheEnabled`).
     const artifactCache = process.env.SOLIDC_COMPILE_CACHE !== '0';
+    // `split: 'func'` publishes each framed contract as a per-entry bundle beside its logical artifact. It is a
+    // placement of the compiled contracts, not an option of the logical compile.
+    const { split: splitMode, ...solcOptions } = hre.config.solc ?? {};
     const compilerOptions = {
-      ...hre.config.solc,
+      ...solcOptions,
       // A project config may pin the composition convention directly; it overrides the free-form solc map.
       ...(hre.config.composition !== undefined && { composition: hre.config.composition }),
       suppressWarnings,
@@ -283,10 +288,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     for (const full of files) {
       const fn = path.basename(full);
       try {
-        const source = fs.readFileSync(full, 'utf-8');
         // Hardhat mirror: one artifact JSON per CONTRACT (by contract name), nested under the source file dir.
-        // This is what `getContractFactory("Name")` resolves against.
-        const map = compileStringMulti(source, compilerOptions);
+        // This is what `getContractFactory("Name")` resolves against. The file's own resolver serves its imports
+        // (`import { BchNative } from "@solidcash/solidcash/contracts/BchNative.scash"`), as for a `.sol` root.
+        const map = compileFileMulti(full, compilerOptions);
         const nestDir = path.join(outputDir, contractsBase, fn);
         fs.mkdirSync(nestDir, { recursive: true });
         for (const [name, artifact] of Object.entries(map)) {
@@ -297,15 +302,33 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           contracts++;
         }
         // Backward-compat flat artifact (the file's primary contract, by file name) for direct `import` usage.
-        const primary = compileString(source, compilerOptions);
+        const primary = compileFile(full, compilerOptions);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(
           path.join(outputDir, fn.replace('.scash', '.artifact.ts')),
           formatArtifactModule(primary, fn.replace('.scash', '.json')),
         );
         // X149: `bytecode` is an ASM listing; measuring it fires on contracts that actually fit.
-        if (asmToBytecode(primary.bytecode).length > maxShardBytes) {
-          const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes });
+        if (splitMode === 'func' && compilerOptions.composition === 'framed') {
+          // A framed project compiled with `split: 'func'` places a `.scash` contract one entry per master, as it
+          // places a `.sol` one below: a master that carries every entry outgrows an input.
+          for (const [name, artifact] of Object.entries(map)) {
+            if ((artifact as Artifact).composition?.convention !== 'framed'
+              || typeof (artifact as Artifact).bytecode !== 'string' || (artifact as Artifact).bytecode.length === 0) {
+              continue;
+            }
+            try {
+              const bundle = compileFileSplit(full, {
+                ...compilerOptions, maxShardBytes, framedWitnessReserve: true, split: 'func', primaryContractName: name,
+              });
+              fs.writeFileSync(path.join(outputDir, `${name}.func.json`), formatSplitArtifactBundle(bundle, 'json'));
+              if (!args.quiet) console.log(`Split ${name} -> ${bundle.shards.length} entry shard(s)`);
+            } catch (error: any) {
+              console.warn(`Warning: failed to shard ${fn}:${name} (unsplit artifact kept): ${error.message.split('\n')[0]}`);
+            }
+          }
+        } else if (asmToBytecode(primary.bytecode).length > maxShardBytes) {
+          const split = compileFileSplit(full, { ...compilerOptions, maxShardBytes });
           fs.writeFileSync(
             path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
             formatSplitArtifactBundle(split, 'json'),
@@ -335,9 +358,15 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     let compilerJobs = 0;
     let cacheHits = 0;
     try {
+      // A contract a creator reaches through the template table (a CREATE2 over a code value) is a child too.
+      const templateChildren = Object.values(hre.config.create2Templates ?? {});
       const result = await compileSolidityProject(
         solFiles,
-        { evmCompat: true, ...compilerOptions },
+        {
+          evmCompat: true,
+          ...compilerOptions,
+          ...(templateChildren.length === 0 ? {} : { framedCreationTargets: templateChildren }),
+        },
         compileFileMulti,
         artifactCache ? {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
@@ -365,7 +394,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           // The lightweight declaration scan can see prose in comments (for example, "contract constructor").
           // Artifact maps are ordinary objects, so a name like `constructor` can otherwise resolve an inherited
           // Object.prototype member and reach asmToBytecode with no bytecode string.
-          return typeof artifact?.bytecode === 'string'
+          // A framed contract is never size-split: `split: 'func'` places it one entry per master below.
+          return typeof artifact?.bytecode === 'string' && artifact.composition?.convention !== 'framed'
             && asmToBytecode(artifact.bytecode).length > maxShardBytes;
         });
         if (!needsSplit) continue;
@@ -373,6 +403,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         try {
           split = compileFileSplit(full, {
             evmCompat: true, ...compilerOptions, maxShardBytes,
+            ...(result.creationTargets.length === 0 ? {} : { framedCreationTargets: result.creationTargets }),
           });
         } catch (error: any) {
           // Keep sharding the remaining sources. Aborting here reports one wall per run, which on a large
@@ -389,6 +420,33 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
           formatSplitArtifactBundle(split, 'json'),
         );
+      }
+      // A framed project compiled with `split: 'func'` places every deployable framed contract one entry per master
+      // program, so each master carries only its own entry. The bundle is published as `<Contract>.func.json`.
+      if (splitMode === 'func' && compilerOptions.composition === 'framed') {
+        const bundled = new Set<string>();
+        for (const full of solFiles) {
+          for (const name of new Set(solidityDeclarations(full))) {
+            const artifact = result.artifacts[name] as Artifact | undefined;
+            if (artifact?.composition?.convention !== 'framed' || typeof artifact.bytecode !== 'string'
+              || artifact.bytecode.length === 0 || bundled.has(name)) continue;
+            bundled.add(name);
+            try {
+              const bundle = compileFileSplit(full, {
+                // The cap is the input limit, which a framed master shares with its witness block.
+                evmCompat: true, ...compilerOptions, maxShardBytes, framedWitnessReserve: true, split: 'func',
+                primaryContractName: name,
+                // A contract another source creates carries constant master locks in its bundle too, which is the
+                // form the app deploys.
+                ...(result.creationTargets.length === 0 ? {} : { framedCreationTargets: result.creationTargets }),
+              });
+              fs.writeFileSync(path.join(outputDir, `${name}.func.json`), formatSplitArtifactBundle(bundle, 'json'));
+              if (!args.quiet) console.log(`Split ${name} -> ${bundle.shards.length} entry shard(s)`);
+            } catch (error: any) {
+              shardFailures.push(`${path.relative(contractsDir, full)}:${name}: ${error.message.split('\n')[0]}`);
+            }
+          }
+        }
       }
       if (shardFailures.length > 0) {
         // Keep compile successful when ordinary artifacts already published. Unsplit oversized roots remain
@@ -491,7 +549,7 @@ task('init', 'Create SolidCash configuration')
 task('test', 'Run the test suite (Vitest)')
   .addFlag('no-compile', 'Skip compilation before running tests')
   .addVariadicPositionalParam('paths', 'Optional test file paths/globs')
-  .setAction(async (args) => {
+  .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const extra = (args.paths as string[]) ?? [];
     const solidhatConfig = ['vitest.solidhat.config.ts', 'vitest.solidhat.config.js']
       .map((candidate) => path.resolve(candidate))
@@ -499,7 +557,11 @@ task('test', 'Run the test suite (Vitest)')
     // Pass the config and root as ABSOLUTE paths. Vitest resolves a relative --config against its own inferred
     // root, which in a monorepo is not necessarily this project, and it then fails to load the config at all.
     const configArgs = solidhatConfig ? ['--config', solidhatConfig, '--root', process.cwd()] : [];
-    const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], { stdio: 'inherit' });
+    // The workers build their own HRE, so the network `--network` selected travels with them, as `npx hardhat test
+    // --network localhost` runs its tests against the node.
+    const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], {
+      stdio: 'inherit', env: { ...process.env, [TEST_NETWORK_ENV]: hre.network.name },
+    });
     if (res.status !== 0) process.exitCode = res.status ?? 1;
     return { status: res.status };
   });
@@ -525,8 +587,33 @@ async function runScript(
       // No tsx available: the caller's loader (if any) resolves the import.
     }
   }
+  registerScriptHooks();
+  // The `chai` drop-in extends Vitest's `expect`, which a test run makes global; a script's chai assertions get it too.
+  // Vitest is an optional peer: without it, only a script that imports chai fails.
+  if ((globalThis as any).expect === undefined) {
+    try {
+      (globalThis as any).expect = (await import('vitest')).expect;
+    } catch {
+      // No Vitest installed.
+    }
+  }
   (globalThis as any).hre = hre;
   await import(pathToFileURL(script).href);
+}
+
+let scriptHooksRegistered = false;
+
+/** Resolve a script's `hardhat`/`ethers` imports to the SolidCash drop-ins, as the test runner aliases them. */
+function registerScriptHooks(): void {
+  if (scriptHooksRegistered) return;
+  scriptHooksRegistered = true;
+  const data: ScriptHookData = {
+    aliases: hardhatAliases(),
+    parentURL: import.meta.url,
+    projectURL: pathToFileURL(process.cwd() + path.sep).href,
+  };
+  // Registered after tsx, so it runs first and hands tsx the drop-in's specifier.
+  register(new URL('./script-hooks.js', import.meta.url), { data });
 }
 
 task('run', 'Run a script with the SolidCash HRE available as the `hre` global')
@@ -566,6 +653,10 @@ task('clean', 'Delete the artifacts directory')
 task('node', 'Start a persistent mem-cash devnet (the `npx hardhat node` analogue)')
   .addParam('host', 'Bind address (a non-loopback value requires --unsafe-expose)')
   .addParam('port', 'HTTP + WebSocket port; 0 picks a free port')
+  .addFlag('tls', 'Also serve HTTPS/WSS, with a generated self-signed certificate unless one is given')
+  .addParam('tls-port', 'HTTPS/WSS port; defaults to the HTTP port + 1, 0 picks a free port')
+  .addParam('tls-cert', 'PEM certificate for --tls')
+  .addParam('tls-key', 'PEM private key for --tls')
   .addParam('mining', 'Mining mode: auto, manual, or interval')
   .addParam('interval', 'Interval mining period in milliseconds')
   .addFlag('interval-empty', 'Interval mining also mines empty blocks')
@@ -579,7 +670,7 @@ task('node', 'Start a persistent mem-cash devnet (the `npx hardhat node` analogu
   .addParam('height', 'Bootstrap tip height (>= 11)')
   .addParam('timestamp', 'Genesis timestamp; block h is at timestamp + h')
   .addParam('vm', 'VM version: BCH_2023_05, BCH_2025_05, BCH_2026_05, or BCH_SPEC')
-  .addParam('consensus', 'Consensus profile: relaxed or production')
+  .addParam('consensus', 'Consensus profile: production (default) or relaxed')
   .addFlag('no-fund', 'Skip account funding (empty chain)')
   .addFlag('no-keys', 'Omit WIFs from the startup table')
   .addParam('chain-id', 'Chain id committed in the genesis coinbase')

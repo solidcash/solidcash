@@ -4,7 +4,7 @@ import {
 } from '@bitauth/libauth';
 import { INDEX_NONE, encodeWitnessBlock, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
 import {
-  declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript,
+  declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript, defineValidatorSettledScript,
 } from '../../../src/framed/master/declared-view.js';
 import { compositionMachine } from '../machine.js';
 
@@ -160,6 +160,8 @@ function keptIn(
     { counts: { segmentIndex: segment, callCount: segments.length - 1 }, index: [] as Uint8Array[] },
     { counts: { runtimeCounts: true as const }, index: [encodeDataPush(new Uint8Array(segment === 0 ? [] : [segment]))] },
   ].map(({ counts, index }) => runOnBlock(segments, new Uint8Array([
+    // A master defines its validator-settled flag before its body runs, as every compiled one does.
+    ...defineValidatorSettledScript(),
     ...pairs.flatMap((push) => [...push]),
     ...index.flatMap((push) => [...push]),
     ...declaredRecordsKeptScript({ ...counts, ...options }),

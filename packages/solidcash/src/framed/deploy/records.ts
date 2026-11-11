@@ -14,6 +14,8 @@
 
 import { hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import {
+  VALUE_HEAD_SIZE,
+  VALUE_INLINE_LIMIT,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
@@ -23,15 +25,26 @@ import {
   hasDataNftIndexTags,
   parsePushdataCommitment,
   scriptToBytecode,
+  validatorAddress,
+  type Artifact,
   type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import { encodeFunctionArgument } from '../../Argument.js';
 import { authheadLockingBytecode } from '../../bcmr/authhead.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
-import { getDataNftLockingBytecode } from '../../stateful/covenant-helpers.js';
-import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../../utils.js';
+import { decodeEntryCommitment } from '../../stateful/SortedList.js';
+import { getDataNftLockingBytecode, toTokenAwareAddress } from '../../stateful/covenant-helpers.js';
+import {
+  createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode, tryCashAddressToLockScript,
+} from '../../utils.js';
+import { listDeployments } from '../../stateful/deployment-registry.js';
+import { mappingValueChunkLock } from '../composer/mapping-plan.js';
+import { prepareFunctionSplitDeployment } from './entry-pool.js';
+import { deployMaster } from './material.js';
+import { functionSplitFor } from './split-registry.js';
 
 /** Raised when a framed deployment's records cannot be read. */
 export class FramedRecordError extends Error {
@@ -59,6 +72,26 @@ export function stateRecordLockingBytecode(categoryId: string): Uint8Array {
  */
 export function satoshiContainerLockingBytecode(categoryId: string): Uint8Array {
   return scriptToLockingBytecode(buildSatoshiContainerCovenantScript(hexToBin(categoryId)), 'p2sh32');
+}
+
+/**
+ * The output a contract's run of sends follows when its frame keeps nothing: zero satoshis at
+ * `OP_RETURN <the contract's container lock>`. It names the payer as a container would (spec 4b, "A send's payer"),
+ * where a container cannot hold nothing and a dust one would be a gift the EVM never makes.
+ */
+export function drainedRunMarkerLockingBytecode(categoryId: string): Uint8Array {
+  const lock = satoshiContainerLockingBytecode(categoryId);
+  // Framed keeps this OP_RETURN until it retires after TRE (the user, 2026-11-03).
+  return Uint8Array.from([0x6a, lock.length, ...lock]);
+}
+
+/** The output a contract's run of sends follows: the container that keeps `kept`, or the drained run's marker. */
+export function runLeadOutput(
+  categoryId: string, kept: bigint,
+): { readonly lockingBytecode: Uint8Array; readonly valueSatoshis: bigint } {
+  return kept > 0n
+    ? { lockingBytecode: satoshiContainerLockingBytecode(categoryId), valueSatoshis: kept }
+    : { lockingBytecode: drainedRunMarkerLockingBytecode(categoryId), valueSatoshis: 0n };
 }
 
 /**
@@ -194,18 +227,96 @@ function chunkLocks(categoryId: string, layout: StateLayout): ReadonlySet<string
   return locks;
 }
 
+/** A deployment's coins are found through a provider that indexes categories, or at the locks they derive. */
+function listsByCategory(
+  provider: NetworkProvider,
+): provider is NetworkProvider & Required<Pick<NetworkProvider, 'getUtxosByTokenCategory'>> {
+  return typeof provider.getUtxosByTokenCategory === 'function';
+}
+
+/** Whether a token's category is `categoryId`, which a caller may state in either byte order. */
+function ofCategory(utxo: Utxo, categoryId: string): boolean {
+  const held = utxo.token?.category.toLowerCase();
+  if (held === undefined) return false;
+  const wanted = categoryId.toLowerCase();
+  return held === wanted || held === bytesToHex(hexToBin(wanted).reverse());
+}
+
 /**
- * Every live UTXO of a category, or `undefined` when the provider cannot enumerate by category.
+ * The coins of `categoryId` at `locks`, each carrying the lock it was listed at.
  *
- * A provider that lists by category reaches every pool in one call: the master pool, the validator pool and the
- * records, wherever the records' own lock sits.
+ * A lock takes anyone's coins, so a listing holds whatever was paid to it: a foreign token at a record's covenant is
+ * nothing of the deployment's, and a constant-lock master's listing holds every category that shares it. Only the
+ * category's own coins are returned, and a coin two locks' listings share is returned once.
  */
-async function utxosOfCategory(
+export async function categoryCoinsAtLocks(
   provider: NetworkProvider,
   categoryId: string,
-): Promise<readonly Utxo[] | undefined> {
-  if (typeof provider.getUtxosByTokenCategory !== 'function') return undefined;
-  return provider.getUtxosByTokenCategory(categoryId);
+  locks: readonly Uint8Array[],
+): Promise<Utxo[]> {
+  const unique = [...new Map(locks.map((lock) => [bytesToHex(lock), lock])).values()];
+  const listed = await Promise.all(unique.map(async (lock) => (await provider.getUtxosForLockingBytecode(lock))
+    .filter((utxo) => ofCategory(utxo, categoryId))
+    .map((utxo): Utxo => ({ ...utxo, lockingBytecode: lock }))));
+  return [...new Map(listed.flat().map((utxo) => [`${utxo.txid}:${utxo.vout}`, utxo])).values()];
+}
+
+/** The locks a category's record state sits at: its records and each dynamic value's chunks. */
+export function framedRecordLocks(categoryId: string, layout: StateLayout): Uint8Array[] {
+  return [
+    ...(layout.dataNftCount > 0 ? [stateRecordLockingBytecode(categoryId)] : []),
+    ...(layout.variables ?? []).filter((variable) => variable.dynamic === true)
+      .map((variable) => chunkRecordLockingBytecode(categoryId, variable.name, variable.type)),
+  ];
+}
+
+/** The locks all of a category's state sits at: its record state and each sorted collection's nodes. */
+export function framedStateLocks(categoryId: string, layout: StateLayout): Uint8Array[] {
+  return [...framedRecordLocks(categoryId, layout), ...framedCollectionLocks(categoryId, layout)];
+}
+
+/** The lock of each sorted collection the layout publishes. */
+export function framedCollectionLocks(categoryId: string, layout: StateLayout): Uint8Array[] {
+  return (layout.collections ?? []).map((collection) => entryRecordLockingBytecode(categoryId, collection.signature));
+}
+
+/**
+ * The locks a long mapping value's continuation chunks sit at: each salted with its node's slot and its value's digest,
+ * so a provider that lists by lock reaches them from the nodes `coins` hold, a value that fits its node having none.
+ */
+function valueChunkLocks(categoryId: string, layout: StateLayout, coins: readonly Utxo[]): Uint8Array[] {
+  const locks: Uint8Array[] = [];
+  for (const collection of layout.collections ?? []) {
+    if (collection.chunkableValue !== true) continue;
+    const lock = bytesToHex(entryRecordLockingBytecode(categoryId, collection.signature));
+    for (const coin of coins) {
+      const commitment = coin.token?.nft?.commitment;
+      if (commitment === undefined || coin.lockingBytecode === undefined
+        || bytesToHex(coin.lockingBytecode) !== lock) continue;
+      let entry: ReturnType<typeof decodeEntryCommitment>;
+      try {
+        entry = decodeEntryCommitment(hexToBin(commitment));
+      } catch {
+        continue; // A collection's head sentinel holds no value.
+      }
+      const { slot, value: tail } = entry;
+      if (tail.length < 4 + 32 + VALUE_HEAD_SIZE) continue;
+      const length = new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+      if (tail.length === 4 + length && length <= VALUE_INLINE_LIMIT) continue;
+      locks.push(mappingValueChunkLock(hexToBin(categoryId), collection.name, { slot, root: tail.slice(4, 4 + 32) }));
+    }
+  }
+  return locks;
+}
+
+/**
+ * A category's mapping-value chunks, the coins whose locks only its live nodes name. `nodes` are the category's coins
+ * already listed; a provider that lists by category has them there.
+ */
+export async function framedValueChunks(
+  provider: NetworkProvider, categoryId: string, layout: StateLayout, nodes: readonly Utxo[],
+): Promise<Utxo[]> {
+  return categoryCoinsAtLocks(provider, categoryId, valueChunkLocks(categoryId, layout, nodes));
 }
 
 /** The data-NFT index a commitment parses at, or `undefined` when it is not a data-NFT commitment. */
@@ -328,24 +439,128 @@ export function classifyFramedDeployment(
 }
 
 /**
- * Reads a deployed framed contract's pools and records from the chain, by category.
+ * Every entry lock the provider's registrations hold for a category: each shard and internal cut of the bundle its
+ * genesis registered, else the program of the deployment registered for it. A category nothing registered has none.
+ */
+function registeredMasterLocks(
+  provider: NetworkProvider, categoryId: string, validatorProgram: Uint8Array,
+): Uint8Array[] {
+  const category = hexToBin(categoryId);
+  const split = functionSplitFor(provider, categoryId);
+  if (split !== undefined) {
+    const prepared = prepareFunctionSplitDeployment(split, category, validatorProgram);
+    return [
+      ...prepared.locks.values(),
+      ...[...prepared.shardArtifacts.values()].map((artifact) => deployMaster(artifact, category, validatorProgram)
+        .lockingBytecode),
+    ];
+  }
+  const wanted = categoryId.toLowerCase();
+  return listDeployments(provider).flatMap((registered) => {
+    const contract = registered.contract as {
+      readonly categoryId?: string;
+      readonly artifact?: Artifact;
+      readonly inner?: { readonly artifact?: Artifact };
+      readonly proxy?: { readonly categoryId?: string };
+      readonly framedProxy?: { readonly artifact?: Artifact };
+    } | undefined;
+    const artifact = contract?.proxy?.categoryId?.toLowerCase() === wanted
+      ? contract.framedProxy?.artifact
+      : contract?.categoryId?.toLowerCase() === wanted || registered.category?.toLowerCase() === wanted
+        ? contract?.inner?.artifact ?? contract?.artifact
+        : undefined;
+    return artifact?.composition?.placeholders === undefined
+      ? [] : [deployMaster(artifact, category, validatorProgram).lockingBytecode];
+  });
+}
+
+/** What a read of a deployment needs when its provider lists by lock only. */
+export interface FramedDeploymentReadOptions {
+  /**
+   * The master locks the read is for. A provider that lists by category answers with every master it holds, and
+   * these change nothing. One that lists by lock is asked for these alone: an entry's lock is known before its master
+   * is, and a created child's masters share their locks with every child of its creator, so a listing of them all
+   * would grow with the creator's children. `withMastersAt` adds a lock a read did not name. Left out, the read lists
+   * every entry lock the provider's registrations hold for the category.
+   */
+  readonly masterLocks?: readonly Uint8Array[];
+  /** The program the category's validators are addressed by; the toolchain's own by default. */
+  readonly validatorProgram?: Uint8Array;
+}
+
+/**
+ * Reads a deployed framed contract's pools and records from the chain.
  *
- * Refuses rather than guessing when the provider cannot enumerate a category, since classifying the pools needs
- * every live UTXO of the category to tell a master from a validator from a record.
+ * Classifying the pools needs the coins of the category. A provider that indexes categories lists them in one call; on
+ * one that lists by lock (an Electrum server) each pool is found at the lock it derives: the validators at the
+ * category's address, the records, nodes and chunks at their covenants, and the masters at the entry locks the caller
+ * names (`FramedDeploymentReadOptions.masterLocks`) or, naming none, at the locks the provider's registrations derive.
  */
 export async function readFramedDeployment(
   provider: NetworkProvider,
   categoryId: string,
   layout: StateLayout,
+  options: FramedDeploymentReadOptions = {},
 ): Promise<FramedDeploymentSet> {
-  const utxos = await utxosOfCategory(provider, categoryId);
-  if (utxos === undefined) {
-    throw new FramedRecordError(
-      `the provider cannot enumerate UTXOs by category ${categoryId}, which is how the master pool, the validator `
-      + 'pool and the records are told apart',
-    );
+  if (listsByCategory(provider)) {
+    return classifyFramedDeployment(await provider.getUtxosByTokenCategory(categoryId), layout);
   }
-  return classifyFramedDeployment(utxos, layout);
+  const validatorProgram = options.validatorProgram ?? framedValidator.buildValidatorProgram();
+  const coins = await categoryCoinsAtLocks(provider, categoryId, [
+    validatorAddress(hexToBin(categoryId), validatorProgram),
+    ...framedStateLocks(categoryId, layout),
+    ...options.masterLocks ?? registeredMasterLocks(provider, categoryId, validatorProgram),
+  ]);
+  return classifyFramedDeployment([...coins, ...await framedValueChunks(provider, categoryId, layout, coins)], layout);
+}
+
+/**
+ * `deployment` with the masters at `locks` in its pools: on a provider that lists by lock, a read names only the
+ * entry it knows of, and a frame planned later may run another entry of the category. A provider that lists by category
+ * has them all already, as has a read that named the lock.
+ */
+export async function withMastersAt(
+  provider: NetworkProvider,
+  categoryId: string,
+  deployment: FramedDeploymentSet,
+  locks: readonly Uint8Array[],
+): Promise<FramedDeploymentSet> {
+  if (listsByCategory(provider)) return deployment;
+  const missing = locks.filter((lock) => !deployment.mastersByLock.has(bytesToHex(lock)));
+  if (missing.length === 0) return deployment;
+  const found = await categoryCoinsAtLocks(provider, categoryId, missing);
+  const mastersByLock = new Map(deployment.mastersByLock);
+  // An empty pool is remembered too, so a lock no master sits at is listed once.
+  for (const lock of missing) {
+    const key = bytesToHex(lock);
+    mastersByLock.set(key, found.filter((utxo) => utxo.token?.nft?.capability === 'minting'
+      && bytesToHex(utxo.lockingBytecode!) === key).sort((left, right) => left.vout - right.vout));
+  }
+  return {
+    ...deployment,
+    masters: [...mastersByLock.values()].flat().sort((left, right) => left.vout - right.vout),
+    mastersByLock,
+  };
+}
+
+/**
+ * The category of the framed contract at `address`, or undefined when no coin there derives the address.
+ *
+ * A framed contract's address is `addrV(category)`, so the category is proven, not read off the first token at the
+ * address: an address takes anyone's coins, and a dust CashToken paid to one would otherwise name its own category.
+ * A contract's validators sit there, so a live deployment always holds the coin that proves it.
+ */
+export async function framedCategoryAt(
+  provider: NetworkProvider,
+  address: string,
+  validatorProgram: Uint8Array = framedValidator.buildValidatorProgram(),
+): Promise<string | undefined> {
+  const lockingBytecode = tryCashAddressToLockScript(address);
+  if (lockingBytecode === undefined) return undefined;
+  const lock = bytesToHex(lockingBytecode);
+  const coins = await provider.getUtxos(toTokenAwareAddress(address));
+  const categories = new Set(coins.flatMap((utxo) => (utxo.token === undefined ? [] : [utxo.token.category])));
+  return [...categories].find((category) => bytesToHex(validatorAddress(hexToBin(category), validatorProgram)) === lock);
 }
 
 /** The decoded state a framed deployment's records hold, keyed by variable name. */
@@ -367,7 +582,8 @@ export async function readFramedState(
   categoryId: string,
   layout: StateLayout,
 ): Promise<FramedState> {
-  const deployment = await readFramedDeployment(provider, categoryId, layout);
+  // A state read spends no master, so a provider that lists by lock is asked for none.
+  const deployment = await readFramedDeployment(provider, categoryId, layout, { masterLocks: [] });
   const byNft: Array<Record<string, StateValue>> = [];
   for (let nftIndex = 0; nftIndex < layout.dataNftCount; nftIndex += 1) {
     const record = deployment.records[nftIndex];

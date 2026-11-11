@@ -7,26 +7,27 @@ library UsdtTransferFacet {
 
     uint256 constant MAX_ALLOWANCE = type(uint256).max;
 
+    bool backingSet;
+    bytes32 backingCategory;
+    bool paused;
+    bool deprecated;
+    int backedSupply;
+    int containerSeen;
     address owner;
+    int quarantineBlocks;
+    int clock;
+    address upgradedAddress;
+    bool initialized;
+    uint8 decimals;
+    bytes32 name;
+    bytes32 symbol;
     int totalSupply;
     mapping(address => int) balances;
     mapping(address => mapping(address => uint256)) allowed;
-    bool paused;
     mapping(address => bool) isBlackListed;
-    bytes32 name;
-    bytes32 symbol;
-    uint8 decimals;
-    bool deprecated;
-    address upgradedAddress;
     mapping(address => bool) frozen;
     mapping(address => int) pendingAmount;
     mapping(address => int) pendingUnlockAt;
-    int quarantineBlocks;
-    bytes32 backingCategory;
-    bool backingSet;
-    int containerSeen;
-    int backedSupply;
-    int clock;
 
     // `openSelf` creates recipient rows before any delegated balance update.
     function transfer(address to, int value) public {

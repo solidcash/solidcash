@@ -13,3 +13,20 @@ export class FramedProxyDeployError extends Error {
     super(message);
   }
 }
+
+/**
+ * Two frames of a hop, one of which enters the other, touch one node in an order the plan cannot state
+ * (`requireChainableNodes`). The execution meets the shape only once it makes both touches, so a call whose run stops
+ * on a contract's own reason before that reports its own stop (`PlannedCallees.chainRefusal`).
+ */
+export class FramedNodeChainError extends FramedProxyDeployError {}
+
+/**
+ * A low-level call the planner cannot place because its callee has no body to run for it: the EVM's call fails there,
+ * returning `false` to the caller, whose own check over its success refuses with `failedCallMessage`.
+ */
+export class FramedFailedCallSite extends FramedProxyDeployError {
+  public constructor(message: string, public readonly failedCallMessage: string) {
+    super(message);
+  }
+}

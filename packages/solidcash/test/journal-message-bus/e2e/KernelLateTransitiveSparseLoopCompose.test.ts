@@ -181,6 +181,10 @@ describe('kernel late transitive sparse loop graph planning', () => {
     // Decimal accumulation distinguishes the compact source-order rows [2, 3] from reversal,
     // duplicated skipped iterations, or a guessed occurrence-zero argument.
     await expect(sink.getState()).resolves.toMatchObject({ total: 23n });
+    // The returning rows compose atomically when sent; `echo` writes nothing.
+    await expect((deployed as any).relayReturning(coordinator.inner.lockingBytecode, [2n, 3n, 0n]).send())
+      .resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    await expect(sink.getState()).resolves.toMatchObject({ total: 23n });
   }, 180_000);
 
   it('builds the bus composition its send settles: each repeated owner spent once, through its route', async () => {

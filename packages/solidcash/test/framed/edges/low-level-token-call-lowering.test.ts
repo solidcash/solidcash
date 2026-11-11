@@ -38,7 +38,7 @@ const LABELS = { Caller: CALLER_LABEL, Token: TOKEN_LABEL };
 const TOKEN_ADDRESS = seededAddress(TOKEN_LABEL);
 const AMOUNT = 5n;
 
-const HEAD = 'pragma solidcash ^0.14.0;'
+const HEAD = 'pragma solidcash ^0.50.0;'
   + ' interface IERC20 { function transfer(address to, int amount) returns (bool); }'
   + ' contract Token {'
   + '   function transfer(address to, int amount) returns (bool) { require(true); return true; }'
@@ -245,8 +245,8 @@ function planFor(source: string): Run {
       { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
       { contract: 'Token', masters: ['token-1'], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs(['user'], 4),
+    // The two facets the validator binds are two participants ahead of the user.
+    userInputs: userInputs(['user'], 5),
     masters: [callerMaster, tokenMaster],
     inputs: {
       'caller-1': { source: masterInput(caller) },
@@ -352,7 +352,7 @@ describe('a low-level token call whose callee and method are statically known', 
     ]);
 
     // A payload the compiler cannot name at all.
-    const opaquePayload = 'pragma solidcash ^0.14.0;'
+    const opaquePayload = 'pragma solidcash ^0.50.0;'
       + ' contract Caller { function f(bytes payload) {'
       + `   (bool ok, bytes data) = address(${TARGET}).call(payload);`
       + '   require(ok);'

@@ -49,7 +49,7 @@ interface Built {
 /** Compiles, deploys, composes and derives the two-contract composition: caller, callee and its validator. */
 function build(): Built {
   const calleeAddress = seededAddress('the called contract');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
@@ -68,8 +68,8 @@ function build(): Built {
       { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
       { contract: 'Callee', masters: ['callee-1'], state: [] },
     ],
-    // The facet the validator binds is one participant ahead of the user.
-    userInputs: userInputs(['user'], 4),
+    // The two facets the validator binds are participants ahead of the user.
+    userInputs: userInputs(['user'], 5),
     masters: [
       master({
         master: 'caller-1', contract: 'Caller', entry: 'callIt', program: caller.program,
@@ -116,8 +116,11 @@ describe('a composed root master binds msg.sender to its caller\'s lock', () => 
   it('accepts the assembled composition on every contract input', () => {
     const { outcome } = build();
     expect(outcome.verdicts.map((row) => `${row.participant}: ${row.objection ?? 'accepted'}`))
-      // The validator's facet is a participant too, and it accepts.
-      .toStrictEqual(['caller-1: accepted', 'validator: accepted', 'validator/1: accepted', 'callee-1: accepted']);
+      // The validator's facets are participants too, and they accept.
+      .toStrictEqual([
+        'caller-1: accepted', 'validator: accepted', 'validator/1: accepted', 'validator/2: accepted',
+        'callee-1: accepted',
+      ]);
   });
 
   it('refuses a root whose witness sender is not the caller\'s lock, while the validator still accepts', () => {

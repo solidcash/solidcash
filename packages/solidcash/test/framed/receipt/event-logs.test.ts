@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FrameKind, bytesEqual, encodeEventCommitment, validatorAddress,
+  FrameKind, bytesEqual, encodeEventCommitment, splitEventPayload, validatorAddress,
 } from '@solidcash/utils';
 import { eventOutput } from '../../../../solidc/test/framed/master/event-input.js';
 import type { CompositionDraftPlan, DraftInput } from '../../../src/framed/composer/index.js';
+import { eventChunkLockingBytecode } from '../../../src/framed/deploy/index.js';
 import { compositionEventLogs } from '../../../src/framed/receipt/index.js';
 import {
   USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, compileAndDeploy, hexOf, master, masterInput,
@@ -49,14 +50,18 @@ describe('an event emitted by a nested frame', () => {
   const EMITTER_LABEL = 'the nested event emitter';
   const emitterAddress = seededAddress(EMITTER_LABEL);
   // The caller emits an event of its own and then calls the emitter, whose own event the nested frame emits.
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface IEmitter { function fire(); }'
     + ' contract Emitter { event Report(int a, int b, int c, int d, int e);'
     + `   function fire() { emit Report(${BIG}, ${BIG}, ${BIG}, ${BIG}, ${BIG}); require(true); } }`
     + ' contract Caller { event Ping(int x);'
     + `   function start() { emit Ping(1); IEmitter(0x${hexOf(emitterAddress)}).fire.call(); require(true); } }`;
 
-  /** The nested plan, with the caller's own event at output 3 and the callee's at 4. */
+  /**
+   * The nested plan, with the caller's own event at output 5 and the callee's at 6 and 7: five 32-byte words are
+   * wider than one 128-byte commitment, so the callee lists two outputs for its event, the first 128 bytes of the
+   * payload at the event covenant and the rest at its continuation covenant.
+   */
   function buildNested(callerValues: readonly bigint[] = [1n]): {
     plan: CompositionDraftPlan;
     artifacts: ReturnType<typeof compileAndDeploy>['artifacts'];
@@ -72,6 +77,8 @@ describe('an event emitted by a nested frame', () => {
     const validator = validatorFor(caller.category);
     const fire = selectorOf(artifacts, 'Emitter', 'fire');
     const payload = encodeEventCommitment(callerEvent.parameters, [...callerValues]);
+    const [reportHead, reportRest] = splitEventPayload(
+      encodeEventCommitment(emitterEvent.parameters, [BIG, BIG, BIG, BIG, BIG]));
 
     const plan: CompositionDraftPlan = {
       blocks: [
@@ -79,10 +86,11 @@ describe('an event emitted by a nested frame', () => {
         { contract: 'Emitter', masters: ['emitter-1'], state: [] },
       ],
       userInputs: [
-        // The facet the validator binds is one participant ahead of the users.
-        { id: 'event-caller', index: 4 },
-        { id: 'event-emitter', index: 5 },
-        { id: 'user', index: 6 },
+        // The two facets the validator binds are two participants ahead of the users.
+        { id: 'event-caller', index: 5 },
+        { id: 'event-emitter', index: 6 },
+        { id: 'event-emitter-continued', index: 7 },
+        { id: 'user', index: 8 },
       ],
       masters: [
         {
@@ -99,8 +107,8 @@ describe('an event emitted by a nested frame', () => {
               value: 0n, argumentPushes: [fire],
             }],
           }),
-          // The facet the validator binds is one participant ahead of the events.
-          events: [4],
+          // The two facets the validator binds are two participants ahead of the events.
+          events: [5],
         },
         {
           ...master({
@@ -112,8 +120,8 @@ describe('an event emitted by a nested frame', () => {
             frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
             enteredBy: 'caller-1', origin: 'user', argumentPushes: [fire],
           }),
-          // The facet the validator binds is one participant ahead of the events.
-          events: [5],
+          // The callee's wide event lists both of its chunks, the event covenant's output and the continuation's.
+          events: [6, 7],
         },
       ],
       inputs: {
@@ -123,9 +131,9 @@ describe('an event emitted by a nested frame', () => {
           source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(caller.category, 'mutable') },
         },
         'event-caller': eventInput(eventLock(caller.category, callerEvent.signature), caller.category, payload),
-        'event-emitter': eventInput(
-          eventLock(emitter.category, emitterEvent.signature), emitter.category,
-          encodeEventCommitment(emitterEvent.parameters, [BIG, BIG, BIG, BIG, BIG]),
+        'event-emitter': eventInput(eventLock(emitter.category, emitterEvent.signature), emitter.category, reportHead!),
+        'event-emitter-continued': eventInput(
+          eventChunkLockingBytecode(emitter.category, emitterEvent.signature, false, 1), emitter.category, reportRest!,
         ),
         user: userInput(),
       },
@@ -147,8 +155,9 @@ describe('an event emitted by a nested frame', () => {
     const logs = compositionEventLogs(outcome.draft, [artifacts.Caller!, artifacts.Emitter!], {
       validatorProgram: VALIDATOR_PROGRAM,
     });
-    // The events sit one participant on: the caller, the head, the facet it binds, then the events.
-    expect(logs.map((log) => log.outputIndex)).toStrictEqual([4, 5]);
+    // The events follow the participants: the caller, the head, the two facets it binds and the callee. The callee's
+    // continuation chunk at 7 is joined into its event's log rather than reported as one of its own.
+    expect(logs.map((log) => log.outputIndex)).toStrictEqual([5, 6]);
 
     // The caller's own event, reported with the caller's address.
     const ping = logs.find((log) => log.eventName === 'Ping')!;
@@ -173,7 +182,7 @@ describe('an event emitted by a nested frame', () => {
     expect(report.args).toStrictEqual({ a: BIG, b: BIG, c: BIG, d: BIG, e: BIG });
 
     // The reported address is the emitter's `addrV`, not the event covenant the output sits at.
-    const covenantLock = outcome.draft.programFor('emitter-1').transaction.outputs[4]!.lockingBytecode;
+    const covenantLock = outcome.draft.programFor('emitter-1').transaction.outputs[6]!.lockingBytecode;
     expect(bytesEqual(report.address, covenantLock)).toBe(false);
   });
 
@@ -189,7 +198,7 @@ describe('an event emitted by a nested frame', () => {
 });
 
 describe('a composition that emits nothing', () => {
-  const SOURCE = 'pragma solidcash ^0.14.0; contract Solo { function ping() { require(true); } }';
+  const SOURCE = 'pragma solidcash ^0.50.0; contract Solo { function ping() { require(true); } }';
 
   it('reports no logs', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Solo: 'a quiet contract' });
@@ -218,7 +227,7 @@ describe('a composition that emits nothing', () => {
 describe('an event covenant no frame lists', () => {
   const EMITTER_LABEL = 'the unlisted event emitter';
   const emitterAddress = seededAddress(EMITTER_LABEL);
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface IEmitter { function fire(); }'
     + ' contract Emitter { event Report(int a);'
     + '   function fire() { emit Report(7); require(true); } }'
@@ -242,10 +251,10 @@ describe('an event covenant no frame lists', () => {
         { contract: 'Emitter', masters: ['emitter-1'], state: [] },
       ],
       userInputs: [
-        // The facet the validator binds is one participant ahead of the users.
-        { id: 'event-caller', index: 4 },
-        { id: 'event-emitter', index: 5 },
-        { id: 'user', index: 6 },
+        // The two facets the validator binds are two participants ahead of the users.
+        { id: 'event-caller', index: 5 },
+        { id: 'event-emitter', index: 6 },
+        { id: 'user', index: 7 },
       ],
       masters: [
         {
@@ -262,8 +271,8 @@ describe('an event covenant no frame lists', () => {
               value: 0n, argumentPushes: [fire],
             }],
           }),
-          // The facet the validator binds is one participant ahead of the events.
-          events: [4],
+          // The two facets the validator binds are two participants ahead of the events.
+          events: [5],
         },
         {
           ...master({
@@ -275,8 +284,8 @@ describe('an event covenant no frame lists', () => {
             frame: { kind: FrameKind.CALL, sender: caller.address, self: emitter.address, value: 0n },
             enteredBy: 'caller-1', origin: 'user', argumentPushes: [fire],
           }),
-          // The facet the validator binds is one participant ahead of the events.
-          events: [5],
+          // The two facets the validator binds are two participants ahead of the events.
+          events: [6],
         },
       ],
       inputs: {
@@ -307,7 +316,7 @@ describe('an event covenant no frame lists', () => {
     const listed = compositionEventLogs(outcome.draft, [artifacts.Caller!, artifacts.Emitter!], {
       validatorProgram: VALIDATOR_PROGRAM,
     });
-    expect(listed.map((log) => log.outputIndex)).toStrictEqual([4, 5]);
+    expect(listed.map((log) => log.outputIndex)).toStrictEqual([5, 6]);
 
     // The transaction carries one more output locked by a listed event's own covenant, but no frame lists it, so
     // the frames' declarations are the census and it is not reported.
@@ -316,6 +325,6 @@ describe('an event covenant no frame lists', () => {
       validatorProgram: VALIDATOR_PROGRAM,
       outputs: [...derived, stray as unknown as (typeof derived)[number]],
     });
-    expect(withStray.map((log) => log.outputIndex)).toStrictEqual([4, 5]);
+    expect(withStray.map((log) => log.outputIndex)).toStrictEqual([5, 6]);
   });
 });

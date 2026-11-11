@@ -44,11 +44,11 @@ const HOLDER = seededAddress(HUB_LABEL);
 /** The composer gives a user-entered master no call data, so the root takes no argument and the amount is fixed. */
 const AMOUNT = 40n;
 const PREVIOUS = 7n;
-// The hub, its validator and the facet it binds, the vault, the token's two masters, then the node.
-const NODE_INDEX = 6;
+// The hub, its validator and the two facets it binds, the vault, the token's two masters, then the node.
+const NODE_INDEX = 7;
 const ZERO_SLOT = new Uint8Array(32);
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IToken {'
   + '   function approve(address spender, int amount);'
   + '   function transferFrom(address holder, address recipient, int amount);'

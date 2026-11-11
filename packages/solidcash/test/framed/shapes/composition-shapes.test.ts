@@ -50,7 +50,7 @@ function expectDerivationConvergedWithAssembly(
 }
 
 describe('one contract entered once with no calls', () => {
-  const SOURCE = 'pragma solidcash ^0.14.0; contract Solo { function ping() { require(true); } }';
+  const SOURCE = 'pragma solidcash ^0.50.0; contract Solo { function ping() { require(true); } }';
 
   it('lays out one master and its user, derives the single segment, and the machine accepts it', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Solo: 'a contract entered once' });
@@ -84,7 +84,7 @@ describe('one contract entered once with no calls', () => {
 
 describe('two contracts where the first calls the second', () => {
   const calleeAddress = seededAddress('the called contract');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
@@ -105,8 +105,8 @@ describe('two contracts where the first calls the second', () => {
         { contract: 'Caller', masters: ['caller-1'], validator: { id: 'validator', settles: [] }, state: [] },
         { contract: 'Callee', masters: ['callee-1'], state: [] },
       ],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: userInputs(['user'], 4),
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: userInputs(['user'], 5),
       masters: [
         master({
           master: 'caller-1', contract: 'Caller', entry: 'callIt', program: caller.program,
@@ -140,20 +140,20 @@ describe('two contracts where the first calls the second', () => {
     const outcome = composeAndDerive(plan, [artifacts.Caller!, artifacts.Callee!], [rootOf('Caller', 'callIt', 'caller-1')]);
 
     // The caller's block holds its master and the validator that binds the call edge; the callee follows.
-    // The facet the validator binds sits at 2, so the callee follows at 3.
-    expect(['caller-1', 'validator', 'callee-1'].map((id) => participant(outcome.draft.layout, id).index)).toStrictEqual([0, 1, 3]);
+    // The two facets the validator binds sit at 2 and 3, so the callee follows at 4.
+    expect(['caller-1', 'validator', 'callee-1'].map((id) => participant(outcome.draft.layout, id).index)).toStrictEqual([0, 1, 4]);
     // The derivation completes the callee before the caller resumes.
     expect(outcome.completed.map((frame) => frame.functionName))
       .toStrictEqual([entryName('Callee', 'ping'), entryName('Caller', 'callIt')]);
     // The one call record resolves to the callee's layout index.
-    expect(outcome.draft.assembly.calls.map((call) => call.calleeRef)).toStrictEqual([3]);
+    expect(outcome.draft.assembly.calls.map((call) => call.calleeRef)).toStrictEqual([4]);
     expectEveryContractInputAccepted(outcome);
     expectDerivationConvergedWithAssembly(outcome, ['caller-1', 'callee-1']);
   });
 });
 
 describe('two independent roots of two different contracts', () => {
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' contract First { function left() { require(true); } }'
     + ' contract Second { function right() { require(true); } }';
 
@@ -215,7 +215,7 @@ describe('two independent roots of two different contracts', () => {
 
 describe('one contract entering another of its own entries', () => {
   const ownAddress = seededAddress('the self-calling contract');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface IOwn { function inner(); }'
     + ' contract Own {'
     + `   function start() { IOwn(0x${hexOf(ownAddress)}).inner.call(); require(true); }`
@@ -231,8 +231,8 @@ describe('one contract entering another of its own entries', () => {
     const inner = selectorOf(artifacts, 'Own', 'inner');
     const plan: CompositionDraftPlan = {
       blocks: [{ contract: 'Own', masters: ['own-1', 'own-2'], validator: { id: 'validator', settles: [] }, state: [] }],
-      // The facet the validator binds is one participant ahead of the user.
-      userInputs: userInputs(['user'], 4),
+      // The two facets the validator binds are two participants ahead of the user.
+      userInputs: userInputs(['user'], 5),
       masters: [
         master({
           master: 'own-1', contract: 'Own', entry: 'start', program: own.program,
@@ -284,7 +284,7 @@ describe('one contract entering another of its own entries', () => {
     // The self-call target may be spelled as the contract's own address. The caller's own code holds that address
     // as its frame `self`, so the site binds its record to it as it does a computed target. The run on two masters
     // is pinned by the identity toy (`toys/identity.test.ts`).
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface IOwn { function inner(); }'
       + ' contract Own {'
       + '   function start() { IOwn(address(this)).inner.call(); require(true); }'
@@ -303,7 +303,7 @@ describe('a call and a return call between two contracts', () => {
     // the body that runs pins the block's declared length to its own.
     const firstAddress = seededAddress('the returning contract');
     const secondAddress = seededAddress('the called-back contract');
-    const source = 'pragma solidcash ^0.14.0;'
+    const source = 'pragma solidcash ^0.50.0;'
       + ' interface ISecond { function respond(); }'
       + ' interface IFirst { function finish(); }'
       + ' contract First {'
@@ -325,7 +325,7 @@ describe('a three-contract chain that calls back to the first', () => {
   const firstAddress = seededAddress('the chain head');
   const secondAddress = seededAddress('the chain middle');
   const thirdAddress = seededAddress('the chain tail');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ISecond { function middle(); function back(); }'
     + ' interface IThird { function end(); }'
     + ' interface IFirst { function finish(); }'
@@ -449,10 +449,11 @@ describe('a three-contract chain that calls back to the first', () => {
       built.artifacts.First!, built.artifacts.Second!, built.artifacts.Third!,
     ], [rootOf('First', 'begin', 'first-1')]);
 
-    // Each contract's masters sit in entry order and the one validator follows the head's block.
+    // Each contract's masters sit in entry order and the one validator follows the head's block, the two facets it
+    // binds at 3 and 4.
     expect(['first-1', 'first-2', 'validator', 'second-1', 'second-2', 'third-1']
-      .map((id) => participant(outcome.draft.layout, id).index)).toStrictEqual([0, 1, 2, 4, 5, 6]);
-    expect(outcome.draft.layout.funderInputBase).toBe(7);
+      .map((id) => participant(outcome.draft.layout, id).index)).toStrictEqual([0, 1, 2, 5, 6, 7]);
+    expect(outcome.draft.layout.funderInputBase).toBe(8);
     // The chain closes: the entry the last call reaches completes first, the user's entry last.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('First', 'finish'), entryName('Second', 'back'), entryName('Third', 'end'),
@@ -460,11 +461,11 @@ describe('a three-contract chain that calls back to the first', () => {
     ]);
     // Each call resolves to its callee's layout index.
     expect(outcome.draft.assembly.calls.map((call) => `${call.from}->${call.calleeRef}`))
-      .toStrictEqual(['first-1->4', 'second-1->6', 'third-1->5', 'second-2->1']);
+      .toStrictEqual(['first-1->5', 'second-1->7', 'third-1->6', 'second-2->1']);
     // The one validator names every master that points at it and the user's entry as its root.
     expect(outcome.draft.assembly.transcripts.map((entry) => ({
       validator: entry.validator, roots: entry.transcript.roots, masters: entry.transcript.masters,
-    }))).toStrictEqual([{ validator: 'validator', roots: [0], masters: [0, 1, 4, 5, 6] }]);
+    }))).toStrictEqual([{ validator: 'validator', roots: [0], masters: [0, 1, 5, 6, 7] }]);
     expectEveryContractInputAccepted(outcome);
     expectDerivationConvergedWithAssembly(outcome, ['first-1', 'first-2', 'second-1', 'second-2', 'third-1']);
   });
@@ -483,7 +484,7 @@ describe('a three-contract chain that calls back to the first', () => {
 });
 
 describe('two entry points of one contract entered independently', () => {
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' contract Twin { function left() { require(true); } function right() { require(true); } }';
 
   /** Two masters of one contract, one validator, entered by two separate users. */
@@ -510,8 +511,8 @@ describe('two entry points of one contract entered independently', () => {
     });
     return {
       blocks: [{ contract: 'Twin', masters: ['twin-left', 'twin-right'], validator: { id: 'validator', settles: [] }, state: [] }],
-      // The facet the validator binds is one participant ahead of the users.
-      userInputs: userInputs(['user-left', 'user-right'], 4),
+      // The two facets the validator binds are two participants ahead of the users.
+      userInputs: userInputs(['user-left', 'user-right'], 5),
       masters: [build('twin-left', 'left', 'user-left', left), build('twin-right', 'right', 'user-right', right)],
       inputs: {
         'twin-left': { source: masterInput(twin) },
@@ -552,7 +553,7 @@ describe('two independent pairs that each need their own validator', () => {
   // covering its own callee, so every master points at the validator that covers it.
   const leftCalleeAddress = seededAddress('the first callee');
   const rightCalleeAddress = seededAddress('the second callee');
-  const SOURCE = 'pragma solidcash ^0.14.0;'
+  const SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ILeftCallee { function ping(); }'
     + ' interface IRightCallee { function ping(); }'
     + ' contract Left {'
@@ -584,8 +585,8 @@ describe('two independent pairs that each need their own validator', () => {
         { contract: 'Right', masters: ['right-1'], validator: { id: 'right-validator', settles: [] }, state: [] },
         { contract: 'RightCallee', masters: ['right-callee-1'], state: [] },
       ],
-      // Each validator binds a facet, so two participants precede the users.
-      userInputs: userInputs(['user-left', 'user-right'], 8),
+      // Each validator binds two facets, so four more participants precede the users.
+      userInputs: userInputs(['user-left', 'user-right'], 10),
       masters: [
         master({
           master: 'left-1', contract: 'Left', entry: 'callIt', program: left.program,
@@ -674,9 +675,9 @@ describe('two independent pairs that each need their own validator', () => {
     // Each caller's block holds its master and its own validator; the callee's block follows.
     expect(['left-1', 'left-validator', 'left-callee-1', 'right-1', 'right-validator', 'right-callee-1']
       .map((id) => participant(outcome.draft.layout, id).index))
-      // Each validator binds one facet, so the pairs are two participants wider than the masters.
-      .toStrictEqual([0, 1, 3, 4, 5, 7]);
-    expect(outcome.draft.layout.funderInputBase).toBe(8);
+      // Each validator binds two facets, so the pairs are four participants wider than the masters.
+      .toStrictEqual([0, 1, 4, 5, 6, 9]);
+    expect(outcome.draft.layout.funderInputBase).toBe(10);
     // The callee of each pair completes before its caller, and the first pair is derived before the second.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('LeftCallee', 'ping'), entryName('Left', 'callIt'),
@@ -684,15 +685,15 @@ describe('two independent pairs that each need their own validator', () => {
     ]);
     // Each call resolves to its own callee's layout index.
     expect(outcome.draft.assembly.calls.map((call) => `${call.from}->${call.calleeRef}`))
-      .toStrictEqual(['left-1->3', 'right-1->7']);
+      .toStrictEqual(['left-1->4', 'right-1->9']);
     // Each validator's transcript names only the masters that point at it.
     expect(outcome.draft.assembly.transcripts.map((entry) => ({
       validator: entry.validator,
       roots: entry.transcript.roots,
       masters: entry.transcript.masters,
     }))).toStrictEqual([
-      { validator: 'left-validator', roots: [0], masters: [0, 3] },
-      { validator: 'right-validator', roots: [4], masters: [4, 7] },
+      { validator: 'left-validator', roots: [0], masters: [0, 4] },
+      { validator: 'right-validator', roots: [5], masters: [5, 9] },
     ]);
     expectEveryContractInputAccepted(outcome);
     expectDerivationConvergedWithAssembly(outcome, ['left-1', 'left-callee-1', 'right-1', 'right-callee-1']);

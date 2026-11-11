@@ -493,6 +493,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (fn.body && fn.returnTypes.length === 1
         && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn))) {
         this.normalizeMultiEarlyReturn(fn);
+        this.normalizeGuardedEarlyReturn(fn);
         this.analysisNodes.delete(fn);
       }
     }
@@ -621,7 +622,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // checks a transaction signature, and a file-level one that hashes (freeFunctionHashes).
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
-          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn))) {
+          || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn)
+          || (this.keepSelfMessageCalls && this.framedLibraryHashes(fn)))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -713,6 +715,93 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (let guard = 0; guard < 256 && this.normalizeSimpleEarlyReturn(fn); guard++) { /* fold */ }
   }
 
+  /**
+   * Canonicalize the early-return shape `normalizeMultiEarlyReturn` cannot reach: a guard whose return is NOT the
+   * statement before the tail, as in a token's `if (failTransfers) return false; ... emit Transfer(..);
+   * return true;`. Such a helper touches its own entry and emits, so it must inline (an OP_INVOKE subroutine has no
+   * caller block layout and would drop the event), yet `eligibleShape` sees two returns and leaves it behind. That
+   * is what kept a fee-on-transfer test token's message-bus route from being synthesized at all: route generation
+   * refused the retained helper, every rung failed, and the artifact fell back to direct-only.
+   *
+   * Rewrite every top-level `if (c) return a;` and the tail `return b;` into one assignment to a result temp, with
+   * the statements after each guard nested in its `else` arm:
+   *
+   * ```
+   * T f() { pre; if (c) return a; post; return b; }
+   * ->
+   * T f() { T __rh_ret; pre; if (c) { __rh_ret = a; } else { post; __rh_ret = b; } return __rh_ret; }
+   * ```
+   *
+   * Evaluation order, side effects and local scopes are preserved: `post` runs exactly when the guard failed, and
+   * every statement keeps its position on the path that reaches it. Only a flat body whose returns are all such
+   * top-level guards plus the tail qualifies; anything else is left for the existing refusals.
+   */
+  private normalizeGuardedEarlyReturn(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length !== 1) return false;
+    const stmts = fn.body.statements ?? [];
+    const tail = stmts[stmts.length - 1];
+    if (!isSourceReturn(tail) || tail.expressions.length !== 1) return false;
+    const isGuardedReturn = (statement: StatementNode): statement is BranchNode => {
+      if (!(statement instanceof BranchNode) || statement.elseBlock !== undefined) return false;
+      const arm = statement.ifBlock.statements ?? [];
+      return arm.length === 1 && isSourceReturn(arm[0]) && arm[0].expressions.length === 1;
+    };
+    let guards = 0;
+    for (let index = 0; index < stmts.length - 1; index += 1) {
+      if (isGuardedReturn(stmts[index])) guards += 1;
+    }
+    if (guards === 0) return false;
+    let returns = 0;
+    for (const node of this.nodesOf(fn)) if (node instanceof ReturnNode && !node.isYulReturn) returns += 1;
+    if (returns !== guards + 1) return false;
+
+    const resultName = `${PREFIX}_${this.counter++}_early`;
+    const resultId = (): IdentifierNode => {
+      const id = new IdentifierNode(resultName);
+      id.location = fn.location;
+      return id;
+    };
+    const assignResult = (value: ExpressionNode): StatementNode => {
+      const assignment = new AssignNode(resultId(), cloneNode(value) as ExpressionNode);
+      assignment.location = value.location ?? fn.location;
+      return assignment;
+    };
+    const block = (statements: StatementNode[]): BlockNode => {
+      const body = new BlockNode(statements);
+      body.location = fn.location;
+      return body;
+    };
+    // Fold the list's first guard into an `if`/`else`, recursing into the guarded continuation. The returned list
+    // ends on a path that assigns the result, never on a `return`.
+    const fold = (list: StatementNode[]): StatementNode[] => {
+      const index = list.findIndex(isGuardedReturn);
+      if (index < 0) {
+        const last = list[list.length - 1];
+        return isSourceReturn(last) && last.expressions.length === 1
+          ? [...list.slice(0, -1), assignResult(last.expressions[0])]
+          : list;
+      }
+      const guard = list[index] as BranchNode;
+      const early = (guard.ifBlock.statements![0] as ReturnNode).expressions[0];
+      const rest = fold(list.slice(index + 1));
+      const branch = new BranchNode(
+        cloneNode(guard.condition) as ExpressionNode,
+        block([assignResult(early)]),
+        block(rest),
+      );
+      branch.location = guard.location;
+      return [...list.slice(0, index), branch];
+    };
+    const folded = fold(stmts);
+    if (folded.length > 0 && isSourceReturn(folded[folded.length - 1])) return false;
+    const declaration = new VariableDefinitionNode(fn.returnTypes[0], [], resultName);
+    declaration.location = fn.location;
+    const trailing = new ReturnNode([resultId()]);
+    trailing.location = tail.location;
+    fn.body.statements = [declaration, ...folded, trailing];
+    return true;
+  }
+
   // Solidity permits a multi-returning call to be forwarded as one return expression (`return target.f()`).
   // Give that value one local per return slot so the ordinary multi-value helper inliner can splice wrappers
   // which own an external call into the entry point. Otherwise eligibleShape sees one expression for N declared
@@ -782,10 +871,17 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE))) return false;
     const stmts = this.effectiveStmts(fn.body.statements ?? []);
     const last = stmts[stmts.length - 1];
-    if (!isSourceReturn(last)) return false;
-    if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
     for (const n of this.nodesOf(fn)) if (n instanceof ReturnNode) returns += 1;
+    if (!isSourceReturn(last)) {
+      // A message-bus route clone can be taken from a body snapshot made before NamedReturnTransformation
+      // appended the implicit named-return tail. Solidity returns the named values on fall-through, so such a
+      // body is still a single-return helper; `inlineCall` reads the named locals directly. Without this the
+      // clone stays behind OP_INVOKE and code generation refuses its event (X118, `_mintFee` -> `_mint`).
+      return returns === 0 && fn.returnNames.length > 0
+        && fn.returnNames.length === fn.returnTypes.length;
+    }
+    if (last.expressions.length !== fn.returnTypes.length) return false;
     return returns === 1;
   }
 
@@ -833,6 +929,30 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
       return callee !== undefined && callee !== fn && this.eligibleShape(callee)
         && this.freeFunctionHashes(callee, seen);
+    });
+  }
+
+  /**
+   * A library member reaching keccak256, directly or through another free function (`UniswapV2Library.pairFor`), in
+   * a framed compile. A framed body reads each hash's side-car at the step its own count of calls names, after its
+   * master's input, so a hash an OP_INVOKE subroutine makes reads the side-car of the subroutine's own ordinal on
+   * every invocation, and the entry publishes none for it. Inlined, each call site is a hash of the entry's own.
+   */
+  private framedLibraryHashes(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (!this.freeFns.includes(fn) || this.ambiguousInlineKeys.has(key)) return false;
+    if (this.containsKeccak(fn)) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const libPrefix = fn.name.includes('.') ? fn.name.slice(0, fn.name.lastIndexOf('.') + 1) : '';
+    return this.nodesOf(fn).some((node) => {
+      if (!(node instanceof FunctionCallNode)) return false;
+      const name = node.identifier.name;
+      const callee = this.lookupOverload(name, node.parameters.length)
+        ?? (libPrefix !== '' && !name.includes('.')
+          ? this.lookupOverload(libPrefix + name, node.parameters.length) : undefined);
+      return callee !== undefined && callee !== fn && this.eligibleShape(callee)
+        && this.framedLibraryHashes(callee, seen);
     });
   }
 
@@ -1300,7 +1420,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return node;
   }
 
-  /** Resolve a direct, uniquely named event helper which the ordinary returning-helper pass can inline. */
+  /**
+   * Resolve a direct, uniquely named helper which the ordinary returning-helper pass can inline and whose expansion
+   * the arm of a conditional position must own: an event helper, or a framed one that hashes (`framedArmHashes`).
+   */
   private lazyEventHelper(call: FunctionCallNode): FunctionDefinitionNode | undefined {
     const key = inlineKey(call.identifier.name, call.parameters.length);
     // Overload choice is a semantic/type decision. This pre-semantic rewrite must never guess between same-arity
@@ -1309,7 +1432,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const callee = this.lookupOverload(call.identifier.name, call.parameters.length)
       ?? this.funcByName.get(call.identifier.name);
     if (!callee || !this.inlinedFns.has(call.identifier.name)
-      || !this.transitivelyContainsEvent(callee)) return undefined;
+      || !(this.transitivelyContainsEvent(callee) || this.framedArmHashes(callee))) return undefined;
     // A recursive body is deliberately left to the established diagnostic. Expanding one frame would neither
     // make the call graph finite nor provide an exact event occurrence domain.
     const reachesSelf = (fn: FunctionDefinitionNode, target: string, seen = new Set<string>()): boolean => {
@@ -1326,6 +1449,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return false;
     };
     return reachesSelf(callee, key) ? undefined : callee;
+  }
+
+  /**
+   * A framed helper that hashes. As an OP_INVOKE subroutine its calls read side-cars by its own ordinals on every
+   * invocation (`framedLibraryHashes`), so a conditional position that calls it expands it in the arm that makes the
+   * call, as an event helper is: each of its hashes is then one of the entry's own, made where the arm is taken.
+   */
+  private framedArmHashes(fn: FunctionDefinitionNode): boolean {
+    return this.keepSelfMessageCalls
+      && (this.containsKeccak(fn) || this.freeFunctionHashes(fn) || this.framedLibraryHashes(fn));
   }
 
   private containsLazyEventHelper(node: Node): boolean {
@@ -1800,6 +1933,25 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         }
       }
     });
+    // Implicit named returns: a body without a tail `return` reads its named-return locals at fall-through.
+    // Give those locals stable per-inline names and declare the ones the body does not declare itself. Every
+    // other helper keeps the established explicit-return lowering byte-for-byte.
+    const calleeStmts = this.effectiveStmts(callee.body?.statements ?? []);
+    const implicitTail = !isSourceReturn(calleeStmts[calleeStmts.length - 1]);
+    const implicitReturnDecls: VariableDefinitionNode[] = [];
+    if (implicitTail) {
+      for (let index = 0; index < callee.returnNames.length; index += 1) {
+        const name = callee.returnNames[index];
+        if (callee.parameters.some((parameter) => parameter.name === name)) continue;
+        if (rename.has(name)) continue;
+        const local = `${PREFIX}${n}_${name}`;
+        rename.set(name, local);
+        const definition = new VariableDefinitionNode(callee.returnTypes[index], [], local);
+        definition.location = callee.location;
+        definition.allowUnused = true;
+        implicitReturnDecls.push(definition);
+      }
+    }
     this.applyRename(cloned.body, rename);
     substituteInFunction(cloned, subs);
     // An inherited helper's body may legitimately touch its own contract's PRIVATE state; tag the inlined
@@ -1822,12 +1974,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const processed = this.effectiveStmts((this.visit(cloned.body) as BlockNode).statements ?? []);
     this.stack = savedStack;
 
-    const ret = processed[processed.length - 1] as ReturnNode;
+    const tail = processed[processed.length - 1];
+    const retExpressions: ExpressionNode[] = isSourceReturn(tail) && !implicitTail
+      ? tail.expressions as ExpressionNode[]
+      : callee.returnNames.map((name) => {
+        const id = new IdentifierNode(rename.get(name) ?? name);
+        id.location = callee.location;
+        return id;
+      });
     const retDefs: VariableDefinitionNode[] = [];
     const ids: IdentifierNode[] = [];
-    for (let k = 0; k < ret.expressions.length; k++) {
+    for (let k = 0; k < retExpressions.length; k++) {
       const retName = `${PREFIX}${n}__ret${k}`;
-      const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
+      const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, retExpressions[k]);
       retDef.location = callee.location;
       retDef.inlinedReturningHelperPure = callee.modifiers.includes(FunctionModifier.PURE);
       retDef.inlinedReturningHelperSeparableEvent = this.hasOnlySeparableEventEffects(callee);
@@ -1836,7 +1995,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       id.location = callee.location;
       ids.push(id);
     }
-    this.hoists.push(...bindings, ...rmwPrologue, ...processed.slice(0, -1), ...retDefs, ...rmwEpilogue);
+    this.hoists.push(...bindings, ...implicitReturnDecls, ...rmwPrologue,
+      ...(isSourceReturn(tail) && !implicitTail ? processed.slice(0, -1) : processed), ...retDefs, ...rmwEpilogue);
     return ids;
   }
 

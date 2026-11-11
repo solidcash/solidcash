@@ -18,7 +18,8 @@ const OPTIONS = {
 } as const;
 
 // This shape keeps the publisher ordinary: one linear array push after a returning sibling, while
-// the caller's own dynamic write also needs its final output coordinates.
+// the caller's own dynamic write also needs its final output coordinates. It emits no event: one puts this kernel
+// publisher's spend over the 10,000-byte unlocking limit.
 describe('ordinary direct nested authenticated array pushes', () => {
   it('appends exact timestamped elements across target continuations and a predecessor insert', async () => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
@@ -32,13 +33,11 @@ describe('ordinary direct nested authenticated array pushes', () => {
       contract Publisher {
         address public expectedRoot;
         mapping(uint256 => Entry[]) public entries;
-        event Logged(uint256 key);
         constructor(address expected) { expectedRoot = expected; }
         function log(uint256 key, Entry memory entry) public {
           require(msg.sender == expectedRoot, "not logical root");
           entry.timestamp = uint32(block.timestamp);
           entries[key].push(entry);
-          emit Logged(key);
         }
       }
       contract RootLedger {

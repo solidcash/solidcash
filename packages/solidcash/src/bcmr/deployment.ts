@@ -15,12 +15,13 @@ import type {
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import type { Artifact } from '@solidcash/utils';
 import type { Output, Unlocker, Utxo } from '../interfaces.js';
+import { isExternallySignedUnlocker } from '../external-signing.js';
 import { ownCoinRefusal } from '../framed/deploy/own-coin.js';
 import { stageBroadcasts } from '../framed/proxy/staged-broadcasts.js';
 import type { DeployOptions } from '../stateful/stateful-lifecycle-types.js';
 import type { GenesisIdentity } from './identity.js';
 import {
-  BcmrError, dataCarrierBytes, ipfsCidV1Raw, publicationOutput,
+  BcmrError, dataCarrierBytes, publicationOutput, resolvePublicationUris, type PublicationUris,
 } from './publication.js';
 import {
   assertTokenSymbol, encodeRegistry, publishedRegistry, registryTimestamp,
@@ -52,8 +53,11 @@ export interface BcmrPublication {
     readonly nfts?: NftCategory | 'generated';
   };
   readonly extensions?: Extensions;
-  /** The URIs the publication offers; `ipfs://<CIDv1 of the registry>` when omitted. */
-  readonly publicationUris?: readonly string[];
+  /**
+   * The URIs the publication offers, or a function of the encoded registry that names them once it has placed the
+   * bytes (an upload); `ipfs://<CIDv1 of the registry>` when omitted.
+   */
+  readonly publicationUris?: PublicationUris;
   /** When the snapshot takes effect, as `YYYY-MM-DDTHH:mm:ss.sssZ`; the deployment time when omitted. */
   readonly timestamp?: string;
 }
@@ -132,7 +136,28 @@ export function nativeCategoryStateVariable(artifact: Artifact): string | undefi
     .find((access) => access.keySource === 'state')?.keyStateVariable;
 }
 
-async function readFact(contract: unknown, view: string): Promise<unknown> {
+/** Where the probe reads a framed contract: the staged provider its genesis went to, and the contract's category. */
+interface FramedProbe {
+  readonly provider: DeployOptions['provider'];
+  readonly artifact: Artifact;
+  readonly categoryId: string;
+}
+
+/**
+ * A view of the probe's contract, or undefined when the probe cannot evaluate it. A framed contract answers through
+ * the framed read, which runs a per-entry bundle's view on that entry's own shard: its handle's direct call path
+ * looks for the monolithic master, which a framed genesis never mints.
+ */
+async function readFact(contract: unknown, view: string, framed?: FramedProbe): Promise<unknown> {
+  if (framed !== undefined) {
+    try {
+      const { readFramedEntry } = await import('../framed/read/read.js');
+      const read = await readFramedEntry({ ...framed, functionName: view });
+      return read.accepted ? read.value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   const read = (contract as unknown as { callStatic?: Record<string, () => Promise<unknown>> }).callStatic?.[view];
   if (read === undefined) return undefined;
   try {
@@ -166,26 +191,47 @@ export function wrappedCategory(nativeToken: NativeTokenOptions | undefined): st
 }
 
 /** Reads the contract's token facts from a probe genesis that is never broadcast. */
+/**
+ * The probe's stand-in for an unlocker a wallet signs: the same lock and the same placeholder the wallet's signature
+ * would replace, with no wallet behind it. The probe genesis is held and never broadcast, so nobody is asked to sign
+ * it, and a wallet that funds a deployment signs once, for the genesis that goes out. Any other unlocker signs as it
+ * would, asking nobody.
+ */
+function probeUnlocker(unlocker: Unlocker): Unlocker {
+  if (!isExternallySignedUnlocker(unlocker)) return unlocker;
+  return {
+    generateLockingBytecode: () => unlocker.generateLockingBytecode(),
+    generateUnlockingBytecode: (context) => unlocker.generateUnlockingBytecode(context),
+  };
+}
+
 async function probeTokenFacts(
   artifact: Artifact, categoryVariable: string | undefined, options: DeployOptions, probe: ProbeDeploy,
 ): Promise<ContractTokenFacts> {
   const staging = stageBroadcasts(options.provider);
+  const nativeFunder = options.nativeToken?.funder;
   const { contract } = await probe({
     ...options, provider: staging.provider, bcmr: undefined, metadataProbe: true,
+    funder: probeUnlocker(options.funder),
+    ...(nativeFunder === undefined ? {} : { nativeToken: { ...options.nativeToken, funder: probeUnlocker(nativeFunder) } }),
   });
+  // A framed genesis registers a per-entry bundle on the provider it went to, so the framed read finds the shards.
+  const framed: FramedProbe | undefined = artifact.composition?.convention === 'framed'
+    ? { provider: staging.provider, artifact, categoryId: options.fundingUtxo.txid.toLowerCase() }
+    : undefined;
   const facts: {
     name?: string; symbol?: string; decimals?: bigint; totalSupply?: bigint; nativeCategory?: string;
   } = {};
   if (hasErc20Metadata(artifact)) {
-    const name = await readFact(contract, 'name');
-    const symbol = await readFact(contract, 'symbol');
-    const decimals = await readFact(contract, 'decimals');
+    const name = await readFact(contract, 'name', framed);
+    const symbol = await readFact(contract, 'symbol', framed);
+    const decimals = await readFact(contract, 'decimals', framed);
     if (name !== undefined) facts.name = metadataText(name);
     if (symbol !== undefined) facts.symbol = metadataText(symbol);
     if (decimals !== undefined) facts.decimals = metadataInteger(decimals, 'decimals()');
   }
   if (hasTotalSupply(artifact)) {
-    const totalSupply = await readFact(contract, 'totalSupply');
+    const totalSupply = await readFact(contract, 'totalSupply', framed);
     if (totalSupply !== undefined) facts.totalSupply = metadataInteger(totalSupply, 'totalSupply()');
   }
   if (categoryVariable !== undefined) {
@@ -429,7 +475,7 @@ export async function prepareMetadata(options: {
   const encoded = await encodeRegistry(publishedRegistry(
     options.category, identities, publication.timestamp ?? registryTimestamp(),
   ));
-  const uris = publication.publicationUris ?? [`ipfs://${ipfsCidV1Raw(encoded.bytes)}`];
+  const uris = await resolvePublicationUris(publication.publicationUris, encoded);
   return { ...prepared, registry: { ...encoded, uris } };
 }
 

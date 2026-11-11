@@ -9,7 +9,10 @@ import { stateRecordUnlockingBytecode } from '../../../../solidcash/src/framed/d
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { deployChunkRunContract, type ChunkRunContract } from './chunk-run-input.js';
-import { REAL_VALIDATOR_PROGRAM, dataRecordLock, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, dataRecordLock, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * Call records in execution order: a block holds one record per call the execution made, in the order it made them.
@@ -17,9 +20,9 @@ import { REAL_VALIDATOR_PROGRAM, dataRecordLock, seededCategory, validatorSpend 
  * A site the execution reaches binds the next record and a site it skips binds none, so the records a frame
  * declares follow its own arguments rather than the sites its source names, and the body ends by pinning how many it
  * made. The same compiled program is judged over the block its argument implies and over the block a record per
- * published site would give. Self-settlement follows the same records: a master whose sites include a delegate call
- * settles its own records whenever the frame's block records none, since the validator then leaves them to it (V8).
- * Every verdict is the BCH-2026 machine's on the master's own input.
+ * published site would give. Every verdict is the BCH-2026 machine's on the master's own input, and, where a case is
+ * about the records the frame leaves, on the validator's head and facet too: the validator settles every covered
+ * master's contract (V8), whatever calls its frames record.
  */
 
 const label = (text: string): string => `skipped call ${text}`;
@@ -29,7 +32,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x24));
 const EMPTY = new Uint8Array(0);
 const VALUE = 20_000n;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IB { function f(int x); }'
   + ' interface IC { function g(int x); }'
   + ' contract B { function f(int x) { require(x > 0); } }'
@@ -96,7 +99,9 @@ const FORWARDER_RECORD = (implementation: Uint8Array, total: number): Uint8Array
 
 /** Where the master's validator and its data record sit; the callees follow them, and the user comes last. */
 const VALIDATOR_INDEX = 1;
-const RECORD_INDEX = 2;
+const RECORD_INDEX = VALIDATOR_INDEX + VALIDATOR_INPUT_SPAN;
+
+type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0];
 
 interface Token {
   readonly category: Uint8Array;
@@ -108,11 +113,11 @@ const token = (category: Uint8Array, capability: 'minting' | 'mutable', commitme
   ({ category, amount: 0n, nft: { capability, commitment } });
 
 /**
- * The master's verdict: the master at input 0, the validator of its category (which covers the frames and settles
- * nothing, as V8 has it for a contract with one master and no delegate call), the record when the frame spends it,
- * the callees, then the user. Every input but the user's is recreated in place, the record at what the frame wrote.
+ * The transaction: the master at input 0, the validator of its category with its facets (which covers the frames
+ * and settles the master's contract), the record when the frame spends it, the callees, then the user. Every input
+ * but the user's is recreated in place, the record at what the frame wrote.
  */
-function verdict(frame: Frame): boolean {
+function build(frame: Frame): Omit<VmProgram, 'inputIndex'> {
   const { contract } = frame;
   const callees = [...new Set(frame.calls)];
   const validatorIndex = VALIDATOR_INDEX;
@@ -120,8 +125,11 @@ function verdict(frame: Frame): boolean {
   const calleeBase = frame.record === undefined ? RECORD_INDEX : RECORD_INDEX + 1;
   const userIndex = calleeBase + callees.length;
   const validator = validatorSpend(contract.category, {
-    roots: [0], masters: [0, ...callees.map((_, offset) => calleeBase + offset)], settles: [],
+    roots: [0],
+    masters: [0, ...callees.map((_, offset) => calleeBase + offset)],
+    settles: [{ category: contract.category, stateInputs: frame.record === undefined ? [] : [recordIndex] }],
   });
+  const facets = validatorFacetPlacements();
   const block: WitnessBlock = {
     kind: FrameKind.ROOT, callerRef: userIndex, originRef: userIndex, validatorRef: validatorIndex,
     sender: USER_LOCK, self: contract.address, value: 0n, retval: EMPTY,
@@ -152,6 +160,7 @@ function verdict(frame: Frame): boolean {
   const inputs = [
     input(0, masterUnlocking),
     input(validatorIndex, validator.unlockingBytecode),
+    ...facets.map((facet) => facet.input),
     ...(frame.record === undefined ? [] : [
       input(recordIndex, stateRecordUnlockingBytecode(toHex(contract.category), 0, 1)),
     ]),
@@ -166,6 +175,7 @@ function verdict(frame: Frame): boolean {
   const head = [
     { lockingBytecode: contract.masterLock, valueSatoshis: VALUE, token: token(contract.category, 'minting') },
     { lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(contract.category, 'mutable') },
+    ...facets.map((facet) => facet.output),
   ];
   const calleeMasters = callees.map((callee) => ({
     lockingBytecode: callee.contract.masterLock, valueSatoshis: VALUE, token: token(callee.contract.category, 'minting'),
@@ -178,11 +188,21 @@ function verdict(frame: Frame): boolean {
   const user = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
   const sourceOutputs = [...head, ...recordAt(frame.record?.spent ?? EMPTY), ...calleeMasters, user];
   const outputs = [...head, ...recordAt(frame.record?.written ?? EMPTY), ...calleeMasters, user];
+  return { sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 } };
+}
+
+/** The master's own verdict. */
+function verdict(frame: Frame): boolean {
   const vm = compositionMachine();
-  const state = vm.evaluate({
-    inputIndex: 0, sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 },
-  });
-  return vm.stateSuccess(state) === true;
+  return vm.stateSuccess(vm.evaluate({ inputIndex: 0, ...build(frame) })) === true;
+}
+
+/** Whether the validator's head and every facet it binds accept. */
+function validatorAccepts(frame: Frame): boolean {
+  const vm = compositionMachine();
+  const program = build(frame);
+  return Array.from({ length: VALIDATOR_INPUT_SPAN }, (_, offset) => VALIDATOR_INDEX + offset).every((inputIndex) =>
+    vm.stateSuccess(vm.evaluate({ inputIndex, ...program })) === true);
 }
 
 /** The caller's record, declared at its index in every segment: kept, or carried from `from` to `to`. */
@@ -231,10 +251,10 @@ describe('a call site the execution skips', () => {
 });
 
 describe('a master whose delegate call another body makes', () => {
-  it('settles alone a frame whose block records no delegate call, so a forged record write beside it is refused', () => {
-    // `touch` makes no call, and the validator settles nothing (V8: one master, no delegate frame), so the master's
-    // own walk is what holds the record to the transaction. A record rewritten to another implementation was
-    // accepted while the head skipped that walk for every frame of a master that can forward.
+  it('refuses a forged record write beside a frame whose block records no delegate call', () => {
+    // `touch` makes no call, and the validator settles its contract all the same (V8), so its census holds the record
+    // to the transaction. A record rewritten to another implementation was accepted while nothing settled the record
+    // of a frame of a master that can forward, so the refusal is the validator's, whatever the master's own code.
     const touch = (written: Uint8Array): Frame => ({
       contract: FORWARDER, entry: 'touch', args: [push(4)], calls: [],
       segments: [[{
@@ -244,6 +264,7 @@ describe('a master whose delegate call another body makes', () => {
       record: { spent: FORWARDER_RECORD(B.address, 0), written },
     });
     expect(verdict(touch(FORWARDER_RECORD(B.address, 4)))).toBe(true);
-    expect(verdict(touch(FORWARDER_RECORD(USER_LOCK, 4)))).toBe(false);
+    expect(validatorAccepts(touch(FORWARDER_RECORD(B.address, 4)))).toBe(true);
+    expect(validatorAccepts(touch(FORWARDER_RECORD(USER_LOCK, 4)))).toBe(false);
   });
 });

@@ -14,7 +14,10 @@ import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stat
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
-import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+import {
+  REAL_VALIDATOR_PROGRAM, VALIDATOR_INPUT_SPAN, categorySlotValue, seededCategory, validatorFacetPlacements,
+  validatorSpend,
+} from './validator-input.js';
 
 /**
  * A compiled master whose entry writes a verified mapping after it has made an external call.
@@ -37,7 +40,7 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -48,7 +51,7 @@ const SOURCE = 'pragma solidcash ^0.14.0;'
   + '   }'
   + ' }';
 
-const TWO_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
+const TWO_CALL_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -127,8 +130,15 @@ function build(options: Options = {}): Omit<Program, 'inputIndex'> {
   const unit = options.callerUnit ?? artifacts;
   const callerProgram = fill(unit, 'Caller');
   const calleeProgram = fill(artifacts, 'Callee');
+  // The validator settles both covered masters' contracts: the caller's spent predecessor and created node, and the
+  // callee, which holds no record.
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+    roots: [CALLER_INDEX],
+    masters: [CALLER_INDEX, CALLEE_INDEX],
+    settles: [
+      { category: CATEGORY_CALLER, stateInputs: [PRED_INDEX], createdOutputs: [NODE_INDEX] },
+      { category: CATEGORY_CALLEE, stateInputs: [] },
+    ],
   });
   const callerLock = encodeLockingBytecodeP2sh32(hash256(callerProgram));
   const calleeLock = encodeLockingBytecodeP2sh32(hash256(calleeProgram));
@@ -256,8 +266,22 @@ function build(options: Options = {}): Omit<Program, 'inputIndex'> {
   sourceOutputs[VALIDATOR_INDEX] = {
     lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable'),
   };
+  validatorFacetPlacements().forEach((facet, offset) => {
+    const index = VALIDATOR_INDEX + 1 + offset;
+    inputs[index] = facet.input; outputs[index] = facet.output; sourceOutputs[index] = facet.output;
+  });
 
   return { sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 } };
+}
+
+/** Whether the validator's head and every facet it binds accept. */
+function validatorAccepts(options: Options = {}): boolean {
+  const program = build(options);
+  const vm = compositionMachine();
+  return Array.from({ length: VALIDATOR_INPUT_SPAN }, (_, offset) => VALIDATOR_INDEX + offset).every((inputIndex) =>
+    vm.stateSuccess(vm.evaluate({
+      inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    })) === true);
 }
 
 /** The caller input's verdict in the BCH-2026 machine, with the objection for a diagnosis. */
@@ -279,9 +303,13 @@ describe('a framed master whose entry writes a verified mapping after an externa
   });
 
   it('is refused when the created node carries a value the code did not compute', () => {
+    // The caller's code ends the node at the view it computed; the validator, which settles the caller's contract,
+    // holds that view to the output the node is created at (V7).
     const tampered = encodeEntryCommitment(SLOT, ZERO_SLOT, new Uint8Array([AMOUNT + 1]));
-    expect(verdict({ nodeOutputCommitment: tampered }).accepted).toBe(false);
+    expect(verdict({ nodeOutputCommitment: tampered }).accepted).toBe(true);
+    expect(validatorAccepts({ nodeOutputCommitment: tampered })).toBe(false);
     expect(verdict({ nodeOutputCommitment: NODE_COMMITMENT }).accepted).toBe(true);
+    expect(validatorAccepts({ nodeOutputCommitment: NODE_COMMITMENT })).toBe(true);
   });
 
   it('serves a write after two calls, reading the segment the second call opened', () => {
@@ -292,7 +320,7 @@ describe('a framed master whose entry writes a verified mapping after an externa
 });
 
 describe('a framed master whose entry deletes a mapping entry beside a call elsewhere', () => {
-  const DELETE_SOURCE = 'pragma solidcash ^0.14.0;'
+  const DELETE_SOURCE = 'pragma solidcash ^0.50.0;'
     + ' interface ICallee { function ping(); }'
     + ' contract Callee { function ping() { require(true); } }'
     + ' contract Caller {'
@@ -317,7 +345,7 @@ describe('a framed master whose entry deletes a mapping entry beside a call else
  * The write lands in the frame's opening segment whatever runs, and it settles there: the block declares it in
  * the first segment and the segment the call opens keeps it.
  */
-const WRITE_FIRST_SOURCE = 'pragma solidcash ^0.14.0;'
+const WRITE_FIRST_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -329,7 +357,7 @@ const WRITE_FIRST_SOURCE = 'pragma solidcash ^0.14.0;'
   + ' }';
 
 /** The same write with an unconditional call after it, so the entry carries no calls-made counter. */
-const WRITE_FIRST_PLAIN_SOURCE = 'pragma solidcash ^0.14.0;'
+const WRITE_FIRST_PLAIN_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -351,7 +379,7 @@ describe('a framed master whose write precedes a call in the same body', () => {
  * A branch whose arms make the same number of calls: `if (amount >= 0) ping else pong`, then the write. Every path
  * makes one call before the write, so the write lands in segment 1 and the master reads that segment.
  */
-const SAME_CALL_BRANCH_SOURCE = 'pragma solidcash ^0.14.0;'
+const SAME_CALL_BRANCH_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); function pong(); }'
   + ' contract Callee { function ping() { require(true); } function pong() { require(true); } }'
   + ' contract Caller {'
@@ -381,7 +409,7 @@ describe('a framed master whose write follows a branch whose arms call the same 
  * to settle over a frame that takes the arm (one record, the write in segment 1) and one that skips it (no
  * record, the write in segment 0), which is what shows the derivation followed the declared count.
  */
-const VARYING_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
+const VARYING_CALL_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -415,7 +443,7 @@ describe('a framed master whose write follows a branch whose arms call a differe
  * A removal of a mapping entry after the same body makes a call, so the removal's records are declared in the
  * segment the call opened. The removal's own body makes the call the write follows.
  */
-const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
+const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -435,7 +463,7 @@ const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.14.0;'
  * A removal whose own body makes no call, in a contract whose other entry does. Its records are declared in the
  * frame's opening segment, the one segment the entry has.
  */
-const REMOVE_ONLY_SOURCE = 'pragma solidcash ^0.14.0;'
+const REMOVE_ONLY_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'

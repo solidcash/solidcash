@@ -92,6 +92,23 @@ export function reconcileMaterializedReturnWitnesses(
     builder.outputs, tailExpectations,
   )) resolved.set(groupIdx, outputIndex);
 
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_EXTCALL === '1') {
+    console.error('stb-return-reconcile', JSON.stringify({
+      groups: host.externalCallUtxoGroups.map((g, i) => ({
+        i, name: g.functionName, returnOutputIndex: g.returnOutputIndex,
+        built: host.getBuiltExternalCallReturnEventOutputIndex(i),
+        inBlock: groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, i),
+        witnessGroups: g.returnWitnessGroups, commitmentLen: g.precomputedReturnCommitment?.length,
+      })),
+      pending: host.pendingReturnEventOutputs.map((e) => ({
+        id: e.identity, len: e.commitment.length, cat: e.categoryId.slice(0, 10),
+      })),
+      tailExpectations: tailExpectations.map((t) => ({
+        g: t.groupIndex, cur: t.currentIndex, built: t.builtIndex, cat: t.categoryId.slice(0, 10),
+      })),
+      resolved: [...resolved.entries()],
+    }));
+  }
   let changed = false;
   for (const [groupIdx, outputIndex] of resolved) {
     const group = host.externalCallUtxoGroups[groupIdx];

@@ -53,6 +53,7 @@ const RAW = encodePushdataValue(NOTES, 'Note[]', STRUCTS)!;
 /** The live list holding the one key, with its long value's continuation chunks. */
 const BATCH = planMappingBatch({
   writes: [{ keys: [TARGET], value: RAW }],
+  keyEncoding: COLLECTION,
   inventory: [headSentinelCommitment()],
   encodeValue: encodeChunkableValueTail,
   chunkable: (value) => value,

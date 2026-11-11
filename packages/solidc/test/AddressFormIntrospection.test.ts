@@ -24,10 +24,29 @@ describe('addressForm and the address introspection values', () => {
   });
 
   it('leaves address equality and the zero comparison form-independent (a guard must not be re-domained)', () => {
+    // The guard's own bytes, over the same contract reading `owner` without comparing it with msg.sender: the
+    // generated `owner()` getter's result follows the form (it carries the whole lock under 'bytecode'), the guard not.
     const guard = 'contract C() { address owner; function f() { require(msg.sender == this.owner); } }';
+    const read = 'contract C() { address owner; function f() { require(this.owner != address(0)); } }';
     const zero = 'contract C() { function f() { require(msg.sender == address(0)); } }';
-    expect(size(guard, 'bytecode')).toBe(size(guard, 'hash'));
+    expect(size(guard, 'bytecode') - size(read, 'bytecode')).toBe(size(guard, 'hash') - size(read, 'hash'));
     expect(size(zero, 'bytecode')).toBe(size(zero, 'hash'));
+  });
+
+  it('returns an address whole under bytecode: its result travels as compact pushdata, not a 20-byte word', () => {
+    const source = 'contract C() { address owner; uint256 count; '
+      + 'function who() external returns (address) { return msg.sender; } '
+      + 'function many() external returns (uint256) { return this.count; } }';
+    const encodings = (addressForm: 'hash' | 'bytecode'): Record<string, string | undefined> => Object.fromEntries(
+      compileString(source, { evmCompat: true, messageBus: false, addressForm }).abi
+        .filter((entry: { outputs?: unknown[] }) => (entry.outputs?.length ?? 0) > 0)
+        .map((entry: { name: string; resultEncoding?: string }) => [entry.name, entry.resultEncoding]),
+    );
+    expect(encodings('hash')).toMatchObject({ who: 'evm-abi-v1', owner: 'evm-abi-v1', many: 'evm-abi-v1' });
+    // An integer still fits a word; an address result (a function's or a getter's) carries the whole lock.
+    expect(encodings('bytecode')).toMatchObject({
+      who: 'compact-pushdata-v1', owner: 'compact-pushdata-v1', many: 'evm-abi-v1',
+    });
   });
 
   it('leaves an event address field form-independent (the receipt carries the lock either way)', () => {

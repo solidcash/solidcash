@@ -515,13 +515,36 @@ describe('type(X).creationCode constructor-args warning', () => {
 describe('chained sibling deployment (C deploys B, B deploys A)', () => {
   // The reference collection is transitive and topologically ordered (A compiles before B, B before C),
   // the child re-analysis wrapper carries the file's definitions, and a child ctor's synthetic
-  // __internal__ params (e.g. a ctor msg.sender read) are excluded from call-site arg checks.
-  it('compiles a three-contract deploy chain with a ctor msg.sender read in the leaf', () => {
+  // __internal__ params (e.g. a ctor msg.sender read) are excluded from call-site arg checks. A direct creator folds
+  // its child's constructor, and a nested `new` there does not fold: it left `a` at zero, so it is refused by name
+  // until the fold carries it (deferrals.md, "A child genesis a direct creator cannot fold").
+  it('refuses a three-contract deploy chain whose nested creation does not fold', () => {
     const src = `
       contract A {
           uint x;
           address immutable owner;
           constructor() { owner = msg.sender; }
+          function getX() public view returns (uint) { return x; }
+      }
+      contract B {
+          A a;
+          function make() public { a = new A(); }
+          function getX() public view returns (uint) { return a.getX(); }
+      }
+      contract C {
+          B b;
+          function make() public { b = new B(); }
+          function f() public view { assert(b.getX() == 0); }
+      }`;
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  // A constructor that deploys does not fold into its own genesis: B would be created with `a` at its default and no
+  // A behind it. The chain above deploys from functions instead.
+  it('refuses a chain whose middle contract deploys in its constructor', () => {
+    const src = `
+      contract A {
+          uint x;
           function getX() public view returns (uint) { return x; }
       }
       contract B {
@@ -534,6 +557,7 @@ describe('chained sibling deployment (C deploys B, B deploys A)', () => {
           constructor() { b = new B(); }
           function f() public view { assert(b.getX() == 0); }
       }`;
-    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
+    expect(() => compileString(src, { evmCompat: true }))
+      .toThrow(/A direct creator folds the genesis of the "B" it creates, and its constructor's write to "a" does not fold/);
   });
 });

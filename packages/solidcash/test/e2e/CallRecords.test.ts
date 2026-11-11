@@ -243,6 +243,10 @@ describe('direct call records', () => {
     // The same transaction with the caller's own argument agreeing is valid: only the digest refuses the forgery.
     const control = decode(encode(tx));
     setArgument(control, masterInput(control, d.readerCat), artifacts().Reader, 'sync', 'x', 8n);
+    // The caller attests the call it made too: its edge record digests the same argument.
+    const edgeOf = (transaction: Tx): Output => transaction.outputs.find((output) =>
+      binToHex(output.lockingBytecode) === '5161')!;
+    edgeOf(control).token!.nft!.commitment = edgeOf(forged).token!.nft!.commitment.slice();
     expectScriptRejection(await outcomeOf(d.provider, encode(tx)), masterInput(tx, d.readerCat));
     expect(await outcomeOf(d.provider, encode(control))).toBe('ACCEPTED');
   }, 300_000);

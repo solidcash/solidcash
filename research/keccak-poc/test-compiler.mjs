@@ -1,6 +1,6 @@
 // Verify the compiler emits the keccak side-car loader + invoke and records the artifact dependency.
-import { compileString } from '../packages/solidc/dist/compiler.js';
-import { KECCAK256_LIBRARY_BLOB_HASH, KECCAK256_LIBRARY_BLOB_LENGTH } from '../packages/utils/dist/index.js';
+import { compileString } from '../../packages/solidc/dist/compiler.js';
+import { KECCAK256_LIBRARY_BLOB_HASH, KECCAK256_LIBRARY_BLOB_LENGTH } from '../../packages/utils/dist/index.js';
 
 const src = `contract KeccakTest() {
     function verify(bytes preimage, bytes32 expected) {

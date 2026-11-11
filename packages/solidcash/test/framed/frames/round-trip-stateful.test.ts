@@ -42,8 +42,8 @@ import {
  * `A.f` runs on the entry the user reached, calls `B.g`, and `B.g` calls back into `A.k`, so `A` runs on two
  * masters while `B` runs on one. `A`'s one record is written by `A.f` segment 0, then by `A.k`, then by `A.f`
  * segment 1, so its declaration is chained across three frames; `B`'s record is written by `B.g` segment 0 and
- * again in segment 1, and `B` is its own single master, so it settles itself. Because `A` runs on two masters the
- * validator settles it and lists `A`'s record as the state input the transaction spends.
+ * again in segment 1. Every frame of either contract points at `A`'s validator, which settles both (V8): it lists
+ * `A`'s record as the state input the transaction spends, and settles `B` from `B`'s own block.
  *
  * Everything is shipped: the sources through `compileStringMulti` with the framed option, both programs through
  * the shipped deployment, the composer laying the two contracts' blocks out and assembling the caller, the masters
@@ -53,11 +53,12 @@ import {
  * accepted by the machine, and the validator's own decision accepts the transcript. The tests below also pin the
  * refusals that hold the declarations to the frames' own computations and to the transaction.
  *
- * The entry emits after its call returns, so the transaction is spec 5.2's output set complete: the six
- * participants' recreations at 0-5, the event at 6 and the user's change behind it at 7. A plan that leaves the
- * entry's own event unstated cannot be derived, which pins the event region to the block that declares it. The
- * validator input is a separate limit: the shipped program's operation cost on this shape is within 1% of the
- * density its own script sets, so the emitting shape's walk is refused by that limit, measured and pinned below.
+ * The entry emits after its call returns, so the transaction is spec 5.2's output set complete, with the validator's
+ * two facets after its head: the eight participants' recreations at 0-7, the event at 8 and the user's change behind
+ * it at 9. A plan that leaves the entry's own event unstated cannot be derived, which pins the event region to the
+ * block that declares it. The validator input is a separate limit: the shipped program's operation cost on this
+ * shape is within 1% of the density its own script sets, so the emitting shape's walk is refused by that limit,
+ * measured and pinned below.
  */
 
 const CATEGORY_A = seededCategory('round trip stateful A');
@@ -80,25 +81,26 @@ const RECORD_A = 'record-a';
 const RECORD_B = 'record-b';
 const USER_ID = 'user';
 
-// The layout is one block per contract: `A`'s masters, its validator and its record, then `B`'s master and its
-// record, then the user. A participant recreates at its own index, so these are also the output indices.
+// The layout is one block per contract: `A`'s masters, its validator, the two facets it binds and its record, then
+// `B`'s master and its record, then the user. A participant recreates at its own index, so these are also the
+// output indices.
 const A_FIRST_INDEX = 0;
-const B_MASTER_INDEX = 5;
-const RECORD_A_INDEX = 4;
-const RECORD_B_INDEX = 6;
-// The two A masters, the validator, the facet it binds, A's record, B's master and B's record precede it.
-const USER_INDEX = 7;
-// The first output past the six participants, where the layout opens the trailing region: the same indices spec
-// 5.2's worked transaction has, with the entry's event at 6 and the user's change behind it at 7.
-const EVENT_INDEX = 7;
-const CHANGE_INDEX = 8;
+const B_MASTER_INDEX = 6;
+const RECORD_A_INDEX = 5;
+const RECORD_B_INDEX = 7;
+// The two A masters, the validator, the two facets it binds, A's record, B's master and B's record precede it.
+const USER_INDEX = 8;
+// The first output past the eight participants, where the layout opens the trailing region: spec 5.2's worked
+// transaction two outputs on, for the validator's facets, with the entry's event at 8 and the user's change at 9.
+const EVENT_INDEX = 8;
+const CHANGE_INDEX = 9;
 
 const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
 const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
 const K_SELECTOR = computeFunctionSelector(computeFunctionSignature('k', []));
 const VALUE = 20_000n;
 
-const SOURCE = 'pragma solidcash ^0.14.0;'
+const SOURCE = 'pragma solidcash ^0.50.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ' contract B {'
@@ -191,8 +193,8 @@ function buildComposition(options: {
   const a = deployMaster(aArtifact, CATEGORY_A, VALIDATOR_PROGRAM);
   const b = deployMaster(bArtifact, CATEGORY_B, VALIDATOR_PROGRAM);
 
-  // `A` runs on two masters and `B` on one, so A's validator settles A while B settles itself. Every entry into
-  // either contract points at that one validator, so it covers B without settling it.
+  // Every entry into either contract points at A's validator, which settles both contracts; the composer adds the
+  // settlement of `B`, whose one master it covers, to the one the plan states for `A`.
   const validator = validatorSpend(CATEGORY_A, {
     roots: [0], masters: [0, 1, 4], settles: [{ category: CATEGORY_A, stateInputs: [RECORD_A_INDEX] }],
   });
@@ -324,7 +326,7 @@ function buildComposition(options: {
       id: VALIDATOR_ID,
       covers: ['B'],
       // `A` runs on two masters, so its validator settles it and lists its record as the state input it spends.
-      // `B` runs on one master and settles itself, so the transcript does not settle it.
+      // The validator covers `B`'s master too, so the composer settles `B` beside it.
       settles: [{ category: CATEGORY_A, stateInputs: [RECORD_A] }],
       redeemScript: validator.redeem,
     },
@@ -438,7 +440,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(participant(draft.layout, A_SECOND).index).toBe(1);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(2);
     expect(participant(draft.layout, RECORD_A).index).toBe(RECORD_A_INDEX);
-    expect(participant(draft.layout, B_MASTER).index).toBe(5);
+    expect(participant(draft.layout, B_MASTER).index).toBe(B_MASTER_INDEX);
     expect(participant(draft.layout, RECORD_B).index).toBe(RECORD_B_INDEX);
     expect(draft.blockOf(A_FIRST).segments.map((segment) => segment.map((entry) => entry.in)))
       .toStrictEqual([[RECORD_A_INDEX], [RECORD_A_INDEX]]);
@@ -483,8 +485,8 @@ describe('a two-contract round trip where both contracts keep records', () => {
   });
 
   it('lays the emitted event and the user\'s change at the outputs past the participants', () => {
-    // Spec 5.2's set complete: the event at 6, the first output the layout opens past the six participants, and
-    // the funder's change behind it at 7.
+    // Spec 5.2's set complete: the event at 8, the first output the layout opens past the eight participants, and
+    // the funder's change behind it at 9.
     const { draft, plan } = deriveRoundTrip();
     const outputs = draft.programFor(A_FIRST).transaction.outputs;
     const event = outputs[EVENT_INDEX]!;
@@ -586,20 +588,23 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(at([kept(RECORD_A_INDEX, A_SPENT, A_AFTER_K)]).accepted).toBe(false);
   });
 
-  it('refuses a standalone master whose last declaration is not the transaction\'s output', () => {
-    // `B` runs on one master, so it settles its own record and the head holds its last declared viewOut to the
-    // transaction's output at the record's index. The declarations and the body agree on `12`; a transaction that
-    // writes `11` there is refused by the settlement the master runs itself, not by the body's own close.
+  it('refuses at the validator a frame whose last declaration is not the transaction\'s output', () => {
+    // `B` runs on one master, which the validator covers, so the validator settles `B`'s record and holds its last
+    // declared viewOut to the transaction's output at the record's index (V8). The declarations and the body agree
+    // on `12`; a transaction that writes `11` there is refused by that settlement, while `B`'s master, which leaves
+    // its settlement to the validator, and the body's own close both still accept it.
     const { draft } = deriveRoundTrip();
     const program = draft.programFor(B_MASTER);
     const index = participant(draft.layout, B_MASTER).index;
+    const validatorIndex = participant(draft.layout, VALIDATOR_ID).index;
     expect(verdict(machine(), program, index).objection ?? 'accepted').toBe('accepted');
+    expect(verdict(machine(), program, validatorIndex).objection ?? 'accepted').toBe('accepted');
     const written = program.transaction.outputs.map((output, at) => (at === RECORD_B_INDEX
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: B_AFTER_G0 } } }
       : output));
-    const wrong = verdict(machine(), {
-      ...program, transaction: { ...program.transaction, outputs: written },
-    }, index);
+    const wrongProgram = { ...program, transaction: { ...program.transaction, outputs: written } };
+    expect(verdict(machine(), wrongProgram, index).accepted).toBe(true);
+    const wrong = verdict(machine(), wrongProgram, validatorIndex);
     expect(wrong.accepted).toBe(false);
     expect(wrong.objection).toContain('OP_VERIFY');
   });

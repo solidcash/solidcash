@@ -54,10 +54,13 @@ export async function appendCreateBuilderNestedCalleeLoopWrites(
     throw new Error('cross-contract callee loop over multiple collections is not supported (fails closed).');
   }
   const bCore = bBlockInputs.length; // loop entries begin here (== B's blockSize for a dense block)
-  if (bCore !== (bBlockLayout?.blockSize ?? bCore) || bCore > 1) {
-    // The callee loop function must touch ONLY the looped mapping (block = master alone). A callee that also
-    // reads/writes OTHER state (a data NFT slot) needs its data-NFT derivation interleaved with the loop
-    // co-spend; not yet wired, so fail closed cleanly rather than emitting a mispositioned block.
+  const voidEntry = (bAbiFunc.outputs?.length ?? 0) === 0;
+  const bStateSlots = bBlockLayout?.slots.filter((slot) => !(voidEntry && slot.kind === 'returnEvent')).length ?? bCore;
+  if (bCore !== (bBlockLayout?.blockSize ?? bCore) || bStateSlots > 1) {
+    // The callee loop function must touch ONLY the looped mapping (block = master alone, and a void entry's call
+    // record slot, which holds no state). A callee that also reads/writes OTHER state (a data NFT slot) needs its
+    // data-NFT derivation interleaved with the loop co-spend; not yet wired, so fail closed cleanly rather than
+    // emitting a mispositioned block.
     throw new Error('cross-contract callee loop: the callee loop function must access only the looped mapping '
       + '(a callee that also reads/writes other state is not yet supported cross-contract; fails closed).');
   }

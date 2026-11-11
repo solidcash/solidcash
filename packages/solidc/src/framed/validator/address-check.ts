@@ -103,12 +103,13 @@ export function addressCheckScript(source: ProgramBytesSource): Uint8Array {
     // `[pin, sender, self, value, rest]`. Keep `self`.
     readFrameFieldsScript(),
     op(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_NIP, Opcodes.OP_SWAP),
-    // `[self, address]`, compared raw.
+    // `[self, address]`, compared raw: every covered frame presents the address its category derives.
     addressFromPinScript(source),
     op(Opcodes.OP_EQUALVERIFY),
     op(Opcodes.OP_ENDIF),
   );
 }
+
 
 /** A minimal script number, pushed the way `encodeInt` encodes every other integer in the toolchain. */
 function pushInt(value: number): Uint8Array {

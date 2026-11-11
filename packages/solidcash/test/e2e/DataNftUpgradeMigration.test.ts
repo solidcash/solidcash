@@ -5,13 +5,14 @@ import {
   SignatureTemplate,
 } from '../../src/index.js';
 import { StatefulContract, getDataNftLockingBytecode } from '../../src/stateful/index.js';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { FILLER_SATOSHIS, fillerLockingBytecode, parsePushdataCommitment } from '@solidcash/utils';
 import {
   alicePub,
   alicePriv,
   alicePkh,
 } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
+import { addressToLockScript } from '../../src/utils.js';
 import type { Unlocker, Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -138,11 +139,11 @@ describe('StatefulContract.upgrade() data-NFT migration (CRYPTO-4)', () => {
     expect(result.categoryId).toBe(categoryId);
 
     const outputs = getTxOutputs(result.tx);
-    // out[0] = new master, out[1] = non-category pad, out[2] = re-minted data NFT, out[3] = change.
+    // out[0] = new master, out[1] = filler pad, out[2] = re-minted data NFT, out[3] = change.
     expect(outputs[0].token?.nft?.capability).toBe('minting');
     expect(outputs[0].token?.category).toBe(categoryId);
-    expect(binToHex(outputs[1].to as Uint8Array)).toBe('6a');
-    expect(outputs[1].amount).toBe(0n);
+    expect(binToHex(addressToLockScript(outputs[1].to as string))).toBe(binToHex(fillerLockingBytecode()));
+    expect(outputs[1].amount).toBe(FILLER_SATOSHIS);
     expect(outputs[1].token).toBeUndefined();
 
     expect(outputs[2].token?.nft?.capability).toBe('mutable');
@@ -182,7 +183,7 @@ describe('StatefulContract.upgrade() data-NFT migration (CRYPTO-4)', () => {
     // out[0]=master, out[1]=pad, out[2]=re-mint, out[3]=added data NFT, out[4]=change.
     expect(outputs.map((output) => output.token?.nft?.capability))
       .toEqual(['minting', undefined, 'mutable', 'mutable', undefined]);
-    expect(binToHex(outputs[1].to as Uint8Array)).toBe('6a');
+    expect(binToHex(addressToLockScript(outputs[1].to as string))).toBe(binToHex(fillerLockingBytecode()));
 
     // The re-minted record carries the migrated value; the added one is default-initialised.
     const reMinted = parsePushdataCommitment(outputs[2].token!.nft!.commitment, wide.stateLayout!, 0);

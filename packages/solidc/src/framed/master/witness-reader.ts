@@ -15,7 +15,7 @@
 
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { OpcodesBchSpec as Opcodes } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/spec/bch-spec-opcodes.js';
-import { WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION } from '@solidcash/utils';
+import { KEPT_VIEW_LENGTH, WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION } from '@solidcash/utils';
 
 const op = (...opcodes: number[]): Uint8Array => new Uint8Array(opcodes);
 
@@ -74,6 +74,69 @@ function takeLengthPrefixedFieldOfWidth(width: number): Uint8Array {
 /** Takes a fixed-width field from the front of the item on top, leaving `[..., field, tail]`. */
 export function takeFixedWidthField(width: number): Uint8Array {
   return new Uint8Array([...encodeDataPush(minimalNumber(width)), ...op(Opcodes.OP_SPLIT)]);
+}
+
+/** The `outLen` bytes of a record its segment leaves as it found it, whose `viewOut` is its `viewIn`. */
+const KEPT_VIEW_LENGTH_BYTES = new Uint8Array([KEPT_VIEW_LENGTH & 0xff, KEPT_VIEW_LENGTH >>> 8]);
+
+/**
+ * Turns the two raw length fields of a record on top into the bytes its views take: `[inLen, outLen]` to
+ * `[inLen, total]`, `inLen` as a number. A kept record's `viewOut` takes no bytes of its own.
+ */
+function recordViewLengths(): number[] {
+  return [
+    Opcodes.OP_DUP, ...encodeDataPush(KEPT_VIEW_LENGTH_BYTES), Opcodes.OP_EQUAL,
+    Opcodes.OP_IF, Opcodes.OP_DROP, Opcodes.OP_0, Opcodes.OP_ELSE, ...unsignedLength(), Opcodes.OP_ENDIF,
+    Opcodes.OP_SWAP, ...unsignedLength(), Opcodes.OP_TUCK, Opcodes.OP_ADD,
+  ];
+}
+
+/**
+ * Takes one record off the front of a segment's records: `in:u16 out:u16 inLen:u16 outLen:u16 viewIn viewOut`.
+ *
+ * Entry `[..., rest]`, exit `[..., in, out, viewIn, viewOut, rest']`: the indices are their raw two bytes and the
+ * views their payloads, a kept record's `viewOut` being its `viewIn`. The record leads with both indices and both
+ * views' lengths, so two cuts of `rest` take it whatever its views. The alt stack is left as it was found.
+ */
+export function takeRecordFieldsScript(): Uint8Array {
+  return new Uint8Array([
+    ...encodeDataPush(minimalNumber(8)), Opcodes.OP_SPLIT, Opcodes.OP_SWAP, // [rest8, head8]
+    ...encodeDataPush(minimalNumber(2)), Opcodes.OP_SPLIT,
+    ...encodeDataPush(minimalNumber(2)), Opcodes.OP_SPLIT,
+    ...encodeDataPush(minimalNumber(2)), Opcodes.OP_SPLIT, // [rest8, in, out, inLen, outLen]
+    Opcodes.OP_DUP, ...encodeDataPush(KEPT_VIEW_LENGTH_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK,
+    ...recordViewLengths(), // [rest8, in, out, inLen, total]
+    ...encodeDataPush(minimalNumber(4)), Opcodes.OP_ROLL,
+    Opcodes.OP_SWAP, Opcodes.OP_SPLIT, // [in, out, inLen, views, rest']
+    Opcodes.OP_TOALTSTACK, Opcodes.OP_SWAP, Opcodes.OP_SPLIT, // [in, out, viewIn, viewOut or nothing]
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, // [.., rest', kept]
+    Opcodes.OP_IF, Opcodes.OP_NIP, Opcodes.OP_OVER, Opcodes.OP_SWAP, Opcodes.OP_ENDIF,
+  ]);
+}
+
+/** Steps one record off the front of a segment's records. Entry `[..., rest]`, exit `[..., rest']`, in two cuts. */
+export function skipRecordScript(): Uint8Array {
+  return new Uint8Array([
+    ...encodeDataPush(minimalNumber(8)), Opcodes.OP_SPLIT, Opcodes.OP_SWAP, // [rest8, head8]
+    ...encodeDataPush(minimalNumber(4)), Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+    ...encodeDataPush(minimalNumber(2)), Opcodes.OP_SPLIT, // [rest8, inLen, outLen]
+    ...recordViewLengths(), Opcodes.OP_NIP, // [rest8, total]
+    Opcodes.OP_SPLIT, Opcodes.OP_NIP,
+  ]);
+}
+
+/**
+ * Takes one segment off the front of the segments: `segLen:u16` then the segment, its record count and its records.
+ *
+ * Entry `[..., rest]`, exit `[..., segment, rest']`, the segment without its length.
+ */
+export function takeSegmentScript(): Uint8Array {
+  return takeLengthPrefixedField();
+}
+
+/** Steps one segment off the front of the segments by the length it leads with. Entry `[..., rest]`, exit `[..., rest']`. */
+export function skipSegmentScript(): Uint8Array {
+  return new Uint8Array([...takeLengthPrefixedField(), Opcodes.OP_NIP]);
 }
 
 /**

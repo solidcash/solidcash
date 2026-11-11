@@ -33,8 +33,8 @@ const OP_TRUE_LOCK = new Uint8Array([Opcodes.OP_1]);
 const VALUE = 1_000n;
 const EMPTY = new Uint8Array(0);
 
-const QUIET = 'pragma solidcash ^0.14.0; contract Quiet { function idle() { require(true); } }';
-const EMITTER = 'pragma solidcash ^0.14.0;'
+const QUIET = 'pragma solidcash ^0.50.0; contract Quiet { function idle() { require(true); } }';
+const EMITTER = 'pragma solidcash ^0.50.0;'
   + ' contract Emitter { event Ping(int value); function fire(int n) { emit Ping(n); require(true); } }';
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -51,7 +51,8 @@ interface Deployed {
 }
 
 function deploy(source: string): Deployed {
-  const artifact = compileString(source, { composition: 'framed' });
+  // Unoptimised, so a check's own instructions are the program's and the verdict reads where it sits.
+  const artifact = compileString(source, { composition: 'framed', optimise: false });
   const { placeholders } = artifact.composition!;
   const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), placeholders, {
     category: categorySlotValue(CATEGORY), contractAddress: ADDRESS,
@@ -98,7 +99,8 @@ function verdictOf(master: Deployed, state: VmState, vm: Machine): Verdict {
   const census = mastersRecreatedInPlaceScript();
   const found = binToHex(master.program).indexOf(binToHex(census));
   if (found % 2 === 0 && offset > found / 2 && offset < found / 2 + census.length) return 'amount census';
-  const tail = [Opcodes.OP_ROT, Opcodes.OP_OVER, Opcodes.OP_GREATERTHANOREQUAL];
+  // The walk's count check: a copy of the declared count, then `seen <= declared`.
+  const tail = [Opcodes.OP_PICK, Opcodes.OP_OVER, Opcodes.OP_GREATERTHANOREQUAL];
   const counted = tail.every((opcode, index) => opcodes[failing - tail.length + index] === opcode);
   return counted ? 'immutable census' : 'elsewhere';
 }

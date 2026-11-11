@@ -3,7 +3,7 @@ import {
 } from 'vitest';
 import { compileFile } from '@solidcash/solidc';
 import { URL } from 'url';
-import { hexToBin } from '@bitauth/libauth';
+import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import {
@@ -86,6 +86,7 @@ function initialState(ownerAddr: Uint8Array): Record<string, unknown> {
     decimals: DECIMALS,
     deprecated: false,
     upgradedAddress: ownerAddr,
+    initialized: true,
     quarantineBlocks: 10n,
     backingCategory: new Uint8Array(32),
     backingSet: false,
@@ -118,8 +119,18 @@ let categorySeed = 0x10;
 // facet's ADDRESS (which depends on the facet's category) while each facet is
 // BRANDED to the master's category. Picking both up front breaks the cycle. This
 // is why the suite is mock-only - seeding a chosen category needs addUtxo.
-async function deployAll(opts?: { premint?: bigint; quarantineBlocks?: bigint }): Promise<Deployed> {
+async function deployAll(
+  opts?: { premint?: bigint; quarantineBlocks?: bigint; initialized?: boolean },
+): Promise<Deployed> {
   const provider = createTestProvider();
+  // The mock admits larger inputs than mainnet: every spend here is held to mainnet's, whole unlocking bytecode and all.
+  const send = provider.sendRawTransaction.bind(provider);
+  provider.sendRawTransaction = async (raw: string): Promise<string> => {
+    for (const input of decodeTransactionUnsafe(hexToBin(raw)).inputs) {
+      expect(input.unlockingBytecode.length).toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
+    }
+    return send(raw);
+  };
   const ownerAddr = ADDR.owner();
   categorySeed += 1;
   const tag = categorySeed.toString(16).padStart(2, '0');
@@ -152,6 +163,12 @@ async function deployAll(opts?: { premint?: bigint; quarantineBlocks?: bigint })
   const masterContract = new Contract(masterArt, ctorArgs as never, { provider });
   const state = initialState(ownerAddr);
   if (opts?.quarantineBlocks !== undefined) state.quarantineBlocks = opts.quarantineBlocks;
+  if (opts?.initialized === false) {
+    Object.assign(state, {
+      initialized: false, owner: new Uint8Array(0), upgradedAddress: new Uint8Array(0),
+      name: new Uint8Array(32), symbol: new Uint8Array(32), decimals: 0n, quarantineBlocks: 0n,
+    });
+  }
   await setupStatefulUtxos(
     provider, masterContract, masterArt.stateLayout!, state,
     { saltContract: true, categoryOverride: masterCat },
@@ -564,6 +581,28 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('NativeUsdt / the mappin
     const h = await d.provider.getBlockHeight();
     await d.as(d.signers.owner).call.tick(BigInt(h)).setLocktime(h).send();
     expect((await d.master.getState()).clock).toBe(BigInt(h));
+  });
+
+  it('initialize sets the deployment state once, for the pinned first owner alone', async () => {
+    const d = await deployAll({ initialized: false });
+    const run = (who: Signer, firstOwner: Uint8Array): ReturnType<StatefulContract['call']['initialize']> => d.as(who)
+      .call.initialize(firstOwner, b32('Tether USD'), b32('USDT'), DECIMALS, 7n);
+
+    // Anyone else, naming themselves or naming the pinned owner, settles nothing.
+    await expect(run(d.signers.bob, ADDR.bob()).send()).rejects.toThrow(/input 0/);
+    await expect(run(d.signers.bob, ADDR.owner()).send()).rejects.toThrow(/input/);
+    expect((await readState(d)).initialized).toBe(false);
+
+    await run(d.signers.owner, ADDR.owner()).send();
+    const state = await readState(d);
+    expect(state.owner).toStrictEqual(ADDR.owner());
+    expect(state.upgradedAddress).toStrictEqual(ADDR.owner());
+    expect(state.name).toStrictEqual(b32('Tether USD'));
+    expect(state.decimals).toBe(DECIMALS);
+    expect(state.quarantineBlocks).toBe(7n);
+
+    await d.fund(d.signers.owner);
+    await expect(run(d.signers.owner, ADDR.owner()).send()).rejects.toThrow(/input/);
   });
 
   it('openSelf refuses to clobber a live balance', async () => {

@@ -27,7 +27,7 @@ export function reassertSendPostLayoutMaterialization(
   host.reconcileMaterializedReturnWitnesses(finalBuilder);
   host.ensureAuthenticatedViewReturns(finalBuilder);
   host.ensureDistinctJobEventNfts(finalBuilder);
-  // Tail-return / distinct-event materializers may append after the OP_RETURN
+  // Tail-return / distinct-event materializers may append after the filler separator
   // trailer and shift TXOUTPUTCOUNT-1-nNew. Re-pin the suffix as the last layout write
   // before unlocker sync and covenant preflight.
   host.finalizeReverseSuffixValueChunkLayout(finalBuilder);

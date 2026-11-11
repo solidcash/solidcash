@@ -294,13 +294,19 @@ export function canonicalWriterReturnCommitment(parts: {
   writesState?: boolean;
   evmBool?: boolean;
   returnsBool?: boolean;
+  /**
+   * The pending value came from an authenticated observation (not the zero seed). A canonical all-zero boolean is
+   * then a legitimate `false`, which must not be replaced by the state-writing success default.
+   */
+  authenticated?: boolean;
 }): string {
   const evmBool = parts.evmBool === true;
   const boolTrue = evmBool ? `${'00'.repeat(31)}01` : '51';
-  const boolFalse = evmBool ? `${'00'.repeat(31)}00` : '00';
+  const boolFalse = evmBool ? `${'00'.repeat(32)}` : '00';
   const defaultBool = parts.writesState === true ? boolTrue : boolFalse;
   const pending = (parts.pendingHex ?? '').toLowerCase();
   if (parts.returnsBool !== true) return pending || '00';
+  if (parts.authenticated === true && pending === boolFalse) return boolFalse;
   if (pending === '' || /^0+$/.test(pending)) return defaultBool;
   if (evmBool) {
     if (pending === boolFalse || pending === boolTrue) return pending;
@@ -401,19 +407,29 @@ export function liveChunkWidthForGroup(
   return liveChunkSlotsByOwner(groups, ownerConvention).get(owner) ?? 0;
 }
 
+/** A direct block that stops at its last slot, a record it does not carry: no input or output holds that slot. */
+function compactsRecordSlot(group: PhysicalReturnGroup, layout: FunctionBlockLayout | undefined): boolean {
+  if (group.compilerRoute !== undefined || group.returnEventInBlock === true || layout === undefined) return false;
+  const slot = layout.slots.find(({ kind }) => kind === 'returnEvent');
+  return slot?.offset === layout.blockSize - 1 && group.blockInputs?.length === slot.offset;
+}
+
 /** Complete coordinate span reserved by a participant, including output-only slots. */
 export function physicalParticipantWidth(group: PhysicalReturnGroup): number {
   const layout = group.blockLayout ?? group.compilerRoute?.abiFunction?.blockLayout;
+  const stateWidth = 1 + (group.dataNftUtxos?.length ?? 0);
+  const assembledWidth = group.blockInputs?.length ?? 0;
+  if (compactsRecordSlot(group, layout)) return Math.max(stateWidth, assembledWidth);
   const declaredSpan = layout?.slots.reduce(
     (width, slot) => Math.max(width, slot.offset + 1),
     0,
   ) ?? 0;
   return Math.max(
     1,
-    1 + (group.dataNftUtxos?.length ?? 0),
+    stateWidth,
     layout?.blockSize ?? 0,
     declaredSpan,
-    group.blockInputs?.length ?? 0,
+    assembledWidth,
   );
 }
 
@@ -577,14 +593,14 @@ export type ViewTailPackOptions = {
   /** Input-bearing identities which the selected executable pins at the same output coordinate. */
   reservedIndices?: ReadonlySet<number>;
   band?: { start: number; end: number };
-  /** First reserved suffix index (OP_RETURN / value chunks). Tails must not land here. */
+  /** First reserved suffix index (filler / value chunks). Tails must not land here. */
   suffixStart?: number;
   tokenWriterPresent?: boolean;
 };
 
 /**
  * Keep planned view witnesses when a prior write grew the continuation band
- * and packing would land on it or the terminal OP_RETURN. A separate minting
+ * and packing would land on it or the terminal filler. A separate minting
  * writer still parks tails after its swapped block.
  */
 export function clampViewTailPlacement(parts: {

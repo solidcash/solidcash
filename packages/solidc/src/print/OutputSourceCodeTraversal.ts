@@ -59,6 +59,7 @@ import {
   EventDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   TokenContainerMethodStatementNode,
   ReturnNode,
   FunctionCallStatementNode,
@@ -371,6 +372,13 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
     this.addOutput('this.transfer(', true);
     node.lockingBytecode = this.visit(node.lockingBytecode);
     this.addOutput(', ');
+    node.amount = this.visit(node.amount);
+    this.addOutput(');\n');
+    return node;
+  }
+
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    this.addOutput('this.payMinerFee(', true);
     node.amount = this.visit(node.amount);
     this.addOutput(');\n');
     return node;

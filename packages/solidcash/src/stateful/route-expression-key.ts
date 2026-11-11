@@ -19,6 +19,25 @@ import { sortAddressPair } from './solidityAbi.js';
 import type { ValueChunkProducerPathDisposition } from './ValueChunkProducerIdentity.js';
 
 /**
+ * A call's arguments as a key expression reads them: a scalar `address` stated as a CashAddress is the lock the body
+ * receives, so a key that orders or hashes it computes over the same bytes the body does.
+ */
+export function keyArguments(
+  args: readonly FunctionArgument[], inputs: readonly { readonly type?: string }[],
+): FunctionArgument[] {
+  return args.map((arg, index) => {
+    const type = inputs[index]?.type;
+    if ((type !== 'address' && type !== 'address payable') || typeof arg !== 'string') return arg;
+    try {
+      const encoded = encodeFunctionArgument(arg, 'address');
+      return encoded instanceof Uint8Array ? encoded : arg;
+    } catch {
+      return arg;
+    }
+  });
+}
+
+/**
  * Auto-evaluate a sorted mapping's COMPUTED key from the artifact's canonical expression label against the call
  * args, for the common hash-builtin + bytes-cast cases (e.g. balances[hash160(pk)] -> hash160(argPk)). This makes
  * a direct computed key resolve WITHOUT a manual withEntryKey (Solidity auto-resolves such keys). Returns
@@ -190,6 +209,16 @@ export function evalComputedKey(
           : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
             ? left === right : undefined;
         return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
+      }
+      // An address or bytesN ordering compares the byte values as unsigned big-endian numbers, as the covenant's
+      // own comparison does (`emitBytesCompare`).
+      const ordered = (value: unknown): Uint8Array | undefined => (value instanceof Uint8Array ? value
+        : typeof value === 'string' && value.includes(':') ? addressToLockScript(value) : undefined);
+      const [leftBytes, rightBytes] = [ordered(left), ordered(right)];
+      if (leftBytes && rightBytes && (m[1] === '<' || m[1] === '<=' || m[1] === '>' || m[1] === '>=')) {
+        const number = (bytes: Uint8Array): bigint => bytes.reduce((value, byte) => (value << 8n) | BigInt(byte), 0n);
+        const [l, r] = [number(leftBytes), number(rightBytes)];
+        return m[1] === '<' ? l < r : m[1] === '<=' ? l <= r : m[1] === '>' ? l > r : l >= r;
       }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;

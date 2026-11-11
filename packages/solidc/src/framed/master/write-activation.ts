@@ -45,10 +45,12 @@ import {
   EmitStatementNode,
   ExpressionNode,
   type ExternalCallExpression,
+  ExternalFunctionCallNode,
   FieldAccessNode,
   FunctionCallNode,
   FunctionCallStatementNode,
   FunctionDefinitionNode,
+  MethodCallNode,
   HexLiteralNode,
   IdentifierNode,
   IntLiteralNode,
@@ -288,6 +290,16 @@ class ActivationSerializer {
     this.visible = entry.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   }
 
+  /**
+   * `value` as the body holds it where `statement` runs, a statement on no branch of the body's top level, or
+   * undefined when the frame's facts do not state it there.
+   */
+  valueAt(statement: Node, value: ExpressionNode): ExternalCallExpression | undefined {
+    const path = pathTo(this.entry.body, statement);
+    if (path === undefined || path.guards.length > 0) return undefined;
+    return this.serialize(value, { prior: path.prior, following: new Set() });
+  }
+
   /** The conjunction of the predicates on the path to `write`, or undefined when one is not the frame's to decide. */
   activationOf(write: Node): ExternalCallExpression | undefined {
     const path = pathTo(this.entry.body, write);
@@ -494,6 +506,37 @@ export function framedWriteActivation(
   return activation ?? UNDECIDED_WRITE_ACTIVATION;
 }
 
+/** One state variable a framed body leaves at a value its frame's own facts state (`framedStateWrites`). */
+export interface FramedStateWrite {
+  readonly name: string;
+  readonly value: ExternalCallExpression;
+}
+
+/**
+ * The scalar state a framed body leaves wherever it completes, as the frame's own facts state it: each state
+ * variable the body assigns once, at its top level — on no branch and in no loop — with the value serialized where
+ * the body assigns it. A planner reads a later frame of the contract in the same transaction against these, since the
+ * records an earlier frame writes are not the deployment's yet. A variable any other statement writes, or a value the
+ * frame's facts do not state, is left out.
+ */
+export function framedStateWrites(
+  entry: FunctionDefinitionNode,
+  constants: ReadonlyMap<string, ExpressionNode>,
+): readonly FramedStateWrite[] {
+  const statements = entry.body?.statements ?? [];
+  if (entry.body === undefined) return [];
+  const serializer = new ActivationSerializer(entry, constants);
+  const writes: FramedStateWrite[] = [];
+  for (const statement of statements) {
+    if (!(statement instanceof StateAssignNode)) continue;
+    const others = statements.filter((other) => other !== statement);
+    if (namesWritten(others).has(statement.name)) continue;
+    const value = serializer.valueAt(statement, statement.expression);
+    if (value !== undefined) writes.push({ name: statement.name, value });
+  }
+  return writes;
+}
+
 /**
  * The activation of a framed body's emit at `emitIndex`, an emit some branch arm guards: the disjunction of the
  * conditions the slot's emits run under, since exclusive arms may emit into one slot, `true` where they hold wherever
@@ -511,4 +554,261 @@ export function framedEmitActivation(
     }
   });
   return new ActivationSerializer(entry, constants).activationOfAny(sites) ?? UNDECIDED_WRITE_ACTIVATION;
+}
+
+/** A fixed entry's alternative runtime write: its key and the condition it runs under, both as SDK labels. */
+export interface DirectEntryAlternative {
+  key: string;
+  activation?: string;
+}
+
+/**
+ * Resolves the value a predicate reads to the label language the SDK evaluates (`state:`, `id:`, `lit:`, `binop:`,
+ * `cast:`, `call:sqrt`, `call:min`, and `producer:<callsite>:<result>`).
+ *
+ * This is the direct-entry counterpart of the tree serializer above. It is used only to publish a *skippable*
+ * alternative for a merged entry: a label the SDK cannot resolve drops the guard, and a label that resolves to
+ * `false` is trusted to mean the write did not run. Locals are followed through their declaration or their single
+ * assignment, because a guard that holds at the write also holds for the assignments on its path.
+ */
+class DirectLabelSerializer {
+  private readonly producers = new Map<string, {
+    callsiteId?: number; sourceEffectOrdinal?: number; resultIndex: number; functionName?: string;
+  }>();
+
+  private readonly definitions = new Map<string, VariableDefinitionNode>();
+  private readonly assignments = new Map<string, AssignNode[]>();
+  // `(uint112 r0, uint112 r1,) = getReserves()` binds a local to one component of an internal call's result.
+  private readonly tupleResults = new Map<string, { call: ExpressionNode; index: number }>();
+
+  constructor(
+    private readonly entry: FunctionDefinitionNode,
+    private readonly constants: ReadonlyMap<string, ExpressionNode>,
+  ) {
+    walkInvocationAst(entry.body, (node) => {
+      if (node instanceof TupleAssignmentNode && node.tuple !== undefined
+        && !(node.tuple instanceof ExternalFunctionCallNode)) {
+        node.elements.forEach((element, index) => {
+          if (element.skip || element.name === undefined) return;
+          this.tupleResults.set(element.name, { call: node.tuple, index });
+        });
+      }
+      if (node instanceof TupleAssignmentNode && node.tuple instanceof ExternalFunctionCallNode) {
+        const call = node.tuple;
+        const callsiteId = call.callInfo?.externalCallSlotIndex;
+        const effect = call.sourceEffectOrdinal;
+        const publishedCall = effect === undefined ? undefined
+          : entry.externalCalls?.find((candidate) => candidate.sourceEffectOrdinal === effect);
+        node.elements.forEach((element, index) => {
+          if (element.skip || element.name === undefined) return;
+          this.producers.set(element.name, {
+            callsiteId: callsiteId !== undefined && callsiteId >= 0 ? callsiteId : publishedCall?.slotIndex,
+            sourceEffectOrdinal: effect,
+            resultIndex: index,
+            ...(call.callInfo?.functionName && { functionName: call.callInfo.functionName }),
+          });
+        });
+      }
+      if (node instanceof VariableDefinitionNode && node.expression !== undefined
+        && !this.definitions.has(node.name)) this.definitions.set(node.name, node);
+      if (node instanceof AssignNode) {
+        const list = this.assignments.get(node.identifier.name) ?? [];
+        list.push(node);
+        this.assignments.set(node.identifier.name, list);
+      }
+    });
+  }
+
+  /** The conjunction of the write's decidable path guards, or undefined when none is decidable. */
+  activationLabel(write: Node): string | undefined {
+    const path = pathTo(this.entry.body, write);
+    if (path === undefined) return undefined;
+    let combined: string | undefined;
+    for (const [index, guard] of path.guards.entries()) {
+      const label = this.label(guard.condition, new Set(), path.before[index]);
+      if (label === undefined) continue;
+      const part = guard.negated ? `unop:!(${label})` : label;
+      combined = combined === undefined ? part : `binop:&&(${combined},${part})`;
+    }
+    return combined;
+  }
+
+  keyLabel(expression: ExpressionNode): string | undefined {
+    return this.label(expression, new Set(), []);
+  }
+
+  private producerLabel(name: string): string | undefined {
+    const producer = this.producers.get(name);
+    // The SDK resolves `producer:` through the published external-call table, whose coordinate is the callsite id.
+    return producer?.callsiteId === undefined ? undefined
+      : `producer:${producer.callsiteId}:${producer.resultIndex}`;
+  }
+
+  private label(node: ExpressionNode, following: ReadonlySet<string>, prior: readonly Node[]): string | undefined {
+    if (node instanceof IdentifierNode) {
+      const produced = this.producerLabel(node.name);
+      if (produced !== undefined) return produced;
+      if (this.visibleNames().includes(node.name)) return `id:${node.name}`;
+      const constant = this.constants.get(node.name);
+      if (constant !== undefined) return this.label(constant, following, prior);
+      if (following.has(node.name)) return undefined;
+      const next = new Set(following).add(node.name);
+      const definition = this.definitions.get(node.name);
+      if (definition?.expression !== undefined) {
+        const resolved = this.label(definition.expression, next, prior);
+        return resolved;
+      }
+      const writes: AssignNode[] = [];
+      for (const statement of prior) {
+        walkInvocationAst(statement, (candidate) => {
+          if (candidate instanceof AssignNode && candidate.identifier.name === node.name) writes.push(candidate);
+        });
+      }
+      const global = this.assignments.get(node.name) ?? [];
+      const assignment = writes.length === 1 ? writes[0] : global.length === 1 ? global[0] : undefined;
+      if (assignment !== undefined) return this.label(assignment.expression, next, prior);
+      const tupleResult = this.tupleResults.get(node.name);
+      if (tupleResult !== undefined) return this.tupleResultLabel(tupleResult.call, tupleResult.index);
+      // An inlined helper body can keep the caller's source-local spelling after the inliner renamed the
+      // declaration (`_reserve0` -> `__rh0__reserve0`). The copy is the only name ending in the old spelling.
+      const aliases = [...new Set([...this.definitions.keys(), ...this.assignments.keys()])]
+        .filter((name) => name !== node.name && name.endsWith(node.name));
+      if (aliases.length === 1) {
+        const alias = aliases[0]!;
+        const aliasDefinition = this.definitions.get(alias);
+        if (aliasDefinition?.expression !== undefined) {
+          return this.label(aliasDefinition.expression, new Set([...next, alias]), prior);
+        }
+        const aliasAssignments = this.assignments.get(alias) ?? [];
+        if (aliasAssignments.length === 1) {
+          return this.label(aliasAssignments[0]!.expression, new Set([...next, alias]), prior);
+        }
+      }
+      return undefined;
+    }
+    if (node instanceof StateAccessNode) return `state:${node.name}`;
+    if (node instanceof BoolLiteralNode) return `lit:${node.value}`;
+    if (node instanceof IntLiteralNode) return `lit:${node.value.toString()}`;
+    if (node instanceof HexLiteralNode) {
+      return `lit:0x${[...node.value].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    }
+    if (node instanceof CastNode) {
+      const inner = this.label(node.expression, following, prior);
+      return inner === undefined ? undefined : `cast:${node.type.toString()}(${inner})`;
+    }
+    if (node instanceof UnaryOpNode) {
+      const inner = this.label(node.expression, following, prior);
+      return inner === undefined ? undefined : `unop:${node.operator}(${inner})`;
+    }
+    if (node instanceof BinaryOpNode) {
+      const left = this.label(node.left, following, prior);
+      const right = left === undefined ? undefined : this.label(node.right, following, prior);
+      return right === undefined ? undefined : `binop:${node.operator}(${left},${right})`;
+    }
+    if (node instanceof TernaryOpNode) {
+      const condition = this.label(node.condition, following, prior);
+      const ifTrue = condition === undefined ? undefined : this.label(node.ifTrue, following, prior);
+      const ifFalse = ifTrue === undefined ? undefined : this.label(node.ifFalse, following, prior);
+      return ifFalse === undefined ? undefined
+        : `ternary(${condition},${ifTrue},${ifFalse})`;
+    }
+    if (node instanceof MappingAccessNode) {
+      const keys: string[] = [];
+      for (const key of node.keys) {
+        const label = this.label(key, following, prior);
+        if (label === undefined) return undefined;
+        keys.push(label);
+      }
+      return `map:${node.name}(${keys.join(',')})`;
+    }
+    if (node instanceof FunctionCallNode) {
+      const name = node.identifier.name;
+      const args: string[] = [];
+      for (const parameter of node.parameters) {
+        const label = this.label(parameter, following, prior);
+        if (label === undefined) return undefined;
+        args.push(label);
+      }
+      const math = this.mathCall(name, args);
+      if (math !== undefined) return math;
+      return undefined;
+    }
+    if (node instanceof MethodCallNode) {
+      const object = this.label(node.object, following, prior);
+      if (object === undefined) return undefined;
+      const args: string[] = [];
+      for (const parameter of node.parameters) {
+        const label = this.label(parameter, following, prior);
+        if (label === undefined) return undefined;
+        args.push(label);
+      }
+      return this.mathCall(node.methodName, [object, ...args]);
+    }
+    return undefined;
+  }
+
+  /** One component of a parameterless internal call's tuple result, read from the callee's named return. */
+  private tupleResultLabel(call: ExpressionNode, index: number): string | undefined {
+    if (!(call instanceof FunctionCallNode)) return undefined;
+    const callee = call.resolvedFunction;
+    const result = ((): string | undefined => {
+      if (callee === undefined || callee.parameters.length !== 0) return undefined;
+      const returnName = callee.returnNames?.[index];
+      if (returnName === undefined) return undefined;
+      const serializer = new DirectLabelSerializer(callee, this.constants);
+      const definition = serializer.definitions.get(returnName);
+      if (definition?.expression !== undefined) {
+        return serializer.label(definition.expression, new Set([returnName]), []);
+      }
+      const assignments = serializer.assignments.get(returnName) ?? [];
+      return assignments.length === 1
+        ? serializer.label(assignments[0]!.expression, new Set([returnName]), []) : undefined;
+    })();
+    return result;
+  }
+
+  private mathCall(name: string, args: readonly string[]): string | undefined {
+    const short = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : name;
+    if (short === 'sqrt' && args.length === 1) return `call:sqrt(${args[0]})`;
+    if (short === 'min' && args.length === 2) return `call:min(${args[0]},${args[1]})`;
+    if (short === 'max' && args.length === 2) return `call:max(${args[0]},${args[1]})`;
+    const operator = short === 'add' ? '+' : short === 'sub' ? '-' : short === 'mul' ? '*'
+      : short === 'div' ? '/' : undefined;
+    return operator === undefined || args.length !== 2 ? undefined
+      : `binop:${operator}(${args[0]},${args[1]})`;
+  }
+
+  private visibleNames(): readonly string[] {
+    return this.entry.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+      .map((parameter) => parameter.name);
+  }
+}
+
+/** The fixed-entry write node carrying one source-effect ordinal. */
+function ordinalWrite(entry: FunctionDefinitionNode, ordinal: number): Node | undefined {
+  let found: Node | undefined;
+  walkInvocationAst(entry.body, (node) => {
+    if (found !== undefined) return;
+    if ((node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+      || node instanceof MappingDeleteNode) && node.sourceEffectOrdinal === ordinal) found = node;
+  });
+  return found;
+}
+
+/**
+ * An alternative key and activation for one of a merged fixed entry's write sites, or undefined when the site's key
+ * or guards cannot be stated. `primaryKeys` are the labels of the entry's published primary key(s); a site whose key
+ * is one of them adds nothing.
+ */
+export function directWriteAlternative(
+  entry: FunctionDefinitionNode, ordinal: number, constants: ReadonlyMap<string, ExpressionNode>,
+  primaryKeys: readonly string[],
+): DirectEntryAlternative | undefined {
+  const write = ordinalWrite(entry, ordinal);
+  if (!(write instanceof MappingAssignNode) || write.keys.length !== 1) return undefined;
+  const serializer = new DirectLabelSerializer(entry, constants);
+  const key = serializer.keyLabel(write.keys[0]);
+  if (key === undefined || primaryKeys.includes(key)) return undefined;
+  const activation = serializer.activationLabel(write);
+  return { key, ...(activation !== undefined && { activation }) };
 }

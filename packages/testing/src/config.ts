@@ -17,7 +17,15 @@ export interface NetworkConfig {
   type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc' | 'mem-cash';
   /** BCH network used by live providers. Inferred from the config key when omitted. */
   network?: 'mainnet' | 'testnet3' | 'testnet4' | 'chipnet' | 'regtest';
-  electrum?: { host: string; port?: number };
+  electrum?: {
+    host: string;
+    /** The server's WebSocket port; the protocol's 50004 by default. */
+    port?: number;
+    /** False for a plain `ws://` server, which a local Fulcrum serves; encrypted by default. */
+    encrypted?: boolean;
+    /** Keeps one socket for the run, which the caller opens with the provider's `connect()`. */
+    manualConnectionManagement?: boolean;
+  };
   rpc?: { url: string; user?: string; password?: string };
   /** Client settings for `type: "mem-cash"`. */
   memCash?: {
@@ -48,7 +56,11 @@ export interface NetworkConfig {
     /** Bootstrap height; headers `0..height` exist. */
     chainId?: string;
   };
-  /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */
+  /**
+   * Consensus overrides. A mock enforces them; a mem-cash entry states them as the limits a compile reads before it
+   * connects, which the node's advertised profile then replaces. Defaults to 1MB inputs/stack items and 10MB
+   * transactions.
+   */
   consensus?: Partial<{
     maximumInputBytes: number;
     maximumStackItemBytes: number;
@@ -56,6 +68,8 @@ export interface NetworkConfig {
     maximumNftCommitmentBytes: number;
     operationCostBudgetPerByte: number;
     hashDigestIterationsPerByte: number;
+    /** The most satoshis one output, or a transaction's inputs together, may hold; BCH's 21 million coins by default. */
+    maximumMoney: bigint;
   }>;
   policy?: Partial<{
     enforceDust: boolean;
@@ -116,6 +130,12 @@ export interface SolidcashConfig {
    */
   composition?: 'direct' | 'framed';
   /**
+   * The contract a framed CREATE2 over a code value stands up, by the code's keccak256 as hex. A factory that
+   * creates its children from code it holds (an EVM pair bytecode, say) commits each child's identity to that code's
+   * hash, and the code is no program a BCH master runs: the child's frames run the contract this table names.
+   */
+  create2Templates?: Record<string, string>;
+  /**
    * Address a deployment by a stable, chain-independent CREATE identity (default) or by the address its own
    * deployment transaction produces.
    *
@@ -138,6 +158,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
   composition?: 'direct' | 'framed';
+  create2Templates?: Record<string, string>;
   logicalIdentity: boolean;
   typegen: {
     targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[];
@@ -161,6 +182,7 @@ export const solidcashConfigSchema = {
     defaultNetwork: { type: 'string' }, mnemonic: { type: 'string' },
     compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
     composition: { enum: ['direct', 'framed'] },
+    create2Templates: { type: 'object', additionalProperties: { type: 'string' } },
     logicalIdentity: { type: 'boolean' },
     trustProjectCache: { type: 'boolean' },
     networks: { type: 'object', additionalProperties: { type: 'object' } },
@@ -201,6 +223,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     solc: compiler,
     compiler,
     composition: config.composition,
+    ...(config.create2Templates === undefined ? {} : { create2Templates: config.create2Templates }),
     logicalIdentity: config.logicalIdentity ?? true,
     typegen: {
       jsonArtifactModules: config.typegen?.jsonArtifactModules,

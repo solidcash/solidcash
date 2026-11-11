@@ -50,7 +50,7 @@ const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
  * A two-contract source whose second contract's entry calls the first. The call target is a code-baked address
  * literal, which is the shape whose callee address the head can compare a witness call record against.
  */
-const callingSource = (target: Uint8Array): string => 'pragma solidcash ^0.14.0;'
+const callingSource = (target: Uint8Array): string => 'pragma solidcash ^0.50.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
@@ -126,8 +126,11 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     Opcodes.OP_1,
   ]);
 
+  // The validator settles both covered masters' contracts, neither of which holds a record here.
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+    roots: [CALLER_INDEX],
+    masters: [CALLER_INDEX, CALLEE_INDEX],
+    settles: [{ category: CATEGORY_CALLER, stateInputs: [] }, { category: CATEGORY_CALLEE, stateInputs: [] }],
   });
   const validatorLock = validator.lock;
   const facets = validatorFacetPlacements();

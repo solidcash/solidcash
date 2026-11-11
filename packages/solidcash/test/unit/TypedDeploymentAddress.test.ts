@@ -1,7 +1,9 @@
 import { binToHex, hash160, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { describe, expect, it } from 'vitest';
 import {
-  findDeploymentByAddressValue, findDeploymentByLockingBytecode, registerDeployment,
+  findDeploymentByAddressValue, findDeploymentByLockingBytecode, isCreate2ProjectedAddressValue,
+  registerDeployment,
   registeredAddressValueLockingBytecode, registeredPhysicalLockingBytecode,
   registeredValueAddressLockingBytecode,
 } from '../../src/stateful/deployment-registry.js';
@@ -64,5 +66,43 @@ describe('typed deployment address resolution', () => {
       expect(registeredAddressValueLockingBytecode(provider, value)).toBeUndefined();
     }
     expect(registeredAddressValueLockingBytecode(provider, lock)).toEqual(lock);
+  });
+
+  it('resolves a lock-derived child identity and a unique off-chain CREATE2 projection', () => {
+    const provider = createTestProvider();
+    const parentLock = hexToBin(`76a914${'11'.repeat(20)}88ac`);
+    const parent = lockingBytecodeToCashAddress({ bytecode: parentLock, prefix: 'bchtest' });
+    const childLock = hexToBin(`aa20${'22'.repeat(32)}87`);
+    const child = lockingBytecodeToCashAddress({ bytecode: childLock, prefix: 'bchtest' });
+    if (typeof parent === 'string' || typeof child === 'string') throw new Error('invalid fixture');
+    const salt = 'ab'.repeat(32);
+    registerDeployment(provider, {
+      contractName: 'Child', address: child.address, lockingBytecode: binToHex(childLock),
+      parentAddress: parent.address, parentLockingBytecode: binToHex(parentLock), salt, contract: {},
+    });
+
+    // The projection the Solidity `pairFor` helper computes: keccak(0xff ++ parent identity ++ salt ++ init).
+    // A P2PKH lock's Solidity identity is its payload, not the hash of the whole lock.
+    const preimage = Uint8Array.from([
+      0xff, ...parentLock.subarray(3, 23), ...hexToBin(salt),
+      ...hexToBin('e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303'),
+    ]);
+    const projected = keccak_256(preimage).slice(12);
+    expect(findDeploymentByAddressValue(provider, projected)?.contractName).toBe('Child');
+    // One owning child is resolvable: the SDK substitutes that child's real lock for the witness.
+    expect(isCreate2ProjectedAddressValue(provider, projected)).toBe(false);
+
+    // The identity the child's own locking bytecode projects to is the one the covenant can authenticate.
+    const physical = hash160(childLock);
+    expect(findDeploymentByAddressValue(provider, physical)?.contractName).toBe('Child');
+    expect(isCreate2ProjectedAddressValue(provider, physical)).toBe(false);
+
+    // Without an owner, or with several, there is no callee the caller can authenticate.
+    expect(isCreate2ProjectedAddressValue(provider, keccak_256(new Uint8Array(64).fill(7)).slice(12))).toBe(true);
+    registerDeployment(provider, {
+      contractName: 'Sibling', address: 'sibling', lockingBytecode: binToHex(childLock),
+      parentAddress: parent.address, parentLockingBytecode: binToHex(parentLock), salt, contract: {},
+    });
+    expect(isCreate2ProjectedAddressValue(provider, projected)).toBe(true);
   });
 });

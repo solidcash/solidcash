@@ -93,7 +93,7 @@ export function gatherContiguousPlainFunders<T extends {
 /**
  * Last mutable p2sh32 writer that sits on a planned view-tail index, extended
  * through the contiguous collection band (jobEvents). Token-free pads and the
- * trailing value-chunk suffix (separated by a pad or OP_RETURN) are not included.
+ * trailing value-chunk suffix (separated by a pad or the separator filler) are not included.
  */
 export function lastCollidingMutableWriterIndex(
   outputs: ReadonlyArray<{

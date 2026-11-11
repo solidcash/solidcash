@@ -5993,6 +5993,25 @@ function messageBusRecordClaim(
   return { ...claim, collections: [...named] };
 }
 
+/** Whether the function deploys a child with `new C{code: c}`, which only the direct path checks. */
+function deploysChildCode(fn: FunctionDefinitionNode): boolean {
+  const seen = new Set<object>();
+  const visit = (value: unknown): boolean => {
+    if (!(value instanceof Node) || seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof InstantiationNode && value.callOptions?.code !== undefined) return true;
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'deployedStateVars', 'stateVariable', 'collection'].includes(key)) continue;
+      if (child instanceof Node ? visit(child) : Array.isArray(child) && child.some((item) => visit(item))) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return visit(fn.body);
+}
+
 function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -7642,6 +7661,14 @@ function synthesizeMessageBusRoute(
       continue;
     }
     if (fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
+        ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';
+      continue;
+    }
+    // A route rebuilds its child sites from the embedded body; `new C{code: c}` embeds none and requires the code to
+    // match a template, which no route replays. Keep such a deploy on the direct path alone, where it is checked.
+    if (deploysChildCode(fn)) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = compilerOptions.messageBusKernel === true
         ? 'KERNEL_LIFECYCLE' : 'lifecycle-or-unsafe-handler';

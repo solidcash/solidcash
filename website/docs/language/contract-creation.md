@@ -161,6 +161,12 @@ Control flow, mapping writes, ordinary function calls, external calls, events, t
 and nested deployment are not foldable. The compiler fails with `DeployThenCallError`; deploy first and call the
 child in a later transaction.
 
+The child's own constructor folds the same way. A child whose constructor does not fold cannot be created with `new`:
+the factory checks the child's genesis against the folded constructor, so it could not check the state that
+constructor produces (see [A child's constructor](#a-childs-constructor) for the errors). Assign those fields with
+straight-line expressions of constants and constructor arguments, for example a precomputed constant in place of a
+value a loop builds.
+
 :::danger
 `require(...)` statements inside a folded child initializer are not executed. Put every authorization and input
 guard in the factory before `new`/the folded call, as in the example. The initializer's assignments are still
@@ -174,7 +180,8 @@ its own covenant, which then verifies the child's first state. Constructor argum
 fold, and so does a `require` over them, which the creating call enforces.
 
 A statement the fold cannot express is refused with `ChildGenesisFoldError`, naming the child and the statement, so a
-guard or a write is never dropped. That covers a write or `require` that reads `tx.*`, `msg.value`, the child's own
+guard or a write is never dropped. A constructor whose fold fails without one such statement is refused with
+`UnfoldableChildConstructorError`. That covers a write or `require` that reads `tx.*`, `msg.value`, the child's own
 state or a signature, a branch the fold cannot join, an `emit`, a transfer, a nested `new`, and any `block.*` or
 `blockhash` read. Compute the value in the factory and pass it as an argument, or set it in a later transaction. A
 child that reads block data in its own later calls is unaffected. Framed creation replays a child's genesis under its
@@ -204,6 +211,55 @@ contract Factory(pubkey admin) {
     }
 }
 ```
+
+### Deploying code by template
+
+`new C{code: c}(...)` creates a child that runs the bytes `c` instead of C's compiled body. The factory embeds no
+code: it requires `sha256(c)` to be the sha256 of C's compiled body, a 32-byte constant, and builds the child's
+address from `c`. A factory of a large child stays small, and its other functions no longer carry the child's code.
+The code still travels in the deploying transaction: as an argument it sits in the factory's own input, which BCH
+limits to 10,000 bytes, so a factory near that limit can read it from another input instead.
+
+```solidity
+contract Child(int limit) {
+    int counter;
+    function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
+}
+
+contract Factory() {
+    int created;
+
+    function create(int limit, bytes code) public {
+        new Child{code: code}(limit);
+        this.created += 1;
+    }
+}
+```
+
+`new C{code: c, template: t}(...)` checks `c` against a template chosen at run time instead: `sha256(c)` must equal
+`t`. The child keeps C's interface (its constructor arguments, state layout and constructor fold) and runs whatever
+code hashes to `t`, so one factory can create children of several versions of C. A caller who chooses the template
+chooses the child's code, so the template must be a constant, a constructor argument or a state variable, or else a
+parameter that the function never reassigns and passes to an event it emits on every path:
+
+```solidity
+contract Registry() {
+    int created;
+    event Created(bytes32 template, int limit);
+
+    function create(bytes32 template, int limit, bytes code) public {
+        new Child{code: code, template: template}(limit);
+        emit Created(template, limit);
+        this.created += 1;
+    }
+}
+```
+
+`deployFrom()` builds the child from the code in the deploy arguments, and refuses code that does not hash to the
+template before anything is broadcast. The deploy covenant refuses it on chain either way.
+
+`code` and `template` apply to a stateful child created on the direct convention. A function that uses them is not
+admitted to the message-bus route, and the framed convention refuses them.
 
 ## Upgrading
 

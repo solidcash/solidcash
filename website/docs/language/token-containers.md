@@ -148,12 +148,15 @@ await call.send();
 ```
 
 `tokenContainerDeposit()` does not source or unlock tokens. It only adjusts the expected preservation output;
-the added input, its unlocker, token change, and BCH funding remain transaction-builder responsibilities.
+the added input, its unlocker and any token change remain the caller's. The SDK refuses to burn a surplus, so a
+coin larger than the deposit needs an `.addOutput()` for the rest. A connected signer pays the BCH.
 Consensus enforces the category's overall token balance.
 
 The amount must be positive, and the called function must use `this.tokens[category]` so that the transaction
 includes the container. When no container exists for the category yet, the deposit creates it: a new container
-output of 1,200 satoshis holding the deposited tokens.
+output of 1,200 satoshis holding the deposited tokens. Under
+[`pragma tokencontainer single`](/docs/language/stateful-contracts#keeping-one-coin-per-container) a call cannot open
+one, so the deployment does, with `tokenContainers`.
 
 ## SDK access
 

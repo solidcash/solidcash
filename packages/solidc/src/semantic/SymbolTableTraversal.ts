@@ -36,6 +36,7 @@ import {
   type EmitInfo,
   type TransferInfo,
   TransferStatementNode,
+  MinerFeeStatementNode,
   TokenContainerMethodStatementNode,
   BranchNode,
   DoWhileNode,
@@ -234,6 +235,10 @@ import {
   SolidcDiagnosticError,
   UpgradeStrandsBoundStateError,
   ChildGenesisFoldError,
+  MinerFeeStatementError,
+  SingleContainersError,
+  UnfoldableChildConstructorError,
+  DeployCodeError,
 } from '../Errors.js';
 import { type ChainRead, childChainReadFinder } from './SynthesizeBlockOracle.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
@@ -1665,6 +1670,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && node.functions.length === 0 && node.stateVariables.length === 0;
     if (!shadowedInterface) this.contractMap.set(node.name, node);
     this.currentContract = node;
+    if (node.singleSatoshiContainer || node.singleTokenContainer) this.validateSingleContainers(node);
 
     // Types declared by an inherited interface are members of the contract scope. A file-level/library enum with
     // the same short name must not win merely because it was registered earlier (`contract C is I`, where both
@@ -15962,6 +15968,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!createsItself) this.refuseChildConstructorChainRead(contract);
       const droppedStatement = this.tryFoldChildConstructor(node);
       if (!createsItself) this.refuseDroppedChildStatement(contract, droppedStatement);
+      // A constructor that failed to fold may set any field, so the genesis check would create the child in a state
+      // its source never reaches. A dropped statement is refused by name above; any other fold failure is refused here.
+      if (!createsItself && node.isStatefulDeploy && node.ctorFoldFailed === true) {
+        throw new UnfoldableChildConstructorError(node, contract.name);
+      }
 
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
       // COMPOSED with the category self-pin for a stateful target (`<salt> OP_DROP | <cat self-pin> | base`,
@@ -15971,7 +15982,20 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
       }
 
+      if (node.callOptions?.code || node.callOptions?.template) {
+        if (node.callOptions.code) node.callOptions.code = this.visit(node.callOptions.code) as ExpressionNode;
+        if (node.callOptions.template) {
+          node.callOptions.template = this.visit(node.callOptions.template) as ExpressionNode;
+        }
+        this.checkDeployTemplate(node, contract.name);
+      }
+
       return node;
+    }
+
+    if (node.callOptions?.code || node.callOptions?.template) {
+      throw new DeployCodeError(node, `'code' and 'template' name the code of a contract created with new, `
+        + `and '${contractName}' is not a contract`);
     }
 
     // Built-in class instantiation (LockingBytecodeP2PKH, etc.)
@@ -15980,6 +16004,79 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.expectedSymbolType = SymbolType.VARIABLE;
     node.parameters = this.visitList(node.parameters);
     return node;
+  }
+
+  /**
+   * `new C{code: c}` and `new C{code: c, template: t}`. The creator builds the child's address from the code it is
+   * handed, after requiring `sha256(c)` to be the template, so the template is all that fixes what the child runs:
+   * C's own compiled code when none is named. A template is admitted only when the caller cannot choose it, or when
+   * the caller chooses it and the function publishes it: a parameter it never reassigns, an argument of an event it
+   * emits on every path, so each child's template is on record. Anything else would let a caller create a child of
+   * any code through this contract with nothing to tell it apart.
+   */
+  private checkDeployTemplate(node: InstantiationNode, childName: string): void {
+    const { code, template } = node.callOptions!;
+    const refuse = (reason: string): never => {
+      throw new DeployCodeError(node, `new ${childName}{code: ...}: ${reason}`);
+    };
+    if (!node.isStatefulDeploy) {
+      refuse(`'code' names the code of a stateful child the creator checks at its genesis, and '${childName}' is `
+        + 'not one created here');
+    }
+    if (!code) refuse(`'template' is the sha256 the child's 'code' must have, and no 'code' is given`);
+    if (!template) return;
+    if (template instanceof HexLiteralNode) return;
+    const unpublished = 'a template must be a constant, a constructor argument, a state variable, or a parameter '
+      + 'of this function that it never reassigns and passes to an event it always emits';
+    if (!(template instanceof IdentifierNode)) refuse(unpublished);
+    const name = (template as IdentifierNode).name;
+    const fn = this.currentFunction;
+    const declaration = (template as IdentifierNode).definition?.definition;
+    // A local is whatever the function computes, and may shadow a field of the same name.
+    if (declaration instanceof VariableDefinitionNode) refuse(unpublished);
+    const isFunctionParameter = fn?.parameters.some((parameter) => parameter === declaration || parameter.name === name)
+      ?? false;
+    if (!isFunctionParameter) {
+      const owner = this.currentContract;
+      const fixed = declaration instanceof ConstantDefinitionNode
+        || declaration instanceof StateVariableNode
+        || (owner?.parameters.some((parameter) => parameter === declaration || parameter.name === name) ?? false)
+        || (owner?.stateVariables.some((state) => state.name === name) ?? false)
+        || (owner?.constantDefinitions.some((constant) => constant.name === name) ?? false);
+      if (!fixed) refuse(unpublished);
+      return;
+    }
+    const statements = (fn!.body instanceof BlockNode ? fn!.body.statements : undefined) ?? [];
+    const seen = new Set<object>();
+    const finds = (value: unknown, match: (node: Node) => boolean): boolean => {
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (match(value)) return true;
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'deployedStateVars', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node ? finds(child, match) : Array.isArray(child) && child.some((item) => finds(item, match))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    // Inline assembly may write any variable, so the template could change behind it.
+    const reassigns = (candidate: Node): boolean => (candidate instanceof AssignNode
+      && candidate.identifier instanceof IdentifierNode && candidate.identifier.name === name)
+      || (candidate instanceof TupleAssignmentNode
+        && candidate.elements.some((element) => !element.skip && element.name === name))
+      || (candidate instanceof DeleteLocalNode && candidate.identifier.name === name)
+      || candidate instanceof AssemblyStatementNode;
+    if (statements.some((statement) => { seen.clear(); return finds(statement, reassigns); })) refuse(unpublished);
+    // A top-level emit runs on every path that reaches the end of the function, unless a return comes before it.
+    for (const statement of statements) {
+      if (statement instanceof EmitStatementNode
+        && statement.args.some((argument) => argument instanceof IdentifierNode && argument.name === name)) return;
+      seen.clear();
+      if (finds(statement, (candidate) => candidate instanceof ReturnNode)) break;
+    }
+    refuse(unpublished);
   }
 
   // When we enter a console statement,
@@ -16198,6 +16295,42 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.lockingBytecode = this.visit(node.lockingBytecode);
     node.amount = this.visit(node.amount);
     return node;
+  }
+
+  /**
+   * `this.payMinerFee(amount)`. Framed conservation has no such term: its validator weighs only sends and calls, so
+   * value leaves a framed contract only as a send (spec 4b). The statement is a top-level one, and one per entry, so
+   * every run of the entry authorizes exactly the amount its source names, and its layout can read it from the body.
+   */
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    const fn = this.currentFunction;
+    if (this.compilerOptions.composition === 'framed') {
+      throw new MinerFeeStatementError(node, 'is not available in the framed composition: value leaves a framed '
+        + 'contract only as a send');
+    }
+    if (!fn?.isEntryPoint) throw new MinerFeeStatementError(node, 'must be in a public entry point');
+    if (fn.modifiers.includes(FunctionModifier.VIEW) || fn.modifiers.includes(FunctionModifier.PURE)) {
+      throw new MinerFeeStatementError(node, 'cannot be in a view or pure function');
+    }
+    if (!fn.body.statements?.includes(node)) {
+      throw new MinerFeeStatementError(node, 'must be a top-level statement of the function, not in a branch or loop');
+    }
+    if (fn.body.statements.filter((statement) => statement instanceof MinerFeeStatementNode).length > 1) {
+      throw new MinerFeeStatementError(node, 'can appear once in a function');
+    }
+    this.minerFeeAmount(node);
+    node.amount = this.visit(node.amount);
+    return node;
+  }
+
+  /** The satoshis a `this.payMinerFee` names: a positive integer literal, or a constant that holds one. */
+  private minerFeeAmount(node: MinerFeeStatementNode): bigint {
+    const expression = node.amount instanceof IdentifierNode
+      ? this.constantMap.get(node.amount.name)?.expression : node.amount;
+    if (!(expression instanceof IntLiteralNode) || expression.value <= 0n) {
+      throw new MinerFeeStatementError(node, 'needs a positive compile-time amount');
+    }
+    return expression.value;
   }
 
   /**
@@ -20132,6 +20265,25 @@ export default class SymbolTableTraversal extends AstTraversal {
       && slot.condition === undefined && !slot.addressIsSelf && !slot.addressIsMsgSender;
   }
 
+  /**
+   * `pragma satoshicontainer single` and `pragma tokencontainer single` keep one coin at a container's lock, which a
+   * framed contract, whose frames settle its containers, a message-bus route and an upgrade, which moves them to a new
+   * lock, cannot promise. The error names the satoshi pragma when the contract has both.
+   */
+  private validateSingleContainers(node: ContractNode): void {
+    const pragma = node.singleSatoshiContainer ? 'satoshicontainer' : 'tokencontainer';
+    if (this.compilerOptions.composition === 'framed') {
+      throw new SingleContainersError(node, pragma, 'is not available to a framed contract');
+    }
+    if (this.compilerOptions.messageBus) {
+      throw new SingleContainersError(node, pragma, 'is not available to a message-bus contract');
+    }
+    const upgrade = node.functions.find((fn) => fn.modifiers.includes(FunctionModifier.UPGRADE));
+    if (upgrade) {
+      throw new SingleContainersError(upgrade, pragma, `cannot keep its containers through '${upgrade.name}'`);
+    }
+  }
+
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
     // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
     // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
@@ -20184,9 +20336,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Satoshi container (if function has transfers - its own, or a graph handler's frames)
+    // Satoshi container (if function has transfers - its own, or a graph handler's frames - or pays the miner fee,
+    // which the container funds)
+    const minerFeeStatement = node.body?.statements?.find(
+      (statement): statement is MinerFeeStatementNode => statement instanceof MinerFeeStatementNode,
+    );
+    // Under `pragma satoshicontainer single` a payable call adds to the one coin, so it spends it.
+    const singleSatoshiContainer = this.currentContract?.singleSatoshiContainer === true;
     if ((node.transferInfos && node.transferInfos.length > 0)
-      || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0) {
+      || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0 || minerFeeStatement
+      || (singleSatoshiContainer && node.modifiers.includes(FunctionModifier.PAYABLE))) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -20404,7 +20563,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     // argument's length. A reserved band only made the SDK fund its unused slots.
     const needsTrailingRegion = node.name === '__message_bus1'
       && (needsWideTrailingRegion || collectionRouteCapacity > 0);
-    if (!needsTrailingRegion) return { blockSize: offset, slots };
+    const published = {
+      ...(minerFeeStatement ? { minerFee: this.minerFeeAmount(minerFeeStatement).toString() } : {}),
+      ...(singleSatoshiContainer ? { singleSatoshiContainer: true } : {}),
+      ...(this.currentContract?.singleTokenContainer ? { singleTokenContainer: true } : {}),
+    };
+    if (!needsTrailingRegion) return { blockSize: offset, slots, ...published };
 
     const trailingBase = offset;
     // Each counter loop has an independent 64-iteration proof, so reserve its complete resource capacity rather
@@ -20423,6 +20587,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots,
       trailingBase,
       trailingCapacity,
+      ...published,
     };
   }
 

@@ -40,6 +40,8 @@ A UTXO can also be given in full: `{ txid, vout, satoshis }` plus an optional `t
 
 :::note
 By default, the `MockNetworkProvider` evaluates transactions locally and updates the in-memory UTXO set after a transaction is sent. This means spent UTXOs are consumed and new UTXOs are created when mocking a transaction `send` using the provider. This can be disabled by setting the `updateUtxoSet` option to `false`.
+
+By default it is also relaxed: its size limits are far above the chain's, dust is off, and the SDK may mint placeholder coins on it for funding and padding. `new MockNetworkProvider({ profile: 'production' })` behaves as a real node instead. It enforces BCH's size limits, the standard relay VM and dust, and it has no `addUtxo`, so every transaction is funded by coins that exist and the sizes and fees it reports are what a real network would see. Put coins on its ledger with `seedUtxo`.
 :::
 
 :::caution Mock limits are relaxed

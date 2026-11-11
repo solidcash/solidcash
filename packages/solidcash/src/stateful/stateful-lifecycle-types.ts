@@ -101,6 +101,8 @@ export interface DeployOptions {
   /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
+  /** Fungible token coins the genesis moves whole into their containers, one coin per category. */
+  tokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
   /** When false, the genesis transaction is built and its txid is returned, but nothing is broadcast. */

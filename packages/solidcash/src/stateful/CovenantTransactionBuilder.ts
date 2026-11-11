@@ -2,13 +2,18 @@ import type { Transaction as LibauthTransaction } from '@bitauth/libauth/build/l
 import { TransactionBuilder } from '../TransactionBuilder.js';
 
 /**
- * TransactionBuilder for covenant (stateful) transactions. Covenant-managed outputs make the
- * base fee heuristic meaningless, so fee validation is delegated to StatefulTransactionBuilder,
- * which validates fees itself before broadcast. Everything else (burn checks, building, signing,
- * txid verification) is inherited unchanged.
+ * TransactionBuilder for covenant (stateful) transactions. Inside the SDK this builder is a probe or a frame whose
+ * funding comes later, so its fee means nothing yet, and StatefulTransactionBuilder validates the fee of what it
+ * sends itself. Everything else (burn checks, building, signing, txid verification) is inherited unchanged.
  */
 export class CovenantTransactionBuilder extends TransactionBuilder {
-  protected override checkMaxFee(_transaction: LibauthTransaction): void {
-    // No-op: covenant fee validation is performed by StatefulTransactionBuilder.
+  /**
+   * Set on the builder a call's `build()` hands back. Its caller sends that builder itself, so the call's fee
+   * caps hold there as they do in the call's own `send()`: a coin added by hand cannot go to the miner whole.
+   */
+  enforceFeeCaps = false;
+
+  protected override checkMaxFee(transaction: LibauthTransaction): void {
+    if (this.enforceFeeCaps) super.checkMaxFee(transaction);
   }
 }

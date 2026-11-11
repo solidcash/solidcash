@@ -81,6 +81,7 @@ import {
   EventDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   FunctionModifier,
@@ -875,8 +876,27 @@ export default class AstBuilder
     }
     let selectedAbiCoder: { version: 'v1' | 'v2'; legacy: boolean } | undefined;
     const experimentalFeatures = new Set<string>();
+    let singleSatoshiContainer = false;
+    let singleTokenContainer = false;
     for (const pragma of ctx.pragmaDirective_list()) {
       const text = pragma.getText();
+      if (text.startsWith('pragmacontainers')) {
+        throw new ParseError(
+          'Expected "pragma satoshicontainer single" or "pragma tokencontainer single"', Location.fromCtx(pragma),
+        );
+      }
+      if (text.startsWith('pragmasatoshicontainer')) {
+        if (text !== 'pragmasatoshicontainersingle;') {
+          throw new ParseError('Expected "pragma satoshicontainer single"', Location.fromCtx(pragma));
+        }
+        singleSatoshiContainer = true;
+      }
+      if (text.startsWith('pragmatokencontainer')) {
+        if (text !== 'pragmatokencontainersingle;') {
+          throw new ParseError('Expected "pragma tokencontainer single"', Location.fromCtx(pragma));
+        }
+        singleTokenContainer = true;
+      }
       if (this.evmCompat && text.startsWith('pragmaexperimental')) {
         const feature = text.slice('pragmaexperimental'.length, -1);
         const supported = new Set(['ABIEncoderV2', 'SMTChecker', 'solidity', '__test']);
@@ -1559,6 +1579,12 @@ export default class AstBuilder
     sourceFileNode.libraryErrorDefinitions = libraryErrorDefinitions;
     sourceFileNode.libraryModifierDefinitions = libraryModifierDefinitions;
     sourceFileNode.abiCoderVersion = selectedAbiCoder?.version;
+    sourceFileNode.singleSatoshiContainer = singleSatoshiContainer;
+    sourceFileNode.singleTokenContainer = singleTokenContainer;
+    for (const contract of contracts) {
+      contract.singleSatoshiContainer = singleSatoshiContainer;
+      contract.singleTokenContainer = singleTokenContainer;
+    }
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;
   }
@@ -1633,7 +1659,7 @@ export default class AstBuilder
     if (this.evmCompat) {
       if (!ctx.pragmaName()) {
         const name = ctx.Identifier(0)?.getText();
-        if (name !== 'abicoder' && name !== 'experimental') {
+        if (name !== 'abicoder' && name !== 'experimental' && name !== 'satoshicontainer' && name !== 'tokencontainer') {
           throw new ParseError(`Unknown pragma '${name}'`, Location.fromCtx(ctx));
         }
       }
@@ -1644,7 +1670,9 @@ export default class AstBuilder
     // directives (abicoder / experimental); reject any other bare-identifier pragma as unsupported/typo'd.
     if (!ctx.pragmaName()) {
       const name = ctx.Identifier(0)?.getText();
-      if (name === 'abicoder' || name === 'experimental') return;
+      if (name === 'abicoder' || name === 'experimental' || name === 'satoshicontainer' || name === 'tokencontainer') {
+        return;
+      }
       throw new ParseError(
         `Unsupported pragma '${name}'. Only 'solidcash' is supported; `
         + 'enable evmCompat to accept \'solidity\'.',
@@ -5242,7 +5270,7 @@ export default class AstBuilder
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
     if (ctx.callOptions()) {
-      instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+      instantiation.callOptions = this.parseCallOptions(ctx.callOptions(), true);
     }
     return instantiation;
   }
@@ -5255,7 +5283,7 @@ export default class AstBuilder
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
-    instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+    instantiation.callOptions = this.parseCallOptions(ctx.callOptions(), true);
     return instantiation;
   }
 
@@ -8222,7 +8250,8 @@ export default class AstBuilder
     return node;
   }
 
-  private parseCallOptions(ctx: CallOptionsContext | undefined): CallOptions | undefined {
+  /** `instantiation` admits `code` and `template`, which name the code a `new` child runs. */
+  private parseCallOptions(ctx: CallOptionsContext | undefined, instantiation = false): CallOptions | undefined {
     if (!ctx) return undefined;
     const options: CallOptions = {};
     const seen = new Set<string>();
@@ -8233,22 +8262,33 @@ export default class AstBuilder
       }
       seen.add(name);
       const expr = this.visit(opt.expression()) as ExpressionNode;
+      if ((name === 'code' || name === 'template') && !instantiation) {
+        throw new ParseError(
+          `Call option '${name}' names the code a contract created with 'new' runs, and applies only to 'new'`,
+          Location.fromCtx(opt),
+        );
+      }
       if (name === 'value') {
         options.value = expr;
       } else if (name === 'salt') {
         options.salt = expr;
+      } else if (name === 'code') {
+        options.code = expr;
+      } else if (name === 'template') {
+        options.template = expr;
       } else if (name === 'gas') {
         options.gas = expr;
         const line = this.diagLine(opt.start?.line);
         emitCompilerWarning(`Warning: 'gas' call option is a no-op in SolidCash${line}. BCH does not use gas metering.`);
       } else {
         throw new ParseError(
-          `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`,
+          `Unknown call option '${name}'. Only 'value', 'salt', and 'gas' are supported`
+            + (instantiation ? ', and on new also \'code\' and \'template\'' : ''),
           Location.fromCtx(opt),
         );
       }
     }
-    return (options.value || options.gas || options.salt) ? options : undefined;
+    return (options.value || options.gas || options.salt || options.code || options.template) ? options : undefined;
   }
 
   // Legacy 0.6.x low-level-call option syntax `target.call.value(v)(data)` / `.call.gas(g)(data)`. Desugar to the
@@ -10719,6 +10759,11 @@ export default class AstBuilder
       if (method === 'transfer' && args.length !== 2) throw new ParseError('this.tokens[...].transfer() expects 2 arguments (to, amount)', loc);
       if (method === 'transferNft' && args.length !== 3) throw new ParseError('this.tokens[...].transferNft() expects 3 arguments (to, commitment, capability)', loc);
       const node = new TokenContainerMethodStatementNode(keyExpr, method, args); node.location = loc; return node;
+    }
+    if (method === 'payMinerFee' && recvCtx.getText() === 'this' && !this.currentContractFunctionNames.has(method)) {
+      if (callArgs.length !== 1) throw new ParseError('this.payMinerFee() expects 1 argument (amount)', loc);
+      const node = new MinerFeeStatementNode(callArgs[0]);
+      node.location = loc; return node;
     }
     if (method === 'transfer') {
       if (recvCtx.getText() === 'this' && !this.currentContractFunctionNames.has(method)) {

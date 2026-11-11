@@ -84,6 +84,16 @@ export interface ApplyOverridesHost {
   autoWireLibraryDelegatecalls(): void;
 }
 
+/**
+ * `.withValue()` on an entry that spends no satoshi container: nothing recreates a coin it could add to, so the value
+ * arrives as a new container coin, which `msg.value` counts as the container's growth. An entry that spends one adds
+ * the value to the coin it recreates.
+ */
+function addContainerDepositOutput(host: ApplyOverridesHost, builder: StatefulTransactionBuilder): void {
+  if (host.containerDepositAmount <= 0n || builder.hasLoadedSatoshiContainer()) return;
+  builder.addOutput({ to: host.parentContract!.getSatoshiContainerAddress(), amount: host.containerDepositAmount });
+}
+
 export function reApplyOverrides(
   host: ApplyOverridesHost,
   builder: StatefulTransactionBuilder,
@@ -94,6 +104,7 @@ export function reApplyOverrides(
   if (host.containerDepositAmount > 0n) builder.setContainerDepositAmount(host.containerDepositAmount);
   if (host.locktimeOverride !== undefined) builder.setLocktime(host.locktimeOverride);
   for (const { utxo, unlocker } of host.extraInputs) builder.addInput(utxo, unlocker);
+  addContainerDepositOutput(host, builder);
   for (const output of host.extraOutputs) builder.addOutput(output);
   builder.clearTokenContainerDeposits();
   for (const deposit of host.tokenContainerDeposits) {
@@ -252,6 +263,7 @@ export async function applyOverrides(
 
   if (host.locktimeOverride !== undefined) builder.setLocktime(host.locktimeOverride);
   for (const { utxo, unlocker } of host.extraInputs) builder.addInput(utxo, unlocker);
+  addContainerDepositOutput(host, builder);
   for (const output of host.extraOutputs) builder.addOutput(output);
   builder.clearTokenContainerDeposits();
   for (const { tokenContainerCategoryId, amount } of host.tokenContainerDeposits) {

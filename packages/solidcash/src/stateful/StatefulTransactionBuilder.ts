@@ -578,6 +578,7 @@ import {
   getLoopEntryOutputIndex as getLoopEntryOutputIndexImpl,
   type GetLoopEntryOutputIndexHost,
 } from './stb-get-loop-entry-output-index.js';
+import type Signer from '../Signer.js';
 import { measureAndFundCovenantFee, type MeasureAndFundCovenantFeeHost } from './stb-measure-and-fund-covenant-fee.js';
 import { type ReassertSendFinalBuilderHost } from './stb-reassert-send-final-builder.js';
 import { type PlaceSendChangeAndSidecarHost } from './stb-place-send-change-and-sidecar.js';
@@ -855,6 +856,7 @@ export class StatefulTransactionBuilder {
   private satoshiContainerUtxo?: UnlockableUtxo;
   private satoshiContainerLockingBytecode?: Uint8Array;
   private containerDepositAmount: bigint = 0n;
+  private feeSigner?: Signer;
   private pendingTokenContainerDeposits: Map<string, bigint> = new Map();
   private pendingTokenContainerTransfers: TokenContainerTransferData[] = [];
   private pendingTokenContainerTransferNfts: TokenContainerTransferNftData[] = [];
@@ -1290,6 +1292,11 @@ export class StatefulTransactionBuilder {
   }
 
   /** Set the change address for funder excess (returned after fee deduction). */
+  /** The signer that pays the fee and any `.withValue()` amount when the provider cannot mint a funder. */
+  setFeeSigner(signer: Signer): void {
+    this.feeSigner = signer;
+  }
+
   setFunderChangeAddress(address: Uint8Array): void {
     this.funderChangeAddress = address;
   }
@@ -2293,7 +2300,14 @@ export class StatefulTransactionBuilder {
       sidecarUtxo: this.sidecarUtxo,
       lateValueChunkOutputs: this.lateValueChunkOutputs,
       checkMinRelayFee: this._checkMinRelayFee,
+      feeSigner: this.feeSigner,
       accountingFunderUtxos: () => this._accountingFunderUtxos(),
+      adoptAccountingFunders: (funders) => {
+        const held = new Set(this.embeddedFunderUtxos.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));
+        for (const funder of funders) {
+          if (!held.has(`${funder.txid.toLowerCase()}:${funder.vout}`)) this.embeddedFunderUtxos.push(funder);
+        }
+      },
       computeMinFee: (size) => this.computeMinFee(size),
     };
   }
@@ -3379,6 +3393,8 @@ export class StatefulTransactionBuilder {
 
   private _tagEmptyP2sh32ImmutablesAsScid(builder: TransactionBuilder): void {
     const eventDests = new Set(this._emitDestinationIndices());
+    // A token container keeps what it holds: an empty immutable NFT on one is a coin's, not an anchor.
+    const containerLocks = new Set([...this.tokenContainerLockingBytecodes.values()].map((lock) => binToHex(lock)));
     for (const [index, output] of builder.outputs.entries()) {
       if (eventDests.has(index)) continue;
       if (output.token?.nft?.capability !== 'none') continue;
@@ -3389,6 +3405,7 @@ export class StatefulTransactionBuilder {
         ? output.to
         : addressToLockScript(output.to);
       if (lock.length < 2 || lock[0] !== 0xaa || lock[1] !== 0x20) continue;
+      if (containerLocks.has(binToHex(lock))) continue;
       output.token = {
         ...output.token,
         nft: { capability: 'none', commitment: '53434944' },
@@ -6859,7 +6876,8 @@ export class StatefulTransactionBuilder {
       .reduce((sum, t) => sum + t.amount, 0n)
       + this.runtimeLoopTransferOutputs
         .filter((transfer) => (transfer.kind ?? 'bch') === 'bch')
-        .reduce((sum, transfer) => sum + transfer.amount, 0n);
+        .reduce((sum, transfer) => sum + transfer.amount, 0n)
+      + BigInt(this.blockLayout?.minerFee ?? 0);
     return total >= this.satoshiContainerUtxo.satoshis + this.containerDepositAmount;
   }
 

@@ -8,6 +8,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   VALUE_INLINE_LIMIT,
   buildPushdataCommitment,
+  containerKeepsTokenless,
   containerMasterRetires,
   parsePushdataCommitment,
   hasDataNftIndexTags,
@@ -257,7 +258,8 @@ export async function upgradeStatefulContract<T extends Artifact>(
   }
 
   // The old covenant re-mints each container in its own form, so a replacement whose containers take the other form
-  // (the destroy arm, `containerMasterRetires`) would hold them at a lock its code never derives.
+  // (the destroy arm, `containerMasterRetires`, or the tokenless pin, `containerKeepsTokenless`) would hold them at a
+  // lock its code never derives.
   const oldAbi = oldContract.inner.artifact.abi;
   const migratesContainers = oldAbi.some((fn) => fn.blockLayout?.slots
     .some((slot) => slot.kind === 'satoshiContainer' || slot.kind === 'tokenContainer'));
@@ -266,6 +268,15 @@ export async function upgradeStatefulContract<T extends Artifact>(
       `Upgrade cannot migrate the containers of '${oldContract.name}' to '${newArtifact.contractName}': exactly one `
       + 'of them retires its master (a selfdestruct entry), so their container covenants differ.',
     );
+  }
+  for (const [kind, pragma] of [['satoshiContainer', 'satoshicontainer'], ['tokenContainer', 'tokencontainer']] as const) {
+    const migrates = oldAbi.some((fn) => fn.blockLayout?.slots.some((slot) => slot.kind === kind));
+    if (migrates && containerKeepsTokenless(oldAbi, kind) !== containerKeepsTokenless(newArtifact.abi, kind)) {
+      throw new Error(
+        `Upgrade cannot migrate the containers of '${oldContract.name}' to '${newArtifact.contractName}': exactly one `
+        + `of them is under \`pragma ${pragma} single\`, so their container covenants differ.`,
+      );
+    }
   }
 
   const previousLayout = oldContract.inner.artifact.stateLayout;

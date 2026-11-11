@@ -1,5 +1,6 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
 import { keccak_256 } from '@noble/hashes/sha3.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
@@ -32,6 +33,7 @@ import {
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
   buildSatoshiContainerCovenantScript,
+  containerKeepsTokenless,
   buildTokenContainerCovenantScript,
   containerMasterRetires,
   VALUE_CHUNK_DOMAIN_TAG,
@@ -217,6 +219,7 @@ import {
   EmitStatementNode,
   type EmitInfo,
   TransferStatementNode,
+  MinerFeeStatementNode,
   SelfdestructStatementNode,
   type TransferInfo,
   ReturnNode,
@@ -325,6 +328,7 @@ import {
   importedFileCaveat,
   UncheckedFunctionIdParameterError,
   UncheckedFunctionIdValueError,
+  SingleContainersError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -1527,6 +1531,16 @@ let validatorTemplateHashMemo: Uint8Array | undefined;
 function constantLockValidatorTemplateHash(): Uint8Array {
   validatorTemplateHashMemo ??= validatorTemplateHash(buildValidatorProgram());
   return validatorTemplateHashMemo;
+}
+
+/** Where a `new C{code, template}` value comes from, for the SDK: a deploy-function parameter it forwards, or not. */
+function deployOptionSource(
+  expression: ExpressionNode, parameterIndices: ReadonlyMap<string, number>,
+): { kind: 'parameter'; name: string; index: number } | { kind: 'expression' } {
+  if (expression instanceof IdentifierNode && parameterIndices.has(expression.name)) {
+    return { kind: 'parameter', name: expression.name, index: parameterIndices.get(expression.name)! };
+  }
+  return { kind: 'expression' };
 }
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
@@ -4083,6 +4097,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       blockSize: offset,
       slots,
       ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
+      ...(node.blockLayout.minerFee !== undefined && { minerFee: node.blockLayout.minerFee }),
+      ...(node.blockLayout.singleSatoshiContainer && { singleSatoshiContainer: true }),
+      ...(node.blockLayout.singleTokenContainer && { singleTokenContainer: true }),
     };
   }
 
@@ -6601,6 +6618,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       for (const key in current) {
         if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
+        // A deployed or referenced contract is embedded as compiled bytes, never run here, and its function ids
+        // are numbered in its own space. Reading them would mark this contract's function of the same id invoked
+        // and OP_DEFINE it beside its inline copy, a dead definition the size of the whole body.
+        if (key === 'referencedContract' || key === 'deployedStateVars') continue;
         // A resolved direct call already contributed its target above unless it folded away. Its callee
         // identifier is not a function-pointer value; scanning that identifier re-adds a folded target as a
         // dead OP_DEFINE. Keep scanning arguments, which may contain real function-pointer values.
@@ -9778,6 +9799,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         blockSize: blOffset,
         slots,
         ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
+        ...(node.blockLayout.minerFee !== undefined && { minerFee: node.blockLayout.minerFee }),
+        ...(node.blockLayout.singleSatoshiContainer && { singleSatoshiContainer: true }),
+        ...(node.blockLayout.singleTokenContainer && { singleTokenContainer: true }),
       };
     }
 
@@ -10865,7 +10889,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const hasEntryAccess = this.entrySlots.length > 0;
     const hasEntryWrites = this.pendingEntryWrites.size > 0;
     const hasEntryDeletes = this.pendingEntryDeletes.size > 0;
-    const hasTransfers = this.pendingTransfers.length > 0;
+    const hasTransfers = this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined;
+    const singlePragma = node.blockLayout?.singleSatoshiContainer ? 'satoshicontainer'
+      : node.blockLayout?.singleTokenContainer ? 'tokencontainer' : undefined;
+    if (singlePragma !== undefined && this.functionHasDelegatecall) {
+      throw new SingleContainersError(node, singlePragma, `cannot keep its containers through '${node.name}'`);
+    }
+    if (node.blockLayout?.singleSatoshiContainer && this.functionContainsRuntimeLoopBchTransfer(node)) {
+      throw new SingleContainersError(node, 'satoshicontainer', `cannot keep its containers through '${node.name}'`);
+    }
     const hasEventEmits = this.pendingEmits.length > 0;
     const hasRuntimeLoopEvents = this.functionContainsRuntimeLoopEvent(node);
     const hasRuntimeLoopTransfers = this.functionContainsRuntimeLoopTransfer(node);
@@ -11059,6 +11091,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         if (!this.functionHasDelegatecall && hasTokenContainerAccess) {
           this.emitTokenContainerIdentityVerification(node);
+          if (node.blockLayout?.singleTokenContainer && !isSelfdestruct) this.emitSingleTokenContainers(node);
         }
         if (!this.functionHasDelegatecall && hasTokenContainerTransfers) {
           this.emitTokenContainerTransferCovenantVerification(node);
@@ -22036,6 +22069,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();                                  // (sd_insum)
   }
 
+  /** Emits nothing here: its amount is a constant, and `emitValuePreservation` weighs it against the container. */
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    return node;
+  }
+
   visitTransferStatement(node: TransferStatementNode): Node {
     this.emitGraphStaticDirty(node);
     if (node.runtimeLoopTransfer) {
@@ -22650,6 +22688,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || primary.receiveDef === this.currentFunction;
   }
 
+  /**
+   * `new C{code: c}` / `new C{code: c, template: t}`: push the child's code `c`, having required `sha256(c)` to be the
+   * template - `t` when the source names one, else the sha256 of C's own compiled body, a constant. The value checked
+   * is the value pushed, so the code that enters the child's address is exactly the template's. Leaves one tracked
+   * value, the code.
+   */
+  private emitDeployCode(
+    node: InstantiationNode, compiledBody: Uint8Array, locationData: SingleLocationData,
+  ): void {
+    const { code, template } = node.callOptions!;
+    this.visit(code!); // [code]
+    this.emit(Op.OP_DUP, locationData); // [code, code]
+    this.pushToStack('(value)');
+    this.emit(Op.OP_SHA256, locationData); // [code, sha256(code)]
+    if (template) {
+      this.visit(template); // [code, sha256(code), template]
+    } else {
+      this.emit(sha256(compiledBody), locationData); // [code, sha256(code), sha256(body)]
+      this.pushToStack('(value)');
+    }
+    this.emit(Op.OP_EQUALVERIFY, locationData); // [code]
+    this.requires.push({
+      ip: this.getMostRecentInstructionPointer(),
+      line: node.location.start.line,
+      message: `new ${node.referencedContract!.name}{code}: the code does not hash to the template`,
+    });
+    this.popFromStack(2);
+  }
+
   private emitContractDeployment(node: InstantiationNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     const contract = node.referencedContract!;
@@ -22714,9 +22781,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitSelfLockingBytecode(locationData);
       this.pushToStack('(value)');
     } else if (bakedArguments === 0) {
-      this.emit(bodyBytecode!, locationData);
+      if (node.callOptions?.code) {
+        this.emitDeployCode(node, bodyBytecode!, locationData);
+        this.popFromStack();
+      } else {
+        this.emit(bodyBytecode!, locationData);
+      }
       this.pushToStack('(redeemScript)');
     } else {
+      // `new C{code: c}`: the checked code sits under the arguments until it follows their encoding.
+      const deployCode = node.callOptions?.code !== undefined;
+      if (deployCode) this.emitDeployCode(node, bodyBytecode!, locationData);
       // Evaluate constructor args
       if (bakesCtorArgs) {
         for (const arg of node.parameters) {
@@ -22733,9 +22808,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPushdataEncode(contract.parameters[bakedArguments - 1 - i].type, locationData);
         this.emit(Op.OP_CAT, locationData);
       }
-      // CAT with body bytecode
-      this.emit(bodyBytecode!, locationData);
-      this.emit(Op.OP_CAT, locationData);
+      if (deployCode) {
+        // [code, args] -> [args || code]
+        this.emit(Op.OP_SWAP, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack();
+      } else {
+        // CAT with body bytecode
+        this.emit(bodyBytecode!, locationData);
+        this.emit(Op.OP_CAT, locationData);
+      }
       // Stack management
       for (let i = 0; i < bakedArguments; i++) this.popFromStack();
       this.pushToStack('(redeemScript)');
@@ -22911,8 +22993,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(salt && { salt }),
         // Body Instantiation just embedded for address computation — pin it for the SDK so
         // deployFrom builds the child with the same redeem script (not a divergent standalone artifact).
-        // A stateful deploy is never a self-deploy, so the body is always embedded here.
+        // A stateful deploy is never a self-deploy, so the body is always embedded here. With `{code: c}` nothing is
+        // embedded: this is C's compiled body, the code a compiled template requires `c` to be.
         creationBytecode: binToHex(bodyBytecode!),
+        ...(node.callOptions?.code && {
+          code: deployOptionSource(node.callOptions.code, deployFnParamIndices),
+          template: node.callOptions.template
+            ? deployOptionSource(node.callOptions.template, deployFnParamIndices)
+            : { kind: 'compiled' as const, hash: binToHex(sha256(bodyBytecode!)) },
+        }),
         ...(node.hasFoldedChildCall && { hasFoldedChildCall: true }),
         childLayoutDigest: childStateLayoutDigest({
           variables: liveVars.map((state) => ({
@@ -55810,9 +55899,73 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     }
+    // The miner fee the source names is the one amount that leaves with no output. A constant, so a call loses at
+    // most its transfers and this, however many container coins a composer co-spends.
+    const minerFee = this.currentFunction.blockLayout?.minerFee;
+    if (minerFee !== undefined) {
+      this.emit(encodeInt(BigInt(minerFee)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.popFromStack(2);
+  }
+
+  /** This function spends the satoshi container that `pragma satoshicontainer single` keeps as one coin. */
+  private hasSingleSatoshiContainer(): boolean {
+    const layout = this.currentFunction.blockLayout;
+    return layout?.singleSatoshiContainer === true && layout.slots.some((slot) => slot.kind === 'satoshiContainer');
+  }
+
+  /**
+   * `pragma satoshicontainer single` and `pragma tokencontainer single`, for a container of `kind`: the input at a
+   * container's slot is identified as the container, so its lock is the container's. The output at the slot stays at
+   * that lock and no other output is at it, so a call recreates the one coin and opens no second: a filler, a new coin
+   * beside it or one made with nothing spent are all refused. Nothing
+   * runs when a coin is paid to the lock from outside, and such a coin holds nothing of the contract's. A satoshi
+   * container's slot holds no token: a token-bearing coin can be paid to its lock, and with it in the slot a call
+   * could leave the contract's satoshis on a coin that no longer reads as the container. Stack neutral.
+   */
+  private emitContainerStaysSingle(
+    kind: 'satoshiContainer' | 'tokenContainer', slot: number | undefined, loc: SingleLocationData,
+  ): void {
+    if (kind === 'satoshiContainer') {
+      this.emitBlockSlotIndex(kind, slot, loc);
+      this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_0, Op.OP_EQUALVERIFY], loc);
+    }
+    this.emitBlockSlotIndex(kind, slot, loc);
+    this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.pushToStack('(__container_lock)');
+    this.emitBlockSlotIndex(kind, slot, loc);
+    this.emit([Op.OP_OUTPUTBYTECODE, Op.OP_OVER, Op.OP_EQUALVERIFY], loc);
+    // [lock] -> [lock, outputsAtLock, 0]
+    this.emit([
+      Op.OP_0, Op.OP_TXOUTPUTCOUNT,
+      Op.OP_BEGIN,
+      Op.OP_1SUB, Op.OP_DUP, Op.OP_OUTPUTBYTECODE, encodeInt(3n), Op.OP_PICK, Op.OP_EQUAL,
+      Op.OP_ROT, Op.OP_ADD, Op.OP_SWAP,
+      Op.OP_DUP, Op.OP_NOT,
+      Op.OP_UNTIL,
+      Op.OP_DROP, Op.OP_1, Op.OP_NUMEQUALVERIFY, Op.OP_DROP,
+    ], loc);
+    this.popFromStack();
+  }
+
+  /**
+   * A token container's identity is checked only when its slot holds a token, since a first deposit may fill the slot
+   * with a pad. Under `pragma tokencontainer single` the deployment made it, so the slot must hold it.
+   */
+  private emitSingleTokenContainers(node: FunctionDefinitionNode): void {
+    const loc = { location: node.body.location, positionHint: PositionHint.END };
+    // The one coin stays exactly as it is, so no NFT can leave it.
+    if (this.pendingTokenContainerTransfers.some((transfer) => transfer.method === 'transferNft')) {
+      throw new SingleContainersError(node, 'tokencontainer', `cannot send an NFT from a container in '${node.name}'`);
+    }
+    for (let i = 0; i < this.tokenContainerSlots.length; i++) {
+      this.emitBlockSlotIndex('tokenContainer', i, loc);
+      this.emit([Op.OP_UTXOTOKENCATEGORY, Op.OP_SIZE, Op.OP_NIP, Op.OP_VERIFY], loc);
+      this.emitContainerStaysSingle('tokenContainer', i, loc);
+    }
   }
 
   /** `[]` -> slotScanResidue with `keep`, else `[]`: the input pass of emitSlotScans. */
@@ -57710,14 +57863,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // GRAPH_TRANSFER_REACHED below is the occurrence aggregate for precisely this route shape.
     // A framed master has no satoshi container: its value sends are the witness block's listed sends, and the
     // value accounting for them is the records' own floor rather than a co-spent container's balance.
-    if (!this.framedMaster && this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
-      && !this.graphTransferFlagActive) {
+    const minerFee = this.currentFunction.blockLayout?.minerFee;
+    const singleContainer = this.hasSingleSatoshiContainer();
+    const spendsContainer = minerFee !== undefined || singleContainer;
+    if (!this.framedMaster && (this.pendingTransfers.length > 0 || spendsContainer)
+      && this.currentFunction.blockLayout && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
-      // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot.
-      this.emitPendingTransferValueGuard(locationData);
+      // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot. A function
+      // that pays the miner fee, or holds the one container of `pragma satoshicontainer single`, always spends it.
+      if (!spendsContainer) this.emitPendingTransferValueGuard(locationData);
       this.emitSatoshiContainerIdentity(locationData);
+      if (singleContainer) this.emitContainerStaysSingle('satoshiContainer', undefined, locationData);
 
-      // containerInputSats <= containerOutputSats + sum(transferValues)
+      // containerInputSats <= containerOutputSats + sum(transferValues) + minerFee
       // Read satoshi container input value
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);
@@ -57751,12 +57909,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, locationData);
       }
 
+      // The miner fee has no output: this constant is the whole of what lets it leave the container.
+      if (minerFee !== undefined) {
+        this.emit(encodeInt(BigInt(minerFee)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+
       this.emit(Op.OP_LESSTHANOREQUAL, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
       this.emit(Op.OP_VERIFY, locationData);
       this.popFromStack();
-      this.emit(Op.OP_ENDIF, locationData);
+      if (!spendsContainer) this.emit(Op.OP_ENDIF, locationData);
     }
 
     // Graph handlers authenticate each transfer output inside their occurrence-specific subroutine frame. Sum
@@ -58924,9 +59088,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * The bound container covenants' destroy arm, read off the entries this contract's ABI publishes as the SDK reads
    * it (`containerMasterRetires`). Every lock this program binds takes the same form: a delegate and its proxy both
-   * keep the plain pin, and the SDK refuses an upgrade whose replacement takes the other form.
+   * keep the plain pin, and the SDK refuses an upgrade whose replacement takes the other form. The same goes for the
+   * tokenless pin of `pragma satoshicontainer single` and `pragma tokencontainer single`, each on the containers of
+   * its own `kind` (`containerKeepsTokenless`).
    */
-  private boundContainerOptions(): { masterRetires: boolean } {
+  private boundContainerOptions(
+    kind: 'satoshiContainer' | 'tokenContainer',
+  ): { masterRetires: boolean; keepsTokenless: boolean } {
     const contract = this.sourcePrimaryContract;
     if (contract === undefined) throw new Error('A bound container covenant needs the contract it is compiled for');
     const entries = [
@@ -58936,7 +59104,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ].map((fn) => ({ modifiers: fn.modifiers.map(String), lowLevelCalls: fn.lowLevelCalls }));
     // The ABI publishes a receive function as `payable` only.
     if (contract.receiveDef) entries.push({ modifiers: ['payable'], lowLevelCalls: contract.receiveDef.lowLevelCalls });
-    return { masterRetires: containerMasterRetires(entries) };
+    return {
+      masterRetires: containerMasterRetires(entries),
+      keepsTokenless: containerKeepsTokenless([{
+        blockLayout: {
+          singleSatoshiContainer: contract.singleSatoshiContainer, singleTokenContainer: contract.singleTokenContainer,
+        },
+      }], kind),
+    };
   }
 
   /** `[encLock, encCategory]` -> the satoshi container P2SH32 bound to that lock. */
@@ -58944,7 +59119,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
     const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(
-      categoryPlaceholder, lockPlaceholder, this.boundContainerOptions(),
+      categoryPlaceholder, lockPlaceholder, this.boundContainerOptions('satoshiContainer'),
     ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
@@ -58974,7 +59149,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
     const covenant = scriptToBytecode(buildTokenContainerCovenantScript(
-      master, token, lockPlaceholder, this.boundContainerOptions(),
+      master, token, lockPlaceholder, this.boundContainerOptions('tokenContainer'),
     ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },

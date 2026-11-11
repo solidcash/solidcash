@@ -78,6 +78,7 @@ import {
   EventDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   TokenContainerMethodStatementNode,
   BlockNode,
   StatementNode,
@@ -636,6 +637,14 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
     }
 
+    return node;
+  }
+
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
+    node.amount = this.visit(node.amount);
+    if (node.amount.type && !implicitlyCastable(node.amount.type, PrimitiveType.BIGINT)) {
+      throw new TransferArgumentTypeError(node, 'amount', node.amount.type, PrimitiveType.BIGINT);
+    }
     return node;
   }
 
@@ -2295,6 +2304,18 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (node.callOptions?.salt) {
         node.callOptions.salt = this.visit(node.callOptions.salt);
         expectBytes(node as any, node.callOptions.salt.type);
+      }
+      if (node.callOptions?.code) {
+        node.callOptions.code = this.visit(node.callOptions.code);
+        expectBytes(node as any, node.callOptions.code.type);
+      }
+      if (node.callOptions?.template) {
+        node.callOptions.template = this.visit(node.callOptions.template);
+        // The template is the sha256 the code must hash to: exactly 32 bytes, or the check could never pass.
+        const template = node.callOptions.template.type;
+        if (!(template instanceof BytesType) || template.bound !== 32) {
+          throw new UnsupportedTypeError(node as any, template, new BytesType(32));
+        }
       }
 
       node.type = new BytesType();

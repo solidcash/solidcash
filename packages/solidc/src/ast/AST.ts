@@ -103,6 +103,9 @@ export class SourceFileNode extends Node {
   // Explicit source-unit ABI coder selection. Undefined means the compiler/default coder; only explicit v1
   // requires the legacy ABI type restrictions.
   abiCoderVersion?: 'v1' | 'v2';
+  // `pragma satoshicontainer single;` and `pragma tokencontainer single;`, for every contract of this source unit.
+  singleSatoshiContainer = false;
+  singleTokenContainer = false;
   importedContracts: ContractNode[] = [];
   isLibrary: boolean = false;
   libraryName?: string;
@@ -164,6 +167,10 @@ export class ContractNode extends Node implements Named {
   // Evaluated `layout at <base>` slot (solc 0.8.29 custom storage layout). Shifts the EVM-visible slot of every
   // persistent state var (inherited ones included), not transient ones. Absent = slot 0.
   storageLayoutBase?: bigint;
+  // `pragma satoshicontainer single;`: a call keeps the satoshi container in one coin and opens no other.
+  singleSatoshiContainer: boolean = false;
+  // `pragma tokencontainer single;`: a call keeps each token container in one coin and opens no other.
+  singleTokenContainer: boolean = false;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.
@@ -612,6 +619,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
     // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
     creationBytecode?: string;
+    // `new C{code: c}`: where the child's code comes from and the sha256 it must have.
+    code?: import('@solidcash/utils').DeployCodeSourceAbi;
+    template?: import('@solidcash/utils').DeployTemplateAbi;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -2991,6 +3001,13 @@ export interface CallOptions {
   value?: ExpressionNode;
   gas?: ExpressionNode;
   salt?: ExpressionNode;
+  /**
+   * `new C{code: c}(...)`: the child's code is the bytes `c` rather than C's compiled body embedded in the creator.
+   * The creator requires `sha256(c)` to equal `template`, or C's own compiled code when no template is named.
+   */
+  code?: ExpressionNode;
+  /** `new C{code: c, template: t}(...)`: the sha256 of the code the child runs, chosen at run time. */
+  template?: ExpressionNode;
 }
 
 export class ExternalFunctionCallNode extends ExpressionNode {
@@ -3561,6 +3578,19 @@ export class TransferStatementNode extends StatementNode {
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitTransferStatement(this);
+  }
+}
+
+// `this.payMinerFee(amount)`: the contract's satoshi container may lose `amount` beyond what its sends pay, with no
+// output for it. That value is the transaction's input-output delta, so the contract pays the miner by omission. The
+// amount is a compile-time constant, so a composer can take no more of the contract's balance than its source names.
+export class MinerFeeStatementNode extends StatementNode {
+  constructor(public amount: ExpressionNode) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitMinerFeeStatement(this);
   }
 }
 

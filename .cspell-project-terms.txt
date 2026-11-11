@@ -805,6 +805,10 @@ Ppush
 pragmaabicoder
 pragmaexperimental
 pragmaexperimentalsolidity
+pragmasatoshicontainer
+pragmasatoshicontainersingle
+pragmatokencontainer
+pragmatokencontainersingle
 Prealloc
 preargfix
 precendence
@@ -963,6 +967,7 @@ rvalue
 rwidth
 safecast
 SATLBC
+satoshicontainer
 scal
 scalarmul
 SCID
@@ -1098,6 +1103,7 @@ timepoints
 timetravel
 tkey
 TOALT
+tokencontainer
 tokenful
 tokenless
 tokk

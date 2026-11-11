@@ -458,6 +458,23 @@ export class ConditionalDeployError extends SolidCashError {
   }
 }
 
+export class UnfoldableChildConstructorError extends SolidCashError {
+  constructor(public node: InstantiationNode, contractName: string) {
+    super(node,
+      `Cannot deploy '${contractName}' with new: its constructor does not fold into the genesis the deploying `
+      + 'contract verifies. The child would be created with type defaults in the fields that constructor sets. '
+      + 'Only straight-line local and state assignments, branches over them and requires fold; a loop or a call '
+      + 'to a function that is not inlined does not. Assign those fields from constants or constructor '
+      + 'arguments, for example a precomputed constant in place of a value a loop builds');
+  }
+}
+
+export class DeployCodeError extends SolidCashError {
+  constructor(public node: InstantiationNode, message: string) {
+    super(node, message);
+  }
+}
+
 export class DirectHeterogeneousDeployError extends SolidCashError {
   constructor(public node: InstantiationNode) {
     super(node,
@@ -1281,6 +1298,19 @@ export class NamedArgumentError extends SolidCashError {}
 export class TransferArgumentTypeError extends TypeError {
   constructor(node: Node, argName: string, actual?: Type, expected?: Type) {
     super(node, actual, expected, `this.transfer() argument '${argName}' has type '${actual}' but expected '${expected}'`);
+  }
+}
+
+/** A `this.payMinerFee` the compiler cannot honour, named by what is wrong with it. */
+export class MinerFeeStatementError extends SolidCashError {
+  constructor(node: Node, reason: string) {
+    super(node, `this.payMinerFee() ${reason}`);
+  }
+}
+
+export class SingleContainersError extends SolidCashError {
+  constructor(node: Node, pragma: 'satoshicontainer' | 'tokencontainer', reason: string) {
+    super(node, `pragma ${pragma} single ${reason}`);
   }
 }
 

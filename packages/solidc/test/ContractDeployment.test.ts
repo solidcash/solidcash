@@ -528,6 +528,27 @@ describe('chained sibling deployment (C deploys B, B deploys A)', () => {
       }
       contract B {
           A a;
+          function make() public { a = new A(); }
+          function getX() public view returns (uint) { return a.getX(); }
+      }
+      contract C {
+          B b;
+          function make() public { b = new B(); }
+          function f() public view { assert(b.getX() == 0); }
+      }`;
+    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
+  });
+
+  // A constructor that deploys does not fold into its own genesis: B would be created with `a` at its default and no
+  // A behind it. The chain above deploys from functions instead.
+  it('refuses a chain whose middle contract deploys in its constructor', () => {
+    const src = `
+      contract A {
+          uint x;
+          function getX() public view returns (uint) { return x; }
+      }
+      contract B {
+          A a;
           constructor() { a = new A(); }
           function getX() public view returns (uint) { return a.getX(); }
       }

@@ -965,6 +965,8 @@ export interface DeployOptions {
   /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
+  /** Fungible token coins the genesis moves whole into their containers, one coin per category. */
+  tokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
   /**
@@ -14847,8 +14849,8 @@ export class StatefulFunctionCall {
 
   /**
    * Deposit satoshis into the satoshi container (positive msg.value).
-   * Used with payable functions to increase the container balance.
-   * The extra sats are sourced from the fee funder.
+   * Used with payable functions to increase the container balance. An entry that spends no container coin adds a
+   * new one. The extra sats are sourced from the fee funder.
    */
   withValue(amount: bigint): this {
     if (amount < 0n) throw new Error('Call value cannot be negative.');
@@ -15167,7 +15169,7 @@ export class StatefulFunctionCall {
   }
 
   async build(): Promise<TransactionBuilder> {
-    return buildStatefulFunctionCallImpl({
+    const builder = await buildStatefulFunctionCallImpl({
       compilerRoute: this.compilerRoute,
       functionName: this.functionName,
       parentContract: this.parentContract,
@@ -15185,6 +15187,10 @@ export class StatefulFunctionCall {
       recursivePreflightHasSignatures: () => this._recursivePreflightHasSignatures(),
       preflightRecursiveBuilder: (builder) => this._preflightRecursiveBuilder(builder),
     });
+    // Whoever sends a built call sends this builder, so the call's fee caps go with it (the default one, or
+    // `.withMaxFee`). A composition reads a participant's builder and never sends it.
+    if ('enforceFeeCaps' in builder) (builder as { enforceFeeCaps: boolean }).enforceFeeCaps = true;
+    return builder;
   }
 
   /** In-flight logical transaction of this call object. See {@link send}. */

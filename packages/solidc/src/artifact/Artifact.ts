@@ -4193,6 +4193,8 @@ function buildFunctionAbiMetadata(
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
         ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
+        ...(dt.code && { code: dt.code }),
+        ...(dt.template && { template: dt.template }),
         ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),
         ...(dt.childLayoutDigest && { childLayoutDigest: dt.childLayoutDigest }),
         ...(dt.genesisState && { genesisState: dt.genesisState }),

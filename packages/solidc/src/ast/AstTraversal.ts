@@ -74,6 +74,7 @@ import {
   ErrorDefinitionNode,
   EmitStatementNode,
   TransferStatementNode,
+  MinerFeeStatementNode,
   SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   ReturnNode,
@@ -323,6 +324,12 @@ export default class AstTraversal extends AstVisitor<Node> {
     if (node.callOptions?.salt) {
       node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
     }
+    if (node.callOptions?.code) {
+      node.callOptions.code = this.visit(node.callOptions.code) as ExpressionNode;
+    }
+    if (node.callOptions?.template) {
+      node.callOptions.template = this.visit(node.callOptions.template) as ExpressionNode;
+    }
     return node;
   }
 
@@ -550,6 +557,11 @@ export default class AstTraversal extends AstVisitor<Node> {
 
   visitTransferStatement(node: TransferStatementNode): Node {
     node.lockingBytecode = this.visit(node.lockingBytecode);
+    node.amount = this.visit(node.amount);
+    return node;
+  }
+
+  visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
     node.amount = this.visit(node.amount);
     return node;
   }

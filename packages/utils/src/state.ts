@@ -2394,6 +2394,30 @@ export function isComputedBlockhashKey(key: string): boolean {
   return key.startsWith(COMPUTED_BLOCKHASH_PREFIX);
 }
 
+/** The two forms a direct contract's bound containers can take, derived from its ABI by the compiler and the SDK. */
+export interface ContainerCovenantOptions {
+  /** The destroy arm of `directMasterOutputPin` (`containerMasterRetires`). */
+  readonly masterRetires?: boolean;
+  /** A tokenless coin stays tokenless, and a token container's coin stays as it is (`containerKeepsTokenless`). */
+  readonly keepsTokenless?: boolean;
+}
+
+/**
+ * Whether a direct contract's bound containers of `kind` refuse a token on a tokenless coin and keep a token coin as
+ * it is: `pragma satoshicontainer single` for the satoshi container, `pragma tokencontainer single` for the token
+ * containers, whose one coin must keep reading as a container and stay able to be recreated. A pragma is on every
+ * entry that has a block layout, so an ABI states it.
+ */
+export function containerKeepsTokenless(
+  abi: readonly {
+    readonly blockLayout?: { readonly singleSatoshiContainer?: boolean; readonly singleTokenContainer?: boolean };
+  }[],
+  kind: 'satoshiContainer' | 'tokenContainer',
+): boolean {
+  const flag = kind === 'satoshiContainer' ? 'singleSatoshiContainer' : 'singleTokenContainer';
+  return abi.some((entry) => entry.blockLayout?.[flag] === true);
+}
+
 /**
  * Whether a direct contract's bound containers carry the destroy arm of `directMasterOutputPin`: only a selfdestruct
  * entry spends a master without recreating one. A delegate binds its proxy's containers without seeing the proxy's
@@ -2421,14 +2445,35 @@ function masterCategoryRead(retires: boolean): Script {
  * (the covenant built with the contract's 35-byte lock).
  *
  * The output at this input keeps the container lock, or it is a filler with no token (`fillerLockingBytecode`). A
- * kept lock also keeps the token category. The satoshi and fungible amounts are the master's to account: an
+ * kept lock also keeps the token category of a coin that has one. Under `tokenless`, a coin that has none keeps none:
+ * `pragma satoshicontainer single` and `pragma tokencontainer single` keep a container in one coin, and a token on it
+ * would stop it reading as a container for good. The satoshi and fungible amounts are the master's to account: an
  * authorized transfer debits them, a call that names no transfer leaves them on the lock, and a filler's satoshis
- * are no kept balance. A master that can retire pins it only while
+ * are no kept balance. Under `keepsCoin` a kept token coin stays exactly the coin it was, at the same or a higher
+ * value: a call that names no container checks only its lock, category and amount, a coin is recreated with the
+ * satoshis it holds while the dust floor rises with its amount, and an NFT hung on it can stop it paying (a minting
+ * one brings the mint bound). No script can see an immutable NFT with an empty commitment beside a fungible amount,
+ * so that one the SDK has to carry. A master that can retire pins it only while
  * an output carries its minting NFT: a transaction that recreates no master is the destroy path (selfdestruct), whose
  * covenant accounts for the freed value and whose one output leaves none at this index. The category-only covenant is
  * the framed container; its change is not at this input's index, so this pin is not part of that script.
  */
-function directMasterOutputPin(retires: boolean): Script {
+function directMasterOutputPin(retires: boolean, tokenless: boolean, keepsCoin = false): Script {
+  const keep: Script = keepsCoin ? [
+    Op.OP_DUP, Op.OP_OUTPUTVALUE, Op.OP_OVER, Op.OP_UTXOVALUE, Op.OP_GREATERTHANOREQUAL, Op.OP_VERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OVER, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_EQUALVERIFY,
+    Op.OP_DUP, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_SWAP, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY,
+  ] : [
+    Op.OP_DUP,
+    Op.OP_OUTPUTTOKENCATEGORY,
+    // UTXOTOKENCATEGORY returns the 32-byte category plus the 1-byte capability. The capability legitimately
+    // changes when the master spends an NFT out of the container, so the pin compares the category ID only.
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
+    Op.OP_SWAP,
+    Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
+    Op.OP_EQUALVERIFY,
+  ];
   const pin: Script = [
     Op.OP_INPUTINDEX,
     Op.OP_DUP,
@@ -2442,17 +2487,9 @@ function directMasterOutputPin(retires: boolean): Script {
     Op.OP_SIZE,
     Op.OP_NIP,
     Op.OP_IF,
-    Op.OP_DUP,
-    Op.OP_OUTPUTTOKENCATEGORY,
-    // UTXOTOKENCATEGORY returns the 32-byte category plus the 1-byte capability. The capability legitimately
-    // changes when the master spends an NFT out of the container, so the pin compares the category ID only.
-    encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
-    Op.OP_SWAP,
-    Op.OP_UTXOTOKENCATEGORY,
-    encodeInt(32n), Op.OP_SPLIT, Op.OP_DROP,
-    Op.OP_EQUALVERIFY,
+    ...keep,
     Op.OP_ELSE,
-    Op.OP_DROP,
+    ...(tokenless ? [Op.OP_OUTPUTTOKENCATEGORY, encodeInt(0n), Op.OP_EQUALVERIFY] : [Op.OP_DROP]),
     Op.OP_ENDIF,
     Op.OP_ELSE,
     // A drained container leaves a filler at its index. OUTPUTBYTECODE consumes the index, so keep a copy.
@@ -2540,12 +2577,14 @@ function accountedTokenContainerKeep(): Script {
  * @param tokenContainerCategoryId - 32-byte token container's token category (salt for unique address)
  * @param options.accounted - without a master lock, the accounted framed container (`accountedTokenContainerKeep`)
  * @param options.masterRetires - with a master lock, the destroy arm (`containerMasterRetires`)
+ * @param options.keepsTokenless - with a master lock, a tokenless coin stays tokenless and a token coin stays as it
+ * is (`containerKeepsTokenless`)
  */
 export function buildTokenContainerCovenantScript(
   categoryId: Uint8Array,
   tokenContainerCategoryId: Uint8Array,
   masterLock?: Uint8Array,
-  options: { readonly accounted?: boolean; readonly masterRetires?: boolean } = {},
+  options: ContainerCovenantOptions & { readonly accounted?: boolean } = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
   const retires = masterLock !== undefined && options.masterRetires === true;
@@ -2555,7 +2594,8 @@ export function buildTokenContainerCovenantScript(
     ...bindMintingAuthorityLock(masterLock),
     ...masterCategoryRead(retires),
     encodeInt(32n), Op.OP_SPLIT, Op.OP_2, Op.OP_EQUALVERIFY, catInternal, Op.OP_EQUALVERIFY,
-    ...(masterLock !== undefined ? directMasterOutputPin(retires)
+    ...(masterLock !== undefined
+      ? directMasterOutputPin(retires, options.keepsTokenless === true, options.keepsTokenless === true)
       : options.accounted === true ? accountedTokenContainerKeep() : framedTokenContainerKeep()),
     // Salt for unique address per token container category
     tokenContainerCategoryId,
@@ -2590,9 +2630,10 @@ export function buildTokenContainerCovenantBytecode(
  *
  * @param categoryId - 32-byte master contract's token category (also used as salt for unique address)
  * @param options.masterRetires - with a master lock, the destroy arm (`containerMasterRetires`)
+ * @param options.keepsTokenless - with a master lock, a tokenless coin stays tokenless (`containerKeepsTokenless`)
  */
 export function buildSatoshiContainerCovenantScript(
-  categoryId: Uint8Array, masterLock?: Uint8Array, options: { readonly masterRetires?: boolean } = {},
+  categoryId: Uint8Array, masterLock?: Uint8Array, options: ContainerCovenantOptions = {},
 ): Script {
   const catInternal = categoryId.slice().reverse();
   const retires = masterLock !== undefined && options.masterRetires === true;
@@ -2608,7 +2649,7 @@ export function buildSatoshiContainerCovenantScript(
     Op.OP_EQUALVERIFY, // minting capability
     catInternal,
     Op.OP_EQUALVERIFY, // expected category
-    ...(masterLock !== undefined ? directMasterOutputPin(retires) : []),
+    ...(masterLock !== undefined ? directMasterOutputPin(retires, options.keepsTokenless === true) : []),
     Op.OP_ELSE,
     // === Merge path (flag=0): output preserves locking bytecode, value, token category, and FT amount ===
     Op.OP_DUP, // preserve mergeOutputIndex for value check

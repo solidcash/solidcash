@@ -564,6 +564,13 @@ require(this.outState.balance >= floor);     // satoshi-container outputs of thi
 
 - `this.balance` is the contract's own BCH (fund it at deploy with SDK `initialBalance`). `addr.balance` sums this
   transaction's inputs locked to `addr`, not a chain-wide balance; prefer `this.balance` to `address(this).balance`.
+- `this.payMinerFee(FEE);` (a positive compile-time constant, once, at the top level of a public entry) lets the entry
+  take `FEE` more out of the satoshi container with no output for it: the contract pays the miner by omission, and
+  the caller needs no coin. Refused in framed composition.
+- `pragma satoshicontainer single;` and `pragma tokencontainer single;` keep one coin per container for every contract
+  in the file. The deployment opens it (`initialBalance`, `tokenContainers`); each call spends it, recreates it in
+  place and cannot drain it. Refused in framed contracts, through `upgrade` and in delegatecalling functions; such a
+  contract gets no message-bus route.
 
 ### Global Variables
 
@@ -798,6 +805,9 @@ contract Factory(pubkey admin) {
 Child c = new Child(admin);                    // keep a typed handle
 new Child{salt: salt}(admin);                  // deterministic address (CREATE2 analogue)
 new Child{value: amount}(admin);               // fund the child with satoshis
+new Child{code: code}(admin);                  // the child runs `code`; sha256(code) must be Child's body hash
+new Child{code: code, template: t}(admin);     // any code hashing to t; t a constant, constructor arg, state, or a
+                                               // parameter never reassigned and emitted on every path
 c.initialize(amount, owner);                   // straight-line initializer right after `new`: folded into genesis
 bytes code = type(Child).creationCode;         // redeem script (runtimeCode alias); EVM CREATE2 math does not apply
 ```

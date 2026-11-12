@@ -7735,12 +7735,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const index = this.getStackIndex('__internal__genesisCall', true);
     if (index < 0) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    // An ordinary call answers no constructor: the parameter is empty. The tagged form and the (X, 0) and value
-    // checks that go with it arrive with Deploy<C> (B6.5's remaining half), which is the only tag supplier.
+    const taggedSize = node.usesMsgSender === true ? 46 : 36;
     this.emitPickAt(index, loc);
+    this.pushToStack('(genesis)');
+    // Size is 0 (an ordinary call) or the tag's size.
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(BigInt(taggedSize)), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_BOOLOR, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    // A tag names (X, 0) of its g_in. X is the first 32 bytes; slot and g_in follow.
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);                                  // [genesis]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);                                 // [genesis, X, rest]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_DROP, loc);                                  // [rest, X]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_SPLIT, loc);                                 // [rest, X, slot, rest2]
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_SWAP, loc);                                  // [rest, rest2, X]
+    this.emit(Op.OP_ROT, loc);
+    this.emit(Op.OP_DROP, loc);                                  // [rest2, X]
+    // A sender-reading entry's tag continues with g_out, a_off, a_len, code_off and code_len; g_in is the first
+    // two bytes of that remainder.
+    if (taggedSize === 46) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(2n), loc);
+      this.emit(Op.OP_SPLIT, loc);                               // [rest2, X, g_in, tail]
+      this.emit(Op.OP_NIP, loc);                                 // [rest2, X, g_in]
+      this.emit(Op.OP_SWAP, loc);                                // [rest2, g_in, X]
+      this.emit(Op.OP_ROT, loc);
+      this.emit(Op.OP_DROP, loc);                                // [g_in, X]
+    }
+    this.emit(Op.OP_SWAP, loc);                                  // [X, g_in]
+    this.emit(new Uint8Array([0x00]), loc);                      // unsigned: append the sign byte
+    this.emit(Op.OP_CAT, loc);
+    this.emit(Op.OP_BIN2NUM, loc);                               // [X, g_in]
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_OUTPOINTTXHASH, loc);                        // [X, g_in, txid]
+    this.emit(Op.OP_ROT, loc);                                   // [g_in, txid, X]
+    this.emit(Op.OP_EQUALVERIFY, loc);                           // [g_in]
+    this.emit(Op.OP_OUTPOINTINDEX, loc);
+    this.emit(Op.OP_0, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.popFromStack();
   }
 
   private emitExactStackCheck(node: FunctionDefinitionNode): void {
@@ -51719,10 +51772,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUM2BIN, loc);
     } : undefined;
     const prefix = this.getStackIndex(CALL_RECORD_PREFIX, true) >= 0 ? CALL_RECORD_PREFIX : undefined;
-    // The tagged form (ff ff ‖ tag ‖ selector ‖ arguments) is B6.5's next step: Deploy<C> is the only caller that
-    // supplies a tag, and it is not built yet. Until then an entry requires the empty form, so a tag can never
-    // settle an untagged record.
-    const genesis = false;
+    const genesis = this.getStackIndex('__internal__genesisCall', true) >= 0;
+    if (genesis) {
+      // The preimage starts with `0000 ‖ selector` for an ordinary call, or `ffff ‖ tag ‖ selector` for one that
+      // answers a constructor. The compile may already hold the first form as CALL_RECORD_PREFIX; take that item
+      // over rather than leave a second prefix on the stack.
+      const existing = this.getStackIndex(CALL_RECORD_PREFIX, true);
+      if (existing >= 0) {
+        this.emitRollAt(existing, loc);
+        this.removeFromStack(existing);
+      } else {
+        this.emit(new Uint8Array([0x00, 0x00]), loc);
+        this.emit(this.callRecordSelector(node), loc);
+        this.emit(Op.OP_CAT, loc);
+      }
+      this.emitPickAt(this.getStackIndex('__internal__genesisCall'), loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);                                  // the genesis copy
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);                                  // the genesis copy
+      this.emit(Op.OP_DROP, loc);                                  // the empty-form header
+      this.emit(new Uint8Array([0xff, 0xff]), loc);
+      this.emitPickAt(this.getStackIndex('__internal__genesisCall'), loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(this.callRecordSelector(node), loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      this.pushToStack('__internal__genesisHeader');
+    }
     this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
       (index) => {
         this.emitPickAt(this.getStackIndex(visible[index]!.name), loc);

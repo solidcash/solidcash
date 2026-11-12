@@ -11627,8 +11627,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     this.emitGenesisMasterPin(node);
     this.emitGenesisCensus();
-    this.emitGenesisCalleeListCheck();
     if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
+    if ((node.externalCalls?.length ?? 0) > 0) this.emitExternalCallVerification(node);
+    this.emitGenesisCalleeListCheck();
     if (this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined) {
       this.emitTransferCovenantVerification(node);
     }
@@ -51663,6 +51664,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
     emitLateOrdinal?: () => void, own?: { prefix?: string; selectorAfterPrefix?: boolean },
+    prefixStack?: string,
   ): void {
     if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
@@ -51671,6 +51673,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, loc);
     } else if (emitLateOrdinal) {
       this.emit(selector, loc);
+    } else if (prefixStack !== undefined) {
+      const prefixIdx = this.getStackIndex(prefixStack);
+      this.emitRollAt(prefixIdx, loc);
+      this.removeFromStack(prefixIdx);
+      this.emit(selector, loc);
+      this.emit(Op.OP_CAT, loc);
     } else if (own?.prefix !== undefined) {
       const prefixIdx = this.getStackIndex(own.prefix);
       this.emitRollAt(prefixIdx, loc);
@@ -51807,12 +51815,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_2, loc);
       this.emit(Op.OP_NUM2BIN, loc);
     };
+    let genesisPrefix: string | undefined;
+    if (this.currentFunction?.genesisMode === true) {
+      this.emit(new Uint8Array([0xff, 0xff]), loc);
+      this.pushToStack('(genesis_prefix)');
+      this.emitPickTrackedFromBottom('(gen_x)', loc);
+      this.pushToStack('(tag_x)');
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(genesis_prefix)');
+      this.emit(Uint8Array.of(slot.slotIndex & 0xff, (slot.slotIndex >> 8) & 0xff), loc);
+      this.pushToStack('(tag_slot)');
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(genesis_prefix)');
+      genesisPrefix = '(genesis_prefix)';
+    }
     this.emitCallRecordDigest(selector, ordinal !== undefined && 'ordinal' in ordinal ? ordinal.ordinal : 0,
       digested.map((index) => declared[index]), (position) => {
         const argument = cloneNode(node.parameters[digested[position]!]!) as ExpressionNode;
         this.markArrayArgumentBlobEncoded(argument);
         this.visit(argument);
-      }, loc, undefined, emitLateOrdinal);
+      }, loc, undefined, emitLateOrdinal, undefined, genesisPrefix);
     return true;
   }
 

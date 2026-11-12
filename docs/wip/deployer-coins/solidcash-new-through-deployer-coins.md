@@ -4296,7 +4296,7 @@ it) never takes today's genesis (A12).
       an `unsafe` entry costs a contract's callers.
 - [x] **B12.4** Search the repository for a user-facing deployment guide
       (`grep -rl deployStatefulContract --include=*.md`), and add the A12 note there too.
-- [ ] **B12.5** Commit: "docs: deployer coins".
+- [x] **B12.5** Commit: "docs: deployer coins".
 
 ## B13. Commits and handoff
 

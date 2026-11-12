@@ -3623,8 +3623,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census, the callee-list size
       check, the tagged caller digest of A7, the ordinary external-call verification, the per-entry callee-list
       binding and the executed-slot mask (on the alternate stack) are in, and the record commitment settlement runs.
-      The per-slot carrier bindings and a VM case with s > 0 (which needs a callee that publishes a tagged record)
-      are not built.
+      The per-slot carrier bindings and a VM case with s > 0 are not built. A hand-built callee carrier now
+      passes token validation and the callee-category check, but create still fails an OP_VERIFY; the remaining
+      gap is the callee's inline result encoding after the 31-byte digest.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,

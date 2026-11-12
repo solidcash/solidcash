@@ -1220,6 +1220,14 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     ? 'required'
     : options.messageBus === false ? 'disabled'
       : options.messageBus === true ? 'enabled' : 'auto';
+  // B6.2: `callRecords: 'all'` is a direct-convention option. A framed program and a message-bus program bind a
+  // callee's result in their own way, and a void entry there has no result to bind.
+  if (options.callRecords === 'all' && (compositionConvention === 'framed'
+    || messageBusMode === 'enabled' || messageBusMode === 'required')) {
+    throw new Error("callRecords: 'all' is not available on a "
+      + `${compositionConvention === 'framed' ? 'framed' : 'message-bus'} compile: that convention binds a `
+      + "callee's result in its own way, and a void entry has no result to bind");
+  }
   // Debug switch for the whole run: emitting the code generator's bytecode verbatim makes an instruction pointer
   // name the exact source line that produced it, which is what a VM-failure investigation needs. An explicit
   // option still wins, and the resolved value lands in the artifact cache key.

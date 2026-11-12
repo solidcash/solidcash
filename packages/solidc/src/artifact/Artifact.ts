@@ -4722,6 +4722,7 @@ export function generateArtifact(
     || contract.deploysWithValue
     || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
+  const directCompile = compilerOptions.composition !== 'framed';
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
     ...(func.mappingArrayPagination && { mappingArrayPagination: func.mappingArrayPagination }),
@@ -5047,6 +5048,9 @@ export function generateArtifact(
     bytecode,
     source,
     debug,
+    ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
+    ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),
+    ...(contract.recordSound !== undefined && { recordSound: contract.recordSound }),
     ...(functionBodies && { functionBodies }),
     ...(fingerprint && { fingerprint }),
     ...(stateLayout && { stateLayout }),

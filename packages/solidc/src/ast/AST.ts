@@ -171,6 +171,12 @@ export class ContractNode extends Node implements Named {
   singleSatoshiContainer: boolean = false;
   // `pragma tokencontainer single;`: a call keeps each token container in one coin and opens no other.
   singleTokenContainer: boolean = false;
+  /** Set by code generation: the contract was compiled as record-sound (A7, B6.4). */
+  recordSound?: boolean;
+  /** Set by code generation: the flag byte of the code marker, 0 when the contract carries none. */
+  codeMarkerFlags?: number;
+  /** Set by code generation: this contract creates a sender-reading child, so it is a marked creator (A6). */
+  createsSenderReadingChildren?: boolean;
   isAbstract: boolean = false;
   // Set when this contract was lowered from a `library` (docs/library-contracts.md). Surfaced as the artifact
   // `isLibrary` flag; the deployed-library codegen (self-preservation) and SDK co-spend key on it.

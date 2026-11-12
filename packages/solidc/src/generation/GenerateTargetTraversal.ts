@@ -1,4 +1,5 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
+import { applyCodeTail } from './CodeTail.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
@@ -320,7 +321,7 @@ import {
   ChainedEntryElementReadError, ConditionalDeployError, DirectHeterogeneousDeployError,
   NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
-  BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
+  BlockLayoutUnavailableError, CallRecordsOptionError, StackVariableUnavailableError, SolidcDiagnosticError,
   UnsupportedEvmAbiEncodingError, UnpinnedExternalCallTargetError, LogicalSenderUnavailableError,
   DirectStaleReadError, DirectInvokedStaleReadError, DirectIndirectStaleReadError, ConstructorStaleReadError,
   UnpublishableLoopGuardError,
@@ -4459,7 +4460,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // push. A master that stands alone reserves no such slot, so it keeps the program it had.
     if (!this.framedReservesValidatorHash) this.poolTopLevelConstants(node);
 
+    // O4 (B6.4): the code tail, after optimisation and after any sharing pass that prepends definitions.
+    if (!this.framedMaster) {
+      const contract = node.contract;
+      const tailInfo = this.codeTailFlags(contract);
+      const tail = tailInfo.flags;
+      if (tail !== 0) contract.codeMarkerFlags = tail;
+      if (tailInfo.recordSound !== undefined) contract.recordSound = tailInfo.recordSound;
+      const loc: SingleLocationData = { location: contract.location, positionHint: PositionHint.END };
+      const before = scriptToBytecode(this.output).length;
+      const tailed = applyCodeTail([...scriptToBytecode(this.output)], { flags: tail });
+      this.output = tailed;
+      for (let i = before; i < tailed.length; i += 1) this.locationData.push(loc);
+    }
+
     return node;
+  }
+
+  /**
+   * B6.4: the marker flags the finished code carries, or `undefined` when the contract gets no tail treatment.
+   * A contract is record-sound when it has a record-publishing entry and every arm but `__construct` is an ordinary
+   * entry, `receive`, or the multi-call entry. A marked creator (B8.7) sets bit 0; that flag is added there.
+   */
+  private codeTailFlags(node: ContractNode): { flags: number; recordSound?: boolean } {
+    const delegatecall = (fn: FunctionDefinitionNode): boolean => (fn.lowLevelCalls ?? [])
+      .some((call) => call.callMode === 'delegatecall');
+    const ordinary = (fn: FunctionDefinitionNode): boolean => fn.isEntryPoint === true
+      && !fn.graphEmissionHandler && !this.isCompilerMessageBusRoute(fn) && !delegatecall(fn)
+      && !fn.modifiers.some((modifier) => modifier === FunctionModifier.UNSAFE
+        || modifier === FunctionModifier.SPLIT || modifier === FunctionModifier.MERGE
+        || modifier === FunctionModifier.DELEGATE);
+    const publishing = node.functions.some((fn) => ordinary(fn)
+      && (fn.returnTypes.length > 0 || this.compilerOptions.genesisCalls !== false));
+    const armsSound = node.fallbackDef === undefined
+      && node.functions.every((fn) => fn.isEntryPoint !== true || ordinary(fn)
+        || fn.nativeSelfBatchDispatcher === true)
+      && (node.receiveDef === undefined || !delegatecall(node.receiveDef));
+    const recordSound = publishing ? armsSound : undefined;
+    const markedCreator = node.createsSenderReadingChildren === true;
+    const flags = (recordSound === true ? 2 : 0) | (markedCreator ? 1 : 0);
+    return { flags, recordSound };
   }
 
   /**
@@ -5610,6 +5650,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    if (this.compilerOptions.callRecords === 'all'
+      && (this.framedMaster || ['enabled', 'required'].includes(
+        (this.compilerOptions as { __messageBusMode?: string }).__messageBusMode ?? ''))) {
+      throw new CallRecordsOptionError(node, this.framedMaster ? 'framed' : 'message-bus');
+    }
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
@@ -51186,6 +51231,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * non-frame tail with an empty result blob.
    */
   private emitUniversalVoidCallRecordSettlement(loc: SingleLocationData): void {
+    if (this.compilerOptions.callRecords === 'all' && this.currentFunction !== undefined) {
+      this.currentFunction.settlesCallRecord = true;
+    }
     const digestIdx = this.getStackIndex('__internal__callDigest');
     this.emitRollAt(digestIdx, loc);
     this.removeFromStack(digestIdx);

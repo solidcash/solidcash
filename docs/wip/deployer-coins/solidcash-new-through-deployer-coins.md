@@ -3126,7 +3126,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       `__internal__returnOutputIdx` (`grep -rn __internal__returnOutputIdx W/solidcash/src`); read each one.
       Done when a unit test shows an empty push for a hand-written ABI that has the input, and the SDK's
       regression files pass. Commit on its own: "feat(solidcash): fill the genesis call of an ordinary call".
-- [ ] **B6.2 One predicate.** Under `callRecords: 'returning'` nothing of this item changes anything: every
+- [x] **B6.2 One predicate.** Under `callRecords: 'returning'` nothing of this item changes anything: every
       condition in the code stays as it is. Add `publishesRecord(fn)`, for a direct stateful contract, as a
       test of the declaration that the symbol pass can make: fn is an entry function that returns a value,
       or, under `callRecords: 'all'`, one that returns nothing; it is not `receive`, `fallback`, a graph
@@ -3145,12 +3145,12 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       message every use, with its kind: "this entry publishes a record" (changed for `'all'`), or "the
       function I call returns a value" (unchanged; among them STT 4653 and GTT 26478, 26494, 50099, 10752
       and 42727–42790).
-- [ ] **B6.3 Void records.** For a void entry under `'all'`, push an empty `__internal__returnBlob` and run
+- [x] **B6.3 Void records.** For a void entry under `'all'`, push an empty `__internal__returnBlob` and run
       the same settlement as a returning entry (`emitReturnEventCovenantVerification`, GTT 49431). The record
       is then the digest and the form byte `01`. Write `callRecords` into the artifact, and
       `callRecord: true` on the void entries (`Artifact.ts:4739`). A void function's
       `__internal__returnOutputIdx` is −1 in every existing caller path; B6.8 tests that.
-- [ ] **B6.4 Record-sound contracts, and the tail of the code (O4, O5).** Under `genesisCalls`, decide for
+- [x] **B6.4 Record-sound contracts, and the tail of the code (O4, O5).** Under `genesisCalls`, decide for
       every direct master that has an entry with `publishesRecord` whether it is compiled as record-sound
       (A7):
       - list every kind of arm the generator can emit (entry functions with each lifecycle modifier and
@@ -4275,7 +4275,7 @@ tests only (AGENTS.md).
 **Compiler tests, each listed in full in its item:**
 - [x] `W/solidc/test/PushdataEncodeMinimal.test.ts` (B3.1);
 - [x] `W/solidc/test/DeployArgsSyntax.test.ts` (B5.6, extended in B8.11);
-- [ ] `W/solidc/test/VoidCallRecord.test.ts`, `RecordAccounting.test.ts`, `GenesisCall.test.ts` and
+- [x] `W/solidc/test/VoidCallRecord.test.ts`, `RecordAccounting.test.ts`, `GenesisCall.test.ts` and
       `MsgSenderGenesis.test.ts` (B6.8);
 - [x] `W/solidc/test/ExactStackEveryArm.test.ts` (B6.0): every arm kind, unmodified and with one surplus
       push, a contract that reads `msg.data`, and one that uses an inline external library;

@@ -2963,7 +2963,7 @@ This phase works on today's `new`. It needs nothing from a later phase.
       `StatefulAddressPaymentWarning` to `Errors.ts`. In STT or TCT, raise the error and emit the warning as
       A8 says, the error also for a routed payment to a child without that container. Done when a compiler
       test shows the error in both of its cases, the warning, and neither for the B2.2 case.
-- [ ] **B2.4 Container coin choice.** In `sc-load-create-builder-satoshi-container.ts:50–60` and
+- [x] **B2.4 Container coin choice.** In `sc-load-create-builder-satoshi-container.ts:50–60` and
       `sc-load-create-builder-token-containers.ts:127–136`, where no single-container pragma is set, pick the
       coin the pragma path already picks: the largest one a call can use. Keep the pragma path as it is.
       Done when a unit test with two coins picks the larger one, with and without the pragma.
@@ -2973,7 +2973,7 @@ This phase works on today's `new`. It needs nothing from a later phase.
 
 ## B3. Minimal push encoding (A9)
 
-- [ ] **B3.1 Test first.** Add `W/solidc/test/PushdataEncodeMinimal.test.ts`. Each case compiles a parent
+- [x] **B3.1 Test first.** Add `W/solidc/test/PushdataEncodeMinimal.test.ts`. Each case compiles a parent
       whose function returns `Child(x).lockingBytecode` for a stateless child with one contract parameter of
       the type under test, runs it in `createVirtualMachineBch2026()`, and compares the result with the lock
       the test computes itself: P2SH32 of libauth's `encodeDataPush(value bytes)` followed by the child's
@@ -3019,12 +3019,12 @@ This phase works on today's `new`. It needs nothing from a later phase.
 This phase parses the new form, but the compiler refuses to compile it until B8. No existing source changes
 meaning here.
 
-- [ ] **B5.1 Errors.** Add the classes of A3's table to `Errors.ts`, except the two that B2.3 added. Each
+- [x] **B5.1 Errors.** Add the classes of A3's table to `Errors.ts`, except the two that B2.3 added. Each
       message names the fix, for example "pass the contract parameters as `args: (...)`".
       `DeployerUnsupportedError` and `DeployerUnsupportedWarning` take a reason identifier and a detail
       string.
-- [ ] **B5.2 AST.** Add `args?: ExpressionNode[]` to `CallOptions` (`W/solidc/src/ast/AST.ts:2989–3000`).
-- [ ] **B5.3 Parser.** Give `parseCallOptions` (`W/solidc/src/ast/AstBuilder.ts`, about line 8254) an
+- [x] **B5.2 AST.** Add `args?: ExpressionNode[]` to `CallOptions` (`W/solidc/src/ast/AST.ts:2989–3000`).
+- [x] **B5.3 Parser.** Give `parseCallOptions` (`W/solidc/src/ast/AstBuilder.ts`, about line 8254) an
       `instantiation` argument again, since B1 removed it. Pass `true` from `visitInstantiation` and
       `visitInstantiationWithOptions` (about 5266 and 5280). Handle the name `args` before visiting the value:
       - when the value is a parenthesized tuple (a `GroupedExpression` holding a `TupleExpression`, grammar
@@ -3033,15 +3033,15 @@ meaning here.
       - do not call `visitTupleExpression` (AstBuilder 3412–3418), which throws.
 
       Outside an instantiation, `args` gets the same ParseError as any unknown option.
-- [ ] **B5.4 Temporary refusal.** In TCT `visitInstantiation` (2262–2339), raise `DeployerUnsupportedError`
+- [x] **B5.4 Temporary refusal.** In TCT `visitInstantiation` (2262–2339), raise `DeployerUnsupportedError`
       with the reason `args-not-yet` when `args` is present. B8.2 removes this refusal and its test.
-- [ ] **B5.5 Reserved names.** Raise `ReservedNameError` for an identifier that starts with `__solidcash_`,
+- [x] **B5.5 Reserved names.** Raise `ReservedNameError` for an identifier that starts with `__solidcash_`,
       declared or used anywhere in a source: events, functions, modifiers, variables and parameters, in a
       contract, at file level, in a library, in an interface or in an inherited contract, and any
       expression that names one. Check the parsed source, before any compiler pass adds names of its own. First run
       `grep -rn __solidcash_ W/solidc/test W/solidcash/test W/solidc/src`: if an existing source declares such
       a name, stop and report.
-- [ ] **B5.6 Tests.** Add `W/solidc/test/DeployArgsSyntax.test.ts`. For now it checks only that:
+- [x] **B5.6 Tests.** Add `W/solidc/test/DeployArgsSyntax.test.ts`. For now it checks only that:
       - `{args: a}` and `{args: (a, b)}` parse;
       - `args` outside `new` fails to parse;
       - `args` is refused by B5.4;

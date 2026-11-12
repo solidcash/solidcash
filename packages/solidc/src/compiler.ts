@@ -761,15 +761,248 @@ function compileDeployerProgram(
   delete (inner as { delegateVariant?: unknown }).delegateVariant;
   let artifact: Artifact;
   try {
-    artifact = compileResolvedAst(
+    // The program is compiler-generated: its `unsafe` sweep and its missing user entries are not source facts.
+    artifact = withCompilerWarnings(true, () => compileResolvedAst(
       cloneAst(sourceAst, 'deployer-program'), code, inner,
-    );
+    ));
   } catch (error) {
     // A `ctor-…` reason is a signal that ends this build only; B7.14 turns it into the warning and artifact field.
     if (error instanceof DeployerUnsupportedError) return { reason: error.reason };
     throw error;
   }
   return { artifact, box };
+}
+
+/** B7.8: `create`'s final ABI order is A4.2's, with every synthetic parameter behind the source argument bands. */
+function arrangeDeployerParameters(ast: Ast, box: DeployerProgramBox | undefined): void {
+  const contract = ast.contract;
+  const create = contract.functions.find((fn) => fn.name === '__construct');
+  if (create === undefined) return;
+  const location = create.location;
+  const parameter = (type: Type, name: string): ParameterNode => {
+    const node = new ParameterNode(type, name);
+    node.location = location;
+    return node;
+  };
+  const contractParameters = contract.parameters;
+  contract.parameters = [];
+  const sourceParameters = create.parameters.filter((entry) => !entry.name.startsWith('__internal__'));
+  const passParameters = create.parameters.filter((entry) => entry.name.startsWith('__internal__')
+    && !['__internal__budgetPad', '__internal__oracleOwner', '__internal__authorIndex', '__internal__identity',
+      '__internal__creatorInputIdx', '__internal__creatorList', '__internal__creatorListPos',
+      '__internal__code', '__internal__deployValue', '__internal__msgSenderCategory',
+      '__internal__genesisCallees', '__internal__genesisOutputBase', '__internal__genesisSidecarBase',
+      '__internal__genesisCall', '__internal__returnOutputIdx']
+      .includes(entry.name)
+    && !entry.name.startsWith('__ctorread_') && !entry.name.startsWith('__internal__viewReturn'));
+  const readingBlockData = contract.usesBlockOracle === true;
+  const readsSender = box?.constructorReadsSender === true;
+  create.parameters = [
+    parameter(new BytesType(), '__internal__budgetPad'),
+    ...(readingBlockData ? [parameter(new BytesType(20), '__internal__oracleOwner')] : []),
+    parameter(PrimitiveType.BIGINT, '__internal__authorIndex'),
+    parameter(PrimitiveType.BIGINT, '__internal__identity'),
+    ...(readsSender ? [
+      parameter(PrimitiveType.BIGINT, '__internal__creatorInputIdx'),
+      parameter(new BytesType(), '__internal__creatorList'),
+      parameter(PrimitiveType.BIGINT, '__internal__creatorListPos'),
+    ] : []),
+    parameter(PrimitiveType.BIGINT, '__internal__genesisOutputBase'),
+    parameter(PrimitiveType.BIGINT, '__internal__genesisSidecarBase'),
+    ...passParameters,
+    parameter(new BytesType(), '__internal__code'),
+    ...contractParameters,
+    ...sourceParameters,
+    parameter(PrimitiveType.BIGINT, '__internal__deployValue'),
+    parameter(new BytesType(32), '__internal__msgSenderCategory'),
+    parameter(new BytesType(), '__internal__genesisCallees'),
+  ];
+}
+
+/** B7.8's generator check on `create`'s finished parameter list. */
+function assertDeployerParameters(create: FunctionDefinitionNode): void {
+  const names = create.parameters.map((parameter) => parameter.name);
+  const tail = ['__internal__code', '__internal__deployValue', '__internal__msgSenderCategory',
+    '__internal__genesisCallees'];
+  const at = names.indexOf('__internal__code');
+  if (at < 0 || names[names.length - 1] !== '__internal__genesisCallees'
+    || names[names.length - 2] !== '__internal__msgSenderCategory'
+    || names[names.length - 3] !== '__internal__deployValue') {
+    throw new DeployerInternalError(create, `create's inputs do not end with ${tail.join(', ')}`);
+  }
+  if (names.some((name) => name.startsWith('__ctorread_') || name.startsWith('__internal__viewReturn'))) {
+    throw new DeployerInternalError(create, 'create takes a constructor-read or view-return witness');
+  }
+  // B7.18 replaces the entry write path with the collection journal. Until it lands, a collection-writing
+  // constructor keeps today's write witnesses rather than failing the build.
+}
+
+/**
+ * B7.5: classify what the constructor does, refuse every `ctor-…` reason A4.1 names, and publish the facts the
+ * deployer artifact and the SDK need.
+ */
+function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions): void {
+  const contract = ast.contract;
+  const create = contract.functions.find((fn) => fn.name === '__construct');
+  if (create === undefined) throw new DeployerInternalError(contract, 'the deployer program has no create body');
+  const box = options.__deployerProgram!.box;
+  const refuse = (reason: string, detail: string): never => {
+    throw new DeployerUnsupportedError(create, reason, detail);
+  };
+
+  const slots = create.externalCalls ?? [];
+  if (slots.length > 37) refuse('ctor-call-count', 'the constructor has more than 37 call slots');
+  const targets = new Set<string>();
+  for (const slot of slots) {
+    if (slot.addressIsSelf === true) refuse('ctor-self-call', 'the constructor calls C through this');
+    if (slot.inlineLoopDispatch === true || slot.loopArrayVar !== undefined
+      || slot.batchInvocations !== undefined || slot.fnPtrCall === true
+      || slot.addressIsMsgSender === true || slot.callOrdinal !== undefined) {
+      refuse('ctor-call-shape', `the call to ${slot.interfaceName}.${slot.functionName} has a shape a call slot cannot bind`);
+    }
+    if (slot.callValueEffect === true) refuse('ctor-call-value', 'a constructor call cannot send value');
+    const target = slot.addressParam ?? slot.addressStateVar ?? slot.addressLiteral ?? slot.interfaceName;
+    if (targets.has(target)) {
+      refuse('ctor-call-shape', 'two call slots name the same target expression');
+    }
+    targets.add(target);
+    if (slot.condition !== undefined) {
+      refuse('ctor-call-conditional', `the call to ${slot.functionName} is conditional`);
+    }
+  }
+  for (const fn of contract.functions) {
+    if (fn === create) continue;
+    if ((fn.externalCalls?.length ?? 0) > 0) {
+      refuse('ctor-call-helper', `the helper '${fn.name}' still holds an external call`);
+    }
+  }
+
+  for (const state of contract.stateVariables) {
+    if (state.isDynamic || isDynamicStorageType(state.type)) {
+      refuse('ctor-dynamic-state', `state '${state.name}' is dynamic`);
+    }
+    if (state.type instanceof FunctionType) {
+      refuse('ctor-function-value', `state '${state.name}' is a function value`);
+    }
+  }
+
+  let blockNumber = false;
+  let blockTimestamp = false;
+  let conditionalDepth = 0;
+  let loopDepth = 0;
+  const seen = new Set<Node>();
+  const walk = (node: Node): void => {
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (node instanceof SelfdestructStatementNode) refuse('ctor-selfdestruct', 'the constructor contains selfdestruct');
+    if (node instanceof InstantiationNode) refuse('ctor-creates', 'the constructor contains new');
+    if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
+      refuse('ctor-lowlevel-call', 'the constructor makes a raw call');
+    }
+    if (node instanceof ExternalOutputStateAccessNode) {
+      refuse('ctor-external-state', 'the constructor reads another contract\'s state');
+    }
+    if (node instanceof TokenContainerMethodStatementNode) {
+      refuse('ctor-token-container', 'the constructor uses a token container method');
+    }
+    if (node instanceof DeleteStateNode || node instanceof MappingDeleteNode || node instanceof ArrayDeleteNode
+      || node instanceof StateArrayDeleteNode) {
+      refuse('ctor-collection-shape', 'the constructor deletes an entry');
+    }
+    if (node instanceof ReturnNode && slots.length > 0) {
+      refuse('ctor-call-conditional', 'the constructor has a return and a call slot');
+    }
+    if (node instanceof NullaryOpNode) {
+      if (node.operator === NullaryOperator.OUTPUT_COUNT
+        || node.operator === NullaryOperator.MSG_SIG || node.operator === NullaryOperator.MSG_DATA) {
+        if (node.operator === NullaryOperator.OUTPUT_COUNT) {
+          refuse('ctor-reads-outputs', 'the constructor reads tx.outputs');
+        }
+        refuse('ctor-function-value', `the constructor reads ${node.operator}`);
+      }
+      if (node.operator === NullaryOperator.BLOCK_NUMBER) blockNumber = true;
+      if (node.operator === NullaryOperator.BLOCK_TIMESTAMP) blockTimestamp = true;
+      if ([NullaryOperator.BLOCK_DIFFICULTY, NullaryOperator.BLOCK_SIZE, NullaryOperator.BLOCK_TOTAL_FEES,
+        NullaryOperator.BLOCK_BASEFEE, NullaryOperator.BLOCK_BLOBBASEFEE, NullaryOperator.BLOCK_GASLIMIT,
+        NullaryOperator.BLOCK_PREVRANDAO, NullaryOperator.BLOCK_COINBASE, NullaryOperator.LOCKTIME]
+        .includes(node.operator)) {
+        refuse('ctor-block-data', `the constructor reads ${node.operator}`);
+      }
+    }
+    if (node instanceof UnaryOpNode && (node.operator === UnaryOperator.OUTPUT_TOKEN_CATEGORY
+      || node.operator === UnaryOperator.OUTPUT_NFT_COMMITMENT || node.operator === UnaryOperator.OUTPUT_VALUE
+      || node.operator === UnaryOperator.OUTPUT_TOKEN_AMOUNT)) {
+      refuse('ctor-reads-outputs', 'the constructor reads tx.outputs');
+    }
+    if (node instanceof VariableDefinitionNode && node.type instanceof FunctionType) {
+      refuse('ctor-function-value', `local '${node.name}' is a function value`);
+    }
+    if (node instanceof ParameterNode && node.type instanceof FunctionType) {
+      refuse('ctor-function-value', `parameter '${node.name}' is a function value`);
+    }
+    if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode) {
+      if (loopDepth > 0) refuse('ctor-collection-shape', 'the constructor writes a collection in a loop');
+    }
+    if ((node instanceof EmitStatementNode || node instanceof TransferStatementNode
+      || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)
+      && loopDepth > 0) {
+      refuse('ctor-loop-effects', 'the constructor emits or sends inside a loop');
+    }
+    if (node instanceof FunctionCallNode && (node.fromThisCall === true || node.fromExternalSelfCall === true)) {
+      refuse('ctor-self-call', 'the constructor calls C through this');
+    }
+    if ((node instanceof ExternalFunctionCallNode || node instanceof FunctionCallNode)
+      && node instanceof ExternalFunctionCallNode && conditionalDepth > 0) {
+      refuse('ctor-call-conditional', 'the constructor makes a call under a condition');
+    }
+
+    const branch = node instanceof BranchNode || node instanceof TernaryOpNode || node instanceof TryCatchNode
+      || (node instanceof BinaryOpNode && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
+    const loop = node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
+    if (branch) conditionalDepth += 1;
+    if (loop) loopDepth += 1;
+    for (const [key, child] of Object.entries(node)) {
+      if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable', 'type',
+        'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+      if (child instanceof Node) walk(child);
+      else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+    }
+    if (loop) loopDepth -= 1;
+    if (branch) conditionalDepth -= 1;
+  };
+  walk(create.body);
+  if (blockNumber && blockTimestamp) {
+    refuse('ctor-block-data', 'the constructor reads both block.number and block.timestamp');
+  }
+
+  const boxTarget = options.__deployerProgram!.box;
+  if (boxTarget !== undefined) {
+    boxTarget.callSlots = slots.length;
+    boxTarget.constructorReadsSender = create.usesMsgSender === true;
+    boxTarget.readsBlockData = contract.usesBlockOracle === true || contract.usesBlockhash === true;
+    boxTarget.constructorBlockField = blockNumber ? 'number' : blockTimestamp ? 'timestamp' : undefined;
+    boxTarget.sidecars = {
+      keccak: create.keccakCompute === true ? 1 : 0,
+      ecrecover: create.ecrecoverCallCount ?? 0,
+    };
+    let sendsSatoshi = false;
+    const writtenCollections = new Set<string>();
+    walkInvocationAst(create.body, (node) => {
+      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) sendsSatoshi = true;
+      if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode) {
+        writtenCollections.add(node.name);
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    const singleSatoshi = options.__deployerProgram!.constants.singleSatoshiContainer;
+    const payable = create.modifiers.includes(FunctionModifier.PAYABLE);
+    boxTarget.satoshiContainer = singleSatoshi ? 'required' : payable || sendsSatoshi ? 'optional' : 'none';
+    boxTarget.collectionRows = options.__deployerProgram!.constants.collections
+      .filter((collection) => writtenCollections.has(collection.name))
+      .map((collection) => ({ collection: collection.name, appendSites: 1 }));
+    boxTarget.arms = contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name);
+  }
+  void box;
 }
 
 /**
@@ -17352,8 +17585,16 @@ function compileResolvedAst(
     }
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
-  // B7.4: the finished deployer program carries exactly the two arms of A4.2.
-  if (isDeployerProgram) assertDeployerArms(ast, mergedCompilerOptions as InternalCompilerOptions);
+  // B7.5/B7.4: classify the constructor, publish the facts, then require the two arms of A4.2.
+  if (isDeployerProgram) {
+    inspectDeployerConstructor(ast, mergedCompilerOptions as InternalCompilerOptions);
+    const deployerCreate = ast.contract.functions.find((fn) => fn.name === '__construct');
+    if (deployerCreate !== undefined) {
+      arrangeDeployerParameters(ast, (mergedCompilerOptions as InternalCompilerOptions).__deployerProgram?.box);
+      assertDeployerParameters(deployerCreate);
+    }
+    assertDeployerArms(ast, mergedCompilerOptions as InternalCompilerOptions);
+  }
   // Code generation
   if (mergedCompilerOptions.composition === 'framed') {
     // The route is built for the lowering it performs on the source's own bodies — a low-level call becomes an
@@ -17633,7 +17874,6 @@ function compileResolvedAst(
       : ast.contract.usesBlockhash === true ? 'blockhash-ring'
         : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true
           ? 'lock-composition'
-          : ast.contract.usesBlockOracle === true ? 'code-not-constant'
           : unsupportedParameter ? 'param-type'
             : inlineLibrary ? 'inline-library'
               : undefined;
@@ -17643,31 +17883,42 @@ function compileResolvedAst(
         ? 'a deployer exists only for a direct stateful contract'
         : reason === 'blockhash-ring' ? 'a blockhash ring would have to be minted at genesis'
           : reason === 'lock-composition' ? 'its master lock is not the plain pin and code P2SH32 lock'
-            : reason === 'code-not-constant' ? 'the block-oracle lock sentinel makes the code differ per instance'
-            : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
-              : 'an inline external library puts an OP_DROP between the pin and the arguments';
+          : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
+            : 'an inline external library puts an OP_DROP between the pin and the arguments';
       emitCompilerWarning(new DeployerUnsupportedWarning(artifact.contractName, reason, detail).message);
     } else if (deployerSourceAst !== undefined && !isDeployerProgram) {
       const built = compileDeployerProgram(deployerSourceAst, code, mergedCompilerOptions as InternalCompilerOptions,
         constants);
       if ('reason' in built) {
         artifact.deployerUnsupported = built.reason;
+        emitCompilerWarning(new DeployerUnsupportedWarning(
+          artifact.contractName, built.reason, 'the constructor uses a construct the deployer cannot compile',
+        ).message);
       } else {
         const program = built.artifact;
         const createAbi = program.abi.find((fn) => fn.name === '__construct');
         const sweepAbi = program.abi.find((fn) => fn.name === '__solidcash_sweep');
         const callSlots = built.box.callSlots ?? 0;
-        const codeBytes = constants.code;
+        const body = constants.code;
         const bytecodeBytes = asmToBytecode(program.bytecode);
-        const lockingBytecode = Uint8Array.from([0xaa, 0x20, ...hash256(bytecodeBytes), 0x87]);
+        // B7.14: a constructor with a call slot makes C's born code end with `push32(hash256(Deploy<C>)) OP_DROP`.
+        // The body, which TEMPLATE hashes, stays the same with and without a deployer.
+        const deployerHash = hash256(bytecodeBytes);
+        const code = callSlots > 0 ? Uint8Array.from([...body, 0x20, ...deployerHash, 0x75]) : body;
+        if (callSlots > 0) {
+          const script = [...bytecodeToScript(asmToBytecode(artifact.bytecode)), deployerHash,
+            Op.OP_DROP];
+          artifact.bytecode = scriptToAsm(script);
+        }
+        const lockingBytecode = Uint8Array.from([0xaa, 0x20, ...deployerHash, 0x87]);
         const deployerAbi: DeployerAbi = {
           version: 1,
           bytecode: binToHex(bytecodeBytes),
           lockingBytecode: binToHex(lockingBytecode),
-          template: binToHex(sha256Bytes.hash(codeBytes)),
-          code: binToHex(codeBytes),
+          template: binToHex(sha256Bytes.hash(body)),
+          code: binToHex(code),
           birthTrailer: callSlots > 0,
-          coinValue: '1200',
+          coinValue: BigInt(1200 + Math.ceil((bytecodeBytes.length + 95) / 100) * 100).toString(),
           sweepAge: 1440,
           abi: [
             ...(createAbi === undefined ? [] : [{ ...createAbi, name: 'create', selector: binToHex(DEPLOYER_SELECTOR_CREATE) }]),
@@ -17686,40 +17937,16 @@ function compileResolvedAst(
             ? {} : { constructorBlockField: built.box.constructorBlockField }),
           sidecars: built.box.sidecars ?? { keccak: 0, ecrecover: 0 },
         };
+        // B7.14 (O4): the born code ends with the trailer exactly when callSlots > 0, and it names this deployer.
+        if (callSlots > 0) {
+          const trailer = [...code.slice(-34)];
+          if (trailer[0] !== 0x20 || trailer[33] !== 0x75
+            || trailer.slice(1, 33).some((byte, index) => byte !== deployerHash[index])) {
+            throw new DeployerInternalError(ast.contract, 'the birth trailer does not name this deployer');
+          }
+        }
         artifact.deployer = deployerAbi;
       }
-    }
-  }
-  if (isDeployerProgram) {
-    const deployerOptions = mergedCompilerOptions as InternalCompilerOptions;
-    const box = deployerOptions.__deployerProgram?.box;
-    if (box !== undefined) {
-      const create = ast.contract.functions.find((fn) => fn.name === '__construct');
-      box.arms = ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name);
-      box.callSlots = create?.externalCalls?.length ?? 0;
-      box.constructorReadsSender = create?.usesMsgSender === true;
-      box.readsBlockData = ast.contract.usesBlockOracle === true || ast.contract.usesBlockhash === true;
-      box.sidecars = {
-        keccak: create?.keccakCompute === true ? 1 : 0,
-        ecrecover: create?.ecrecoverCallCount ?? 0,
-      };
-      let sendsSatoshi = false;
-      const writtenCollections = new Set<string>();
-      if (create !== undefined) {
-        walkInvocationAst(create.body, (node) => {
-          if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
-            || node instanceof AddressSendExpressionNode) sendsSatoshi = true;
-          if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode) {
-            writtenCollections.add(node.name);
-          }
-        }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
-      }
-      const singleSatoshi = deployerOptions.__deployerProgram!.constants.singleSatoshiContainer;
-      const payable = create?.modifiers.includes(FunctionModifier.PAYABLE) === true;
-      box.satoshiContainer = singleSatoshi ? 'required' : payable || sendsSatoshi ? 'optional' : 'none';
-      box.collectionRows = deployerOptions.__deployerProgram!.constants.collections
-        .filter((collection) => writtenCollections.has(collection.name))
-        .map((collection) => ({ collection: collection.name, appendSites: 1 }));
     }
   }
   if (traversal.routeOnlyEntries.size > 0) {

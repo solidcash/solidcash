@@ -3532,7 +3532,7 @@ with a deployer whose constructor writes a collection, and only where today's st
         `emitDataNftLbc(loc, true)`); emit no input-side preservation.
       - The generator rebuilds every entry's layout and offsets itself (GTT 9313–9430). w_out and every
         offset must come from that layout, the one the pins use.
-- [ ] **B7.8 Parameters (O2).** Declare `create`'s parameters as A4.2 lists them.
+- [x] **B7.8 Parameters (O2).** Declare `create`'s parameters as A4.2 lists them.
       - Contract parameters stay declared on the contract in C. In the deployer program they are parameters
         of `create` instead and are removed from the contract's own list, so that they are not seeded for
         `sweep` (GTT 5445, 8126–8128) and not declared twice (`VariableRedefinitionError`, STT 2437–2451).
@@ -3555,6 +3555,10 @@ with a deployer whose constructor writes a collection, and only where today's st
 
       Done when a unit test reads `create`'s ABI inputs in exactly the A4.2 order, for a C with no call slot
       and for one with two, with and without a sender-reading constructor.
+
+      Note (implementation, 2026-11-12): done for the ABI. The entry-write-path check is deferred to B7.18,
+      where the collection journal replaces those witnesses; a collection-writing constructor therefore keeps
+      them for now.
 - [ ] **B7.9 Genesis layout, slot base and sidecars.** Add `buildGenesisBlockLayout` next to the block-layout
       builder (STT 19434–19731). Build the genesis range of A4.4 from `create`'s layout: keep only output-only
       slots, in the A4.4 order; move the keccak and

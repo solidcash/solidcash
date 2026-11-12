@@ -11,6 +11,7 @@ import type { DeployerConstants } from '../src/generation/deployerConstants.js';
 
 const P = 'pragma solidcash ^0.50.0;';
 const STATEFUL = `${P} contract C { int n; function bump() { n = n + 1; } }`;
+const STATEFULWithCtor = `${P} contract C { int n; constructor() { n = 1; } function bump() { n = n + 1; } }`;
 
 const compile = (source: string, options: Record<string, unknown>): {
   artifact: ReturnType<typeof compileString>;
@@ -124,5 +125,112 @@ describe('B7.0: when a deployer is built', () => {
   it('the arms check throws for a program a test hook gave a third entry', () => {
     expect(() => compile(STATEFUL, { deployer: true, __deployerTestBox: { thirdArm: true } } as never))
       .toThrow(/internal deployer check failed/);
+  });
+
+  const createInputs = (source: string): string[] => {
+    const { artifact } = compile(source, { deployer: true });
+    return artifact.deployer!.abi.find((fn) => fn.name === 'create')!.inputs.map((input) => input.name);
+  };
+
+  it('orders create inputs as A4.2 says, without a sender or a call slot', () => {
+    expect(createInputs(`${P} contract C(bytes32 t) { int n; constructor(int x) { n = x; } }`)).toEqual([
+      '__internal__budgetPad', '__internal__authorIndex', '__internal__identity',
+      '__internal__genesisOutputBase', '__internal__genesisSidecarBase', '__internal__code',
+      't', 'x', '__internal__deployValue', '__internal__msgSenderCategory', '__internal__genesisCallees',
+    ]);
+  });
+
+  it('adds the creator parameters only when the constructor reads msg.sender', () => {
+    expect(createInputs(`${P} contract C { address owner; constructor() { owner = msg.sender; } }`)).toEqual([
+      '__internal__budgetPad', '__internal__authorIndex', '__internal__identity',
+      '__internal__creatorInputIdx', '__internal__creatorList', '__internal__creatorListPos',
+      '__internal__genesisOutputBase', '__internal__genesisSidecarBase', '__internal__code',
+      '__internal__deployValue', '__internal__msgSenderCategory', '__internal__genesisCallees',
+    ]);
+  });
+});
+
+describe('B7.5: what the constructor does', () => {
+  const reasonOf = (source: string): string | undefined => compile(source, { deployer: true }).artifact.deployerUnsupported;
+  const cases: [string, string][] = [
+    ['ctor-reads-outputs', `${P} contract C { int n; constructor() { n = int(tx.outputs.length); } }`],
+    ['ctor-selfdestruct', `${P} contract C { int n; constructor() { selfdestruct(payable(msg.sender)); } }`],
+    ['ctor-function-value', `${P} contract C { int n; constructor() { bytes4 s = msg.sig; n = int(s); } }`],
+    ['ctor-block-data', `${P} contract C { int n; constructor() { n = block.difficulty; } }`],
+    ['ctor-block-data', `${P} contract C { int n; constructor() { n = block.number + block.timestamp; } }`],
+    ['ctor-dynamic-state', `${P} contract C { string s; constructor() { s = "x"; } }`],
+    ['ctor-lowlevel-call', `${P} contract C { int n; constructor() { address(msg.sender).call(hex""); } }`],
+  ];
+  for (const [reason, source] of cases) {
+    it(`refuses ${reason}: ${source.slice(0, 60)}`, () => {
+      expect(reasonOf(source)).toBe(reason);
+    });
+  }
+
+  it('publishes the constructor facts the deployer and the SDK need', () => {
+    const block = compile(`${P} contract C { int n; constructor() { n = block.number; } }`, { deployer: true });
+    expect(block.artifact.deployer!.readsBlockData).toBe(true);
+    expect(block.artifact.deployer!.constructorBlockField).toBe('number');
+
+    const payable = compile(`${P} contract C { int n; constructor() payable { n = 1; } }`, { deployer: true });
+    expect(payable.artifact.deployer!.satoshiContainer).toBe('optional');
+
+    const plain = compile(`${P} contract C { int n; constructor() { n = 1; } }`, { deployer: true });
+    expect(plain.artifact.deployer!.satoshiContainer).toBe('none');
+
+    const hashed = compile(`${P} contract C { bytes32 h; constructor(bytes b) { h = keccak256(b); } }`,
+      { deployer: true });
+    expect(hashed.artifact.deployer!.sidecars.keccak).toBeGreaterThan(0);
+
+    const sender = compile(`${P} contract C { address owner; constructor() { owner = msg.sender; } }`,
+      { deployer: true });
+    expect(sender.artifact.deployer!.constructorReadsSender).toBe(true);
+  });
+
+  it('keeps C\'s body byte-identical when the constructor has no call slot', () => {
+    const { artifact } = compile(STATEFULWithCtor, { deployer: true });
+    const deployer = artifact.deployer!;
+    expect(deployer.birthTrailer).toBe(false);
+    expect(Uint8Array.from(Buffer.from(deployer.code, 'hex')))
+      .toEqual(scriptToBytecode(asmToScript(artifact.bytecode)));
+    const redeemSize = Uint8Array.from(Buffer.from(deployer.bytecode, 'hex')).length;
+    expect(BigInt(deployer.coinValue)).toBe(BigInt(1200 + Math.ceil((redeemSize + 95) / 100) * 100));
+  });
+
+  it('adds the 34-byte birth trailer when the constructor has a call slot', () => {
+    const source = `${P} interface I { function f(int x) external returns (bool); }
+      contract C { bool ok; constructor(I i) { ok = i.f(5); } }`;
+    const { artifact } = compile(source, { deployer: true });
+    const deployer = artifact.deployer!;
+    expect(deployer.callSlots).toBe(1);
+    expect(deployer.birthTrailer).toBe(true);
+    const body = Uint8Array.from(Buffer.from(deployer.code, 'hex'));
+    const hash = Uint8Array.from(Buffer.from(deployer.lockingBytecode, 'hex')).slice(2, 34);
+    expect([...body.slice(-34)]).toEqual([0x20, ...hash, 0x75]);
+    expect([...scriptToBytecode(asmToScript(artifact.bytecode))].slice(-34))
+      .toEqual([0x20, ...hash, 0x75]);
+  });
+
+  it('orders two call slots and their witnesses after the synthetic bases', () => {
+    const source = `${P} interface I { function f(int x) external returns (bool);
+      function g(int x) external returns (bool); }
+      contract C { bool a; bool b; constructor(I i, I j) { a = i.f(5); b = j.g(6); } }`;
+    expect(compile(source, { deployer: true }).artifact.deployer!
+      .abi.find((fn) => fn.name === 'create')!.inputs.map((input) => input.name)).toEqual([
+      '__internal__budgetPad', '__internal__authorIndex', '__internal__identity',
+      '__internal__genesisOutputBase', '__internal__genesisSidecarBase',
+      '__internal__externalCallInputBase', '__internal__externalCallSelector0',
+      '__internal__externalCallSelector1', '__internal__extcallMasterIdx0', '__internal__extcallMasterIdx1',
+      '__internal__extcallAnchorIdx0', '__internal__extcallAnchorIdx1', '__internal__externalReturnOutputIdx0',
+      '__internal__externalReturnOutputIdx1', '__internal__callEdgeOutputIdx0', '__internal__callEdgeOutputIdx1',
+      '__internal__code', 'i', 'j', '__internal__deployValue', '__internal__msgSenderCategory',
+      '__internal__genesisCallees',
+    ]);
+  });
+
+  it('sweep carries this.age >= 1440 and no own-category read', () => {
+    const { artifact } = compile(STATEFULWithCtor, { deployer: true });
+    const hex = artifact.deployer!.bytecode;
+    expect(hex).toContain('02a005b2');
   });
 });

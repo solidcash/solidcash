@@ -18,6 +18,7 @@ type CallerContract = {
   getEntries(collectionNameOrSignature: string): Promise<unknown>;
   _resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
   _evaluateExternalExpression(...args: any[]): unknown;
+  _ordinaryEntrySelfAddress?(abiFunction: AbiFunction | undefined): Uint8Array;
 };
 
 type CalleeContract = { inner: { artifact: { abi: readonly AbiFunction[] } } };
@@ -57,7 +58,8 @@ export async function autoWireLowLevelCalls(host: AutoWireLowLevelCallsHost): Pr
   const caller = host.parentContract as CallerContract | undefined;
   if (!caller?.inner || typeof caller._resolveExternalArgs !== 'function') return;
   const functionArgs = host.functionArgs as FunctionArgument[];
-  const selfAddress = hexToBin(caller.inner.lockingBytecode);
+  // `address(this)` in a payload is the entry's public self, which the callee's pushes must repeat.
+  const selfAddress = caller._ordinaryEntrySelfAddress?.(abiFunction) ?? hexToBin(caller.inner.lockingBytecode);
   const resolve = (
     sources: ArgSource[], state: Record<string, unknown>,
   ): FunctionArgument[] | undefined => caller._resolveExternalArgs(

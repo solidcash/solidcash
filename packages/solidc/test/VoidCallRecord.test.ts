@@ -45,7 +45,7 @@ describe('B6.2/B6.3: void call records', () => {
 
   it('a void record is a run of a record-publishing entry: the contract is record-sound', () => {
     const artifact = compileString(`${P} contract C { int s; function v(int x) { s = s + x; } }`, {
-      messageBus: false, callRecords: 'all',
+      messageBus: false, callRecords: 'all', genesisCalls: true,
     });
     expect(artifact.recordSound).toBe(true);
     expect(artifact.genesisCalls).toBe(true);

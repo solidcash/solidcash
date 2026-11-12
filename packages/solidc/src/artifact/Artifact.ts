@@ -5049,7 +5049,7 @@ export function generateArtifact(
     source,
     debug,
     ...(directCompile && isStateful && { callRecords: compilerOptions.callRecords ?? 'returning' as const }),
-    ...(directCompile && isStateful && { genesisCalls: compilerOptions.genesisCalls !== false }),
+    ...(directCompile && isStateful && compilerOptions.genesisCalls !== undefined && { genesisCalls: compilerOptions.genesisCalls }),
     ...(contract.recordSound !== undefined && { recordSound: contract.recordSound }),
     ...(functionBodies && { functionBodies }),
     ...(fingerprint && { fingerprint }),

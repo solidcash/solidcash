@@ -70,7 +70,7 @@ describe('B6.0: an arm starts from an exact stack', () => {
   };
 
   it('emits OP_DEPTH n OP_NUMEQUALVERIFY at the start of an inlined sole entry', () => {
-    const artifact = compileString(SOURCE, { messageBus: false });
+    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
     const opcodes = decodeAuthenticationInstructions(
       scriptToBytecode(asmToScript(artifact.bytecode)),
     ).map((i) => i.opcode);
@@ -99,7 +99,7 @@ contract C {
   it('accepts the honest unlocking and refuses one surplus push or one missing push', async () => {
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const artifact = compileString(SOURCE, { messageBus: false });
+    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
     const funding = { txid: 'c1c0'.repeat(16), vout: 0, satoshis: 300000n };
     await provider.addUtxo(p2pkh.address, funding);
     const deployed = await StatefulContract.deploy(artifact, [], {

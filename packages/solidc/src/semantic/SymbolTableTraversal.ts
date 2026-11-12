@@ -16226,7 +16226,9 @@ export default class SymbolTableTraversal extends AstTraversal {
    * region the creator binds is exactly the values `create` reads.
    */
   private injectGenesisCallParameter(node: FunctionDefinitionNode): void {
-    if (this.compilerOptions.genesisCalls === false) return;
+    // Opt-in until B9/B10: the SDK's external-call and route compositions do not yet carry the parameter
+    // everywhere, and the spec's switch (B10) turns the default on together with that SDK work.
+    if (this.compilerOptions.genesisCalls !== true) return;
     if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
     if (node.parameters.some((parameter) => parameter.name === '__internal__genesisCall')) return;
     const parameter = new ParameterNode(new BytesType(), '__internal__genesisCall');

@@ -23,7 +23,7 @@ type Provider = ReturnType<typeof createTestProvider>;
 
 describe('B6.5: the genesis call parameter', () => {
   it('follows the return-carrier witness in the ABI of every record-publishing entry', () => {
-    const artifact = compileString(SOURCE, { messageBus: false });
+    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
     const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;
     const names = entry.inputs.map((input) => input.name);
     // The unlocking pushes the ABI in reverse, so the parameter that follows the carrier witness in the source

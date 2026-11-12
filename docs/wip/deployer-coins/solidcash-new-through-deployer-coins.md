@@ -3566,9 +3566,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): done for the ABI. The entry-write-path check is deferred to B7.18,
       where the collection journal replaces those witnesses; a collection-writing constructor therefore keeps
       them for now.
-      Note (implementation, 2026-11-12): output-only slots address `__internal__genesisOutputBase` and
-      `genesisOutputs` is the current layout's slot count. A dedicated `buildGenesisBlockLayout`, the sidecar group
-      and the oracle/HEAD ordering are not built.
+      Note (implementation, 2026-11-12): `buildGenesisBlockLayout` ranks the constructor's slots in A4.4 order,
+      compacts their offsets, and `genesisOutputs` is its length. The sidecar group, the oracle/HEAD/token/collection
+      rows and their pins are not built; a layout with a sidecar or trailing region keeps today's layout.
 - [ ] **B7.9 Genesis layout, slot base and sidecars.** Add `buildGenesisBlockLayout` next to the block-layout
       builder (STT 19434–19731). Build the genesis range of A4.4 from `create`'s layout: keep only output-only
       slots, in the A4.4 order; move the keccak and
@@ -3592,8 +3592,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       - `block.number` and `block.timestamp` (`visitNullaryOp`, 19202–19207) follow A5:
         `OP_TXLOCKTIME OP_DUP OP_CHECKLOCKTIMEVERIFY OP_DROP`, then the range check;
       Note (implementation, 2026-11-12): M, R, `msg.value`, a zero-category `msg.sender` and `address(this)` are
-      resolved; the balance journal, the nonzero creator sender, the locktime form of block fields (the AST path is
-      present, but its census needs the A4.4 oracle row) and most of the skipped checks are not.
+      resolved; the balance journal, the nonzero creator sender and most of the skipped checks are not. The
+      `OP_TXLOCKTIME` form is emitted for block.number/block.timestamp, but the create still reaches an
+      oracle-input read before code generation, so no VM case passes yet.
       - emit none of: `emitDirectGenesisGuard` (11060), `emitTokenCategoryVerification` (36645),
         `emitMasterSelfPreservation` (50415), `emitMintingNftUniqueness` (51592), `emitValuePreservation`
         (55880), `emitOwnCategoryMutableNftConservation` (51806), `emitMasterCommitmentPreservation` (10839),

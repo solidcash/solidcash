@@ -6,6 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
+import { asmToScript, computeCollectionHash, scriptToBytecode } from '@solidcash/utils';
+import type { DeployerConstants } from '../src/generation/deployerConstants.js';
 
 const P = 'pragma solidcash ^0.50.0;';
 const STATEFUL = `${P} contract C { int n; function bump() { n = n + 1; } }`;
@@ -59,6 +61,33 @@ describe('B7.0: when a deployer is built', () => {
       constructor() { m[1] = 2; } function bump() { n = n + 1; } }`;
     const { artifact } = compile(source, { deployer: true });
     expect(artifact.constructorWritesCollections).toBe(true);
+  });
+
+  it('derives the deployer constants from C\'s compile', () => {
+    const source = `${P} contract C { mapping(int => int) m; int n;
+      function bump() { n = n + 1; } }`;
+    const box: { constants?: DeployerConstants } = {};
+    const { artifact } = compile(source, { deployer: true, __deployerConstantsBox: box } as never);
+    const constants = box.constants!;
+    expect(constants.code).toEqual(scriptToBytecode(asmToScript(artifact.bytecode)));
+    expect(constants.dataNftCount).toBe(artifact.stateLayout!.dataNftCount);
+    const collection = constants.collections.find((candidate) => candidate.name === 'm')!;
+    expect(collection.signature).toBe('m:mapping(int256 => int256)');
+    expect(collection.hash).toEqual(computeCollectionHash(collection.signature));
+    expect(constants.singleTokenContainer).toBe(false);
+    expect(constants.singleTokenContainerKeys).toEqual([]);
+  });
+
+  it('derives the empty sorted-list HEAD and single-container keys', () => {
+    const source = `${P} contract C { mapping(int => int) m; bytes32 t;
+      function put(int k, int v) { m[k] = v; } }`;
+    const box: { constants?: DeployerConstants } = {};
+    const { artifact } = compile(source, { deployer: true, __deployerConstantsBox: box } as never);
+    expect(artifact.stateLayout!.collections!.find((c) => c.name === 'm')!.sorted).toBe(true);
+    const constants = box.constants!;
+    const collection = constants.collections.find((candidate) => candidate.name === 'm')!;
+    expect(collection.sorted).toBe(true);
+    expect(collection.headCommitment).toEqual(new Uint8Array(128));
   });
 
   it('a supported stateful direct contract records no reason', () => {

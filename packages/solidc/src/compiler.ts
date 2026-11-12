@@ -282,6 +282,7 @@ import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import { compileFunctionSplit } from './split/function-split.js';
+import { deployerConstantsOf } from './generation/deployerConstants.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
@@ -674,6 +675,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __attemptFailureBox?: { failures: CaughtCompilerAttempt[] };
   /** Test-only explicit audit flag; kernel compiles enforce this invariant regardless of the flag's value. */
   __strictNoInternalRecovery?: boolean;
+  /** Test-only observation of the constants B7.2 derives for a deployer. */
+  __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
   /** Compiler-owned shared state propagated through binder/recovery recursion. */
   __internalAttemptFailureState?: InternalAttemptFailureState;
   /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
@@ -17411,6 +17414,9 @@ function compileResolvedAst(
       }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
     }
     if (constructorWritesCollections) artifact.constructorWritesCollections = true;
+    // B7.2: computed once the artifact exists; the deployer program consumes them in B7.3.
+    const constantsBox = (mergedCompilerOptions as InternalCompilerOptions).__deployerConstantsBox;
+    if (constantsBox !== undefined) constantsBox.constants = deployerConstantsOf(artifact, ast.contract);
     const split = (mergedCompilerOptions as { split?: unknown }).split !== undefined;
     const constructorParameters = ast.contract.constructorDef?.parameters ?? [];
     const unsupportedParameter = constructorParameters.some((parameter) => parameter.type instanceof StructType
@@ -17418,7 +17424,9 @@ function compileResolvedAst(
     const inlineLibrary = artifact.externalLibraries?.some((library) => library.resultNft !== true) === true;
     const reason = !artifact.stateLayout || mergedCompilerOptions.composition === 'framed' ? 'not-stateful-direct'
       : ast.contract.usesBlockhash === true ? 'blockhash-ring'
-        : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true ? 'lock-composition'
+        : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true
+          ? 'lock-composition'
+          : ast.contract.usesBlockOracle === true ? 'code-not-constant'
           : unsupportedParameter ? 'param-type'
             : inlineLibrary ? 'inline-library'
               : undefined;
@@ -17428,6 +17436,7 @@ function compileResolvedAst(
         ? 'a deployer exists only for a direct stateful contract'
         : reason === 'blockhash-ring' ? 'a blockhash ring would have to be minted at genesis'
           : reason === 'lock-composition' ? 'its master lock is not the plain pin and code P2SH32 lock'
+            : reason === 'code-not-constant' ? 'the block-oracle lock sentinel makes the code differ per instance'
             : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
               : 'an inline external library puts an OP_DROP between the pin and the arguments';
       emitCompilerWarning(new DeployerUnsupportedWarning(artifact.contractName, reason, detail).message);

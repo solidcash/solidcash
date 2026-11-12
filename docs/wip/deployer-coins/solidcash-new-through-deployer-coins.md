@@ -3355,7 +3355,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       Done when a unit test shows: a plain compile of C runs one compile; a contract that references C
       does not make C's standalone compile build a deployer; and `deployer: true` on a stateless contract
       gives the warning and the artifact field.
-- [ ] **B7.1 What C's own compile already tells.** After C's own code generation, and before the deployer
+- [x] **B7.1 What C's own compile already tells.** After C's own code generation, and before the deployer
       program is built, decide the reasons that need no second program: `param-type`, `inline-library`,
       `blockhash-ring` and `lock-composition` (A4.1). For `lock-composition`, first list every way the SDK
       composes a master lock (`Contract.ts:495–555`: library pad, block-oracle lock, pin, salt;
@@ -3363,7 +3363,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       option that changes a master's shape (function split, proxy and delegate variants). Write the list
       into the unit test, with the verdict for each: supported, or refused. Done when a unit test shows each
       of the four reasons.
-- [ ] **B7.2 Constants from C's own compile.** Collect, for the deployer program to use as constants:
+- [x] **B7.2 Constants from C's own compile.** Collect, for the deployer program to use as constants:
       - C's container options, from `containerOptionsOf(C)` (B2.2);
       - N and the layout of the data records;
       - what today's top-level genesis mints for a collection that nothing wrote: the lock, the token and

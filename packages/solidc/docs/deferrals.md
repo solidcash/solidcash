@@ -3346,6 +3346,11 @@ belongs in the caller state snapshot taken before the arguments resolve.
 
 **Revisit if:** a port's call argument reads the chain; `MasterChefDeposit` pins the refusal and flips when this lands.
 
+**Update 2026-11-12:** lifted for a root call's arguments by the release line's 328f2a88f (merged to master on
+2026-11-11): the direct convention publishes `__block_number` beside `__block_timestamp`, and the SDK states both from
+the info coin the read slices. Nested compose paths still state the clock alone. `MasterChefDeposit` now passes the
+arguments and stops at the next gap, "A Solidity-compat call to a stateful callee on the direct convention" below.
+
 
 ## A compat call that cannot attest its edge (2026-11-05)
 
@@ -3378,3 +3383,22 @@ input fails on its call record: the trial placed the callee's learned data commi
 run that outgrows the inputs behind it.
 
 **Revisit if:** a port's callee writes a mapping and a string in one call and meets this refusal.
+
+
+## A Solidity-compat call to a stateful callee on the direct convention (2026-11-12)
+
+**Deferred:** a direct entry's raw `call` with a visible payload, such as SafeERC20's `transferFrom`, co-spends only its
+stateful callee's master and data records (`sc-materialize-create-builder-low-level-stateful-call.ts`). A callee whose
+run writes entries, emits events or returns a record needs its whole block, as a delegatecall proxy's callee gets. Such a
+transaction fails closed at preflight. `MasterChefDeposit` pins it at `deposit`.
+
+**Why now:** the 2026-11-11 landing let `deposit` reach the call. MasterChef compiles direct on master because its bus
+build is 107,507 B, over the 100,000 B input limit, so automatic selection falls back. On the 0.50.x release line it
+compiled for the bus, below that limit, where the raw call is a `__raw__` call slot whose callee block the SDK supplies.
+
+**What it'd take:** the SDK places the callee's full band after the caller's trailing inputs, as the compiler's
+`__internal__callInputIndex` comment intends, or a bus build of such a contract below the input limit. Branch
+`fix/masterchef-edge` (892c89022) holds two fixes on the way: the call-input index rebinds to where the build placed the
+callee, which a run confirmed, and the compat auto-wire passes the entry's own address, which no run has confirmed yet.
+
+**Revisit if:** a port calls a stateful token through SafeERC20 on the direct convention.

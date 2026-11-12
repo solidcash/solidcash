@@ -505,6 +505,41 @@ against the route handler's copy). Handler counts are unchanged. In the legacy c
 (`direct-versus-batch-introspection-divergence`), are refused functions; the kernel convention's route admits them.
 The test files whose contracts change bytes passed once. `kernel-beta-gate` and the marketplace matrix were not run.
 
+### The 2026-11-12 verification (master after the 2026-11-11 landing)
+
+On 2026-11-11 every unmerged worktree branch except TRE work landed on master: the sushi line with the 2026-11-05
+landing fixes, the 0.50.x release line (`mainnet-final` 95f051c36) and `tornado-framed` (merge `4fd1b33b8`). The merge
+re-pinned `scripts/gate.sh` to `{"routeBytes":44920,"fullBytes":256741,"fullHash":"6a3ccc467ccc480b"}` and the kernel
+manifest's cold compiles (MarketplaceV1 legacy 44920 / 256741, kernel 14870 / 323217; UnicrowClaim kernel 1110 /
+17413; handler counts unchanged), measured from a clean build (`586fb06d4`). One mocknet battery then ran at
+`b9ed8e059`, one step at a time:
+
+| Gate | Result |
+|---|---|
+| utils, testing, solidhat, testing-suite | 562/562; 165/165; 72 passed, 1 skipped; 27/27 |
+| solidc | 43 failed, 7553 passed: all from a stale `pragma solidcash ^0.14.0` the 0.50.0 compiler refuses |
+| solidcash without e2e | 59 failed, 6227 passed, 5 expected failures, 191 skipped, 5 todo: the same pragma |
+| solidcash e2e | 8 failed, 3935 passed, 24 skipped, 3 todo |
+| `yarn lint`, `yarn spellcheck` | 57 errors; 7 issues |
+| `check:source-tree`, `check:doc-citations` | exit 0 |
+| `scripts/gate.sh fast` | exit 0, identity as pinned |
+| application and security conformance | 106/106; 3/3 |
+| generated-project and package smoke | 21/21; 3/3 |
+| `release-docs-snippets` | 2 failed |
+| `release-corpus-baseline` | exit 0 |
+| `kernel-beta-gate` | exit 0 (1,949 s), 217 tests, without `--allow-dirty` |
+| marketplace matrix, `release-application-regtest` | not run (mocknet only) |
+
+Fixed after the battery (`32ccc5f85`..`a4d2ceebb`), each failing file then passing once (compiler 13 files 116/116, SDK
+21 files 189/189), lint, spellcheck and the docs snippets (162 compiled, 0 failed) exit 0:
+
+- tests from the landing and tornado-framed lines named `^0.14.0`; three tests lost imports to the release line's
+  cleanups; lint and spelling in the merged files; two template snippets lacked a deploy entry's signature check;
+- the release line's refusal of a returning call that leaves arguments to the callee (67eb8e641) sat behind master's
+  support for that call (173951f2e) and could not fire; master's behaviour stands (`32ccc5f85`);
+- `MasterChefDeposit` now reaches SafeERC20's raw call and fails closed there: deferred in
+  `packages/solidc/docs/deferrals.md` ("A Solidity-compat call to a stateful callee on the direct convention").
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

@@ -288,7 +288,7 @@ import {
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
   UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
-  ChildGenesisFoldError,
+  ChildGenesisFoldError, DeployerUnsupportedWarning,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -17383,6 +17383,56 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  // B7.0: the deployer option concerns this contract only. A plain compile builds none; an unsupported contract
+  // records why and warns instead of failing.
+  if (mergedCompilerOptions.deployer === true) {
+    // B7.0: computed before any decision about the deployer, so it is present also when the deployer is refused.
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of [...ast.contract.functions, ...(ast.contract.constructorDef === undefined
+      ? [] : [ast.contract.constructorDef])]) {
+      const list = byName.get(fn.name) ?? [];
+      list.push(fn);
+      byName.set(fn.name, list);
+    }
+    const seen = new Set<FunctionDefinitionNode>();
+    const queue = ast.contract.constructorDef === undefined ? [] : [ast.contract.constructorDef];
+    let constructorWritesCollections = false;
+    while (queue.length > 0 && !constructorWritesCollections) {
+      const fn = queue.pop()!;
+      if (seen.has(fn)) continue;
+      seen.add(fn);
+      walkInvocationAst(fn.body, (visited) => {
+        if (visited instanceof MappingAssignNode || visited instanceof MappingFieldAssignNode) {
+          constructorWritesCollections = true;
+        }
+        if (visited instanceof FunctionCallNode) {
+          for (const callee of byName.get(visited.identifier.name) ?? []) queue.push(callee);
+        }
+      }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    }
+    if (constructorWritesCollections) artifact.constructorWritesCollections = true;
+    const split = (mergedCompilerOptions as { split?: unknown }).split !== undefined;
+    const constructorParameters = ast.contract.constructorDef?.parameters ?? [];
+    const unsupportedParameter = constructorParameters.some((parameter) => parameter.type instanceof StructType
+      || parameter.type instanceof ArrayType || parameter.type instanceof FunctionType);
+    const inlineLibrary = artifact.externalLibraries?.some((library) => library.resultNft !== true) === true;
+    const reason = !artifact.stateLayout || mergedCompilerOptions.composition === 'framed' ? 'not-stateful-direct'
+      : ast.contract.usesBlockhash === true ? 'blockhash-ring'
+        : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true ? 'lock-composition'
+          : unsupportedParameter ? 'param-type'
+            : inlineLibrary ? 'inline-library'
+              : undefined;
+    if (reason !== undefined) {
+      artifact.deployerUnsupported = reason;
+      const detail = reason === 'not-stateful-direct'
+        ? 'a deployer exists only for a direct stateful contract'
+        : reason === 'blockhash-ring' ? 'a blockhash ring would have to be minted at genesis'
+          : reason === 'lock-composition' ? 'its master lock is not the plain pin and code P2SH32 lock'
+            : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
+              : 'an inline external library puts an OP_DROP between the pin and the arguments';
+      emitCompilerWarning(new DeployerUnsupportedWarning(artifact.contractName, reason, detail).message);
+    }
+  }
   if (traversal.routeOnlyEntries.size > 0) {
     artifact.abi = artifact.abi.map((fn) => (traversal.routeOnlyEntries.has(fn.selector ?? fn.name)
       ? { ...fn, routeOnly: true } : fn));

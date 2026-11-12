@@ -3331,7 +3331,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
 Nothing in this phase changes an existing contract, except C's own constructor arm in a contract compiled
 with a deployer whose constructor writes a collection, and only where today's static plan refused (B7.18).
 
-- [ ] **B7.0 When the deployer is built.**
+- [x] **B7.0 When the deployer is built.**
       - A compile builds its primary contract's deployer when the public option `deployer` or the internal
         option `__emitDeployer` is set. A plain compile sets neither and stays one compile.
       - The public option concerns the primary contract only. The options recorded for the compiles of

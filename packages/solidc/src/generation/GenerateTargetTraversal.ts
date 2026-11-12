@@ -7762,44 +7762,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_2DROP, loc);
+    this.emit(Op.OP_2DROP, loc);                                 // drop the copy and the empty parameter
+    this.emit(Op.OP_0, loc);                                     // ...and put an empty item back in its place
     this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);                                  // [genesis]
+    // The tag stays for the body; every read below works on the copy on top.
+    // X = tag[0:32].
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);                                 // [genesis, X, rest]
-    this.emit(Op.OP_SWAP, loc);
-    this.emit(Op.OP_ROT, loc);
-    this.emit(Op.OP_DROP, loc);                                  // [rest, X]
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(2n), loc);
-    this.emit(Op.OP_SPLIT, loc);                                 // [rest, X, slot, rest2]
-    this.emit(Op.OP_NIP, loc);
-    this.emit(Op.OP_SWAP, loc);                                  // [rest, rest2, X]
-    this.emit(Op.OP_ROT, loc);
-    this.emit(Op.OP_DROP, loc);                                  // [rest2, X]
-    // A sender-reading entry's tag continues with g_out, a_off, a_len, code_off and code_len; g_in is the first
-    // two bytes of that remainder.
-    if (taggedSize === 46) {
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                                  // [tag, X]
+    this.emit(Op.OP_SWAP, loc);                                  // [X, tag]
+    // [T] -> [T, n]: the unsigned 2-byte field at `offset`.
+    const field = (offset: number): void => {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(2n), loc);
-      this.emit(Op.OP_SPLIT, loc);                               // [rest2, X, g_in, tail]
-      this.emit(Op.OP_NIP, loc);                                 // [rest2, X, g_in]
-      this.emit(Op.OP_SWAP, loc);                                // [rest2, g_in, X]
-      this.emit(Op.OP_ROT, loc);
-      this.emit(Op.OP_DROP, loc);                                // [g_in, X]
-    }
-    this.emit(Op.OP_SWAP, loc);                                  // [X, g_in]
-    this.emit(new Uint8Array([0x00]), loc);                      // unsigned: append the sign byte
-    this.emit(Op.OP_CAT, loc);
-    this.emit(Op.OP_BIN2NUM, loc);                               // [X, g_in]
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(new Uint8Array([0x00]), loc);
+      this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_BIN2NUM, loc);
+    };
+    field(34);                                                   // [X, tag, g_in]
     this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPOINTTXHASH, loc);                        // [X, g_in, txid]
-    this.emit(Op.OP_ROT, loc);                                   // [g_in, txid, X]
-    this.emit(Op.OP_EQUALVERIFY, loc);                           // [g_in]
+    this.emit(Op.OP_OUTPOINTTXHASH, loc);                        // [X, tag, g_in, txid]
+    this.emit(encodeInt(2n), loc);
+    this.emit(Op.OP_PICK, loc);                                  // [X, tag, g_in, txid, X]
+    this.emit(Op.OP_EQUALVERIFY, loc);                           // [X, tag, g_in]
     this.emit(Op.OP_OUTPOINTINDEX, loc);
     this.emit(Op.OP_0, loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);                        // [X, tag, g_in]
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc);
     // A constructor's call sends no value: a payable tagged entry requires msg.value to be 0. The SDK cannot fund
     // the callee's container in the creation transaction without the creation failing here.
     const payable = node.modifiers.includes(FunctionModifier.PAYABLE);
@@ -51802,6 +51800,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(this.callRecordSelector(node), loc);
         this.emit(Op.OP_CAT, loc);
       }
+      // The header is now one physical item on top; model it before the pick below, whose depth it shifts.
+      this.pushToStack('__internal__genesisHeader');
       this.emitPickAt(this.getStackIndex('__internal__genesisCall'), loc);
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_0, loc);
@@ -51817,7 +51817,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(this.callRecordSelector(node), loc);
       this.emit(Op.OP_CAT, loc);
       this.emit(Op.OP_ENDIF, loc);
-      this.pushToStack('__internal__genesisHeader');
     }
     this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
       (index) => {
@@ -58496,6 +58495,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         {},
       );
     }
+    const genesisIdx = this.getStackIndex('__internal__genesisCall', true);
+    if (genesisIdx >= 0 && this.currentFunction?.usesMsgSender === true) {
+      this.emitPickAt(genesisIdx, locationData);   // one tag copy, handed to the branch that takes it
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_0, locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emitMsgSenderResolutionToday(locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emitGenesisSenderResolution(locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      return;
+    }
+    this.emitMsgSenderResolutionToday(locationData);
+  }
+
+  /** Today's `msg.sender`: the witness's sender category, or the minting input's lock. */
+  private emitMsgSenderResolutionToday(locationData: SingleLocationData): void {
     // Pick _msgSenderCategory from the stack
     if (!this.stack.includes('__internal__msgSenderCategory')) {
       throw new LogicalSenderUnavailableError(this.currentFunction?.name ?? 'unknown');
@@ -58517,6 +58535,179 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Non-zero category - verify minting input and return its lockingBytecode
     this.emitMsgSenderMintingVerification(locationData);
     this.emit(Op.OP_ENDIF, locationData);
+  }
+
+  /** B6.6/B6.7: the sender of a constructor's call is the child it created (A7's genesis step, checks 2, 3, 5). */
+  private emitGenesisSenderResolution(loc: SingleLocationData): void {
+    const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
+    const num = (value: number | bigint): void => emit(encodeInt(BigInt(value)));
+    const saved = [...this.stack];
+    // [T] -> [n]: the unsigned 2-byte field at `offset`.
+    const field = (offset: number): void => {
+      emit(Op.OP_DUP);
+      num(offset);
+      emit(Op.OP_SPLIT);
+      emit(Op.OP_NIP);
+      emit(Op.OP_DUP);
+      num(2);
+      emit(Op.OP_SPLIT);
+      emit(Op.OP_DROP);
+      emit(new Uint8Array([0x00]));
+      emit(Op.OP_CAT);
+      emit(Op.OP_BIN2NUM);
+      emit(Op.OP_SWAP);
+      emit(Op.OP_DROP);
+      emit(Op.OP_SWAP);
+      emit(Op.OP_DROP);
+    };
+    const tagCopy = (): void => {
+      emit(Op.OP_FROMALTSTACK);
+      emit(Op.OP_DUP);
+      emit(Op.OP_TOALTSTACK);
+    };
+    // [.., V] -> [.., V after its first `fieldOffset` bytes].
+    const dropPrefix = (fieldOffset: number): void => {
+      tagCopy();
+      field(fieldOffset);
+      emit(Op.OP_SPLIT);
+      emit(Op.OP_NIP);
+    };
+    // [.., V] -> [.., V's first `lenFieldOffset` bytes].
+    const takePrefix = (lenFieldOffset: number): void => {
+      tagCopy();
+      field(lenFieldOffset);
+      emit(Op.OP_SPLIT);
+      emit(Op.OP_DROP);
+    };
+    emit(Op.OP_SIZE);
+    num(46);
+    emit(Op.OP_NUMEQUALVERIFY);                       // a sender-reading entry's tag is exactly 46 bytes
+    emit(Op.OP_DUP);
+    emit(Op.OP_TOALTSTACK);                           // one tag copy parked for every field read
+    field(34);                                        // g_in
+    emit(Op.OP_DUP);                                  // keep g_in for check 4
+    emit(Op.OP_INPUTBYTECODE);                        // [g_in, U]
+    // Check 5: the callee list's entry for this slot names this input. First the bound: 2 × slot + 2 ≤ len,
+    // where len is byte 5 of the unlocking (the list push's length byte).
+    emit(Op.OP_DUP);
+    num(5);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_NIP);
+    num(1);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_NIP);
+    emit(new Uint8Array([0x00]));
+    emit(Op.OP_CAT);
+    emit(Op.OP_BIN2NUM);                              // [g_in, U, len]
+    tagCopy();
+    field(32);                                        // [.., len, slot]
+    num(2);
+    emit(Op.OP_MUL);
+    num(2);
+    emit(Op.OP_ADD);                                  // [.., len, 2 × slot + 2]
+    emit(Op.OP_GREATERTHANOREQUAL);                   // len ≥ 2 × slot + 2
+    emit(Op.OP_VERIFY);
+    emit(Op.OP_DUP);
+    num(6);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_NIP);
+    emit(Op.OP_DUP);
+    num(2);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_DROP);
+    emit(Op.OP_INPUTINDEX);
+    num(2);
+    emit(Op.OP_NUM2BIN);
+    emit(Op.OP_EQUALVERIFY);                          // [U, right]
+    emit(Op.OP_DROP);                                 // [U]
+    emit(Op.OP_DUP);                                  // [U, U]
+    dropPrefix(42);                                   // [U, restC]
+    takePrefix(44);                                   // [U, code]
+    emit(Op.OP_SWAP);                                 // [code, U]
+    dropPrefix(38);                                   // [code, restA]
+    takePrefix(40);                                   // [code, A]
+    emit(Op.OP_SWAP);                                 // [A, code]
+    emit(Op.OP_CAT);                                  // [S]
+    // Check 2: output g_out carries exactly X ‖ 02.
+    tagCopy();
+    field(36);                                        // g_out
+    emit(Op.OP_OUTPUTTOKENCATEGORY);                  // [S, cat]
+    emit(Op.OP_DUP);
+    emit(Op.OP_SIZE);
+    emit(Op.OP_NIP);
+    num(33);
+    emit(Op.OP_NUMEQUALVERIFY);
+    tagCopy();
+    num(32);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_DROP);                                 // [S, cat, X]
+    emit(new Uint8Array([0x02]));
+    emit(Op.OP_CAT);                                  // [S, cat, X ‖ 02]
+    emit(Op.OP_EQUALVERIFY);                          // [g_in, S]
+    // Check 4: when S carries the birth trailer `20 ‖ D ‖ 75`, g_in's coin is P2SH32(D). A child without one
+    // (its constructor makes no call slot) skips this check; B7 appends the trailer to every record-sound child.
+    emit(Op.OP_SIZE);
+    num(34);
+    emit(Op.OP_GREATERTHANOREQUAL);
+    emit(Op.OP_IF);
+    emit(Op.OP_DUP);
+    emit(Op.OP_SIZE);
+    num(34);
+    emit(Op.OP_SUB);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_NIP);                                  // [g_in, S, tail(34)]
+    emit(Op.OP_DUP);
+    num(1);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_DROP);                                 // [.., tail, first]
+    num(0x20);
+    emit(Op.OP_EQUALVERIFY);
+    emit(Op.OP_DUP);
+    emit(Op.OP_SIZE);
+    num(1);
+    emit(Op.OP_SUB);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_NIP);                                  // [.., tail, last]
+    num(0x75);
+    emit(Op.OP_EQUALVERIFY);
+    num(33);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_DROP);                                 // [g_in, S, 20 ‖ D]
+    num(1);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_NIP);                                  // [g_in, S, D]
+    emit(P2SH32_LBC_PREFIX);                          // aa 20
+    emit(Op.OP_SWAP);
+    emit(Op.OP_CAT);
+    emit(P2SH32_LBC_SUFFIX);                          // 87
+    emit(Op.OP_CAT);                                  // [g_in, S, aa 20 ‖ D ‖ 87]
+    num(2);
+    emit(Op.OP_PICK);                                 // [.., expected, g_in]
+    emit(Op.OP_UTXOBYTECODE);
+    emit(Op.OP_EQUALVERIFY);
+    emit(Op.OP_ENDIF);
+    // Check 3: M = P2SH32(21 ‖ X ‖ 02 c0 ce 88 ‖ S).
+    tagCopy();
+    num(32);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_DROP);                                 // [S, X]
+    emit(new Uint8Array([0x21]));
+    emit(Op.OP_SWAP);
+    emit(Op.OP_CAT);
+    emit(hexToBin('02c0ce88'));
+    emit(Op.OP_CAT);                                  // [S, pin(X)]
+    emit(Op.OP_SWAP);                                 // [pin(X), S]
+    emit(Op.OP_CAT);                                  // [pin(X) ‖ S]
+    emit(Op.OP_HASH256);
+    emit(P2SH32_LBC_PREFIX);
+    emit(Op.OP_SWAP);
+    emit(Op.OP_CAT);
+    emit(P2SH32_LBC_SUFFIX);
+    emit(Op.OP_CAT);                                  // [g_in, M]
+    emit(Op.OP_FROMALTSTACK);
+    emit(Op.OP_DROP);
+    emit(Op.OP_NIP);                                  // [M]: g_in is no longer needed
+    this.stack = saved;
   }
 
   /**

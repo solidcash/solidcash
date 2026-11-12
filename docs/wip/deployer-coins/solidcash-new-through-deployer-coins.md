@@ -4285,16 +4285,16 @@ it) never takes today's genesis (A12).
 
 ## B12. Documentation
 
-- [ ] **B12.1** Add the A12 note to `W/solidc/docs/contract-creation.md`, in a new section "Deployer coins",
+- [x] **B12.1** Add the A12 note to `W/solidc/docs/contract-creation.md`, in a new section "Deployer coins",
       with the syntax of A3 and the transaction tables of A10, and the two consequences of the locktime
       (A5).
-- [ ] **B12.2** Replace the "Value and token transfers on deploy" section of `contract-creation.md`: `value`
+- [x] **B12.2** Replace the "Value and token transfers on deploy" section of `contract-creation.md`: `value`
       now opens the child's container, and payments after `new` go to its containers (A8).
-- [ ] **B12.3** In `W/solidc/docs/call-model.md`: section 3, the genesis form of a call record, the void
+- [x] **B12.3** In `W/solidc/docs/call-model.md`: section 3, the genesis form of a call record, the void
       record and the two options; section 9, the genesis step, the birth trailer and the callee list; a new
       paragraph on the created-children list; and the limits of A16.5, in particular `recordSound` and what
       an `unsafe` entry costs a contract's callers.
-- [ ] **B12.4** Search the repository for a user-facing deployment guide
+- [x] **B12.4** Search the repository for a user-facing deployment guide
       (`grep -rl deployStatefulContract --include=*.md`), and add the A12 note there too.
 - [ ] **B12.5** Commit: "docs: deployer coins".
 

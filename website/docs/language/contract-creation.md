@@ -380,3 +380,29 @@ every lifecycle function must be externally callable (not `internal` or `private
 - [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies) - native migration and proxy security
 - [Contract Destruction](/docs/language/selfdestruct) - destination, fee, authorization, and batching rules
 - [Libraries & Using-For](/docs/language/libraries#deployed-delegate-libraries) - deployed delegate libraries
+
+## Proof of birth: deploying through Deploy<C>
+
+A stateful contract compiled with `deployer: true` carries a one-shot **Deploy<C>** program. When its artifact
+has one, the SDK deploys the instance through it, and the instance has a **proof of birth**: its category was
+created by spending the deployer coin at output 0 of a prep transaction, and that coin's program checked the
+constructor's outputs and calls. An artifact from a plain compile has no deployer and its top-level deployment
+is today's genesis, silently.
+
+- **The category** is the txid of the contract's own prep transaction, not `fundingUtxo.txid`. The funding
+  coin only pays for the prep and need not sit at vout 0. Code that needs a category or address before a
+  deployment builds the preps first and reads it from each result.
+- **The constructor's `msg.sender`** is `tx.origin`, the deploying wallet, as in Solidity. `block.number` and
+  `block.timestamp` come from the transaction's locktime, a lower bound rather than the mined block.
+- **Identity.** The creation keeps the category's identity output at output 0 as today's option says. It does
+  not mint a logical-identity anchor: the census forbids one at birth.
+- **Fallbacks.** A deployment that asks for anything the deployer does not build (an initial state the
+  constructor does not produce, a salt, another address type, several master threads, a non-P2PKH funder)
+  takes today's genesis with one warning, and has no proof of birth. `viaDeployer: true` turns the fallback
+  into an error that names it.
+- **Inside a creator**, `new C{args: (a1, a2), value: v}(c1, c2)` gives C's contract parameters in `args` and
+  the constructor arguments in the parentheses. A `new` of a stateful direct child compiles to a deployer
+  binding: the creator publishes its own category into the deployer's arguments, checks what the deployer
+  received, and the child's constructor can read `msg.sender` as the creator. See
+  [contract-creation.md in the compiler docs](https://github.com/solidcash/solidcash/blob/master/packages/solidc/docs/contract-creation.md)
+  for the transaction tables and the full interface.

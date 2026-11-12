@@ -103,6 +103,24 @@ index `__internal__externalReturnOutputIdx[N]` via `OP_OUTPUTTOKENCOMMITMENT`, r
 decodes the pushdata-framed fields. Single value, multi-value tuple (destructured `(a, b) = IFoo(addr).f()`), and
 forward-looking opaque `bytes` are all supported; an opaque read checks no digest.
 
+### Calls made by a constructor (genesis calls)
+
+A constructor's external call is the same co-spend covenant with two additions. Its call record's digest
+covers a tagged preimage, `ff ff ‖ tag ‖ selector ‖ arguments`, where the 46-byte tag names the deployer
+coin `(X, 0)`, the constructor's call slot, the callee's input and the child's master output. A callee that
+both reads `msg.sender` and carries the tag resolves its caller through the **genesis step**: it checks that
+the named input spends `(X, 0)`, that the output at the tag's index carries `X‖02`, that its lock is
+`P2SH32(pin(X) ‖ A ‖ code)` rebuilt from the deployer's unlocking, that a record-sound child's code ends with
+the birth trailer `20 ‖ D ‖ 75` (whose `D` names the deployer coin's lock), and that the callee list at byte 5
+of that unlocking names this input at the tag's slot.
+
+A call whose result the constructor discards is bound like any other when the callee publishes **void
+records**: compile the callee with `callRecords: 'all'` and its void entries settle a record too. The two
+options are `callRecords: 'returning' | 'all'` and `genesisCalls: true | false` (the latter is on by default;
+it is what adds the tag parameter and the genesis step). Under `'returning'`, a void entry still runs its
+settlement but does not advertise a record in the ABI; under `genesisCalls: false` a contract compiles
+exactly as before the deployer work.
+
 ### What is compile-time vs runtime
 
 Compile-time today: the callee TYPE (interface or contract - resolved via `getCalleeFunctions`, which reads
@@ -198,6 +216,21 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
   the website message-bus guide. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
 - **Script is sole arbiter:** unchecked == unconstrained.
+- **Genesis sender:** an entry that reads `msg.sender` and carries the genesis call resolves it to the
+  child's master lock, never to `tx.origin`, when the tag is non-empty. The checks above make the child's
+  lock a fresh P2SH32 of `pin(X)` and the deployer's own code; without the birth trailer the binding rests on
+  the lock and the callee list, which is why every record-sound child gets the trailer.
+- **The callee list:** Deploy<C>'s unlocking carries, immediately after the `create` selector, a push of one
+  2-byte input index per call slot. `create` checks each slot against the call its constructor wrote, and the
+  callee checks its own entry, so a call can only answer a constructor slot it belongs to.
+- **The created-children list:** a marked creator (one that runs a deployer `new` of a sender-reading child)
+  publishes `sha256` of the categories it created at offset 5 of its own unlocking. A child's constructor that
+  reads `msg.sender` sees the creator, not the wallet that funded the transaction.
+- **What an unsound master costs its callers:** `recordSound` is false when any arm is an `unsafe`, `split`,
+  `merge` or `delegate` entry, a fallback, a message-bus route or a delegatecall forwarder. Such a master has
+  no deployer, its entries carry no genesis parameter, and no other contract's constructor can call it: the
+  call would have no record to bind.
+
 - **Co-spend liveness:** targets are real inputs, recreated for reads; the tx grows with N.
 
 ## 10. Forward design: generic (allowlist-free) dynamic dispatch

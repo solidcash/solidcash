@@ -1075,6 +1075,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   usesDynamicChunkInputBase?: boolean;
   /** A body of Deploy<C> compiled in genesis mode (A5): its create arm and every body the program keeps. */
   genesisMode?: boolean;
+  /** In Deploy<C>'s create, the contract parameters, moved from the contract's own list (A4.2 item 8). */
+  deployerContractParameters?: ParameterNode[];
+  /** In Deploy<C>'s create, sha256 of C's body, which the pushed code must equal (A4.3 step 2). */
+  deployerTemplate?: Uint8Array;
   /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
   framedValueWitnessSlots?: number;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */

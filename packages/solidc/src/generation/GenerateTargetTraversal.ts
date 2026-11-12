@@ -10784,6 +10784,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_TOALTSTACK, anchorLoc);
       this.keccakSlotAltAnchored = true;
     }
+    if (node.genesisMode === true) {
+      this.emitGenesisCodeCheck(node);
+      this.emitGenesisPrologue(node);
+    }
     node.body = this.visit(node.body) as BlockNode;
     if (this.keccakSlotAltAnchored) {
       this.emit(Op.OP_FROMALTSTACK, { location: node.body.location, positionHint: PositionHint.END });
@@ -11030,6 +11034,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.currentContractReadsBlockhash
       || this.currentContractEmitsEvent
       || (this.compilerOptions.forceStateful ?? false);
+    // A5: the create arm's genesis epilogue replaces every live-spend covenant check.
+    if (node.genesisMode === true) {
+      this.emitGenesisCreateEpilogue(node);
+      this.emit(Op.OP_1, { location: node.body.location, positionHint: PositionHint.END });
+      this.pushToStack('(value)');
+      this.cleanStack(node.body);
+      return node;
+    }
     const isUnsafe = node.modifiers.includes(FunctionModifier.UNSAFE);
     const unsafeTier = isUnsafe ? (node.unsafeTier ?? 0) : null;
     // The token-container migration range is set only while emitting an upgrade entry; every other entry must not
@@ -11593,6 +11605,143 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /**
+   * A5: the create arm of Deploy<C>. Its body has run in genesis mode; the records it wrote are pinned at the
+   * genesis output base, and none of the master, container or census checks of a live spend apply.
+   */
+  private emitGenesisCreateEpilogue(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    this.emitGenesisMasterPin(node);
+    if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
+  }
+
+  /**
+   * A4.3 step 5 / A4.4: M = P2SH32(pin(X) || A || code) is output OUTBASE's lock, with X‖02, amount 0, value
+   * RESERVE and an empty commitment. X is this input's outpoint transaction id.
+   */
+  /** A4.3 step 2: the pushed code hashes to TEMPLATE(C). */
+  private emitGenesisCodeCheck(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.START };
+    const template = node.deployerTemplate;
+    if (template === undefined) throw new Error('genesis create has no TEMPLATE');
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__code'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(codecopy)');
+    this.emit(Op.OP_SHA256, loc);
+    this.popFromStack();
+    this.pushToStack('(hash)');
+    this.emit(template, loc);
+    this.pushToStack('(template)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  /**
+   * A4.3 step 5: build R = pin(X) || A || code and M = P2SH32(R) once, and keep both for the body and epilogue.
+   */
+  private emitGenesisPrologue(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.START };
+    const push = (name: string, script: Script): void => {
+      this.emit(script, loc);
+      this.pushToStack(name);
+    };
+    const pick = (name: string, out: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack(out);
+    };
+    const cat = (out: string): void => {
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack(out);
+    };
+
+    push('(gen_x)', [Op.OP_INPUTINDEX, Op.OP_OUTPOINTTXHASH]);
+    pick('(gen_x)', '(gen_cat)');
+    this.emit(encodeInt(2n), loc);
+    this.pushToStack('(tmp)');
+    cat('(gen_cat)');
+    pick('(gen_cat)', '(catcopy)');
+    push('(pinprefix)', [Uint8Array.of(0x21)]);
+    this.emit(Op.OP_SWAP, loc);
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    cat('(gen_pin)');
+    push('(tmp)', [Uint8Array.from([0xc0, 0xa2, 0x88])]);
+    cat('(gen_pin)');
+    for (const parameter of [...(node.deployerContractParameters ?? [])].reverse()) {
+      pick(parameter.name, '(arg)');
+      this.emitPushdataEncode(parameter.type, loc);
+      cat('(gen_pin)');
+    }
+    pick('__internal__code', '(code)');
+    cat('(gen_r)');
+    this.emit(Op.OP_DUP, loc);
+    this.pushToStack('(rcopy)');
+    this.stack[this.getStackIndex('(gen_r)')] = '(gen_r)';
+    this.emit(Op.OP_HASH256, loc);
+    this.popFromStack();
+    this.pushToStack('(gen_hash)');
+    push('(mprefix)', [Uint8Array.from([0xaa, 0x20])]);
+    this.emit(Op.OP_SWAP, loc);
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    cat('(gen_m)');
+    push('(mcap)', [Uint8Array.of(0x87)]);
+    cat('(gen_m)');
+  }
+
+  private emitGenesisMasterPin(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const push = (name: string, script: Script): void => {
+      this.emit(script, loc);
+      this.pushToStack(name);
+    };
+    const pick = (name: string, out: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack(out);
+    };
+
+    pick('__internal__genesisOutputBase', '(outidx)');
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.popFromStack();
+    this.pushToStack('(lbc)');
+    pick('(gen_m)', '(mcopy)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    // A4.4: X‖02, amount 0, empty commitment, RESERVE satoshis.
+    pick('__internal__genesisOutputBase', '(oidx)');
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.popFromStack();
+    this.pushToStack('(outcat)');
+    pick('(gen_cat)', '(expectcat)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    pick('__internal__genesisOutputBase', '(oidx)');
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.popFromStack();
+    this.pushToStack('(amount)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(zero)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+    pick('__internal__genesisOutputBase', '(oidx)');
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.popFromStack();
+    this.pushToStack('(commitment)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(empty)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    pick('__internal__genesisOutputBase', '(oidx)');
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
+    this.emit(encodeInt(1200n), loc);
+    this.pushToStack('(reserve)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
   }
 
   /**
@@ -19220,6 +19369,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitUnaryOp(node: UnaryOpNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
+    // A5: in genesis mode `address(this)` is M, the master lock the prologue built.
+    if (this.currentFunction?.genesisMode === true
+      && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(gen_m)'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // A runtime graph edge has no fixed `externalCallInputBase`: its callee is located by the authenticated
     // callManifest settlement table. Solidity's ubiquitous `Address.functionCall` guard only asks
     // `target.code.length`, so answer that exact question from the logical BCH address without attempting the
@@ -19711,10 +19871,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     switch (node.operator) {
       case NullaryOperator.MSG_SENDER:
-        this.emitMsgSender(locationData);
+        if (this.currentFunction?.genesisMode === true) {
+          // A4.3 step 8: a zero sender category is tx.origin. The creator path (B7.11) is not built yet.
+          this.emit(encodeInt(BigInt(this.getStackIndex('__internal__msgSenderCategory'))), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          this.pushToStack('(sender_category)');
+          this.emit(new Uint8Array(32), locationData);
+          this.pushToStack('(zero)');
+          this.emit(Op.OP_EQUAL, locationData);
+          this.popFromStack(2);
+          this.emit(Op.OP_IF, locationData);
+          this.emitTxOrigin(locationData);
+          this.emit(Op.OP_ELSE, locationData);
+          this.emitTxOrigin(locationData);
+          this.emit(Op.OP_ENDIF, locationData);
+        } else {
+          this.emitMsgSender(locationData);
+        }
         break;
       case NullaryOperator.MSG_VALUE:
-        this.emitMsgValue(locationData);
+        if (this.currentFunction?.genesisMode === true) {
+          this.emit(encodeInt(BigInt(this.getStackIndex('__internal__deployValue'))), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        } else {
+          this.emitMsgValue(locationData);
+        }
         break;
       case NullaryOperator.MSG_SIG:
         this.emitMsgSig(locationData);
@@ -19724,6 +19905,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         break;
       case NullaryOperator.TX_ORIGIN:
         this.emitTxOrigin(locationData);
+        break;
+      case NullaryOperator.BYTECODE:
+        if (this.currentFunction?.genesisMode === true) {
+          this.emit(encodeInt(BigInt(this.getStackIndex('(gen_r)'))), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          break;
+        }
+        this.emit(Op.OP_ACTIVEBYTECODE, locationData);
         break;
       case NullaryOperator.CHAIN_ID:
         // block.chainid is uint256 (Solidity parity). Emit the network selector as its UNSIGNED byte value
@@ -19744,10 +19933,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitTxGasprice(locationData);
         break;
       case NullaryOperator.BLOCK_NUMBER:
-        this.emitBlockOracleField('number', locationData);
+        if (this.currentFunction?.genesisMode === true) {
+          this.emit(Op.OP_TXLOCKTIME, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(Op.OP_CHECKLOCKTIMEVERIFY, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(encodeInt(500_000_000n), locationData);
+          this.emit(Op.OP_LESSTHAN, locationData);
+          this.emit(Op.OP_VERIFY, locationData);
+          this.pushToStack('(value)');
+        } else {
+          this.emitBlockOracleField('number', locationData);
+        }
         return node;
       case NullaryOperator.BLOCK_TIMESTAMP:
-        this.emitBlockOracleField('timestamp', locationData);
+        if (this.currentFunction?.genesisMode === true) {
+          this.emit(Op.OP_TXLOCKTIME, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(Op.OP_CHECKLOCKTIMEVERIFY, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          this.emit(encodeInt(500_000_000n), locationData);
+          this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+          this.emit(Op.OP_VERIFY, locationData);
+          this.pushToStack('(value)');
+        } else {
+          this.emitBlockOracleField('timestamp', locationData);
+        }
         return node;
       case NullaryOperator.BLOCK_DIFFICULTY:
         this.emitBlockOracleField('difficulty', locationData);
@@ -20940,6 +21153,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(stackLabel);
     };
     const fromState = (): void => {
+      // Genesis: a field the constructor has not written reads its type's default (A5).
+      if (this.currentFunction?.genesisMode === true) {
+        this.emitDefaultValue(locationData, sv.type);
+        this.pushToStack(stackLabel);
+        return;
+      }
       // Read from NFT commitment
       const fieldsInNft = this.stateVariables
         .filter((v) => v.nftIndex === sv.nftIndex)
@@ -26161,6 +26380,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
     };
     const fromState = (): void => {
+      // Genesis: a field the constructor has not written reads its type's default (A5).
+      if (this.currentFunction?.genesisMode === true) {
+        this.emitDefaultValue(locationData, sv.type);
+        this.pushToStack('(value)');
+        return;
+      }
       // Get fields in same NFT, sorted by fieldIndex
       const fieldsInNft = this.stateVariables
         .filter((v) => v.nftIndex === sv.nftIndex)
@@ -37839,7 +38064,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // re-mint lock check replace these same-index preservation checks.
       if (this.directUpgradeMigratesDataNfts(node)) continue;
       const fields = nftFields.get(nftIdx);
-      const hasWrite = fields?.some((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
+      // Genesis mints every record: an unwritten field is its type's default, and the output is pinned below.
+      const hasWrite = this.currentFunction?.genesisMode === true
+        || fields?.some((sv) => this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
       // A scalar the body wrote before a call and read again past it is closed: the slot still holds the pre-call
       // value, and a frame of this contract below the call may have rewritten the record. The segment of that read
       // keeps the view the chain carried in. A record last touched where it was written keeps the rebuild below.
@@ -37928,17 +38155,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             }
             this.pushToStack('(value)');
           } else {
-            // Read from input commitment, decode, re-encode
-            // Decode this field. An unwritten dynamic var preserves its uint32 A$len header verbatim
-            // (see physicalFieldType), not a value of its declared type.
+            // Genesis: a field the constructor never wrote is the type's default.
             const fieldType = this.physicalFieldType(sv);
-            this.emitStateFieldRead(sv, fieldType, sortedFields, locationData);
+            if (this.currentFunction?.genesisMode === true) {
+              this.emitDefaultValue(locationData, fieldType);
+              this.pushToStack('(value)');
+              this.emitPushdataEncode(fieldType, locationData);
+            } else {
+              // Read from input commitment, decode, re-encode
+              // Decode this field. An unwritten dynamic var preserves its uint32 A$len header verbatim
+              // (see physicalFieldType), not a value of its declared type.
+              this.emitStateFieldRead(sv, fieldType, sortedFields, locationData);
 
-            // Track the decoded value (produced by untracked opcodes above)
-            // so that emitPushdataEncode's internal popFromStack pops the right entry
-            this.pushToStack('(value)');
-            // Re-encode to pushdata format (pops decoded value, pushes encoded value)
-            this.emitPushdataEncode(fieldType, locationData);
+              // Track the decoded value (produced by untracked opcodes above)
+              // so that emitPushdataEncode's internal popFromStack pops the right entry
+              this.pushToStack('(value)');
+              // Re-encode to pushdata format (pops decoded value, pushes encoded value)
+              this.emitPushdataEncode(fieldType, locationData);
+            }
           }
 
           // CAT with previous fields
@@ -44236,6 +44470,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * as a second copy of this one. Stack neutral.
    */
   private emitRebuiltRecordInputTag(nftIdx: number, compactOffset: number, loc: SingleLocationData): void {
+    if (this.currentFunction?.genesisMode === true) return;
     if (!this.recordsTellApartByTag()) return;
     const here = this.openControlPath();
     const decoded = this.recordInputDecodePaths.get(nftIdx) ?? [];
@@ -44789,6 +45024,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * it unchanged; a frame that declares no record leaves the sentinel, which no index opcode accepts.
    */
   private emitRecordBlockBase(side: 'in' | 'out', loc: SingleLocationData): void {
+    if (this.currentFunction?.genesisMode === true) {
+      if (side === 'in') {
+        throw new Error(`a genesis-mode body reads a record input (${this.currentFunction.name})`);
+      }
+      const base = this.getStackIndex('__internal__genesisOutputBase');
+      this.emit(encodeInt(BigInt(base)), loc);
+      this.emit(Op.OP_PICK, loc);
+      return;
+    }
     if (!this.readsRecordsFromFrame) {
       this.emit(Op.OP_INPUTINDEX, loc);
       return;
@@ -44913,6 +45157,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Verify a data NFT preserves its locking bytecode and token category. */
   private emitDataNftPreservation(offset: number, loc: SingleLocationData): void {
+    // Genesis mints every record output; there is no input record to preserve.
+    if (this.currentFunction?.genesisMode === true) return;
     // Delegate and message-bus owner-base frames must address the authenticated participant block, not
     // OP_INPUTINDEX. Merge tails share the route unlocker; baking INPUTINDEX into a shared helper would make
     // them preserve a neighbouring consumed master instead of the survivor dataNft.
@@ -45025,6 +45271,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitDataNftCommitmentPreservation(offset: number, loc: SingleLocationData): void {
+    if (this.currentFunction?.genesisMode === true) return;
     if (this.currentFunctionIsDelegate || this.usesMessageBusOwnerBlockBase()) {
       this.emitDataNftCommitmentPreservationInline(offset, loc, true);
       return;

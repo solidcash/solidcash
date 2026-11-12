@@ -680,6 +680,9 @@ function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): vo
   create.name = '__construct';
   create.location = location;
   create.functionSelector = DEPLOYER_SELECTOR_CREATE;
+  if (options.__deployerProgram !== undefined) {
+    create.deployerTemplate = sha256Bytes.hash(options.__deployerProgram.constants.code);
+  }
 
   // Keep exactly the functions the constructor reaches. Every other body would either become an arm or fail in
   // genesis mode for a reason the source never asked about.
@@ -813,6 +816,7 @@ function arrangeDeployerParameters(ast: Ast, box: DeployerProgramBox | undefined
     return node;
   };
   const contractParameters = contract.parameters;
+  create.deployerContractParameters = contractParameters;
   contract.parameters = [];
   const sourceParameters = create.parameters.filter((entry) => !entry.name.startsWith('__internal__'));
   const passParameters = create.parameters.filter((entry) => entry.name.startsWith('__internal__')
@@ -15939,7 +15943,7 @@ function compileResolvedAst(
     // and loop-return normalization below.
     ast = ast.accept(new DesugarNestedBranchReturn(true)) as Ast;
   }
-  if (earlyEntryFeatures?.needsBlockOracle) {
+  if (earlyEntryFeatures?.needsBlockOracle && !isDeployerProgram) {
     ast = ast.accept(new SynthesizeBlockOracle(
       mergedCompilerOptions.evmCompat ?? false,
       oracleDelegateExecutionContext,
@@ -16751,8 +16755,8 @@ function compileResolvedAst(
     || ast.contract.constructorDef?.usesBlockOracle === true
     || ast.contract.fallbackDef?.usesBlockOracle === true
     || ast.contract.receiveDef?.usesBlockOracle === true;
-  if (needsBlockOracle || oracleAlreadyMarked
-    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+  if (!isDeployerProgram && (needsBlockOracle || oracleAlreadyMarked
+    || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle))) {
     ast = ast.accept(blockOracle) as Ast;
   }
 

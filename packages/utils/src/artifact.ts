@@ -105,6 +105,11 @@ export interface CompilerOptions {
    */
   deployer?: boolean;
   /**
+   * Internal. Compile a direct creator's deployer `new` sites against the child's deployer instead of embedding
+   * the child (B8). It is off until the switch of B10; with it off every source compiles as it did after B7.
+   */
+  __deployerNew?: boolean;
+  /**
    * Which entry functions publish a call record: `'returning'` (today's behaviour: only functions that return a
    * value) or `'all'` (void entries too). Framed and message-bus compiles accept only `'returning'`.
    */

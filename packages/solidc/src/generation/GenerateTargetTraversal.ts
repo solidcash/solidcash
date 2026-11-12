@@ -120,6 +120,7 @@ import {
   validatorTemplateHash,
   type AbiFunction,
   type AddressForm,
+  type DeployerAbi,
 } from '@solidcash/utils';
 import {
   validateDefineEmission,
@@ -2507,6 +2508,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Subroutines a direct upgrade reaches; their transaction-signature checks must sign all outputs.
   private upgradeSignatureFenceIds = new Set<number>();
   private deployCounter: number = 0;
+  /** B8.8: a deployer `new`'s value leaves the creator's satoshi container like a transfer, with no output pinned. */
+  private deployerNewValues: { amountStackName: string }[] = [];
   private deploymentRecipeAnalysis = new WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis>();
   /**
    * Memo for the fallback body scans in `functionContainsRuntimeLoopEvent` / `...Transfer`. Those predicates
@@ -4083,7 +4086,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (s.kind === 'deploy') {
         slots.push({ ...s, offset: offset++ });
         const target = node.deployTargets[deployIdx];
-        const need = (target?.dataNftCount ?? 0) + (target?.entryNftCount ?? 0);
+        const need = target?.deployerGenesisOutputs !== undefined
+          ? Math.max(0, target.deployerGenesisOutputs - 1)
+          : (target?.dataNftCount ?? 0) + (target?.entryNftCount ?? 0);
         for (let n = 0; n < need; n++) {
           slots.push({
             kind: 'deployDataNft', offset: offset++, slotIndex: deployIdx, nftIndex: n,
@@ -9675,6 +9680,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
+    this.deployerNewValues = [];
     // `analyzeChildDeploymentRecipes` produces a WeakMap keyed by InstantiationNode whose only readers are
     // `prepareDeployEntryGeometry` and the deploy-target publish below; both look a node up and treat a miss as
     // "no recipe". `hasContractInstantiation` is set by SymbolTableTraversal.visitInstantiation for EVERY
@@ -22957,6 +22963,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    // B8.6: a `new` result's category is the X the site bound, in display order (`this.category` in the child).
+    if (node.name === 'category' && node.expression.type instanceof AddressType) {
+      const site = this.deployerNewSiteOf(node.expression);
+      if (site === undefined) throw new Error('A `.category` without a deployer `new` reached code generation');
+      let inline: ExpressionNode = node.expression;
+      while (inline instanceof CastNode) inline = inline.expression;
+      // An inline `new C().category` creates here; a local already holds the site's X.
+      if (inline instanceof InstantiationNode) this.visit(node.expression);
+      const deployIndex = this.deployRoutingCounters.get(site);
+      if (deployIndex === undefined) {
+        throw new Error('A `.category` reads a deploy site this body did not emit');
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex(`__deploy_x_${deployIndex}`))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_REVERSEBYTES, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // Handle .code on AddressType - extract redeem script
     if (node.name === 'code' && node.expression.type instanceof AddressType) {
       const addressParam = node.expression instanceof IdentifierNode ? node.expression.name : undefined;
@@ -23133,6 +23158,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitContractDeployment(node: InstantiationNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     const contract = node.referencedContract!;
+    if (node.isDeployerNew === true) return this.emitDeployerNewSite(node, locationData);
     const bodyBytecode = this.compiledBytecodes.get(contract.name);
     // Deploying the contract currently being compiled (`new A()` inside A). The child is this same contract
     // class, so its locking bytecode is exactly the one THIS INPUT spends, and `emitSelfLockingBytecode` produces
@@ -23524,6 +23550,201 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     return node;
+  }
+
+  /**
+   * B8.6: a deployer `new` binds the Deploy<C> input at the site instead of embedding C's code. The site emits
+   * `<Q> <A> <d_in> OP_INPUTBYTECODE`, then checks the selector, the Q‖A bytes, DEPLOY(C) and X‖02 at d_out.
+   */
+  private emitDeployerNewSite(node: InstantiationNode, locationData: SingleLocationData): Node {
+    const abi = node.deployerAbi;
+    if (abi === undefined) throw new Error('A deployer `new` has no DeployerAbi');
+    const site = this.deployCounter++;
+    this.deployRoutingCounters.set(node, site);
+    node.creationBytecode = abi.code;
+    node.deployedDataNftCount = node.referencedContract?.stateVariables.length
+      ? Math.max(...node.referencedContract.stateVariables.map((state) => state.nftIndex ?? 0)) + 1 : 0;
+    node.deployedEntryNftCount = node.referencedContract?.collections.length ?? 0;
+    this.recordDeployerDeployTarget(node, abi);
+
+    // Step 1: evaluate value once. It is kept for the conservation sum of B8.8 and reused for Q.
+    let valueName: string | undefined;
+    if (node.callOptions?.value !== undefined) {
+      this.visit(node.callOptions.value);
+      valueName = `__internal__deployer_value_${site}`;
+      this.popFromStack();
+      this.pushToStack(valueName);
+      this.deployerNewValues.push({ amountStackName: valueName });
+    }
+
+    // Step 2: Q := encode(own category) ‖ encode(v) ‖ encode(c_k) ‖ … ‖ encode(c_1).
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.pushToStack('(value)');
+    this.emit(new Uint8Array([0x01, 0x20]), locationData); // the 32-byte push prefix
+    this.pushToStack('(value)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    if (valueName !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(valueName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else {
+      this.emit(Op.OP_0, locationData);
+    }
+    this.pushToStack('(value)');
+    this.emitPushdataEncode(node.callOptions?.value?.type ?? PrimitiveType.BIGINT, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    for (let index = node.parameters.length - 1; index >= 0; index--) {
+      const argument = node.parameters[index];
+      this.visit(argument);
+      this.emitPushdataEncode(argument.type ?? PrimitiveType.BIGINT, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+    }
+
+    // A := encode(a_n) ‖ … ‖ encode(a_1).
+    const contractArguments = node.callOptions?.args ?? [];
+    if (contractArguments.length === 0) {
+      this.emit(Op.OP_0, locationData);
+      this.pushToStack('(value)');
+    } else {
+      for (let index = contractArguments.length - 1; index >= 0; index--) {
+        const argument = contractArguments[index];
+        this.visit(argument);
+        this.emitPushdataEncode(argument.type ?? PrimitiveType.BIGINT, locationData);
+        if (index < contractArguments.length - 1) {
+          this.emit(Op.OP_CAT, locationData);
+          this.popFromStack(2);
+          this.pushToStack('(value)');
+        }
+      }
+    }
+    // Q ‖ A, in that order: Q is below A, and CAT keeps the lower value first.
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+
+    // Step 3: <Q> <A> <d_in> OP_INPUTBYTECODE, with nothing in between.
+    this.emitBlockSlotIndex('deploy', site, locationData);
+    this.emit(Op.OP_INPUTBYTECODE, locationData);
+    this.pushToStack('(unlocking)');
+
+    // Step 4a: the selector push, then the callee list's length byte.
+    this.emit(encodeInt(6n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack();
+    this.pushToStack('(value)');
+    this.pushToStack('(unlockingRest)');
+    const selector = abi.abi.find((entry) => entry.name === 'create')?.selector;
+    if (selector === undefined) throw new Error('The child deployer has no create selector');
+    const prefix = new Uint8Array([0x04, ...hexToBin(selector), 2 * abi.callSlots]);
+    this.emit(encodeDataPush(prefix), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    // Step 4b: the bytes from 6 + 2s are exactly Q ‖ A.
+    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_SIZE, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.pushToStack('(unlockingRest)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(bound)');
+    this.pushToStack('(tail)');
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    // Step 4c: d_in's lock is DEPLOY(C), and d_out carries X ‖ 0x02.
+    this.emitBlockSlotIndex('deploy', site, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(encodeDataPush(hexToBin(abi.lockingBytecode)), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emitBlockSlotIndex('deploy', site, locationData);
+    this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    const xName = `__deploy_x_${site}`;
+    this.pushToStack(xName);
+    this.emit(Op.OP_DUP, locationData);
+    this.pushToStack('(value)');
+    this.emit(encodeDataPush(new Uint8Array([0x02])), locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(expectedCategory)');
+    this.emitDeployerChildOutputIndex(site, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    // Step 5: the expression is the child's master locking bytecode at d_out.
+    this.emitDeployerChildOutputIndex(site, locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.pushToStack('(value)');
+    return node;
+  }
+
+  /** The absolute output index of the child master this site creates, from the master input index. */
+  private emitDeployerChildOutputIndex(site: number, locationData: SingleLocationData): void {
+    this.emitMasterInputIndex(locationData);
+    const offset = this.getBlockSlotOffset('deploy', site);
+    if (offset > 0) {
+      this.emit(encodeInt(BigInt(offset)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+  }
+
+  /** B8.10: the deploy-target record a deployer child publishes for the SDK. */
+  private recordDeployerDeployTarget(node: InstantiationNode, abi: DeployerAbi): void {
+    const parameters = new Set(this.currentFunction.parameters.map((parameter) => parameter.name));
+    const source = (expression: ExpressionNode | undefined): string | null =>
+      expression instanceof IdentifierNode && parameters.has(expression.name) ? expression.name : null;
+    if (!this.currentFunction.deployTargets) this.currentFunction.deployTargets = [];
+    this.currentFunction.deployTargets.push({
+      contractName: node.referencedContract!.name,
+      dataNftCount: node.deployedDataNftCount,
+      ...(node.deployedEntryNftCount > 0 && { entryNftCount: node.deployedEntryNftCount }),
+      deployerGenesisOutputs: abi.genesisOutputs,
+      contractArgs: (node.callOptions?.args ?? []).map(source),
+      constructorArgs: node.parameters.map(source),
+      ...(node.callOptions?.value !== undefined && { valueArg: source(node.callOptions.value) }),
+      creationBytecode: abi.code,
+    });
+  }
+
+  /** The `new` site a `.category` expression reads (B8.2), or undefined when it is not a `new` result. */
+  private deployerNewSiteOf(expression: ExpressionNode | undefined): InstantiationNode | undefined {
+    let current: ExpressionNode | undefined = expression;
+    const seen = new Set<Node>();
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      if (current instanceof InstantiationNode) return current.isDeployerNew === true ? current : undefined;
+      if (current instanceof CastNode) {
+        current = current.expression;
+        continue;
+      }
+      if (current instanceof IdentifierNode) {
+        const definition = current.definition?.definition;
+        if (definition instanceof VariableDefinitionNode && definition.expression !== undefined) {
+          current = definition.expression;
+          continue;
+        }
+      }
+      return undefined;
+    }
+    return undefined;
   }
 
   // ===== ABI Encode/Decode Support =====
@@ -58409,7 +58630,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const minerFee = this.currentFunction.blockLayout?.minerFee;
     const singleContainer = this.hasSingleSatoshiContainer();
     const spendsContainer = minerFee !== undefined || singleContainer;
-    if (!this.framedMaster && (this.pendingTransfers.length > 0 || spendsContainer)
+    if (!this.framedMaster && (this.pendingTransfers.length > 0 || this.deployerNewValues.length > 0
+      || spendsContainer)
       && this.currentFunction.blockLayout && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
       // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot. A function
@@ -58449,6 +58671,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_ENDIF, locationData);
         }
 
+        this.emit(Op.OP_ADD, locationData);
+      }
+
+      // B8.8: a deployer `new`'s value leaves the container with no pinned transfer output; Deploy<C> pins the
+      // child's container itself.
+      for (const deploy of this.deployerNewValues) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(deploy.amountStackName))), locationData);
+        this.emit(Op.OP_PICK, locationData);
         this.emit(Op.OP_ADD, locationData);
       }
 

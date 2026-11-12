@@ -625,6 +625,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
     // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
     creationBytecode?: string;
+    /** B8.5: a deployer child's site reserves w_out(C) − 1 output-only slots after its deploy slot. */
+    deployerGenesisOutputs?: number;
+    /** Per contract argument of a deployer `new`: the creating function's parameter it forwards, or null. */
+    contractArgs?: (string | null)[];
+    /** The creating function's parameter a deployer `new`'s `value` comes from, or null. */
+    valueArg?: string | null;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
     childLayoutDigest?: string;
@@ -2088,6 +2094,10 @@ export class IndirectCallNode extends ExpressionNode {
 export class InstantiationNode extends ExpressionNode {
   referencedContract?: ContractNode;
   callOptions?: CallOptions;
+  /** B8.1: this `new` creates a stateful direct child through its deployer (A3, A6). */
+  isDeployerNew?: boolean;
+  /** B8.3: the child's deployer, when it has one; its `create` ABI and constants drive the site's binding. */
+  deployerAbi?: import('@solidcash/utils').DeployerAbi;
   transferIndex: number = 0;
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;

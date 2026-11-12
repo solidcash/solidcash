@@ -263,7 +263,9 @@ import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js'
 import { emitCompilerWarning } from '../warnings.js';
 import {
   DeployerUnsupportedError, ReservedNameError, StatefulAddressPaymentError, StatefulAddressPaymentWarning,
+  DeploySaltError, DeployValueBelowReserveError, DeployValueWithoutContainerError, DeployedChildCallError,
 } from '../Errors.js';
+import { deployerChildOf, type DeployerChild } from '../generation/deployerChildren.js';
 import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js';
 
 export { getMaxPushdataEncodedSizeForType };
@@ -15364,6 +15366,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               if (this.deployResultLocals.has(varName)) {
                 this.refuseFramedDeployThenCall();
                 const deployNode = this.deployResultLocals.get(varName)!;
+                if (deployNode.isDeployerNew === true) {
+                  throw new DeployedChildCallError(node, deployNode.identifier.name);
+                }
                 // ifaceFunc is a signature-only view; the real body lives on the referenced contract.
                 const realFoo = this.deployFoldTarget(node, deployNode, ifaceFunc, methodName, parameters.length);
                 if (realFoo && this.calleeCannotComplete(realFoo)) {
@@ -15904,18 +15909,42 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Contract deployment mode
       node.referencedContract = contract;
 
-      // B5.4: `args` is parsed but not compiled until the deployer exists (B8.2 removes this).
-      if (node.callOptions?.args) {
-        throw new DeployerUnsupportedError(node, 'args-not-yet',
-          '`args` names a child contract parameter and needs that child to have a deployer, which this build does '
-          + 'not yet generate');
+      // B8.1: a deployer `new` is one whose target B8.0 gathered. Everything else keeps today's binding.
+      const deployerChild: DeployerChild | undefined = deployerChildOf(
+        this.compilerOptions, contract.name,
+      );
+      if (node.callOptions?.args && deployerChild === undefined) {
+        // B5's refusal stands while the deployer path is off (B8.1's gate).
+        if ((this.compilerOptions as { __deployerNew?: boolean }).__deployerNew !== true) {
+          throw new DeployerUnsupportedError(node, 'args-not-yet',
+            '`args` names a child contract parameter and needs that child to have a deployer, which this build '
+            + 'does not yet generate');
+        }
+        throw new DeployerUnsupportedError(node, 'args-outside-deployer-new',
+          '`args` names a child contract parameter, which only a deployer `new` can bind');
+      }
+      if (deployerChild !== undefined && deployerChild.abi === undefined) {
+        throw new DeployerUnsupportedError(node, deployerChild.reason ?? 'not-stateful-direct',
+          `'${contract.name}' has no deployer`);
       }
 
       if (contract.isAbstract) {
         throw new AbstractContractNotCompilableError(node, contract.name);
       }
 
-      const isStatefulTarget = contract.stateVariables.length > 0 || contract.collections.length > 0;
+      if (deployerChild?.abi !== undefined) {
+        node.isDeployerNew = true;
+        node.deployerAbi = deployerChild.abi;
+        if (deployerChild.abi.readsBlockData) {
+          throw new DeployerUnsupportedError(node, 'child-reads-block-data',
+            `'${contract.name}' reads block data, so Deploy<${contract.name}> mints an oracle the creation cannot pin`);
+        }
+        // A3 rule 5: the child's redeem script starts with its category pin, so a salt has no place to go.
+        if (node.callOptions?.salt) throw new DeploySaltError(node);
+      }
+
+      const isStatefulTarget = node.isDeployerNew === true
+        || contract.stateVariables.length > 0 || contract.collections.length > 0;
       let isInDeployFunction = this.currentFunction?.modifiers?.includes(FunctionModifier.DEPLOY) ?? false;
 
       // Infer the `deploy` modifier: instantiating a stateful contract (`new T()` mints the child's genesis)
@@ -15954,15 +15983,38 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
 
+      // B8.3: `value` opens the child's satoshi container. A literal below the reserve cannot, and a child whose
+      // deployer pins no satoshi container row has nowhere to receive it.
+      if (node.isDeployerNew === true && node.callOptions?.value !== undefined) {
+        const literal = node.callOptions.value instanceof IntLiteralNode ? node.callOptions.value.value : undefined;
+        if (literal !== undefined && literal > 0n && literal < 1200n) {
+          throw new DeployValueBelowReserveError(node, literal);
+        }
+        if (node.deployerAbi?.satoshiContainer === 'none') {
+          throw new DeployValueWithoutContainerError(node, contract.name);
+        }
+      }
+
+      // B8.3: a deployer `new` inside a `delegate` entry, a `fallback`, or a function one of them reaches cannot
+      // keep the creator's shape (A6): neither arm can carry the site's binding.
+      if (node.isDeployerNew === true && this.reachesDelegateOrFallback()) {
+        throw new DeployerUnsupportedError(node, 'creator-shape',
+          'a deployer `new` cannot run in a delegate or fallback body');
+      }
+
       // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
       // level parameters; use whichever carries them. Synthetic __internal__ params (a child's own semantic
       // pass appends them onto the SHARED ctor node, e.g. for a ctor msg.sender read) are never call-site
       // arguments - count declared params only. Nor is the pool binding, which the creator passes itself.
       const declaredParams = contract.parameters.filter((p) => p.name !== ORACLE_POOL_PARAMETER);
-      const expectedCtorParams = (declaredParams.length > 0
-        ? declaredParams : (contract.constructorDef?.parameters ?? []))
+      const declaredCtorParams = (contract.constructorDef?.parameters ?? [])
         .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
-      if (node.parameters.length !== expectedCtorParams.length) {
+      // A deployer `new` always binds the parentheses to the constructor's parameters. The compatibility rule of
+      // A3 rule 6 (parentheses read as contract parameters) is type-checked in TypeCheckTraversal.
+      const expectedCtorParams = node.isDeployerNew === true
+        ? declaredCtorParams
+        : (declaredParams.length > 0 ? declaredParams : declaredCtorParams);
+      if (node.isDeployerNew !== true && node.parameters.length !== expectedCtorParams.length) {
         throw new ContractConstructorArgCountError(node, contract.name, expectedCtorParams.length, node.parameters.length);
       }
 
@@ -15976,6 +16028,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       node.parameters = this.visitList(node.parameters);
+      if (node.callOptions?.args) {
+        node.callOptions.args = this.visitList(node.callOptions.args) as ExpressionNode[];
+      }
       // Visit the value first: the constructor fold substitutes it for the child's `msg.value`, and a folded
       // expression is consumed by code generation as-is (an unvisited node would carry no resolved type).
       if (node.callOptions?.value) {
@@ -15986,19 +16041,21 @@ export default class SymbolTableTraversal extends AstTraversal {
       // conservative straight-line pure subset that deployment-recipe analysis accepts.
       this.inlineChildDeploymentHelpers(node, this.currentContract?.functions ?? []);
 
-      // Fold the child ctor's writes into the genesis: the deploy covenant otherwise verifies TYPE
-      // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later
-      // deploy-then-call folds so their `this.field` reads see the true genesis value. A direct creator refuses by
-      // name what the fold cannot express: a chain read or a dropped statement. A contract creating itself is
-      // refused as circular at codegen.
-      const createsItself = contract.name === this.currentContract?.name;
-      if (!createsItself) this.refuseChildConstructorChainRead(contract);
-      const droppedStatement = this.tryFoldChildConstructor(node);
-      if (!createsItself) this.refuseDroppedChildStatement(contract, droppedStatement);
-      // A constructor that failed to fold may set any field, so the genesis check would create the child in a state
-      // its source never reaches. A dropped statement is refused by name above; any other fold failure is refused here.
-      if (!createsItself && node.isStatefulDeploy && node.ctorFoldFailed === true) {
-        throw new UnfoldableChildConstructorError(node, contract.name);
+      if (node.isDeployerNew !== true) {
+        // Fold the child ctor's writes into the genesis: the deploy covenant otherwise verifies TYPE
+        // DEFAULTS, diverging from a ctor that initializes fields from its args. Also seeds later
+        // deploy-then-call folds so their `this.field` reads see the true genesis value. A direct creator refuses by
+        // name what the fold cannot express: a chain read or a dropped statement. A contract creating itself is
+        // refused as circular at codegen.
+        const createsItself = contract.name === this.currentContract?.name;
+        if (!createsItself) this.refuseChildConstructorChainRead(contract);
+        const droppedStatement = this.tryFoldChildConstructor(node);
+        if (!createsItself) this.refuseDroppedChildStatement(contract, droppedStatement);
+        // A constructor that failed to fold may set any field, so the genesis check would create the child in a state
+        // its source never reaches. A dropped statement is refused by name above; any other fold failure is refused here.
+        if (!createsItself && node.isStatefulDeploy && node.ctorFoldFailed === true) {
+          throw new UnfoldableChildConstructorError(node, contract.name);
+        }
       }
 
       // Salt (EVM create2): honored - baked as an outermost `<salt> OP_DROP` address segment in codegen,
@@ -16326,6 +16383,37 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     walk(root);
+  }
+
+  /** Whether the body being checked is a `delegate` entry, the `fallback`, or a function one of them reaches. */
+  private reachesDelegateOrFallback(): boolean {
+    const contract = this.currentContract;
+    const current = this.currentFunction;
+    if (contract === undefined || current === undefined) return false;
+    const roots = [contract.fallbackDef, ...contract.functions
+      .filter((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE))]
+      .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    if (roots.includes(current)) return true;
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of contract.functions) {
+      const list = byName.get(fn.name) ?? [];
+      list.push(fn);
+      byName.set(fn.name, list);
+    }
+    const seen = new Set<string>();
+    const queue = roots.map((fn) => fn.name);
+    while (queue.length > 0) {
+      const name = queue.shift()!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      if (name === current.name) return true;
+      for (const fn of byName.get(name) ?? []) {
+        walkInvocationAst(fn.body, (node) => {
+          if (node instanceof FunctionCallNode) queue.push(node.identifier.name);
+        }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      }
+    }
+    return false;
   }
 
   /**
@@ -19072,6 +19160,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           : deployName ? this.deployResultLocals.get(deployName) : undefined;
         if (deployNode) {
           this.refuseFramedDeployThenCall();
+          if (deployNode.isDeployerNew === true) {
+            throw new DeployedChildCallError(node, deployNode.identifier.name);
+          }
           const receiverName = deployName ?? `new ${deployNode.identifier.name}()`;
           // An inline deploy the hoist left in place (a conditionally evaluated position) would vanish with the
           // fold, which keeps only the call's effect: refuse it rather than drop the child.
@@ -20707,6 +20798,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!(n instanceof Node) || seen.has(n)) return;
       seen.add(n);
       if (n instanceof InstantiationNode && n.referencedContract && n.isStatefulDeploy) {
+        if (n.isDeployerNew === true) {
+          // B8.5: `create` pins w_out(C) outputs from the child's master on, so the site reserves w_out − 1.
+          counts.push(Math.max(0, (n.deployerAbi?.genesisOutputs ?? 1) - 1));
+          return;
+        }
         const vars = n.referencedContract.stateVariables ?? [];
         const commitmentLimit = this.compilerOptions.commitmentLimit ?? 128;
         let nftIndex = 0;

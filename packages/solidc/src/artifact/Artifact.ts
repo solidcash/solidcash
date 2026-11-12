@@ -4191,6 +4191,8 @@ function buildFunctionAbiMetadata(
         dataNftCount: dt.dataNftCount,
         ...(dt.entryNftCount !== undefined && { entryNftCount: dt.entryNftCount }),
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
+        ...(dt.contractArgs && { contractArgs: dt.contractArgs }),
+        ...(dt.valueArg !== undefined && { valueArg: dt.valueArg }),
         ...(dt.salt && { salt: dt.salt }),
         ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
         ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),

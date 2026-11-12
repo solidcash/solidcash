@@ -293,7 +293,11 @@ import {
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
   UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
   ChildGenesisFoldError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError,
+  DeployCycleError,
 } from './Errors.js';
+import {
+  compilesInDirectConvention, type DeployerChild,
+} from './generation/deployerChildren.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
@@ -1145,6 +1149,13 @@ type InternalCompilerOptions = CompilerOptions & {
   __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
   /** Test-only hooks for the deployer generator checks. */
   __deployerTestBox?: { thirdArm?: boolean };
+  /**
+   * B8.0: the direct children a creator's `new` names, each compiled standalone with its deployer before the
+   * creator's semantic passes run. B8.1's predicate is membership in this map.
+   */
+  __compiledDeployers?: ReadonlyMap<string, import('./generation/deployerChildren.js').DeployerChild>;
+  /** Test-only observation of how many standalone child compiles B8.0 ran. */
+  __deployerChildCompileCounter?: { count: number };
   /**
    * The second compile B7.3 runs: the deployer program Deploy<C>. It is internal because a source never asks for
    * it; `deployer: true` builds it and this flag reaches the recursive pipeline that produces it.
@@ -17015,6 +17026,14 @@ function compileResolvedAst(
   // statement once. A function that still returns from a loop is left to EarlyReturnTransformation's refusal.
   ast = confineReturns(ast, true);
 
+  // B8.0: a direct creator's `new` sites need facts about each child (its deployer's DEPLOY(C), w_out, call slots,
+  // constructor reads) before the creator's symbol pass. Compile each named child standalone with its deployer here,
+  // and let the later referenced-contract pass take its code from this map instead of compiling it again.
+  const gatheredDeployers = gatherDeployerChildren(ast, code, mergedCompilerOptions as InternalCompilerOptions);
+  if (gatheredDeployers !== undefined) {
+    (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers = gatheredDeployers;
+  }
+
   mark('lowering');
   // B7.3: the deployer program is the second compile's shape. Build its two arms once every pass that adds,
   // merges or inlines functions has run, and before the semantic pass assigns selectors and block layouts.
@@ -19586,6 +19605,15 @@ function compileResolvedAst(
     // A compiler warning is diagnostic only; the actual refusal remains at the spend boundary.
     console.warn(`Error: ${message}`);
   }
+  // B8.10: the deployer of every child type this contract creates, by contract name.
+  const childDeployers = (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers;
+  if (childDeployers !== undefined && childDeployers.size > 0) {
+    const entries: Record<string, NonNullable<Artifact['deployer']>> = {};
+    for (const [name, child] of childDeployers) {
+      if (child.abi !== undefined) entries[name] = child.abi;
+    }
+    if (Object.keys(entries).length > 0) artifact.childDeployers = entries;
+  }
   return artifact;
 }
 
@@ -21295,6 +21323,14 @@ function compileReferencedContracts(
     // Skip abstract contracts - they can't be compiled
     if (contract.isAbstract) continue;
 
+    // B8.0: a deployer child was already compiled standalone with its deployer; the creator embeds no code and
+    // code generation reads its binding from the DeployerAbi instead.
+    const gathered = (compilerOptions as InternalCompilerOptions).__compiledDeployers?.get(contractName);
+    if (gathered?.abi !== undefined) {
+      compiledBytecodes.set(contractName, hexToBin(gathered.abi.code));
+      continue;
+    }
+
     // Create a minimal AST wrapper and run semantic analysis passes
     // to properly populate opRolls (last-use tracking for OP_ROLL optimization).
     // Without this, imported contracts get OP_PICK + OP_NIP instead of OP_ROLL,
@@ -21545,6 +21581,101 @@ function publicCompilerOptions(options: CompilerOptions): CompilerOptions {
 
 /** Contracts whose standalone compile an enclosing compile is waiting on, outermost first. */
 const referencedContractCompileStack: string[] = [];
+
+/**
+ * B8.0: the direct `new` targets of `ast`, each compiled standalone with its deployer. Only a contract a source
+ * names with `new` is included; `type(C).creationCode` and a stateless child get no entry, so B8.1's predicate
+ * keeps today's binding for them. A cycle is refused rather than left to a missing bytecode error.
+ */
+function gatherDeployerChildren(
+  ast: Ast, code: string, options: InternalCompilerOptions,
+): Map<string, DeployerChild> | undefined {
+  if (options.__deployerNew !== true || !compilesInDirectConvention(options)) return undefined;
+  // The deployer program is a synthetic compile of C's constructor: it cannot create children.
+  if (options.__deployerProgram !== undefined) return undefined;
+  const knownNames = new Set(ast.importedContracts.map((contract) => contract.name));
+  const named = directNewContractNames(ast.contract, knownNames, ast.freeFunctions ?? []);  if (named.size === 0) return undefined;
+  const childOptions = { ...referencedChildCompilerOptions(options), deployer: true, __deployerNew: true };
+  const map = new Map<string, DeployerChild>();
+  for (const name of named) {
+    if (name === ast.contract.name) throw new DeployCycleError(ast.contract, name);
+    const counter = options.__deployerChildCompileCounter;
+    if (counter !== undefined) counter.count += 1;
+    const result = compileReferencedDeployerStandalone(code, name, childOptions);
+    if (result.cycle === true) throw new DeployCycleError(ast.contract, name);
+    if (result.error !== undefined) throw result.error;
+    const artifact = result.artifact;
+    if (artifact === undefined) continue;
+    const abi = artifact.deployer;
+    const reason = artifact.deployerUnsupported;
+    if (abi === undefined && (reason === undefined || reason === 'not-stateful-direct')) continue;
+    map.set(name, { name, artifact, abi, reason });
+  }
+  return map.size > 0 ? map : undefined;
+}
+
+/** The names a direct `new` in `contract` (or in a retained free function) quotes, without the transitive closure. */
+function directNewContractNames(
+  contract: ContractNode, knownNames: Set<string>, freeFunctions: FunctionDefinitionNode[],
+): Set<string> {
+  const names = new Set<string>();
+  const seen = new WeakSet<object>();
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || seen.has(value as object)) return;
+    seen.add(value as object);
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!(value instanceof Node)) return;
+    if (value instanceof InstantiationNode
+      && (knownNames.has(value.identifier.name) || value.identifier.name === contract.name)) {
+      names.add(value.identifier.name);
+      for (const argument of value.parameters) walk(argument);
+      if (value.callOptions?.value) walk(value.callOptions.value);
+      if (value.callOptions?.salt) walk(value.callOptions.salt);
+      if (value.callOptions?.args) for (const argument of value.callOptions.args) walk(argument);
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      // A back-reference to a child declaration would pull in that child's own `new` sites.
+      if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable'
+        || key === 'resolvedFunction' || key === 'type' || key === 'stateVariable' || key === 'collection') continue;
+      walk(child);
+    }
+  };
+  for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
+    if (fn !== undefined) walk(fn.body);
+  }
+  for (const fn of freeFunctions) walk(fn.body);
+  return names;
+}
+
+/**
+ * The whole artifact of `contractName`'s standalone compile, nested inside the compile that gathers it. It shares
+ * the recursion stack of `compileReferencedContractStandalone`, so a creation cycle is reported instead of looped.
+ */
+function compileReferencedDeployerStandalone(
+  code: string, contractName: string, options: CompilerOptions,
+): { artifact?: Artifact; cycle?: boolean; error?: Error } {
+  if (referencedContractCompileStack.includes(contractName)) return { cycle: true };
+  const enclosingAdmissionAnalysis = pendingSpanAdmissionAnalysis;
+  referencedContractCompileStack.push(contractName);
+  try {
+    const artifact = withCompilerWarnings(true, () => compileStringUnchecked(code, {
+      ...options,
+      primaryContractName: contractName,
+      suppressWarnings: true,
+      __artifactCache: true,
+    } as CompileOptions));
+    return { artifact };
+  } catch (error) {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  } finally {
+    referencedContractCompileStack.pop();
+    pendingSpanAdmissionAnalysis = enclosingAdmissionAnalysis;
+  }
+}
 
 /**
  * The bytes of `contractName`'s standalone compile, nested inside the compile that embeds it, or the error when the

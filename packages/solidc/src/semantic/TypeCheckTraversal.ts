@@ -21,6 +21,7 @@ import {
   Op,
   asmToScript,
   ORACLE_POOL_PARAMETER,
+  abiTypeString,
 } from '@solidcash/utils';
 import { isDynamicallyEncodedElementType } from '../generation/utils.js';
 import {
@@ -176,6 +177,12 @@ import {
   StructFieldExternalCallError,
   BlockOracleIndexNotForwardedError,
   DeployerUnsupportedError,
+  DeployArgsRequiredError,
+  DeployArgsCountError,
+  DeployArgsUnexpectedError,
+  DeployArgsPositionalWarning,
+  ChildCategoryUnavailableError,
+  DeployerInternalError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -1071,6 +1078,16 @@ export default class TypeCheckTraversal extends AstTraversal {
         && node.name === 'code') {
       node.type = new BytesType();
       return node;
+    }
+
+    // B8.2: `.category` is available only on the result of a deployer `new` (A6). On any other contract value the
+    // address alone does not carry the category.
+    if ((exprType instanceof AddressType) && node.name === 'category') {
+      if (this.deployerNewResult(node.expression) !== undefined) {
+        node.type = new BytesType(32);
+        return node;
+      }
+      throw new ChildCategoryUnavailableError(node);
     }
 
     // Handle enum member access: Color.Red
@@ -2261,28 +2278,138 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
+  /**
+   * B8.2: the argument forms of a deployer `new` (A3). `args` gives C's contract parameters, the parentheses the
+   * constructor's; when C has contract parameters, no constructor parameters and no `args`, the parentheses fill the
+   * contract parameters (the compatibility rule) with a warning.
+   */
+  private checkDeployerNewArguments(
+    node: InstantiationNode, contractName: string,
+    contractParams: ParameterNode[], ctorParams: ParameterNode[],
+  ): void {
+    let args = node.callOptions?.args;
+    if (args === undefined) {
+      if (contractParams.length > 0 && ctorParams.length === 0) {
+        if (node.parameters.length !== contractParams.length) {
+          throw new DeployArgsCountError(node, contractName, node.parameters.length, contractParams.length);
+        }
+        args = node.parameters;
+        node.parameters = [];
+        node.callOptions = { ...node.callOptions, args };
+        emitCompilerWarning(new DeployArgsPositionalWarning(contractName).message);
+      } else if (contractParams.length > 0) {
+        throw new DeployArgsRequiredError(node, contractName);
+      }
+    }
+    if (args !== undefined) {
+      if (contractParams.length === 0) throw new DeployArgsUnexpectedError(node, contractName);
+      if (args.length !== contractParams.length) {
+        throw new DeployArgsCountError(node, contractName, args.length, contractParams.length);
+      }
+      const types = contractParams.map((parameter) => parameter.type);
+      args = this.coerceHexArgs(args, types);
+      expectParameters(node, args.map((argument) => argument.type!), types);
+      node.callOptions = { ...node.callOptions, args };
+    }
+    const ctorTypes = ctorParams.map((parameter) => parameter.type);
+    node.parameters = this.coerceHexArgs(node.parameters, ctorTypes);
+    expectParameters(node, node.parameters.map((argument) => argument.type!), ctorTypes);
+    // A6: the creator binds the bytes `create` reads, so the two compiles must agree on the parameter lists.
+    const create = node.deployerAbi?.abi.find((entry) => entry.name === 'create');
+    if (create === undefined) {
+      throw new DeployerInternalError(node, `'${contractName}' has no create ABI for its deployer new`);
+    }
+    const codeAt = create.inputs.findIndex((input) => input.name === '__internal__code');
+    const valueAt = create.inputs.findIndex((input) => input.name === '__internal__deployValue');
+    if (codeAt < 0 || valueAt <= codeAt) {
+      throw new DeployerInternalError(node, `'${contractName}''s create ABI has no parameter bands`);
+    }
+    const abiContract = create.inputs.slice(codeAt + 1, codeAt + 1 + contractParams.length);
+    const abiCtor = create.inputs.slice(codeAt + 1 + contractParams.length, valueAt);
+    const disagreement = (source: ParameterNode[], abi: { type: string }[]): boolean =>
+      source.length !== abi.length || source.some((parameter, index) => abiTypeString(parameter.type) !== abi[index].type);
+    if (disagreement(contractParams, abiContract) || disagreement(ctorParams, abiCtor)) {
+      throw new DeployerInternalError(node,
+        `'${contractName}''s deployer was built with different constructor parameters`);
+    }
+  }
+
+  /** Whether a local of the function being checked is assigned anywhere in its body. */
+  private localIsReassigned(name: string): boolean {
+    let found = false;
+    const walk = (node: Node | undefined): void => {
+      if (!node || found) return;
+      if (node instanceof AssignNode && node.identifier?.name === name) { found = true; return; }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition'
+          || key === 'references') continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(this.currentFunction?.body);
+    return found;
+  }
+
+  /**
+   * B2.2/B8.2: the `new` site an expression is a result of, for `.category`. A local must be initialised with that
+   * site and never assigned again; a cast preserves the result.
+   */
+  private deployerNewResult(expression: ExpressionNode | undefined): InstantiationNode | undefined {
+    const seen = new Set<Node>();
+    let current = expression;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      if (current instanceof InstantiationNode) return current.isDeployerNew === true ? current : undefined;
+      if (current instanceof CastNode) {
+        current = current.expression;
+        continue;
+      }
+      if (current instanceof IdentifierNode) {
+        const definition = current.definition?.definition;
+        if (definition instanceof VariableDefinitionNode && definition.expression !== undefined
+          && !this.localIsReassigned(definition.name)) {
+          current = definition.expression;
+          continue;
+        }
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+
   visitInstantiation(node: InstantiationNode): Node {
     if (node.referencedContract) {
-      if (node.callOptions?.args) {
-        throw new DeployerUnsupportedError(node, 'args-not-yet',
-          '`args` names a child contract parameter and needs that child to have a deployer, which this build does '
-          + 'not yet generate');
+      const contract = node.referencedContract;
+      const deployerNew = node.isDeployerNew === true;
+      const contractParams = contract.parameters.filter((p) => p.name !== ORACLE_POOL_PARAMETER);
+      const ctorParams = (contract.constructorDef?.parameters ?? [])
+        .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
+      if (!deployerNew && node.callOptions?.args) {
+        throw new DeployerUnsupportedError(node, 'args-outside-deployer-new',
+          '`args` names a child contract parameter, which only a deployer `new` can bind');
       }
+
       // Contract deployment: type-check constructor args
       node.parameters = this.visitList(node.parameters);
-      // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)
-      // contract-level parameters; use whichever has them. Synthetic __internal__ params (appended onto
-      // the shared ctor node by the child's own semantic pass) are never call-site arguments, nor is the pool
-      // binding, which the creator passes itself.
-      const declaredParams = node.referencedContract.parameters.filter((p) => p.name !== ORACLE_POOL_PARAMETER);
-      const ctorParams = (declaredParams.length > 0
-        ? declaredParams : (node.referencedContract.constructorDef?.parameters ?? []))
-        .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
-      const expectedTypes = ctorParams.map((p) => p.type);
-      // Constructor calls apply the same contextual literal conversions as ordinary calls.
-      node.parameters = this.coerceHexArgs(node.parameters, expectedTypes);
-      const parameterTypes = node.parameters.map((p) => p.type!);
-      expectParameters(node, parameterTypes, expectedTypes);
+      if (deployerNew && node.callOptions?.args !== undefined) {
+        node.callOptions.args = this.visitList(node.callOptions.args) as ExpressionNode[];
+      }
+
+      if (deployerNew) {
+        this.checkDeployerNewArguments(node, contract.name, contractParams, ctorParams);
+      } else {
+        // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)
+        // contract-level parameters; use whichever has them. Synthetic __internal__ params (appended onto
+        // the shared ctor node by the child's own semantic pass) are never call-site arguments, nor is the pool
+        // binding, which the creator passes itself.
+        const expectedCtorParams = (contractParams.length > 0 ? contractParams : ctorParams);
+        const expectedTypes = expectedCtorParams.map((p) => p.type);
+        // Constructor calls apply the same contextual literal conversions as ordinary calls.
+        node.parameters = this.coerceHexArgs(node.parameters, expectedTypes);
+        const parameterTypes = node.parameters.map((p) => p.type!);
+        expectParameters(node, parameterTypes, expectedTypes);
+      }
 
       // Deploy-then-call fold: type the per-field genesis expressions (param-substituted clones of the
       // folded callee's body) so the deploy covenant codegen has operand types. See tryFoldDeployCall.

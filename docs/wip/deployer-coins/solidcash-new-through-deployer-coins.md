@@ -3247,6 +3247,13 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
         and compare it with `OP_OUTPUTBYTECODE` of g_out;
       - check 4: split the last 34 bytes off S, require the first to be `20` and the last `75`, and compare
         `aa 20 ‖ D ‖ 87` with `OP_UTXOBYTECODE` of g_in;
+
+  **Clarification, 2026-11-12 (Grok, recorded under B0.8).** Check 4 applies when S carries the code
+  marker's birth trailer. A child compiled without one (its constructor makes no call slot) has no
+  `20 ‖ D ‖ 75` tail; the entry then skips check 4, and the binding rests on checks 1, 2, 3 and 5. For the
+  binding to hold for every callee a constructor may call, B7 appends the birth trailer to every record-sound
+  child, not only to one whose constructor has a call slot: a record-sound child is exactly one this plan
+  lets a constructor call, and the trailer is what ties its code to the deployer coin (A6).
       - check 5: len is byte 5 of the unlocking, read as unsigned; require 2 × slot + 2 ≤ len; cut the two
         bytes at 6 + 2 × slot; compare them with `OP_INPUTINDEX` through `2 OP_NUM2BIN`. The entry is never
         a `delegate` entry, so its own input is the master it runs for.

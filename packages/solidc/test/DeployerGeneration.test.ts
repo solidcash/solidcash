@@ -161,6 +161,12 @@ describe('B7.5: what the constructor does', () => {
     ['ctor-block-data', `${P} contract C { int n; constructor() { n = block.number + block.timestamp; } }`],
     ['ctor-dynamic-state', `${P} contract C { string s; constructor() { s = "x"; } }`],
     ['ctor-lowlevel-call', `${P} contract C { int n; constructor() { address(msg.sender).call(hex""); } }`],
+    ['ctor-call-conditional', `${P} interface I { function f(int x) external returns (bool); }
+      contract C { bool a; constructor(I i, bool c) { if (c) { a = i.f(5); } } }`],
+    ['ctor-call-value', `${P} interface I { function f(int x) external payable returns (bool); }
+      contract C { bool a; constructor(I i) { a = i.f{value: 1}(5); } }`],
+    ['ctor-call-shape', `${P} interface I { function f(int x) external returns (bool); }
+      contract C { bool a; bool b; constructor(I i) { a = i.f(5); b = i.f(6); } }`],
   ];
   for (const [reason, source] of cases) {
     it(`refuses ${reason}: ${source.slice(0, 60)}`, () => {

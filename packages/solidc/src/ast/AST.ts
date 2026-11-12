@@ -1392,6 +1392,8 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Synthesized binding that may legitimately go unused (e.g. a desugared `for..of` loop var);
   // suppresses the unused-variable check.
   allowUnused?: boolean;
+  /** Compiler-generated name (e.g. `__solidcash_created`): exempt from the reserved-name check. */
+  compilerGenerated?: boolean;
   // The init of a C-style `for` loop. Block-scoped in Solidity but the for desugars to a flattened
   // `{ init; while }`, so a sequential loop reusing the same name may re-declare (overwrite) it.
   isLoopVariable?: boolean;
@@ -2098,6 +2100,8 @@ export class InstantiationNode extends ExpressionNode {
   isDeployerNew?: boolean;
   /** B8.3: the child's deployer, when it has one; its `create` ABI and constants drive the site's binding. */
   deployerAbi?: import('@solidcash/utils').DeployerAbi;
+  /** B8.7: the child reads `msg.sender`, so this site appends X to the creator's created-children list. */
+  createsSenderReadingChild?: boolean;
   transferIndex: number = 0;
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;

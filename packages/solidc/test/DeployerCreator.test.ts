@@ -167,6 +167,41 @@ describe('B8.2/B8.3: the argument forms and their diagnostics', () => {
   });
 });
 
+describe('B8.7: a marked creator lists the children it makes', () => {
+  const senderReader = `${P} contract Child { address owner; constructor() { owner = msg.sender; }
+      function bump() { owner = owner; } }`;
+  const creator = `${P} ${senderReader}
+    contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`;
+
+  it('publishes the flag and the creator code-marker bit', () => {
+    const artifact = compile(creator);
+    expect(artifact.createsSenderReadingChildren).toBe(true);
+    // The marker is `15 ‖ MAGIC ‖ flags ‖ 75` at the code's end; bit 0 is the marked creator.
+    expect(artifact.bytecode).toContain('1744a65e30fda2209c561da7e1920101f44c313a03');
+    expect(artifact.bytecode).toContain('OP_INPUTBYTECODE');
+    expect(artifact.bytecode).toContain('OP_SHA256');
+  });
+
+  it('leaves a creator of a child that does not read the sender unmarked', () => {
+    const artifact = compile(`${P} ${statefulChild()}
+      contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`);
+    expect(artifact.createsSenderReadingChildren).toBeUndefined();
+    expect(artifact.bytecode).not.toContain('OP_SHA256');
+  });
+
+  it('refuses a fallback on a marked creator', () => {
+    refusal(`${P} ${senderReader} contract Parent { int m;
+      receive() external payable { m = 1; }
+      fallback() external payable { m = 2; }
+      function make() { Child c = new Child(); m = 3; } }`, /creator-shape/);
+  });
+
+  it('refuses a sender-reading new in receive', () => {
+    refusal(`${P} ${senderReader} contract Parent { int m;
+      receive() external payable { Child c = new Child(); m = 1; } }`, /creator-shape/);
+  });
+});
+
 describe('B8.2/B8.4: new results', () => {
   it('types child.category as bytes32 and stores the child\'s category', () => {
     const source = `${P} ${statefulChild()}

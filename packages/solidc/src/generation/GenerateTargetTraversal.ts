@@ -11534,6 +11534,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitOwnCategoryImmutableNftOutputPin(node);
     }
 
+    // B8.7 rule 1: every arm but `__construct` of a marked creator checks its own unlocking. It runs before the
+    // final success value, so every successful path meets it; an `unsafe(0)` arm emits no other covenant code.
+    if (this.sourcePrimaryContract?.createsSenderReadingChildren === true && !this.framedMaster
+      && !this.isDefineSubTraversal && node.name !== '__construct' && node.isEntryPoint
+      && this.compilerOptions.composition !== 'framed' && this.compilerOptions.messageBus !== true) {
+      this.emitCreatedChildrenUnlockingCheck({ location: node.body.location, positionHint: PositionHint.END });
+    }
+
     // Function ending
     const hasCovenantChecks = isSplit || isMerge || (unsafeTier !== null && unsafeTier >= 1)
       || this.functionHasDelegatecall || hasAnyStatefulAccess
@@ -23579,10 +23587,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Step 2: Q := encode(own category) ‖ encode(v) ‖ encode(c_k) ‖ … ‖ encode(c_1).
     this.emit(Op.OP_INPUTINDEX, locationData);
+    this.pushToStack('(inputIndex)');
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.popFromStack();
+    this.pushToStack('(ownCategory)');
     this.emit(encodeInt(32n), locationData);
+    this.pushToStack('(categorySize)');
     this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(category)');
+    this.pushToStack('(capability)');
     this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.popFromStack();
     this.pushToStack('(value)');
     this.emit(new Uint8Array([0x01, 0x20]), locationData); // the 32-byte push prefix
     this.pushToStack('(value)');
@@ -23648,7 +23665,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const prefix = new Uint8Array([0x04, ...hexToBin(selector), 2 * abi.callSlots]);
     this.emit(encodeDataPush(prefix), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.popFromStack(2);
+    // The prefix constant is untracked; the comparison consumes it and the head, leaving the rest.
+    this.popFromStack();
 
     // Step 4b: the bytes from 6 + 2s are exactly Q ‖ A.
     this.emit(Op.OP_TOALTSTACK, locationData);
@@ -23689,6 +23707,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
 
+    // B8.7 rule 2: a sender-reading child's X joins this run's created-children list.
+    if (node.createsSenderReadingChild === true) this.appendCreatedChild(xName, locationData);
+
     // Step 5: the expression is the child's master locking bytecode at d_out.
     this.emitDeployerChildOutputIndex(site, locationData);
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);
@@ -23722,6 +23743,129 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(node.callOptions?.value !== undefined && { valueArg: source(node.callOptions.value) }),
       creationBytecode: abi.code,
     });
+  }
+
+  /** B8.7 rule 2: append this site's X to the arm's `__solidcash_created` list. */
+  private appendCreatedChild(xName: string, locationData: SingleLocationData): void {
+    const listIndex = this.getStackIndex('__solidcash_created');
+    if (listIndex < 0) throw new Error('A sender-reading site has no created-children local');
+    this.emit(encodeInt(BigInt(listIndex)), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.removeFromStack(listIndex);
+    this.pushToStack('(createdChildren)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(xName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('__solidcash_created');
+  }
+
+  /**
+   * B8.7 rule 1: every arm but `__construct` reads its own unlocking and checks the created-children digest at
+   * offset o (5 with a dispatcher, 0 without). An empty list requires byte o not to be 0x20; a non-empty one
+   * requires it to be 0x20 and the 32 bytes after it to be sha256(list).
+   */
+  private emitCreatedChildrenUnlockingCheck(locationData: SingleLocationData): void {
+    const baseline = [...this.stack];
+    const put = (name: string): void => { this.pushToStack(name); };
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_INPUTBYTECODE, locationData);
+    put('(ownUnlocking)');
+    // o := 5 when byte 0 is 0x04, else 0.
+    this.emit(Op.OP_DUP, locationData);
+    put('(unlockingCopy)');
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    put('(b0)');
+    put('(rest0)');
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_4, locationData);
+    put('(four)');
+    this.emit(Op.OP_EQUAL, locationData);
+    this.popFromStack(2);
+    put('(isSelector)');
+    this.emit(Op.OP_5, locationData);
+    put('(five)');
+    this.emit(Op.OP_MUL, locationData);
+    this.popFromStack(2);
+    put('(o)');
+    // Split off the bytes before o, discard them, and keep [b, tail] at o.
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    put('(before)');
+    put('(after)');
+    this.emit(Op.OP_SWAP, locationData);
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_1, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    put('(b)');
+    put('(tail)');
+    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_DUP, locationData);
+    put('(bCopy)');
+    this.emit(encodeDataPush(new Uint8Array([0x20])), locationData);
+    put('(twenty)');
+    this.emit(Op.OP_EQUAL, locationData);
+    this.popFromStack(2);
+    put('(isTwenty)');
+    // The list: the hidden local, or empty in an arm that creates nothing.
+    if (this.stack.includes('__solidcash_created')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__solidcash_created'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else {
+      this.emit(Op.OP_0, locationData);
+    }
+    put('(list)');
+    this.emit(Op.OP_SIZE, locationData);
+    put('(listSize)');
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.popFromStack(2);
+    put('(isEmpty)');
+    this.emit(Op.OP_IF, locationData);
+    this.popFromStack();
+    // Empty list: byte o must not be 0x20.
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_NOT, locationData);
+    this.popFromStack();
+    put('(notTwenty)');
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_ELSE, locationData);
+    // Non-empty list: byte o is 0x20 and the next 32 bytes are sha256(list).
+    this.emit(Op.OP_SHA256, locationData);
+    this.popFromStack();
+    put('(digest)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    put('(tail)');
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    put('(thirtyTwo)');
+    this.emit(Op.OP_SPLIT, locationData);
+    this.popFromStack(2);
+    put('(bound)');
+    put('(remainder)');
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+    this.emit(Op.OP_2DROP, locationData);
+    this.popFromStack(2);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.stack = baseline;
   }
 
   /** The `new` site a `.category` expression reads (B8.2), or undefined when it is not a `new` result. */

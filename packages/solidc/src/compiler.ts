@@ -17032,6 +17032,7 @@ function compileResolvedAst(
   const gatheredDeployers = gatherDeployerChildren(ast, code, mergedCompilerOptions as InternalCompilerOptions);
   if (gatheredDeployers !== undefined) {
     (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers = gatheredDeployers;
+    prepareMarkedCreator(ast, gatheredDeployers, mergedCompilerOptions as InternalCompilerOptions);
   }
 
   mark('lowering');
@@ -17785,6 +17786,9 @@ function compileResolvedAst(
   // path so bytecode size does not depend on the front-end compilation-speed preference.
   // The children are compiled, so a creator knows which of them take the pool binding it passes on.
   bindOraclePool(ast.contract, ast.freeFunctions, isFramedMaster(mergedCompilerOptions as InternalCompilerOptions));
+  // B8.7 rule 2: after every transformation that moves statements, declare the created-children local in the arms
+  // that hold a sender-reading site, so code generation's stack model and the program agree.
+  injectCreatedChildrenLocals(ast, (mergedCompilerOptions as InternalCompilerOptions).__compiledDeployers);
   const traversal = new GenerateTargetTraversal(mergedCompilerOptions.messageBusKernel === true
     ? { ...mergedCompilerOptions, optimizeForCompilationSpeed: true }
     : mergedCompilerOptions);
@@ -19613,6 +19617,17 @@ function compileResolvedAst(
       if (child.abi !== undefined) entries[name] = child.abi;
     }
     if (Object.keys(entries).length > 0) artifact.childDeployers = entries;
+  }
+  // B8.7: a marked creator publishes the flag, and every entry but `receive` ends its ABI with the digest input.
+  if (ast.contract.createsSenderReadingChildren === true) {
+    artifact.createsSenderReadingChildren = true;
+    for (const fn of ast.contract.functions) {
+      if (fn.isEntryPoint !== true || fn.name === '__construct' || fn.isReceive || fn.isFallback) continue;
+      if (fn.parameters[fn.parameters.length - 1]?.name !== '__internal__createdChildren') {
+        throw new DeployerInternalError(fn,
+          `'${fn.name}' does not end with the created-children parameter`);
+      }
+    }
   }
   return artifact;
 }
@@ -21614,8 +21629,112 @@ function gatherDeployerChildren(
   return map.size > 0 ? map : undefined;
 }
 
-/** The names a direct `new` in `contract` (or in a retained free function) quotes, without the transitive closure. */
-function directNewContractNames(
+/**
+ * B8.7: a creator that makes a sender-reading child is a marked creator. Refuse the shapes whose master cannot
+ * carry the unlocking check, declare the hidden `__solidcash_created` local in each arm that holds such a site,
+ * and mark the contract so the code tail sets the creator flag.
+ */
+function prepareMarkedCreator(
+  ast: Ast, children: ReadonlyMap<string, DeployerChild>, options: InternalCompilerOptions,
+): void {
+  const names = new Set([...children]
+    .filter(([, child]) => child.abi?.constructorReadsSender === true)
+    .map(([name]) => name));
+  if (names.size === 0) return;
+  const contract = ast.contract;
+  const refuse = (detail: string): never => {
+    throw new DeployerUnsupportedError(contract, 'creator-shape', detail);
+  };
+  if (options.messageBus === true || options.composition === 'framed') {
+    refuse('a marked creator must be a plain direct master, not a message-bus or framed program');
+  }
+  if (options.callBatch === true) refuse('a marked creator has no multi-call entry');
+  if ((options as { split?: unknown }).split !== undefined) refuse('a marked creator cannot be split');
+  if (options.autoDelegate === true
+    || (options as InternalCompilerOptions & { delegateVariant?: unknown }).delegateVariant !== undefined) {
+    refuse('a marked creator cannot be a proxy or delegate variant');
+  }
+  if (contract.fallbackDef !== undefined) refuse('a marked creator has no fallback arm');
+
+  const countSites = (body: Node | undefined): number => {
+    if (body === undefined) return 0;
+    let count = 0;
+    const seen = new Set<Node>();
+    const walk = (value: unknown): void => {
+      if (value === null || typeof value !== 'object' || seen.has(value as Node)) return;
+      seen.add(value as Node);
+      if (Array.isArray(value)) { for (const item of value) walk(item); return; }
+      if (!(value instanceof Node)) return;
+      if (value instanceof InstantiationNode && names.has(value.identifier.name)) count += 1;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable'
+          || key === 'resolvedFunction' || key === 'type' || key === 'stateVariable' || key === 'collection') continue;
+        walk(child);
+      }
+    };
+    walk(body);
+    return count;
+  };
+  for (const fn of [contract.constructorDef, contract.receiveDef, ...contract.functions]) {
+    if (fn === undefined || countSites(fn.body) === 0) continue;
+    if (fn.name === '__construct') refuse('the constructor creates a child');
+    if (fn.isReceive) refuse('a deployer `new` cannot run in `receive`');
+    if (fn === contract.fallbackDef) refuse('a deployer `new` cannot run in `fallback`');
+    if (fn.isEntryPoint !== true) refuse('a deployer `new` in an invoked function body has no created-children list');
+  }
+  for (const fn of ast.freeFunctions) {
+    if (countSites(fn.body) > 0) refuse('a deployer `new` in an invoked function body has no created-children list');
+  }
+  contract.createsSenderReadingChildren = true;
+}
+
+/**
+ * B8.7 rule 2: declare the hidden `__solidcash_created` local in each arm that holds a sender-reading `new`. It
+ * runs after every transformation that moves statements, so the local sits at the function body's start in the
+ * program code generation emits.
+ */
+function injectCreatedChildrenLocals(ast: Ast, children: ReadonlyMap<string, DeployerChild> | undefined): void {
+  if (children === undefined || ast.contract.createsSenderReadingChildren !== true) return;
+  const names = new Set([...children]
+    .filter(([, child]) => child.abi?.constructorReadsSender === true)
+    .map(([name]) => name));
+  if (names.size === 0) return;
+  const countSites = (body: Node | undefined): number => {
+    if (body === undefined) return 0;
+    let count = 0;
+    const seen = new Set<Node>();
+    const walk = (value: unknown): void => {
+      if (value === null || typeof value !== 'object' || seen.has(value as Node)) return;
+      seen.add(value as Node);
+      if (Array.isArray(value)) { for (const item of value) walk(item); return; }
+      if (!(value instanceof Node)) return;
+      if (value instanceof InstantiationNode && names.has(value.identifier.name)) count += 1;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable'
+          || key === 'resolvedFunction' || key === 'type' || key === 'stateVariable' || key === 'collection') continue;
+        walk(child);
+      }
+    };
+    walk(body);
+    return count;
+  };
+  for (const fn of ast.contract.functions) {
+    if (!fn.isEntryPoint || fn.isReceive || fn.isFallback || countSites(fn.body) === 0) continue;
+    const statements = fn.body.statements ?? [];
+    if (statements.some((statement) => statement instanceof VariableDefinitionNode
+      && statement.name === '__solidcash_created')) continue;
+    const empty = new HexLiteralNode(new Uint8Array(0));
+    empty.location = fn.location;
+    const local = new VariableDefinitionNode(new BytesType(), [], '__solidcash_created', empty);
+    local.location = fn.location;
+    local.compilerGenerated = true;
+    local.allowUnused = true;
+    statements.unshift(local);
+    fn.body.statements = statements;
+  }
+}
+
+/** The names a direct `new` in `contract` (or in a retained free function) quotes, without the transitive closure. */function directNewContractNames(
   contract: ContractNode, knownNames: Set<string>, freeFunctions: FunctionDefinitionNode[],
 ): Set<string> {
   const names = new Set<string>();

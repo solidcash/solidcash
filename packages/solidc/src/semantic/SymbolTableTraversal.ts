@@ -5897,6 +5897,22 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // B8.7 rule 3: a marked creator's every entry except `receive` takes the created-children digest as its last
+    // ABI input. It is injected after every other hidden witness, so it stays last; the body never reads it.
+    if (this.currentContract?.createsSenderReadingChildren === true && node.isEntryPoint
+      && !node.isReceive && !node.isFallback && node.name !== '__construct' && !node.graphEmissionHandler
+      && this.compilerOptions.composition !== 'framed' && this.compilerOptions.messageBus !== true
+      && !node.parameters.some((parameter) => parameter.name === '__internal__createdChildren')) {
+      const createdParam = new ParameterNode(new BytesType(), '__internal__createdChildren');
+      createdParam.location = node.location;
+      createdParam.syntheticallyUsed = true;
+      node.parameters.push(createdParam);
+      this.symbolTables[0].set(Symbol.variable(createdParam));
+      this.symbolTables[0].get('__internal__createdChildren')
+        ?.references.push({ name: '__internal__createdChildren' } as IdentifierNode);
+      this.pushToStack(createdParam);
+    }
+
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
       if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
@@ -15935,6 +15951,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (deployerChild?.abi !== undefined) {
         node.isDeployerNew = true;
         node.deployerAbi = deployerChild.abi;
+        node.createsSenderReadingChild = deployerChild.abi.constructorReadsSender === true;
         if (deployerChild.abi.readsBlockData) {
           throw new DeployerUnsupportedError(node, 'child-reads-block-data',
             `'${contract.name}' reads block data, so Deploy<${contract.name}> mints an oracle the creation cannot pin`);
@@ -16000,6 +16017,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.isDeployerNew === true && this.reachesDelegateOrFallback()) {
         throw new DeployerUnsupportedError(node, 'creator-shape',
           'a deployer `new` cannot run in a delegate or fallback body');
+      }
+      // B8.7: the created-children list lives in the arm body, so a site in `receive`, the constructor or an
+      // invoked helper has no list to append to.
+      if (node.createsSenderReadingChild === true && this.currentFunction !== undefined) {
+        const fn = this.currentFunction;
+        if (fn.name === '__construct' || fn.isReceive || fn.isEntryPoint !== true) {
+          throw new DeployerUnsupportedError(node, 'creator-shape',
+            'a `new` of a sender-reading child must run in the body of an entry function');
+        }
       }
 
       // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
@@ -16353,6 +16379,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const walk = (value: unknown): void => {
       if (!(value instanceof Node) || seen.has(value)) return;
       seen.add(value);
+      if (value instanceof VariableDefinitionNode && value.compilerGenerated === true) return;
       if (value instanceof IdentifierNode && value.name.startsWith('__solidcash_')) {
         throw new ReservedNameError(value, value.name);
       }

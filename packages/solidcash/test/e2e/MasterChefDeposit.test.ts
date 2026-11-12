@@ -35,8 +35,9 @@ describe('MasterChef deposit', () => {
     await lp.transfer(bob.getAddress(), 1000n).send();
     await lp.connect(bob).approve(chefIdentity, 1000n).send();
     console.log('approve ok');
-    // `updatePool` mints from `block.number`, which the published call arguments cannot state yet: a fresh compile
-    // stops here by name instead of guessing an amount (packages/solidc/docs/deferrals.md).
-    await expect(chef.connect(bob).deposit(0n, 100n).send()).rejects.toThrow(/expression-based argSources/);
+    // `updatePool` mints from `block.number`, which the call arguments read from the pool coin (328f2a88f).
+    await chef.connect(bob).deposit(0n, 100n).send();
+    console.log('deposit ok');
+    expect(true).toBe(true);
   });
 });

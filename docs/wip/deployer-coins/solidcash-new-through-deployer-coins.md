@@ -3619,8 +3619,9 @@ with a deployer whose constructor writes a collection, and only where today's st
         position fails by itself; do not add a check that could be skipped.
       - Emit step 8 only when `constructorReadsSender` is true, and make `emitMsgSender` in genesis mode
         throw `DeployerInternalError` when it is reached in a program that did not emit step 8.
-      Note (implementation, 2026-11-12): steps 2 and 5 and the master row of step 12 are in, and the record
-      commitment settlement runs. The census, the call mask and the callee list are not built.
+      Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census and the callee-list size
+      check are in, and the record commitment settlement runs. The call-slot mask, the per-slot carrier bindings and
+      the callee-list entry checks are not built.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,
@@ -3714,8 +3715,8 @@ with a deployer whose constructor writes a collection, and only where today's st
       part and D18's deployer part need the genesis-mode emitters.
       Note (implementation, 2026-11-12): `DeployerCreation.test.ts` runs genuine creates on the VM for records,
       defaults, initialisers, helper writes, the master row, the code hash, contract arguments, `msg.value`,
-      `tx.origin`, `address(this)` and `this.activeBytecode`. The remaining refusal cases listed below are not yet
-      added.
+      `tx.origin`, `address(this)`, `this.activeBytecode`, the census refusals and the callee-list size. The
+      remaining refusal cases listed below are not yet added.
 - [ ] **B7.16 Tests.** Add `W/solidc/test/DeployerGeneration.test.ts`. Hand-built VM transactions are allowed
       here, as in other compiler tests. Every VM test puts the deployer coin at an input index that differs
       from OUTBASE (for example input 3 and OUTBASE 5). Where a case needs bytes that only the SDK computes

@@ -3402,3 +3402,12 @@ compiled for the bus, below that limit, where the raw call is a `__raw__` call s
 callee, which a run confirmed, and the compat auto-wire passes the entry's own address, which no run has confirmed yet.
 
 **Revisit if:** a port calls a stateful token through SafeERC20 on the direct convention.
+
+**Resolved 2026-11-12:** a compat `call` whose stateful callee function publishes a block slot past its master, data
+records and return event runs that callee as a direct external group after the typed groups
+(`sc-select-compat-callee-block-calls.ts`, 7766bf6f5), so its whole block is co-spent, unlocked and derived as a typed
+call's is. The caller reads it at `__internal__callInputIndex[<i>]`, rebound to where that group's master lands
+(892c89022), its edge is pinned at `__internal__lowLevelCallEdgeOutputIdx<i>`, and a payload's `address(this)` is the
+entry's public self. `CompatCallFullCalleeBlock` pins the shape and `MasterChefDeposit` passes `deposit`. A function
+that also delegatecalls, a call without a published call-input witness and a callee function the SDK cannot resolve
+keep the master-and-data path and still fail closed.

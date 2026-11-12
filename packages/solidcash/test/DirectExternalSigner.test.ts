@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { binToHex, cashAddressToLockingBytecode, encodeCashAddress, encodeTransaction, hash160, secp256k1 } from '@bitauth/libauth';
 import { compileString } from '@solidcash/solidc';
 import { SignatureTemplate, Signer } from '../src/index.js';
@@ -8,7 +9,7 @@ import type { WcTransactionObject } from '../src/walletconnect-utils.js';
 // A wallet's coin funds a direct stateful call and the wallet signs it at broadcast: the SDK holds no key. Its input
 // carries a placeholder through the build, which the final preflight must not evaluate.
 describe('a direct stateful call funded by an external wallet', () => {
-  const source = `pragma solidcash ^0.14.0;
+  const source = `pragma solidcash ^0.50.0;
 contract Counter() {
     uint32 count;
     constructor() { this.count = 0; }
@@ -69,20 +70,22 @@ contract Counter() {
             : input)),
       })),
     });
-    const details = await contract.connect(Signer.external({ wallet: { signTransaction: async (r: WcTransactionObject) => sign(r) }, address }, provider))
+    const wallet = { signTransaction: async (r: WcTransactionObject) => sign(r) };
+    const details = await contract.connect(Signer.external({ wallet, address }, provider))
       .call.deposit().withValue(5000n).send();
     expect(details.txid).toMatch(/^[0-9a-f]{64}$/);
     expect((await contract.getState()).count).toBe(1n);
 
     // A wallet that signs with the wrong key is caught by the node: a preflight receipt must not stand in for it.
     const wrong = new SignatureTemplate(new Uint8Array(32).fill(0x38));
-    const forged = { signTransaction: async (r: WcTransactionObject) => sign(r, { generateUnlockingBytecode: (options: any) => {
-      const honest = template.unlockP2PKH().generateUnlockingBytecode(options);
-      const bad = wrong.unlockP2PKH().generateUnlockingBytecode(options);
-      return Uint8Array.from([...bad.slice(0, 66), ...honest.slice(66)]);
-    } } as any) };
-    await expect(contract.connect(Signer.external({ wallet: forged, address }, provider)).call.deposit().withValue(5000n).send())
-      .rejects.toThrow();
+    const forged = {
+      signTransaction: async (r: WcTransactionObject) => sign(r, { generateUnlockingBytecode: (options: any) => {
+        const honest = template.unlockP2PKH().generateUnlockingBytecode(options);
+        const bad = wrong.unlockP2PKH().generateUnlockingBytecode(options);
+        return Uint8Array.from([...bad.slice(0, 66), ...honest.slice(66)]);
+      } } as any) };
+    await expect(contract.connect(Signer.external({ wallet: forged, address }, provider))
+      .call.deposit().withValue(5000n).send()).rejects.toThrow();
     expect((await contract.getState()).count).toBe(1n);
   });
 });

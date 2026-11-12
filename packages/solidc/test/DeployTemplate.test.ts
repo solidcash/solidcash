@@ -18,7 +18,7 @@ contract Child(int limit) {
 }`;
 
 const compile = (factory: string, options = {}): Record<string, any> => compileStringMulti(
-  `pragma solidcash ^0.14.0;\n${CHILD}\n${factory}`, options,
+  `pragma solidcash ^0.50.0;\n${CHILD}\n${factory}`, options,
 ) as Record<string, any>;
 
 const sha256 = (hex: string): string => createHash('sha256').update(Buffer.from(hex, 'hex')).digest('hex');

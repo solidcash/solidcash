@@ -178,7 +178,7 @@ describe('address(this).balance, compiled framed', () => {
   });
 });
 
-const OUT_STATE_SOURCE = 'pragma solidcash ^0.14.0;'
+const OUT_STATE_SOURCE = 'pragma solidcash ^0.50.0;'
   + ' contract OutState {'
   + '   constructor() { }'
   + '   function check(int expected) { require(this.outState.balance == expected); }'

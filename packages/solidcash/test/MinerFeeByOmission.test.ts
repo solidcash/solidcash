@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
  * `this.payMinerFee`: a contract's satoshi container pays the miner by omission. A production-profile mock behaves as
  * a real node, so nothing here is funded by a coin the SDK made up.
@@ -14,7 +15,7 @@ import { alicePriv } from './fixture/vars.js';
 
 const PAY = 100_000n;
 const FEE = 30_000n;
-const SOURCE = `pragma solidcash ^0.14.0;
+const SOURCE = `pragma solidcash ^0.50.0;
 contract Tip() {
   int constant PAY = 100000;
   int constant FEE = 30000;
@@ -124,7 +125,9 @@ describe('fee by omission', () => {
       const coins = await provider.getUtxos(pool.satoshiContainer.address);
       const other = coins.find((coin) => !spent.includes(`${coin.txid}:${coin.vout}`))!;
       const master = await provider.getLedgerOutput(hex(transaction.inputs[0].outpointTransactionHash), 0);
-      const redeem = scriptToBytecode(buildSatoshiContainerCovenantScript(hexToBin(pool.categoryId), master!.lockingBytecode));
+      const redeem = scriptToBytecode(
+        buildSatoshiContainerCovenantScript(hexToBin(pool.categoryId), master!.lockingBytecode),
+      );
       expect(same(Uint8Array.from([0xaa, 0x20, ...hash256(redeem), 0x87]), containerLock)).toBe(true);
       const index = transaction.inputs.length;
       transaction.inputs.push({
@@ -162,7 +165,7 @@ describe('.withValue on a payable entry that spends no container', () => {
 });
 
 describe('a connected signer on a provider that cannot mint a funder', () => {
-  const SOURCE_WITH_STATE_ONLY_CALL = `pragma solidcash ^0.14.0;
+  const SOURCE_WITH_STATE_ONLY_CALL = `pragma solidcash ^0.50.0;
 contract Counter() {
   uint32 n;
   constructor() { this.n = 0; }

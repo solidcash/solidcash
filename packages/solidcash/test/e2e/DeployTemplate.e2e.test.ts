@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { asmToBytecode } from '@solidcash/utils';
@@ -14,7 +15,7 @@ import { createTestProvider, getTxOutputs } from '../test-util.js';
 // `new C{code: c}` deploys a child that runs the bytes `c`, which the factory requires to hash to a template: C's
 // compiled code, or a template chosen at run time. Each refusal below has a control that differs in that one value.
 
-const SOURCE = `pragma solidcash ^0.14.0;
+const SOURCE = `pragma solidcash ^0.50.0;
 contract Child(int limit) {
     int counter;
     function bump(int n) public { require(n < limit, "limit"); this.counter = this.counter + n; }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
  * A coin a call adds by hand. When the connected signer's own coin covers the fee by itself the SDK adds no funder,
  * so it used to add no change either: the whole surplus went to the miner, refused only by the fee cap in `send()`
@@ -11,14 +12,14 @@ import {
   StatefulContract, genesisOutpointKey, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from '../src/stateful/index.js';
 
-const SOURCE = `pragma solidcash ^0.14.0;
+const SOURCE = `pragma solidcash ^0.50.0;
 contract Counter() {
   uint32 n;
   constructor() { this.n = 0; }
   function bump() public { this.n = this.n + 1; }
 }`;
 
-const LOGGED = `pragma solidcash ^0.14.0;
+const LOGGED = `pragma solidcash ^0.50.0;
 contract Logged() {
   event Bumped(uint32 n);
   uint32 n;
@@ -57,7 +58,8 @@ describe('a coin added by hand', () => {
     // The master and the state record, then the coin: no other coin of the signer's was spent.
     expect(transaction.inputs).toHaveLength(3);
     expect(hex(transaction.inputs[2].outpointTransactionHash)).toBe(own.txid);
-    const change = transaction.outputs.filter((output: any) => hex(output.lockingBytecode) === hex(alice.getLockingBytecode()));
+    const change = transaction.outputs
+      .filter((output: any) => hex(output.lockingBytecode) === hex(alice.getLockingBytecode()));
     expect(change).toHaveLength(1);
     // The master and the state record are recreated at what they held, so the coin pays everything past them.
     const past = transaction.outputs.slice(2).reduce((sum: bigint, output: any) => sum + output.valueSatoshis, 0n);
@@ -75,7 +77,8 @@ describe('a coin added by hand', () => {
     const details = await counter.connect(alice).call.bump().addInput(small, alice.unlockP2PKH()).send();
     const transaction = decoded(details);
     expect(transaction.inputs.length).toBeGreaterThan(3);
-    expect(transaction.outputs.some((output: any) => hex(output.lockingBytecode) === hex(alice.getLockingBytecode()))).toBe(true);
+    expect(transaction.outputs
+      .some((output: any) => hex(output.lockingBytecode) === hex(alice.getLockingBytecode()))).toBe(true);
   });
 
   it("does not take another key's coin as the signer's", async () => {

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
 
 /** `child`, then a creator whose `make` runs `body` before its own write. */
-const creator = (child: string, body: string): string => `pragma solidcash ^0.14.0;
+const creator = (child: string, body: string): string => `pragma solidcash ^0.50.0;
 ${child}
 contract Maker {
   int made;

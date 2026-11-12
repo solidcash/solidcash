@@ -5,7 +5,7 @@ import { compileStringMulti } from './direct-compile.js';
 // can evaluate. A field the constructor sets by a step that does not fold was checked against its type default, so
 // the child was created in a state its source never reaches. The compiler refuses that deploy instead.
 
-const factory = (child: string): string => `pragma solidcash ^0.14.0;
+const factory = (child: string): string => `pragma solidcash ^0.50.0;
 ${child}
 contract Factory() {
     int created;

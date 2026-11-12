@@ -403,7 +403,7 @@ A container is a lock, and by default any number of coins can sit at it: each `.
 no container coin opens a new one. Two pragmas keep one coin instead, each for one kind of container:
 
 ```solidity
-pragma solidcash ^0.14.0;
+pragma solidcash ^0.50.0;
 pragma satoshicontainer single; // the satoshi container
 pragma tokencontainer single;   // each token container
 ```

@@ -159,6 +159,14 @@ describe('B8.2/B8.3: the argument forms and their diagnostics', () => {
     /child-reads-block-data/);
   });
 
+  it('refuses a second coin at a container the child keeps single', () => {
+    refusal(`${P} pragma satoshicontainer single;
+      contract Child { int n; constructor() payable { n = msg.value; }
+        function bump() { n = n + 1; } }
+      contract Parent { int m; function make() { Child c = new Child(); this.transfer(c, 1000); m = 1; } }`,
+    /second-coin-at-single-container/);
+  });
+
   it('refuses a deployer new in a fallback', () => {
     refusal(`${P} ${statefulChild()} contract Parent { int m;
       receive() external payable { m = 1; }

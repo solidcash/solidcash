@@ -3982,7 +3982,7 @@ with a deployer whose constructor writes a collection, and only where today's st
 Every item of this phase is behind `__deployerNew` (B8.1). With the option off, the compiler does nothing of
 this phase and compiles every source as it did after B7.
 
-- [ ] **B8.0 Child facts before the creator's symbol pass.** The creator's `SymbolTableTraversal`
+- [x] **B8.0 Child facts before the creator's symbol pass.** The creator's `SymbolTableTraversal`
       (`compiler.ts:16482`) needs facts about each deployer child: w_out for the block layout (B8.5),
       `constructorReadsSender` for the list (B8.7), `callSlots` and DEPLOY(C) for the binding (B8.6), the
       container facts (B8.3), and the reason when it has no deployer. Today children are compiled after
@@ -4016,7 +4016,7 @@ this phase and compiles every source as it did after B7.
       Done when unit tests show: the creator's symbol pass receives w_out and `constructorReadsSender` of a
       child; a counter shows that child's standalone compile ran once; a stateless child is not in the map;
       and both cycle errors.
-- [ ] **B8.1 One predicate, and the gate.** Add the internal compiler option `__deployerNew`, default off,
+- [x] **B8.1 One predicate, and the gate.** Add the internal compiler option `__deployerNew`, default off,
       and `isDeployerNew(site)`: the option is on, the surrounding contract is compiled in the direct
       convention, and the target is in `compiledDeployers`. Use it everywhere this phase says "deployer
       `new`" or "deployer child". Today's code decides "stateful target" from state variables and
@@ -4038,7 +4038,7 @@ this phase and compiles every source as it did after B7.
       expression is a `new` result (`isNewResult`, B2.2) of a deployer `new`, and raise
       `ChildCategoryUnavailableError` otherwise. A contract that declares a member named `category` keeps
       its own meaning.
-- [ ] **B8.3 Symbols.** In STT `visitInstantiation` (15283–15391), for a deployer `new`:
+- [x] **B8.3 Symbols.** In STT `visitInstantiation` (15283–15391), for a deployer `new`:
       - visit the `args` expressions;
       - raise `DeployValueBelowReserveError` for a literal value from 1 to 1,199, and
         `DeployValueWithoutContainerError` for any `value` when the child's `satoshiContainer` is `'none'`;
@@ -4052,10 +4052,10 @@ this phase and compiles every source as it did after B7.
         entry or a `fallback`, or a function that one of them reaches (A6).
 
       Keep folding on the framed and message-bus paths.
-- [ ] **B8.4 Call after `new`.** For a deployer `new`, raise `DeployedChildCallError` where today's
+- [x] **B8.4 Call after `new`.** For a deployer `new`, raise `DeployedChildCallError` where today's
       deploy-then-call fold is detected (`tryFoldDeployCall`; search STT for its call sites, near 14758 and
       18297), and for any other call on a `new` result in the function.
-- [ ] **B8.5 Layout.** In the deploy-slot expansion (STT 19720–19731 and GTT 3856–3895), give each deployer
+- [x] **B8.5 Layout.** In the deploy-slot expansion (STT 19720–19731 and GTT 3856–3895), give each deployer
       `new` site w_out(C) − 1 `deployDataNft` slots in place of data + entries, with w_out from
       `compiledDeployers`.
 - [ ] **B8.6 Binding.** In `emitContractDeployment` (22269–22674), for a deployer `new`:

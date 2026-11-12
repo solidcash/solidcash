@@ -16314,6 +16314,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // A token transfer to a `new` result pays the child's token container (A8).
     if (node.methodName === 'transfer') node.tokenPaymentTarget = this.newResultOf(node.args[0]);
+    if (node.tokenPaymentTarget?.isDeployerNew === true
+      && (node.tokenPaymentTarget.deployerAbi?.tokenRows.length ?? 0) > 0) {
+      throw new DeployerUnsupportedError(node, 'second-coin-at-single-container',
+        'the child keeps its token containers single, so a second coin at that lock would fail its creation');
+    }
 
     return node;
   }
@@ -16363,6 +16368,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.lockingBytecode = this.visit(node.lockingBytecode);
     node.amount = this.visit(node.amount);
     node.paymentTarget = this.newResultOf(node.lockingBytecode);
+    if (node.paymentTarget?.isDeployerNew === true
+      && node.paymentTarget.deployerAbi?.satoshiContainer === 'required') {
+      throw new DeployerUnsupportedError(node, 'second-coin-at-single-container',
+        'the child keeps its satoshi container single, so a second coin at that lock would fail its creation');
+    }
     if (node.paymentTarget === undefined) this.checkContractAddressPayment(node, node.lockingBytecode);
     return node;
   }

@@ -260,6 +260,9 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { reachableFreeFunctionsInSource } from './PruneUnreachableFreeFunctions.js';
 import { reachableContractFunctions } from './PruneUnreachableMsgDataMethods.js';
 import { emitCompilerWarning } from '../warnings.js';
+import {
+  DeployerUnsupportedError, ReservedNameError, StatefulAddressPaymentError, StatefulAddressPaymentWarning,
+} from '../Errors.js';
 import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js';
 
 export { getMaxPushdataEncodedSizeForType };
@@ -1208,6 +1211,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.refuseReservedNames(node);
     this.sourceFile = node;
     this.sourceFreeFunctions.clear();
     this.reachableSourceFreeFunctions.clear();
@@ -2757,7 +2761,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Survey the conditions which can make an otherwise stateless contract stateful. Stateful-child deployment is
   // the first condition in the historical short-circuit chain, so finding one stops immediately. If none exists,
   // that same necessary full traversal also answers the value-bearing-deploy and event-emission predicates.
-  private surveyContractStatefulness(node: ContractNode): {
+  surveyContractStatefulness(node: ContractNode): {
     deploysStatefulChild: boolean; deploysWithValue: boolean; emitsEvent: boolean;
   } {
     const seen = new Set<Node>();
@@ -15883,6 +15887,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Contract deployment mode
       node.referencedContract = contract;
 
+      // B5.4: `args` is parsed but not compiled until the deployer exists (B8.2 removes this).
+      if (node.callOptions?.args) {
+        throw new DeployerUnsupportedError(node, 'args-not-yet',
+          '`args` names a child contract parameter and needs that child to have a deployer, which this build does '
+          + 'not yet generate');
+      }
+
       if (contract.isAbstract) {
         throw new AbstractContractNotCompilableError(node, contract.name);
       }
@@ -16201,13 +16212,123 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new TokenContainerKeyMustBeParameterError(node);
     }
 
+    // A token transfer to a `new` result pays the child's token container (A8).
+    if (node.methodName === 'transfer') node.tokenPaymentTarget = this.newResultOf(node.args[0]);
+
     return node;
   }
 
   visitTransferStatement(node: TransferStatementNode): Node {
     node.lockingBytecode = this.visit(node.lockingBytecode);
     node.amount = this.visit(node.amount);
+    node.paymentTarget = this.newResultOf(node.lockingBytecode);
+    if (node.paymentTarget === undefined) this.checkContractAddressPayment(node, node.lockingBytecode);
     return node;
+  }
+
+  /**
+   * B5.5: `__solidcash_` is the compiler's own prefix (A3). A source may neither declare nor use a name that starts
+   * with it; checked on the parsed tree, before any pass adds a name of its own.
+   */
+  private refuseReservedNames(root: Node): void {
+    const seen = new Set<Node>();
+    const walk = (value: unknown): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof IdentifierNode && value.name.startsWith('__solidcash_')) {
+        throw new ReservedNameError(value, value.name);
+      }
+      const name = (value as unknown as { name?: unknown }).name;
+      // A library function is registered under its qualified name (`L.f`); the declaration's own name is the last
+      // segment.
+      if (typeof name === 'string'
+        && (name.startsWith('__solidcash_') || name.slice(name.lastIndexOf('.') + 1).startsWith('__solidcash_'))) {
+        throw new ReservedNameError(value, name.slice(name.lastIndexOf('.') + 1));
+      }
+      for (const key of Object.keys(value)) {
+        if (['location', 'definition', 'symbolTable', 'type', 'references', 'resolvedFunction',
+          'functionReference'].includes(key)) {
+          continue;
+        }
+        const child = (value as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) walk(child);
+        else if (Array.isArray(child)) {
+          // Event parameters are plain `{ name, type }` records rather than nodes.
+          for (const item of child) {
+            if (item instanceof Node) walk(item);
+            else if (typeof (item as { name?: unknown })?.name === 'string'
+              && (item as { name: string }).name.startsWith('__solidcash_')) {
+              throw new ReservedNameError(value, (item as { name: string }).name);
+            }
+          }
+        }
+      }
+    };
+    walk(root);
+  }
+
+  /**
+   * The `new` site an expression is a result of (A6): a `new` of a stateful direct child, a local whose
+   * declaration initialises it with one and which is never assigned again, or a cast of either. Anything else
+   * (a state variable, a parameter, a value assigned in a branch) is not a result of one `new` site.
+   */
+  newResultOf(expression: ExpressionNode | undefined): InstantiationNode | undefined {
+    const seen = new Set<Node>();
+    let current = expression;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      if (current instanceof InstantiationNode) return current.isStatefulDeploy ? current : undefined;
+      if (current instanceof CastNode) {
+        current = current.expression;
+        continue;
+      }
+      if (current instanceof IdentifierNode) {
+        const definition = current.definition?.definition;
+        if (definition instanceof VariableDefinitionNode && definition.expression !== undefined
+          && !this.localIsReassigned(definition.name)) {
+          current = definition.expression;
+          continue;
+        }
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * A payment whose destination is a contract the compilation declares (A8). A stateful direct contract's address
+   * is its master lock, where a coin can never be spent; an interface or an unclassifiable declaration gets a
+   * warning instead, because the compiler cannot see whether the coin would be stuck.
+   */
+  private checkContractAddressPayment(node: Node, expression: ExpressionNode): void {
+    // The expression's type is set by the type pass, which runs later; a declared name carries it already.
+    let type: Type | undefined = expression.type;
+    if (!(type instanceof AddressType)) {
+      if (expression instanceof IdentifierNode) {
+        type = (expression.definition?.definition as { type?: Type } | undefined)?.type;
+      } else if (expression instanceof CastNode) {
+        type = expression.type;
+      }
+    }
+    if (!(type instanceof AddressType) || type.interfaceName === undefined) return;
+    if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
+    const name = type.interfaceName;
+    const declaration = this.contractMap.get(name);
+    const isInterface = this.interfaceMap.has(name);
+    if (declaration !== undefined) {
+      const survey = this.surveyContractStatefulness(declaration);
+      if (declaration.stateVariables.length > 0 || declaration.collections.length > 0
+        || survey.deploysStatefulChild) {
+        throw new StatefulAddressPaymentError(node, name);
+      }
+      return;
+    }
+    if (isInterface) {
+      emitCompilerWarning(new StatefulAddressPaymentWarning(
+        `Warning: a payment to '${name}' pays the address of a contract whose code is not declared in this `
+        + 'compilation; if it is a stateful contract the satoshis land on its master lock and can never be spent. '
+        + 'Call one of its payable functions instead.').message);
+    }
   }
 
   /**

@@ -3543,6 +3543,8 @@ export class EmitStatementNode extends StatementNode {
 
 export class TransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Set when the destination is a `new` result (A6); its payment is routed to the child's satoshi container. */
+  paymentTarget?: InstantiationNode;
   /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
   sourceEffectRecipeProvenanceSafe?: boolean;
   /** Runtime transfer site within a lowered counter-keyed mapping loop; excluded from fixed transfer slots. */
@@ -3677,6 +3679,8 @@ export class TypeIntrospectionNode extends ExpressionNode {
 
 export class TokenContainerMethodStatementNode extends StatementNode {
   tokenContainerSlotIndex: number = 0;
+  /** Set when arg 0 is a `new` result (A6); its payment is routed to the child's token container. */
+  tokenPaymentTarget?: InstantiationNode;
   transferIndex: number = 0;
   /** Runtime counter-loop effect stream ownership for fungible-token or NFT transfer sites. */
   runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };

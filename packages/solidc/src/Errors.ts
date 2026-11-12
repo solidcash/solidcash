@@ -65,6 +65,8 @@ export type SolidcDiagnosticCode =
   | 'COMPAT_CALL_UNBOUND_ARGUMENTS'
   // A transaction-signature check left in an invoked subroutine, whose covered bytecode no SDK signature matches.
   | 'SIGNATURE_CHECK_IN_SUBROUTINE'
+  // A payment to a `new` result whose category cannot be read at the payment site (branch or loop).
+  | 'STATEFUL_PAYMENT_UNROUTABLE'
   // A contract's own code deploys that same contract, so its creation code would have to contain itself.
   | 'CIRCULAR_CONTRACT_REFERENCE'
   | 'INTERFACE_CONTRACT_BASE'
@@ -1292,6 +1294,146 @@ export class NamedArgumentError extends SolidCashError {}
 export class TransferArgumentTypeError extends TypeError {
   constructor(node: Node, argName: string, actual?: Type, expected?: Type) {
     super(node, actual, expected, `this.transfer() argument '${argName}' has type '${actual}' but expected '${expected}'`);
+  }
+}
+
+/** `new C{args: (…)}`: the contract parameters and the constructor's own, in the forms A3 gives. */
+export class DeployArgsRequiredError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' has contract parameters and constructor parameters: pass the contract parameters `
+      + 'as `args: (...)` and the constructor arguments in the parentheses');
+  }
+}
+
+export class DeployArgsCountError extends SolidCashError {
+  constructor(node: Node, contractName: string, given: number, expected: number) {
+    super(node, `'${contractName}' takes ${expected} contract parameter(s) in \`args\`, but ${given} value(s) were given`);
+  }
+}
+
+export class DeployArgsUnexpectedError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' has no contract parameters, so \`args\` has nothing to fill`);
+  }
+}
+
+export class DeployValueBelowReserveError extends SolidCashError {
+  constructor(node: Node, value: bigint) {
+    super(node, `a child's satoshi container cannot be opened with ${value} satoshis: pass 0, or at least 1200`);
+  }
+}
+
+export class DeployValueWithoutContainerError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' has no satoshi container row in its deployer, so \`value\` has nowhere to go`);
+  }
+}
+
+export class DeploySaltError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '`salt` is not available on a deployer `new`: the child\'s redeem starts with its category pin, so '
+      + 'its address already depends on the deployer coin');
+  }
+}
+
+export class DeployedChildCallError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `a call on the child returned by \`new ${contractName}\` cannot be bound at its creation: call the `
+      + 'child in a later transaction');
+  }
+}
+
+/** A `new` the deployer path cannot compile, or a child with no deployer. `reason` is an A4.1 identifier. */
+export class DeployerUnsupportedError extends SolidCashError {
+  constructor(node: Node, readonly reason: string, detail: string) {
+    super(node, `the deployer path refuses this \`new\` (${reason}): ${detail}`);
+  }
+}
+
+/** A contract whose code creates itself, directly or through another child. */
+export class DeployCycleError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `'${contractName}' creates itself, directly or through another child, so its creation cannot be built`);
+  }
+}
+
+/** A source name the compiler keeps for its own: anything starting with `__solidcash_`. */
+export class ReservedNameError extends SolidCashError {
+  constructor(node: Node, name: string) {
+    super(node, `'${name}' is reserved for compiler-generated names: the prefix \`__solidcash_\` is not available `
+      + 'to a source');
+  }
+}
+
+/** A constructor that uses a token container other than by reading `tokenAmount` (A3 rule 4). */
+export class CtorTokenContainerError extends SolidCashError {
+  constructor(node: Node, member: string) {
+    super(node, `a constructor may read a token container's \`tokenAmount\` only; \`${member}\` is not available `
+      + 'while it runs, because no tokens reach the contract before it is born');
+  }
+}
+
+/** `.category` on a contract value that is not a `new` result (A6). */
+export class ChildCategoryUnavailableError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '`.category` is available on the result of `new C(...)`: an address alone does not carry the category');
+  }
+}
+
+/** A generator check of A16.2 failed: a defect in the compiler, never in the source. */
+export class DeployerInternalError extends SolidCashError {
+  constructor(node: Node | undefined, detail: string) {
+    super(node as Node, `internal deployer check failed: ${detail}`);
+  }
+}
+
+export class CallRecordsOptionError extends SolidCashError {
+  constructor(node: Node, convention: string) {
+    super(node, `callRecords: 'all' is not available on a ${convention} compile: that convention binds a callee's `
+      + 'result in its own way, and a void entry has no result to bind');
+  }
+}
+
+export class ReceiveShapeError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, 'a `receive` that reads `msg.sender` or block data cannot be reached: the dispatcher selects it by a '
+      + 'stack depth that leaves no room for the hidden parameter the read needs');
+  }
+}
+
+/** The compatibility rule of A3 rule 6 was applied: parentheses read as `args`. */
+export class DeployArgsPositionalWarning {
+  readonly message: string;
+
+  constructor(contractName: string) {
+    this.message = `Warning: \`new ${contractName}(…)\` fills its contract parameters; write `
+      + `\`new ${contractName}{args: (…)}()\` to say so, and put constructor arguments in the parentheses.`;
+  }
+}
+
+/** `deployer: true` was given and C cannot have a deployer; the message names the reason. */
+export class DeployerUnsupportedWarning {
+  readonly message: string;
+
+  constructor(contractName: string, reason: string, detail: string) {
+    this.message = `Warning: '${contractName}' has no deployer (${reason}): ${detail}`;
+  }
+}
+
+/** A payment to a stateful direct contract's address: it would land on the master lock and be unspendable. */
+export class StatefulAddressPaymentError extends SolidCashError {
+  constructor(node: Node, contractName: string) {
+    super(node, `a payment to '${contractName}' pays its address, which is the master lock; only a call of one of its `
+      + 'payable functions can credit it. Pay the child returned by `new` instead, or send through a call.');
+  }
+}
+
+/** A payment to a contract-typed address the compiler cannot classify; the satoshis may be unspendable. */
+export class StatefulAddressPaymentWarning {
+  readonly message: string;
+
+  constructor(message: string) {
+    this.message = message;
   }
 }
 

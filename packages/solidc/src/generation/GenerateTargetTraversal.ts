@@ -22106,6 +22106,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Visit lockingBytecode expression and replace pre-allocated slot
       node.lockingBytecode = this.visit(node.lockingBytecode);
+      if (node.paymentTarget) this.emitNewResultSatoshiLock(node.paymentTarget, { location: node.location, positionHint: PositionHint.END });
       this.emitReplace(this.getStackIndex(lbName), node);
       this.popFromStack();
 
@@ -22117,6 +22118,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       // Normal path (outside branches)
       node.lockingBytecode = this.visit(node.lockingBytecode);
+      if (node.paymentTarget) this.emitNewResultSatoshiLock(node.paymentTarget, { location: node.location, positionHint: PositionHint.END });
       this.popFromStack();
       const lbStackName = `__internal__transfer_lb_${node.transferIndex}`;
       this.pushToStack(lbStackName);
@@ -22415,6 +22417,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Visit method arguments and replace pre-allocated slots
       for (let i = 0; i < node.args.length; i++) {
         node.args[i] = this.visit(node.args[i]);
+        if (i === 0 && node.tokenPaymentTarget) {
+          this.emitNewResultTokenLock(node.tokenPaymentTarget, { location: node.location, positionHint: PositionHint.END });
+        }
         const argName = `__tc_arg_${transferIndex}_${i}`;
         this.emitReplace(this.getStackIndex(argName), node);
         this.popFromStack();
@@ -22441,6 +22446,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Visit method arguments
       for (let i = 0; i < node.args.length; i++) {
         node.args[i] = this.visit(node.args[i]);
+        if (i === 0 && node.tokenPaymentTarget) {
+          this.emitNewResultTokenLock(node.tokenPaymentTarget, { location: node.location, positionHint: PositionHint.END });
+        }
         this.popFromStack();
         const argName = `__tc_arg_${transferIndex}_${i}`;
         this.pushToStack(argName);
@@ -22998,6 +23006,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       const deployIdx = this.deployCounter++;
+      // A later payment to this new result reads the category from the same deploy slot.
+      this.deployRoutingCounters.set(node, deployIdx);
       const masterLbcStackName = `__deploy_master_lbc_${deployIdx}`;
       const categoryStackName = `__deploy_category_${deployIdx}`;
 
@@ -59013,9 +59023,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Shared satoshi container address body taking the lock: `[category, lock]` -> `[lbc]`. */
-  private emitLockedSatoshiContainerLbc(locationData: SingleLocationData): void {
+  private emitLockedSatoshiContainerLbc(
+    locationData: SingleLocationData,
+    options: { masterRetires: boolean; keepsTokenless: boolean } = this.boundContainerOptions('satoshiContainer'),
+  ): void {
     this.encodeTopLockAndCategory(locationData);
-    this.emitBoundSatoshiContainerCovenant(locationData);
+    this.emitBoundSatoshiContainerCovenant(locationData, options);
   }
 
   /**
@@ -59047,12 +59060,82 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
   }
 
+  /**
+   * A child's container options from its own declaration (A8, B2.2): whether one of its entries lets the master
+   * retire, and whether it keeps the container in one coin. The deployer and the SDK derive the same lock.
+   */
+  private containerOptionsOf(
+    contract: ContractNode,
+    kind: 'satoshiContainer' | 'tokenContainer',
+  ): { masterRetires: boolean; keepsTokenless: boolean } {
+    const entries = [
+      ...contract.functions.filter((fn) => fn.visibility !== 'internal' && fn.visibility !== 'private'),
+      ...(contract.constructorDef ? [contract.constructorDef] : []),
+      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
+    ].map((fn) => ({ modifiers: fn.modifiers.map(String), lowLevelCalls: fn.lowLevelCalls }));
+    if (contract.receiveDef) entries.push({ modifiers: ['payable'], lowLevelCalls: contract.receiveDef.lowLevelCalls });
+    const flag = kind === 'satoshiContainer' ? 'singleSatoshiContainer' : 'singleTokenContainer';
+    const bodies = [
+      ...contract.functions,
+      ...(contract.constructorDef ? [contract.constructorDef] : []),
+      ...(contract.receiveDef ? [contract.receiveDef] : []),
+      ...(contract.fallbackDef ? [contract.fallbackDef] : []),
+    ];
+    const keepsTokenless = contract[flag] === true && bodies.some((fn) => fn.blockLayout?.[flag] === true);
+    return { masterRetires: containerMasterRetires(entries), keepsTokenless };
+  }
+
+  /** The deploy-site counter that produced each `new` result, for routing a later payment to its container. */
+  private readonly deployRoutingCounters = new WeakMap<InstantiationNode, number>();
+
+  /** `[..]` -> `[.., X]`: the category the routing child was born with (its deploy input's outpoint txid). */
+  private emitNewResultCategory(target: InstantiationNode, locationData: SingleLocationData): void {
+    const counter = this.deployRoutingCounters.get(target);
+    if (counter === undefined) {
+      throw new SolidcDiagnosticError(
+        'STATEFUL_PAYMENT_UNROUTABLE',
+        'a payment to this new result is compiled from a branch or a loop, where its category is not available at '
+          + 'the payment. Pay it in the same straight-line block as the new, or send through a call.',
+        { contractName: target.referencedContract?.name ?? target.identifier.name },
+      );
+    }
+    this.emitBlockSlotIndex('deploy', counter, locationData);
+    this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    this.pushToStack('(value)');
+  }
+
+  /** `[M]` -> `[satoshi container lock of (M, X)]`. */
+  private emitNewResultSatoshiLock(target: InstantiationNode, locationData: SingleLocationData): void {
+    this.emitNewResultCategory(target, locationData); // [M, X]
+    this.emit(Op.OP_SWAP, locationData); // [X, M]
+    this.emitLockedSatoshiContainerLbc(
+      locationData, this.containerOptionsOf(target.referencedContract!, 'satoshiContainer'),
+    );
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+  }
+
+  /** `[t, M]` -> `[token container lock of (M, X, t)]`. */
+  private emitNewResultTokenLock(target: InstantiationNode, locationData: SingleLocationData): void {
+    this.emitNewResultCategory(target, locationData); // [t, M, X]
+    this.emit(Op.OP_ROT, locationData); // [M, X, t]
+    this.emit(Op.OP_ROT, locationData); // [X, t, M]
+    this.emitLockedTokenContainerLbc(
+      locationData, this.containerOptionsOf(target.referencedContract!, 'tokenContainer'),
+    );
+    this.popFromStack(3);
+    this.pushToStack('(value)');
+  }
+
   /** `[encLock, encCategory]` -> the satoshi container P2SH32 bound to that lock. */
-  private emitBoundSatoshiContainerCovenant(locationData: SingleLocationData): void {
+  private emitBoundSatoshiContainerCovenant(
+    locationData: SingleLocationData,
+    options: { masterRetires: boolean; keepsTokenless: boolean } = this.boundContainerOptions('satoshiContainer'),
+  ): void {
     const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
     const covenant = scriptToBytecode(buildSatoshiContainerCovenantScript(
-      categoryPlaceholder, lockPlaceholder, this.boundContainerOptions('satoshiContainer'),
+      categoryPlaceholder, lockPlaceholder, options,
     ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'category', bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
@@ -59061,7 +59144,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Shared token container address body taking the lock: `[masterCat, tcCat, lock]` -> `[lbc]`. */
-  private emitLockedTokenContainerLbc(locationData: SingleLocationData): void {
+  private emitLockedTokenContainerLbc(
+    locationData: SingleLocationData,
+    options: { masterRetires: boolean; keepsTokenless: boolean } = this.boundContainerOptions('tokenContainer'),
+  ): void {
     this.emit(hexToBin('23'), locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);
@@ -59073,16 +59159,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(hexToBin('20'), locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);
-    this.emitBoundTokenContainerCovenant(locationData);
+    this.emitBoundTokenContainerCovenant(locationData, options);
   }
 
   /** `[encLock, encMaster, encToken]` -> the token container P2SH32 bound to that lock. */
-  private emitBoundTokenContainerCovenant(locationData: SingleLocationData): void {
+  private emitBoundTokenContainerCovenant(
+    locationData: SingleLocationData,
+    options: { masterRetires: boolean; keepsTokenless: boolean } = this.boundContainerOptions('tokenContainer'),
+  ): void {
     const master = Uint8Array.from({ length: 32 }, (_value, index) => index);
     const token = Uint8Array.from({ length: 32 }, (_value, index) => 0x40 + index);
     const lockPlaceholder = Uint8Array.from({ length: 35 }, (_value, index) => 0xc0 + index);
     const covenant = scriptToBytecode(buildTokenContainerCovenantScript(
-      master, token, lockPlaceholder, this.boundContainerOptions('tokenContainer'),
+      master, token, lockPlaceholder, options,
     ));
     this.emitBoundCovenantP2sh32(covenant, [
       { token: 'master', bytes: Uint8Array.from([0x20, ...master.slice().reverse()]) },

@@ -702,6 +702,7 @@ function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): vo
     }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
   }
   contract.functions = contract.functions.filter((fn) => reached.has(fn));
+  for (const fn of reached) fn.genesisMode = true;
   contract.constructorDef = undefined;
   contract.fallbackDef = undefined;
   contract.receiveDef = undefined;

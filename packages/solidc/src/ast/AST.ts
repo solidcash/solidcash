@@ -1073,6 +1073,8 @@ export class FunctionDefinitionNode extends Node implements Named {
    * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
    * the function's maximum block width. */
   usesDynamicChunkInputBase?: boolean;
+  /** A body of Deploy<C> compiled in genesis mode (A5): its create arm and every body the program keeps. */
+  genesisMode?: boolean;
   /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
   framedValueWitnessSlots?: number;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */

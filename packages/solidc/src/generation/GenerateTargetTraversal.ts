@@ -11601,7 +11601,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * anyone: an owner rewritten, a supply minted twice, a coin spent through a constructor that checks nothing.
    */
   private emitDirectGenesisGuard(node: FunctionDefinitionNode): void {
-    if (node.name !== '__construct' || this.isDefineSubTraversal || this.framedMaster) return;
+    if (node.name !== '__construct' || this.isDefineSubTraversal || this.framedMaster || node.genesisMode === true) {
+      return;
+    }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     this.emit(bytecodeToScript(genesisSpendCheck()), loc);
     this.requires.push({

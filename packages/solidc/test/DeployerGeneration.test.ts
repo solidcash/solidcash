@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 import { asmToScript, computeCollectionHash, scriptToBytecode } from '@solidcash/utils';
+import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import type { DeployerConstants } from '../src/generation/deployerConstants.js';
 
 const P = 'pragma solidcash ^0.50.0;';
@@ -249,5 +250,16 @@ describe('B7.5: what the constructor does', () => {
         function take(address to, int amount) { this.tokens[asset].transfer(to, amount); } }`,
       { deployer: true });
     expect(token.artifact.deployer!.tokenRows).toEqual([0]);
+  });
+
+  it('is deterministic across compiles and hashes the body for TEMPLATE', () => {
+    const first = compile(`${STATEFULWithCtor}\n// one`, { deployer: true, __artifactCache: false } as never);
+    const second = compile(`${STATEFULWithCtor}\n// two`, { deployer: true, __artifactCache: false } as never);
+    expect(first.artifact.deployer!.bytecode).toBe(second.artifact.deployer!.bytecode);
+    expect(first.artifact.deployer!.lockingBytecode).toBe(second.artifact.deployer!.lockingBytecode);
+    const body = Uint8Array.from(Buffer.from(first.artifact.deployer!.code, 'hex'));
+    expect(first.artifact.deployer!.template).toBe(
+      Buffer.from(sha256.hash(body)).toString('hex'),
+    );
   });
 });

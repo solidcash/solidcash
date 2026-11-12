@@ -540,6 +540,12 @@ Fixed after the battery (`32ccc5f85`..`a4d2ceebb`), each failing file then passi
 - `MasterChefDeposit` now reaches SafeERC20's raw call and fails closed there: deferred in
   `packages/solidc/docs/deferrals.md` ("A Solidity-compat call to a stateful callee on the direct convention").
 
+The deferral was lifted the same day by the `fix/masterchef-edge` merge (`b4122478c`, SDK only): such a callee runs as
+a direct external group with its whole block, and `MasterChefDeposit` passes. At `dd7bbf1bc` the SDK suites ran once
+(6,286 passed without e2e, 3,958 e2e passed, no failures), as did testing, solidhat, testing-suite, application and
+security conformance and generated-project smoke. The compiler did not change, so the compiler suite, `gate.sh`, the
+corpus and the kernel gate's cold compiles stand.
+
 ### What closed the 2026-10-17 failures
 
 The full list is `git log 34be189e4..11b8f7feb`. The commits that map directly onto a gate:

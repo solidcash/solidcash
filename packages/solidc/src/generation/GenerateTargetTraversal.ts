@@ -11626,6 +11626,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitGenesisCreateEpilogue(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     this.emitGenesisMasterPin(node);
+    this.emitGenesisCensus();
+    this.emitGenesisCalleeListCheck();
     if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
     if (this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined) {
       this.emitTransferCovenantVerification(node);
@@ -11652,6 +11654,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(template)');
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.popFromStack(2);
+  }
+
+  /** A4.3 step 14: the callee list is exactly 2s bytes. */
+  private emitGenesisCalleeListCheck(): void {
+    const loc: SingleLocationData = {
+      location: this.currentFunction.body.location, positionHint: PositionHint.END,
+    };
+    this.emitDropUntrackedStackItems(loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__genesisCallees'))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(callees)');
+    this.emit(Op.OP_SIZE, loc);
+    this.pushToStack('(callee_size)');
+    this.emit(encodeInt(BigInt(2 * (this.currentFunction.externalCalls?.length ?? 0))), loc);
+    this.pushToStack('(expected)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(this.getStackIndex('(callees)'));
+  }
+
+  /** A4.5: exactly one master, N records and 1 + N own-category outputs, each with fungible amount 0. */
+  private emitGenesisCensus(): void {
+    const loc: SingleLocationData = {
+      location: this.currentFunction.body.location, positionHint: PositionHint.END,
+    };
+    this.emitDropUntrackedStackItems(loc);
+    const records = this.dataNftCount + (this.currentContractUsesBlockOracle ? 1 : 0);
+    this.emitDeployCapabilityOutputCount('(gen_x)', 0x02, 1, loc);
+    this.emitDeployCapabilityOutputCount('(gen_x)', 0x01, records, loc);
+    this.emitDeployChildCategoryBound('(gen_x)', 1 + records, loc);
   }
 
   /**

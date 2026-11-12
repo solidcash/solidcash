@@ -90,6 +90,7 @@ function createSpend(
   originLock?: Uint8Array,
   locktime = 0,
   deployerSequence = 0xffffffff,
+  extraOutputs: VmOutput[] = [],
 ) {
   const sourceOutputs: SourceOutputs = [
     { lockingBytecode: originLock ?? TOKENLESS, valueSatoshis: 10_000n },
@@ -108,6 +109,7 @@ function createSpend(
     token: { category: x, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } },
   }));
   outputs.push(record ?? recordOutput(artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master));
+  outputs.push(...extraOutputs);
   const values: Record<string, Uint8Array> = {
     __internal__budgetPad: EMPTY,
     __internal__authorIndex: new Uint8Array([0x01]),
@@ -260,3 +262,57 @@ describe('B7.10: address(this) and this.activeBytecode', () => {
 });
 
 
+
+describe('B7.12 / A4.5: the census', () => {
+  const deployerOf = () => compileString(C, { deployer: true, messageBus: false });
+  const tokenOutput = (
+    category: Uint8Array,
+    nft: { capability: 'none' | 'mutable' | 'minting'; commitment: Uint8Array } | undefined,
+    amount = 0n,
+  ): VmOutput => ({
+    lockingBytecode: TOKENLESS,
+    valueSatoshis: 1200n,
+    token: { category, amount, ...(nft === undefined ? {} : { nft }) },
+  });
+  const x = () => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
+  const run = (
+    extra: VmOutput[] = [], adjustMaster: (output: VmOutput) => VmOutput = (output) => output,
+    valueOverrides: Record<string, Uint8Array> = {},
+  ) => {
+    const artifact = deployerOf();
+    return createSpend(artifact, artifact.deployer!, undefined, [], adjustMaster, undefined,
+      valueOverrides, undefined, 0, 0xffffffff, extra);
+  };
+
+  it('refuses a second master', () => {
+    expect(vm.verify(run([tokenOutput(x(), { capability: 'minting', commitment: EMPTY })]) as never))
+      .not.toBe(true);
+  });
+  it('refuses an extra mutable record', () => {
+    expect(vm.verify(run([tokenOutput(x(), { capability: 'mutable', commitment: EMPTY })]) as never))
+      .not.toBe(true);
+  });
+  it('refuses an extra immutable own-category NFT', () => {
+    expect(vm.verify(run([tokenOutput(x(), { capability: 'none', commitment: EMPTY })]) as never))
+      .not.toBe(true);
+  });
+  it('refuses an own-category fungible amount', () => {
+    expect(vm.verify(run([tokenOutput(x(), undefined, 1n)]) as never)).not.toBe(true);
+  });
+  it('refuses a missing master', () => {
+    expect(vm.verify(run([], (output) => ({ ...output, token: undefined })) as never)).not.toBe(true);
+  });
+  it('refuses an OUTBASE that does not name the master', () => {
+    expect(vm.verify(run([], (output) => output,
+      { __internal__genesisOutputBase: Uint8Array.of(OUTBASE - 1) }) as never)).not.toBe(true);
+  });
+});
+
+describe('B7.12: the callee list', () => {
+  it('refuses a non-empty list when the constructor calls nothing', () => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const spend = createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined,
+      { __internal__genesisCallees: Uint8Array.of(0, 0) });
+    expect(vm.verify(spend as never)).not.toBe(true);
+  });
+});

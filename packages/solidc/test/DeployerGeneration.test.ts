@@ -270,3 +270,12 @@ describe('B7.5: what the constructor does', () => {
     );
   });
 });
+
+describe('B7.5: ctor-call-count', () => {
+  it('refuses more than 37 call slots', () => {
+    const calls = Array.from({ length: 38 }, (_, i) => `a = i.f(${i});`).join('');
+    const source = `${P} interface I { function f(int x) external returns (bool); }
+      contract C { bool a; constructor(I i) { ${calls} } }`;
+    expect(compile(source, { deployer: true }).artifact.deployerUnsupported).toBe('ctor-call-count');
+  });
+});

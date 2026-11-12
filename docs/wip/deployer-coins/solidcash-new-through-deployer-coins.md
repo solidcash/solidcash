@@ -3592,8 +3592,8 @@ with a deployer whose constructor writes a collection, and only where today's st
       - `block.number` and `block.timestamp` (`visitNullaryOp`, 19202–19207) follow A5:
         `OP_TXLOCKTIME OP_DUP OP_CHECKLOCKTIMEVERIFY OP_DROP`, then the range check;
       Note (implementation, 2026-11-12): M, R, `msg.value`, a zero-category `msg.sender` and `address(this)` are
-      resolved; the balance journal, the nonzero creator sender, the locktime form of block fields and most of the
-      skipped checks are not.
+      resolved; the balance journal, the nonzero creator sender, the locktime form of block fields (the AST path is
+      present, but its census needs the A4.4 oracle row) and most of the skipped checks are not.
       - emit none of: `emitDirectGenesisGuard` (11060), `emitTokenCategoryVerification` (36645),
         `emitMasterSelfPreservation` (50415), `emitMintingNftUniqueness` (51592), `emitValuePreservation`
         (55880), `emitOwnCategoryMutableNftConservation` (51806), `emitMasterCommitmentPreservation` (10839),
@@ -3619,9 +3619,11 @@ with a deployer whose constructor writes a collection, and only where today's st
         position fails by itself; do not add a check that could be skipped.
       - Emit step 8 only when `constructorReadsSender` is true, and make `emitMsgSender` in genesis mode
         throw `DeployerInternalError` when it is reached in a program that did not emit step 8.
-      Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census and the callee-list size
-      check are in, and the record commitment settlement runs. The call-slot mask, the per-slot carrier bindings and
-      the callee-list entry checks are not built.
+      Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census, the callee-list size
+      check, the tagged caller digest of A7 and the ordinary external-call verification are in, and the record
+      commitment settlement runs. The executed-slot mask, the per-slot carrier bindings and the callee-list entry
+      checks are not built; settlement rewrites the tracked frame, so the mask needs a dedicated local that survives
+      it.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,

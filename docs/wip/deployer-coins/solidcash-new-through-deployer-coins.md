@@ -3683,12 +3683,20 @@ with a deployer whose constructor writes a collection, and only where today's st
         compile return the `DeployerAbi` to it (B8.0). With a reason raised anywhere in B7.1 to B7.14: under
         `deployer: true` set `artifact.deployerUnsupported` and emit `DeployerUnsupportedWarning`; in a
         creator's compile return the reason to it.
+
+      Note (implementation, 2026-11-12): the birth trailer, TEMPLATE, V_DEPLOY and the smallest-unlocking
+      check are done; the constants this compiler derives are C's own code, w_out is not yet computed (the
+      genesis layout is B7.9), and the block-oracle constant-lock form is not available in this backend.
 - [ ] **B7.15 Measure first.** As soon as B7.14 produces a deployer: build the sweep of a sample deployer
       coin by hand and measure its size, fix the constant of V_DEPLOY, and fill D2, D3, D9, the second part
       of D16 and the deployer's part of D18. Then compile the user's two pools with `deployer: true` (read-only:
       `bch-next/contracts/NotePool.scash` and `TokenNotePool.scash`) and fill D20: the size of each
       deployer, and whether the smallest `create` unlocking fits in 10,000 bytes. If either pool does not
       fit, or is refused with a reason, stop and report before going on.
+
+      Note (implementation, 2026-11-12): both pools compile with a deployer and fit: D20 records 2,110 B and
+      2,129 B, with smallest creations of 6,981 B and 8,063 B. D2, D3 and D20 are filled; D9, D16's second
+      part and D18's deployer part need the genesis-mode emitters.
 - [ ] **B7.16 Tests.** Add `W/solidc/test/DeployerGeneration.test.ts`. Hand-built VM transactions are allowed
       here, as in other compiler tests. Every VM test puts the deployer coin at an input index that differs
       from OUTBASE (for example input 3 and OUTBASE 5). Where a case needs bytes that only the SDK computes
@@ -4539,8 +4547,9 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 
 - [ ] **D1.** (B2.1) The payment finding, and where a call's value lands: ____.
 - [ ] **D2.** (B7.15) Deploy<C>'s redeem size, for a minimal C and for a C with one event, one payment and one
-      call: ____ B, ____ B.
-- [ ] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: ____.
+      call: 1,064 B, 2,037 B.
+- [ ] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,400 and 3,400 satoshis;
+      the sweep is 1,159 B and 2,132 B at 1 sat/B (rounded up to the next 100 in V_DEPLOY).
 - [ ] **D4.** (B0.6, B9.12) Creation size through a creator, compared with today's `new` for the same child:
       ____ B against ____ B.
 - [ ] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
@@ -4588,7 +4597,7 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       registry's creation of such a pool against today's creation through PoolGenesis: ____ B; ____ B against
       ____ B.
 - [ ] **D20.** (B7.15) The user's pools: the size of Deploy<NotePool> and Deploy<TokenNotePool>, and the
-      smallest `create` unlocking of each against 10,000 bytes: ____ B, ____ B; ____ B, ____ B.
+      smallest `create` unlocking of each against 10,000 bytes: 2,110 B and 2,129 B; 6,981 B and 8,063 B.
 - [ ] **D21.** (B6.0) The exact stack in every arm: bytes added per arm kind (entry function with 0, 1 and
       three visible parameters, `receive`, `fallback`, the multi-call entry, `__construct`), and the size of a
       whole contract before and after, for a contract with one arm and for the user's pools: ____ B;

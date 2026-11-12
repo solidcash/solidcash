@@ -194,7 +194,11 @@ describe('B7.5: what the constructor does', () => {
     expect(Uint8Array.from(Buffer.from(deployer.code, 'hex')))
       .toEqual(scriptToBytecode(asmToScript(artifact.bytecode)));
     const redeemSize = Uint8Array.from(Buffer.from(deployer.bytecode, 'hex')).length;
-    expect(BigInt(deployer.coinValue)).toBe(BigInt(1200 + Math.ceil((redeemSize + 95) / 100) * 100));
+    const pushHeader = redeemSize < 0x4c ? 1 : redeemSize <= 0xff ? 2 : redeemSize <= 0xffff ? 3 : 5;
+    const unlocking = 5 + pushHeader + redeemSize;
+    const varint = unlocking < 0xfd ? 1 : unlocking <= 0xffff ? 3 : 5;
+    const sweepSize = 4 + 1 + 36 + varint + unlocking + 4 + 1 + 8 + 1 + 25 + 4;
+    expect(BigInt(deployer.coinValue)).toBe(BigInt(1200 + Math.ceil(sweepSize / 100) * 100));
   });
 
   it('adds the 34-byte birth trailer when the constructor has a call slot', () => {
@@ -232,5 +236,18 @@ describe('B7.5: what the constructor does', () => {
     const { artifact } = compile(STATEFULWithCtor, { deployer: true });
     const hex = artifact.deployer!.bytecode;
     expect(hex).toContain('02a005b2');
+  });
+
+  it('names a single satoshi container and a single token container keyed by a contract parameter', () => {
+    const satoshi = compile(`pragma solidcash ^0.50.0; pragma satoshicontainer single;
+      contract C() { int n; constructor() { n = 1; } function bump() { n = n + 1; } }`,
+      { deployer: true });
+    expect(satoshi.artifact.deployer!.satoshiContainer).toBe('required');
+
+    const token = compile(`pragma solidcash ^0.50.0; pragma tokencontainer single;
+      contract C(bytes32 asset) { int n; constructor() { n = 1; }
+        function take(address to, int amount) { this.tokens[asset].transfer(to, amount); } }`,
+      { deployer: true });
+    expect(token.artifact.deployer!.tokenRows).toEqual([0]);
   });
 });

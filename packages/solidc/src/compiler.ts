@@ -634,6 +634,33 @@ interface DeployerProgramBox {
 
 /** The two protocol selectors of A4.2, independent of `evmCompat`. */
 
+/** B7.14: the smallest `create` unlocking, with every unbounded parameter at length 0. */
+function smallestCreateUnlockingSize(
+  inputs: readonly { name: string; type: string }[], codeLength: number, redeemLength: number,
+  callSlots: number,
+): number {
+  const pushHeader = (length: number): number =>
+    length < 0x4c ? 1 : length <= 0xff ? 2 : length <= 0xffff ? 3 : 5;
+  const argumentSize = (input: { name: string; type: string }): number => {
+    if (input.name === '__internal__code') return pushHeader(codeLength) + codeLength;
+    const fixed = /^bytes([0-9]+)$/.exec(input.type);
+    if (fixed !== null) return 1 + Number(fixed[1]);
+    if (input.type === 'address' || input.type === 'address payable') return 21;
+    return 1;
+  };
+  const calleeList = callSlots === 0 ? 1 : 1 + 2 * callSlots;
+  return 5 + calleeList + inputs.reduce((total, input) => total + argumentSize(input), 0)
+    + pushHeader(redeemLength) + redeemLength;
+}
+
+/** B7.15: the serialized size of a sweep at 1 sat/B, from its unlocking: selector, redeem push, one P2PKH output. */
+function sweepTransactionSize(redeemLength: number): number {
+  const pushHeader = redeemLength < 0x4c ? 1 : redeemLength <= 0xff ? 2 : redeemLength <= 0xffff ? 3 : 5;
+  const unlockingLength = 5 + pushHeader + redeemLength;
+  const varint = unlockingLength < 0xfd ? 1 : unlockingLength <= 0xffff ? 3 : 5;
+  return 4 + 1 + 36 + varint + unlockingLength + 4 + 1 + 8 + 1 + 25 + 4;
+}
+
 /**
  * B7.3: rename the constructor `create` and add `sweep`. The constructor keeps the internal name `__construct`
  * so every constructor-keyed rule (genesis reads, the delete refusal, the token-container rules, and the
@@ -17901,6 +17928,16 @@ function compileResolvedAst(
         const callSlots = built.box.callSlots ?? 0;
         const body = constants.code;
         const bytecodeBytes = asmToBytecode(program.bytecode);
+        const unlockingSize = smallestCreateUnlockingSize(
+          createAbi?.inputs ?? [], body.length, bytecodeBytes.length, callSlots,
+        );
+        if (unlockingSize > 10000) {
+          artifact.deployerUnsupported = 'unlocking-too-large';
+          emitCompilerWarning(new DeployerUnsupportedWarning(
+            artifact.contractName, 'unlocking-too-large',
+            `even the smallest create unlocking is ${unlockingSize} bytes, past the 10,000-byte limit`,
+          ).message);
+        } else {
         // B7.14: a constructor with a call slot makes C's born code end with `push32(hash256(Deploy<C>)) OP_DROP`.
         // The body, which TEMPLATE hashes, stays the same with and without a deployer.
         const deployerHash = hash256(bytecodeBytes);
@@ -17918,7 +17955,7 @@ function compileResolvedAst(
           template: binToHex(sha256Bytes.hash(body)),
           code: binToHex(code),
           birthTrailer: callSlots > 0,
-          coinValue: BigInt(1200 + Math.ceil((bytecodeBytes.length + 95) / 100) * 100).toString(),
+          coinValue: BigInt(1200 + Math.ceil(sweepTransactionSize(bytecodeBytes.length) / 100) * 100).toString(),
           sweepAge: 1440,
           abi: [
             ...(createAbi === undefined ? [] : [{ ...createAbi, name: 'create', selector: binToHex(DEPLOYER_SELECTOR_CREATE) }]),
@@ -17946,6 +17983,7 @@ function compileResolvedAst(
           }
         }
         artifact.deployer = deployerAbi;
+        }
       }
     }
   }

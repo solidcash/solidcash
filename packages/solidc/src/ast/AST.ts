@@ -2998,6 +2998,8 @@ export interface CallOptions {
   value?: ExpressionNode;
   gas?: ExpressionNode;
   salt?: ExpressionNode;
+  /** `new C{args: (...)}`: the child's contract parameters, in declaration order (A3). */
+  args?: ExpressionNode[];
 }
 
 export class ExternalFunctionCallNode extends ExpressionNode {

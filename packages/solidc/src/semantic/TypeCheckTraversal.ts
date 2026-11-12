@@ -175,6 +175,7 @@ import {
   UndefinedReferenceError,
   StructFieldExternalCallError,
   BlockOracleIndexNotForwardedError,
+  DeployerUnsupportedError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -2262,6 +2263,11 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitInstantiation(node: InstantiationNode): Node {
     if (node.referencedContract) {
+      if (node.callOptions?.args) {
+        throw new DeployerUnsupportedError(node, 'args-not-yet',
+          '`args` names a child contract parameter and needs that child to have a deployer, which this build does '
+          + 'not yet generate');
+      }
       // Contract deployment: type-check constructor args
       node.parameters = this.visitList(node.parameters);
       // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)

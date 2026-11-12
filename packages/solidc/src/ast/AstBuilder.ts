@@ -5271,7 +5271,7 @@ export default class AstBuilder
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
     if (ctx.callOptions()) {
-      instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+      instantiation.callOptions = this.parseCallOptions(ctx.callOptions(), true);
     }
     return instantiation;
   }
@@ -5284,7 +5284,7 @@ export default class AstBuilder
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const instantiation = new InstantiationNode(identifier, parameters);
     instantiation.location = Location.fromCtx(ctx);
-    instantiation.callOptions = this.parseCallOptions(ctx.callOptions());
+    instantiation.callOptions = this.parseCallOptions(ctx.callOptions(), true);
     return instantiation;
   }
 
@@ -8251,7 +8251,7 @@ export default class AstBuilder
     return node;
   }
 
-  private parseCallOptions(ctx: CallOptionsContext | undefined): CallOptions | undefined {
+  private parseCallOptions(ctx: CallOptionsContext | undefined, instantiation = false): CallOptions | undefined {
     if (!ctx) return undefined;
     const options: CallOptions = {};
     const seen = new Set<string>();
@@ -8261,6 +8261,20 @@ export default class AstBuilder
         throw new ParseError(`Duplicate call option '${name}'`, Location.fromCtx(opt));
       }
       seen.add(name);
+      if (name === 'args') {
+        if (!instantiation) {
+          throw new ParseError(
+            `Unknown call option 'args'. Only 'value', 'salt', and 'gas' are supported`,
+            Location.fromCtx(opt),
+          );
+        }
+        // `(a, b)` is a parenthesized tuple, which is only a value list here; visiting it as one would throw.
+        const inner = unwrapParens(opt.expression());
+        options.args = inner instanceof TupleExpressionContext
+          ? inner.expression_list().map((element) => this.visit(element) as ExpressionNode)
+          : [this.visit(opt.expression()) as ExpressionNode];
+        continue;
+      }
       const expr = this.visit(opt.expression()) as ExpressionNode;
       if (name === 'value') {
         options.value = expr;
@@ -8277,7 +8291,7 @@ export default class AstBuilder
         );
       }
     }
-    return (options.value || options.gas || options.salt) ? options : undefined;
+    return (options.value || options.gas || options.salt || options.args) ? options : undefined;
   }
 
   // Legacy 0.6.x low-level-call option syntax `target.call.value(v)(data)` / `.call.gas(g)(data)`. Desugar to the

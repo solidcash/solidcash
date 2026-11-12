@@ -4494,7 +4494,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const publishing = node.functions.some((fn) => ordinary(fn)
       && (fn.returnTypes.length > 0 || this.compilerOptions.genesisCalls !== false));
     const armsSound = node.fallbackDef === undefined
-      && node.functions.every((fn) => fn.isEntryPoint !== true || ordinary(fn)
+      && node.functions.every((fn) => (fn.isEntryPoint !== true
+        && !fn.modifiers.includes(FunctionModifier.DELEGATE)) || ordinary(fn)
         || fn.nativeSelfBatchDispatcher === true)
       && (node.receiveDef === undefined || !delegatecall(node.receiveDef));
     const recordSound = publishing ? armsSound : undefined;

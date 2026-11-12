@@ -16230,6 +16230,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     // everywhere, and the spec's switch (B10) turns the default on together with that SDK work.
     if (this.compilerOptions.genesisCalls !== true) return;
     if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
+    // Nothing of B6.4 to B6.7 is emitted in a master that is not record-sound: such an entry cannot answer a
+    // constructor, so it takes no genesis parameter.
+    const contract = this.currentContract;
+    const delegatecall = (fn: FunctionDefinitionNode): boolean => describeFunctionLowLevelCallsites(fn)
+      .some((site) => site.callMode === 'delegatecall');
+    const ordinary = (fn: FunctionDefinitionNode): boolean => fn.isEntryPoint === true
+      && !fn.graphEmissionHandler && fn.messageBusRoute !== true && !delegatecall(fn)
+      && !fn.modifiers.some((modifier) => modifier === FunctionModifier.UNSAFE
+        || modifier === FunctionModifier.SPLIT || modifier === FunctionModifier.MERGE
+        || modifier === FunctionModifier.DELEGATE);
+    const armsSound = contract === undefined || (contract.fallbackDef === undefined
+      && contract.functions.every((fn) => (fn.isEntryPoint !== true && !delegatecall(fn)) || ordinary(fn)
+        || fn.nativeSelfBatchDispatcher === true)
+      && (contract.receiveDef === undefined || !delegatecall(contract.receiveDef)));
+    if (!armsSound) return;
     if (node.parameters.some((parameter) => parameter.name === '__internal__genesisCall')) return;
     const parameter = new ParameterNode(new BytesType(), '__internal__genesisCall');
     parameter.location = node.location;

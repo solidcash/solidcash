@@ -66,6 +66,8 @@ describe('B6.6/B6.7: the genesis sender', () => {
     gIn?: number;
     gOut?: number;
     tagSize?: number;
+    /** A surplus push placed before the redeem, testing the exact-stack check. */
+    extraPush?: boolean;
   } = {}) {
     const provider = createTestProvider();
     const signer = HDSigner.fromPhrase(
@@ -142,6 +144,9 @@ describe('B6.6/B6.7: the genesis sender', () => {
         const listBytes = Uint8Array.from(options.listBytes ?? [0x00, 0x00]);
         unlocking[genesisAt] = { opcode: carriedTag.length, data: carriedTag };
         unlocking[expectedAt] = { opcode: L.length, data: L };
+        if (options.extraPush === true) {
+          unlocking.splice(unlocking.length - 1, 0, { opcode: 1, data: Uint8Array.of(0x01) });
+        }
         tx.inputs[calleeIndex]!.unlockingBytecode = encodeAuthenticationInstructions(unlocking);
 
         tx.outputs.push({
@@ -253,6 +258,11 @@ describe('B6.6/B6.7: the genesis sender', () => {
   it('accepts a child whose code has no birth trailer, and skips the trailer check', async () => {
     const f = await fixture({ childTail: () => Uint8Array.of(0x51) });
     expect(await f.attempt()).toContain('ACCEPTED');
+  }, 120_000);
+
+  it('refuses one surplus push at the entry', async () => {
+    const f = await fixture({ extraPush: true });
+    expect(await f.attempt()).toContain('REFUSED');
   }, 120_000);
 
   it('refuses a trailer that names another lock', async () => {

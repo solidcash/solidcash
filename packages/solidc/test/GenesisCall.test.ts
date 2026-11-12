@@ -31,6 +31,14 @@ describe('B6.5: the genesis call parameter', () => {
     expect(names.indexOf('__internal__genesisCall')).toBe(names.indexOf('__internal__returnOutputIdx') - 1);
   });
 
+  it('a contract with a delegate entry is not record-sound and takes no parameter', () => {
+    const source = `${P} contract C { int calls; function hit(int amount) { calls = calls + amount; }
+      function d() public delegate { calls = calls + 1; } }`;
+    const artifact = compileString(source, { messageBus: false, genesisCalls: true });
+    const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;
+    expect(entry.inputs.some((input) => input.name === '__internal__genesisCall')).toBe(false);
+  });
+
   it('is absent when genesisCalls is off', () => {
     const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: false });
     const entry = artifact.abi.find((candidate) => candidate.name === 'hit')!;

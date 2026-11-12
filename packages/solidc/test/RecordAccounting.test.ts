@@ -93,6 +93,32 @@ describe('B6.4: record-sound classification and the marker', () => {
     expect(markerAt(script, script.length - 23)).toBe(false);
   });
 
+  it('a delegate entry and a fallback each make the master unsound', () => {
+    const cases = [
+      `${P} contract C { int s; function a() { s = s + 1; } function u() delegate { s = s + 2; } }`,
+      `${P} contract C { int s; function a() { s = s + 1; } fallback() external { s = s + 2; } }`,
+    ];
+    for (const source of cases) {
+      const artifact = compileString(source, { messageBus: false, allowUnsafeOperations: true });
+      expect(artifact.recordSound).toBe(false);
+      const script = scriptToBytecode(asmToScript(artifact.bytecode));
+      expect(markerAt(script, script.length - 23)).toBe(false);
+    }
+  });
+
+  it('a message-bus route makes the master unsound', () => {
+    const artifact = compileString(`${P} contract C { int s; function a() { s = s + 1; } function b() { s = s + 2; } }`,
+      { messageBus: true });
+    expect(artifact.recordSound).toBe(false);
+  });
+
+  it('a non-record-sound contract is byte-identical with genesisCalls on and off', () => {
+    const source = `${P} contract C { int s; function u() unsafe { s = s + 1; } }`;
+    const on = compileString(source, { messageBus: false, genesisCalls: true });
+    const off = compileString(source, { messageBus: false, genesisCalls: false });
+    expect(on.bytecode).toBe(off.bytecode);
+  });
+
   it('a contract with no record-publishing entry has no recordSound field', () => {
     const artifact = compileString(`${P} contract C { int s; function u() unsafe { s = s + 1; } }`, { messageBus: false });
     expect(artifact.recordSound).toBeUndefined();

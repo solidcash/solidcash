@@ -33,6 +33,13 @@ describe('B6.2/B6.3: void call records', () => {
     expect(artifact.callRecords).toBe('returning');
   });
 
+  it('a returning compile is byte-identical with genesisCalls on and off when the contract is not record-sound', () => {
+    const source = `${P} contract C { int s; function v(int x) unsafe { s = s + x; } }`;
+    const on = compileString(source, { messageBus: false, genesisCalls: true });
+    const off = compileString(source, { messageBus: false, genesisCalls: false });
+    expect(on.bytecode).toBe(off.bytecode);
+  });
+
   it('refuses callRecords: all on a framed compile', () => {
     expect(() => compileString(VOID_AND_RETURNING, { messageBus: false, composition: 'framed', callRecords: 'all' }))
       .toThrow(/callRecords: 'all' is not available on a framed compile/);

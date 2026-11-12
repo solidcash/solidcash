@@ -3055,7 +3055,7 @@ This phase does not depend on deployers. It changes what an entry function publi
 sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.7 is compiled only under
 `genesisCalls`, which is on by default.
 
-- [ ] **B6.0 The exact stack in every arm (O8).** The user's decision b (A18). Built first in this phase, so
+- [x] **B6.0 The exact stack in every arm (O8).** The user's decision b (A18). Built first in this phase, so
       that every later comparison with "today's" code is with the code after this item. For every arm of a
       master script of a stateful contract in the direct convention, emit `OP_DEPTH n OP_NUMEQUALVERIFY` where
       the arm has taken every positional item its kind takes, so that its physical stack should equal its
@@ -3121,7 +3121,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       - Run both suites (milestone), then commit: "feat(solidc): every arm starts from an exact stack". Fill
         D21.
 
-- [ ] **B6.1 The SDK first.** Wherever the SDK fills synthetic parameters by name, fill
+- [x] **B6.1 The SDK first.** Wherever the SDK fills synthetic parameters by name, fill
       `__internal__genesisCall` with empty bytes. The places are those that fill
       `__internal__returnOutputIdx` (`grep -rn __internal__returnOutputIdx W/solidcash/src`); read each one.
       Done when a unit test shows an empty push for a hand-written ABI that has the input, and the SDK's
@@ -4277,7 +4277,7 @@ tests only (AGENTS.md).
 - [x] `W/solidc/test/DeployArgsSyntax.test.ts` (B5.6, extended in B8.11);
 - [ ] `W/solidc/test/VoidCallRecord.test.ts`, `RecordAccounting.test.ts`, `GenesisCall.test.ts` and
       `MsgSenderGenesis.test.ts` (B6.8);
-- [ ] `W/solidc/test/ExactStackEveryArm.test.ts` (B6.0): every arm kind, unmodified and with one surplus
+- [x] `W/solidc/test/ExactStackEveryArm.test.ts` (B6.0): every arm kind, unmodified and with one surplus
       push, a contract that reads `msg.data`, and one that uses an inline external library;
 - [ ] `W/solidc/test/DeployerGeneration.test.ts` (B7.16), extended in B7.18 with constructors that write
       collections and touch single token containers;

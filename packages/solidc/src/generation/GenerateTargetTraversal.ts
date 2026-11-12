@@ -25010,6 +25010,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPushdataEncode(type: Type, locationData: SingleLocationData): void {
     // A function pointer is its integer functionId on the wire: encode/decode it as an int.
     if (type instanceof FunctionType) type = PrimitiveType.BIGINT;
+    // A user-defined value type rides on its underlying type, so its encoding is the underlying type's.
+    while (type instanceof ValueType) type = type.underlyingType;
     // StructType: the value is already an encoded blob from construction - no-op
     if (type instanceof StructType) {
       return;
@@ -25182,8 +25184,62 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ELSE, locationData);
 
       this.emit(Op.OP_DROP, locationData); // drop the dup
+
+      // A one-byte value whose byte is 0x01 to 0x10, or 0x81, has a one-byte minimal form (OP_1 to OP_16,
+      // OP_1NEGATE). Consensus requires it, and a creator binds these bytes against the deployer's unlocking.
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_EQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(new Uint8Array([0x81]), locationData);
+      this.emit(Op.OP_EQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(new Uint8Array([0x4f]), locationData); // OP_1NEGATE
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(new Uint8Array([0x01, 0x00]), locationData); // the one-byte value 0x00
+      this.emit(Op.OP_EQUAL, locationData);
+      this.emit(Op.OP_OVER, locationData);
+      this.emit(new Uint8Array([0x01, 0x80]), locationData); // the one-byte value 0x80
+      this.emit(Op.OP_EQUAL, locationData);
+      this.emit(Op.OP_BOOLOR, locationData);
+      this.emit(Op.OP_IF, locationData);
+      // 0x00 and 0x80 are not minimally encoded numbers; both take the ordinary one-byte frame.
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_BIN2NUM, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(encodeInt(0x10n), locationData);
+      this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+      this.emit(Op.OP_BOOLAND, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_BIN2NUM, locationData);
+      this.emit(encodeInt(0x50n), locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_NUM2BIN, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      // Any other one-byte value: the ordinary one-byte frame.
+      this.emit(encodeInt(1n), locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_CAT, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_ELSE, locationData);
       // Standard pushdata framing
       this.emitStandardPushdataFrame(locationData);
+      this.emit(Op.OP_ENDIF, locationData);
       this.emit(Op.OP_ENDIF, locationData);
     }
 

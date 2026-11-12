@@ -226,10 +226,11 @@ contract Child(int limit) {
     function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
 }
 
-contract Factory() {
+contract Factory(pubkey admin) {
     int created;
 
-    function create(int limit, bytes code) public {
+    function create(int limit, bytes code, sig s) public {
+        require(checkSig(s, admin));
         new Child{code: code}(limit);
         this.created += 1;
     }
@@ -243,11 +244,17 @@ chooses the child's code, so the template must be a constant, a constructor argu
 parameter that the function never reassigns and passes to an event it emits on every path:
 
 ```solidity
-contract Registry() {
+contract Child(int limit) {
+    int counter;
+    function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
+}
+
+contract Registry(pubkey admin) {
     int created;
     event Created(bytes32 template, int limit);
 
-    function create(bytes32 template, int limit, bytes code) public {
+    function create(bytes32 template, int limit, bytes code, sig s) public {
+        require(checkSig(s, admin));
         new Child{code: code, template: template}(limit);
         emit Created(template, limit);
         this.created += 1;

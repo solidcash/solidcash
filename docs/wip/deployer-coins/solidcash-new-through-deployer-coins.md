@@ -3228,7 +3228,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       In a contract that is not record-sound nothing of B6.4 to B6.7 is emitted but the tail rule. With
       `genesisCalls: false` and `callRecords: 'returning'` every contract's bytecode and ABI are byte for
       byte its code after B6.0, unless the tail rule touches it.
-- [ ] **B6.6 Shared sender resolution (O6).** Only in a contract in which some entry both reads `msg.sender`
+- [x] **B6.6 Shared sender resolution (O6).** Only in a contract in which some entry both reads `msg.sender`
       and carries the genesis call: emit A7's three-step resolution as one shared defined function, and use
       it for every resolution of `msg.sender` in those entries. `emitMsgSender` has three callers (GTT
       19170, 17207 and 48439): the read itself, the sender handed to an invoked function, and one more;
@@ -3240,10 +3240,6 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       (`subroutineDefined` 1775, `invokeSubroutineIfDefined` 7047). Every other read of `msg.sender`, in
       every contract, is compiled exactly as today.
 
-  **Status, 2026-11-12 (Grok).** The three-step resolution is implemented and attack-tested, but emitted inline at
-  each read rather than as one shared defined function. The shared-helper machinery cannot capture this body:
-  its field reads pick the tag from the frame's bottom ordinal, which a helper body compiled on an empty model
-  cannot address. Recorded rather than hidden; the interface and behaviour are those B6.6 describes.
 
 - [x] **B6.7 The genesis step (O6).** Implement A7's step 1 in that shared function. Check 1, the spend of
       (X, 0), is already made by B6.5 for every entry with a tag. The rest:

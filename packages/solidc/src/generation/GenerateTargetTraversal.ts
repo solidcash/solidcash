@@ -58473,7 +58473,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.emitMsgSenderResolutionToday(locationData);
       this.emit(Op.OP_ELSE, locationData);
-      this.emitGenesisSenderResolution(locationData);
+      const genesisBody = (t: GenerateTargetTraversalWithLocation, l: SingleLocationData): void => {
+        t.emitGenesisSenderResolution(l);
+      };
+      if (!this.invokeSharedEntryCheck('genesisSender', genesisBody, locationData)) {
+        this.emitGenesisSenderResolution(locationData);
+      }
       this.emit(Op.OP_ENDIF, locationData);
       return;
     }
@@ -58515,10 +58520,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
     const num = (value: number | bigint): void => emit(encodeInt(BigInt(value)));
     const saved = [...this.stack];
-    // The branch's tag copy is on top; drop it and read the entry's parameter from the bottom, so the physical
-    // stack stays equal to the model.
+    // The caller leaves a redundant tag copy on top; drop it. The entry's parameter is the second item from the
+    // bottom of the ABI frame (the return index is the deepest), so `OP_DEPTH - 2` names it whatever the caller
+    // holds above it. A shared helper body therefore needs no tracked model.
     emit(Op.OP_DROP);
-    const tagCopy = (): void => this.emitPickTrackedFromBottom('__internal__genesisCall', loc);
+    const tagCopy = (): void => {
+      emit(Op.OP_DEPTH);
+      num(2);
+      emit(Op.OP_SUB);
+      emit(Op.OP_PICK);
+    };
     const field = (offset: number): void => {
       tagCopy();
       emit(Op.OP_DUP);

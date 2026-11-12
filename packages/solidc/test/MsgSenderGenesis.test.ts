@@ -17,8 +17,9 @@ import { Contract, SignatureTemplate } from '../../solidcash/src/index.js';
 import { StatefulContract } from '../../solidcash/src/stateful/index.js';
 import { HDSigner } from '../../solidcash/src/HDSigner.js';
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
+import { addressToLockScript } from '../../solidcash/src/utils.js';
 import { solidCashOutputToLibauthOutput } from '../../solidcash/src/utils.js';
-import { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { createVirtualMachineBch2026, disassembleBytecodeBCH } from '@bitauth/libauth';
 import { alicePub, alicePriv, alicePkh } from '../../solidcash/test/fixture/vars.js';
 import { createTestProvider } from '../../solidcash/test/test-util.js';
 import p2pkhArtifact from '../../solidcash/test/fixture/p2pkh.artifact.js';
@@ -27,6 +28,7 @@ const SOURCE = `pragma solidcash ^0.50.0;
 contract T {
     int n;
     function who(address expected) { require(msg.sender == expected); n = n + 1; }
+    function whoElse(address expected) { require(msg.sender == expected); n = n + 2; }
 }`;
 
 const DE_RE = hexToBin('af341413');
@@ -123,10 +125,13 @@ describe('B6.6/B6.7: the genesis sender', () => {
         const gOut = tx.outputs.length;
         const unlocking = decodeAuthenticationInstructions(tx.inputs[calleeIndex]!.unlockingBytecode);
         if (typeof unlocking === 'string') throw new Error(unlocking);
-        // ABI order is `expected, __internal__msgSenderCategory, __internal__genesisCall,
-        // __internal__returnOutputIdx`; the unlocking pushes it in reverse, so the empty genesis push sits at
-        // index 1 and the remaining witnesses keep their positions.
-        const genesisAt = 1;
+        // The witnesses are found by content, not by position: a call-batch prefix or a dispatcher prefix may
+        // add a push, and the tag has to replace the empty genesis push wherever it lies.
+        const honestLock = addressToLockScript(signer.getAddress());
+        const genesisAt = unlocking.findIndex((instruction) => instruction.data?.length === 0);
+        const expectedAt = unlocking.findIndex((instruction) => instruction.data !== undefined
+          && instruction.data.length === honestLock.length && binToHex(instruction.data) === binToHex(honestLock));
+        if (genesisAt < 0 || expectedAt < 0) throw new Error('fixture: witness not found');
         const aOff = 6 + 2 + 0;                 // 6 + 2s + |Q|, Q empty in this fixture
         const codeOff = aOff + 1;               // + |A| + h, A empty, h = 1
         const tag = concat(options.tagX ?? Xvm, u16(options.slot ?? 0), u16(options.gIn ?? gIn),
@@ -136,7 +141,7 @@ describe('B6.6/B6.7: the genesis sender', () => {
             : concat(tag, new Uint8Array(options.tagSize - tag.length));
         const listBytes = Uint8Array.from(options.listBytes ?? [0x00, 0x00]);
         unlocking[genesisAt] = { opcode: carriedTag.length, data: carriedTag };
-        unlocking[unlocking.length - 2] = { opcode: L.length, data: L };
+        unlocking[expectedAt] = { opcode: L.length, data: L };
         tx.inputs[calleeIndex]!.unlockingBytecode = encodeAuthenticationInstructions(unlocking);
 
         tx.outputs.push({
@@ -174,7 +179,6 @@ describe('B6.6/B6.7: the genesis sender', () => {
         const verdict = createVirtualMachineBch2026().verify({ transaction: tx, sourceOutputs });
         if (verdict !== true) throw new Error(`fixture refused: ${verdict}`);
         return binToHex(hash256(hexToBin(raw)).reverse());
-        return binToHex(hash256(hexToBin(raw)).reverse());
       };
 
     const honestExpected = signer.getAddress();
@@ -188,6 +192,19 @@ describe('B6.6/B6.7: the genesis sender', () => {
     };
     return { attempt, sawMutation: () => sawMutation, provider, X, D, L, signer };
   }
+
+  it('emits one shared resolution and invokes it', () => {
+    clearCompileCache();
+    const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
+    const asm = disassembleBytecodeBCH(hexToBin(artifact.bytecode)).split(' ');
+    const signature = ['OP_OUTPUTTOKENCATEGORY', 'OP_DUP', 'OP_SIZE', 'OP_NIP', 'OP_PUSHBYTES_1', '0x21',
+      'OP_NUMEQUALVERIFY'];
+    let occurrences = 0;
+    for (let i = 0; i + signature.length <= asm.length; i++) {
+      if (signature.every((word, j) => asm[i + j] === word)) occurrences += 1;
+    }
+    expect(occurrences).toBe(1);
+  });
 
   it('resolves a genuine genesis call to the child', async () => {
     const f = await fixture();

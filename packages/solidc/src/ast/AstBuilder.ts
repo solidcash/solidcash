@@ -880,6 +880,7 @@ export default class AstBuilder
     let singleTokenContainer = false;
     for (const pragma of ctx.pragmaDirective_list()) {
       const text = pragma.getText();
+      // cspell:disable-next-line
       if (text.startsWith('pragmacontainers')) {
         throw new ParseError(
           'Expected "pragma satoshicontainer single" or "pragma tokencontainer single"', Location.fromCtx(pragma),
@@ -1581,9 +1582,9 @@ export default class AstBuilder
     sourceFileNode.abiCoderVersion = selectedAbiCoder?.version;
     sourceFileNode.singleSatoshiContainer = singleSatoshiContainer;
     sourceFileNode.singleTokenContainer = singleTokenContainer;
-    for (const contract of contracts) {
-      contract.singleSatoshiContainer = singleSatoshiContainer;
-      contract.singleTokenContainer = singleTokenContainer;
+    for (const declared of contracts) {
+      declared.singleSatoshiContainer = singleSatoshiContainer;
+      declared.singleTokenContainer = singleTokenContainer;
     }
     sourceFileNode.location = Location.fromCtx(ctx);
     return sourceFileNode;

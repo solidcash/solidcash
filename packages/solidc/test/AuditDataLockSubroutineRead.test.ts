@@ -77,7 +77,7 @@ function spend(artifact: Artifact, foreignLock?: Uint8Array, threads = 0): true 
   // split/merge lifecycle entry), so when the spent entry carries it, its value (-1, a compacted standalone void
   // record) is pushed first, then `b` = true, then `n`.
   const carriesVoidRecord = artifact.abi.some((entry) =>
-    (entry.inputs ?? []).some((input) => input.name === '__internal__returnOutputIdx'));
+    (entry.inputs ?? []).some((parameter) => parameter.name === '__internal__returnOutputIdx'));
   const args = [...(carriesVoidRecord ? [encodeIntegerValue(-1n)] : []), encodeIntegerValue(1n),
     ...(threads > 0 ? [encodeIntegerValue(BigInt(threads))] : [])];
   const master = (): VmOutput => ({ lockingBytecode: lock, valueSatoshis: VALUE, token: token('minting', EMPTY) });

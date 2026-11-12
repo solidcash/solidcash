@@ -22,7 +22,6 @@ type MachineState = ReturnType<InstructionSet['evaluate']>;
 /** The program a head runs: its input of the transaction, with the outputs every input spends. */
 export type ValidatorHeadProgram = Parameters<InstructionSet['evaluate']>[0];
 
-type HeadMachine = AuthenticationVirtualMachine<ResolvedTransactionCommon, ValidatorHeadProgram, MachineState>;
 
 /**
  * The run that reads the close: every budget and size ceiling lifted, so the head reaches it whatever its input pays

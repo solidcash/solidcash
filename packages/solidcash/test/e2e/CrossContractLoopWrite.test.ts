@@ -100,9 +100,9 @@ contract Caller(bytes bankAddr) {
   });
 
   it('a one-method interface: the caller reads the void record and the loop entries follow it', async () => {
-    const ICREDIT = 'interface ICredit { function credit(int[] ks, int[] vs); }';
+    const CREDIT_INTERFACE = 'interface ICredit { function credit(int[] ks, int[] vs); }';
     const ONE_METHOD_CALLER = `pragma solidcash >=0.8.0;
-${ICREDIT}
+${CREDIT_INTERFACE}
 contract OneMethodCaller(bytes bankAddr) {
   bigint calls;
   function poke(int[] ks, int[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); ICredit(bankAddr).credit(ks, vs); this.calls = this.calls + 1; }

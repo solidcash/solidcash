@@ -1,4 +1,3 @@
-/* global hre */
 // Run by `solidhat run scripts/deploy.ts --network localhost` inside this directory.
 //
 // Prints the CREATE nonce it read, the address it predicts, and the address the deployment produced, so the

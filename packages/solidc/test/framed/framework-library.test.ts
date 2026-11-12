@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256, type Input } from '@bitauth/libauth';
+import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   KECCAK256_COMPUTE_STATEFUL_SHARED_LOCK,
   Op,

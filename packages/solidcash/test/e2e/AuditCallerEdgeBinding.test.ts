@@ -38,17 +38,6 @@ function hexToBinSafe(hex: string): Uint8Array {
   return Uint8Array.from((hex.match(/.{2}/g) ?? []).map((b) => parseInt(b, 16)));
 }
 
-function runVm(call: any): { success: boolean; error?: string } {
-  const tx = call.buildLibauthTransaction();
-  const hex = binToHex(encodeTransaction(tx));
-  const sourceOutputs = generateLibauthSourceOutputs(call.inputs);
-  const lt = Number(tx.locktime);
-  const chain = lt < 500000000
-    ? { height: lt + 1, medianTimePast: 1700000000 } : { height: 133700, medianTimePast: lt + 1 };
-  const result = verifier.verify(hex, sourceOutputs, chain);
-  return { success: result.success, error: result.success ? undefined : (result.debugMessage ?? result.error) };
-}
-
 async function setup(): Promise<{ scCaller: any; scCallee: any; calleeAddr: Uint8Array }> {
   const provider = createTestProvider();
   const artCaller = compileString(CALLER, { evmCompat: true });

@@ -7,7 +7,6 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/framed/machine.js';
-import type { Utxo } from '../../../src/interfaces.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster, stateRecordLockingBytecode } from '../../../src/framed/deploy/index.js';
 import { readFramedEntry } from '../../../src/framed/read/index.js';

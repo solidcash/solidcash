@@ -15994,7 +15994,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     if (node.callOptions?.code || node.callOptions?.template) {
-      throw new DeployCodeError(node, `'code' and 'template' name the code of a contract created with new, `
+      throw new DeployCodeError(node, "'code' and 'template' name the code of a contract created with new, "
         + `and '${contractName}' is not a contract`);
     }
 
@@ -16023,7 +16023,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       refuse(`'code' names the code of a stateful child the creator checks at its genesis, and '${childName}' is `
         + 'not one created here');
     }
-    if (!code) refuse(`'template' is the sha256 the child's 'code' must have, and no 'code' is given`);
+    if (!code) refuse("'template' is the sha256 the child's 'code' must have, and no 'code' is given");
     if (!template) return;
     if (template instanceof HexLiteralNode) return;
     const unpublished = 'a template must be a constant, a constructor argument, a state variable, or a parameter '

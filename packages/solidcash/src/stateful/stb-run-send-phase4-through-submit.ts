@@ -57,7 +57,9 @@ export async function runSendPhase4ThroughSubmit(
   const unlockers = finalBuilder.inputs.map((input) => ('unlocker' in input ? input.unlocker : undefined));
   let decodedTx = finalizedTransaction;
   if (unlockers.some(isExternallySignedUnlocker)) {
-    decodedTx = await applyExternalSignatures(unlockers, finalizedTransaction, generateLibauthSourceOutputs(finalBuilder.inputs));
+    decodedTx = await applyExternalSignatures(
+      unlockers, finalizedTransaction, generateLibauthSourceOutputs(finalBuilder.inputs),
+    );
     rawTxBin = encodeTransaction(decodedTx);
     rawTx = binToHex(rawTxBin);
     sendTiming('externally-signed');

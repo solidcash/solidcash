@@ -3380,7 +3380,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       function, as the SDK derives for each; E and the HEAD bytes for a contract with one mapping, equal to
       what the SDK's genesis builds for it (expected bytes from the fixture file of B7.16); and
       `single-container-key`.
-- [ ] **B7.3 The second program.** The deployer program is a second run of the compile pipeline on C's
+- [x] **B7.3 The second program.** The deployer program is a second run of the compile pipeline on C's
       source, with the internal option `__deployerProgram`, started by B7.0's step once C's own artifact and
       the constants of B7.2 exist. In that run, edit the AST at the points each item names; the items with
       no point run after the passes that add or merge functions (inheritance flattening, `expandInheritance`,
@@ -3466,7 +3466,14 @@ with a deployer whose constructor writes a collection, and only where today's st
         `genesisCalls: false`, entry type checks on;
       - run the semantic passes, then a `GenerateTargetTraversal`, then the optimiser, as for C's own
         program (`emitContractScript`).
-- [ ] **B7.4 The arms check (O1).** On the finished program, before its script is emitted, require that the
+
+      Note (implementation, 2026-11-12): the constructor becomes `create` after inheritance, modifier
+      expansion, getter synthesis and the inlining passes, and keeps the internal name `__construct` so
+      every constructor-keyed rule and code-generation branch applies unchanged; the ABI renames it
+      `create`. `sweep` is `__solidcash_sweep` and carries `unsafe` (tier 0). `PromoteConstructorExternalReads`
+      and `rewriteMultiUseViewCalls` are not yet switched off, and the call-closure deletion keeps only
+      direct named callees. Those are finished with B7.6–B7.12.
+- [x] **B7.4 The arms check (O1).** On the finished program, before its script is emitted, require that the
       set of dispatched arms is exactly `create` and `sweep`, with the two selectors of A4.2, and that there
       is no `receive` and no `fallback` arm (`emitDispatch`'s inputs, GTT 6884–6897). Throw
       `DeployerInternalError` otherwise. Done when unit tests show two arms for: a plain C; a C with a base

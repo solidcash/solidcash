@@ -90,10 +90,39 @@ describe('B7.0: when a deployer is built', () => {
     expect(collection.headCommitment).toEqual(new Uint8Array(128));
   });
 
-  it('a supported stateful direct contract records no reason', () => {
+  it('a supported stateful direct contract records no reason and publishes Deploy<C>', () => {
     const { artifact } = compile(STATEFUL, { deployer: true });
     expect(artifact.deployerUnsupported).toBeUndefined();
-    // The deployer program itself is B7.3; until it lands the artifact carries neither field.
-    expect(artifact.deployer).toBeUndefined();
+    expect(artifact.deployer).toBeDefined();
+    expect(artifact.deployer!.abi.map((fn) => fn.name)).toEqual(['create', 'sweep']);
+    expect(artifact.deployer!.abi.map((fn) => fn.selector)).toEqual(['af341413', '740b423a']);
+    expect(artifact.deployer!.abi.find((fn) => fn.name === 'sweep')!.inputs).toEqual([]);
+    expect(artifact.deployer!.version).toBe(1);
+  });
+
+  it('keeps exactly the create and sweep arms for every contract shape', () => {
+    const cases = [
+      `${P} contract C { int n; constructor() { n = 1; } function bump() { n = n + 1; } }`,
+      `${P} contract Base { int b; function baseFn() { b = b + 1; } }
+        contract C is Base { int n; constructor() { n = 1; } }`,
+      `${P} contract C { int n; constructor() { n = 1; } function create() { n = n + 1; }
+        function sweep() { n = n + 2; } }`,
+      `${P} contract C { int n; constructor() { n = 1; } receive() external payable { n = n + 1; }
+        fallback() external { n = n + 2; } }`,
+      `${P} contract C { int n; constructor() { n = 1; } function bump() { n = n + 1; } }`,
+    ];
+    for (const source of cases) {
+      const { artifact } = compile(source, { deployer: true });
+      expect(artifact.deployer, source).toBeDefined();
+      expect(artifact.deployer!.abi.map((fn) => fn.selector), source).toEqual(['af341413', '740b423a']);
+    }
+    const compat = compile(`${P} contract C { uint public n; constructor() { n = 1; } }`,
+      { deployer: true, evmCompat: true });
+    expect(compat.artifact.deployer!.abi.map((fn) => fn.selector)).toEqual(['af341413', '740b423a']);
+  });
+
+  it('the arms check throws for a program a test hook gave a third entry', () => {
+    expect(() => compile(STATEFUL, { deployer: true, __deployerTestBox: { thirdArm: true } } as never))
+      .toThrow(/internal deployer check failed/);
   });
 });

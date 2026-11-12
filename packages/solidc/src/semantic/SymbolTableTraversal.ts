@@ -1,4 +1,5 @@
 import { singleLiteralElement } from '../analysis/InitializedArrayElement.js';
+import { DEPLOYER_SELECTOR_CREATE, DEPLOYER_SELECTOR_SWEEP } from '../generation/deployerConstants.js';
 import { GLOBAL_SYMBOL_TABLE, Modifier, GlobalFunction } from '../ast/Globals.js';
 import {
   ContractNode,
@@ -2176,7 +2177,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       // its abi.* family emits, and a native compile keeps BCH's sha256 one.
       const selector = func.messageBusRoute
         ? Uint8Array.from([0x53, 0x43, 0x42, 0x31])
-        : this.computeAbiSelector(sig);
+        : (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined
+          && func.name === '__construct' ? DEPLOYER_SELECTOR_CREATE
+          : (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined
+            && func.name === '__solidcash_sweep' ? DEPLOYER_SELECTOR_SWEEP
+            : this.computeAbiSelector(sig);
       const selectorHex = binToHex(selector);
 
       const collision = selectorMap.get(selectorHex);
@@ -2331,7 +2336,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.insideConstructor = false;
     }
 
-    node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+    // B7.3: a deployer program keeps the constructor in `functions` under its internal `__construct` name so the
+    // code generator dispatches it as `create`. It is still the constructor for every semantic rule.
+    node.functions = node.functions.map((func) => {
+      const previous = this.insideConstructor;
+      if (func.name === '__construct') this.insideConstructor = true;
+      const visited = this.visit(func) as FunctionDefinitionNode;
+      this.insideConstructor = previous;
+      return visited;
+    }) as FunctionDefinitionNode[];
     // Recovery calls can sit behind one or more internal/library helpers (OpenZeppelin's ECDSA.recover ->
     // tryRecover overload chain is the common shape). The per-body survey above deliberately follows only the
     // structural body while symbols are being resolved, so close the intra-contract call graph after every body
@@ -16274,6 +16287,9 @@ export default class SymbolTableTraversal extends AstTraversal {
    * with it; checked on the parsed tree, before any pass adds a name of its own.
    */
   private refuseReservedNames(root: Node): void {
+    // The deployer program's own `__solidcash_` names are compiler-generated; the source was checked by C's own
+    // compile before this second run.
+    if ((this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined) return;
     const seen = new Set<Node>();
     const walk = (value: unknown): void => {
       if (!(value instanceof Node) || seen.has(value)) return;

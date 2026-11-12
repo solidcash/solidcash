@@ -11,6 +11,8 @@ import {
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
+import { hash256 } from '@bitauth/libauth/build/lib/crypto/combinations.js';
+import { sha256 as sha256Bytes } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { decodeAuthenticationInstructions } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -41,6 +43,7 @@ import {
   scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle,
+  type DeployerAbi,
   type SplitStateFootprint, StructType, TupleType,
   type Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
@@ -130,10 +133,10 @@ import {
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
   type ExternalCallExpression,
   BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
-  exactArrayLength,
+  exactArrayLength, TimeOpNode,
 } from './ast/AST.js';
 import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
-import { Class, GlobalFunction } from './ast/Globals.js';
+import { Class, GlobalFunction, TimeOp } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
@@ -282,14 +285,14 @@ import { ImportResolver } from './ImportResolver.js';
 import { createMapResolver } from './createMapResolver.js';
 import { assertNoAmbiguousOverrides } from './semantic/AmbiguousOverrides.js';
 import { compileFunctionSplit } from './split/function-split.js';
-import { deployerConstantsOf } from './generation/deployerConstants.js';
+import { DEPLOYER_SELECTOR_CREATE, DEPLOYER_SELECTOR_SWEEP, deployerConstantsOf } from './generation/deployerConstants.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
   CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
   SortedMappingCodegenPendingError, BlockLayoutUnavailableError, StackVariableUnavailableError,
   UnboundReturnCallError, UnpublishableLoopGuardError, RecursiveStructDefinitionError, ContractStorageTooLargeError,
-  ChildGenesisFoldError, DeployerUnsupportedWarning,
+  ChildGenesisFoldError, DeployerUnsupportedWarning, DeployerUnsupportedError, DeployerInternalError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -613,6 +616,186 @@ type CaughtCompilerAttempt = {
   internalCodegen: boolean;
 };
 type InternalAttemptFailureState = { firstError?: unknown };
+/** Facts the B7.3 deployer program publishes for the artifact B7.14 writes. */
+interface DeployerProgramBox {
+  callSlots?: number;
+  constructorReadsSender?: boolean;
+  readsBlockData?: boolean;
+  constructorBlockField?: 'number' | 'timestamp';
+  sidecars?: { keccak: number; ecrecover: number };
+  satoshiContainer?: 'none' | 'optional' | 'required';
+  genesisOutputs?: number;
+  collectionRows?: { collection: string; appendSites: number }[];
+  /** Set when a `ctor-…` reason ends the deployer build. */
+  reason?: string;
+  /** The dispatched arms the finished program carries, by internal name. */
+  arms?: string[];
+}
+
+/** The two protocol selectors of A4.2, independent of `evmCompat`. */
+
+/**
+ * B7.3: rename the constructor `create` and add `sweep`. The constructor keeps the internal name `__construct`
+ * so every constructor-keyed rule (genesis reads, the delete refusal, the token-container rules, and the
+ * constructor branch of code generation) applies to its body.
+ */
+function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): void {
+  const contract = ast.contract;
+  const location = contract.location;
+  const create = contract.constructorDef ?? new FunctionDefinitionNode(
+    '__construct', [],
+    (() => {
+      const body = new BlockNode([]);
+      body.location = location;
+      return body;
+    })(),
+  );
+  create.name = '__construct';
+  create.location = location;
+  create.functionSelector = DEPLOYER_SELECTOR_CREATE;
+
+  // Keep exactly the functions the constructor reaches. Every other body would either become an arm or fail in
+  // genesis mode for a reason the source never asked about.
+  const functionsByName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of contract.functions) {
+    const group = functionsByName.get(fn.name) ?? [];
+    group.push(fn);
+    functionsByName.set(fn.name, group);
+  }
+  const reached = new Set<FunctionDefinitionNode>();
+  const queue = [create];
+  while (queue.length > 0) {
+    const fn = queue.pop()!;
+    if (reached.has(fn)) continue;
+    reached.add(fn);
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof FunctionCallNode) {
+        for (const callee of functionsByName.get(node.identifier.name) ?? []) queue.push(callee);
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+  }
+  contract.functions = contract.functions.filter((fn) => reached.has(fn));
+  contract.constructorDef = undefined;
+  contract.fallbackDef = undefined;
+  contract.receiveDef = undefined;
+
+  const requireStatement = (expression: ExpressionNode): RequireNode => {
+    const node = new RequireNode(expression);
+    node.location = location;
+    return node;
+  };
+  const int = (value: bigint): IntLiteralNode => {
+    const node = new IntLiteralNode(value);
+    node.location = location;
+    return node;
+  };
+  const binary = (left: ExpressionNode, operator: BinaryOperator, right: ExpressionNode): BinaryOpNode => {
+    const node = new BinaryOpNode(left, operator, right);
+    node.location = location;
+    return node;
+  };
+  const age = new TimeOpNode(TimeOp.CHECK_SEQUENCE, int(1440n));
+  age.location = location;
+  const outputs = new NullaryOpNode(NullaryOperator.OUTPUT_COUNT);
+  outputs.location = location;
+  const outputCategory = new UnaryOpNode(UnaryOperator.OUTPUT_TOKEN_CATEGORY, int(0n));
+  outputCategory.location = location;
+  const emptyCategory = new HexLiteralNode(new Uint8Array(0));
+  emptyCategory.location = location;
+  const sweepBody = new BlockNode([
+    age,
+    requireStatement(binary(outputs, BinaryOperator.EQ, int(1n))),
+    requireStatement(binary(outputCategory, BinaryOperator.EQ, emptyCategory)),
+  ]);
+  sweepBody.location = location;
+  const sweep = new FunctionDefinitionNode('__solidcash_sweep', [], sweepBody);
+  sweep.location = location;
+  sweep.functionSelector = DEPLOYER_SELECTOR_SWEEP;
+  sweep.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.UNSAFE);
+  sweep.unsafeTier = 0;
+  contract.functions.push(create, sweep);
+  if (options.__deployerTestBox?.thirdArm === true) {
+    const thirdBody = new BlockNode([requireStatement(new BoolLiteralNode(true))]);
+    thirdBody.location = location;
+    const third = new FunctionDefinitionNode('__solidcash_third_arm', [], thirdBody);
+    third.location = location;
+    third.functionSelector = Uint8Array.from([0xde, 0xad, 0xbe, 0xef]);
+    third.modifiers.push(FunctionModifier.PUBLIC);
+    contract.functions.push(third);
+  }
+  void options;
+}
+
+/**
+ * B7.3: compile Deploy<C> from C's pristine resolved tree. The program carries only `create` and `sweep`; its
+ * artifact is the redeem script A13 publishes, and the box carries what B7.14 needs from the second compile.
+ */
+function compileDeployerProgram(
+  sourceAst: Ast,
+  code: string,
+  options: InternalCompilerOptions,
+  constants: import('./generation/deployerConstants.js').DeployerConstants,
+): { artifact: Artifact; box: DeployerProgramBox } | { reason: string } {
+  const box: DeployerProgramBox = {};
+  const inner = {
+    ...options,
+    deployer: false,
+    messageBus: false,
+    messageBusKernel: false,
+    callBatch: false,
+    callRecords: 'returning',
+    genesisCalls: false,
+    composition: 'direct',
+    split: undefined,
+    autoDelegate: false,
+    __deployerProgram: { constants, box, thirdArm: options.__deployerTestBox?.thirdArm === true },
+    __pristineAstBox: undefined,
+    __parsedAst: undefined,
+    __deployerConstantsBox: undefined,
+    __admissionWinnerBox: undefined,
+    __attemptFailureBox: undefined,
+    __internalAttemptFailureState: undefined,
+    __kernelReadCarrierAuthorizationBox: undefined,
+    __singlePassVerifierSource: undefined,
+  } as InternalCompilerOptions;
+  delete (inner as { delegateVariant?: unknown }).delegateVariant;
+  let artifact: Artifact;
+  try {
+    artifact = compileResolvedAst(
+      cloneAst(sourceAst, 'deployer-program'), code, inner,
+    );
+  } catch (error) {
+    // A `ctor-…` reason is a signal that ends this build only; B7.14 turns it into the warning and artifact field.
+    if (error instanceof DeployerUnsupportedError) return { reason: error.reason };
+    throw error;
+  }
+  return { artifact, box };
+}
+
+/**
+ * B7.4: the finished deployer program has exactly the two arms of A4.2 and no receive or fallback. A test hook
+ * may add a third entry through `__deployerProgram.box.arms`, so the check itself is exercised.
+ */
+function assertDeployerArms(ast: Ast, options: InternalCompilerOptions): void {
+  const contract = ast.contract;
+  const entries = contract.functions.filter((fn) => fn.isEntryPoint);
+  const names = entries.map((fn) => fn.name).sort();
+  const expected = ['__construct', '__solidcash_sweep'];
+  const selectors = entries.map((fn) => (fn.functionSelector === undefined ? '' : binToHex(fn.functionSelector)));
+  const expectedSelectors = [binToHex(DEPLOYER_SELECTOR_CREATE), binToHex(DEPLOYER_SELECTOR_SWEEP)];
+  if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
+    throw new DeployerInternalError(contract, `Deploy<${contract.name}> dispatches ${JSON.stringify(names)}, not create and sweep`);
+  }
+  if (selectors.length !== expectedSelectors.length
+    || expectedSelectors.some((selector) => !selectors.includes(selector))) {
+    throw new DeployerInternalError(contract, `Deploy<${contract.name}> has the wrong create/sweep selectors`);
+  }
+  if (contract.receiveDef !== undefined || contract.fallbackDef !== undefined) {
+    throw new DeployerInternalError(contract, `Deploy<${contract.name}> has a receive or fallback arm`);
+  }
+  void options;
+}
+
 type InternalCompilerOptions = CompilerOptions & {
   /**
    * The public options the outermost compile was given. A contract this compile creates or embeds is compiled with
@@ -677,6 +860,18 @@ type InternalCompilerOptions = CompilerOptions & {
   __strictNoInternalRecovery?: boolean;
   /** Test-only observation of the constants B7.2 derives for a deployer. */
   __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
+  /** Test-only hooks for the deployer generator checks. */
+  __deployerTestBox?: { thirdArm?: boolean };
+  /**
+   * The second compile B7.3 runs: the deployer program Deploy<C>. It is internal because a source never asks for
+   * it; `deployer: true` builds it and this flag reaches the recursive pipeline that produces it.
+   */
+  __deployerProgram?: {
+    readonly constants: import('./generation/deployerConstants.js').DeployerConstants;
+    box?: DeployerProgramBox;
+    /** Test hook: add a third entry, so B7.4's arms check can be shown to throw. */
+    readonly thirdArm?: boolean;
+  };
   /** Compiler-owned shared state propagated through binder/recovery recursion. */
   __internalAttemptFailureState?: InternalAttemptFailureState;
   /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
@@ -15069,6 +15264,10 @@ function compileResolvedAst(
   let phaseStarted = resolvedStarted;
   let currentPhase = 'start';
   const contractName = ast.contract?.name;
+  // B7.3: the deployer program is a second compile of C's source. Take the pristine tree before any pass mutates it.
+  const isDeployerProgram = (mergedCompilerOptions as InternalCompilerOptions).__deployerProgram !== undefined;
+  const deployerSourceAst = mergedCompilerOptions.deployer === true && !isDeployerProgram
+    ? cloneAst(ast, 'deployer-source') : undefined;
   // The inline-assembly blocks each body reaches are read from the program as it arrived. A later pass rewrites
   // the blocks the lowering supports, and the admission rungs prune entry bodies, so the reachability a framed
   // body is refused by is taken here and matched against what the lowering left in place further down.
@@ -16533,6 +16732,11 @@ function compileResolvedAst(
   ast = confineReturns(ast, true);
 
   mark('lowering');
+  // B7.3: the deployer program is the second compile's shape. Build its two arms once every pass that adds,
+  // merges or inlines functions has run, and before the semantic pass assigns selectors and block layouts.
+  if ((mergedCompilerOptions as InternalCompilerOptions).__deployerProgram !== undefined) {
+    prepareDeployerContract(ast, mergedCompilerOptions as InternalCompilerOptions);
+  }
   // Semantic analysis
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
@@ -17148,6 +17352,8 @@ function compileResolvedAst(
     }
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
+  // B7.4: the finished deployer program carries exactly the two arms of A4.2.
+  if (isDeployerProgram) assertDeployerArms(ast, mergedCompilerOptions as InternalCompilerOptions);
   // Code generation
   if (mergedCompilerOptions.composition === 'framed') {
     // The route is built for the lowering it performs on the source's own bodies — a low-level call becomes an
@@ -17415,8 +17621,9 @@ function compileResolvedAst(
     }
     if (constructorWritesCollections) artifact.constructorWritesCollections = true;
     // B7.2: computed once the artifact exists; the deployer program consumes them in B7.3.
+    const constants = deployerConstantsOf(artifact, ast.contract);
     const constantsBox = (mergedCompilerOptions as InternalCompilerOptions).__deployerConstantsBox;
-    if (constantsBox !== undefined) constantsBox.constants = deployerConstantsOf(artifact, ast.contract);
+    if (constantsBox !== undefined) constantsBox.constants = constants;
     const split = (mergedCompilerOptions as { split?: unknown }).split !== undefined;
     const constructorParameters = ast.contract.constructorDef?.parameters ?? [];
     const unsupportedParameter = constructorParameters.some((parameter) => parameter.type instanceof StructType
@@ -17440,6 +17647,79 @@ function compileResolvedAst(
             : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
               : 'an inline external library puts an OP_DROP between the pin and the arguments';
       emitCompilerWarning(new DeployerUnsupportedWarning(artifact.contractName, reason, detail).message);
+    } else if (deployerSourceAst !== undefined && !isDeployerProgram) {
+      const built = compileDeployerProgram(deployerSourceAst, code, mergedCompilerOptions as InternalCompilerOptions,
+        constants);
+      if ('reason' in built) {
+        artifact.deployerUnsupported = built.reason;
+      } else {
+        const program = built.artifact;
+        const createAbi = program.abi.find((fn) => fn.name === '__construct');
+        const sweepAbi = program.abi.find((fn) => fn.name === '__solidcash_sweep');
+        const callSlots = built.box.callSlots ?? 0;
+        const codeBytes = constants.code;
+        const bytecodeBytes = asmToBytecode(program.bytecode);
+        const lockingBytecode = Uint8Array.from([0xaa, 0x20, ...hash256(bytecodeBytes), 0x87]);
+        const deployerAbi: DeployerAbi = {
+          version: 1,
+          bytecode: binToHex(bytecodeBytes),
+          lockingBytecode: binToHex(lockingBytecode),
+          template: binToHex(sha256Bytes.hash(codeBytes)),
+          code: binToHex(codeBytes),
+          birthTrailer: callSlots > 0,
+          coinValue: '1200',
+          sweepAge: 1440,
+          abi: [
+            ...(createAbi === undefined ? [] : [{ ...createAbi, name: 'create', selector: binToHex(DEPLOYER_SELECTOR_CREATE) }]),
+            ...(sweepAbi === undefined ? [] : [{ ...sweepAbi, name: 'sweep', selector: binToHex(DEPLOYER_SELECTOR_SWEEP) }]),
+          ],
+          genesisOutputs: built.box.genesisOutputs ?? 0,
+          callSlots,
+          satoshiContainer: built.box.satoshiContainer ?? 'none',
+          tokenRows: constants.singleTokenContainerKeys
+            .map((name) => artifact.constructorInputs.findIndex((input) => input.name === name))
+            .filter((index) => index >= 0),
+          collectionRows: built.box.collectionRows ?? [],
+          readsBlockData: built.box.readsBlockData === true,
+          constructorReadsSender: built.box.constructorReadsSender === true,
+          ...(built.box.constructorBlockField === undefined
+            ? {} : { constructorBlockField: built.box.constructorBlockField }),
+          sidecars: built.box.sidecars ?? { keccak: 0, ecrecover: 0 },
+        };
+        artifact.deployer = deployerAbi;
+      }
+    }
+  }
+  if (isDeployerProgram) {
+    const deployerOptions = mergedCompilerOptions as InternalCompilerOptions;
+    const box = deployerOptions.__deployerProgram?.box;
+    if (box !== undefined) {
+      const create = ast.contract.functions.find((fn) => fn.name === '__construct');
+      box.arms = ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name);
+      box.callSlots = create?.externalCalls?.length ?? 0;
+      box.constructorReadsSender = create?.usesMsgSender === true;
+      box.readsBlockData = ast.contract.usesBlockOracle === true || ast.contract.usesBlockhash === true;
+      box.sidecars = {
+        keccak: create?.keccakCompute === true ? 1 : 0,
+        ecrecover: create?.ecrecoverCallCount ?? 0,
+      };
+      let sendsSatoshi = false;
+      const writtenCollections = new Set<string>();
+      if (create !== undefined) {
+        walkInvocationAst(create.body, (node) => {
+          if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+            || node instanceof AddressSendExpressionNode) sendsSatoshi = true;
+          if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode) {
+            writtenCollections.add(node.name);
+          }
+        }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      }
+      const singleSatoshi = deployerOptions.__deployerProgram!.constants.singleSatoshiContainer;
+      const payable = create?.modifiers.includes(FunctionModifier.PAYABLE) === true;
+      box.satoshiContainer = singleSatoshi ? 'required' : payable || sendsSatoshi ? 'optional' : 'none';
+      box.collectionRows = deployerOptions.__deployerProgram!.constants.collections
+        .filter((collection) => writtenCollections.has(collection.name))
+        .map((collection) => ({ collection: collection.name, appendSites: 1 }));
     }
   }
   if (traversal.routeOnlyEntries.size > 0) {

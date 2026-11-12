@@ -8,6 +8,10 @@ import { asmToScript, computeCollectionHash, scriptToBytecode } from '@solidcash
 import type { Artifact } from '@solidcash/utils';
 import type { ContractNode } from '../ast/AST.js';
 
+/** The two protocol selectors of A4.2, independent of `evmCompat`. */
+export const DEPLOYER_SELECTOR_CREATE: Uint8Array = Uint8Array.from([0xaf, 0x34, 0x14, 0x13]);
+export const DEPLOYER_SELECTOR_SWEEP: Uint8Array = Uint8Array.from([0x74, 0x0b, 0x42, 0x3a]);
+
 export interface DeployerCollectionConstant {
   readonly name: string;
   readonly signature: string;

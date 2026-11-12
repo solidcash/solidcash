@@ -2866,13 +2866,13 @@ Rules for every phase:
 
 ## B0. Before starting
 
-- [ ] **B0.1** Read `/Code/cashscript/.worktrees/tornado-framed/AGENTS.md`. Its rules apply throughout:
+- [x] **B0.1** Read `/Code/cashscript/.worktrees/tornado-framed/AGENTS.md`. Its rules apply throughout:
       - focused tests only, with the file and `-t 'test name'`;
       - `yarn build` as the type gate before every commit;
       - `yarn check:source-tree` before every commit;
       - `yarn test:e2e:watch -- test/e2e/X.e2e.test.ts` for e2e tests, never `vitest test/e2e <file>`.
-- [ ] **B0.2** Work only inside the worktree. Never `cd` to `/Code/cashscript` itself.
-- [ ] **B0.3** Never use a bare `git stash`. To set work aside, make a WIP commit, or use
+- [x] **B0.2** Work only inside the worktree. Never `cd` to `/Code/cashscript` itself.
+- [x] **B0.3** Never use a bare `git stash`. To set work aside, make a WIP commit, or use
       `git stash push -u -m "<unique tag>"` and apply it back by its SHA.
 - [ ] **B0.4** Run `git status` and `git log -1`. Expect a clean tree at `f6667bd53`. If it differs, stop and
       report.
@@ -2892,19 +2892,19 @@ Rules for every phase:
       - D19: today's creation of a pool through `bch-next`'s PoolGenesis, if `bch-next` has a test or a script
         that builds it with the SDK under the production limits. If it has none, leave that half of D19
         empty and say so in the report.
-- [ ] **B0.7** Measure only SDK-built transactions under the production limits:
+- [x] **B0.7** Measure only SDK-built transactions under the production limits:
       `new MockNetworkProvider({ profile: 'production' })` (`W/solidcash/src/network/MockNetworkProvider.ts:79–86`).
       The default mock allows 1 MB stack items, and a pass there proves nothing about mainnet. Compiler tests
       already use libauth's `createVirtualMachineBch2026()` with the standard limits. Hand-built transactions
       are for attack tests only. A size in bytes of compiled code is not a transaction and is measured by
       compiling.
-- [ ] **B0.8** Do not push. Part A changes only in these cases:
+- [x] **B0.8** Do not push. Part A changes only in these cases:
       - a number marked "estimated" is replaced with its measurement from Part D;
       - an item of this plan names the change: a refusal reason to add (B3.2, B7.12), a fallback case to add
         (B9.4), the HEAD row of A4.4 to drop or correct (B7.2). Make it, name it in the commit message, and
         list it in the phase's report;
       - anything else: stop and ask the user.
-- [ ] **B0.9** Read A16.2. Each obligation O1 to O10 names the items that build its generator check. A violated
+- [x] **B0.9** Read A16.2. Each obligation O1 to O10 names the items that build its generator check. A violated
       obligation never yields a program: it ends the compile with `DeployerInternalError`, or with the
       refusal named beside the obligation. Never turn such a check into a warning that still emits the
       program, and never add a weaker check in the place of one the text asks for.
@@ -2913,12 +2913,12 @@ Rules for every phase:
 
 ## B1. Remove `{code, template}` (first, so that later edits to the same files do not conflict)
 
-- [ ] **B1.1** Run `git revert --no-edit f6667bd53`. It touched 16 files: `DeployCodeError`,
+- [x] **B1.1** Run `git revert --no-edit f6667bd53`. It touched 16 files: `DeployCodeError`,
       `CallOptions.code/template`, `parseCallOptions` (including its `instantiation` argument),
       TCT, `checkDeployTemplate`, `deployOptionSource`, `emitDeployCode`, `deploysChildCode`, the framed
       refusal, the SDK's `deployChildCode`, `DeployCodeSourceAbi`/`DeployTemplateAbi`, and the tests
       `DeployTemplate.test.ts` and `DeployTemplate.e2e.test.ts`. If the revert conflicts, stop and report.
-- [ ] **B1.2** Run `yarn build`, then the three creation test files that B3.3 names, then commit:
+- [x] **B1.2** Run `yarn build`, then the three creation test files that B3.3 names, then commit:
       "revert: new C{code, template}".
 
 ## B2. Payments to stateful contracts (A8)
@@ -2967,7 +2967,7 @@ This phase works on today's `new`. It needs nothing from a later phase.
       `sc-load-create-builder-token-containers.ts:127–136`, where no single-container pragma is set, pick the
       coin the pragma path already picks: the largest one a call can use. Keep the pragma path as it is.
       Done when a unit test with two coins picks the larger one, with and without the pragma.
-- [ ] **B2.5** Run `yarn build` and `yarn check:source-tree`, then commit twice: "fix(solidc): pay a new
+- [x] **B2.5** Run `yarn build` and `yarn check:source-tree`, then commit twice: "fix(solidc): pay a new
       child's container, not its master lock" (B2.2, B2.3) and "fix(solidcash): spend the largest container
       coin" (B2.1, B2.4). The two tests that paid a master lock (A8) change with the first.
 
@@ -2988,31 +2988,31 @@ This phase works on today's `new`. It needs nothing from a later phase.
       Expect failures only for the 1-byte values 0x01 to 0x10 and 0x81 of `bytes`, `string`, `address` and
       `datasig`, and possibly for the value types and enums (A9). Any other failure means A9 is wrong: stop
       and report.
-- [ ] **B3.2** Fix the branch of `emitPushdataEncode` that serves unbounded values (GTT 24762–24778): add a
+- [x] **B3.2** Fix the branch of `emitPushdataEncode` that serves unbounded values (GTT 24762–24778): add a
       run-time branch for length 1 with a value of 0x01 to 0x10 (emit `0x50 + b`) or 0x81 (emit `0x4f`).
       Unwrap a user-defined value type before choosing the branch. Leave the number ladder and the fixed-size
       paths unchanged. Emit the branch as one shared defined function when it is used more than once
       (`sharedEntryCheckId`). Done when B3.1 passes. A type that still fails is added to `param-type` in
       A4.1 (B0.8).
-- [ ] **B3.3** Run the existing creation tests that bake arguments:
+- [x] **B3.3** Run the existing creation tests that bake arguments:
       - `W/solidc/test/ContractDeployment.test.ts`;
       - `W/solidcash/test/e2e/ContractFactory.test.ts`;
       - `W/solidcash/test/e2e/DeployFromContract.test.ts`.
 
       Fix an expectation only when it changes for this reason.
-- [ ] **B3.4** Commit: "fix(solidc): encode a one-byte push minimally".
+- [x] **B3.4** Commit: "fix(solidc): encode a one-byte push minimally".
 
 ## B4. Artifact and option types
 
-- [ ] **B4.1** In `W/utils/src/artifact.ts`, add everything A13 lists: `DeployerAbi`,
+- [x] **B4.1** In `W/utils/src/artifact.ts`, add everything A13 lists: `DeployerAbi`,
       `DeployerUnsupportedReason`, `deployer`, `deployerUnsupported`, `childDeployers`, `callRecords`,
       `genesisCalls`, `recordSound` and `createsSenderReadingChildren`; and, on the element type of
       `deployTargets` (an inline type at `:777–798`), the optional fields `contractArgs` and `valueArg`.
       Remove nothing.
-- [ ] **B4.2** Add the public compiler options `deployer?: boolean`, `callRecords?: 'returning' | 'all'` and
+- [x] **B4.2** Add the public compiler options `deployer?: boolean`, `callRecords?: 'returning' | 'all'` and
       `genesisCalls?: boolean` to the option type and to the CLI (`W/solidc/src/solidc-cli.ts`: `--deployer`,
       `--call-records <mode>`, `--no-genesis-calls`). They do nothing yet.
-- [ ] **B4.3** Run `yarn build`, then commit: "feat: artifact and option types for deployer coins".
+- [x] **B4.3** Run `yarn build`, then commit: "feat: artifact and option types for deployer coins".
 
 ## B5. Syntax and names (A3)
 
@@ -3047,7 +3047,7 @@ meaning here.
       - `args` is refused by B5.4;
       - each kind of declaration of B5.5 is refused, and so is an assignment to an undeclared
         `__solidcash_created`.
-- [ ] **B5.7** Commit: "feat(solidc): parse new C{args: (...)}".
+- [x] **B5.7** Commit: "feat(solidc): parse new C{args: (...)}".
 
 ## B6. The callee side (A7)
 
@@ -4273,8 +4273,8 @@ stays green afterwards. All SDK tests use `new MockNetworkProvider({ profile: 'p
 tests only (AGENTS.md).
 
 **Compiler tests, each listed in full in its item:**
-- [ ] `W/solidc/test/PushdataEncodeMinimal.test.ts` (B3.1);
-- [ ] `W/solidc/test/DeployArgsSyntax.test.ts` (B5.6, extended in B8.11);
+- [x] `W/solidc/test/PushdataEncodeMinimal.test.ts` (B3.1);
+- [x] `W/solidc/test/DeployArgsSyntax.test.ts` (B5.6, extended in B8.11);
 - [ ] `W/solidc/test/VoidCallRecord.test.ts`, `RecordAccounting.test.ts`, `GenesisCall.test.ts` and
       `MsgSenderGenesis.test.ts` (B6.8);
 - [ ] `W/solidc/test/ExactStackEveryArm.test.ts` (B6.0): every arm kind, unmodified and with one surplus

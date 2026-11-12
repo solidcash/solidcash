@@ -3620,10 +3620,10 @@ with a deployer whose constructor writes a collection, and only where today's st
       - Emit step 8 only when `constructorReadsSender` is true, and make `emitMsgSender` in genesis mode
         throw `DeployerInternalError` when it is reached in a program that did not emit step 8.
       Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census, the callee-list size
-      check, the tagged caller digest of A7 and the ordinary external-call verification are in, and the record
-      commitment settlement runs. The executed-slot mask, the per-slot carrier bindings and the callee-list entry
-      checks are not built; settlement rewrites the tracked frame, so the mask needs a dedicated local that survives
-      it.
+      check, the tagged caller digest of A7, the ordinary external-call verification, the per-entry callee-list
+      binding and the executed-slot mask (on the alternate stack) are in, and the record commitment settlement runs.
+      The per-slot carrier bindings and a VM case with s > 0 (which needs a callee that publishes a tagged record)
+      are not built.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,

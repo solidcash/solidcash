@@ -99,6 +99,18 @@ export interface CompilerOptions {
   // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
   allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
+  /**
+   * Compile the primary contract together with its deployer contract, Deploy<C>, and publish it as
+   * `artifact.deployer`. A contract that cannot have one carries `artifact.deployerUnsupported` and a warning.
+   */
+  deployer?: boolean;
+  /**
+   * Which entry functions publish a call record: `'returning'` (today's behaviour: only functions that return a
+   * value) or `'all'` (void entries too). Framed and message-bus compiles accept only `'returning'`.
+   */
+  callRecords?: 'returning' | 'all';
+  /** Compile direct contracts with the constructor-genesis (O6) mechanisms. Defaults to on. */
+  genesisCalls?: boolean;
   /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */
   tagSingletonDataNfts?: boolean;
   // Solidity-source compatibility and EVM byte-parity mode: resolve `.sol` imports as solidcash sources,
@@ -778,8 +790,13 @@ export interface AbiFunction {
     contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
-    // `__oraclePool` forwards the creator's own `__oraclePool` constructor input.
+    // `__oraclePool` forwards the creator's own `__oraclePool` constructor input. For a deployer child these are
+    // the parentheses' arguments; `contractArgs` names `args`, and `valueArg` names `value`.
     constructorArgs?: readonly (string | null)[];
+    /** Per contract argument of a deployer `new`: the creating function's parameter it forwards, or null. */
+    contractArgs?: readonly (string | null)[];
+    /** The creating function's parameter a deployer `new`'s `value` comes from, or null. */
+    valueArg?: string | null;
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
@@ -2305,6 +2322,45 @@ export interface CreationArgumentBinding {
   readonly value: string | bigint | boolean | Uint8Array;
 }
 
+/** The deployer contract a stateful direct contract C was compiled together with (A13). */
+export interface DeployerAbi {
+  version: 1;
+  /** Deploy<C>'s redeem script, hex. Used verbatim: no pin, no arguments. */
+  bytecode: string;
+  /** DEPLOY(C), hex. */
+  lockingBytecode: string;
+  /** TEMPLATE(C) = sha256(the body of C's code), hex. */
+  template: string;
+  /** C's code, hex, with its birth trailer when it has one. */
+  code: string;
+  /** True when the constructor makes an external call, so C's born code ends with the birth trailer. */
+  birthTrailer: boolean;
+  /** V_DEPLOY(C), satoshis, decimal. */
+  coinValue: string;
+  sweepAge: 1440;
+  /** `create` and `sweep`, with selectors, inputs in A4.2 order, and blockLayout. */
+  abi: AbiFunction[];
+  /** w_out(C): the genesis outputs `create` pins. */
+  genesisOutputs: number;
+  /** s: the constructor's call slots; the callee list is 2s bytes. */
+  callSlots: number;
+  satoshiContainer: 'none' | 'optional' | 'required';
+  /** Indexes of the contract parameters that name a single token container. */
+  tokenRows: number[];
+  /** Per collection the constructor writes, in the HEADs' order: its entry rows. */
+  collectionRows: { collection: string; appendSites: number }[];
+  /** Deploy<C> mints C's oracle: C reads block data. */
+  readsBlockData: boolean;
+  /** C stores `msg.sender` in its constructor: its creator is a marked creator. */
+  constructorReadsSender: boolean;
+  /** The constructor reads this field: the SDK sets the locktime. */
+  constructorBlockField?: 'number' | 'timestamp';
+  sidecars: { keccak: number; ecrecover: number };
+}
+
+/** One of the identifiers listed in A4.1; a string so an added reason needs no artifact version bump. */
+export type DeployerUnsupportedReason = string;
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -2341,6 +2397,22 @@ export interface Artifact {
   usesBlockhash?: boolean;  // contract reads blockhash(n) from a ring slot of its oracle pool
   /** A function reads a block-info coin of the bound oracle pool. */
   usesBlockOracle?: boolean;
+  /** Present when the primary contract was compiled with `deployer: true` and has a deployer. */
+  deployer?: DeployerAbi;
+  /** Set when `deployer: true` was given and C cannot have one; `reason` is an A4.1 identifier. */
+  deployerUnsupported?: DeployerUnsupportedReason;
+  /** Set when `deployer: true` was given: C's constructor arm, or a function it calls, writes a collection. */
+  constructorWritesCollections?: boolean;
+  /** Which entries publish a call record, on a contract compiled by this plan. */
+  callRecords?: 'returning' | 'all';
+  /** The `genesisCalls` option the contract was compiled with. */
+  genesisCalls?: boolean;
+  /** True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that prevents it. */
+  recordSound?: boolean;
+  /** True for a marked creator: a contract that creates a sender-reading child. */
+  createsSenderReadingChildren?: boolean;
+  /** One entry per child type a `new` creates through a deployer, by contract name. */
+  childDeployers?: Record<string, DeployerAbi>;
   /**
    * The pool coin kinds the bound contracts this one creates or names read, theirs included. With this contract's
    * own reads it shapes a pool its deployment mints.

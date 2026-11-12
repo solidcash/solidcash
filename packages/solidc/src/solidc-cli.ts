@@ -35,6 +35,12 @@ program
   .option('-L, --skip-enforce-locktime-guard', 'Do not inject a tx.time guard when tx.locktime is used.')
   .option('--allow-unverified-paths', 'Allow spending paths with no verification or state covenant (unsafe).')
   .option('--allow-unsafe-operations', 'Allow detected caller-controlled delegatecall/selfdestruct authority (unsafe).')
+  .option('--deployer', 'Compile the contract together with its deployer contract, Deploy<C>.')
+  .addOption(
+    new Option('--call-records <mode>', 'Which entry functions publish a call record: returning, or all.')
+      .choices(['returning', 'all']),
+  )
+  .option('--no-genesis-calls', 'Compile without the constructor-genesis call mechanisms.')
   .addOption(
     new Option('-f, --format <format>', 'Specify the format of the output.')
       .choices(['json', 'ts'])
@@ -66,6 +72,9 @@ function run(): void {
     enforceFinalRequire: !opts.allowUnverifiedPaths,
     allowUnsafeOperations: opts.allowUnsafeOperations,
     suppressWarnings: opts.suppressWarnings,
+    ...(opts.deployer === true && { deployer: true }),
+    ...(opts.callRecords !== undefined && { callRecords: opts.callRecords as 'returning' | 'all' }),
+    ...(opts.genesisCalls === false && { genesisCalls: false }),
     // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
     // CLI compilation uses automatic selection rather than turning the absent flag into required mode.
     messageBus: opts.messageBus === false ? false : undefined,

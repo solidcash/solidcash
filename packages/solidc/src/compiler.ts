@@ -43,7 +43,7 @@ import {
   scriptToBytecode, bytecodeToScript, asmToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   type AbiFunction, type ChildDeploymentSiteAbi, type FunctionSplitBundle, type SplitArtifactBundle,
-  type DeployerAbi,
+  type DeployerAbi, type FunctionBlockLayout, type BlockSlotKind,
   type SplitStateFootprint, StructType, TupleType,
   type Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, isDynamicStorageType, isFixedWidthType,
@@ -873,11 +873,28 @@ function assertDeployerParameters(create: FunctionDefinitionNode): void {
  * B7.5: classify what the constructor does, refuse every `ctor-…` reason A4.1 names, and publish the facts the
  * deployer artifact and the SDK need.
  */
+/** B7.9: A4.4's output range order, applied to the layout the constructor's body produced. */
+function buildGenesisBlockLayout(layout: FunctionBlockLayout | undefined): FunctionBlockLayout | undefined {
+  if (layout === undefined) return undefined;
+  const rank: Partial<Record<BlockSlotKind, number>> = {
+    master: 0, dataNft: 1, blockhashOracle: 2, blockInfoOracle: 2, entry: 3,
+    satoshiContainer: 4, tokenContainer: 5, transfer: 6, tcTransfer: 6,
+    event: 7, eventChunk: 7, returnEvent: 7,
+  };
+  const grouped = layout.slots.filter((slot) => slot.kind !== 'keccakSideCar' && slot.kind !== 'ecrecoverSideCar');
+  if (grouped.length !== layout.slots.length || layout.trailingBase !== undefined) return layout;
+  const slots = [...grouped]
+    .sort((left, right) => (rank[left.kind] ?? 99) - (rank[right.kind] ?? 99) || left.offset - right.offset)
+    .map((slot, offset) => ({ ...slot, offset }));
+  return { ...layout, blockSize: slots.length, slots };
+}
+
 function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions): void {
   const contract = ast.contract;
   const create = contract.functions.find((fn) => fn.name === '__construct');
   if (create === undefined) throw new DeployerInternalError(contract, 'the deployer program has no create body');
   const box = options.__deployerProgram!.box;
+  create.blockLayout = buildGenesisBlockLayout(create.blockLayout);
   const refuse = (reason: string, detail: string): never => {
     throw new DeployerUnsupportedError(create, reason, detail);
   };

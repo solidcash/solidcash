@@ -279,3 +279,15 @@ describe('B7.5: ctor-call-count', () => {
     expect(compile(source, { deployer: true }).artifact.deployerUnsupported).toBe('ctor-call-count');
   });
 });
+
+describe('B7.9: the genesis range order', () => {
+  it('orders master, records, containers, transfers and events', () => {
+    const source = `${P} contract C { int n; event E(int x);
+      constructor() payable { n = 1; emit E(2); payable(msg.sender).transfer(1000); } }`;
+    const { artifact } = compile(source, { deployer: true });
+    const create = artifact.deployer!.abi.find((fn) => fn.name === 'create')!;
+    expect(create.blockLayout!.slots.map((slot) => slot.kind))
+      .toEqual(['master', 'dataNft', 'satoshiContainer', 'transfer', 'event']);
+    expect(artifact.deployer!.genesisOutputs).toBe(5);
+  });
+});

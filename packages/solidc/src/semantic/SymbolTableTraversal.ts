@@ -5292,6 +5292,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         returnOutputIdxSymbol.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
       }
       this.pushToStack(returnOutputIdxParam);
+      this.injectGenesisCallParameter(node);
     }
 
     // B-side (approach B, single-interface method binding): an ordinary void entry of a direct stateful contract
@@ -5327,6 +5328,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.symbolTables[0].get('__internal__returnOutputIdx')
         ?.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
       this.pushToStack(voidRecordIdxParam);
+      this.injectGenesisCallParameter(node);
     }
 
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
@@ -16216,6 +16218,30 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.methodName === 'transfer') node.tokenPaymentTarget = this.newResultOf(node.args[0]);
 
     return node;
+  }
+
+  /**
+   * B6.5: a record-publishing entry of a direct master takes the constructor genesis call that answered it, empty
+   * for every ordinary call. It follows `__internal__returnOutputIdx` in the ABI so the unlocking's byte 6 + 2s
+   * region the creator binds is exactly the values `create` reads.
+   */
+  private injectGenesisCallParameter(node: FunctionDefinitionNode): void {
+    if (this.compilerOptions.genesisCalls === false) return;
+    if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
+    if (node.parameters.some((parameter) => parameter.name === '__internal__genesisCall')) return;
+    const parameter = new ParameterNode(new BytesType(), '__internal__genesisCall');
+    parameter.location = node.location;
+    parameter.syntheticallyUsed = true;
+    // The unlocking pushes the parameters in reverse ABI order, so the parameter that follows
+    // `__internal__returnOutputIdx` in the ABI sits below it on the stack. The model is built in ABI order
+    // from the bottom, so the entry goes before the carrier witness.
+    const at = node.parameters.findIndex((candidate) => candidate.name === '__internal__returnOutputIdx');
+    if (at >= 0) node.parameters.splice(at, 0, parameter);
+    else node.parameters.push(parameter);
+    this.symbolTables[0].set(Symbol.variable(parameter));
+    this.symbolTables[0].get('__internal__genesisCall')
+      ?.references.push({ name: '__internal__genesisCall' } as IdentifierNode);
+    this.pushToStack(parameter);
   }
 
   visitTransferStatement(node: TransferStatementNode): Node {

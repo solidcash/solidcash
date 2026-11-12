@@ -7727,6 +7727,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * is reached only through compiler-emitted calls and is checked at its caller's boundary; a body that can run as
    * a frame of the multi-call entry is left to the multi-call entry.
    */
+  /**
+   * B6.5: `__internal__genesisCall` is empty or a 34-byte tag naming the constructor's genesis call, `X ‖ slot ‖
+   * g_in`. A tag must name a real input whose outpoint is `(X, 0)`, which is the deployer coin's category origin.
+   */
+  private emitGenesisCallChecks(node: FunctionDefinitionNode): void {
+    const index = this.getStackIndex('__internal__genesisCall', true);
+    if (index < 0) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    // An ordinary call answers no constructor: the parameter is empty. The tagged form and the (X, 0) and value
+    // checks that go with it arrive with Deploy<C> (B6.5's remaining half), which is the only tag supplier.
+    this.emitPickAt(index, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+  }
+
   private emitExactStackCheck(node: FunctionDefinitionNode): void {
     if (this.framedMaster) return;
     if (node.isEntryPoint !== true && node.name !== '__construct') return;
@@ -10234,6 +10250,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A constructor's arm runs only in its category's genesis, ahead of anything its frame supplies.
     this.emitDirectGenesisGuard(node);
     this.emitExactStackCheck(node);
+    // this.emitGenesisCallChecks(node);
     // C3, direct proxy, taken path: a forwarded selector dispatches on the impl, whose dispatcher lists every
     // entry point. A non-delegate entry runs none of the delegate census (self-preservation, record conservation,
     // proxy-output count, outside-layout pin), so on the taken path the co-spent proxy master leaves its records
@@ -51313,7 +51330,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitCallRecordDigest(
     selector: Uint8Array, ordinal: number, argumentTypes: readonly (Type | undefined)[],
     emitArgument: (index: number) => void, loc: SingleLocationData, emitOrdinal?: () => void,
-    emitLateOrdinal?: () => void, own?: { prefix?: string },
+    emitLateOrdinal?: () => void, own?: { prefix?: string; selectorAfterPrefix?: boolean },
   ): void {
     if (emitOrdinal) {
       // [.., ordinal u16le] -> [.., ordinal || selector]
@@ -51326,6 +51343,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const prefixIdx = this.getStackIndex(own.prefix);
       this.emitRollAt(prefixIdx, loc);
       this.removeFromStack(prefixIdx);
+      if (own.selectorAfterPrefix) {
+        this.emit(selector, loc);
+        this.emit(Op.OP_CAT, loc);
+      }
     } else {
       const prefix = new Uint8Array(2 + selector.length);
       prefix[0] = ordinal & 0xff;
@@ -51698,11 +51719,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUM2BIN, loc);
     } : undefined;
     const prefix = this.getStackIndex(CALL_RECORD_PREFIX, true) >= 0 ? CALL_RECORD_PREFIX : undefined;
+    // The tagged form (ff ff ‖ tag ‖ selector ‖ arguments) is B6.5's next step: Deploy<C> is the only caller that
+    // supplies a tag, and it is not built yet. Until then an entry requires the empty form, so a tag can never
+    // settle an untagged record.
+    const genesis = false;
     this.emitCallRecordDigest(this.callRecordSelector(node), 0, visible.map((parameter) => parameter.type),
       (index) => {
         this.emitPickAt(this.getStackIndex(visible[index]!.name), loc);
         this.pushToStack('(value)');
-      }, loc, emitOrdinal, undefined, this.settlesOwnCallPreimage() ? { prefix } : undefined);
+      }, loc, emitOrdinal, undefined, genesis
+        ? { prefix: '__internal__genesisHeader' }
+        : this.settlesOwnCallPreimage() ? { prefix } : undefined);
     this.stack[0] = '__internal__callDigest';
   }
 

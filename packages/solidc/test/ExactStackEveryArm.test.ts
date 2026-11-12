@@ -77,7 +77,8 @@ describe('B6.0: an arm starts from an exact stack', () => {
     const checks = opcodes.flatMap((opcode, index) => (
       opcode === Op.OP_DEPTH && opcodes[index + 2] === Op.OP_NUMEQUALVERIFY ? [opcodes[index + 1]!] : []
     ));
-    expect(checks).toContain(0x52); // OP_2: the model's length at this entry
+    // One visible argument, the return-carrier witness, and the genesis call.
+    expect(checks).toContain(0x53); // OP_3: the model's length at this entry
   });
 
   it('emits the check in each defined entry body', () => {

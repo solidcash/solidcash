@@ -204,7 +204,7 @@ describe('B6.6/B6.7: the genesis sender', () => {
   // Known gap: check 5's `2 × slot + 2 ≤ len` bound and the entry's tag size checks are emitted only by
   // `emitGenesisCallChecks`, which stays disabled until the SDK carries the parameter everywhere (B10). Without
   // it, a slot past the list reads the following push instead of the list. Kept as a documented skip.
-  it.skip('refuses a slot the list does not name', async () => {
+  it('refuses a slot the list does not name', async () => {
     const f = await fixture({ slot: 1 });
     expect(await f.attempt()).toContain('REFUSED');
   }, 120_000);

@@ -3239,7 +3239,13 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       (56658–56706) stays inside step 3. Use `sharedEntryCheckId` and the subroutine helpers
       (`subroutineDefined` 1775, `invokeSubroutineIfDefined` 7047). Every other read of `msg.sender`, in
       every contract, is compiled exactly as today.
-- [ ] **B6.7 The genesis step (O6).** Implement A7's step 1 in that shared function. Check 1, the spend of
+
+  **Status, 2026-11-12 (Grok).** The three-step resolution is implemented and attack-tested, but emitted inline at
+  each read rather than as one shared defined function. The shared-helper machinery cannot capture this body:
+  its field reads pick the tag from the frame's bottom ordinal, which a helper body compiled on an empty model
+  cannot address. Recorded rather than hidden; the interface and behaviour are those B6.6 describes.
+
+- [x] **B6.7 The genesis step (O6).** Implement A7's step 1 in that shared function. Check 1, the spend of
       (X, 0), is already made by B6.5 for every entry with a tag. The rest:
       - read g_out, a_off, a_len, code_off and code_len, each as unsigned;
       - check 2: `OP_OUTPUTTOKENCATEGORY` of g_out is X‖02;

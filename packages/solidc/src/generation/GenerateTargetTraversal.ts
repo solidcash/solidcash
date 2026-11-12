@@ -531,6 +531,7 @@ const P2PKH_LBC_PREFIX = hexToBin('76a914'); // OP_DUP OP_HASH160 OP_PUSHBYTES_2
 const P2PKH_LBC_SUFFIX = hexToBin('88ac');   // OP_EQUALVERIFY OP_CHECKSIG
 const P2SH20_LBC_PREFIX = hexToBin('a914');  // OP_HASH160 OP_PUSHBYTES_20
 const P2SH20_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
+const GENESIS_TAG_LOCAL = '__internal__genesisTag';
 const P2SH32_LBC_PREFIX = hexToBin('aa20');  // OP_HASH256 OP_PUSHBYTES_32
 const P2SH32_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
 
@@ -7744,10 +7745,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     const taggedSize = node.usesMsgSender === true ? 46 : 36;
-    this.emitPickAt(index, loc);
+    this.emitPickTrackedFromBottom('__internal__genesisCall', loc);
     this.pushToStack('(genesis)');
-    // Size is 0 (an ordinary call) or the tag's size.
-    this.emit(Op.OP_DUP, loc);
+    // Size is 0 (an ordinary call) or the tag's size. OP_SIZE leaves the copy in place.
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_0, loc);
@@ -7757,47 +7757,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUAL, loc);
     this.emit(Op.OP_BOOLOR, loc);
     this.emit(Op.OP_VERIFY, loc);
-    // A tag names (X, 0) of its g_in. X is the first 32 bytes; slot and g_in follow.
+    // The parameter is exactly the empty form or this entry's tag size. The tag's (X, 0) spend is checked by the
+    // sender resolution itself (B6.6/B6.7); an entry that does not read the sender answers no constructor.
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_2DROP, loc);                                 // drop the copy and the empty parameter
-    this.emit(Op.OP_0, loc);                                     // ...and put an empty item back in its place
+    this.emit(Op.OP_DROP, loc);                                  // an ordinary call
     this.emit(Op.OP_ELSE, loc);
-    // The tag stays for the body; every read below works on the copy on top.
-    // X = tag[0:32].
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);                                  // [tag, X]
-    this.emit(Op.OP_SWAP, loc);                                  // [X, tag]
-    // [T] -> [T, n]: the unsigned 2-byte field at `offset`.
-    const field = (offset: number): void => {
-      this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(BigInt(offset)), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(encodeInt(2n), loc);
-      this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.emit(new Uint8Array([0x00]), loc);
-      this.emit(Op.OP_CAT, loc);
-      this.emit(Op.OP_BIN2NUM, loc);
-    };
-    field(34);                                                   // [X, tag, g_in]
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_OUTPOINTTXHASH, loc);                        // [X, tag, g_in, txid]
-    this.emit(encodeInt(2n), loc);
-    this.emit(Op.OP_PICK, loc);                                  // [X, tag, g_in, txid, X]
-    this.emit(Op.OP_EQUALVERIFY, loc);                           // [X, tag, g_in]
-    this.emit(Op.OP_OUTPOINTINDEX, loc);
-    this.emit(Op.OP_0, loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);                        // [X, tag, g_in]
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DROP, loc);                                  // the tag copy
     // A constructor's call sends no value: a payable tagged entry requires msg.value to be 0. The SDK cannot fund
     // the callee's container in the creation transaction without the creation failing here.
     const payable = node.modifiers.includes(FunctionModifier.PAYABLE);
@@ -10317,7 +10285,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A constructor's arm runs only in its category's genesis, ahead of anything its frame supplies.
     this.emitDirectGenesisGuard(node);
     this.emitExactStackCheck(node);
-    // this.emitGenesisCallChecks(node);
+    this.emitGenesisCallChecks(node);
     // C3, direct proxy, taken path: a forwarded selector dispatches on the impl, whose dispatcher lists every
     // entry point. A non-delegate entry runs none of the delegate census (self-preservation, record conservation,
     // proxy-output count, outside-layout pin), so on the taken path the co-spent proxy master leaves its records
@@ -58497,7 +58465,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const genesisIdx = this.getStackIndex('__internal__genesisCall', true);
     if (genesisIdx >= 0 && this.currentFunction?.usesMsgSender === true) {
-      this.emitPickAt(genesisIdx, locationData);   // one tag copy, handed to the branch that takes it
+      this.emitPickTrackedFromBottom('__internal__genesisCall', locationData);   // one tag copy
       this.emit(Op.OP_SIZE, locationData);
       this.emit(Op.OP_0, locationData);
       this.emit(Op.OP_NUMEQUAL, locationData);
@@ -58538,12 +58506,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** B6.6/B6.7: the sender of a constructor's call is the child it created (A7's genesis step, checks 2, 3, 5). */
+  /**
+   * B6.6/B6.7: one shared function resolves the sender of a constructor's call. The caller leaves the verified
+   * 46-byte tag copy on top; the body reads every field by a top-relative pick, so a caller's frame below it does
+   * not shift a depth. It leaves the child's master lock (msg.sender) on top.
+   */
   private emitGenesisSenderResolution(loc: SingleLocationData): void {
     const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
     const num = (value: number | bigint): void => emit(encodeInt(BigInt(value)));
     const saved = [...this.stack];
-    // [T] -> [n]: the unsigned 2-byte field at `offset`.
+    // The branch's tag copy is on top; drop it and read the entry's parameter from the bottom, so the physical
+    // stack stays equal to the model.
+    emit(Op.OP_DROP);
+    const tagCopy = (): void => this.emitPickTrackedFromBottom('__internal__genesisCall', loc);
     const field = (offset: number): void => {
+      tagCopy();
       emit(Op.OP_DUP);
       num(offset);
       emit(Op.OP_SPLIT);
@@ -58560,52 +58537,53 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       emit(Op.OP_SWAP);
       emit(Op.OP_DROP);
     };
-    const tagCopy = (): void => {
-      emit(Op.OP_FROMALTSTACK);
-      emit(Op.OP_DUP);
-      emit(Op.OP_TOALTSTACK);
-    };
-    // [.., V] -> [.., V after its first `fieldOffset` bytes].
     const dropPrefix = (fieldOffset: number): void => {
-      tagCopy();
       field(fieldOffset);
       emit(Op.OP_SPLIT);
       emit(Op.OP_NIP);
     };
-    // [.., V] -> [.., V's first `lenFieldOffset` bytes].
     const takePrefix = (lenFieldOffset: number): void => {
-      tagCopy();
       field(lenFieldOffset);
       emit(Op.OP_SPLIT);
       emit(Op.OP_DROP);
     };
+    tagCopy();
     emit(Op.OP_SIZE);
     num(46);
-    emit(Op.OP_NUMEQUALVERIFY);                       // a sender-reading entry's tag is exactly 46 bytes
+    emit(Op.OP_NUMEQUALVERIFY);
+    emit(Op.OP_DROP);
+    field(34);
+    tagCopy();
+    num(32);
+    emit(Op.OP_SPLIT);
+    emit(Op.OP_DROP);
+    emit(Op.OP_SWAP);
     emit(Op.OP_DUP);
-    emit(Op.OP_TOALTSTACK);                           // one tag copy parked for every field read
-    field(34);                                        // g_in
-    emit(Op.OP_DUP);                                  // keep g_in for check 4
-    emit(Op.OP_INPUTBYTECODE);                        // [g_in, U]
-    // Check 5: the callee list's entry for this slot names this input. First the bound: 2 × slot + 2 ≤ len,
-    // where len is byte 5 of the unlocking (the list push's length byte).
+    emit(Op.OP_OUTPOINTTXHASH);
+    emit(Op.OP_ROT);
+    emit(Op.OP_EQUALVERIFY);
+    emit(Op.OP_DUP);
+    emit(Op.OP_OUTPOINTINDEX);
+    emit(Op.OP_0);
+    emit(Op.OP_NUMEQUALVERIFY);
+    emit(Op.OP_DUP);
+    emit(Op.OP_INPUTBYTECODE);
     emit(Op.OP_DUP);
     num(5);
     emit(Op.OP_SPLIT);
     emit(Op.OP_NIP);
     num(1);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_NIP);
+    emit(Op.OP_DROP);
     emit(new Uint8Array([0x00]));
     emit(Op.OP_CAT);
-    emit(Op.OP_BIN2NUM);                              // [g_in, U, len]
-    tagCopy();
-    field(32);                                        // [.., len, slot]
+    emit(Op.OP_BIN2NUM);
+    field(32);
     num(2);
     emit(Op.OP_MUL);
     num(2);
-    emit(Op.OP_ADD);                                  // [.., len, 2 × slot + 2]
-    emit(Op.OP_GREATERTHANOREQUAL);                   // len ≥ 2 × slot + 2
+    emit(Op.OP_ADD);
+    emit(Op.OP_GREATERTHANOREQUAL);
     emit(Op.OP_VERIFY);
     emit(Op.OP_DUP);
     num(6);
@@ -58618,20 +58596,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit(Op.OP_INPUTINDEX);
     num(2);
     emit(Op.OP_NUM2BIN);
-    emit(Op.OP_EQUALVERIFY);                          // [U, right]
-    emit(Op.OP_DROP);                                 // [U]
-    emit(Op.OP_DUP);                                  // [U, U]
-    dropPrefix(42);                                   // [U, restC]
-    takePrefix(44);                                   // [U, code]
-    emit(Op.OP_SWAP);                                 // [code, U]
-    dropPrefix(38);                                   // [code, restA]
-    takePrefix(40);                                   // [code, A]
-    emit(Op.OP_SWAP);                                 // [A, code]
-    emit(Op.OP_CAT);                                  // [S]
-    // Check 2: output g_out carries exactly X ‖ 02.
-    tagCopy();
-    field(36);                                        // g_out
-    emit(Op.OP_OUTPUTTOKENCATEGORY);                  // [S, cat]
+    emit(Op.OP_EQUALVERIFY);
+    emit(Op.OP_DROP);
+    emit(Op.OP_DUP);
+    dropPrefix(42);
+    takePrefix(44);
+    emit(Op.OP_SWAP);
+    dropPrefix(38);
+    takePrefix(40);
+    emit(Op.OP_SWAP);
+    emit(Op.OP_CAT);
+    field(36);
+    emit(Op.OP_OUTPUTTOKENCATEGORY);
     emit(Op.OP_DUP);
     emit(Op.OP_SIZE);
     emit(Op.OP_NIP);
@@ -58640,12 +58616,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     tagCopy();
     num(32);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_DROP);                                 // [S, cat, X]
+    emit(Op.OP_DROP);
     emit(new Uint8Array([0x02]));
-    emit(Op.OP_CAT);                                  // [S, cat, X ‖ 02]
-    emit(Op.OP_EQUALVERIFY);                          // [g_in, S]
-    // Check 4: when S carries the birth trailer `20 ‖ D ‖ 75`, g_in's coin is P2SH32(D). A child without one
-    // (its constructor makes no call slot) skips this check; B7 appends the trailer to every record-sound child.
+    emit(Op.OP_CAT);
+    emit(Op.OP_EQUALVERIFY);
     emit(Op.OP_SIZE);
     num(34);
     emit(Op.OP_GREATERTHANOREQUAL);
@@ -58655,11 +58629,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     num(34);
     emit(Op.OP_SUB);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_NIP);                                  // [g_in, S, tail(34)]
+    emit(Op.OP_NIP);
     emit(Op.OP_DUP);
     num(1);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_DROP);                                 // [.., tail, first]
+    emit(Op.OP_DROP);
     num(0x20);
     emit(Op.OP_EQUALVERIFY);
     emit(Op.OP_DUP);
@@ -58667,46 +58641,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     num(1);
     emit(Op.OP_SUB);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_NIP);                                  // [.., tail, last]
+    emit(Op.OP_NIP);
     num(0x75);
     emit(Op.OP_EQUALVERIFY);
     num(33);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_DROP);                                 // [g_in, S, 20 ‖ D]
+    emit(Op.OP_DROP);
     num(1);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_NIP);                                  // [g_in, S, D]
-    emit(P2SH32_LBC_PREFIX);                          // aa 20
+    emit(Op.OP_NIP);
+    emit(P2SH32_LBC_PREFIX);
     emit(Op.OP_SWAP);
     emit(Op.OP_CAT);
-    emit(P2SH32_LBC_SUFFIX);                          // 87
-    emit(Op.OP_CAT);                                  // [g_in, S, aa 20 ‖ D ‖ 87]
+    emit(P2SH32_LBC_SUFFIX);
+    emit(Op.OP_CAT);
     num(2);
-    emit(Op.OP_PICK);                                 // [.., expected, g_in]
+    emit(Op.OP_PICK);
     emit(Op.OP_UTXOBYTECODE);
     emit(Op.OP_EQUALVERIFY);
     emit(Op.OP_ENDIF);
-    // Check 3: M = P2SH32(21 ‖ X ‖ 02 c0 ce 88 ‖ S).
     tagCopy();
     num(32);
     emit(Op.OP_SPLIT);
-    emit(Op.OP_DROP);                                 // [S, X]
+    emit(Op.OP_DROP);
     emit(new Uint8Array([0x21]));
     emit(Op.OP_SWAP);
     emit(Op.OP_CAT);
     emit(hexToBin('02c0ce88'));
-    emit(Op.OP_CAT);                                  // [S, pin(X)]
-    emit(Op.OP_SWAP);                                 // [pin(X), S]
-    emit(Op.OP_CAT);                                  // [pin(X) ‖ S]
+    emit(Op.OP_CAT);
+    emit(Op.OP_SWAP);
+    emit(Op.OP_CAT);
     emit(Op.OP_HASH256);
     emit(P2SH32_LBC_PREFIX);
     emit(Op.OP_SWAP);
     emit(Op.OP_CAT);
     emit(P2SH32_LBC_SUFFIX);
-    emit(Op.OP_CAT);                                  // [g_in, M]
-    emit(Op.OP_FROMALTSTACK);
-    emit(Op.OP_DROP);
-    emit(Op.OP_NIP);                                  // [M]: g_in is no longer needed
+    emit(Op.OP_CAT);
+    emit(Op.OP_NIP);
     this.stack = saved;
   }
 

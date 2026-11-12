@@ -3623,11 +3623,13 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census, the callee-list size
       check, the tagged caller digest of A7, the ordinary external-call verification, the per-entry callee-list
       binding and the executed-slot mask (on the alternate stack) are in, and the record commitment settlement runs.
-      The per-slot carrier bindings and a VM case with s > 0 are not built. The callee's tag is 46 bytes:
-      `X ‖ slot ‖ g_in ‖ g_out ‖ aOff ‖ qLen ‖ codeOff ‖ len(code)` (`MsgSenderGenesis.test.ts`). The caller's
-      digest must hash `ffff ‖ tag(46) ‖ selector ‖ arguments`; the current caller-side preimage uses only
-      `X ‖ slot` (34 bytes), so the digests cannot match yet. `aOff` and `codeOff` are offsets in the deployer's
-      unlocking and need the SDK's layout, not the ABI order.
+      The per-slot carrier bindings and a VM case with s > 0 are not built. The caller now hashes
+      `ffff ‖ tag ‖ selector ‖ arguments` with the 36-byte tag `X ‖ slot ‖ g_in`; the 46-byte form for a
+      sender-reading callee and its `g_out/aOff/aLen/codeOff/codeLen` fields are not built. A hand-built
+      carrier carrying the 36-byte-tag digest still fails an OP_VERIFY after token validation, callee identity
+      and category checks. A diagnostic sweep over X orientation, 34/36-byte tags, digest lengths 31/32 and
+      several form/field encodings found no accepted commitment, so the failing check is not the preimage
+      alone; the marker/edge checks around the call are the next suspect.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,

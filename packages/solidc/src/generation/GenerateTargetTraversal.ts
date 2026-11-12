@@ -51880,6 +51880,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(genesis_prefix)');
       this.emitPickTrackedFromBottom('(gen_x)', loc);
       this.pushToStack('(tag_x)');
+      this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(Op.OP_CAT, loc);
       this.popFromStack(2);
       this.pushToStack('(genesis_prefix)');

@@ -91,12 +91,16 @@ function createSpend(
   locktime = 0,
   deployerSequence = 0xffffffff,
   extraOutputs: VmOutput[] = [],
+  extraInputs: VmInput[] = [],
+  extraSourceOutputs: SourceOutputs = [],
 ) {
   const sourceOutputs: SourceOutputs = [
     { lockingBytecode: originLock ?? TOKENLESS, valueSatoshis: 10_000n },
     { lockingBytecode: TOKENLESS, valueSatoshis: 10_000n },
     { lockingBytecode: TOKENLESS, valueSatoshis: 10_000n },
     { lockingBytecode: hexToBin(deployer.lockingBytecode), valueSatoshis: 1200n },
+    ...(extraSourceOutputs.length > 0 ? extraSourceOutputs
+      : extraInputs.map(() => ({ lockingBytecode: TOKENLESS, valueSatoshis: 10_000n }))),
   ];
   const outputs: VmOutput[] = Array.from({ length: OUTBASE }, () => ({
     lockingBytecode: TOKENLESS, valueSatoshis: 1000n,
@@ -124,8 +128,9 @@ function createSpend(
   for (const argument of contractArgs) values[argument.name] = argument.value;
   Object.assign(values, valueOverrides);
   const inputs = [dummyInput(0), dummyInput(1), dummyInput(2), {
-    ...dummyInput(DEPLOYER_INPUT), unlockingBytecode: createUnlock(deployer, values),
-  }];
+    ...dummyInput(DEPLOYER_INPUT), sequenceNumber: deployerSequence,
+    unlockingBytecode: createUnlock(deployer, values),
+  }, ...extraInputs];
   return {
     sourceOutputs,
     transaction: { version: 2, locktime, inputs, outputs },

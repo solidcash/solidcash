@@ -2301,6 +2301,13 @@ export class StatefulTransactionBuilder {
       lateValueChunkOutputs: this.lateValueChunkOutputs,
       checkMinRelayFee: this._checkMinRelayFee,
       feeSigner: this.feeSigner,
+      requiresNativeOrigin: (() => {
+        const abi = (this.masterUtxo?.unlocker as {
+          abiFunction?: { usesMsgSender?: boolean; inputs?: { name: string }[] };
+        } | undefined)?.abiFunction;
+        return abi?.usesMsgSender === true
+          || (abi?.inputs ?? []).some((input) => input.name === '__internal__msgSenderCategory');
+      })(),
       accountingFunderUtxos: () => this._accountingFunderUtxos(),
       adoptAccountingFunders: (funders) => {
         const held = new Set(this.embeddedFunderUtxos.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));

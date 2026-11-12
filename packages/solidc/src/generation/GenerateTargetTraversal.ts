@@ -3576,6 +3576,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (kind === 'deploy' && this.emitGraphDeployInputIndex(slotIndex ?? 0, locationData)) return;
     if (this.emitGraphEffectSlotIndex(kind, slotIndex, locationData)) return;
     let offset = this.getBlockSlotOffset(kind, slotIndex);
+    // A5: the genesis range starts at __internal__genesisOutputBase, independent of the deployer's input index.
+    if (this.currentFunction?.genesisMode === true
+      && new Set<BlockSlotKind>(['master', 'transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent',
+        'satoshiContainer', 'tokenContainer', 'entry']).has(kind)) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__genesisOutputBase'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (offset > 0) {
+        this.emit(encodeInt(BigInt(offset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      return;
+    }
     // The 'deploy' slot is read as an INPUT index (the child genesis funding input). Output-only slots
     // (transfer/tcTransfer/event/returnEvent) each take a block-layout offset but consume NO input, so they
     // must be excluded from an input-relative offset - otherwise the funding input is read one-too-high per
@@ -11615,6 +11627,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     this.emitGenesisMasterPin(node);
     if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
+    if (this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined) {
+      this.emitTransferCovenantVerification(node);
+    }
+    if (this.pendingEmits.length > 0) this.emitEventCovenantVerification(node);
   }
 
   /**
@@ -11693,13 +11709,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitGenesisMasterPin(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    this.emitDropUntrackedStackItems(loc);
     const push = (name: string, script: Script): void => {
       this.emit(script, loc);
       this.pushToStack(name);
     };
     const pick = (name: string, out: string): void => {
-      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitPickTrackedFromBottom(name, loc);
       this.pushToStack(out);
     };
 
@@ -45028,9 +45044,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (side === 'in') {
         throw new Error(`a genesis-mode body reads a record input (${this.currentFunction.name})`);
       }
-      const base = this.getStackIndex('__internal__genesisOutputBase');
-      this.emit(encodeInt(BigInt(base)), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitPickTrackedFromBottom('__internal__genesisOutputBase', loc);
       return;
     }
     if (!this.readsRecordsFromFrame) {

@@ -100,6 +100,7 @@ describe('B7.0: when a deployer is built', () => {
     expect(artifact.deployer!.abi.map((fn) => fn.selector)).toEqual(['af341413', '740b423a']);
     expect(artifact.deployer!.abi.find((fn) => fn.name === 'sweep')!.inputs).toEqual([]);
     expect(artifact.deployer!.version).toBe(1);
+    expect(artifact.deployer!.genesisOutputs).toBe(2);
   });
 
   it('keeps exactly the create and sweep arms for every contract shape', () => {

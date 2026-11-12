@@ -1033,6 +1033,7 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
       .filter((collection) => writtenCollections.has(collection.name))
       .map((collection) => ({ collection: collection.name, appendSites: 1 }));
     boxTarget.arms = contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name);
+    boxTarget.genesisOutputs = create.blockLayout?.slots.length ?? 0;
   }
   void box;
 }

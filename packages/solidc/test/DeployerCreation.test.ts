@@ -8,7 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
 import {
-  asmToScript, buildPushdataCommitment, scriptToBytecode, type Artifact, type DeployerAbi,
+  asmToScript, buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode,
+  type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
 
@@ -50,9 +51,13 @@ function createUnlock(
   return new Uint8Array([...pushes(args), ...encodeDataPush(hexToBin(deployer.bytecode))]);
 }
 
-function recordOutput(artifact: Artifact, values: Record<string, bigint>, category: Uint8Array): VmOutput {
+function recordOutput(
+  artifact: Artifact, values: Record<string, bigint>, category: Uint8Array, master?: Uint8Array,
+): VmOutput {
+  const masterLock = master ?? genesisMasters(artifact.deployer!).master;
+  const dataRedeem = scriptToBytecode(buildDataNftCovenantScript(category, masterLock));
   return {
-    lockingBytecode: TOKENLESS,
+    lockingBytecode: encodeLockingBytecodeP2sh32(hash256(dataRedeem)),
     valueSatoshis: 1200n,
     token: {
       category,
@@ -102,7 +107,7 @@ function createSpend(
     valueSatoshis: 1200n,
     token: { category: x, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } },
   }));
-  outputs.push(record ?? recordOutput(artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash));
+  outputs.push(record ?? recordOutput(artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master));
   const values: Record<string, Uint8Array> = {
     __internal__budgetPad: EMPTY,
     __internal__authorIndex: new Uint8Array([0x01]),

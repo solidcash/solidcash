@@ -582,6 +582,8 @@ export function batchRaw(
       // gives every returning entry point this compiler-owned coordinate, so use the same negative sentinel as
       // standalone returning calls until an outer composer explicitly binds a concrete return output.
       if (input.name === '__internal__returnOutputIdx') return -1n;
+      // An ordinary call does not answer a constructor's genesis call.
+      if (input.name === '__internal__genesisCall') return new Uint8Array();
       // A negative value preserves the compiler's layout-relative continuation band. Builders that relocate
       // dynamic value chunks later replace this sentinel with the final absolute output coordinate.
       if (input.name === '__internal__valueChunkOutputBase') return -1n;

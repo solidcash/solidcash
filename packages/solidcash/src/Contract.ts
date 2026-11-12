@@ -877,6 +877,9 @@ export class Contract<
           // A spend no caller made names no record.
           ...(abiFunction.inputs.some((input) => input.name === '__internal__returnOutputIdx')
             ? [bigIntToVmNumber(-1n)] : []),
+          // An ordinary call does not answer a constructor's genesis call.
+          ...(abiFunction.inputs.some((input) => input.name === '__internal__genesisCall')
+            ? [new Uint8Array()] : []),
         ];
 
         // External-library contracts get a budget pad pushed on top (dropped by the redeem's OP_DROP),

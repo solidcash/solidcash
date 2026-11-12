@@ -92,12 +92,32 @@ describe('B8.6: the site binds the deployer instead of embedding the child', () 
     expect(target.dataNftCount).toBe(1);
   });
 
+  it('records the value source for a payable child', () => {
+    const source = `${P} contract Child { int n; constructor(int a) payable { n = a; }
+        function bump() { n = n + 1; } }
+      contract Parent { int m; function make(int v) { Child c = new Child{value: v}(7); m = 1; } }`;
+    const creator = compile(source);
+    const target = creator.abi.find((entry) => entry.name === 'make')!.deployTargets![0];
+    expect(target.valueArg).toBe('v');
+    expect(target.constructorArgs).toEqual([null]);
+    expect(target.contractArgs).toEqual([]);
+  });
+
   it('keeps the whole child genesis range in the layout', () => {
     const source = `${P} ${statefulChild()}
       contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`;
     const creator = compile(source);
     expect(creator.childDeployers!.Child.genesisOutputs).toBe(2);
     expect(creator.bytecode).toContain('OP_INPUTBYTECODE');
+  });
+
+  it('compiles a site in a branch and refuses one in a loop', () => {
+    expect(() => compile(`${P} ${statefulChild()}
+      contract Parent { int m; function make(int x) { if (x > 0) { Child c = new Child(); } m = 1; } }`))
+      .not.toThrow();
+    refusal(`${P} ${statefulChild()}
+      contract Parent { int m; function make(int n) { for (int i = 0; i < n; i = i + 1) { Child c = new Child(); } m = 1; } }`,
+    /in a loop is not available/);
   });
 });
 

@@ -330,6 +330,7 @@ import {
   UncheckedFunctionIdParameterError,
   UncheckedFunctionIdValueError,
   SingleContainersError,
+  DeployerUnsupportedError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -23567,6 +23568,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDeployerNewSite(node: InstantiationNode, locationData: SingleLocationData): Node {
     const abi = node.deployerAbi;
     if (abi === undefined) throw new Error('A deployer `new` has no DeployerAbi');
+    // B8.9's per-iteration d_in/d_out counter is not built yet: a fixed site would reuse iteration 0's indices.
+    if (this.plainLoopDepth > 0) {
+      throw new DeployerUnsupportedError(node, 'creator-shape',
+        'a deployer `new` in a loop is not available in this build');
+    }
     const site = this.deployCounter++;
     this.deployRoutingCounters.set(node, site);
     node.creationBytecode = abi.code;

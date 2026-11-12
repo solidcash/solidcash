@@ -4126,7 +4126,7 @@ this phase and compiles every source as it did after B7.
       - Add a flag `deploysThroughDeployer` to every function with a deployer `new`, and keep such functions
         off the message-bus route, at the places where B1 removed `deploysChildCode` (`compiler.ts`, around
         5920 and 7595 before B1).
-- [ ] **B8.10 Artifact.** For a deployer child's `deployTargets[i]`: fill `contractArgs`, `constructorArgs`
+- [x] **B8.10 Artifact.** For a deployer child's `deployTargets[i]`: fill `contractArgs`, `constructorArgs`
       and `valueArg` as A13 defines them, set `creationBytecode` to the child's `DeployerAbi.code`,
       `dataNftCount` to N and `entryNftCount` to E, and leave out the fields A13 says it does not have.
       Write `artifact.childDeployers` with one entry per child type this contract creates, from

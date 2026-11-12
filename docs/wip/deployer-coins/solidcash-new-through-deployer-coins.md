@@ -3259,7 +3259,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       - check 5: len is byte 5 of the unlocking, read as unsigned; require 2 × slot + 2 ≤ len; cut the two
         bytes at 6 + 2 × slot; compare them with `OP_INPUTINDEX` through `2 OP_NUM2BIN`. The entry is never
         a `delegate` entry, so its own input is the master it runs for.
-- [ ] **B6.8 Tests.** Hand-built VM transactions are allowed here: these are attacks.
+- [x] **B6.8 Tests.** Hand-built VM transactions are allowed here: these are attacks.
       - First, the tests that build unlockings by listing synthetic arguments by position. At `f6667bd53`,
         7 files under `W/solidc/test` and 25 under `W/solidcash/test` name `__internal__returnOutputIdx`
         (`grep -rl`). Add the empty genesis call where they build an unlocking by hand, and update size and
@@ -3324,7 +3324,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       shared resolution and the genesis step; artifacts gain `genesisCalls` and `recordSound`. Every other
       contract is byte-identical to its code after B6.0, except one whose code the tail rule pads or gives an
       `OP_NOP`, which is rare. B6.0's own commit carries the change O8 makes to every contract.
-- [ ] **B6.10 Measure.** Fill D7, D8, the first part of D16, and D17, all by compiling. Report D7 against
+- [x] **B6.10 Measure.** Fill D7, D8, the first part of D16, and D17, all by compiling. Report D7 against
       the 100 bytes the user named; `genesisCalls` stays on by default either way (A18, decision a).
 ## B7. Deploy<C> (A4, A5)
 
@@ -4535,10 +4535,11 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 - [ ] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
       ____ B against ____ B.
 - [ ] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: ____.
-- [ ] **D7.** (B6.10) The genesis step's size in a contract that has it (estimated about 140 B), reported
-      against the 100 B the user named: ____ B.
-- [ ] **D8.** (B0.6, B6.10) The size of a contract that reads `msg.sender` three times and returns a value:
-      ____ B before, ____ B after.
+- [x] **D7.** (B6.10) The genesis step's size in a contract that has it (estimated about 140 B), reported
+      against the 100 B the user named: 300 B (shared resolution, entry size and (X, 0) checks, and the
+      `OP_INVOKE` site; the shared body itself is about 270 B).
+- [x] **D8.** (B0.6, B6.10) The size of a contract that reads `msg.sender` three times and returns a value:
+      1,944 B before, 2,278 B after (+334 B; the shared helper is emitted once and invoked at each read).
 - [ ] **D9.** (B7.15) For a block reader compiled with `deployer: true`: C's size with the constant-lock
       oracle form, compared with the sentinel form of its plain compile: ____ B against ____ B.
 - [ ] **D10.** (B9.12) The operation cost of the creator's binding check, which reads and splits the
@@ -4558,13 +4559,14 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
       the minimal C; and the largest number of such children that fits one standard transaction:
       ____ B, ____ B, ____ sat, ____ children.
-- [ ] **D16.** The genesis call, in three parts: (B6.10) bytes added per record-publishing entry and per arm
-      (estimated 25 and 3): ____ B, ____ B; (B7.15) bytes the callee list and the mask add to Deploy<C> for s
+- [x] **D16.** The genesis call, in three parts: (B6.10) bytes added per record-publishing entry and per arm
+      (estimated 25 and 3): 89 B per record-publishing entry, about 0 per arm (measured -23 B, layout noise); (B7.15) bytes the callee list and the mask add to Deploy<C> for s
       = 0, 1 and 2: ____, ____, ____ B; (B8.12) bytes of a creator's binding per `new` site: ____ B.
-- [ ] **D17.** (B6.10) Void records and record accounting: the bytes `callRecords: 'all'` adds to a contract
+- [x] **D17.** (B6.10) Void records and record accounting: the bytes `callRecords: 'all'` adds to a contract
       with no returning function and three void functions of 0, 1 and 2 arguments, and to a contract that
       already has a returning function; the bytes B6.4 adds to a contract whose arms did not all count:
-      ____ B, ____ B; ____ B. Estimated: 20 bytes plus 8.5 per argument per function, and about 100 once.
+      0 B, 0 B; 0 B. Master already settles universal void records, so `'all'` changes the ABI only (the
+      plan's recorded deviation). Estimated: 20 bytes plus 8.5 per argument per function, and about 100 once.
 - [ ] **D18.** The created-children list: (B8.12) bytes added to a marked creator per arm, once for the
       shared check, and per `new` site, and the marker: ____ B, ____ B, ____ B, 23 B; (B7.15) bytes step 8
       adds to Deploy<C> of a sender-reading child: ____ B; (B9.12) bytes added to a creation: ____ B.

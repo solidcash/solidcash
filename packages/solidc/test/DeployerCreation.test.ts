@@ -316,5 +316,3 @@ describe('B7.12: the callee list', () => {
     expect(vm.verify(spend as never)).not.toBe(true);
   });
 });
-
-

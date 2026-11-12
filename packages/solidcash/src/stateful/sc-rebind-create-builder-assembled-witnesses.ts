@@ -243,10 +243,14 @@ export function rebindCreateBuilderAssembledWitnesses(
   // target). The planned coordinate is reconstructed from dense band widths, which do not hold for a layout whose
   // implementation bands interleave with nested callees, so a stale coordinate fails the spend with a bare
   // `OP_VERIFY` before anything else in the frame can run. Rebind it from the assembled transaction.
-  if (abiFunction && externalCallUtxoGroups.length > 0) {
+  // A compat call's callee group answers no typed callsite, so it names no slot and starts no participant region.
+  const typedGroupIndices = externalCallUtxoGroups.flatMap((group, index) => (
+    group.edgeLowLevelCallIndex === undefined ? [index] : []));
+  if (abiFunction && typedGroupIndices.length > 0) {
     let masterWitnessesChanged = false;
     const groupByCallsite = new Map<number, number>();
-    for (const [groupIndex, group] of externalCallUtxoGroups.entries()) {
+    for (const groupIndex of typedGroupIndices) {
+      const group = externalCallUtxoGroups[groupIndex];
       if (group.sourceCallsiteId !== undefined && !groupByCallsite.has(group.sourceCallsiteId)) {
         groupByCallsite.set(group.sourceCallsiteId, groupIndex);
       }
@@ -256,8 +260,7 @@ export function rebindCreateBuilderAssembledWitnesses(
       if (masterWitness === null) continue;
       const slot = masterWitness[1] === '' ? 0 : Number(masterWitness[1]);
       const groupIndex = groupIndexForExternalCallSlot({
-        slot, externalCalls: abiFunction.externalCalls, groupByCallsite,
-        compactGroups: externalCallUtxoGroups.map((_, index) => index),
+        slot, externalCalls: abiFunction.externalCalls, groupByCallsite, compactGroups: typedGroupIndices,
       });
       if (groupIndex === undefined) continue;
       const group = externalCallUtxoGroups[groupIndex];
@@ -296,10 +299,10 @@ export function rebindCreateBuilderAssembledWitnesses(
   if (abiFunction) {
     const basePosition = abiFunction.inputs.findIndex((input) =>
       input.name === '__internal__externalCallInputBase');
-    if (basePosition >= 0 && basePosition < finalArgs.length && externalCallUtxoGroups.length > 0) {
-      const firstGroup = externalCallUtxoGroups[0];
+    if (basePosition >= 0 && basePosition < finalArgs.length && typedGroupIndices.length > 0) {
+      const firstGroup = externalCallUtxoGroups[typedGroupIndices[0]];
       const firstParticipant = firstGroup === undefined ? -1
-        : builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? 0);
+        : builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? typedGroupIndices[0]);
       if (firstParticipant >= 0 && finalArgs[basePosition] !== BigInt(firstParticipant)) {
         finalArgs[basePosition] = BigInt(firstParticipant);
         bag.stateInputUnlocker = buildStateInputUnlocker();

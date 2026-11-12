@@ -385,9 +385,13 @@ export function constructCreateBuilderTransactionBuilder(
       }
     };
   const refreshTopLevelExternalCallInputIndices = (): boolean => {
-    if (!abiFunction || externalCallUtxoGroups.length === 0) return false;
+    // A compat call's callee group answers no typed callsite, so it names no slot and starts no participant region.
+    const typedGroupIndices = externalCallUtxoGroups.flatMap((group, index) => (
+      group.edgeLowLevelCallIndex === undefined ? [index] : []));
+    if (!abiFunction || typedGroupIndices.length === 0) return false;
     const groupByCallsite = new Map<number, number>();
-    for (const [groupIndex, group] of externalCallUtxoGroups.entries()) {
+    for (const groupIndex of typedGroupIndices) {
+      const group = externalCallUtxoGroups[groupIndex];
       if (group.sourceCallsiteId !== undefined && !groupByCallsite.has(group.sourceCallsiteId)) {
         groupByCallsite.set(group.sourceCallsiteId, groupIndex);
       }
@@ -399,8 +403,7 @@ export function constructCreateBuilderTransactionBuilder(
       if (masterWitness === null) continue;
       const slot = masterWitness[1] === '' ? 0 : Number(masterWitness[1]);
       const groupIndex = groupIndexForExternalCallSlot({
-        slot, externalCalls: abiFunction.externalCalls, groupByCallsite,
-        compactGroups: externalCallUtxoGroups.map((_, index) => index),
+        slot, externalCalls: abiFunction.externalCalls, groupByCallsite, compactGroups: typedGroupIndices,
       });
       const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
       if (group === undefined) continue;
@@ -412,8 +415,8 @@ export function constructCreateBuilderTransactionBuilder(
     const basePosition = abiFunction.inputs.findIndex((input) =>
       input.name === '__internal__externalCallInputBase');
     if (basePosition >= 0 && basePosition < finalArgs.length) {
-      const firstGroup = externalCallUtxoGroups[0];
-      const index = builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? 0);
+      const firstGroup = externalCallUtxoGroups[typedGroupIndices[0]];
+      const index = builder.findMaterializedMasterInput(firstGroup.sharedGroupIndex ?? typedGroupIndices[0]);
       if (index >= 0 && finalArgs[basePosition] !== BigInt(index)) {
         finalArgs[basePosition] = BigInt(index);
         changed = true;
@@ -422,13 +425,14 @@ export function constructCreateBuilderTransactionBuilder(
     return changed;
   };
   // An ordinary low-level call reads its callee at `__internal__callInputIndex[<i>]`. The plan counts dense bands,
-  // but the callee band follows the caller's complete block and trailing run, so rebind it from the assembly.
+  // but the callee band follows the caller's complete block and trailing run, so rebind it from the assembly. A compat
+  // call whose callee runs as a direct external group is read where that group's master landed.
   const refreshTopLevelLowLevelCallInputIndices = abiFunction === undefined
     || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
     ? undefined
     : (materialized?: TransactionBuilder): void => {
       if (!abiFunction) return;
-      for (const group of lowLevelCallUtxoGroups) {
+      for (const group of [...lowLevelCallUtxoGroups, ...externalCallUtxoGroups]) {
         const callIndex = group.edgeLowLevelCallIndex;
         const master = group.masterUtxo;
         if (group.callMode === 'delegatecall' || callIndex === undefined) continue;

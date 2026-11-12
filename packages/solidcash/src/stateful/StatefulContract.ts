@@ -12215,6 +12215,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // (the builder will be rebuilt when .withCall() is used)
           continue;
         }
+        // Its callee already runs as a direct external group with its whole block.
+        if (externalCallsOrchestrated.compatLowLevelCallIndices.has(i)) continue;
 
         if (callInfo.type === 'stateful') {
           const materializedLlc = await materializeCreateBuilderLowLevelStatefulCallImpl(
@@ -12759,7 +12761,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         externalReadUtxos,
         outStateInputCount,
         iterationEntryInputs,
-        externalCallGroupCount: externalCallUtxoGroups.length,
+        // A compat call's callee group answers no typed callsite.
+        externalCallGroupCount: externalCallUtxoGroups
+          .filter((group) => group.edgeLowLevelCallIndex === undefined).length,
         reachedExternalCalls: externalCallsOrchestrated.externalCalls,
       },
     );

@@ -7735,6 +7735,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const index = this.getStackIndex('__internal__genesisCall', true);
     if (index < 0) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    if (this.callBatchFrame) {
+      // A frame of the multi-call entry answers no constructor: its parameter is empty.
+      this.emitPickAt(index, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      return;
+    }
     const taggedSize = node.usesMsgSender === true ? 46 : 36;
     this.emitPickAt(index, loc);
     this.pushToStack('(genesis)');
@@ -7792,6 +7800,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OUTPOINTINDEX, loc);
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    // A constructor's call sends no value: a payable tagged entry requires msg.value to be 0. The SDK cannot fund
+    // the callee's container in the creation transaction without the creation failing here.
+    const payable = node.modifiers.includes(FunctionModifier.PAYABLE);
+    if (payable) {
+      this.emitMsgValue(loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    }
     this.emit(Op.OP_ENDIF, loc);
     this.popFromStack();
   }

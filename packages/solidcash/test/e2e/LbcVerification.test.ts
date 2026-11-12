@@ -131,12 +131,12 @@ describe('Lbc Verification (address instantiation)', () => {
   // ---------- Artifact Metadata Tests ----------
 
   describe('artifact metadata', () => {
-    it('should refuse a returning call that leaves out an argument its record binds, naming the call', () => {
+    it('should compile a returning call that leaves its arguments to the callee', () => {
       const leavesOut = (args: string): string => LBC_CALLER_CONTRACT
         .replace('.getAndIncrement(pk, s)', `.getAndIncrement(${args})`);
-      expect(() => compileString(leavesOut('')))
-        .toThrow(/The external call 'IReturningCounter\.getAndIncrement\(\)' passes 0 of the 2 arguments/);
-      // A signature is no argument of the digest, so it alone may be left out.
+      // The arguments a call does not name are the callee's own witness, and its record is read with no digest.
+      expect(() => compileString(leavesOut(''))).not.toThrow();
+      // A signature is no argument of the digest, so leaving out only it keeps the digest.
       expect(() => compileString(leavesOut('pk'))).not.toThrow();
     });
 

@@ -3522,6 +3522,9 @@ with a deployer whose constructor writes a collection, and only where today's st
 
       Done when the tests of B7.16 pass for a C with records, an event and a satoshi container, and a unit
       test shows `genesis-site` for a construct that no site was converted for.
+      Note (implementation, 2026-11-12): the per-body `genesisMode` flag, the skipped direct genesis guard and a
+      first prologue are in. The three primitive helpers, the converted-site lists and the bare-OP_INPUTINDEX
+      counter are not; `emitRecordBlockBase` is the only primitive with a genesis form.
 - [ ] **B7.7 State.**
       - **Reads.** In `emitStateFieldRead` (43103), in genesis mode, emit the pending written value if there
         is one, otherwise `emitDefaultValue` (36504). Skip the `stateReadIds` shared helper there, since it
@@ -3532,6 +3535,10 @@ with a deployer whose constructor writes a collection, and only where today's st
         `emitDataNftLbc(loc, true)`); emit no input-side preservation.
       - The generator rebuilds every entry's layout and offsets itself (GTT 9313–9430). w_out and every
         offset must come from that layout, the one the pins use.
+
+      Note (implementation, 2026-11-12): scalar reads take pending values or `emitDefaultValue`, and settlement
+      mints every record through the existing rebuild path at `__internal__genesisOutputBase`. Collections and the
+      record rows' lock/token/value checks are not built.
 - [x] **B7.8 Parameters (O2).** Declare `create`'s parameters as A4.2 lists them.
       - Contract parameters stay declared on the contract in C. In the deployer program they are parameters
         of `create` instead and are removed from the contract's own list, so that they are not seeded for
@@ -3559,6 +3566,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): done for the ABI. The entry-write-path check is deferred to B7.18,
       where the collection journal replaces those witnesses; a collection-writing constructor therefore keeps
       them for now.
+      Note (implementation, 2026-11-12): output-only slots address `__internal__genesisOutputBase` and
+      `genesisOutputs` is the current layout's slot count. A dedicated `buildGenesisBlockLayout`, the sidecar group
+      and the oracle/HEAD ordering are not built.
 - [ ] **B7.9 Genesis layout, slot base and sidecars.** Add `buildGenesisBlockLayout` next to the block-layout
       builder (STT 19434–19731). Build the genesis range of A4.4 from `create`'s layout: keep only output-only
       slots, in the A4.4 order; move the keccak and
@@ -3581,6 +3591,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       - every pinned satoshi payment requires its output to carry no token;
       - `block.number` and `block.timestamp` (`visitNullaryOp`, 19202–19207) follow A5:
         `OP_TXLOCKTIME OP_DUP OP_CHECKLOCKTIMEVERIFY OP_DROP`, then the range check;
+      Note (implementation, 2026-11-12): M, R, `msg.value`, a zero-category `msg.sender` and `address(this)` are
+      resolved; the balance journal, the nonzero creator sender, the locktime form of block fields and most of the
+      skipped checks are not.
       - emit none of: `emitDirectGenesisGuard` (11060), `emitTokenCategoryVerification` (36645),
         `emitMasterSelfPreservation` (50415), `emitMintingNftUniqueness` (51592), `emitValuePreservation`
         (55880), `emitOwnCategoryMutableNftConservation` (51806), `emitMasterCommitmentPreservation` (10839),
@@ -3606,6 +3619,8 @@ with a deployer whose constructor writes a collection, and only where today's st
         position fails by itself; do not add a check that could be skipped.
       - Emit step 8 only when `constructorReadsSender` is true, and make `emitMsgSender` in genesis mode
         throw `DeployerInternalError` when it is reached in a program that did not emit step 8.
+      Note (implementation, 2026-11-12): steps 2 and 5 and the master row of step 12 are in, and the record
+      commitment settlement runs. The census, the call mask and the callee list are not built.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,
@@ -3697,6 +3712,10 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): both pools compile with a deployer and fit: D20 records 2,110 B and
       2,129 B, with smallest creations of 6,981 B and 8,063 B. D2, D3 and D20 are filled; D9, D16's second
       part and D18's deployer part need the genesis-mode emitters.
+      Note (implementation, 2026-11-12): `DeployerCreation.test.ts` runs genuine creates on the VM for records,
+      defaults, initialisers, helper writes, the master row, the code hash, contract arguments, `msg.value`,
+      `tx.origin`, `address(this)` and `this.activeBytecode`. The remaining refusal cases listed below are not yet
+      added.
 - [ ] **B7.16 Tests.** Add `W/solidc/test/DeployerGeneration.test.ts`. Hand-built VM transactions are allowed
       here, as in other compiler tests. Every VM test puts the deployer coin at an input index that differs
       from OUTBASE (for example input 3 and OUTBASE 5). Where a case needs bytes that only the SDK computes
@@ -3826,7 +3845,7 @@ with a deployer whose constructor writes a collection, and only where today's st
         14;
       - a callee T′ with an `unsafe` entry: its artifact has `recordSound: false`, its code has no marker,
         and no creation that calls it passes.
-- [ ] **B7.17** Run `yarn build`, then commit: "feat(solidc): generate Deploy<C> for stateful contracts".
+- [x] **B7.17** Run `yarn build`, then commit: "feat(solidc): generate Deploy<C> for stateful contracts".
 - [ ] **B7.18 Collections and single token containers in the constructor (A4.4, A5).** The user's decision c
       (A18). Lift the two refusals only where A3 rule 4 and A4.1 allow, and build "The collection rows" and
       the fixed starts of A5.

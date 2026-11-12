@@ -421,6 +421,27 @@ export function constructCreateBuilderTransactionBuilder(
     }
     return changed;
   };
+  // An ordinary low-level call reads its callee at `__internal__callInputIndex[<i>]`. The plan counts dense bands,
+  // but the callee band follows the caller's complete block and trailing run, so rebind it from the assembly.
+  const refreshTopLevelLowLevelCallInputIndices = abiFunction === undefined
+    || compilerRouteUsesPhysicalWrapper(overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction)
+    ? undefined
+    : (materialized?: TransactionBuilder): void => {
+      if (!abiFunction) return;
+      for (const group of lowLevelCallUtxoGroups) {
+        const callIndex = group.edgeLowLevelCallIndex;
+        const master = group.masterUtxo;
+        if (group.callMode === 'delegatecall' || callIndex === undefined) continue;
+        const position = abiFunction.inputs.findIndex((input) => input.name === `__internal__callInputIndex${callIndex}`
+          || (callIndex === 0 && input.name === '__internal__callInputIndex'));
+        if (position < 0 || position >= finalArgs.length) continue;
+        const localIndex = materialized
+          ? materialized.inputs.findIndex((input) => input.txid.toLowerCase() === master.txid.toLowerCase()
+            && input.vout === master.vout)
+          : builder.findInputIndexByOutpoint(master);
+        if (localIndex >= 0) finalArgs[position] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+      }
+    };
   // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness
   // and the assembled transaction must name the same output. The planned coordinate is written before the builder
   // places its own outputs, and a callee's block (with the event's slot) can still move afterwards - a shared
@@ -660,6 +681,7 @@ export function constructCreateBuilderTransactionBuilder(
       refreshTopLevelDynamicChunkInputBase?.(materialized);
       refreshTopLevelDynamicChunkOutputBase?.(materialized);
       refreshTopLevelExternalCallInputIndices();
+      refreshTopLevelLowLevelCallInputIndices?.(materialized);
       refreshTopLevelReturnWitnesses(materialized);
       refreshTopLevelPredOutWitnesses(materialized);
       return buildStateInputUnlocker();

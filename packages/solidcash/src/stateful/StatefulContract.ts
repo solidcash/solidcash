@@ -13883,6 +13883,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /**
+   * The lock `address(this)` names in an ordinary entry, as `_createBuilder` derives its public self: the CREATE lock
+   * when the entry authenticates its own self, else the executing lock.
+   * @internal
+   */
+  _ordinaryEntrySelfAddress(abiFunction: AbiFunction | undefined): Uint8Array {
+    const registeredSelf = findDeploymentByAddress(this.inner.provider, this.target);
+    const authenticated = hexToBin(registeredSelf?.lockingBytecode || this.inner.lockingBytecode);
+    const logical = this._logicalAddress === undefined ? undefined : addressToLockScript(this._logicalAddress);
+    return usesOrdinarySelfIdentity(abiFunction) && logical !== undefined
+      && binToHex(logical).toLowerCase() !== binToHex(authenticated).toLowerCase() ? logical : authenticated;
+  }
+
+  /**
    * Resolve B's function args from A's args using argSources metadata.
    * Returns the resolved args, or undefined if any arg source is unresolvable.
    * @internal

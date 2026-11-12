@@ -51889,6 +51889,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, loc);
       this.popFromStack(2);
       this.pushToStack('(genesis_prefix)');
+      // g_in: the deployer input that this create runs in.
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(Op.OP_2, loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+      this.pushToStack('(tag_gin)');
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(genesis_prefix)');
       genesisPrefix = '(genesis_prefix)';
     }
     this.emitCallRecordDigest(selector, ordinal !== undefined && 'ordinal' in ordinal ? ordinal.ordinal : 0,

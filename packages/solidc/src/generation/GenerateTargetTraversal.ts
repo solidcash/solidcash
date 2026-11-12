@@ -11628,7 +11628,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitGenesisMasterPin(node);
     this.emitGenesisCensus();
     if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
-    if ((node.externalCalls?.length ?? 0) > 0) this.emitExternalCallVerification(node);
+    if ((node.externalCalls?.length ?? 0) > 0) {
+      this.emitExternalCallVerification(node);
+      this.emitGenesisCalleeBindings(node);
+    }
     this.emitGenesisCalleeListCheck();
     if (this.pendingTransfers.length > 0 || node.blockLayout?.minerFee !== undefined) {
       this.emitTransferCovenantVerification(node);
@@ -11654,6 +11657,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(template, loc);
     this.pushToStack('(template)');
     this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  /**
+   * A4.3 step 14: each callee-list entry is the master input index the slot verified, and the executed-slot mask,
+   * kept on the alternate stack across settlement, records every slot.
+   */
+  private emitGenesisCalleeBindings(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    this.emitDropUntrackedStackItems(loc);
+    const slots = node.externalCalls ?? [];
+    for (const slot of slots) {
+      this.emitSlotMasterIndex(slot, loc);
+      this.emit(Op.OP_2, loc);
+      this.emit(Op.OP_NUM2BIN, loc);
+      this.pushToStack('(master_u16)');
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__genesisCallees'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(callee_list)');
+      this.emit(encodeInt(BigInt(2 * slot.slotIndex)), loc);
+      this.pushToStack('(callee_offset)');
+      this.emit(Op.OP_SPLIT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(list_left)');
+      this.pushToStack('(list_right)');
+      this.emit(Op.OP_NIP, loc);
+      this.removeFromStack(this.getStackIndex('(list_left)'));
+      this.emit(Op.OP_2, loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(list_entry)');
+      this.pushToStack('(list_rest)');
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(this.getStackIndex('(list_rest)'));
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+      // Set the slot's bit in the mask held on the alternate stack.
+      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.pushToStack('(mask)');
+      this.emit(encodeInt(BigInt(1 << slot.slotIndex)), loc);
+      this.pushToStack('(bit)');
+      this.emit(Op.OP_ADD, loc);
+      this.popFromStack(2);
+      this.pushToStack('(mask)');
+      this.emit(Op.OP_TOALTSTACK, loc);
+      this.popFromStack();
+    }
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.pushToStack('(mask)');
+    this.emit(encodeInt(BigInt((1 << slots.length) - 1)), loc);
+    this.pushToStack('(expected_mask)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
   }
 
@@ -11739,6 +11794,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     cat('(gen_m)');
     push('(mcap)', [Uint8Array.of(0x87)]);
     cat('(gen_m)');
+    if ((node.externalCalls?.length ?? 0) > 0) {
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
+    }
   }
 
   private emitGenesisMasterPin(node: FunctionDefinitionNode): void {

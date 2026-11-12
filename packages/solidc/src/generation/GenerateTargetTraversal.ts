@@ -7677,6 +7677,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * OP_INVOKE (since OP_INVOKE hard-fails on unknown function IDs). If no
    * match, drop the unknown selector and invoke the fallback function.
    */
+  /**
+   * O8 (B6.0): `OP_DEPTH n OP_NUMEQUALVERIFY` first in an arm's body, where n is the model's length. A helper body
+   * is reached only through compiler-emitted calls and is checked at its caller's boundary; a body that can run as
+   * a frame of the multi-call entry is left to the multi-call entry.
+   */
+  private emitExactStackCheck(node: FunctionDefinitionNode): void {
+    if (this.framedMaster) return;
+    if (node.isEntryPoint !== true && node.name !== '__construct') return;
+    if (node.messageBusRoute === true || node.graphEmissionHandler === true) return;
+    if (node.nativeSelfBatchDispatcher === true || node.callBatchCandidate === true) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(Op.OP_DEPTH, loc);
+    this.emit(encodeInt(BigInt(this.stack.length)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+  }
+
   private emitDispatch(
     node: ContractNode,
     knownFunctions: FunctionDefinitionNode[],
@@ -10172,6 +10188,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // A constructor's arm runs only in its category's genesis, ahead of anything its frame supplies.
     this.emitDirectGenesisGuard(node);
+    this.emitExactStackCheck(node);
     // C3, direct proxy, taken path: a forwarded selector dispatches on the impl, whose dispatcher lists every
     // entry point. A non-delegate entry runs none of the delegate census (self-preservation, record conservation,
     // proxy-output count, outside-layout pin), so on the taken path the co-spent proxy master leaves its records

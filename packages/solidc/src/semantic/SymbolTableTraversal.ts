@@ -4546,7 +4546,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       const externalCallSlots: ExternalCallSlot[] = [];
       // Reduce a multi-use interface-typed local (view calls + one mutate) to single-use by turning each VIEW call
       // into a caller-provided witness; must run BEFORE the receiver-count snapshot so the mutate reads as single-use.
-      const hasExternalCalls = this.rewriteMultiUseViewCalls(node);
+      // B7.3: the deployer program keeps every constructor call as a call slot, so repeated view calls stay calls.
+      const hasExternalCalls = (this.compilerOptions as { __deployerProgram?: unknown }).__deployerProgram !== undefined
+        ? true : this.rewriteMultiUseViewCalls(node);
       this.extCallReceiverCounts = hasExternalCalls
         ? this.buildExtCallReceiverCounts(node.body) : new Map();
       this.loopDeclaredLocals = hasExternalCalls

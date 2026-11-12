@@ -16731,7 +16731,8 @@ function compileResolvedAst(
 
   // Constructor external reads (`token0 = IERC20(pool.token0())`) -> synthesized deploy-input params (BCH has
   // no on-chain constructor; the read is resolved off-chain at deploy). Runs before the target-address synth.
-  if (needsExternalCallLowering) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
+  // B7.3: in the deployer program a constructor's external call is a call slot, not a deploy input.
+  if (needsExternalCallLowering && !isDeployerProgram) ast = ast.accept(new PromoteConstructorExternalReads()) as Ast;
   // A guarded pointer-table row hoists its element + runtime-selector locals inside the branch; move only their
   // DECLARATIONS to the body top so the epilogue can read them while the reads stay conditional.
   if (needsPointerTableWork) ast = ast.accept(new HoistPointerTableBranchLocals()) as Ast;

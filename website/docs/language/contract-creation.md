@@ -212,62 +212,6 @@ contract Factory(pubkey admin) {
 }
 ```
 
-### Deploying code by template
-
-`new C{code: c}(...)` creates a child that runs the bytes `c` instead of C's compiled body. The factory embeds no
-code: it requires `sha256(c)` to be the sha256 of C's compiled body, a 32-byte constant, and builds the child's
-address from `c`. A factory of a large child stays small, and its other functions no longer carry the child's code.
-The code still travels in the deploying transaction: as an argument it sits in the factory's own input, which BCH
-limits to 10,000 bytes, so a factory near that limit can read it from another input instead.
-
-```solidity
-contract Child(int limit) {
-    int counter;
-    function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
-}
-
-contract Factory(pubkey admin) {
-    int created;
-
-    function create(int limit, bytes code, sig s) public {
-        require(checkSig(s, admin));
-        new Child{code: code}(limit);
-        this.created += 1;
-    }
-}
-```
-
-`new C{code: c, template: t}(...)` checks `c` against a template chosen at run time instead: `sha256(c)` must equal
-`t`. The child keeps C's interface (its constructor arguments, state layout and constructor fold) and runs whatever
-code hashes to `t`, so one factory can create children of several versions of C. A caller who chooses the template
-chooses the child's code, so the template must be a constant, a constructor argument or a state variable, or else a
-parameter that the function never reassigns and passes to an event it emits on every path:
-
-```solidity
-contract Child(int limit) {
-    int counter;
-    function bump(int n) public { require(n < limit); this.counter = this.counter + n; }
-}
-
-contract Registry(pubkey admin) {
-    int created;
-    event Created(bytes32 template, int limit);
-
-    function create(bytes32 template, int limit, bytes code, sig s) public {
-        require(checkSig(s, admin));
-        new Child{code: code, template: template}(limit);
-        emit Created(template, limit);
-        this.created += 1;
-    }
-}
-```
-
-`deployFrom()` builds the child from the code in the deploy arguments, and refuses code that does not hash to the
-template before anything is broadcast. The deploy covenant refuses it on chain either way.
-
-`code` and `template` apply to a stateful child created on the direct convention. A function that uses them is not
-admitted to the message-bus route, and the framed convention refuses them.
-
 ## Upgrading
 
 The `upgrade` modifier allows a function to replace the contract's own bytecode while preserving its category

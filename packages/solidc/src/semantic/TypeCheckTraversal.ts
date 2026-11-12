@@ -2305,18 +2305,6 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.callOptions.salt = this.visit(node.callOptions.salt);
         expectBytes(node as any, node.callOptions.salt.type);
       }
-      if (node.callOptions?.code) {
-        node.callOptions.code = this.visit(node.callOptions.code);
-        expectBytes(node as any, node.callOptions.code.type);
-      }
-      if (node.callOptions?.template) {
-        node.callOptions.template = this.visit(node.callOptions.template);
-        // The template is the sha256 the code must hash to: exactly 32 bytes, or the check could never pass.
-        const template = node.callOptions.template.type;
-        if (!(template instanceof BytesType) || template.bound !== 32) {
-          throw new UnsupportedTypeError(node as any, template, new BytesType(32));
-        }
-      }
 
       node.type = new BytesType();
       return node;

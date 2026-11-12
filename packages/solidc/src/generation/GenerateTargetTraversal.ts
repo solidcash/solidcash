@@ -1,6 +1,5 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
@@ -1531,16 +1530,6 @@ let validatorTemplateHashMemo: Uint8Array | undefined;
 function constantLockValidatorTemplateHash(): Uint8Array {
   validatorTemplateHashMemo ??= validatorTemplateHash(buildValidatorProgram());
   return validatorTemplateHashMemo;
-}
-
-/** Where a `new C{code, template}` value comes from, for the SDK: a deploy-function parameter it forwards, or not. */
-function deployOptionSource(
-  expression: ExpressionNode, parameterIndices: ReadonlyMap<string, number>,
-): { kind: 'parameter'; name: string; index: number } | { kind: 'expression' } {
-  if (expression instanceof IdentifierNode && parameterIndices.has(expression.name)) {
-    return { kind: 'parameter', name: expression.name, index: parameterIndices.get(expression.name)! };
-  }
-  return { kind: 'expression' };
 }
 
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
@@ -22688,35 +22677,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || primary.receiveDef === this.currentFunction;
   }
 
-  /**
-   * `new C{code: c}` / `new C{code: c, template: t}`: push the child's code `c`, having required `sha256(c)` to be the
-   * template - `t` when the source names one, else the sha256 of C's own compiled body, a constant. The value checked
-   * is the value pushed, so the code that enters the child's address is exactly the template's. Leaves one tracked
-   * value, the code.
-   */
-  private emitDeployCode(
-    node: InstantiationNode, compiledBody: Uint8Array, locationData: SingleLocationData,
-  ): void {
-    const { code, template } = node.callOptions!;
-    this.visit(code!); // [code]
-    this.emit(Op.OP_DUP, locationData); // [code, code]
-    this.pushToStack('(value)');
-    this.emit(Op.OP_SHA256, locationData); // [code, sha256(code)]
-    if (template) {
-      this.visit(template); // [code, sha256(code), template]
-    } else {
-      this.emit(sha256(compiledBody), locationData); // [code, sha256(code), sha256(body)]
-      this.pushToStack('(value)');
-    }
-    this.emit(Op.OP_EQUALVERIFY, locationData); // [code]
-    this.requires.push({
-      ip: this.getMostRecentInstructionPointer(),
-      line: node.location.start.line,
-      message: `new ${node.referencedContract!.name}{code}: the code does not hash to the template`,
-    });
-    this.popFromStack(2);
-  }
-
   private emitContractDeployment(node: InstantiationNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     const contract = node.referencedContract!;
@@ -22780,18 +22740,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // no redeem script is built and nothing is hashed.
       this.emitSelfLockingBytecode(locationData);
       this.pushToStack('(value)');
-    } else if (bakedArguments === 0) {
-      if (node.callOptions?.code) {
-        this.emitDeployCode(node, bodyBytecode!, locationData);
-        this.popFromStack();
-      } else {
-        this.emit(bodyBytecode!, locationData);
-      }
+    } else if (node.parameters.length === 0 || !bakesCtorArgs) {
+      this.emit(bodyBytecode!, locationData);
       this.pushToStack('(redeemScript)');
     } else {
-      // `new C{code: c}`: the checked code sits under the arguments until it follows their encoding.
-      const deployCode = node.callOptions?.code !== undefined;
-      if (deployCode) this.emitDeployCode(node, bodyBytecode!, locationData);
       // Evaluate constructor args
       if (bakesCtorArgs) {
         for (const arg of node.parameters) {
@@ -22808,16 +22760,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPushdataEncode(contract.parameters[bakedArguments - 1 - i].type, locationData);
         this.emit(Op.OP_CAT, locationData);
       }
-      if (deployCode) {
-        // [code, args] -> [args || code]
-        this.emit(Op.OP_SWAP, locationData);
-        this.emit(Op.OP_CAT, locationData);
-        this.popFromStack();
-      } else {
-        // CAT with body bytecode
-        this.emit(bodyBytecode!, locationData);
-        this.emit(Op.OP_CAT, locationData);
-      }
+      // CAT with body bytecode
+      this.emit(bodyBytecode!, locationData);
+      this.emit(Op.OP_CAT, locationData);
       // Stack management
       for (let i = 0; i < bakedArguments; i++) this.popFromStack();
       this.pushToStack('(redeemScript)');
@@ -22993,15 +22938,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(salt && { salt }),
         // Body Instantiation just embedded for address computation — pin it for the SDK so
         // deployFrom builds the child with the same redeem script (not a divergent standalone artifact).
-        // A stateful deploy is never a self-deploy, so the body is always embedded here. With `{code: c}` nothing is
-        // embedded: this is C's compiled body, the code a compiled template requires `c` to be.
+        // A stateful deploy is never a self-deploy, so the body is always embedded here.
         creationBytecode: binToHex(bodyBytecode!),
-        ...(node.callOptions?.code && {
-          code: deployOptionSource(node.callOptions.code, deployFnParamIndices),
-          template: node.callOptions.template
-            ? deployOptionSource(node.callOptions.template, deployFnParamIndices)
-            : { kind: 'compiled' as const, hash: binToHex(sha256(bodyBytecode!)) },
-        }),
         ...(node.hasFoldedChildCall && { hasFoldedChildCall: true }),
         childLayoutDigest: childStateLayoutDigest({
           variables: liveVars.map((state) => ({

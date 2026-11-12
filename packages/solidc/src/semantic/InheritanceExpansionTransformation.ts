@@ -2140,11 +2140,6 @@ export function substituteInExpression(
 
   if (expr instanceof InstantiationNode) {
     expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs, storage));
-    // The code and template a child is checked against are values of this scope like its arguments.
-    if (expr.callOptions?.code) expr.callOptions.code = substituteInExpression(expr.callOptions.code, subs, storage);
-    if (expr.callOptions?.template) {
-      expr.callOptions.template = substituteInExpression(expr.callOptions.template, subs, storage);
-    }
     return expr;
   }
 

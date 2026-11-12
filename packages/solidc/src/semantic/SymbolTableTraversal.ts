@@ -238,7 +238,6 @@ import {
   MinerFeeStatementError,
   SingleContainersError,
   UnfoldableChildConstructorError,
-  DeployCodeError,
 } from '../Errors.js';
 import { type ChainRead, childChainReadFinder } from './SynthesizeBlockOracle.js';
 import { parameterTypeSignature } from './parameterTypeToken.js';
@@ -15982,20 +15981,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
       }
 
-      if (node.callOptions?.code || node.callOptions?.template) {
-        if (node.callOptions.code) node.callOptions.code = this.visit(node.callOptions.code) as ExpressionNode;
-        if (node.callOptions.template) {
-          node.callOptions.template = this.visit(node.callOptions.template) as ExpressionNode;
-        }
-        this.checkDeployTemplate(node, contract.name);
-      }
-
       return node;
-    }
-
-    if (node.callOptions?.code || node.callOptions?.template) {
-      throw new DeployCodeError(node, "'code' and 'template' name the code of a contract created with new, "
-        + `and '${contractName}' is not a contract`);
     }
 
     // Built-in class instantiation (LockingBytecodeP2PKH, etc.)
@@ -16004,79 +15990,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.expectedSymbolType = SymbolType.VARIABLE;
     node.parameters = this.visitList(node.parameters);
     return node;
-  }
-
-  /**
-   * `new C{code: c}` and `new C{code: c, template: t}`. The creator builds the child's address from the code it is
-   * handed, after requiring `sha256(c)` to be the template, so the template is all that fixes what the child runs:
-   * C's own compiled code when none is named. A template is admitted only when the caller cannot choose it, or when
-   * the caller chooses it and the function publishes it: a parameter it never reassigns, an argument of an event it
-   * emits on every path, so each child's template is on record. Anything else would let a caller create a child of
-   * any code through this contract with nothing to tell it apart.
-   */
-  private checkDeployTemplate(node: InstantiationNode, childName: string): void {
-    const { code, template } = node.callOptions!;
-    const refuse = (reason: string): never => {
-      throw new DeployCodeError(node, `new ${childName}{code: ...}: ${reason}`);
-    };
-    if (!node.isStatefulDeploy) {
-      refuse(`'code' names the code of a stateful child the creator checks at its genesis, and '${childName}' is `
-        + 'not one created here');
-    }
-    if (!code) refuse("'template' is the sha256 the child's 'code' must have, and no 'code' is given");
-    if (!template) return;
-    if (template instanceof HexLiteralNode) return;
-    const unpublished = 'a template must be a constant, a constructor argument, a state variable, or a parameter '
-      + 'of this function that it never reassigns and passes to an event it always emits';
-    if (!(template instanceof IdentifierNode)) refuse(unpublished);
-    const name = (template as IdentifierNode).name;
-    const fn = this.currentFunction;
-    const declaration = (template as IdentifierNode).definition?.definition;
-    // A local is whatever the function computes, and may shadow a field of the same name.
-    if (declaration instanceof VariableDefinitionNode) refuse(unpublished);
-    const isFunctionParameter = fn?.parameters.some((parameter) => parameter === declaration || parameter.name === name)
-      ?? false;
-    if (!isFunctionParameter) {
-      const owner = this.currentContract;
-      const fixed = declaration instanceof ConstantDefinitionNode
-        || declaration instanceof StateVariableNode
-        || (owner?.parameters.some((parameter) => parameter === declaration || parameter.name === name) ?? false)
-        || (owner?.stateVariables.some((state) => state.name === name) ?? false)
-        || (owner?.constantDefinitions.some((constant) => constant.name === name) ?? false);
-      if (!fixed) refuse(unpublished);
-      return;
-    }
-    const statements = (fn!.body instanceof BlockNode ? fn!.body.statements : undefined) ?? [];
-    const seen = new Set<object>();
-    const finds = (value: unknown, match: (node: Node) => boolean): boolean => {
-      if (!(value instanceof Node) || seen.has(value)) return false;
-      seen.add(value);
-      if (match(value)) return true;
-      for (const [key, child] of Object.entries(value)) {
-        if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
-          'referencedContract', 'deployedStateVars', 'stateVariable', 'collection'].includes(key)) continue;
-        if (child instanceof Node ? finds(child, match) : Array.isArray(child) && child.some((item) => finds(item, match))) {
-          return true;
-        }
-      }
-      return false;
-    };
-    // Inline assembly may write any variable, so the template could change behind it.
-    const reassigns = (candidate: Node): boolean => (candidate instanceof AssignNode
-      && candidate.identifier instanceof IdentifierNode && candidate.identifier.name === name)
-      || (candidate instanceof TupleAssignmentNode
-        && candidate.elements.some((element) => !element.skip && element.name === name))
-      || (candidate instanceof DeleteLocalNode && candidate.identifier.name === name)
-      || candidate instanceof AssemblyStatementNode;
-    if (statements.some((statement) => { seen.clear(); return finds(statement, reassigns); })) refuse(unpublished);
-    // A top-level emit runs on every path that reaches the end of the function, unless a return comes before it.
-    for (const statement of statements) {
-      if (statement instanceof EmitStatementNode
-        && statement.args.some((argument) => argument instanceof IdentifierNode && argument.name === name)) return;
-      seen.clear();
-      if (finds(statement, (candidate) => candidate instanceof ReturnNode)) break;
-    }
-    refuse(unpublished);
   }
 
   // When we enter a console statement,

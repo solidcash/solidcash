@@ -8,9 +8,10 @@
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import {
   asmToScript, AUTHHEAD_BODY, buildDataNftCovenantScript, buildEntryNftCovenantScript,
-  buildPushdataCommitment, computeCollectionHash, scriptToBytecode,
+  buildPushdataCommitment, computeCollectionHash, encodePushdataValue, scriptToBytecode,
   type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
@@ -284,6 +285,7 @@ describe('B7.13: the HEAD of an unwritten sorted collection', () => {
   const source = `${P} contract C { mapping(int => int) m; constructor() { } }`;
   const spendWith = (mutate: (head: VmOutput) => VmOutput) => {
     const artifact = compileString(source, { deployer: true, messageBus: false });
+    console.error('ENTRYABI', JSON.stringify(artifact.deployer!.abi.find((f) => f.name === 'create')!.inputs.map((i) => [i.name, i.type])));
     const { x, master } = genesisMasters(artifact.deployer!);
     const collection = artifact.stateLayout!.collections![0];
     const covenant = scriptToBytecode(buildEntryNftCovenantScript(
@@ -470,7 +472,12 @@ describe('B7.10: msg.value is the deploy value', () => {
     const spend = createSpend(artifact, deployer, recordOutput(
       artifact, { n: 1000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
     ), [], (output) => output, undefined, { __internal__deployValue: Uint8Array.of(0xe8, 0x03) });
-    expect(vm.verify(spend as never)).toBe(true);
+    const verdict = vm.verify(spend as never);
+    if (verdict !== true) {
+      const st = vm.evaluate({ ...(spend as never), inputIndex: 3 } as never) as unknown as { error?: string; ip?: number; instructions?: { opcode: number }[] };
+      console.error('READFAIL', st.error, st.ip, (st.instructions ?? []).slice(Math.max(0,(st.ip??0)-10),(st.ip??0)+2).map((x)=>x.opcode.toString(16)).join(' '));
+    }
+    expect(verdict).toBe(true);
   });
 });
 
@@ -551,5 +558,32 @@ describe('B7.12: the callee list', () => {
     const spend = createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined,
       { __internal__genesisCallees: Uint8Array.of(0, 0) });
     expect(vm.verify(spend as never)).not.toBe(true);
+  });
+});
+
+describe('B7.18: a constructor mapping write', () => {
+  it('mints the entry row its write describes', () => {
+    const artifact = compileString(`${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } }`,
+      { deployer: true, messageBus: false });
+    const { x, master } = genesisMasters(artifact.deployer!);
+    const collection = artifact.stateLayout!.collections![0];
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(
+      x, computeCollectionHash(collection.signature), master,
+    ));
+    const slot = sha256.hash(encodePushdataValue(1n, 'int'));
+    slot[31] &= 0x7f;
+    const commitment = new Uint8Array([...slot, ...new Uint8Array(32), ...encodePushdataValue(2n, 'int')]);
+    const entry: VmOutput = {
+      lockingBytecode: encodeLockingBytecodeP2sh32(hash256(covenant)),
+      valueSatoshis: 1200n,
+      token: { category: x, amount: 0n, nft: { capability: 'mutable', commitment } },
+    };
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined, {
+      __internal__vmapBatchSlot_0: new Uint8Array(32),
+      __internal__vmapBatchProof_0: Uint8Array.of(0x81),
+      __internal__vmapBatchNext_0: new Uint8Array(32),
+      __internal__vmapBatchPredOut_0: Uint8Array.of(0x82),
+      __internal__vmapBatchTrailingCount: EMPTY,
+    }, undefined, 0, 0xffffffff, [entry]) as never)).toBe(true);
   });
 });

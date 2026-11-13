@@ -4002,6 +4002,12 @@ with a deployer whose constructor writes a collection, and only where today's st
       - Run `yarn build`, then commit: "feat(solidc): a constructor writes collections and reads its token
         containers". Fill D22.
 
+Note (implementation, 2026-11-13): a single unconditional constructor write of a new sorted-mapping key is
+verified through the ordinary vmap batch path with the absent-entry witness (slot/next zero, proof -1, predOut
+-2, trailing 0), which `buildDeployerUnlocking` now supplies by default; the entry row is pinned by the existing
+write path. The journal rewrite for reads after writes, multiple writes, branches and loops is not built, and
+those shapes remain refused or unverified as the note below says.
+
 ## B8. The creator side (A3, A6, A8)
 
 Every item of this phase is behind `__deployerNew` (B8.1). With the option off, the compiler does nothing of

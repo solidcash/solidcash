@@ -484,6 +484,18 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
     values.set(name, value instanceof Uint8Array ? value : encodeBigInt(value));
   }
 
+  // A constructor mapping write reaches the ordinary vmap batch path. At birth every entry is absent, so the
+  // absent-entry witness is the slot-independent default: no predecessor, no next node, proof -1.
+  for (const input of create.inputs) {
+    if (!input.name.startsWith('__internal__vmapBatch')) continue;
+    if (values.has(input.name)) continue;
+    if (/^__internal__vmapBatchSlot_\d+$/.test(input.name)
+      || /^__internal__vmapBatchNext_\d+$/.test(input.name)) values.set(input.name, new Uint8Array(32));
+    else if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) values.set(input.name, encodeBigInt(-1n));
+    else if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) values.set(input.name, encodeBigInt(-2n));
+    else if (input.name === '__internal__vmapBatchTrailingCount') values.set(input.name, encodeBigInt(0n));
+  }
+
   const encoded: Uint8Array[] = [];
   for (const input of options.boundBytes === undefined ? create.inputs : []) {
     const known = values.get(input.name);

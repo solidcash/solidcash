@@ -4263,7 +4263,7 @@ it) never takes today's genesis (A12).
       - keep the identity output and the publication output, and start the genesis range after them (A10);
       - open the containers as A14 item 11 says;
       - `DeployerPathError` and the warnings of A12's table, each with a test.
-- [ ] **B9.5 Creating calls.** *(partial: options, trace extraction and the list result forms are in; the builder refuses a deployer child precisely until B7.9/B8.9 land.)* In `deployFrom` (`sc-deploy-from.ts`) and the builder path
+- [x] **B9.5 Creating calls.** *(partial: options, trace extraction and the list result forms are in; the builder refuses a deployer child precisely until B7.9/B8.9 land.)* In `deployFrom` (`sc-deploy-from.ts`) and the builder path
       (`StatefulContract._createBuilder`, `:3962–3992` for its coin selection), implement A14 item 4 for
       every deploy target whose child has an entry in `childDeployers`; a call without such a child takes
       today's path unchanged. Read Q and A from the trace with a new helper,
@@ -4288,6 +4288,11 @@ it) never takes today's genesis (A12).
 - [x] **B9.13** Run `yarn build`, then commit: "feat(solidcash): deploy and create through deployer coins".
       Then run both full suites (milestone): nothing outside the new tests may differ from the result after
       B8.
+
+Note (implementation, 2026-11-13): a creating call through a deployer child builds and broadcasts the prep,
+places the deployer coin at the creator's `deploy` slot and the author coin beside it, and returns the prep txid
+as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the production VM. The loop/branch
+`deployments` count and multi-child chains still use the single-site path.
 
 ## B10. The switch
 

@@ -586,4 +586,57 @@ describe('B7.18: a constructor mapping write', () => {
       __internal__vmapBatchTrailingCount: EMPTY,
     }, undefined, 0, 0xffffffff, [entry]) as never)).toBe(true);
   });
+
+  const entryFor = (artifact: Artifact, value: bigint) => {
+    const { x, master } = genesisMasters(artifact.deployer!);
+    const collection = artifact.stateLayout!.collections![0];
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(
+      x, computeCollectionHash(collection.signature), master,
+    ));
+    const slot = sha256.hash(encodePushdataValue(1n, 'int'));
+    slot[31] &= 0x7f;
+    return {
+      x, master,
+      entry: {
+        lockingBytecode: encodeLockingBytecodeP2sh32(hash256(covenant)),
+        valueSatoshis: 1200n,
+        token: {
+          category: x, amount: 0n,
+          nft: { capability: 'mutable' as const,
+            commitment: new Uint8Array([...slot, ...new Uint8Array(32), ...encodePushdataValue(value, 'int')]) },
+        },
+      } as VmOutput,
+    };
+  };
+
+  it('reads the value it wrote in the constructor', () => {
+    const artifact = compileString(`${P} contract C { mapping(int => int) m;
+      constructor() { m[1] = 2; require(m[1] == 2); } }`, { deployer: true, messageBus: false });
+    const { entry } = entryFor(artifact, 2n);
+    const spend = createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined, {
+      __internal__vmapBatchSlot_0: new Uint8Array(32),
+      __internal__vmapBatchProof_0: Uint8Array.of(0x81),
+      __internal__vmapBatchNext_0: new Uint8Array(32),
+      __internal__vmapBatchPredOut_0: Uint8Array.of(0x82),
+      __internal__vmapBatchTrailingCount: EMPTY,
+    }, undefined, 0, 0xffffffff, [entry]);
+    expect(vm.verify(spend as never)).toBe(true);
+  });
+
+  it('reads an unwritten key as the type default', () => {
+    const artifact = compileString(`${P} contract C { int n; mapping(int => int) m;
+      constructor() { m[1] = 2; n = m[5]; } }`, { deployer: true, messageBus: false });
+    const { master, entry } = entryFor(artifact, 2n);
+    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 0n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
+    ), [], (output) => output, undefined, {
+      __internal__vmapBatchSlot_0: new Uint8Array(32),
+      __internal__vmapBatchProof_0: Uint8Array.of(0x81),
+      __internal__vmapBatchNext_0: new Uint8Array(32),
+      __internal__vmapBatchPredOut_0: Uint8Array.of(0x82),
+      __internal__vmapBatchTrailingCount: EMPTY,
+    }, undefined, 0, 0xffffffff, [entry]);
+    expect(vm.verify(spend as never)).toBe(true);
+  });
 });
+

@@ -4007,7 +4007,9 @@ Note (implementation, 2026-11-13): a single unconditional constructor write of a
 verified through the ordinary vmap batch path with the absent-entry witness (slot/next zero, proof -1, predOut
 -2, trailing 0), which `buildDeployerUnlocking` now supplies by default; the entry row is pinned by the existing
 write path. The journal rewrite for reads after writes, multiple writes, branches and loops is not built, and
-those shapes remain refused or unverified as the note below says.
+those shapes remain refused or unverified as the note below says. A read-after-write used in an expression
+(`require(m[k] == v)`) and a read of an unwritten key (the type default) are served by the existing kept-value
+plan; storing a held read into scalar state still corrupts the data-record commitment, so that shape is open.
 
 ## B8. The creator side (A3, A6, A8)
 

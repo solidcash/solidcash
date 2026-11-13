@@ -161,6 +161,34 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     expect((factoryState as { childCount?: bigint }).childCount).toBe(1n);
   });
 
+  it('refuses a value passed to a deployer child', async () => {
+    // The creator's `new C{value: v}` leaves a transfer slot its own run rejects on this path; the SDK refuses
+    // before building rather than returning a transaction the factory input fails.
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child { int n; constructor() payable { n = 5; } }
+      contract ValueFactory { int childCount;
+        function make() { new Child(); childCount = childCount + 1; }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const deploymentFunding: Utxo = { txid: 'f7'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(artifacts.ValueFactory, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'f8'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    await expect(StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact: artifacts.Child, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address, childValue: 1200n,
+    })).rejects.toThrow(/cannot pass a value to a deployer child/);
+  });
+
   it('refuses a payable child whose satoshi container has no value', async () => {
     // A payable child's genesis row holds exactly the deploy value its create pins (the journal balance), and a
     // zero-sat row is below the relay dust limit: the call must fund the child instead of pinning a row create

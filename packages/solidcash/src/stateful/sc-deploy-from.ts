@@ -304,6 +304,18 @@ export async function deployFromStatefulContract<T extends Artifact>(
     });
     const senderCategory = Uint8Array.from(hexToBin(factory.categoryId)).reverse();
     const deployValue = options.childValue ?? 0n;
+    if (deployValue > 0n) {
+      // A `new C{value: v}` through a creator leaves a value-transfer slot in the creator's block layout, and the
+      // creator's own run does not pass its VM check when this call fills it (the deployer path builds the slot,
+      // but the creator's d_out and transfer pins disagree on where the child's group starts). Refuse before
+      // building instead of handing back a transaction the factory input rejects; a top-level deployment with
+      // initialBalance is the supported way to fund such a child.
+      throw new DeployerPrepError(
+        'A creating call cannot pass a value to a deployer child yet: the creator\'s value-transfer slot does '
+        + 'not pass its own VM run. Deploy the child at top level with initialBalance, or create it without a '
+        + 'value',
+      );
+    }
     // In a loop each child's group is stride outputs wide; the k-th deployer input's OUTBASE is its input index
     // plus k stride-steps when no output-only slot precedes the deploy slot.
     const childStride = childDeployer.genesisOutputs + (deployValue > 0n ? 1 : 0);

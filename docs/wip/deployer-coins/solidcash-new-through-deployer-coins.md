@@ -4314,7 +4314,10 @@ it) never takes today's genesis (A12).
       because its zero-sat row is below the relay limit; a child that keeps a token container single is refused
       with the category named. `childContainers` is not implemented: the compiler's row pin caps a row at the
       journal balance, so the spec's "more when childContainers says so" has no representation in `create`, and
-      naming a token coin would need a wallet lookup the option does not carry.
+      naming a token coin would need a wallet lookup the option does not carry. A value passed to a deployer
+      child (`childValue`, from `new Child{value: v}`) is refused before building: the creator's separate
+      value-transfer slot does not pass the creator's own VM run on this path, so the supported way to fund such
+      a child is a top-level deployment with `initialBalance`.
 - [x] **B9.8 Shared sidecars.** `ResolveKeccakComputeCoSpendsHost`, `ResolveStatefulKeccakLoopHost` and
       `ResolveEcrecoverCoSpendsHost` take `sidecarSalt`, which replaces the category-branded salt in the three
       A14 item 6 places. A top-level creation whose constructor hashes co-spends the shared keccak side-car(s) at

@@ -160,15 +160,20 @@ export async function deployFromStatefulContract<T extends Artifact>(
     return oraclePoolBinding(hexToBin(pool));
   };
   let childConstructorArgs = options.childConstructorArgs;
-  if (bakedConstructorArgumentCount === 0) {
-    childConstructorArgs = [];
-  } else if (!childConstructorArgs && deployTarget?.constructorArgs?.every((n) => n !== null)) {
-    const derived = deployTarget.constructorArgs.map((name) => {
+  const deployConstructorArgs = deployTarget?.constructorArgs;
+  if (!childConstructorArgs && deployConstructorArgs !== undefined
+    && deployConstructorArgs.every((name) => name !== null)) {
+    const derived = deployConstructorArgs.map((name) => {
       if (name === ORACLE_POOL_PARAMETER) return creatorBinding();
       const idx = deployAbi.inputs.findIndex((inp) => inp.name === name);
       return idx >= 0 ? deployFunctionArgs[idx] : undefined;
     });
     if (derived.every((v) => v !== undefined)) childConstructorArgs = derived as ConstructorArgument[];
+  }
+  if (childConstructorArgs === undefined && bakedConstructorArgumentCount === 0
+    && (deployConstructorArgs?.length ?? 0) === 0) {
+    // A child with neither contract parameters nor runtime constructor arguments takes an empty list.
+    childConstructorArgs = [];
   }
   if (!childConstructorArgs) {
     throw new Error(
@@ -179,7 +184,27 @@ export async function deployFromStatefulContract<T extends Artifact>(
   if (takesOraclePool(childArtifact) && childConstructorArgs.length === bakedConstructorArgumentCount - 1) {
     childConstructorArgs = [...childConstructorArgs, creatorBinding()];
   }
-  const bakedChildConstructorArgs = childConstructorArgs.slice(0, bakedConstructorArgumentCount);
+  // The Contract is built from the child's *contract* parameters (`new C{args:(…)}`, or the compatibility form
+  // `new C(…)` that fills them). A creator that forwards them records their sources in `deployTarget.contractArgs`;
+  // the parentheses' arguments (`childConstructorArgs`) are the runtime constructor's. A caller that predates the
+  // split passes the contract parameters through `childConstructorArgs`, so fill from it when the source list is
+  // absent or incomplete.
+  const derivedContractArgs = (deployTarget?.contractArgs ?? []).map((name) => {
+    if (name === null || name === undefined) return undefined;
+    if (name === ORACLE_POOL_PARAMETER) return creatorBinding();
+    const idx = deployAbi.inputs.findIndex((inp) => inp.name === name);
+    return idx >= 0 ? deployFunctionArgs[idx] : undefined;
+  });
+  const bakedChildConstructorArgs = Array.from({ length: bakedConstructorArgumentCount }, (_, index) => (
+    derivedContractArgs[index] !== undefined ? derivedContractArgs[index] : childConstructorArgs[index]
+  )).filter((value) => value !== undefined) as ConstructorArgument[];
+  // A genesis `__construct` witness list is the contract parameters followed by the runtime constructor's.
+  const sourcedContractCount = derivedContractArgs.filter((value) => value !== undefined).length;
+  const childInitArgs = [
+    ...bakedChildConstructorArgs,
+    ...childConstructorArgs.slice(sourcedContractCount > 0 ? 0 : Math.min(childConstructorArgs.length,
+      bakedConstructorArgumentCount)),
+  ] as ConstructorArgument[];
   // create2 salt: build the child with the salt the deploy covenant pins (composed with the self-pin).
   // Resolve from an explicit childSalt, else the recorded `new C{salt}()` mapping (a forwarded deploy param
   // or a hex literal). A computed salt with no explicit childSalt is an error (the address can't be rebuilt).
@@ -598,7 +623,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       funder,
       fundingUtxo: { ...(prepFunding[0] ?? options.fundingUtxo), vout: 0 },
       initialState: options.childInitialState,
-      initArgs: childConstructorArgs,
+      initArgs: childInitArgs,
       changeAddress: changeAddress ?? '',
     };
     const derived = await deriveDeployCommitments(

@@ -4629,10 +4629,11 @@ are allowed here because these are attacks. Each must fail, in the VM unless the
 - [x] a creator that is asked to answer its own child's constructor. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Regression.** Run at the end of every phase, against the B0.5 baseline; the full suites run at the five
-milestones (final acceptance here ran the named regression files only, by the user's instruction: solidc
-`ContractDeployment`, `DeployThenCallFold`, `DeployUnfoldableConstructor` are 80/80 green, and the seven SDK
-files below are 78/78 green. `DeployUnfoldableConstructor` now expects the B10 deployer binding, not the old
-`does not fold` refusal):
+milestones (final acceptance here ran the affected files rather than the whole suites, by the user's
+instruction: 28 compiler files covering every deployer, fold, genesis, record, stack and container area are
+390/390 green, and 18 SDK deploy/create/payment/factory files are 162/162 green. The legacy fold-path files
+compile with the internal `__legacyDeployFold` escape, which is what it exists for; `DeployUnfoldableConstructor`
+expects the B10 deployer binding, and `ContractDeployment` expects the child category to be the prep's txid):
 - [x] `W/solidc/test/ContractDeployment.test.ts`, `DeployThenCallFold.test.ts` and *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       `DeployUnfoldableConstructor.test.ts`;
 - [x] `W/solidcash/test/e2e/ContractFactory.test.ts`, `DeployFromContract.test.ts`, *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*

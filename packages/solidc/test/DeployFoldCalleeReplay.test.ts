@@ -12,7 +12,7 @@ import { compileString } from './direct-compile.js';
 // The corpus harness compiles with `evmCompat: true`, which is the mode whose `d.x()` form reaches the
 // deploy-result-local path pinned here.
 describe('deploy-time callee replay', () => {
-  const OPTS = { evmCompat: true };
+  const OPTS = { evmCompat: true, __legacyDeployFold: true } as never;
 
   const childWithCtor = (ctor: string, helper: string, extra = ''): string =>
     `contract D { uint public x; ${extra}constructor() { ${ctor} } ${helper} }\n`

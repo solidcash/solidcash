@@ -55,7 +55,8 @@ const COMPOSE_SOURCE = `
   }
 `;
 
-const deployFromArtifacts = compileStringMulti(DEPLOY_FROM_SOURCE);
+// This audit predates B10 and checks the legacy genesis funding proof (no deployer child).
+const deployFromArtifacts = compileStringMulti(DEPLOY_FROM_SOURCE, { __legacyDeployFold: true } as never);
 const composeArtifacts = compileStringMulti(COMPOSE_SOURCE, {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
 });

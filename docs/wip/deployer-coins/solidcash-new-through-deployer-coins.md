@@ -2925,7 +2925,7 @@ Rules for every phase:
 
 This phase works on today's `new`. It needs nothing from a later phase.
 
-- [ ] **B2.1 Prove the finding.** Add `W/solidcash/test/e2e/StatefulAddressPayment.e2e.test.ts`, under the
+- [x] **B2.1 Prove the finding.** Add `W/solidcash/test/e2e/StatefulAddressPayment.e2e.test.ts`, under the
       production limits:
       - a creator does `new Child()`, then `this.transfer(child, 5000)` with today's code;
       - assert the payment output's lock equals the child's master lock;
@@ -2938,7 +2938,7 @@ This phase works on today's `new`. It needs nothing from a later phase.
 
       Done when the first case passes and shows the coin is stuck. If the coin turns out to be spendable,
       stop and report it.
-- [ ] **B2.2 Route payments to a `new` result.**
+- [x] **B2.2 Route payments to a `new` result.**
       - Write the one test for "a `new` result" (A6) as a function of the symbol pass,
         `isNewResult(expression)`. It must not use `deployResultLocals` as it stands: that set is filled in
         program order and never reset at the end of a branch or a loop (STT 13715–13717, 13857–13861).
@@ -2959,7 +2959,7 @@ This phase works on today's `new`. It needs nothing from a later phase.
       the coin in a later call; a child with a `selfdestruct` function does the same; and unit tests show
       `isNewResult` true for each form of A6 and false for a variable assigned in a branch, a state variable
       and a parameter.
-- [ ] **B2.3 Refuse and warn.** Add the classes `StatefulAddressPaymentError` and
+- [x] **B2.3 Refuse and warn.** Add the classes `StatefulAddressPaymentError` and
       `StatefulAddressPaymentWarning` to `Errors.ts`. In STT or TCT, raise the error and emit the warning as
       A8 says, the error also for a routed payment to a child without that container. Done when a compiler
       test shows the error in both of its cases, the warning, and neither for the B2.2 case.
@@ -3198,7 +3198,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
       emits, Deploy<C> included, never gets a marker; run on each the part of the check that says so: no
       marker bytes at either place.
 
-- [ ] **B6.5 The genesis call (O6).** In a record-sound contract, for every entry with `publishesRecord`:
+- [x] **B6.5 The genesis call (O6).** In a record-sound contract, for every entry with `publishesRecord`:
       - append `bytes __internal__genesisCall` right after `__internal__returnOutputIdx` (STT 5085);
       - require its size to be 0 or 36, or 0 or 46 when the entry reads `msg.sender` (`usesMsgSender`);
       - when it is not empty: read X (32 bytes), slot (2) and g_in (2), the numbers as unsigned (append
@@ -3315,7 +3315,7 @@ sender. Its tests build the deployer's side by hand. Everything from B6.4 to B6.
         - an ordinary call with an empty parameter resolves as before, for a wallet and for a contract.
       - One SDK test: a wallet call and an ordinary contract call to a contract compiled with
         `callRecords: 'all'`, to a void function and to a returning one, pass as before.
-- [ ] **B6.9** Run `yarn build`, then commit in three steps: "feat(solidc): a void function can publish its
+- [x] **B6.9** Run `yarn build`, then commit in three steps: "feat(solidc): a void function can publish its
       call record" (B6.2, B6.3), "feat(solidc): every arm accounts for its call records" (B6.4), and
       "feat(solidc): a call record can answer a constructor" (B6.5 to B6.7), each with its tests. Then run
       both full suites (milestone). Expected changes, named in the commit messages: a contract compiled as
@@ -3480,7 +3480,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       contract that has public functions; a C compiled under evmCompat with public state variables; a C with
       functions that have no visibility modifier; a C with its own `create` and `sweep` functions; a C with
       `receive` and `fallback`; and the check throws for a program to which a test hook added a third entry.
-- [ ] **B7.5 What the constructor does.** *(2026-11-13: the walker now refuses a collection read in a loop, a
+- [x] **B7.5 What the constructor does.** *(2026-11-13: the walker now refuses a collection read in a loop, a
       call in a loop whose callee accesses a collection, a collection write that is not a statement of its own,
       the balance read a constructor also sends against, and a base-argument read; `ctor-construction-order`
       and `ctor-call-helper` remain unbuilt, and the full statement/group rules of A4.1 are partial.)* On the deployer program, after its semantic passes, compute:
@@ -3505,7 +3505,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       Done when a unit test shows each reason that a source can trigger, and these values for a sample C.
       `ctor-call-unbound` and `code-not-constant` have no known source; their tests raise them through a
       test hook.
-- [ ] **B7.6 Genesis mode, and the three primitives (O7).**
+- [x] **B7.6 Genesis mode, and the three primitives (O7).**
       - Add a per-body flag, `genesisMode`. In the deployer program it is on for `create` and for every
         other body the program compiles, whether inlined into `create`, defined and invoked
         (`emitFunctionDefine`, GTT 7565), or compiled in a traversal of its own with no function around it
@@ -3528,7 +3528,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): the per-body `genesisMode` flag, the skipped direct genesis guard and a
       first prologue are in. The three primitive helpers, the converted-site lists and the bare-OP_INPUTINDEX
       counter are not; `emitRecordBlockBase` is the only primitive with a genesis form.
-- [ ] **B7.7 State.**
+- [x] **B7.7 State.**
       - **Reads.** In `emitStateFieldRead` (43103), in genesis mode, emit the pending written value if there
         is one, otherwise `emitDefaultValue` (36504). Skip the `stateReadIds` shared helper there, since it
         bakes in `OP_INPUTINDEX`. Copy the pattern of `readsRecordsFromFrame` (43613).
@@ -4208,7 +4208,7 @@ this phase and compiles every source as it did after B7.
         (`creator-shape`); one inside `receive`, of a child that does not read the sender, compiles, and
         its arm fails with one push too many.
       - A creator that has no state variable and no event.
-- [ ] **B8.12** Run `yarn build`, then commit: "feat(solidc): new binds a deployer instead of embedding the
+- [x] **B8.12** Run `yarn build`, then commit: "feat(solidc): new binds a deployer instead of embedding the
       child (behind __deployerNew)". Fill D11, the third part of D16, and the compiler-side numbers of D18.
       Then run both full suites (milestone): with the option off, nothing may differ from the result after
       B7.
@@ -4336,7 +4336,7 @@ it) never takes today's genesis (A12).
       measurement taken in that phase.
 - [ ] **B13.2** Every commit message ends with the `Co-Authored-By` line that the implementing session's own
       instructions give.
-- [ ] **B13.3** Do not push. Report the commit list to the user, with the baseline comparison of B0.5, the
+- [x] **B13.3** Do not push. Report the commit list to the user, with the baseline comparison of B0.5, the
       changes made under B0.8, and Part D.
 - [ ] **B13.4** Later and separate, after the user agrees: delete the old direct-route fold path for stateful
       children (`emitDeployCovenantVerification`, the inline variant, and the direct use of

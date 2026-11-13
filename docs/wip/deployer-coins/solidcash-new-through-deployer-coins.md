@@ -4201,7 +4201,7 @@ Nothing in this phase changes what the SDK does for an artifact without `deploye
 deployer children, except that an artifact with `constructorWritesCollections` (`deployerUnsupported` with
 it) never takes today's genesis (A12).
 
-- [ ] **B9.1 Preps.** Create `W/solidcash/src/stateful/deployer.ts` with `buildDeployerPreps`,
+- [x] **B9.1 Preps.** Create `W/solidcash/src/stateful/deployer.ts` with `buildDeployerPreps`,
       `buildDeployerPrep` and `broadcastDeployerPreps` (A14 item 1), and the error classes A14 names. Unit
       tests, for a chain of three children of two types:
       - each prep's output 0 lock and value, its output 1 lock and value, and each category equal to its
@@ -4213,7 +4213,7 @@ it) never takes today's genesis (A12).
         `ContractFactory.ts:265–267`, `own-coin.ts:117–140`);
       - signing the chain twice from the same coins: the test records whether the txids are equal, so
         callers know whether a rebuilt chain keeps its categories.
-- [ ] **B9.2 Unlocking.** Add `buildDeployerUnlocking({ deployer, callees, boundBytes | args, constructorArgs,
+- [x] **B9.2 Unlocking.** Add `buildDeployerUnlocking({ deployer, callees, boundBytes | args, constructorArgs,
       value, senderCategory, authorIndex, identity, creator, oracleOwner, budgetPad, synthetic, forBroadcast })`.
       - `callees` is one input index or `undefined` per call slot; the function writes the placeholder
         `ff ff` for `undefined`, refuses a list whose length is not `deployer.callSlots`, and with
@@ -4227,11 +4227,11 @@ it) never takes today's genesis (A12).
 
       Done when a unit test checks the exact byte layout of A4.2: the callee list's push at byte 5, Q at
       byte 6 + 2s, then A, then the code push, for s = 0 and s = 2; and the size refusal.
-- [ ] **B9.3 The local run.** Add one helper that runs every input of a candidate transaction through the VM
+- [x] **B9.3 The local run.** Add one helper that runs every input of a candidate transaction through the VM
       with `MOCK_PRODUCTION_LIMITS` and throws with the input index and the VM error. Every path of this
       phase calls it before it broadcasts. It also returns each input's operation cost, from which the
       caller sizes `__internal__budgetPad`.
-- [ ] **B9.4 Top-level deployment.** In `deployStatefulContract` (`sc-deploy.ts`) and `ContractFactory.deploy`,
+- [x] **B9.4 Top-level deployment.** In `deployStatefulContract` (`sc-deploy.ts`) and `ContractFactory.deploy`,
       add the deployer path (A14 item 3) and the table of A12. Adapt `deriveDeployCommitments`
       (`sc-derive-deploy-commitments.ts:152–158`) to run `create` against the real candidate transaction
       instead of a synthetic master. Also:
@@ -4245,7 +4245,7 @@ it) never takes today's genesis (A12).
       - keep the identity output and the publication output, and start the genesis range after them (A10);
       - open the containers as A14 item 11 says;
       - `DeployerPathError` and the warnings of A12's table, each with a test.
-- [ ] **B9.5 Creating calls.** In `deployFrom` (`sc-deploy-from.ts`) and the builder path
+- [ ] **B9.5 Creating calls.** *(partial: options, trace extraction and the list result forms are in; the builder refuses a deployer child precisely until B7.9/B8.9 land.)* In `deployFrom` (`sc-deploy-from.ts`) and the builder path
       (`StatefulContract._createBuilder`, `:3962–3992` for its coin selection), implement A14 item 4 for
       every deploy target whose child has an entry in `childDeployers`; a call without such a child takes
       today's path unchanged. Read Q and A from the trace with a new helper,
@@ -4253,21 +4253,21 @@ it) never takes today's genesis (A12).
       chooses between the plain and the deploying path (`StatefulContract.ts:14392–14402`); take the
       deploying path whenever `deployments` is not 0. Keep the single-child options and result fields and
       add the list forms beside them.
-- [ ] **B9.6 Constructor callees and the creator's list.** A14 items 5 and 4.7, with `DeployerCalleeError`.
+- [x] **B9.6 Constructor callees and the creator's list.** A14 items 5 and 4.7, with `DeployerCalleeError`.
       The SDK reads `genesisCalls` and `callRecords` of a callee's artifact to say which option is missing.
-- [ ] **B9.7 Containers.** A14 items 10 and 11.
+- [ ] **B9.7 Containers.** *(partial: top-level satoshi/token planning and the required-category refusal are in; full rows wait on B7.9.)* A14 items 10 and 11.
 - [ ] **B9.8 Shared sidecars.** Add a salt override in the A14 item 6 places, and use salt 0 for Deploy<C>;
       `DeployerSidecarError` when no shared coin is found.
-- [ ] **B9.9 Locktime.** Add `getMedianTimePast()` to `NetworkProvider` and to every class that implements
+- [x] **B9.9 Locktime.** Add `getMedianTimePast()` to `NetworkProvider` and to every class that implements
       it, then set the locktime and the sequence as A14 item 7 says, with
       `DeployerLocktimeConflictError`.
-- [ ] **B9.10 Proof of birth and sweep.** Add `verifyBirth` and `buildDeployerSweep` (A14 items 8 and 9), each
+- [x] **B9.10 Proof of birth and sweep.** Add `verifyBirth` and `buildDeployerSweep` (A14 items 8 and 9), each
       with a unit test.
-- [ ] **B9.11 End-to-end tests.** Write the two files of Part C, `DeployerCreation.e2e.test.ts` and
+- [x] **B9.11 End-to-end tests.** Write the two files of Part C, `DeployerCreation.e2e.test.ts` and
       `DeployerRefusals.e2e.test.ts`, with `__deployerNew` on for every creator they compile.
-- [ ] **B9.12 Measure.** Fill D4, D5, D6, D10, D13, D15, the SDK-side numbers of D18, and D19, from the
+- [x] **B9.12 Measure.** Fill D4, D5, D6, D10, D13, D15, the SDK-side numbers of D18, and D19, from the
       transactions of B9.11.
-- [ ] **B9.13** Run `yarn build`, then commit: "feat(solidcash): deploy and create through deployer coins".
+- [x] **B9.13** Run `yarn build`, then commit: "feat(solidcash): deploy and create through deployer coins".
       Then run both full suites (milestone): nothing outside the new tests may differ from the result after
       B8.
 

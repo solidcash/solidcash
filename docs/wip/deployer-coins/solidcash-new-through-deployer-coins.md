@@ -4365,8 +4365,8 @@ as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the pr
 
 ## B11. Measurements
 
-- [x] **B11.1** (Checked; D6, D9, D10, D11, D16 and D18 were filled here, and D13 and D21 remain open:
-      they need the genesis-call operation probe and a per-arm compile census. Everything else in Part D is
+- [x] **B11.1** (Checked; D6, D9, D10, D11, D16, D18 and D21 were filled here, and D13 remains open: it
+      needs a constructor-call creation fixture under the production VM. Everything else in Part D is
       filled.) Check that every line of Part D is filled: B0.6, B2.1, B6.0, B6.10, B7.15, B7.18, B8.12,
       B9.12, B10.3 and B10.4 each fill their own. Fill what is missing.
 - [x] **B11.2** (Replaced where Part D holds a measurement; the markers with no measured counterpart
@@ -4698,7 +4698,9 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       tests ask for carry `deployer`.
 - [ ] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
-      still passes: ____ ops; ____ of ____, ____ of ____; ____ B.
+      still passes: not measured; no constructor-call creation fixture runs under the production VM yet (the
+      compiler-side genesis-call VM tests exercise the checks on hand-built spends), and `create`'s call-slot
+      resolution is not wired into `deployThroughDeployer`.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
@@ -4729,10 +4731,13 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       ____ B.
 - [x] **D20.** (B7.15) The user's pools: the size of Deploy<NotePool> and Deploy<TokenNotePool>, and the
       smallest `create` unlocking of each against 10,000 bytes: 2,110 B and 2,129 B; 6,981 B and 8,063 B.
-- [ ] **D21.** (B6.0) The exact stack in every arm: bytes added per arm kind (entry function with 0, 1 and
+- [x] **D21.** (B6.0) The exact stack in every arm: bytes added per arm kind (entry function with 0, 1 and
       three visible parameters, `receive`, `fallback`, the multi-call entry, `__construct`), and the size of a
-      whole contract before and after, for a contract with one arm and for the user's pools: ____ B;
-      ____ B against ____ B; ____ B against ____ B.
+      whole contract before and after, for a contract with one arm and for the user's pools: over a 57-byte
+      empty stateful contract, entry-0 adds 1,166 B, entry-1 1,176 B, entry-3 1,233 B, `receive` 1,048 B,
+      `fallback` 1,050 B, `__construct` 1,015 B, and the multi-call entry 1,627 B (whole one-arm contract:
+      1,223 B; the same source compiled at `master` is 1,197 B, the base itself differs by 55 B). The pool
+      whole-contract pair is D20's Deploy<C> sizes; a per-pool plain compile was not re-measured.
 - [x] **D22.** (B7.18) Constructor collections and single containers: bytes one append site adds to
       Deploy<C>: 334 B (845 B with one unconditional mapping write against 511 B for the scalar constructor); the
       entry row's stride is one output. This is the ordinary vmap write path, not the journal.

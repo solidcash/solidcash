@@ -558,6 +558,6 @@ describe('chained sibling deployment (C deploys B, B deploys A)', () => {
           function f() public view { assert(b.getX() == 0); }
       }`;
     expect(() => compileString(src, { evmCompat: true }))
-      .toThrow(/ctor-creates/);
+      .toThrow(/A direct creator folds the genesis of the "B" it creates, and its constructor's write to "a" does not fold/);
   });
 });

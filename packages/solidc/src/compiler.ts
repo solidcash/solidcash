@@ -21752,7 +21752,11 @@ function gatherDeployerChildren(
     const artifact = result.artifact;
     if (artifact === undefined) continue;
     const abi = artifact.deployer;
-    const reason = artifact.deployerUnsupported;
+    // A5 refuses a live block reader's deployer as `code-not-constant` (the constant-lock form this backend
+    // lacks); the creator-side name for the same child fact is A15's `child-reads-block-data`.
+    const reason = artifact.deployerUnsupported === 'code-not-constant' && artifact.usesBlockOracle === true
+      ? 'child-reads-block-data'
+      : artifact.deployerUnsupported;
     if (abi === undefined && (reason === undefined || reason === 'not-stateful-direct')) continue;
     map.set(name, { name, artifact, abi, reason });
   }

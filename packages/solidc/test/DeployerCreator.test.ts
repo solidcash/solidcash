@@ -189,8 +189,8 @@ describe('B8.2/B8.3: the argument forms and their diagnostics', () => {
   });
 
   it('refuses a child that reads block data', () => {
-    refusal(`${P} contract C { int n; constructor() { n = int(block.number); }
-      function bump() { n = n + 1; } }
+    refusal(`${P} contract C { int n; constructor() { n = 1; }
+      function bump() { n = int(block.number); } }
       contract Parent { int m; function make() { C c = new C(); m = 1; } }`,
     /child-reads-block-data/);
   });

@@ -150,6 +150,13 @@ export async function deployFromStatefulContract<T extends Artifact>(
       + 'with factory.registerChild(artifact).',
     );
   }
+  if (options.childContainers !== undefined && options.childContainers.length > 0) {
+    // A14 item 11's `childContainers` is not implemented: a child's rows are funded by the factory or the
+    // paying wallet on the paths that exist, and a silent no-op would misstate where its satoshis went.
+    throw new DeployerPrepError(
+      'childContainers is not implemented on the deployer creating path; fund the child through the factory',
+    );
+  }
   const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
   // `constructorInputs` are a stateful contract's immutable contract parameters; the runtime
   // constructor's arguments are the `__construct` entry's inputs. Only the latter are `new C(...)`'s

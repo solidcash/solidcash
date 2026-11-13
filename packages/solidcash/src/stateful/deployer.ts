@@ -836,9 +836,11 @@ export async function deployThroughDeployer<T extends Artifact>(
       `Contract '${artifact.contractName}' has ${deployer.callSlots} constructor call slots, which the compiler's deployer cannot run in the VM yet`,
     );
   }
-  if (deployer.collectionRows.length > 0 || deployer.readsBlockData) {
+  if (deployer.collectionRows.length > 0 || deployer.readsBlockData
+    || deployer.constructorBlockField !== undefined) {
     throw new DeployerPathError(
-      `Contract '${artifact.contractName}' needs a genesis layout the compiler's deployer does not build yet`,
+      `Contract '${artifact.contractName}' needs a genesis layout or a constructor block-field probe the `
+      + "compiler's deployer does not build yet",
     );
   }
 

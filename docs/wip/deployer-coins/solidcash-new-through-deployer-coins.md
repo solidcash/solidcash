@@ -4663,8 +4663,11 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 - [x] **D9.** (B7.15) For a block reader compiled with `deployer: true`: C's size with the constant-lock
       oracle form, compared with the sentinel form of its plain compile: 467 B against 467 B (the contract's
       own code is unchanged); Deploy<C> is 523 B.
-- [ ] **D10.** (B9.12) The operation cost of the creator's binding check, which reads and splits the
-      deployer's unlocking of up to 10 kB, against the creator input's budget: ____ ops of ____.
+- [x] **D10.** (B9.12) The operation cost of the creator's binding check, which reads and splits the
+      deployer's unlocking of up to 10 kB, against the creator input's budget: the whole creator input costs
+      155,379 ops of a 1,231,200 budget (800/byte x 1,539 bytes), 12.6% used; the deployer input itself costs
+      106,345 and the author coin 28,217. Measured on the production-profile creating call of B9.5; the
+      binding is inside the creator input's 155,379.
 - [x] **D11.** (B0.6, B8.12) What the second compile costs where it runs: the compile time of a creator with
       one `new` against the same creator with the `new` removed, the compile time of C with and without
       `deployer: true`, and the bytes one `DeployerAbi` adds to an artifact file: 35.4 ms against 13.6 ms,

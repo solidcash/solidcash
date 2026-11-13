@@ -4403,9 +4403,11 @@ as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the pr
       message ends with the `Co-Authored-By` line that the implementing session's own instructions give.
 - [x] **B13.3** Do not push. Report the commit list to the user, with the baseline comparison of B0.5, the
       changes made under B0.8, and Part D.
-- [ ] **B13.4** Later and separate, after the user agrees: delete the old direct-route fold path for stateful
+- [x] **B13.4** Later and separate, after the user agrees: delete the old direct-route fold path for stateful
       children (`emitDeployCovenantVerification`, the inline variant, and the direct use of
-      `tryFoldChildConstructor`), if nothing else uses it.
+      `tryFoldChildConstructor`), if nothing else uses it. *(Deferred by the item's own wording: the path is
+      still used, behind the internal `__legacyDeployFold` escape, by `CondDeployRuntime` and
+      `DeployFoldGenesisBalance`; removing it needs those two tests migrated to the deployer path first.)*
 
 ---
 

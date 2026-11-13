@@ -47075,6 +47075,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // so: the body requires the no-index sentinel there rather than leaving a listed output unclaimed.
           this.emit(Op.OP_ELSE, locationData);
           this.requireSendSlotAbsent(transferIndex, locationData);
+        } else {
+          // A4.4: the output at a skipped transfer's row must carry no token.
+          this.emit(Op.OP_ELSE, locationData);
+          this.emitTransferOutputIndex(transferIndex, locationData);
+          this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+          this.emit(Op.OP_0, locationData);
+          this.emit(Op.OP_EQUALVERIFY, locationData);
         }
         this.emit(Op.OP_ENDIF, locationData);
       }

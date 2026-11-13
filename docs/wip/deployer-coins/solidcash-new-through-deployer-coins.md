@@ -3655,7 +3655,8 @@ with a deployer whose constructor writes a collection, and only where today's st
       sorted collection's HEAD (entry lock, X||01, amount 0, the 128-zero commitment compared by hash, RESERVE)
       are pinned and pass their VM cases. The identity branch is also in: with `__internal__identity` set, output 0
       must be the authhead coin (authhead P2SH32 lock, X||01, amount 0), and the census adds the flag at run time.
-      The collection-entry rows (B7.18) and the skipped-slot (unused-index) branch remain.
+      The collection-entry rows (B7.18) remain; a skipped conditional transfer now also requires an output with no
+      token at its row (skipped emits already did).
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,
         amount 0. The oracle, when C reads block data: lock `blockOracleLockingBytecode(X)`, derived with
         `blockOracleLockDerivationScript()`; `X‖01`; commitment `__internal__oracleOwner ‖ unset fields`,

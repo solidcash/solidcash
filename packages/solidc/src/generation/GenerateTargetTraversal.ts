@@ -11792,6 +11792,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitDeployChildCategoryBound('(gen_x)', 1 + records + events, loc);
   }
 
+  /** A5: the satoshi journal read as `this.balance`: the container's start plus `value`, less the sends so far. */
+  private emitGenesisBalance(loc: SingleLocationData): void {
+    const start = this.currentFunction?.blockLayout?.singleSatoshiContainer === true ? 1200n : 0n;
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+    };
+    if (start > 0n) {
+      this.emit(encodeInt(start), loc);
+      this.pushToStack('(value)');
+    }
+    pick('__internal__deployValue');
+    this.pushToStack('(value)');
+    if (start > 0n) {
+      this.emit(Op.OP_ADD, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+    }
+    for (const transfer of this.pendingTransfers) {
+      const isConditional = this.conditionalTransferIndices.has(transfer.transferIndex);
+      if (isConditional) {
+        pick(transfer.lockingBytecodeStackName);
+        this.pushToStack('(value)');
+        this.emit(Op.OP_IF, loc);
+        this.popFromStack();
+        this.scopeDepth += 1;
+      }
+      pick(transfer.amountStackName);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_SUB, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      if (isConditional) {
+        this.scopeDepth -= 1;
+        this.emit(Op.OP_ENDIF, loc);
+      }
+    }
+    // The caller (`visitStateAccess`) pushes the expression's one tracked result.
+    this.popFromStack();
+  }
+
   /**
    * A4.3 step 5: build R = pin(X) || A || code and M = P2SH32(R) once, and keep both for the body and epilogue.
    */
@@ -11825,8 +11866,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A2's pin(X): OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY.
     push('(tmp)', [Uint8Array.from([Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY])]);
     cat('(gen_pin)');
-    for (const parameter of [...(node.deployerContractParameters ?? [])].reverse()) {
+    // The create node the generator visits is rebuilt after `arrangeDeployerParameters`, so the box carries the
+    // band of C's contract parameters by name (A4.2's A, between `__internal__code` and the source arguments).
+    const boxNames = (this.compilerOptions as {
+      __deployerProgram?: { box?: { contractParameterNames?: string[] } };
+    }).__deployerProgram?.box?.contractParameterNames ?? [];
+    const contractParameters = boxNames.length > 0
+      ? boxNames.flatMap((name) => node.parameters.filter((parameter) => parameter.name === name))
+      : node.deployerContractParameters
+        ?? node.parameters.filter((parameter) => parameter.deployerContractParameter === true);
+    for (const parameter of [...contractParameters].reverse()) {
       pick(parameter.name, '(arg)');
+
       this.emitPushdataEncode(parameter.type, loc);
       cat('(gen_pin)');
     }
@@ -26840,6 +26891,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // this.balance - get own category, derive satoshi container lbc, loop over inputs
     if (node.name === 'balance' && !node.stateVariable && this.framedMaster) {
       this.emitFramedOwnBalance(locationData);
+      return node;
+    }
+    if (node.name === 'balance' && !node.stateVariable && this.currentFunction?.genesisMode === true) {
+      // A5: at birth the balance is the satoshi container's start plus __internal__deployValue, less the sends
+      // that have run. A conditional send's locking-bytecode slot is empty until its statement runs.
+      this.emitGenesisBalance(locationData);
+      this.pushToStack('(value)');
       return node;
     }
     if (node.name === 'balance' && !node.stateVariable) {

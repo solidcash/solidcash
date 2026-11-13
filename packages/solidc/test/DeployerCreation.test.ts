@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
+import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
   asmToScript, buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode,
   type Artifact, type DeployerAbi,
@@ -202,6 +203,39 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
     expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
       artifact, { n: 0n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
     ), [{ name: 'asset', value: asset }]) as never)).toBe(true);
+  });
+});
+
+describe('B7.10: the balance journal', () => {
+  it('reads this.balance as __internal__deployValue less the sends', () => {
+    const artifact = compileString(`${P} contract C(address payable to) { int n;
+      constructor() payable { payable(to).send(1000); n = this.balance; } }`,
+    { deployer: true, messageBus: false });
+    const to = Uint8Array.from([0x76, 0xa9, 0x14, ...Array.from({ length: 20 }, (_, i) => i + 1), 0x88, 0xac]);
+    const { master } = genesisMasters(artifact.deployer!, [{ name: 'to', value: to }]);
+    const transfer: VmOutput = { lockingBytecode: to, valueSatoshis: 1000n };
+    const satoshiRow: VmOutput = { lockingBytecode: TOKENLESS, valueSatoshis: 4000n };
+    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 4000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
+    ), [{ name: 'to', value: to }], (output) => output, undefined,
+    { __internal__deployValue: bigIntToVmNumber(5000n) }, undefined, 0, 0xffffffff, [satoshiRow, transfer]);
+    expect(vm.verify(spend as never)).toBe(true);
+  });
+
+  it('reads a payable constructor\'s balance as the deploy value', () => {
+    const artifact = compileString(`${P} contract C { int n; constructor() payable { n = this.balance; } }`,
+      { deployer: true, messageBus: false });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 1000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, { __internal__deployValue: Uint8Array.of(0xe8, 0x03) }) as never)).toBe(true);
+  });
+
+  it('reads the container start plus the value when it keeps the satoshi container single', () => {
+    const artifact = compileString(`${P} pragma satoshicontainer single; contract C { int n;
+      constructor() payable { n = this.balance; } }`, { deployer: true, messageBus: false });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 1700n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(500n) }) as never)).toBe(true);
   });
 });
 

@@ -637,6 +637,8 @@ interface DeployerProgramBox {
   forceReason?: string;
   /** The dispatched arms the finished program carries, by internal name. */
   arms?: string[];
+  /** Contract parameter names, the band of A4.2's A in `create`'s inputs. */
+  contractParameterNames?: string[];
 }
 
 /** The two protocol selectors of A4.2, independent of `evmCompat`. */
@@ -866,6 +868,8 @@ function arrangeDeployerParameters(ast: Ast, box: DeployerProgramBox | undefined
   };
   const contractParameters = contract.parameters;
   create.deployerContractParameters = contractParameters;
+  if (box !== undefined) box.contractParameterNames = contractParameters.map((parameter) => parameter.name);
+  for (const parameter of contractParameters) parameter.deployerContractParameter = true;
   contract.parameters = [];
   const sourceParameters = create.parameters.filter((entry) => !entry.name.startsWith('__internal__'));
   const passParameters = create.parameters.filter((entry) => entry.name.startsWith('__internal__')

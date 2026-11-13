@@ -1188,6 +1188,8 @@ export class ParameterNode extends Node implements Named, Typed {
    * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
    */
   kernelJournalForwardedContext = false;
+  /** A contract parameter of a deployer `create`: part of C's redeem arguments A (A4.2), not a constructor arg. */
+  deployerContractParameter = false;
 
   constructor(
     public type: Type,

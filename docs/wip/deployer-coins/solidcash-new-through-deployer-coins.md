@@ -3605,11 +3605,14 @@ with a deployer whose constructor writes a collection, and only where today's st
       - every pinned satoshi payment requires its output to carry no token;
       - `block.number` and `block.timestamp` (`visitNullaryOp`, 19202–19207) follow A5:
         `OP_TXLOCKTIME OP_DUP OP_CHECKLOCKTIMEVERIFY OP_DROP`, then the range check;
-      Note (implementation, 2026-11-12): M, R, `msg.value`, a zero-category `msg.sender` and `address(this)` are
-      resolved; the balance journal, the nonzero creator sender and most of the skipped checks are not. The
-      `OP_TXLOCKTIME` form for block.number/block.timestamp passes in the VM: a genesis-only body takes no
-      `__oraclePool` binding and no oracle input index, and a height read from a timestamp locktime (or the
-      reverse) fails.
+      Note (implementation, 2026-11-13): M, R, `msg.value`, a zero-category `msg.sender`, `address(this)`,
+      `this.activeBytecode` and the balance journal are resolved. `this.balance` / `address(this).balance` /
+      `selfbalance()` read the container's start (RESERVE when single) plus `__internal__deployValue`, less the
+      sends whose statements have run; a conditional send counts only when its locking-bytecode slot is set.
+      The `OP_TXLOCKTIME` form for block.number/block.timestamp passes in the VM: a genesis-only body takes no
+      `__oraclePool` binding or oracle input index, and a height read from a timestamp locktime (or the reverse)
+      fails. A creator that is a contract (a nonzero sender category) and the satoshi row's amount pin remain for
+      B7.11/B7.12.
       - emit none of: `emitDirectGenesisGuard` (11060), `emitTokenCategoryVerification` (36645),
         `emitMasterSelfPreservation` (50415), `emitMintingNftUniqueness` (51592), `emitValuePreservation`
         (55880), `emitOwnCategoryMutableNftConservation` (51806), `emitMasterCommitmentPreservation` (10839),

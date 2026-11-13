@@ -2,6 +2,7 @@
 import { applyCodeTail } from './CodeTail.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hexToBin, binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
+import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import { utf8ToBin } from '@bitauth/libauth/build/lib/format/utf8.js';
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import {
@@ -11914,7 +11915,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       __deployerProgram?: { box?: { contractParameterNames?: string[] } };
     }).__deployerProgram?.box?.contractParameterNames ?? [];
     for (const slot of layout.slots) {
-      if (slot.kind === 'satoshiContainer') this.emitGenesisSatoshiRowPin(slot.offset, loc);
+      if (slot.kind === 'satoshiContainer') {
+        this.emitGenesisSatoshiRowPin(slot.offset, loc);
+      } else if (slot.kind === 'tokenContainer') {
+        const name = slot.slotIndex === undefined ? undefined : names[slot.slotIndex];
+        if (name !== undefined) this.emitGenesisTokenRowPin(slot.offset, name, loc);
+      } else if (slot.kind === 'head') {
+        const definition = this.collectionDefinitions.find((collection) => collection.name === slot.collection);
+        if (definition !== undefined) {
+          this.emitGenesisHeadPin(slot.offset,
+            computeCollectionHash(computeCollectionSignature(definition.name, definition.type.toString())), loc);
+        }
+      }
     }
   }
 
@@ -11951,8 +11963,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitGenesisTokenRowPin(offset: number, parameter: string, loc: SingleLocationData): void {
     // Category: the parameter, in the VM's byte order (reverse the display-order value), no capability.
+    // OP_OUTPUTTOKENCATEGORY returns the category in the display order the VM number conversions use, which is
+    // the raw parameter bytes for a container key; do not reverse it here.
     this.emitPickTrackedFromBottom(parameter, loc);
-    this.emit(Op.OP_REVERSEBYTES, loc);
     this.pushToStack('(expectcat)');
     this.emitGenesisRowIndex(offset, loc);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
@@ -12025,8 +12038,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.popFromStack();
     this.pushToStack('(commitment)');
-    this.emit(Op.OP_0, loc);
-    this.pushToStack('(empty)');
+    this.emit(Op.OP_SHA256, loc);
+    this.popFromStack();
+    this.pushToStack('(commitmentHash)');
+    // The empty HEAD is 128 zero bytes; a direct all-zero push is minimized away, so compare the hash.
+    this.emit(sha256.hash(new Uint8Array(128)), loc);
+    this.pushToStack('(emptyHeadHash)');
     this.emit(Op.OP_EQUALVERIFY, loc);
     this.popFromStack(2);
     this.emitGenesisRowIndex(offset, loc);

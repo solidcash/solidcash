@@ -9,7 +9,8 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  asmToScript, buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode,
+  asmToScript, buildDataNftCovenantScript, buildEntryNftCovenantScript, buildPushdataCommitment,
+  computeCollectionHash, scriptToBytecode,
   type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
@@ -108,14 +109,17 @@ function createSpend(
   const outputs: VmOutput[] = Array.from({ length: OUTBASE }, () => ({
     lockingBytecode: TOKENLESS, valueSatoshis: 1000n,
   }));
-  // OUTBASE is the master; the record follows it.
+  // OUTBASE is the master; the record follows it when C has one.
+  const dataNftCount = artifact.stateLayout?.dataNftCount ?? 0;
   const { x, redeem, master } = genesisMasters(deployer, contractArgs);
   outputs.push(adjustMaster({
     lockingBytecode: master,
     valueSatoshis: 1200n,
     token: { category: x, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } },
   }));
-  outputs.push(record ?? recordOutput(artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master));
+  if (dataNftCount > 0) {
+    outputs.push(record ?? recordOutput(artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master));
+  }
   // A4.4's satoshi and single-token rows are pinned by create; fill them unless the caller supplies its own
   // outputs (the send test's row and transfer).
   if (extraOutputs.length === 0) {
@@ -273,6 +277,39 @@ describe('B7.10: the balance journal', () => {
     expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
       artifact, { n: 1700n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
     ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(500n) }) as never)).toBe(true);
+  });
+});
+
+describe('B7.13: the HEAD of an unwritten sorted collection', () => {
+  const source = `${P} contract C { mapping(int => int) m; constructor() { } }`;
+  const spendWith = (mutate: (head: VmOutput) => VmOutput) => {
+    const artifact = compileString(source, { deployer: true, messageBus: false });
+    const { x, master } = genesisMasters(artifact.deployer!);
+    const collection = artifact.stateLayout!.collections![0];
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(
+      x, computeCollectionHash(collection.signature), master,
+    ));
+    const head: VmOutput = {
+      lockingBytecode: encodeLockingBytecodeP2sh32(hash256(covenant)),
+      valueSatoshis: 1200n,
+      token: {
+        category: x, amount: 0n,
+        nft: { capability: 'mutable', commitment: new Uint8Array(128) },
+      },
+    };
+    return createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined, {},
+      undefined, 0, 0xffffffff, [mutate(head)]);
+  };
+
+  it('mints the empty HEAD at its row', () => {
+    expect(vm.verify(spendWith((head) => head) as never)).toBe(true);
+  });
+
+  it('refuses another lock or commitment', () => {
+    expect(vm.verify(spendWith((head) => ({ ...head, lockingBytecode: TOKENLESS })) as never)).not.toBe(true);
+    expect(vm.verify(spendWith((head) => ({
+      ...head, token: { ...head.token!, nft: { capability: 'mutable', commitment: new Uint8Array(129) } },
+    })) as never)).not.toBe(true);
   });
 });
 

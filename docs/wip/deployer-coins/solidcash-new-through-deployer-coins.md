@@ -3648,11 +3648,13 @@ with a deployer whose constructor writes a collection, and only where today's st
       and category checks. A diagnostic sweep over X orientation, 34/36-byte tags, digest lengths 31/32 and
       several form/field encodings found no accepted commitment, so the failing check is not the preimage
       alone; the marker/edge checks around the call are the next suspect.
-- [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
+- [x] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
-      Note (implementation, 2026-11-13): the satoshi row is pinned (empty category, at least the journal's final
-      balance) and its VM cases pass. The token, HEAD and collection-entry row pins are not built; the layout
-      rows exist (B7.9).
+      Note (implementation, 2026-11-13): the satoshi row (empty category, at least the journal's final balance),
+      each single token row (category, at least one unit, empty commitment, at least RESERVE) and each unwritten
+      sorted collection's HEAD (entry lock, X||01, amount 0, the 128-zero commitment compared by hash, RESERVE)
+      are pinned and pass their VM cases. The collection-entry rows (B7.18) and the identity/unused-index
+      branches of step 12 remain.
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,
         amount 0. The oracle, when C reads block data: lock `blockOracleLockingBytecode(X)`, derived with
         `blockOracleLockDerivationScript()`; `X‖01`; commitment `__internal__oracleOwner ‖ unset fields`,
@@ -3699,7 +3701,7 @@ with a deployer whose constructor writes a collection, and only where today's st
         (and, for step 10, one per call slot). When the program is finished, compare the flags with the
         steps C requires: all of 1 to 7 and 11 to 15, step 8 when `constructorReadsSender`, steps 9 and 10
         and the per-slot part of 14 when s > 0. Throw `DeployerInternalError` on a difference.
-- [ ] **B7.13 HEADs.** Emit the pins of the E HEAD outputs in step 12, with the lock
+- [x] **B7.13 HEADs.** Emit the pins of the E HEAD outputs in step 12, with the lock
       `emitEntryP2sh32(collectionHash, M)` and the bytes B7.2 found. Done when a compiler VM test shows
       `create` passing for a contract with one mapping, with the HEAD output that the SDK's genesis builds
       for it, and failing when its lock or its commitment is changed. The end-to-end proof that such a

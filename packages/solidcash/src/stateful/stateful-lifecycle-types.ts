@@ -251,7 +251,6 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   masterAmount?: bigint;                     // default: 1200n
   dataNftAmount?: bigint;                    // default: 1200n per data NFT
   /** A one-unit coin of each child's single token container, from the paying wallet (A14 item 11). */
-  childTokenContainers?: Array<{ utxo: Utxo; unlocker: Unlocker }>;
   /** Preps for a creator whose `new` runs through a deployer, one per deployment in run order (A14 item 4). */
   deployerPreps?: import('./deployer.js').DeployerPrep[];
   /** Funding for the preps a creating call has to build, all as one chain before the creation (A14 item 4). */

@@ -1312,24 +1312,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // pins `row value <= journal balance`, where the balance is the deploy value its Q carries: the row holds
   // exactly that value, since a larger row would mint satoshis the child was not given. A payable child with no
   // value therefore needs a zero-sat row, below the relay dust limit - refuse and name the option instead.
-  // A14 item 11: a single token container opens from a one-unit coin of its category, supplied by the paying
-  // wallet. The coin's whole value and its one unit go to the child's token container; no change is needed.
-  const childTokenSeeds = new Map<number, { utxo: Utxo; unlocker: Unlocker }>();
-  if (childDeployer !== undefined) {
-    for (const row of childDeployer.tokenRows) {
-      const raw = (bakedChildConstructorArgs as unknown[])[row];
-      const asset = (typeof raw === 'string' ? raw : raw instanceof Uint8Array ? binToHex(raw) : '').toLowerCase();
-      const supplied = options.childTokenContainers?.find(({ utxo }) => utxo.token !== undefined
-        && utxo.token.category.toLowerCase() === asset && utxo.token.amount === 1n);
-      if (supplied === undefined) {
-        const name = childArtifact.constructorInputs[row]?.name ?? `parameter ${row}`;
-        throw new DeployerPrepError(
-          `'${childArtifact.contractName}' keeps its token container '${name}' single; pass a one-unit coin of `
-          + 'its category in childTokenContainers',
-        );
-      }
-      childTokenSeeds.set(row, supplied);
-    }
+  if (childDeployer !== undefined && childDeployer.tokenRows.length > 0) {
+    // A14 item 11: a token row needs at least one unit of its category from the paying wallet. A creating call
+    // cannot open it yet: the factory's census refuses the foreign token input the seed would need, so refuse
+    // before building rather than return a transaction its creator input rejects.
+    throw new DeployerPrepError(
+      `'${childArtifact.contractName}' keeps its token container inside a single coin; a creating call cannot `
+      + 'open it yet (the paying wallet has no coin of that category to pass)',
+    );
   }
   const childSatoshiRow = (cc: (typeof childContracts)[number], cat: string): { to: string | Uint8Array; amount: bigint } => {
     const abi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
@@ -1384,14 +1374,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const childDeployerAbi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
     if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
       childExtraOutputs.push(childSatoshiRow(cc, cat));
-    }
-    for (const row of childDeployerAbi?.tokenRows ?? []) {
-      const seed = childTokenSeeds.get(row)!;
-      childExtraOutputs.push({
-        to: getTokenContainerAddress(cc, cat, seed.utxo.token!.category),
-        amount: seed.utxo.satoshis,
-        token: { category: seed.utxo.token!.category, amount: 1n },
-      });
     }
     if (isLoopValueDeploy) {
       childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });
@@ -1818,9 +1800,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
   for (const ti of tokenContainerInputs) {
     builder.addInput(ti.utxo, ti.unlocker);
   }
-  // The paying wallet's one-unit coins for each child's single token container.
-  for (const seed of childTokenSeeds.values()) builder.addInput(seed.utxo, seed.unlocker);
-
   // Funding UTXOs for the children's token genesis - N inputs, one per child (a balanced contract block: N
   // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
   for (const [index, fu] of fundingUtxos.entries()) {

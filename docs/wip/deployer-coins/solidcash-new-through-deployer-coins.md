@@ -4293,7 +4293,17 @@ it) never takes today's genesis (A12).
       add the list forms beside them.
 - [x] **B9.6 Constructor callees and the creator's list.** A14 items 5 and 4.7, with `DeployerCalleeError`.
       The SDK reads `genesisCalls` and `callRecords` of a callee's artifact to say which option is missing.
-- [ ] **B9.7 Containers.** *(partial: top-level satoshi/token planning and the required-category refusal are in; full rows wait on B7.9.)* A14 items 10 and 11.
+- [x] **B9.7 Containers.** A14 items 10 and 11. Top-level: a `required` satoshi row opens with RESERVE plus
+      `initialBalance`, an optional row with `initialBalance` (1..RESERVE-1 raised to RESERVE, and the value it
+      states raised with it); a container whose constructor is not payable, or a payable one with no
+      `initialBalance`, is refused by `DeployerPrepError` before the probe runs. `deriveDeployCommitments` now
+      carries the same satoshi/token rows in its probe (and a synthetic container input for a `required` row), so
+      its trace matches the real creation. In a creating call a child's row holds `childValue`; a `required` row
+      adds RESERVE (funded by the paying wallet, so no value is needed); an optional row with no value is refused
+      because its zero-sat row is below the relay limit; a child that keeps a token container single is refused
+      with the category named. `childContainers` is not implemented: the compiler's row pin caps a row at the
+      journal balance, so the spec's "more when childContainers says so" has no representation in `create`, and
+      naming a token coin would need a wallet lookup the option does not carry.
 - [ ] **B9.8 Shared sidecars.** Add a salt override in the A14 item 6 places, and use salt 0 for Deploy<C>;
       `DeployerSidecarError` when no shared coin is found.
 - [x] **B9.9 Locktime.** Add `getMedianTimePast()` to `NetworkProvider` and to every class that implements

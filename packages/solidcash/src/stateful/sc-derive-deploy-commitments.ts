@@ -41,6 +41,8 @@ import {
   directConventionMasterLock,
   getDynamicChunkAddress,
   getEntryNftAddress,
+  getSatoshiContainerAddress,
+  getTokenContainerAddress,
   getValueChunkLockingBytecode,
 } from './covenant-helpers.js';
 import { reduceProbeTrace } from './faithful-probe-trace.js';
@@ -435,6 +437,19 @@ export async function deriveDeployCommitments<T extends Artifact>(
       (nft, i) => probeBuilder.addInput(nft, dataNftUnlockers[i]),
     );
 
+    // A single satoshi container is an input slot too: the constructor's balance read and the genesis covenant's
+    // preservation check spend it. Present the probe's container at its block position, after the data NFTs.
+    const probeDeployer = artifact.deployer;
+    if (probeDeployer !== undefined && probeDeployer.satoshiContainer === 'required') {
+      const containerLock = addressToLockScript(getSatoshiContainerAddress(contract, categoryId));
+      probeBuilder.addInput({
+        txid: `${'00'.repeat(31)}ea`, vout: 0, satoshis: 1200n, lockingBytecode: containerLock,
+      }, {
+        generateLockingBytecode: (): Uint8Array => containerLock,
+        generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+      });
+    }
+
     const constructorKeccakSidecars = syntheticKeccakUtxos.map((utxo, batch) => buildKeccakComputeSidecar(
       constructorKeccakPreimages.slice(batch * 3, batch * 3 + 3)
         .map((preimage) => preimage ?? new Uint8Array(0)),
@@ -560,6 +575,30 @@ export async function deriveDeployCommitments<T extends Artifact>(
           },
         },
       });
+    }
+
+    // Container rows (A4.4's order: after entries, before the transfers). A deployer creation's genesis pins the
+    // satoshi row's category, its value against the journal balance, and each single token row's category and
+    // amount; the probe must carry the same rows the real creation mints or those pins fail.
+    const deployerAbi = artifact.deployer;
+    if (deployerAbi !== undefined) {
+      if (deployerAbi.satoshiContainer !== 'none') {
+        const value = options.initialBalance ?? 0n;
+        probeBuilder.addOutput({
+          to: getSatoshiContainerAddress(contract, categoryId),
+          amount: deployerAbi.satoshiContainer === 'required' ? 1200n : value,
+        });
+      }
+      for (const tokenRow of deployerAbi.tokenRows) {
+        const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
+          && utxo.token.category.toLowerCase() === String(contract.constructorArgs[tokenRow] ?? '').toLowerCase());
+        if (supplied === undefined) continue;
+        probeBuilder.addOutput({
+          to: getTokenContainerAddress(contract, categoryId, supplied.utxo.token!.category),
+          amount: supplied.utxo.satoshis,
+          token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
+        });
+      }
     }
 
     // Transfer placeholder outputs

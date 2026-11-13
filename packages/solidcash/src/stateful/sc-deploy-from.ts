@@ -59,6 +59,7 @@ import {
 } from './deployer.js';
 import { evalComputedKey, keyArguments } from './route-expression-key.js';
 import { callRecordDigest } from './call-record.js';
+import { deriveDeployCommitments } from './sc-derive-deploy-commitments.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { registeredValueAddressLockingBytecode, registerDeployment } from './deployment-registry.js';
 import {
@@ -76,7 +77,7 @@ import {
 import { encodeExternalReturnValues } from './external-return-encoding.js';
 import { eventContinuationLockingBytecode } from './event-chunks.js';
 import type {
-  DeployFromOptions, DeployFromResult,
+  DeployFromOptions, DeployFromResult, DeployOptions,
 } from './stateful-lifecycle-types.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
 
@@ -331,10 +332,19 @@ export async function deployFromStatefulContract<T extends Artifact>(
       if (value !== undefined) aParts.push(pushArgument(name, value));
     }
     const boundBytes = new Uint8Array([...qParts, ...aParts].flatMap((part) => [...part]));
+    // The creator indexes the child's master output as masterInput + the deploy slot's OUTPUT offset, while it
+    // indexes this input as that offset minus every output-only slot before it (a `{value:}` transfer row sits in
+    // only one of the two ranges). Turn the runtime input index into the output base with that difference.
+    const outputOnlyKinds = new Set(['transfer', 'tcTransfer', 'event', 'eventChunk', 'returnEvent', 'deployDataNft']);
+    const deployOutputOffset = deployAbi.blockLayout?.slots.find((slot) => slot.kind === 'deploy')?.offset ?? 0;
+    const outputOnlyBefore = deployAbi.blockLayout?.slots.filter(
+      (slot) => outputOnlyKinds.has(slot.kind) && slot.offset < deployOutputOffset,
+    ).length ?? 0;
     const deployerUnlockers: Unlocker[] = built.preps.map((_prep, childIndex) => ({
       generateLockingBytecode: () => hexToBin(childDeployer.lockingBytecode),
       generateUnlockingBytecode: ({ inputIndex }) => {
-        const outbase = BigInt(inputIndex) + BigInt(childIndex) * BigInt(childStride - 1);
+        const outbase = BigInt(inputIndex) + BigInt(outputOnlyBefore)
+          + BigInt(childIndex) * BigInt(childStride - 1);
         return buildDeployerUnlocking({
           deployer: childDeployer,
           callees: Array.from({ length: childDeployer.callSlots }, () => undefined),
@@ -559,9 +569,32 @@ export async function deployFromStatefulContract<T extends Artifact>(
     && childSeedState.unlocked === undefined) {
     childSeedState.unlocked = 1n;
   }
-  const childCommitments = buildInitialStateCommitments(
+  let childCommitments = buildInitialStateCommitments(
     childLayout, childSeedState, provider.consensusLimits?.maximumNftCommitmentBytes,
   );
+  if (childDeployer !== undefined && childContracts.length > 0
+    && childArtifact.abi.some((entry) => entry.name === '__construct')) {
+    // The factory probe only knows the child's address. Run the child's own create-equivalent constructor probe so
+    // its data-record commitment matches the value its Deploy<C> create pins; a deployer child's genesis reads the
+    // same records the SDK-direct `create` derives. The probe builds its own synthetic transaction, so it reads
+    // provider, funder, fundingUtxo, initialState and initArgs only; changeAddress is required by the type.
+    const firstCategory = fundingUtxos[0].txid;
+    const probeOptions: DeployOptions = {
+      ...options,
+      provider,
+      funder,
+      fundingUtxo: { ...(prepFunding[0] ?? options.fundingUtxo), vout: 0 },
+      initialState: options.childInitialState,
+      initArgs: childConstructorArgs,
+      changeAddress: changeAddress ?? '',
+    };
+    const derived = await deriveDeployCommitments(
+      childContracts[0], childArtifact, childLayout, firstCategory,
+      getDataNftAddress(childContracts[0], firstCategory), masterAmount, dataNftAmount,
+      probeOptions,
+    );
+    childCommitments = derived.stateCommitments;
+  }
 
   // Determine which data NFTs the factory's deploy function needs
   const requiredNftIndices = deployAbi.requiredNftIndices
@@ -1237,6 +1270,42 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // master + data NFTs carry its own category (fundingUtxos[k].txid) and self-pinned address; a loop {value:}
   // group ends with the interleaved value transfer to that child.
   const childExtraOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
+  // A child whose deployer keeps a satoshi container has a row in its genesis group. The child's own `create`
+  // pins `row value <= journal balance`, where the balance is the deploy value its Q carries: the row holds
+  // exactly that value, since a larger row would mint satoshis the child was not given. A payable child with no
+  // value therefore needs a zero-sat row, below the relay dust limit - refuse and name the option instead.
+  if (childDeployer !== undefined && childDeployer.tokenRows.length > 0) {
+    // A14 item 11: a token row needs at least one unit of its category from the paying wallet. deployFrom has no
+    // coin of that category to open it with, so refuse before building rather than mint a row without its token.
+    throw new DeployerPrepError(
+      `'${childArtifact.contractName}' keeps its token container inside a single coin; a creating call cannot `
+      + 'open it (the paying wallet has no coin of that category to pass)',
+    );
+  }
+  const childSatoshiRow = (cc: (typeof childContracts)[number], cat: string): { to: string | Uint8Array; amount: bigint } => {
+    const abi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
+    const value = options.childValue ?? 0n;
+    if (abi === undefined || abi.satoshiContainer === 'none') return { to: Uint8Array.of(0x51), amount: 0n };
+    if (abi.satoshiContainer === 'required') {
+      // A single container opens with its own RESERVE on top of the deploy value (A5); no value is fine, the
+      // paying wallet funds the reserve.
+      return { to: getSatoshiContainerAddress(cc, cat), amount: 1200n + value };
+    }
+    if (value === 0n) {
+      throw new DeployerPrepError(
+        `'${childArtifact.contractName}' has a payable constructor, so its satoshi-container row holds the `
+        + 'value the child is created with; pass childValue and fund the child with '
+        + `\`new ${childArtifact.contractName}{value: ...}()\` in the factory`,
+      );
+    }
+    if (value < 1200n) {
+      throw new DeployerPrepError(
+        `'${childArtifact.contractName}' needs childValue of at least 1200 satoshis: the child's satoshi row `
+        + 'may not hold less, and its own create pins the row to the deploy value',
+      );
+    }
+    return { to: getSatoshiContainerAddress(cc, cat), amount: value };
+  };
   for (let k = 0; k < childCount; k++) {
     const cc = childContracts[k];
     const cat = fundingUtxos[k].txid;
@@ -1265,14 +1334,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     }
     const childDeployerAbi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
     if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
-      const value = options.childValue ?? 0n;
-      if (value > 0n) {
-        childExtraOutputs.push({ to: getSatoshiContainerAddress(cc, cat), amount: value });
-      } else if (childDeployerAbi.satoshiContainer === 'required') {
-        childExtraOutputs.push({ to: getSatoshiContainerAddress(cc, cat), amount: 1200n });
-      } else {
-        childExtraOutputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
-      }
+      childExtraOutputs.push(childSatoshiRow(cc, cat));
     }
     if (isLoopValueDeploy) {
       childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });
@@ -1840,6 +1902,11 @@ export async function deployFromStatefulContract<T extends Artifact>(
       });
     }
     if (k === 0 && hasDeployDataNftSlots) addTrailingEntries();
+    // The child's satoshi-container row, in the same slot as the probe outputs above.
+    const childDeployerAbi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
+    if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
+      builder.addOutput(childSatoshiRow(cc, cat));
+    }
     // Loop {value:}: the value transfer to this child, interleaved as the last output of its group.
     if (isLoopValueDeploy) {
       builder.addOutput({ to: cc.address, amount: options.childValue ?? 0n });
@@ -1868,7 +1935,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // satoshis cover them (any value >= that cost). The iteration chain is satoshi-neutral, but its funder pad has
   // no matching output, so the pad's satoshis join the change.
   const newEntryCount = BigInt(trailingEntrySpecs.length);
-  const totalChildCost = BigInt(childCount) * (masterAmount
+  // A child's satoshi-container row takes its own dust from the funding inputs (see the genesis-group loop above).
+  const childContainerCost = (() => {
+    const abi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
+    if (abi === undefined || abi.satoshiContainer === 'none') return 0n;
+    const value = options.childValue ?? 0n;
+    return abi.satoshiContainer === 'required' ? 1200n + value : value;
+  })();
+  const totalChildCost = BigInt(childCount) * (masterAmount + childContainerCost
     + (dataNftAmount * BigInt(childLayout!.dataNftCount + childGenesisEntries.length)));
   const totalEntryCost = dataNftAmount * newEntryCount;
   const totalDynamicChunkCost = dataNftAmount * BigInt(dynamicWriteChunkOutputs.length);

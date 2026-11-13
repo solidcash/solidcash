@@ -47,7 +47,7 @@ describe('B9.5: a creating call through Deploy<C>', () => {
       provider,
       fundingUtxo: deploymentFunding,
       funder,
-      initialState: { childCount: 0n },
+      initialState: { childCount: 0n }, initialBalance: 5000n,
       changeAddress: change.address,
       senderLockingBytecode: authorLock,
     });
@@ -121,4 +121,76 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     expect((state as { childCount?: bigint }).childCount).toBe(2n);
   });
 
+  it('pins a child whose constructor writes state', async () => {
+    // The child's `create` pins the record its own constructor writes (n = 7). A commitment derived from the
+    // factory's probe alone would leave n at its zero default, and the child's genesis covenant refuses.
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child { int n; constructor() { n = 7; } }
+      contract StateFactory { int childCount;
+        function make() { new Child(); childCount = childCount + 1; }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const factoryArtifact = artifacts.StateFactory;
+    const childArtifact = artifacts.Child;
+    expect(factoryArtifact.childDeployers?.Child).toBeDefined();
+
+    const deploymentFunding: Utxo = { txid: 'f1'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+
+    const prepFunding: Utxo = { txid: 'f2'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+
+    const result = await StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address,
+    });
+
+    expect(result.prepTransactions).toHaveLength(1);
+    const state = await result.child.getState();
+    expect((state as { n?: bigint }).n).toBe(7n);
+    const factoryState = await result.factory.getState();
+    expect((factoryState as { childCount?: bigint }).childCount).toBe(1n);
+  });
+
+  it('refuses a payable child whose satoshi container has no value', async () => {
+    // A payable child's genesis row holds exactly the deploy value its create pins (the journal balance), and a
+    // zero-sat row is below the relay dust limit: the call must fund the child instead of pinning a row create
+    // would reject.
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child { int n; constructor() payable { n = 7; } }
+      contract PayFactory { int childCount;
+        function make() { new Child(); childCount = childCount + 1; }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const factoryArtifact = artifacts.PayFactory;
+    const childArtifact = artifacts.Child;
+
+    const deploymentFunding: Utxo = { txid: 'f3'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'f4'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+
+    await expect(StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address,
+    })).rejects.toThrow(/payable constructor/);
+  });
 });

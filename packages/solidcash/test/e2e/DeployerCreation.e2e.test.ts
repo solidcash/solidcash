@@ -7,6 +7,8 @@ import { compileString } from '../direct-compile.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
+import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { hexToBin } from '@bitauth/libauth';
 import { clearGenesisReservations } from '../../src/stateful/genesis-reservations.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -86,5 +88,67 @@ describe('a top-level deployment through Deploy<C>', () => {
     expect(contract.categoryId).not.toBe('22'.repeat(32));
     expect(await verifyBirth(provider, contract.categoryId, [artifact.deployer!])).toBe(true);
     await contract.read().send();
+  });
+
+  it('funds a payable constructor\'s satoshi row with initialBalance (B9.7)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(`${P} contract Pay { int n; constructor() payable { n = 1; } }`,
+      { deployer: true, messageBus: false });
+    expect(artifact.deployer!.satoshiContainer).toBe('optional');
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '31'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock, initialBalance: 2000n,
+    });
+    // The row holds the deploy value, and the contract's journal reads it back as its balance.
+    const rowAddress = getSatoshiContainerAddress(
+      (result.contract as any).inner ?? result.contract as any, result.categoryId,
+    );
+    const rows = (await provider.getUtxos(rowAddress)).filter((u) => u.satoshis === 2000n);
+    expect(rows).toHaveLength(1);
+    expect(((await result.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    expect(hexToBin(result.categoryId)).toHaveLength(32);
+  });
+
+  it('refuses a payable deployer deployment without initialBalance (B9.7)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(`${P} contract Pay { int n; constructor() payable { n = 1; } }`,
+      { deployer: true, messageBus: false });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '32'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    await expect(StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    })).rejects.toThrow(/pass initialBalance/);
+  });
+
+  it('funds a single satoshi container with RESERVE plus the value (B9.7)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(
+      `${P} pragma satoshicontainer single; contract Pay { int n; constructor() payable { n = 1; } }`,
+      { deployer: true, messageBus: false },
+    );
+    expect(artifact.deployer!.satoshiContainer).toBe('required');
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '33'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock, initialBalance: 2000n,
+    });
+    const rowAddress = getSatoshiContainerAddress(
+      (result.contract as any).inner ?? result.contract as any, result.categoryId,
+    );
+    const rows = (await provider.getUtxos(rowAddress)).filter((u) => u.satoshis === 3200n);
+    expect(rows).toHaveLength(1);
   });
 });

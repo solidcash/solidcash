@@ -773,6 +773,25 @@ export async function deployThroughDeployer<T extends Artifact>(
 
   const stateLayout = artifact.stateLayout;
   const constructorAbi = artifact.abi.find((entry) => entry.name === '__construct');
+  // A14 item 11 runs after the derive below, but its funding facts are needed by the probe: a container row holds
+  // the deploy value (the constructor must be payable to state one), and an unfunded row would be zero satoshis.
+  // Refuse here so the caller gets the option to pass, not a probe failure.
+  if (deployer.satoshiContainer !== 'none') {
+    const constructorPayable = constructorAbi?.modifiers?.includes('payable') === true;
+    if (!constructorPayable) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' keeps a satoshi container, but its constructor is not payable: the row's `
+        + 'satoshis are the deploy value, which only a payable constructor states (pass a payable constructor '
+        + 'and initialBalance)',
+      );
+    }
+    if ((options.initialBalance ?? 0n) === 0n) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' has a payable constructor, so its satoshi-container row holds the deploy `
+        + 'value; pass initialBalance of at least ' + String(RESERVE),
+      );
+    }
+  }
   const commitments = (await deriveDeployCommitments(
     contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n, options,
   )).stateCommitments;
@@ -819,26 +838,17 @@ export async function deployThroughDeployer<T extends Artifact>(
   }
 
   const payable = constructorAbi?.modifiers?.includes('payable') === true;
-  const deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
+  let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
   if (deployValue > 0n && deployValue < RESERVE) {
-    throw new DeployerPrepError(`initialBalance ${deployValue} is below RESERVE for a payable constructor`);
+    // A14 item 11: an optional row funded with 1..RESERVE-1 is raised to RESERVE, and the value it holds is the
+    // row's amount, so the journal's balance (which the row may not exceed) is raised with it.
+    deployValue = RESERVE;
   }
   const needsSatoshiRow = deployer.satoshiContainer !== 'none';
   if (needsSatoshiRow) {
-    const required = deployer.satoshiContainer === 'required';
-    const containerAmount = required ? (options.initialBalance ?? 0n) : (options.initialBalance ?? 0n);
-    if (required && containerAmount < RESERVE) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' keeps its satoshi container single; pass initialBalance of at least ${RESERVE}`,
-      );
-    }
-    if (containerAmount > 0n) {
-      outputs.push({ to: getSatoshiContainerAddress(contract as never, categoryId), amount: containerAmount });
-    } else if (required) {
-      throw new DeployerPrepError(`'${artifact.contractName}' needs its satoshi container funded`);
-    } else {
-      outputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
-    }
+    // A required row also holds RESERVE: it is the container's own opening balance (A5).
+    const containerAmount = deployer.satoshiContainer === 'required' ? RESERVE + deployValue : deployValue;
+    outputs.push({ to: getSatoshiContainerAddress(contract as never, categoryId), amount: containerAmount });
   }
   for (const tokenRow of deployer.tokenRows) {
     const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;

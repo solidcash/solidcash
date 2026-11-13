@@ -3701,7 +3701,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       `create` passing for a contract with one mapping, with the HEAD output that the SDK's genesis builds
       for it, and failing when its lock or its commitment is changed. The end-to-end proof that such a
       contract can insert in its first call is in Part C; if that test fails, stop and report.
-- [ ] **B7.14 Constants, the birth trailer, and the artifact (O4, O7).**
+- [x] **B7.14 Constants, the birth trailer, and the artifact (O4, O7).**
       - For a C that reads block data and is compiled with `deployer: true`, set both switches of A5's
         "Constant code"; when the constant-lock form cannot be built, raise `code-not-constant` and compile
         C as usual.
@@ -3726,17 +3726,18 @@ with a deployer whose constructor writes a collection, and only where today's st
         `deployer: true` set `artifact.deployerUnsupported` and emit `DeployerUnsupportedWarning`; in a
         creator's compile return the reason to it.
 
-      Note (implementation, 2026-11-12): the birth trailer, TEMPLATE, V_DEPLOY and the smallest-unlocking
-      check are done; the constants this compiler derives are C's own code, w_out is not yet computed (the
-      genesis layout is B7.9), and the block-oracle constant-lock form is not available in this backend.
-- [ ] **B7.15 Measure first.** As soon as B7.14 produces a deployer: build the sweep of a sample deployer
+      Note (implementation, 2026-11-13): the birth trailer, TEMPLATE, V_DEPLOY, the smallest-unlocking check
+      and w_out (from the B7.9 layout) are done. The block-oracle constant-lock form is not available in this
+      backend, so a live block reader is refused with `code-not-constant`; a constructor-only read uses the
+      locktime and needs no oracle.
+- [x] **B7.15 Measure first.** As soon as B7.14 produces a deployer: build the sweep of a sample deployer
       coin by hand and measure its size, fix the constant of V_DEPLOY, and fill D2, D3, D9, the second part
       of D16 and the deployer's part of D18. Then compile the user's two pools with `deployer: true` (read-only:
       `bch-next/contracts/NotePool.scash` and `TokenNotePool.scash`) and fill D20: the size of each
       deployer, and whether the smallest `create` unlocking fits in 10,000 bytes. If either pool does not
       fit, or is refused with a reason, stop and report before going on.
 
-      Note (implementation, 2026-11-12): both pools compile with a deployer and fit: D20 records 2,110 B and
+      Note (implementation, 2026-11-13): both pools compile with a deployer and fit: D20 records 2,110 B and
       2,129 B, with smallest creations of 6,981 B and 8,063 B. D2, D3 and D20 are filled; D9, D16's second
       part and D18's deployer part need the genesis-mode emitters.
       Note (implementation, 2026-11-12): `DeployerCreation.test.ts` runs genuine creates on the VM for records,
@@ -4627,9 +4628,10 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       ____ s against ____ s, ____ B. Also the solidc suite's time before and after this work: ____ min against
       ____ min.
 - [x] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
-      `childDeployers`: the solidc suite is 7,826/7,826 and solidcash 6,303 passed with 0 failed (baseline:
-      7,615 solidc). Only artifacts the new deployer tests ask for carry `deployer`; `childDeployers` appears on
-      the creating fixtures under `__deployerNew`. No pre-existing testing-suite artifact changed.
+      `childDeployers`: with the switch off the solidc suite was 7,826/7,826 and solidcash 6,303 passed with 0
+      failed (baseline 7,615 solidc). B10.1 then turned the switch on; the targeted regression files pass and
+      the root build regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer
+      tests ask for carry `deployer`.
 - [ ] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes: ____ ops; ____ of ____, ____ of ____; ____ B.

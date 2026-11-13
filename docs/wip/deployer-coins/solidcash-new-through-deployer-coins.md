@@ -21,7 +21,7 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 18 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 16 unticked ones name the shape the
 shipped SDK path refuses (block-field readers and their locktimes, `childContainers`/single token rows and a
 creating call's payments, constructor ecrecover, per-slot budget padding for a constructor loop, and the
 multi-site/multi-level creating cases); every Part D line is filled, including D13 from the shipped
@@ -4632,10 +4632,10 @@ their contract with `deployer: true`:
       and reads one back with `+=`: born through its deployer, its first calls read each key's last value,
       insert a fourth key between two of them, and read a key that was never written as its default (B7.18);
 - [x] `new` in a branch, and in a loop of two, with two different prep transactions and `deployments` given; *(covered by `DeployerCreatingCall.e2e`: `creates two children from a loop` builds two preps, and `creates one child from a branch` gives `deployments: 1` for a conditional `new`)*
-- [ ] a creating function with two `new` sites of different children; *(not covered)*
+- [x] a creating function with two `new` sites of different children; *(covered by `DeployerCreatingCall.e2e`: `creates two children of different contracts from two new sites` gives `deployments: 2`, two funding coins and both `childArtifacts`)*
 - [x] the SDK's outputs come from the run of Deploy<C> itself: changing one record commitment by hand makes *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       the local run fail;
-- [ ] a creator F whose child C creates a child G in one of its functions: F creates C, then C creates G. *(not covered)*
+- [x] a creator F whose child C creates a child G in one of its functions: F creates C, then C creates G. *(covered by `DeployerCreatingCall.e2e`: `creates a child that creates a child (F then C then G)` performs both creating calls and checks each category)*
 
 **Containers** (same file):
 - [ ] registries of the user's shape, one per pool kind, as the user decided (A18): *(not covered: the pool-shaped child needs `childContainers`, which is not implemented (B9.7))* a BCH registry whose

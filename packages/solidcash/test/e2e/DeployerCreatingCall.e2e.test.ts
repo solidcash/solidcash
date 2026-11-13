@@ -284,4 +284,82 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     expect(result.children).toHaveLength(1);
     expect((await result.factory.getState() as { childCount?: bigint }).childCount).toBe(1n);
   });
+
+
+  it('creates a child that creates a child (F then C then G)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract G { int n; }
+      contract C { int childCount;
+        function make() { new G(); childCount = childCount + 1; }
+      }
+      contract F { int childCount;
+        function makeC() { new C(); childCount = childCount + 1; }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+
+    const deploymentFunding: Utxo = { txid: 'a7'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const f = await StatefulContract.deploy(artifacts.F, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+
+    const cFunding: Utxo = { txid: 'a8'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), cFunding);
+    const c = await StatefulContract.deployFrom({
+      provider, factory: f.contract, deployFunctionName: 'makeC',
+      deployFunctionArgs: [], childArtifact: artifacts.C, childConstructorArgs: [],
+      childInitialState: { childCount: 0n }, fundingUtxo: cFunding,
+      funder, changeAddress: change.address,
+    });
+    expect(c.child.categoryId).toBe(c.childCategoryId);
+
+    const gFunding: Utxo = { txid: 'a9'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), gFunding);
+    const g = await StatefulContract.deployFrom({
+      provider, factory: c.child, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact: artifacts.G, childConstructorArgs: [],
+      childInitialState: { n: 0n }, fundingUtxo: gFunding,
+      funder, changeAddress: change.address,
+    });
+    expect(g.child.categoryId).toBe(g.childCategoryId);
+    expect((await c.child.getState() as { childCount?: bigint }).childCount).toBe(1n);
+  });
+
+
+  it('creates two children of different contracts from two new sites', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract A { int x; }
+      contract B { int y; }
+      contract F { int childCount;
+        function makeBoth() { new A(); new B(); childCount = childCount + 2; }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const deploymentFunding: Utxo = { txid: 'aa'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const f = await StatefulContract.deploy(artifacts.F, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const fundingA: Utxo = { txid: 'ab'.repeat(32), vout: 0, satoshis: 200000n };
+    const fundingB: Utxo = { txid: 'ac'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingA);
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingB);
+    const result = await StatefulContract.deployFrom({
+      provider, factory: f.contract, deployFunctionName: 'makeBoth',
+      deployFunctionArgs: [], childArtifact: artifacts.A,
+      childArtifacts: { A: artifacts.A, B: artifacts.B },
+      childConstructorArgs: [], fundingUtxos: [fundingA, fundingB], deployments: 2,
+      funder, changeAddress: change.address,
+    });
+    expect(result.children).toHaveLength(2);
+  });
 });

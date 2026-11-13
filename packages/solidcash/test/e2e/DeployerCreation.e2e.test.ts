@@ -369,4 +369,72 @@ describe('a top-level deployment through Deploy<C>', () => {
     await connected.call.put(1n, 2n).send();
     await connected.call.read(1n).send();
   });
+
+  it('keeps the last of three constructor writes to one mapping (B7.18)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const artifact = compileString(`${P} contract C { mapping(int => int) m; int n;
+      constructor() { m[1] = 10; m[2] = 20; m[1] = 11; n = m[1]; }
+      function put(int k, int v) { m[k] = v; }
+      function read(int k, int v) { require(m[k] == v); } }`, { deployer: true, messageBus: false });
+    const fundingUtxo: Utxo = { txid: '40'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const signer = new Signer(alicePriv, provider);
+    for (let index = 0; index < 6; index += 1) {
+      await provider.seedUtxo(signer.getAddress(), {
+        txid: `${(0x50 + index).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+      });
+    }
+    const connected = result.contract.connect(signer) as any;
+    await connected.call.read(1n, 11n).send();   // the last write to key 1 won
+    await connected.call.read(2n, 20n).send();   // key 2 holds its only write
+    await connected.call.put(3n, 30n).send();    // a fourth key between them
+    await connected.call.read(3n, 30n).send();
+    await connected.call.read(9n, 0n).send();    // an unwritten key is the type default
+  });
+
+  it('runs a constructor call against a record-sound callee (A7, A14 item 5)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const source = `${P} interface I { function f(int x) external returns (bool); }
+      contract T { bool ok; function f(int x) external returns (bool) { ok = true; return true; } }
+      contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
+    const deploy = async (artifact: any, initArgs: any[] = [], extra: any = {}) => {
+      const fundingUtxo: Utxo = {
+        txid: `${Math.floor(Math.random() * 1e9).toString(16).padStart(64, '0')}`, vout: 0, satoshis: 2_000_000n,
+      };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock,
+        ...(initArgs.length === 0 ? {} : { initArgs }), ...extra,
+      });
+    };
+    const tArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never);
+    const tResult = await deploy(tArtifact);
+    const cArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+    } as never);
+    console.log('CSLOTS', cArtifact.deployer?.callSlots, cArtifact.contractName);
+    const cResult = await deploy(cArtifact, [addressToLockScript(tResult.contract.address)], {
+      constructorCallees: [{ contract: tResult.contract, args: [5n] }],
+    });
+    const signer = new Signer(alicePriv, provider);
+    for (let index = 0; index < 4; index += 1) {
+      await provider.seedUtxo(signer.getAddress(), {
+        txid: `${(0x60 + index).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+      });
+    }
+    await (cResult.contract.connect(signer) as any).call.read().send();
+  });
 });

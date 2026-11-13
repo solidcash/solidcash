@@ -149,6 +149,19 @@ export async function deriveDeployCommitments<T extends Artifact>(
     stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
   );
 
+  // A contract without a constructor arm is born at its defaults: nothing runs, so there is nothing to probe.
+  if (constructorAbi === undefined) {
+    return {
+      stateCommitments: zeroCommitments,
+      entryCommitments: [],
+      trailingEntryCommitments: [],
+      eventCommitments: [],
+      dynamicChunkCommitments: {},
+      valueChunkOutputs: [],
+      transferOutputs: [],
+    };
+  }
+
   // Synthetic master UTXO (contract's locking script + minting NFT). It spends the category's genesis outpoint, as
   // the real genesis's input 0 does: the constructor arm runs only where input 0 spends `(category, 0)`.
   const syntheticMaster: Utxo = {

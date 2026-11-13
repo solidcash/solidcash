@@ -126,6 +126,11 @@ export interface DeployOptions {
   viaDeployer?: boolean;
   /** A prep built beforehand, whose deployer coin this deployment spends. */
   deployerPrep?: import('./deployer.js').DeployerPrep;
+  /**
+   * The contract each constructor call slot calls, in A4.2 slot order (A7, A14 item 5). Each callee must be
+   * record-sound; `args` are its function's visible arguments, and `functionName` defaults to the call's name.
+   */
+  constructorCallees?: readonly import('./deployer.js').ConstructorCallee[];
 }
 
 /** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */

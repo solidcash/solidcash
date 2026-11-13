@@ -174,6 +174,172 @@ export class DeployerCalleeError extends Error {
   }
 }
 
+/** A constructor's call target (A7): the deployed contract, its function and that function's visible arguments. */
+export interface ConstructorCallee {
+  contract: {
+    readonly inner: { readonly artifact: Artifact; readonly unlock: Record<string, ((...values: any[]) => Unlocker) | undefined> };
+    readonly categoryId: string;
+    readonly address: string;
+    getFullState(): Promise<{ masterUtxo?: Utxo; dataNftUtxos: Utxo[] }>;
+  };
+  functionName?: string;
+  args?: readonly FunctionArgument[];
+}
+
+/** A7's tag: `X ‖ slot ‖ g_in`, plus `g_out` and the create unlocking's ranges for a sender reader. */
+function constructorCallTag(categoryId: string, slot: number, gIn: number, senderReader: boolean,
+  gOut: number, aOffset: number, aLength: number, codeOffset: number, codeLength: number): Uint8Array {
+  const tag = new Uint8Array([
+    ...hexToBin(categoryId).slice().reverse(), slot & 0xff, (slot >> 8) & 0xff, gIn & 0xff, (gIn >> 8) & 0xff,
+  ]);
+  if (!senderReader) return tag;
+  const extra = new Uint8Array(10);
+  const write = (at: number, value: number): void => {
+    extra[at] = value & 0xff;
+    extra[at + 1] = (value >> 8) & 0xff;
+  };
+  write(0, gOut); write(2, aOffset); write(4, aLength); write(6, codeOffset); write(8, codeLength);
+  return new Uint8Array([...tag, ...extra]);
+}
+
+/** Encode a callee's full ABI frame with the genesis call's synthetic values. */
+function calleeFrame(callee: ConstructorCallee, functionName: string, args: readonly FunctionArgument[],
+  tag: Uint8Array, returnIndex: number, senderCategory?: Uint8Array): FunctionArgument[] {
+  const fn = callee.contract.inner.artifact.abi.find((entry) => entry.name === functionName);
+  if (fn === undefined) throw new DeployerCalleeError(callee.contract.inner.artifact.contractName, functionName,
+    'the callee has no such function');
+  const visible = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  if (args.length !== visible.length) throw new DeployerCalleeError(
+    callee.contract.inner.artifact.contractName, functionName,
+    `it takes ${visible.length} visible argument${visible.length === 1 ? '' : 's'}, but ${args.length} were given`,
+  );
+  const values = new Map<string, FunctionArgument>();
+  visible.forEach((input, index) => values.set(input.name, args[index]));
+  for (const input of fn.inputs) {
+    if (!input.name.startsWith('__internal__')) continue;
+    if (input.name === '__internal__genesisCall') values.set(input.name, tag);
+    else if (input.name === '__internal__returnOutputIdx') values.set(input.name, BigInt(returnIndex));
+    else if (input.name === '__internal__msgSenderCategory') values.set(input.name, senderCategory ?? new Uint8Array(32));
+    else throw new DeployerCalleeError(callee.contract.inner.artifact.contractName, functionName,
+      `the entry needs the internal witness '${input.name}', which a constructor's call cannot fill`);
+  }
+  return fn.inputs.map((input) => values.get(input.name)!);
+}
+
+/** The callee's data record and return record as the create must carry them. */
+export interface ConstructorCalleeRun {
+  master: Utxo;
+  dataNfts: Utxo[];
+  dataCommitments: string[];
+  returnCommitment: string;
+  category: string;
+  unlocking: Uint8Array;
+  dataUnlocking: Uint8Array;
+  returnIndex: number;
+}
+
+/** Run one callee in an isolated probe and learn its post-call data and return record (A14 item 5). */
+export async function deriveConstructorCalleeRun(options: {
+  callee: ConstructorCallee;
+  functionName: string;
+  args: readonly FunctionArgument[];
+  slot: number;
+  categoryId: string;
+  provider: NetworkProvider;
+  returnIndex: number;
+  masterInputIndex: number;
+  tag: Uint8Array;
+  createUnlocking?: Uint8Array;
+  childMasterLock?: Uint8Array;
+}): Promise<ConstructorCalleeRun> {
+  const { callee, functionName, args, slot, categoryId, provider, returnIndex, masterInputIndex, tag } = options;
+  const artifact = callee.contract.inner.artifact;
+  assertDeployerCallee(artifact.contractName, artifact, functionName);
+  const state = await callee.contract.getFullState();
+  if (state.masterUtxo === undefined) throw new DeployerCalleeError(artifact.contractName, functionName,
+    'the callee has no master coin on the network yet');
+  const { addressToLockScript } = await import('../utils.js');
+  const { getDataNftAddress } = await import('./covenant-helpers.js');
+  const masterLock = addressToLockScript(callee.contract.address);
+  const dataLock = addressToLockScript(getDataNftAddress(
+    callee.contract.inner as never, callee.contract.categoryId,
+  ));
+  const master: Utxo = { ...state.masterUtxo, lockingBytecode: masterLock };
+  const dataNfts: Utxo[] = state.dataNftUtxos.map((utxo) => ({ ...utxo, lockingBytecode: dataLock }));
+  const senderReader = (artifact.abi.find((entry) => entry.name === functionName)?.inputs ?? [])
+    .some((input) => input.name === '__internal__msgSenderCategory');
+  const abiValues = calleeFrame(callee, functionName, args, tag, returnIndex,
+    senderReader ? hexToBin(categoryId) : undefined);
+  const unlocker = callee.contract.inner.unlock[functionName]?.(...abiValues);
+  if (unlocker === undefined) throw new DeployerCalleeError(artifact.contractName, functionName,
+    'the SDK cannot build its unlocking');
+  const calleeUnlocking = unlocker.generateUnlockingBytecode({
+    transaction: { version: 2, locktime: 0, inputs: [], outputs: [] }, sourceOutputs: [], inputIndex: 1,
+  } as never);
+  const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+  const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
+  const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
+  const genesisLock = options.childMasterLock ?? Uint8Array.of(0x51);
+  const dataCount = dataNfts.length;
+  const runProbe = (dataCommits: readonly string[], returnCommit: string): any => {
+    const builder = new CovenantTransactionBuilder({ provider });
+    builder.addInput({ txid: categoryId, vout: 0, satoshis: 1200n, lockingBytecode: genesisLock }, {
+      generateLockingBytecode: () => genesisLock,
+      generateUnlockingBytecode: () => options.createUnlocking ?? Uint8Array.of(0x51),
+    });
+    builder.addInput(master, {
+      generateLockingBytecode: () => masterLock,
+      generateUnlockingBytecode: () => calleeUnlocking,
+    });
+    dataNfts.forEach((utxo) => builder.addInput(utxo, {
+      generateLockingBytecode: () => dataLock,
+      generateUnlockingBytecode: () => Uint8Array.of(0x51),
+    }));
+    builder.addOutput({ to: genesisLock, amount: 1200n });
+    builder.addOutput({ to: masterLock, amount: master.satoshis, ...(master.token === undefined ? {} : { token: master.token }) });
+    dataNfts.forEach((utxo, index) => builder.addOutput({
+      to: dataLock, amount: utxo.satoshis,
+      token: { category: callee.contract.categoryId, amount: 0n,
+        nft: { capability: 'mutable', commitment: dataCommits[index] ?? '' } },
+    }));
+    for (let index = 2 + dataCount; index < returnIndex; index += 1) {
+      builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+    }
+    builder.addOutput({
+      to: Uint8Array.of(0x51), amount: 1000n,
+      token: { category: callee.contract.categoryId, amount: 0n,
+        nft: { capability: 'none', commitment: returnCommit } },
+    });
+    const { transaction, sourceOutputs } = builder.buildLibauthProgram();
+    return evaluateProbeTrace(provider, { inputIndex: 1, sourceOutputs, transaction });
+  };
+  let dataCommitments = dataNfts.map(() => '');
+  let returnCommitment = '';
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const trace = runProbe(dataCommitments, returnCommitment);
+    const nextData = extractCommitmentsFromTrace(trace, dataCount, { min: 2, max: 2 + dataCount }) ?? [];
+    const nextReturn = extractCommitmentsFromTrace(trace, 1, { min: returnIndex, max: returnIndex + 1 })?.[0];
+    let changed = false;
+    if (nextData.length >= dataCount && nextData.some((value, index) => value !== dataCommitments[index])) {
+      dataCommitments = nextData.slice(0, dataCount); changed = true;
+    }
+    if (nextReturn !== undefined && nextReturn !== returnCommitment) { returnCommitment = nextReturn; changed = true; }
+    if (!changed) break;
+  }
+  if (dataCommitments.some((value) => value === '') || returnCommitment === '') {
+    throw new DeployerCalleeError(artifact.contractName, functionName,
+      'the probe could not read the callee\'s records');
+  }
+  const { createDataNftUnlocker } = await import('./covenant-helpers.js');
+  const dataUnlocking = createDataNftUnlocker(
+    callee.contract.inner as never, masterInputIndex, callee.contract.categoryId,
+  ).generateUnlockingBytecode({
+    transaction: { version: 2, locktime: 0, inputs: [], outputs: [] }, sourceOutputs: [], inputIndex: 1,
+  } as never);
+  return { master, dataNfts, dataCommitments, returnCommitment,
+    category: callee.contract.categoryId, unlocking: calleeUnlocking, dataUnlocking, returnIndex };
+}
+
 export class DeployerSidecarError extends Error {
   constructor(kind: 'keccak' | 'ecrecover') {
     super(`No shared ${kind} sidecar coin was found for the deployer; the deployer's shared pool must already exist`);
@@ -498,6 +664,8 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
       || /^__internal__vmapBatchNext_\d+$/.test(input.name)) values.set(input.name, new Uint8Array(32));
     else if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) values.set(input.name, encodeBigInt(-1n));
     else if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) values.set(input.name, encodeBigInt(-2n));
+    else if (/^__internal__vmapBatchRank_\d+$/.test(input.name)) values.set(input.name, encodeBigInt(0n));
+    else if (input.name.startsWith('__internal__vmapBatchRows_')) values.set(input.name, new Uint8Array());
     else if (input.name === '__internal__vmapBatchTrailingCount') values.set(input.name, encodeBigInt(0n));
   }
 
@@ -626,6 +794,252 @@ export function runDeployerInputsLocal(
     runs.push({ inputIndex, operationCost: BigInt(state.metrics?.operationCost ?? 0) });
   }
   return runs;
+}
+
+/**
+ * A14 item 5's fixed point on the shipped creation: a constructor with one call slot and no collection rows,
+ * events or transfers. The callee's record is learned in an isolated probe; the create's own trace then supplies
+ * the child's data-record commitment, and the one tag candidate whose `X` the compiler checks is kept.
+ */
+async function deployThroughCallSlot<T extends Artifact>(options: {
+  artifact: T;
+  constructorArgs: readonly FunctionArgument[];
+  options: import('./stateful-lifecycle-types.js').DeployOptions;
+  prep: DeployerPrep;
+  contract: import('../Contract.js').Contract<T>;
+  deployer: DeployerAbi;
+  categoryId: string;
+  masterLock: Uint8Array;
+  dataNftAddress: string;
+  leading: import('../interfaces.js').Output[];
+  outbase: number;
+  args: Record<string, FunctionArgument>;
+  deployValue: bigint;
+  masterAmount: bigint;
+  dataNftAmount: bigint;
+  stateLayout: NonNullable<Artifact['stateLayout']>;
+  constructorAbi: NonNullable<Artifact['abi'][number]> | undefined;
+}): Promise<import('./stateful-lifecycle-types.js').DeployResult<T>> {
+  const {
+    artifact, constructorArgs, prep, contract, deployer, categoryId, masterLock, dataNftAddress, leading, outbase,
+    args, deployValue, masterAmount, dataNftAmount, stateLayout, constructorAbi,
+  } = options;
+  const callSite = constructorAbi?.externalCalls?.[0];
+  const configured = options.options.constructorCallees?.[0];
+  if (callSite === undefined || configured === undefined) {
+    throw new DeployerCalleeError(artifact.contractName, callSite?.functionName ?? '<unknown>',
+      'pass one constructorCallees entry for the call slot');
+  }
+  const functionName = configured.functionName ?? callSite.functionName;
+  const visible = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+  const calleeArgs = configured.args ?? (callSite.argSources ?? []).map((source) => {
+    if (source.kind === 'literal') return source.value as FunctionArgument;
+    if (source.kind === 'forward' && source.paramIndex !== undefined) {
+      const input = visible[source.paramIndex];
+      const value = input === undefined ? undefined : args[input.name];
+      if (value !== undefined) return value;
+    }
+    throw new DeployerCalleeError(configured.contract.inner.artifact.contractName, functionName,
+      'its call arguments are not literals or forwarded constructor parameters; pass them in constructorCallees');
+  });
+  const createFn = deployer.abi.find((entry) => entry.name === 'create');
+  if (createFn === undefined) throw new DeployerPrepError(`Deployer of '${artifact.contractName}' has no create arm`);
+  const dataCount = stateLayout.dataNftCount;
+  const calleeBase = outbase + deployer.genesisOutputs;
+  const calleeDataCount = configured.contract.inner.artifact.stateLayout?.dataNftCount ?? 0;
+  const returnIndex = calleeBase + 1 + calleeDataCount;
+  const senderReader = (configured.contract.inner.artifact.abi.find((entry) => entry.name === functionName)?.inputs ?? [])
+    .some((input) => input.name === '__internal__msgSenderCategory');
+  const pushLength = (value: FunctionArgument | undefined, type: string): number => {
+    if (value === undefined) return 0;
+    const raw = encodeFunctionArgument(value, type, artifact.structs);
+    return raw instanceof Uint8Array ? encodeDataPush(raw).length : 0;
+  };
+  let qLength = encodeDataPush(new Uint8Array(32)).length + encodeDataPush(bigIntToVmNumber(0n)).length;
+  let aLength = 0;
+  createFn.inputs.filter((input) => !input.name.startsWith('__internal__')).forEach((input, index) => {
+    const length = pushLength(args[input.name], input.type);
+    if (index < artifact.constructorInputs.length) aLength += length;
+    else qLength += length;
+  });
+  const codeLength = hexToBin(deployer.code).length;
+  const codeHeader = codeLength < 0x4c ? 1 : codeLength <= 0xff ? 2 : codeLength <= 0xffff ? 3 : 5;
+  const aOffset = 6 + 2 * deployer.callSlots + qLength;
+  const codeOffset = aOffset + aLength + codeHeader;
+  const callSynthetics = {
+    __internal__externalCallInputBase: BigInt(calleeBase),
+    __internal__extcallMasterIdx0: BigInt(calleeBase),
+    __internal__extcallAnchorIdx0: -1n,
+    __internal__returnOutputIdx: BigInt(returnIndex),
+    __internal__callEdgeOutputIdx0: -1n,
+  };
+  const unlockingFor = (tag: Uint8Array): Uint8Array => buildDeployerUnlocking({
+    deployer,
+    callees: [calleeBase],
+    args,
+    value: deployValue,
+    senderCategory: new Uint8Array(32),
+    authorIndex: 1,
+    identity: true,
+    budgetPad: new Uint8Array(),
+    synthetic: {
+      __internal__genesisOutputBase: BigInt(outbase),
+      __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
+      ...callSynthetics,
+      __internal__externalReturnOutputIdx: BigInt(returnIndex),
+    },
+  });
+  const { TransactionBuilder } = await import('../TransactionBuilder.js');
+  const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
+  const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
+  const fee = options.options.fee ?? defaultDeployerFee(deployer);
+  let failure = '';
+  for (const reverseTag of [true, false]) {
+    const tag = reverseTag
+      ? constructorCallTag(categoryId, 0, 0, senderReader, outbase, aOffset, aLength, codeOffset, codeLength)
+      : new Uint8Array([
+        ...hexToBin(categoryId), 0, 0, 0, 0,
+        ...(senderReader ? [
+          outbase & 0xff, (outbase >> 8) & 0xff,
+          aOffset & 0xff, (aOffset >> 8) & 0xff, aLength & 0xff, (aLength >> 8) & 0xff,
+          codeOffset & 0xff, (codeOffset >> 8) & 0xff, codeLength & 0xff, (codeLength >> 8) & 0xff,
+        ] : []),
+      ]);
+    const prototype = unlockingFor(tag);
+    const run = await deriveConstructorCalleeRun({
+      callee: configured, functionName, args: calleeArgs, slot: 0, categoryId,
+      provider: options.options.provider, returnIndex, tag, masterInputIndex: calleeBase,
+      createUnlocking: prototype, childMasterLock: masterLock,
+    });
+    let dataCommitments = Array.from({ length: dataCount }, () => '');
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      const outputs: import('../interfaces.js').Output[] = [...leading];
+      for (let index = 0; index < dataCount; index += 1) {
+        outputs.push({
+          to: dataNftAddress, amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: dataCommitments[index] ?? '' } },
+        });
+      }
+      outputs.push({
+        to: masterLock, amount: masterAmount,
+        token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+      });
+      // The layout puts the master before its data records.
+      outputs.splice(outbase, 0, outputs.pop()!);
+      outputs.push({
+        to: run.master.lockingBytecode ?? new Uint8Array(), amount: run.master.satoshis,
+        ...(run.master.token === undefined ? {} : { token: run.master.token }),
+      });
+      run.dataNfts.forEach((utxo, index) => outputs.push({
+        to: utxo.lockingBytecode ?? new Uint8Array(), amount: utxo.satoshis,
+        token: { category: run.category, amount: 0n,
+          nft: { capability: 'mutable', commitment: run.dataCommitments[index] ?? '' } },
+      }));
+      outputs.push({
+        to: Uint8Array.of(0x51), amount: 1000n,
+        token: { category: run.category, amount: 0n,
+          nft: { capability: 'none', commitment: run.returnCommitment } },
+      });
+      const deployerUnlocker: Unlocker = {
+        generateLockingBytecode: () => hexToBin(deployer.lockingBytecode),
+        generateUnlockingBytecode: () => unlockingFor(tag),
+      };
+      const builder = new TransactionBuilder({
+        provider: options.options.provider,
+        ...(options.options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.options.maxFee }),
+        skipAutomaticCoSpends: true,
+      });
+      builder.addInput(prep.deployerCoin, deployerUnlocker);
+      builder.addInput(prep.authorCoin, options.options.funder);
+      let fillerTotal = 0n;
+      while (builder.inputs.length < calleeBase) {
+        if (prep.changeCoin === undefined || builder.inputs.some(
+          (input) => input.txid === prep.changeCoin!.txid && input.vout === prep.changeCoin!.vout,
+        )) {
+          throw new DeployerPrepError(
+            `'${artifact.contractName}' needs a filler input at index ${builder.inputs.length} for its constructor `
+            + 'call slot, but the prep left no unused change coin',
+          );
+        }
+        builder.addInput(prep.changeCoin, options.options.funder);
+        fillerTotal += prep.changeCoin.satoshis;
+      }
+      builder.addInput(run.master, {
+        generateLockingBytecode: () => run.master.lockingBytecode ?? new Uint8Array(),
+        generateUnlockingBytecode: () => run.unlocking,
+      });
+      run.dataNfts.forEach((utxo) => builder.addInput(utxo, {
+        generateLockingBytecode: () => utxo.lockingBytecode ?? new Uint8Array(),
+        generateUnlockingBytecode: () => run.dataUnlocking,
+      }));
+      const outputTotal = outputs.reduce((sum, output) => sum + output.amount, 0n);
+      if (prep.authorCoin.satoshis + fillerTotal < outputTotal + fee) {
+        throw new DeployerPrepError(
+          `The author coin of '${artifact.contractName}' holds ${prep.authorCoin.satoshis} satoshis, but its `
+          + `creation needs ${outputTotal + fee}`,
+        );
+      }
+      outputs.forEach((output) => builder.addOutput(output));
+      const change = prep.authorCoin.satoshis + fillerTotal - outputTotal - fee;
+      if (change >= DUST) builder.addOutput({ to: options.options.changeAddress, amount: change });
+      const program = builder.buildLibauthProgram(true);
+      const trace = evaluateProbeTrace(options.options.provider, {
+        inputIndex: 0, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+      });
+      const last = trace[trace.length - 1] as { error?: string } | undefined;
+      const next = extractCommitmentsFromTrace(
+        trace, dataCount, { min: outbase + 1, max: outbase + 1 + dataCount },
+      ) ?? [];
+      const changed = next.length === dataCount
+        && next.some((commitment, index) => commitment !== dataCommitments[index]);
+      if (changed) { dataCommitments = next; continue; }
+      if (last?.error === undefined) {
+        // The deployer input passes; every callee input must too, then the creation is sent.
+        const runs = runDeployerInputsLocal(options.options.provider, program.transaction, program.sourceOutputs);
+        const creationHex = binToHex(encodeTransaction(program.transaction));
+        if ((globalThis as any).process?.env?.DEBUG_D13) {
+          const redeemLength = (() => {
+            const instructions = (globalThis as any).__decode?.(run.unlocking) ?? [];
+            return instructions.length === 0 ? undefined : instructions[instructions.length - 1].data?.length;
+          })();
+          console.log('D13', JSON.stringify({
+            transactionBytes: creationHex.length / 2,
+            operationCosts: runs.map((entry) => ({ input: entry.inputIndex, cost: entry.operationCost.toString() })),
+            calleeUnlockingBytes: run.unlocking.length,
+            deployerUnlockingBytes: program.transaction.inputs[0].unlockingBytecode.length,
+            deployerRedeemBytes: hexToBin(deployer.bytecode).length,
+            calleeRedeemBytes: redeemLength,
+          }));
+        }
+        await broadcastDeployerPreps([prep], options.options.provider);
+        const creationTxid = await options.options.provider.sendRawTransaction(creationHex);
+        releaseDeployerAuthorReservations([prep]);
+        return {
+          contract: (await import('./StatefulContract.js')).StatefulContract.withCategory(
+            contract, categoryId,
+          ) as never,
+          tx: (await import('../wait.js')).attachWait({
+            ...program.transaction, txid: creationTxid, hex: creationHex,
+          } as never, options.options.provider),
+          categoryId,
+          identity: (await import('../bcmr/identity.js')).identityRecord(
+            (await import('../bcmr/identity.js')).planGenesisIdentity({
+              category: categoryId,
+              deployerLock: options.options.senderLockingBytecode
+                ?? options.options.funder.generateLockingBytecode(),
+            }), creationTxid,
+          ),
+          prepTransactions: [prep.transactionHex],
+        };
+      }
+      failure = last.error;
+      break;
+    }
+  }
+  throw new DeployerPrepError(
+    `The creation of '${artifact.contractName}' did not pass its own run: ${failure || 'no tag candidate matched'}`,
+  );
 }
 
 /** True when output 0 of the category's prep transaction is locked to one of the given deployers (A14 item 8). */
@@ -812,9 +1226,18 @@ export async function deployThroughDeployer<T extends Artifact>(
       );
     }
   }
-  const derived = await deriveDeployCommitments(
-    contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n, options,
-  );
+  const callSlotPath = deployer.callSlots === 1
+    && (constructorAbi?.entryAccesses?.length ?? 0) === 0
+    && (constructorAbi?.emits?.length ?? 0) === 0
+    && (constructorAbi?.transferCount ?? 0) === 0;
+  const derived = callSlotPath
+    ? {
+      stateCommitments: [], entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
+      dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
+    }
+    : await deriveDeployCommitments(
+      contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n, options,
+    );
   const commitments = derived.stateCommitments;
 
   // A14 item 3: output 0 is the category's authhead identity, and `create` pins it when
@@ -847,9 +1270,10 @@ export async function deployThroughDeployer<T extends Artifact>(
 
   // A14 item 5/7: the callee list and the sender parameters. The compiler cannot yet run a constructor with a call
   // slot in the VM (B7.11), and a container row or a collection write is not in its genesis layout yet (B7.9).
-  if (deployer.callSlots > 0) {
+  if (deployer.callSlots > 1 || (deployer.callSlots === 1 && !callSlotPath)) {
     throw new DeployerPathError(
-      `Contract '${artifact.contractName}' has ${deployer.callSlots} constructor call slots, which the compiler's deployer cannot run in the VM yet`,
+      `Contract '${artifact.contractName}' has ${deployer.callSlots} constructor call slots together with `
+      + 'collection rows, events or transfers, which the SDK creation probe does not derive yet',
     );
   }
   if (deployer.readsBlockData || deployer.constructorBlockField !== undefined) {
@@ -1005,11 +1429,22 @@ export async function deployThroughDeployer<T extends Artifact>(
     args[name] = value as FunctionArgument;
   });
 
+  if (callSlotPath) {
+    return deployThroughCallSlot({
+      artifact, constructorArgs, options, prep, contract, deployer, categoryId, masterLock, dataNftAddress,
+      leading, outbase, args, deployValue, masterAmount, dataNftAmount, stateLayout, constructorAbi,
+    });
+  }
+
+  const calleeRuns: Array<ConstructorCalleeRun & { inputIndex: number }> = [];
+  let callSynthetics: Record<string, bigint> = {};
+  let calleeList: Array<number | undefined> = Array.from({ length: deployer.callSlots }, () => undefined);
+
   const deployerUnlocker: Unlocker = {
     generateLockingBytecode: () => hexToBin(deployer.lockingBytecode),
     generateUnlockingBytecode: () => buildDeployerUnlocking({
       deployer,
-      callees: Array.from({ length: deployer.callSlots }, () => undefined),
+      callees: calleeList,
       args,
       value: deployValue,
       senderCategory: new Uint8Array(32),
@@ -1019,6 +1454,7 @@ export async function deployThroughDeployer<T extends Artifact>(
       synthetic: {
         __internal__genesisOutputBase: BigInt(outbase),
         __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
+        ...callSynthetics,
       },
       forBroadcast: true,
     }),
@@ -1031,6 +1467,21 @@ export async function deployThroughDeployer<T extends Artifact>(
   });
   builder.addInput(prep.deployerCoin, deployerUnlocker);
   builder.addInput(prep.authorCoin, options.funder);
+  for (const run of calleeRuns) {
+    if (builder.inputs.length !== run.inputIndex) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' cannot place its callee at input ${run.inputIndex}`,
+      );
+    }
+    builder.addInput(run.master, {
+      generateLockingBytecode: () => run.master.lockingBytecode ?? new Uint8Array(),
+      generateUnlockingBytecode: () => run.unlocking,
+    });
+    run.dataNfts.forEach((utxo) => builder.addInput(utxo, {
+      generateLockingBytecode: () => utxo.lockingBytecode ?? new Uint8Array(),
+      generateUnlockingBytecode: () => Uint8Array.of(0x51),
+    }));
+  }
   // A4.4 aligns the sidecar group at the same input and output index. The identity output shifts the outputs but
   // has no input, so a sidecar-bearing creation spends the prep's own change coin as the neutral filler. It is a
   // real wallet coin at the change lock, and its value returns in the change output.

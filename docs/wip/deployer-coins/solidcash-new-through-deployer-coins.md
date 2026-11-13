@@ -21,13 +21,14 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 23 unticked ones name the shape the
-shipped SDK path refuses (constructor call slots, block-field readers, `childContainers`/single token rows,
-constructor ecrecover and the multi-site/multi-level cases); in Part D every line but D13 is filled (D13's
-measurement has no shipped precondition, so it is kept unticked with its limitation). Constructor events, the
-identity output and a stated BCMR publication, the public options/result lists, the self-category deployment,
-constructor mapping rows (written entries and unwritten HEADs) and a first call that inserts or reads a mapping
-entry are implemented and tested. The Part D measurements come from SDK-built transactions.
+in Part C the ticked cases name the committed test that covers them and the 21 unticked ones name the shape the
+shipped SDK path refuses (call slots beyond the simple one-slot shape, block-field readers,
+`childContainers`/single token rows, constructor ecrecover and the multi-site/multi-level cases); every Part D
+line is filled, including D13 from the shipped constructor-call creation. Constructor events, the identity
+output and a stated BCMR publication, the public options/result lists, the self-category deployment, constructor
+mapping rows (written entries, unwritten HEADs and repeated writes), a first call that inserts or reads a mapping
+entry, and a constructor call against a record-sound callee through `constructorCallees` are implemented and
+tested. The Part D measurements come from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -4624,7 +4625,7 @@ their contract with `deployer: true`:
 - [ ] a contract whose constructor reads the balance of a single token container reads 1, the unit the *(not covered: a creating call refuses a single token container, B9.7)*
       creation seeds it with; its first call spends the container; and a constructor that sends tokens does
       not compile (B7.18);
-- [ ] a contract whose constructor writes three keys of one mapping at three sites, two of them the same key, *(compiler VM cases cover the constructor; the SDK creation path is not covered)*
+- [x] a contract whose constructor writes three keys of one mapping at three sites, two of them the same key, *(covered by `DeployerCreation.e2e`: the creation pins two rows, the first calls read 11, 20, then insert 30 and read 0 for an unwritten key)*
       and reads one back with `+=`: born through its deployer, its first calls read each key's last value,
       insert a fourth key between two of them, and read a key that was never written as its default (B7.18);
 - [ ] `new` in a branch, and in a loop of two, with two different prep transactions and `deployments` given; *(the loop of two is covered; the branch case is not)*
@@ -4815,15 +4816,15 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       base changes and the BCMR/collection work (solidc 7,837/7,837; solidcash 6,303 passed, 0 failed). The root build regenerates no
       testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for carry
       `deployer`.
-- [ ] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
+- [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
-      still passes: recorded as a limitation, not estimated. `deployThroughDeployer` refuses `callSlots > 0`
-      before building, because the compiler's `create` cannot yet run a callee in the VM (the compiler-side
-      genesis-call checks are exercised on hand-built spends in the solidc tests). No production SDK creation
-      with a constructor call exists from which to measure the cost, digest iterations, or a shortest
-      unlocking; wiring the callee resolution into the deployer path is the work that would fill this line.
-      The box stays unticked: the item's precondition (a shipped creation with a constructor call) does not
-      exist, so there is no measurement to report against a limit.
+      still passes. Measured on the shipped creation of `DeployerCreation.e2e`'s constructor-call case
+      (a record-sound callee that returns a value): the creation is 5,401 B; the deployer input costs
+      168,524 operations of a 2,926,400 budget (5.8%, from its 2,823-byte unlocking and 835-byte redeem),
+      the callee's master input 177,981 of a 2,182,400 budget (8.2%), and its data input 18,672; the callee
+      unlocking is 1,385 B. The callee's sender step hashes the 2,823-byte `S`: 45 64-byte digest blocks; a
+      6,000-byte `S` is 94 by the same block count (not separately measured). The shortest callee unlocking
+      that still passes was not probed; 1,385 B is the shipped one and it passes.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for

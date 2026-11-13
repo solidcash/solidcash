@@ -4666,7 +4666,7 @@ their contract with `deployer: true`:
       `true`;
 - [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(not covered: the sender-reading callee's tag probe does not settle yet; the compiler VM cases cover it)*
       call has a call slot, and the callee stores M;
-- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(not covered: the SDK path supports one call slot, so the two-slot case is refused)*
+- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(not covered: the SDK path supports one call slot. A two-slot creation was built: `create` emitted one callee binding while its mask expects two, so the create's own run failed; the generator's `emitGenesisCalleeBindings` and its `(1 << slots.length) - 1` mask disagree on the constructor's slot count on this shape)*
 - [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered: a void callee's record is not exercised on the SDK path; the compiler VM cases cover it)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
 - [ ] the same against a registry compiled without the option, and against a callee compiled with *(not covered by an e2e: `assertDeployerCallee` throws `DeployerCalleeError` for a callee that is not record-sound; the e2e path is not exercised)*

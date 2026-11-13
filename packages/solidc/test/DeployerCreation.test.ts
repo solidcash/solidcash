@@ -12,6 +12,8 @@ import {
   type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
+import { SignatureTemplate } from '../../solidcash/src/index.js';
+import { alicePriv } from '../../solidcash/test/fixture/vars.js';
 
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -217,6 +219,50 @@ describe('B7.16: the master output is pinned', () => {
     expect(vm.verify(wrongCommitment as never)).not.toBe(true);
     const wrongValue = spends((output) => ({ ...output, valueSatoshis: 1201n }));
     expect(vm.verify(wrongValue as never)).not.toBe(true);
+  });
+});
+
+describe('B7.16: the deployer coin and the output base', () => {
+  it('refuses a deployer outpoint that is not the category origin', () => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const spend = createSpend(artifact, artifact.deployer!);
+    spend.transaction.inputs[DEPLOYER_INPUT].outpointTransactionHash = new Uint8Array(32).fill(9);
+    expect(vm.verify(spend as never)).not.toBe(true);
+  });
+
+  it('refuses a genesis output base that disagrees with the outputs', () => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const spend = createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined,
+      { __internal__genesisOutputBase: Uint8Array.of(OUTBASE + 1) });
+    expect(vm.verify(spend as never)).not.toBe(true);
+  });
+});
+
+describe('B7.10: the constructor reads msg.sender as tx.origin at birth', () => {
+  const C_SENDER = `${P} contract C { int n; constructor() { n = int(msg.sender.length); } }`;
+  const signer = new SignatureTemplate(alicePriv);
+  const P2PKH = signer.unlockP2PKH().generateLockingBytecode();
+
+  it('resolves the deploying wallet when a native P2PKH coin is co-spent', () => {
+    const artifact = compileString(C_SENDER, { deployer: true, messageBus: false });
+    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 25n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, {
+      __internal__creatorInputIdx: Uint8Array.of(0x81),
+      __internal__creatorList: EMPTY,
+      __internal__creatorListPos: EMPTY,
+    }, P2PKH);
+    spend.transaction.inputs[0].unlockingBytecode = signer.unlockP2PKH().generateUnlockingBytecode({
+      transaction: spend.transaction as never, sourceOutputs: spend.sourceOutputs as never, inputIndex: 0,
+    });
+    expect(vm.verify(spend as never)).toBe(true);
+  });
+
+  it('refuses when there is no native origin', () => {
+    const artifact = compileString(C_SENDER, { deployer: true, messageBus: false });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 0n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    )) as never)).not.toBe(true);
   });
 });
 

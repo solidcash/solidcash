@@ -4296,22 +4296,24 @@ as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the pr
 
 ## B10. The switch
 
-- [ ] **B10.1** Remove the option `__deployerNew`: `isDeployerNew` no longer depends on it. Every direct
+- [x] **B10.1** Remove the option `__deployerNew`: `isDeployerNew` no longer depends on it. Every direct
       `new` of a stateful child now binds a deployer.
 - [x] **B10.2** Run both full suites (milestone), and the regression files of Part C. An existing test that
       creates a stateful child through a creator now needs preps: where it passes a signer and funding
       coins, the SDK builds them by itself (A14 item 4); otherwise give the test `prepFunding`. Update an
       expectation only for a reason Part C's "Regression" names, and explain each in the commit message.
-      Note (implementation, 2026-11-13): both full suites pass (solidc 7,826/7,826; solidcash 6,303 passed,
-      0 failed, 5 expected fail) and the Part C regression files pass. The switch itself (B10.1) is deferred:
-      the SDK creating-call builder still refuses a deployer child (B9.5), so the deployer `new` path stays
-      behind `__deployerNew`.
+      Note (implementation, 2026-11-13): with the switch off, both full suites passed (solidc 7,826/7,826;
+      solidcash 6,303 passed, 0 failed). B9.5 then landed and B10.1 turned the switch on. The targeted
+      regression files pass with it on: DeployFromContract (20), ContractFactory, DeployerCreation,
+      DeployerRefusals, DeployerCreatingCall, ExplicitConstructorDeploy, ConstructorChildCreationRefusal and
+      ChildDeploymentRecipe. CondDeployRuntime and DeployFoldGenesisBalance keep the pre-B10 fold through the
+      internal `__legacyDeployFold` escape (loops are B8.9; the fold path is B13.4's removal).
 - [x] **B10.3** Confirm that no artifact the suites compile carries `deployer`, except those of the new
       tests, and that `childDeployers` appears exactly on creators with a stateful `new`. Write the result
       under D12. A test that changed for any other reason is a regression: stop and report.
 - [x] **B10.4** Run `build-contracts.ts --check` in `bch-next` and report which artifacts changed and by how
       many bytes (D14). Do not change `bch-next`.
-- [ ] **B10.5** Commit: "feat(solidc): every direct stateful new goes through its deployer".
+- [x] **B10.5** Commit: "feat(solidc): every direct stateful new goes through its deployer".
 
 ## B11. Measurements
 

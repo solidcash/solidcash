@@ -57,12 +57,12 @@ describe('B8.0: a deployer child is compiled standalone and published', () => {
     expect(Object.keys(artifact.childDeployers ?? {})).toEqual(['Child']);
   });
 
-  it('does nothing of this phase with the option off', () => {
+  it('binds the deployer by default', () => {
     const source = `${P} ${statefulChild()}
       contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`;
-    const creator = compileString(source);
-    expect(creator.childDeployers).toBeUndefined();
-    expect(creator.bytecode).not.toContain('OP_INPUTBYTECODE');
+    const creator = compileString(source, { allowUnsafeOperations: true } as never);
+    expect(Object.keys(creator.childDeployers ?? {})).toEqual(['Child']);
+    expect(creator.bytecode).toContain('OP_INPUTBYTECODE');
   });
 
   it('refuses a contract that creates itself', () => {

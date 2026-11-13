@@ -2,7 +2,7 @@
  * B5.6: the `args` call option parses only on `new`, and the compiler's `__solidcash_` prefix is reserved.
  *
  * The deployer path itself is not built yet (B5.4), so an `args` instantiation parses and is then refused with the
- * reason `args-not-yet`: that refusal, not a syntax error, is what proves the parse succeeded.
+ * reason `args-outside-deployer-new` when the child is stateless: that refusal proves the parse succeeded.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from './direct-compile.js';
@@ -13,13 +13,13 @@ describe('B5.6: new C{args: (...)}', () => {
   it('parses one contract argument', () => {
     expect(() => compileString(`${P} contract Child(int limit) { function poke() { require(limit > 0); } }`
       + ' contract Parent() { function make(int v) { Child c = new Child{args: v}(); c.poke(); } }'))
-      .toThrow(/args-not-yet/);
+      .toThrow(/args-outside-deployer-new/);
   });
 
   it('parses a parenthesized list of contract arguments', () => {
     expect(() => compileString(`${P} contract Child(int a, bytes20 b) { function poke() { require(a > 0); } }`
       + ' contract Parent() { function make(int v, bytes20 w) { Child c = new Child{args: (v, w)}(); c.poke(); } }'))
-      .toThrow(/args-not-yet/);
+      .toThrow(/args-outside-deployer-new/);
   });
 
   it('refuses args outside new as an unknown call option', () => {

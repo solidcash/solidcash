@@ -52,7 +52,7 @@ describe('folded callee that reads the child own balance (e2e)', () => {
   const deployChild = async (expectation: string, v: bigint, tag: string):
   Promise<{ seen: bigint, x: bigint }> => {
     const factoryArtifact = compileString(factory(expectation), {
-      evmCompat: true, allowUnsafeOperations: true,
+      evmCompat: true, allowUnsafeOperations: true, __legacyDeployFold: true,
     });
     const childArtifact = compileString(CHILD, { evmCompat: true });
     const factoryFunding: Utxo = { txid: tag.repeat(16), vout: 0, satoshis: 200000n };

@@ -203,6 +203,8 @@ export interface BuildDeployerPrepsOptions {
   authorLockingBytecode: Uint8Array;
   changeLockingBytecode: Uint8Array;
   provider: NetworkProvider;
+  /** A creating call may bind an author coin at the same non-P2PKH lock that funds it. */
+  allowAnyAuthorLock?: boolean;
 }
 
 /** One signed prep, and the coins its creation and its chain successor spend. */
@@ -229,7 +231,7 @@ export function defaultAuthorValue(deployer: DeployerAbi): bigint {
   return RESERVE * (nfts + 1n) + 2000n;
 }
 
-function assertSpendableFunding(utxos: readonly Utxo[], signer: Unlocker): void {
+function assertSpendableFunding(utxos: readonly Utxo[], signer: Unlocker, allowAnyAuthorLock = false): void {
   const signerLock = binToHex(signer.generateLockingBytecode());
   if (utxos.length === 0) throw new DeployerPrepError('A deployer prep needs at least one funding UTXO');
   for (const utxo of utxos) {
@@ -245,7 +247,7 @@ function assertSpendableFunding(utxos: readonly Utxo[], signer: Unlocker): void 
       );
     }
   }
-  if (!isP2pkhLock(signer.generateLockingBytecode())) {
+  if (!allowAnyAuthorLock && !isP2pkhLock(signer.generateLockingBytecode())) {
     throw new DeployerPrepError('A deployer prep spends only P2PKH coins');
   }
 }
@@ -263,7 +265,7 @@ export async function buildDeployerPreps(
   if (options.fundingUtxos.length === 0) {
     throw new DeployerPrepError('A prep chain needs at least one funding UTXO for its first prep');
   }
-  assertSpendableFunding(options.fundingUtxos, authorSigner);
+  assertSpendableFunding(options.fundingUtxos, authorSigner, options.allowAnyAuthorLock === true);
   for (const child of children) {
     if (!/^[0-9a-fA-F]{70}$/.test(child.deployer.lockingBytecode)) {
       throw new DeployerPrepError(`The deployer of '${child.contractName}' has no P2SH32 locking bytecode`);

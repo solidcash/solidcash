@@ -263,14 +263,25 @@ export async function deployFromStatefulContract<T extends Artifact>(
       ? funder.generateLockingBytecode()
       : addressToLockScript(changeAddress);
     const authorSigner = options.prepFunding?.authorSigner ?? funder;
+    const authorLock = options.prepFunding?.authorLockingBytecode ?? funder.generateLockingBytecode();
+    // A provider may hand the coin without its locking bytecode; the prep builder proves it against the author's
+    // own P2PKH lock.
+    const prepCoins = prepFunding.map((coin) => (coin.lockingBytecode === undefined
+      ? { ...coin, lockingBytecode: authorLock } : coin));
     const built = options.deployerPreps === undefined
       ? await buildDeployerPreps({
-        children: prepFunding.map(() => ({ contractName: childArtifact.contractName, deployer: childDeployer })),
-        fundingUtxos: prepFunding,
+        children: prepCoins.map(() => ({
+          contractName: childArtifact.contractName,
+          deployer: childDeployer,
+          // The author coin pays the creation's outputs and fee; the deployer coin is only V_DEPLOY.
+          authorValue: prepFunding[0].satoshis / BigInt(prepFunding.length + 1),
+        })),
+        fundingUtxos: prepCoins,
         authorSigner,
         authorLockingBytecode: options.prepFunding?.authorLockingBytecode ?? funder.generateLockingBytecode(),
         changeLockingBytecode: changeLock,
         provider,
+        allowAnyAuthorLock: true,
       })
       : { preps: options.deployerPreps };
     await broadcastDeployerPreps(built.preps, provider);

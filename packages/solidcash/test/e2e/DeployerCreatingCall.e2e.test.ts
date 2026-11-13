@@ -120,4 +120,5 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     const state = await result.factory.getState();
     expect((state as { childCount?: bigint }).childCount).toBe(2n);
   });
+
 });

@@ -305,8 +305,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const deployValue = options.childValue ?? 0n;
     // In a loop each child's group is stride outputs wide; the k-th deployer input's OUTBASE is its input index
     // plus k stride-steps when no output-only slot precedes the deploy slot.
-    const childStride = 1 + (deployTarget.dataNftCount ?? 0) + (deployTarget.entryNftCount ?? 0)
-      + (deployValue > 0n ? 1 : 0);
+    const childStride = childDeployer.genesisOutputs + (deployValue > 0n ? 1 : 0);
     const typeOf = new Map(createInputs.map((input) => [input.name, input.type]));
     const pushArgument = (name: string, value: FunctionArgument): Uint8Array => {
       const type = typeOf.get(name);
@@ -1263,6 +1262,17 @@ export async function deployFromStatefulContract<T extends Artifact>(
           nft: { capability: 'mutable', commitment: entry.commitment },
         },
       });
+    }
+    const childDeployerAbi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
+    if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
+      const value = options.childValue ?? 0n;
+      if (value > 0n) {
+        childExtraOutputs.push({ to: getSatoshiContainerAddress(cc, cat), amount: value });
+      } else if (childDeployerAbi.satoshiContainer === 'required') {
+        childExtraOutputs.push({ to: getSatoshiContainerAddress(cc, cat), amount: 1200n });
+      } else {
+        childExtraOutputs.push({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
     }
     if (isLoopValueDeploy) {
       childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });

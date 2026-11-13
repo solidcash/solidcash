@@ -24055,7 +24055,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(expectedCategory)');
-    this.emitDeployerChildOutputIndex(site, 1 + node.deployedDataNftCount + node.deployedEntryNftCount
+    this.emitDeployerChildOutputIndex(site, abi.genesisOutputs
       + (hasEffectiveCallValue(node.callOptions?.value) ? 1 : 0), locationData);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
     this.pushToStack('(value)');
@@ -24066,7 +24066,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.createsSenderReadingChild === true) this.appendCreatedChild(xName, locationData);
 
     // Step 5: the expression is the child's master locking bytecode at d_out.
-    this.emitDeployerChildOutputIndex(site, 1 + node.deployedDataNftCount + node.deployedEntryNftCount
+    this.emitDeployerChildOutputIndex(site, abi.genesisOutputs
       + (hasEffectiveCallValue(node.callOptions?.value) ? 1 : 0), locationData);
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);
     this.pushToStack('(value)');

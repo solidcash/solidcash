@@ -53,7 +53,9 @@ describe('a signer-funded deployFrom', () => {
       const calls = factory.connect(signer).call as unknown as FactoryCalls;
       const result = await calls.make().deploy();
 
-      expect(result.childCategoryId).toBe(free.txid);
+      // B10: the child is born from a prep, so its category is the prep's txid; the free coin funds the prep.
+      expect(result.childCategoryId).not.toBe(free.txid);
+      expect((result as { prepTransactions?: string[] }).prepTransactions?.length).toBeGreaterThan(0);
       const live = await provider.getUtxos(signer.getAddress());
       expect(live.some((utxo) => utxo.txid === reserved.txid && utxo.vout === 0)).toBe(true);
     } finally {

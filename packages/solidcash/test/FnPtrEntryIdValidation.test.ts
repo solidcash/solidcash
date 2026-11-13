@@ -202,9 +202,11 @@ describe('entry fn-ptr parameters accept only matching public/external functions
 
   it('compiles a foreign `this.f` passed to another contract\'s constructor', () => {
     // `f` deploys without a signature check; permissionless deploy is intended here.
+    // D has a function-typed constructor parameter, so B10's deployer refuses it (`param-type`); this test is
+    // about the function-value validation, which the legacy fold path carries.
     const artifacts = compileStringMulti(CROSS_CONSTRUCTOR, {
-      evmCompat: true, enforceFinalRequire: false, allowUnsafeOperations: true,
-    });
+      evmCompat: true, enforceFinalRequire: false, allowUnsafeOperations: true, __legacyDeployFold: true,
+    } as never);
     expect(Object.keys(artifacts)).toEqual(expect.arrayContaining(['C', 'D']));
   });
 

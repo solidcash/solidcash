@@ -11788,7 +11788,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc);
     [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
     cat('(gen_pin)');
-    push('(tmp)', [Uint8Array.from([0xc0, 0xa2, 0x88])]);
+    // A2's pin(X): OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY.
+    push('(tmp)', [Uint8Array.from([Op.OP_INPUTINDEX, Op.OP_UTXOTOKENCATEGORY, Op.OP_EQUALVERIFY])]);
     cat('(gen_pin)');
     for (const parameter of [...(node.deployerContractParameters ?? [])].reverse()) {
       pick(parameter.name, '(arg)');

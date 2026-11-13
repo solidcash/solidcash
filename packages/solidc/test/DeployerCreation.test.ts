@@ -76,7 +76,7 @@ function genesisMasters(deployer: DeployerAbi, contractArgs: { name: string; val
   const argumentBytes = new Uint8Array(contractArgs.slice().reverse()
     .flatMap((argument) => [...encodeDataPush(argument.value)]));
   const redeem = new Uint8Array([
-    ...encodeDataPush(category), 0xc0, 0xa2, 0x88, ...argumentBytes, ...hexToBin(deployer.code),
+    ...encodeDataPush(category), 0xc0, 0xce, 0x88, ...argumentBytes, ...hexToBin(deployer.code),
   ]);
   return { x, redeem, master: encodeLockingBytecodeP2sh32(hash256(redeem)) };
 }

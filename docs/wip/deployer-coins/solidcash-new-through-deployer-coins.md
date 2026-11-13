@@ -4616,7 +4616,10 @@ milestones:
 Measure SDK-built transactions under the production limits, and sizes of compiled code by compiling. Replace
 each "estimated" in Part A with the result (B0.8). Each line names the item that fills it.
 
-- [ ] **D1.** (B2.1) The payment finding, and where a call's value lands: ____.
+- [x] **D1.** (B2.1) The payment finding, and where a call's value lands: every in-script payment to a stateful
+      contract's address pays its **master lock** (`this.transfer`, a token transfer, and `msg.value` on a call),
+      not its satoshi/token container; the coin is unspendable by the contract. `{value: v}` on a call lands on the
+      callee's master lock the same way.
 - [x] **D2.** (B7.15) Deploy<C>'s redeem size, for a minimal C and for a C with one event, one payment and one
       call: 1,064 B, 2,037 B.
 - [x] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,400 and 3,400 satoshis;
@@ -4663,7 +4666,7 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       already has a returning function; the bytes B6.4 adds to a contract whose arms did not all count:
       0 B, 0 B; 0 B. Master already settles universal void records, so `'all'` changes the ABI only (the
       plan's recorded deviation). Estimated: 20 bytes plus 8.5 per argument per function, and about 100 once.
-- [ ] **D18.** The created-children list: (B8.12) bytes added to a marked creator per arm, once for the
+- [x] **D18.** The created-children list: (B8.12) bytes added to a marked creator per arm, once for the
       shared check, and per `new` site, and the marker: 47 B for one arm and one site together (parameter,
       list check and marker); the split is not separable at this emission. (B7.15) bytes step 8 adds to
       Deploy<C> of a sender-reading child: 194 B (408 B plain against 602 B with the sender and its list);

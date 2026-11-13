@@ -11670,6 +11670,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     this.emitGenesisMasterPin(node);
     this.emitGenesisRowPins(node);
+    this.emitGenesisIdentityPin({ location: node.body.location, positionHint: PositionHint.END });
     this.emitGenesisCensus();
     if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
     if ((node.externalCalls?.length ?? 0) > 0) {
@@ -11790,8 +11791,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const records = this.dataNftCount + heads + entries;
     const events = slots.filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk').length;
     this.emitDeployCapabilityOutputCount('(gen_x)', 0x02, 1, loc);
-    this.emitDeployCapabilityOutputCount('(gen_x)', 0x01, records, loc);
-    this.emitDeployChildCategoryBound('(gen_x)', 1 + records + events, loc);
+    this.emitDeployCapabilityOutputCount('(gen_x)', 0x01, records, loc, undefined,
+      '__internal__identity');
+    this.emitDeployChildCategoryBound('(gen_x)', 1 + records + events, loc, undefined,
+      '__internal__identity');
   }
 
   /** A5: the satoshi journal read as `this.balance`: the container's start plus `value`, less the sends so far. */
@@ -12054,6 +12057,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(reserve)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
+  }
+
+  /** A4.4 step 12: when the identity flag is set, output 0 is the category's authhead coin. */
+  private emitGenesisIdentityPin(loc: SingleLocationData): void {
+    this.emitPickTrackedFromBottom('__internal__identity', loc);
+    this.pushToStack('(identityFlag)');
+    this.emit(Op.OP_IF, loc);
+    this.popFromStack();
+    this.scopeDepth += 1;
+    this.emitPickTrackedFromBottom('(gen_x)', loc);
+    this.pushToStack('(authcat)');
+    this.emitAuthheadLock(loc);
+    this.popFromStack();
+    this.pushToStack('(authlock)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(identityIdx)');
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.popFromStack();
+    this.pushToStack('(identityLbc)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(identityIdx)');
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.popFromStack();
+    this.pushToStack('(identityCat)');
+    this.emitPickTrackedFromBottom('(gen_x)', loc);
+    this.pushToStack('(identityBase)');
+    this.emit(new Uint8Array([0x01]), loc);
+    this.pushToStack('(one)');
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(2);
+    this.pushToStack('(expectIdentityCat)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(identityIdx)');
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.popFromStack();
+    this.pushToStack('(identityAmount)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(zero)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.scopeDepth -= 1;
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   private emitGenesisMasterPin(node: FunctionDefinitionNode): void {
@@ -48579,6 +48628,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     expected: number,
     locationData: SingleLocationData,
     fixedDeployIndex?: number,
+    extraStackName?: string,
   ): void {
     if (fixedDeployIndex !== undefined) {
       // Re-derive from the authenticated vout-0 genesis input. This is independent of tracked-stack liveness
@@ -48626,6 +48676,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
 
     this.emit(encodeInt(BigInt(expected)), locationData);
+    if (extraStackName !== undefined) {
+      this.emitPickTrackedFromBottom(extraStackName, locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
     this.emit(Op.OP_NUMEQUALVERIFY, locationData);
     this.popFromStack();
     this.emit(Op.OP_DROP, locationData);
@@ -48642,6 +48696,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     expected: number,
     locationData: SingleLocationData,
     fixedDeployIndex?: number,
+    extraStackName?: string,
   ): void {
     if (fixedDeployIndex !== undefined) {
       this.emitBlockSlotIndex('deploy', fixedDeployIndex, locationData);
@@ -48698,6 +48753,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UNTIL, locationData);
     this.popFromStack();
     this.emit(encodeInt(BigInt(expected)), locationData);
+    if (extraStackName !== undefined) {
+      this.emitPickTrackedFromBottom(extraStackName, locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
     this.emit(Op.OP_NUMEQUALVERIFY, locationData);
     this.popFromStack();
     this.emit(Op.OP_DROP, locationData);

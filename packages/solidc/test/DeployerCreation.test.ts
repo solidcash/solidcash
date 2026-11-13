@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
-  asmToScript, buildDataNftCovenantScript, buildEntryNftCovenantScript, buildPushdataCommitment,
-  computeCollectionHash, scriptToBytecode,
+  asmToScript, AUTHHEAD_BODY, buildDataNftCovenantScript, buildEntryNftCovenantScript,
+  buildPushdataCommitment, computeCollectionHash, scriptToBytecode,
   type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
@@ -310,6 +310,36 @@ describe('B7.13: the HEAD of an unwritten sorted collection', () => {
     expect(vm.verify(spendWith((head) => ({
       ...head, token: { ...head.token!, nft: { capability: 'mutable', commitment: new Uint8Array(129) } },
     })) as never)).not.toBe(true);
+  });
+});
+
+describe('B7.12: the identity output when the flag is 1', () => {
+  const spendWith = (mutate: (outputs: VmOutput[]) => VmOutput[]) => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const { x } = genesisMasters(artifact.deployer!);
+    const genX = Uint8Array.from(x).reverse();
+    const redeem = Uint8Array.from([0x21, ...genX, 0x01, ...AUTHHEAD_BODY]);
+    const identity: VmOutput = {
+      lockingBytecode: encodeLockingBytecodeP2sh32(hash256(redeem)),
+      valueSatoshis: 1000n,
+      token: { category: x, amount: 0n, nft: { capability: 'mutable', commitment: EMPTY } },
+    };
+    const spend = createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined,
+      { __internal__identity: Uint8Array.of(0x01) });
+    spend.transaction.outputs = mutate([identity, ...spend.transaction.outputs.slice(1)]);
+    return spend;
+  };
+
+  it('mints the authhead coin at output 0', () => {
+    expect(vm.verify(spendWith((outputs) => outputs) as never)).toBe(true);
+  });
+
+  it('refuses another lock, category or amount', () => {
+    expect(vm.verify(spendWith(([first, ...rest]) => [{ ...first, lockingBytecode: TOKENLESS }, ...rest]) as never))
+      .not.toBe(true);
+    expect(vm.verify(spendWith(([first, ...rest]) => [{
+      ...first, token: { ...first.token!, category: new Uint8Array(32) },
+    }, ...rest]) as never)).not.toBe(true);
   });
 });
 

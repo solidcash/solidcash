@@ -259,6 +259,20 @@ describe('B7.5: what the constructor does', () => {
     expect(token.artifact.deployer!.tokenRows).toEqual([0]);
   });
 
+  it('a constructor reads a single token container\'s tokenAmount as its start', () => {
+    const source = `pragma solidcash ^0.50.0; pragma tokencontainer single;
+      contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenAmount); } }`;
+    const { artifact } = compile(source, { deployer: true });
+    expect(artifact.deployer).toBeDefined();
+    expect(artifact.deployer!.tokenRows).toEqual([0]);
+  });
+
+  it('refuses any other token-container member in a constructor', () => {
+    const source = `pragma solidcash ^0.50.0; pragma tokencontainer single;
+      contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenCategory.length); } }`;
+    expect(() => compile(source, { deployer: true })).toThrow(/tokenAmount/);
+  });
+
   it('is deterministic across compiles and hashes the body for TEMPLATE', () => {
     const first = compile(`${STATEFULWithCtor}\n// one`, { deployer: true, __artifactCache: false } as never);
     const second = compile(`${STATEFULWithCtor}\n// two`, { deployer: true, __artifactCache: false } as never);

@@ -175,6 +175,7 @@ import {
   UndefinedErrorError,
   TokenContainerKeyMustBeParameterError,
   TokenContainerTransferInConstructorError,
+  CtorTokenContainerError,
   TokenContainerAccessInConstructorError,
   InvalidModifierCombinationError,
   DelegatecallSelfMutationError,
@@ -16298,7 +16299,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): Node {
     if (this.insideConstructor) {
-      throw new TokenContainerTransferInConstructorError(node);
+      throw new CtorTokenContainerError(node, 'transfer');
     }
     node.tokenContainerKeyExpression = this.visit(node.tokenContainerKeyExpression);
     node.args = this.visitList(node.args);
@@ -17651,6 +17652,30 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFieldAccess(node: FieldAccessNode): Node {
+    // A3 rule 4: while a constructor runs, a token container has no coins; only `tokenAmount` is meaningful, and
+    // it is the container's fixed start (1 when C keeps it single, 0 otherwise). Every other member is refused.
+    if (this.insideConstructor && this.isStatefulContract
+      && node.expression instanceof MappingAccessNode && node.expression.name === 'tokens') {
+      if (node.name !== 'tokenAmount') throw new CtorTokenContainerError(node, node.name);
+      const key = node.expression.keys.at(-1);
+      const namesContractParameter = key instanceof IdentifierNode
+        && this.currentContract?.parameters.some((parameter) => parameter.name === key.name) === true;
+      const start = this.currentContract?.singleTokenContainer === true && namesContractParameter ? 1n : 0n;
+      // Record the container use for the deployer's token rows: the literal replaces the access node.
+      if (namesContractParameter) {
+        const accesses = this.currentFunction.tokenContainerAccesses ?? [];
+        if (!accesses.some((access) => access.keyParam === (key as IdentifierNode).name)) {
+          accesses.push({
+            keyParam: (key as IdentifierNode).name, keySource: 'param', operations: ['read'],
+            slotIndex: 0, transferCount: 0, transferNftCount: 0,
+          });
+        }
+        this.currentFunction.tokenContainerAccesses = accesses;
+      }
+      const literal = new IntLiteralNode(start);
+      literal.location = node.location;
+      return literal;
+    }
     // A direct base contract may qualify an inherited state variable (`Base.a`). The parser can strip the
     // current contract qualifier, but inherited fields are only known after inheritance expansion. Resolve the
     // qualified member here, while still rejecting unrelated contract namespaces.

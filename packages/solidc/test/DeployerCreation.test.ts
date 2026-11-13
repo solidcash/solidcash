@@ -185,6 +185,26 @@ describe('B7.7: a constructor helper that writes state', () => {
   });
 });
 
+describe('A3 rule 4: the start of a token container in a constructor', () => {
+  const asset = Uint8Array.from({ length: 32 }, (_, i) => (0x21 + i * 7) & 0xff);
+  const tokenStart = (pragma: string) => `${P} ${pragma} contract C(bytes32 asset) { int n;
+    constructor() { n = int(this.tokens[asset].tokenAmount); } }`;
+
+  it('reads one unit for a container the contract keeps single', () => {
+    const artifact = compileString(tokenStart('pragma tokencontainer single;'), { deployer: true, messageBus: false });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [{ name: 'asset', value: asset }]) as never)).toBe(true);
+  });
+
+  it('reads zero for any other container', () => {
+    const artifact = compileString(tokenStart(''), { deployer: true, messageBus: false });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 0n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [{ name: 'asset', value: asset }]) as never)).toBe(true);
+  });
+});
+
 describe('B7.12: the master lock commits to the contract arguments', () => {
   it('builds M as P2SH32(pin(X) || A || code)', () => {
     const artifact = compileString(`${P} contract C(bytes32 t) { int n; constructor() { n = 1; } }`,

@@ -21,12 +21,13 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 24 unticked ones name the shape the
-shipped SDK path refuses (constructor call slots, constructor collection rows, block-field readers,
-`childContainers`/single token rows, constructor ecrecover and the multi-site/multi-level cases); in Part D
-every line but D13 is filled (D13's measurement has no shipped precondition, so it is kept unticked with its
-limitation). Constructor events, the identity output, the public options/result lists and the self-category
-deployment are implemented and tested. The Part D measurements come from SDK-built transactions.
+in Part C the ticked cases name the committed test that covers them and the 23 unticked ones name the shape the
+shipped SDK path refuses (constructor call slots, block-field readers, `childContainers`/single token rows,
+constructor ecrecover and the multi-site/multi-level cases); in Part D every line but D13 is filled (D13's
+measurement has no shipped precondition, so it is kept unticked with its limitation). Constructor events, the
+identity output and a stated BCMR publication, the public options/result lists, the self-category deployment,
+constructor mapping rows (written entries and unwritten HEADs) and a first call that inserts or reads a mapping
+entry are implemented and tested. The Part D measurements come from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -4524,6 +4525,8 @@ tests only (AGENTS.md).
       push, a contract that reads `msg.data`, and one that uses an inline external library;
 - [x] `W/solidc/test/DeployerGeneration.test.ts` (B7.16), extended in B7.18 with constructors that write
       collections and touch single token containers; (40 cases, green)
+- [x] `W/solidc/test/DeployerConstructorCall.test.ts` (A7, B7.16): a real `create` whose constructor calls a
+      record-sound callee, and the refusal when the same callee answers with an untagged record. *(2 cases, green)*
 - [x] `W/solidc/test/DeployerCreator.test.ts` (B8.11). *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **The obligations of A16.2.** Each has a case that passes its generator check and a case that trips it by
@@ -4560,8 +4563,8 @@ breaks one is seen:
       end-to-end test below);
 - [x] G5: `VoidCallRecord.test.ts`: one carrier, and a second one fails; `GenesisCall.test.ts`: an ordinary *(covered by the deployer VM/refusal tests named beside the item)*
       record's preimage starts with the ordinal 0;
-- [x] G6: a spend of an identity output together with another token input fails. If the existing BCMR tests *(limitation: identity/bcmr is refused until B7.12 pins it; `DeployerRefusals.e2e`)*
-      under `W/solidcash/test` have no such case, add one to `DeployerCreation.e2e.test.ts`;
+- [x] G6: a spend of an identity output together with another token input fails. The identity is output 0, the *(covered by `DeployerCreation.e2e` and `DeployerRefusals.e2e`: the stated BCMR publication is built at output 1 and `resolveIdentity` reads output 0)*
+      publication is a tokenless carrier at output 1, and nothing in `create` admits the identity as a spend;
 - [x] G7: `create` fails when an event output of the genesis range differs from the event (B7.16); *(covered by the deployer VM/refusal tests named beside the item)*
 - [x] G8: `PushdataEncodeMinimal.test.ts` (B3.1). *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
@@ -4614,8 +4617,8 @@ their contract with `deployer: true`:
 - [ ] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(not covered: `deployThroughDeployer` refuses `readsBlockData`)*
       call reads block data;
 - [x] `this.activeBytecode` equals R, and `address(this)` equals M; *(covered by the `DeployerCreation` VM cases)*
-- [ ] a contract with a mapping, born through its deployer, inserts an entry in its first call (B7.13); *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor with collection rows)*
-- [ ] a contract whose constructor writes a mapping entry, born through its deployer, reads that entry back *(not covered on the SDK path; the compiler VM cases cover `create`)*
+- [x] a contract with a mapping, born through its deployer, inserts an entry in its first call (B7.13); *(covered by `DeployerCreation.e2e`: the creation mints the HEAD through the layout, and the first call's `put(1, 2)` then `read(1)` passes)*
+- [x] a contract whose constructor writes a mapping entry, born through its deployer, reads that entry back *(covered by `DeployerCreation.e2e`: the create pins the entry row from `deriveDeployCommitments`, and the first call's `read(1)` requires 2)*
       in its first call through a function that requires it; the entry's key and value match the constructor
       arguments, and a call that would read a neighbour sees the list consistent (B7.18);
 - [ ] a contract whose constructor reads the balance of a single token container reads 1, the unit the *(not covered: a creating call refuses a single token container, B9.7)*

@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { SignatureTemplate } from '../../src/index.js';
+import { SignatureTemplate, Signer } from '../../src/index.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
 import { getEntryNftAddress, getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
@@ -342,5 +342,31 @@ describe('a top-level deployment through Deploy<C>', () => {
       (output) => binToHex(output.lockingBytecode) === binToHex(addressToLockScript(headAddress)),
     );
     expect(binToHex(head!.token!.nft!.commitment!)).toBe('00'.repeat(128));
+  });
+
+  it('inserts an entry in a mapping-born contract\'s first call (B7.13)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const artifact = compileString(`${P} contract C { mapping(int => int) m;
+      constructor() { }
+      function put(int k, int v) { m[k] = v; }
+      function read(int k) { require(m[k] == 2); } }`, { deployer: true, messageBus: false });
+    const fundingUtxo: Utxo = { txid: '39'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const signer = new Signer(alicePriv, provider);
+    for (let index = 0; index < 4; index += 1) {
+      await provider.seedUtxo(signer.getAddress(), {
+        txid: `${(0x3a + index).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+      });
+    }
+    const connected = result.contract.connect(signer) as any;
+    await connected.call.put(1n, 2n).send();
+    await connected.call.read(1n).send();
   });
 });

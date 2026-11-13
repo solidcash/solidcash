@@ -354,4 +354,60 @@ describe('A7: a constructor call in create', () => {
     expect(vm.stateSuccess(state)).toBe(true);
   });
 
+
+
+  it('reports a callee unlocking shorter than 300 bytes at its code-marker check', () => {
+    const callee = compileString(calleeSource('T'), { deployer: true, messageBus: false, genesisCalls: true });
+    const caller = compileString(callerSource('T', 'i.f(5); ok = true;'), {
+      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+    });
+    const x = masters(caller.deployer!).x;
+    const calleeMaster = masters(callee.deployer!, 7);
+    const digest = callDigest(new Uint8Array(36), '32c0b359', Uint8Array.of(0x05));
+    const run = calleeRun({
+      callee, calleeSeed: 7, callerX: x.slice().reverse(), callerSlot: 0, gIn: DEPLOYER_INPUT, gOut: OUTBASE,
+      unlock: Uint8Array.of(0x51),
+      inputIndex: 7, returnIndex: 9,
+      callDigest: digest,
+      record: (d) => new Uint8Array([...d, 0x01, 0x51]),
+    });
+    const values: Record<string, Uint8Array> = {
+      __internal__budgetPad: EMPTY,
+      __internal__authorIndex: Uint8Array.of(0x01),
+      __internal__identity: EMPTY,
+      __internal__genesisOutputBase: Uint8Array.of(OUTBASE),
+      __internal__genesisSidecarBase: Uint8Array.of(OUTBASE + 2),
+      __internal__externalCallInputBase: Uint8Array.of(7),
+      __internal__extcallAnchorIdx0: Uint8Array.of(0x81),
+      __internal__externalReturnOutputIdx: Uint8Array.of(9),
+      __internal__callEdgeOutputIdx0: Uint8Array.of(0x81),
+      __internal__code: hexToBin(caller.deployer!.code),
+      __internal__deployValue: EMPTY,
+      __internal__msgSenderCategory: new Uint8Array(32),
+      __internal__genesisCallees: Uint8Array.of(7, 0),
+      i: calleeMaster.master,
+    };
+    const outputs: VmOutput[] = Array.from({ length: OUTBASE }, () => ({
+      lockingBytecode: TOKENLESS, valueSatoshis: 1000n,
+    }));
+    outputs.push(
+      { lockingBytecode: masters(caller.deployer!).master, valueSatoshis: 1200n,
+        token: { category: x, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } } },
+      dataOutput(caller, { ok: 1n }, x, masters(caller.deployer!).master),
+      ...run.outputs,
+    );
+    const inputs = [dummyInput(0), dummyInput(1), dummyInput(2), {
+      ...dummyInput(DEPLOYER_INPUT), unlockingBytecode: createUnlock(caller.deployer!, values),
+    }, ...Array.from({ length: 3 }, (_, i) => dummyInput(4 + i)), run.input, run.dataInput];
+    const sources: SourceOutputs = [
+      ...[0, 1, 2, 4, 5, 6].map(() => ({ lockingBytecode: TOKENLESS, valueSatoshis: 10_000n })),
+    ];
+    sources.splice(3, 0, { lockingBytecode: hexToBin(caller.deployer!.lockingBytecode), valueSatoshis: 1200n });
+    sources.push(run.source, run.dataSource);
+    const program = { inputIndex: DEPLOYER_INPUT, sourceOutputs: sources, transaction: {
+      version: 2, locktime: 0, inputs, outputs,
+    } };
+    const state = vm.evaluate(program as never) as { error?: string };
+    expect(state.error).toMatch(/OP_VERIFY|OP_EQUALVERIFY|marker|unlocking/i);
+  });
 });

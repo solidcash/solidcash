@@ -21,14 +21,16 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 21 unticked ones name the shape the
-shipped SDK path refuses (call slots beyond the simple one-slot shape, block-field readers,
-`childContainers`/single token rows, constructor ecrecover and the multi-site/multi-level cases); every Part D
-line is filled, including D13 from the shipped constructor-call creation. Constructor events, the identity
-output and a stated BCMR publication, the public options/result lists, the self-category deployment, constructor
-mapping rows (written entries, unwritten HEADs and repeated writes), a first call that inserts or reads a mapping
-entry, and a constructor call against a record-sound callee through `constructorCallees` are implemented and
-tested. The Part D measurements come from SDK-built transactions.
+in Part C the ticked cases name the committed test that covers them and the 19 unticked ones name the shape the
+shipped SDK path refuses (block-field readers and their locktimes, `childContainers`/single token rows and a
+creating call's payments, constructor ecrecover, per-slot budget padding for a constructor loop, and the
+multi-site/multi-level creating cases); every Part D line is filled, including D13 from the shipped
+constructor-call creations (one and two slots). Constructor events, the identity output and a stated BCMR
+publication, the public options/result lists, the self-category deployment, constructor mapping rows (written
+entries, unwritten HEADs and repeated writes), a first call that inserts or reads a mapping entry, and
+constructor calls against record-sound callees through `constructorCallees` (one or more slots, a multi-method
+selector, a void callee, and the non-record-sound refusal) are implemented and tested. The Part D measurements
+come from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -4666,14 +4668,14 @@ their contract with `deployer: true`:
       `true`;
 - [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(not covered: the sender-reading callee's tag probe does not settle yet; the compiler VM cases cover it)*
       call has a call slot, and the callee stores M;
-- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(not covered: the SDK path supports one call slot. A two-slot creation was built and traced: with a tracked mask the bindings run, but the second slot's master index is read as the child's genesis output base (5) instead of the second callee input (10), so the list compare fails; the create's parameter/witness stack model is short by the two source constructor parameters on this shape. The mask itself also needs to leave the alternate stack, where call-site identity anchors sit)*
+- [x] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(covered by `DeployerConstructorCall.test.ts`: `binds both slots of a two-call constructor` drives the real create with two callees, and `DeployerCreation.e2e`'s two-slot case deploys both and calls the child)*
 - [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered: a void callee's record is not exercised on the SDK path; the compiler VM cases cover it)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
 - [ ] the same against a registry compiled without the option, and against a callee compiled with *(not covered by an e2e: `assertDeployerCallee` throws `DeployerCalleeError` for a callee that is not record-sound; the e2e path is not exercised)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
 - [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(not covered: a void USDT-shaped callee is not exercised)*
-- [ ] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(D13 measured 1,385 B; a shorter callee was not probed)*
+- [x] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(covered by `DeployerConstructorCall.test.ts`: a one-byte `OP_1` callee unlocking fails the create at the call-site code-marker check with a failed `OP_VERIFY`; D13 records it)*
 
 **Any number of deployments** (same file):
 - [x] one chain of three preps from one wallet coin, then a creating function that runs three `new` in a loop: *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
@@ -4826,8 +4828,13 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       168,524 operations of a 2,926,400 budget (5.8%, from its 2,823-byte unlocking and 835-byte redeem),
       the callee's master input 177,981 of a 2,182,400 budget (8.2%), and its data input 18,672; the callee
       unlocking is 1,385 B. The callee's sender step hashes the 2,823-byte `S`: 45 64-byte digest blocks; a
-      6,000-byte `S` is 94 by the same block count (not separately measured). The shortest callee unlocking
-      that still passes was not probed; 1,385 B is the shipped one and it passes.
+      6,000-byte `S` is 94 by the same block count (not separately measured). A two-slot creation of the same
+      shape is 7,845 B: its deployer input costs 238,422 operations, its two callee masters 254,346 and
+      254,352 (each with an 18,672-operation data input), its deployer unlocking is 3,320 B and its redeem
+      1,099 B; both callee unlockings are 1,385 B. A callee unlocking shorter than 300 bytes was probed with a
+      one-byte `OP_1` unlocking in `DeployerConstructorCall.test.ts`: the create fails at the call-site
+      code-marker check with a failed `OP_VERIFY`, so the shortest measured unlocking that passes is the
+      shipped 1,385 B.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for

@@ -1572,6 +1572,9 @@ export async function deployThroughDeployer<T extends Artifact>(
   }
 
   const calleeRuns: Array<ConstructorCalleeRun & { inputIndex: number }> = [];
+  // A constructor whose loop costs more than the creation's own bytes fund needs a padding parameter: every
+  // unlocking byte grants budget. The pad starts empty and grows on a budget failure of the local run.
+  let budgetPad = new Uint8Array();
   let callSynthetics: Record<string, bigint> = {};
   let calleeList: Array<number | undefined> = Array.from({ length: deployer.callSlots }, () => undefined);
 
@@ -1585,7 +1588,7 @@ export async function deployThroughDeployer<T extends Artifact>(
       senderCategory: new Uint8Array(32),
       authorIndex: 1,
       identity: true,
-      budgetPad: new Uint8Array(),
+      budgetPad,
       synthetic: {
         __internal__genesisOutputBase: BigInt(outbase),
         __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
@@ -1686,8 +1689,19 @@ export async function deployThroughDeployer<T extends Artifact>(
   const locktime = await deployerLocktime(deployer, options.provider);
   if (locktime !== undefined) builder.setLocktime(locktime);
 
-  const { transaction, sourceOutputs } = builder.buildLibauthProgram(true);
-  runDeployerInputsLocal(options.provider, transaction, sourceOutputs);
+  let program = builder.buildLibauthProgram(true);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      runDeployerInputsLocal(options.provider, program.transaction, program.sourceOutputs);
+      break;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (!/maximum operation cost|operation cost/i.test(message) || attempt >= 6) throw error;
+      budgetPad = new Uint8Array(budgetPad.length === 0 ? 1 : Math.min(4096, budgetPad.length * 2));
+      program = builder.buildLibauthProgram(true);
+    }
+  }
+  const { transaction, sourceOutputs } = program;
   const creationHex = binToHex(encodeTransaction(transaction));
 
   const preps = [prep];

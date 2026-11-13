@@ -18,15 +18,13 @@ export interface DeployerChild {
 }
 
 export interface DeployerChildOptions {
-  readonly __deployerNew?: boolean;
   readonly composition?: string;
   readonly messageBus?: boolean;
   readonly __compiledDeployers?: ReadonlyMap<string, DeployerChild>;
 }
 
-/** B8.1: `__deployerNew` is on, and the target is a child this compile gathered in B8.0. */
+/** B8.1/B10.1: the target is a child this compile gathered in B8.0 (the path is always on now). */
 export function deployerChildOf(options: DeployerChildOptions, contractName: string): DeployerChild | undefined {
-  if (options.__deployerNew !== true) return undefined;
   return options.__compiledDeployers?.get(contractName);
 }
 

@@ -15931,12 +15931,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.compilerOptions, contract.name,
       );
       if (node.callOptions?.args && deployerChild === undefined) {
-        // B5's refusal stands while the deployer path is off (B8.1's gate).
-        if ((this.compilerOptions as { __deployerNew?: boolean }).__deployerNew !== true) {
-          throw new DeployerUnsupportedError(node, 'args-not-yet',
-            '`args` names a child contract parameter and needs that child to have a deployer, which this build '
-            + 'does not yet generate');
-        }
         throw new DeployerUnsupportedError(node, 'args-outside-deployer-new',
           '`args` names a child contract parameter, which only a deployer `new` can bind');
       }

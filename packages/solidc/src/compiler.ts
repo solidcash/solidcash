@@ -21732,12 +21732,12 @@ const referencedContractCompileStack: string[] = [];
 function gatherDeployerChildren(
   ast: Ast, code: string, options: InternalCompilerOptions,
 ): Map<string, DeployerChild> | undefined {
-  if (options.__deployerNew !== true || !compilesInDirectConvention(options)) return undefined;
+  if (!compilesInDirectConvention(options)) return undefined;
   // The deployer program is a synthetic compile of C's constructor: it cannot create children.
   if (options.__deployerProgram !== undefined) return undefined;
   const knownNames = new Set(ast.importedContracts.map((contract) => contract.name));
   const named = directNewContractNames(ast.contract, knownNames, ast.freeFunctions ?? []);  if (named.size === 0) return undefined;
-  const childOptions = { ...referencedChildCompilerOptions(options), deployer: true, __deployerNew: true };
+  const childOptions = { ...referencedChildCompilerOptions(options), deployer: true };
   const map = new Map<string, DeployerChild>();
   for (const name of named) {
     if (name === ast.contract.name) throw new DeployCycleError(ast.contract, name);
@@ -21749,7 +21749,11 @@ function gatherDeployerChildren(
     const artifact = result.artifact;
     if (artifact === undefined) continue;
     const abi = artifact.deployer;
-    const reason = artifact.deployerUnsupported;
+    // A5 refuses a live block reader's deployer as `code-not-constant` (the constant-lock form this backend
+    // lacks); the creator-side name for the same child fact is A15's `child-reads-block-data`.
+    const reason = artifact.deployerUnsupported === 'code-not-constant' && artifact.usesBlockOracle === true
+      ? 'child-reads-block-data'
+      : artifact.deployerUnsupported;
     if (abi === undefined && (reason === undefined || reason === 'not-stateful-direct')) continue;
     map.set(name, { name, artifact, abi, reason });
   }

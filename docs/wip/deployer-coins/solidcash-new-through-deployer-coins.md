@@ -3743,7 +3743,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       defaults, initialisers, helper writes, the master row, the code hash, contract arguments, `msg.value`,
       `tx.origin`, `address(this)`, `this.activeBytecode`, the census refusals and the callee-list size. The
       remaining refusal cases listed below are not yet added.
-- [ ] **B7.16 Tests.** Add `W/solidc/test/DeployerGeneration.test.ts`. Hand-built VM transactions are allowed
+- [x] **B7.16 Tests.** Add `W/solidc/test/DeployerGeneration.test.ts`. Hand-built VM transactions are allowed
       here, as in other compiler tests. Every VM test puts the deployer coin at an input index that differs
       from OUTBASE (for example input 3 and OUTBASE 5). Where a case needs bytes that only the SDK computes
       today (the yardstick, the HEAD), the test reads them from a fixture file that a script under
@@ -4040,7 +4040,7 @@ this phase and compiles every source as it did after B7.
       `new`" or "deployer child". Today's code decides "stateful target" from state variables and
       collections alone (STT 15302), which misses a child that is stateful for another reason; for direct
       creators the predicate replaces that test. B10 removes the option.
-- [ ] **B8.2 Types.** In TCT `visitInstantiation` (2262–2339), remove the B5.4 refusal and its test. For a
+- [x] **B8.2 Types.** In TCT `visitInstantiation` (2262–2339), remove the B5.4 refusal and its test. For a
       deployer `new`:
       - check `args` against C's contract parameters with `expectParameters`, and the parentheses against
         C's constructor parameters;
@@ -4076,7 +4076,7 @@ this phase and compiles every source as it did after B7.
 - [x] **B8.5 Layout.** In the deploy-slot expansion (STT 19720–19731 and GTT 3856–3895), give each deployer
       `new` site w_out(C) − 1 `deployDataNft` slots in place of data + entries, with w_out from
       `compiledDeployers`.
-- [ ] **B8.6 Binding.** In `emitContractDeployment` (22269–22674), for a deployer `new`:
+- [x] **B8.6 Binding.** In `emitContractDeployment` (22269–22674), for a deployer `new`:
       - replace the building of C's redeem script and lock (22319–22458) with steps 1 to 5 of A6, all at the
         site, with step 3 before step 4;
       - take s and DEPLOY(C) from the child's `DeployerAbi`; compare the first 6 bytes of the unlocking with
@@ -4101,7 +4101,7 @@ this phase and compiles every source as it did after B7.
         B8.8 extend.
 
       Leave the stateless and framed paths unchanged.
-- [ ] **B8.7 The created-children list (O3).** For a contract that contains a deployer `new` of a child
+- [x] **B8.7 The created-children list (O3).** For a contract that contains a deployer `new` of a child
       whose `constructorReadsSender` is true:
       - refuse it (`creator-shape`) when it cannot keep rule 5 of A6: a `fallback`, a `new` inside
         `receive`, a message-bus route among its arms, the multi-call entry (`callBatch`), a function split,
@@ -4135,7 +4135,7 @@ this phase and compiles every source as it did after B7.
       10501–10505) must agree with the symbol pass, which counts a contract that creates a stateful child as
       stateful (STT 1653–1658). Add that term for such contracts only, and test a creator that has no state
       variable and no event.
-- [ ] **B8.8 Value.** For a deployer `new`: count v as an outgoing amount in the creator's satoshi container
+- [x] **B8.8 Value.** For a deployer `new`: count v as an outgoing amount in the creator's satoshi container
       conservation (53987–54029) and in the per-slot check (56031–56052), and emit no `{value}` transfer to
       the child's master lock (22636–22671, 46097–46113 and 46016–46037). Set the site's O10 flag for step 6.
 - [ ] **B8.9 Loops, branches and the message bus.**
@@ -4144,6 +4144,9 @@ this phase and compiles every source as it did after B7.
       - Add a flag `deploysThroughDeployer` to every function with a deployer `new`, and keep such functions
         off the message-bus route, at the places where B1 removed `deploysChildCode` (`compiler.ts`, around
         5920 and 7595 before B1).
+      Note (implementation, 2026-11-13): a deployer `new` compiles in a branch; a site in a loop is refused
+      with `creator-shape` until the per-iteration d_in/d_out counter lands. The message-bus routing flag is
+      not added.
 - [x] **B8.10 Artifact.** For a deployer child's `deployTargets[i]`: fill `contractArgs`, `constructorArgs`
       and `valueArg` as A13 defines them, set `creationBytecode` to the child's `DeployerAbi.code`,
       `dataNftCount` to N and `entryNftCount` to E, and leave out the fields A13 says it does not have.
@@ -4291,7 +4294,7 @@ it) never takes today's genesis (A12).
 
 ## B10. The switch
 
-- [ ] **B10.1** Remove the option `__deployerNew`: `isDeployerNew` no longer depends on it. Every direct
+- [x] **B10.1** Remove the option `__deployerNew`: `isDeployerNew` no longer depends on it. Every direct
       `new` of a stateful child now binds a deployer.
 - [ ] **B10.2** Run both full suites (milestone), and the regression files of Part C. An existing test that
       creates a stateful child through a creator now needs preps: where it passes a signer and funding

@@ -205,6 +205,34 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
   });
 });
 
+describe('B7.10: block fields at genesis come from the locktime', () => {
+  it('reads block.number', () => {
+    const artifact = compileString(`${P} contract C { int n; constructor() { n = block.number; } }`,
+      { deployer: true, messageBus: false });
+    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 900n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, {}, undefined, 900, 0xfffffffe);
+    expect(vm.verify(spend as never)).toBe(true);
+  });
+
+  it('reads block.timestamp', () => {
+    const artifact = compileString(`${P} contract C { int n; constructor() { n = block.timestamp; } }`,
+      { deployer: true, messageBus: false });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 1_700_000_000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, {}, undefined, 1_700_000_000, 0xfffffffe) as never)).toBe(true);
+  });
+
+  it('refuses a height read from a timestamp locktime', () => {
+    const artifact = compileString(`${P} contract C { int n; constructor() { n = block.number; } }`,
+      { deployer: true, messageBus: false });
+    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 1_700_000_000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, {}, undefined, 1_700_000_000, 0xfffffffe);
+    expect(vm.verify(spend as never)).not.toBe(true);
+  });
+});
+
 describe('B7.12: the master lock commits to the contract arguments', () => {
   it('builds M as P2SH32(pin(X) || A || code)', () => {
     const artifact = compileString(`${P} contract C(bytes32 t) { int n; constructor() { n = 1; } }`,

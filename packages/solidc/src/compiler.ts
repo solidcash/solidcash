@@ -713,6 +713,10 @@ function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): vo
   }
   contract.functions = contract.functions.filter((fn) => reached.has(fn));
   for (const fn of reached) fn.genesisMode = true;
+  // A2/A5: every body this program keeps is a genesis body. Its block reads come from the locktime, so it takes
+  // no `__oraclePool` binding and no block-oracle input index; the pool is only for a live call of C.
+  contract.usesBlockOracle = false;
+  contract.usesBlockhash = false;
   contract.constructorDef = undefined;
   contract.fallbackDef = undefined;
   contract.receiveDef = undefined;
@@ -768,6 +772,15 @@ function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): vo
  * B7.3: compile Deploy<C> from C's pristine resolved tree. The program carries only `create` and `sweep`; its
  * artifact is the redeem script A13 publishes, and the box carries what B7.14 needs from the second compile.
  */
+/**
+ * A2: C reads block data when a function other than its constructor reads `block.*` (or reaches a reader by a
+ * named call). The constructor's own reads come from the locktime (A5) and need no oracle.
+ */
+function liveFunctionReadsBlockData(contract: ContractNode): boolean {
+  if (contract.fallbackDef?.usesBlockOracle === true || contract.receiveDef?.usesBlockOracle === true) return true;
+  return contract.functions.some((fn) => fn.isEntryPoint === true && fn.usesBlockOracle === true);
+}
+
 /** B7.5 `ctor-base-argument`: a base constructor argument must not read state or have a side effect. */
 function baseConstructorArgumentReadsState(contract: ContractNode): boolean {
   const stateNames = new Set(contract.stateVariables.map((state) => state.name));
@@ -910,18 +923,44 @@ function assertDeployerParameters(create: FunctionDefinitionNode): void {
  * deployer artifact and the SDK need.
  */
 /** B7.9: A4.4's output range order, applied to the layout the constructor's body produced. */
-function buildGenesisBlockLayout(layout: FunctionBlockLayout | undefined): FunctionBlockLayout | undefined {
+interface GenesisLayoutRows {
+  /** Contract parameters that name a token container C keeps single (A8). */
+  readonly tokenRows: readonly number[];
+  readonly satoshiContainer: 'none' | 'optional' | 'required';
+  /** Sorted collections today's genesis mints an empty HEAD for: those the constructor does not write. */
+  readonly headCollections: readonly string[];
+}
+
+function buildGenesisBlockLayout(
+  layout: FunctionBlockLayout | undefined, rows: GenesisLayoutRows,
+): FunctionBlockLayout | undefined {
   if (layout === undefined) return undefined;
+  // A runtime-variable (trailing) region has no genesis form yet; keep today's layout for it.
+  if (layout.trailingBase !== undefined) return layout;
   const rank: Partial<Record<BlockSlotKind, number>> = {
-    master: 0, dataNft: 1, blockhashOracle: 2, blockInfoOracle: 2, entry: 3,
+    master: 0, dataNft: 1, head: 2, blockhashOracle: 2, blockInfoOracle: 2, entry: 3,
     satoshiContainer: 4, tokenContainer: 5, transfer: 6, tcTransfer: 6,
     event: 7, eventChunk: 7, returnEvent: 7,
   };
-  const grouped = layout.slots.filter((slot) => slot.kind !== 'keccakSideCar' && slot.kind !== 'ecrecoverSideCar');
-  if (grouped.length !== layout.slots.length || layout.trailingBase !== undefined) return layout;
-  const slots = [...grouped]
+  const isSidecar = (kind: BlockSlotKind): boolean => kind === 'keccakSideCar' || kind === 'ecrecoverSideCar';
+  const tokens = new Set(rows.tokenRows);
+  // A5: a genesis read of a block field comes from the transaction's locktime, so no oracle row exists. A token
+  // row exists only for a parameter-named container C keeps single; any other container opens later.
+  const kept = layout.slots.filter((slot) => slot.kind !== 'blockhashOracle' && slot.kind !== 'blockInfoOracle'
+    && slot.kind !== 'satoshiContainer' && !isSidecar(slot.kind)
+    && (slot.kind !== 'tokenContainer' || (slot.slotIndex !== undefined && tokens.has(slot.slotIndex))));
+  const inserted: { kind: BlockSlotKind; offset: number; collection?: string }[] = [
+    ...rows.headCollections.map((collection) => ({ kind: 'head' as const, offset: 0, collection })),
+    ...(rows.satoshiContainer === 'none' ? [] : [{ kind: 'satoshiContainer' as const, offset: 0 }]),
+  ];
+  const slots = [...kept, ...inserted]
     .sort((left, right) => (rank[left.kind] ?? 99) - (rank[right.kind] ?? 99) || left.offset - right.offset)
     .map((slot, offset) => ({ ...slot, offset }));
+  const outputs = slots.length;
+  // The sidecar group follows the range: input and output at the same index (A4.4). It is not part of w_out.
+  for (const [position, sidecar] of layout.slots.filter((slot) => isSidecar(slot.kind)).entries()) {
+    slots.push({ ...sidecar, offset: outputs + position });
+  }
   return { ...layout, blockSize: slots.length, slots };
 }
 
@@ -930,7 +969,6 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
   const create = contract.functions.find((fn) => fn.name === '__construct');
   if (create === undefined) throw new DeployerInternalError(contract, 'the deployer program has no create body');
   const box = options.__deployerProgram!.box;
-  create.blockLayout = buildGenesisBlockLayout(create.blockLayout);
   const refuse = (reason: string, detail: string): never => {
     throw new DeployerUnsupportedError(create, reason, detail);
   };
@@ -1099,7 +1137,9 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
   if (boxTarget !== undefined) {
     boxTarget.callSlots = slots.length;
     boxTarget.constructorReadsSender = create.usesMsgSender === true;
-    boxTarget.readsBlockData = contract.usesBlockOracle === true || contract.usesBlockhash === true;
+    // A2: this is the oracle Deploy<C> mints for C's live functions. The program's own bodies are genesis bodies
+    // and read the locktime, so their own block reads do not set it.
+    boxTarget.readsBlockData = boxTarget.readsBlockData === true;
     boxTarget.constructorBlockField = blockNumber ? 'number' : blockTimestamp ? 'timestamp' : undefined;
     boxTarget.sidecars = {
       keccak: create.keccakCompute === true ? 1 : 0,
@@ -1121,7 +1161,20 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
       .filter((collection) => writtenCollections.has(collection.name))
       .map((collection) => ({ collection: collection.name, appendSites: 1 }));
     boxTarget.arms = contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name);
-    boxTarget.genesisOutputs = create.blockLayout?.slots.length ?? 0;
+    // B7.9: the genesis range follows A4.4. E is the HEAD of a sorted collection the constructor does not write,
+    // which is what today's top-level genesis mints for it.
+    const constants = options.__deployerProgram!.constants;
+    const tokenRows = constants.singleTokenContainerKeys
+      .map((name) => contract.parameters.findIndex((parameter) => parameter.name === name))
+      .filter((index) => index >= 0);
+    const headCollections = constants.collections
+      .filter((collection) => collection.sorted && !writtenCollections.has(collection.name))
+      .map((collection) => collection.name);
+    create.blockLayout = buildGenesisBlockLayout(create.blockLayout, {
+      tokenRows, satoshiContainer: boxTarget.satoshiContainer, headCollections,
+    });
+    boxTarget.genesisOutputs = create.blockLayout?.slots
+      .filter((slot) => slot.kind !== 'keccakSideCar' && slot.kind !== 'ecrecoverSideCar').length ?? 0;
   }
   void box;
 }
@@ -18014,6 +18067,7 @@ function compileResolvedAst(
     const inlineLibrary = artifact.externalLibraries?.some((library) => library.resultNft !== true) === true;
     const reason = !artifact.stateLayout || mergedCompilerOptions.composition === 'framed' ? 'not-stateful-direct'
       : ast.contract.usesBlockhash === true ? 'blockhash-ring'
+        : liveFunctionReadsBlockData(ast.contract) ? 'code-not-constant'
         : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true
           ? 'lock-composition'
           : unsupportedParameter ? 'param-type'
@@ -18024,6 +18078,7 @@ function compileResolvedAst(
       const detail = reason === 'not-stateful-direct'
         ? 'a deployer exists only for a direct stateful contract'
         : reason === 'blockhash-ring' ? 'a blockhash ring would have to be minted at genesis'
+          : reason === 'code-not-constant' ? 'a function of C reads block data, so its code is not the same for every category'
           : reason === 'lock-composition' ? 'its master lock is not the plain pin and code P2SH32 lock'
           : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
             : 'an inline external library puts an OP_DROP between the pin and the arguments';

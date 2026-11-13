@@ -3579,6 +3579,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // per site and pushes the site ordinal as hidden context. Resolve against that frame instead.
     if (kind === 'deploy' && this.emitGraphDeployInputIndex(slotIndex ?? 0, locationData)) return;
     if (this.emitGraphEffectSlotIndex(kind, slotIndex, locationData)) return;
+    // A5/B7.9: the shared sidecar group starts at __internal__genesisSidecarBase; input and output sit at the
+    // same index. The group's position is the slot's place after the genesis range.
+    if (this.currentFunction?.genesisMode === true && (kind === 'keccakSideCar' || kind === 'ecrecoverSideCar')) {
+      const layout = this.currentFunction.blockLayout;
+      const slot = layout?.slots.find((candidate) => candidate.kind === kind
+        && (candidate.slotIndex ?? 0) === (slotIndex ?? 0));
+      const position = slot === undefined || layout?.slots === undefined ? (slotIndex ?? 0)
+        : slot.offset - (layout.slots.filter((candidate) => candidate.kind !== 'keccakSideCar'
+          && candidate.kind !== 'ecrecoverSideCar').length);
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__genesisSidecarBase'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (position > 0) {
+        this.emit(encodeInt(BigInt(position)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      return;
+    }
     let offset = this.getBlockSlotOffset(kind, slotIndex);
     // A5: the genesis range starts at __internal__genesisOutputBase, independent of the deployer's input index.
     if (this.currentFunction?.genesisMode === true
@@ -11762,10 +11779,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       location: this.currentFunction.body.location, positionHint: PositionHint.END,
     };
     this.emitDropUntrackedStackItems(loc);
-    const records = this.dataNftCount + (this.currentContractUsesBlockOracle ? 1 : 0);
+    // A4.5: N mutable data records, E HEADs and C_e collection entries. A5's locktime read needs no oracle
+    // output. The event outputs are immutable (their category has no capability byte) and are counted by the
+    // child-category bound instead. (V is still static here; B7.12 makes it a run-time count.)
+    const slots = this.currentFunction.blockLayout?.slots ?? [];
+    const heads = slots.filter((slot) => slot.kind === 'head').length;
+    const entries = slots.filter((slot) => slot.kind === 'entry').length;
+    const records = this.dataNftCount + heads + entries;
+    const events = slots.filter((slot) => slot.kind === 'event' || slot.kind === 'eventChunk').length;
     this.emitDeployCapabilityOutputCount('(gen_x)', 0x02, 1, loc);
     this.emitDeployCapabilityOutputCount('(gen_x)', 0x01, records, loc);
-    this.emitDeployChildCategoryBound('(gen_x)', 1 + records, loc);
+    this.emitDeployChildCategoryBound('(gen_x)', 1 + records + events, loc);
   }
 
   /**

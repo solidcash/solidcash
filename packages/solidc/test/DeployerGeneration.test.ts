@@ -45,6 +45,13 @@ describe('B7.0: when a deployer is built', () => {
     expect(artifact.deployerUnsupported).toBe('blockhash-ring');
   });
 
+  it('a live block reader records code-not-constant', () => {
+    const source = `${P} contract C { int n; constructor() { n = 1; } function f() { n = block.number; } }`;
+    const { artifact, warnings } = compile(source, { deployer: true });
+    expect(artifact.deployerUnsupported).toBe('code-not-constant');
+    expect(warnings.some((warning) => warning.includes('code-not-constant'))).toBe(true);
+  });
+
   it('a message-bus compile records lock-composition', () => {
     const source = `${P} contract C { int n; function a() { n = n + 1; } function b() { n = n + 2; } }`;
     const { artifact, warnings } = compile(source, { deployer: true, messageBus: true });
@@ -177,7 +184,7 @@ describe('B7.5: what the constructor does', () => {
 
   it('publishes the constructor facts the deployer and the SDK need', () => {
     const block = compile(`${P} contract C { int n; constructor() { n = block.number; } }`, { deployer: true });
-    expect(block.artifact.deployer!.readsBlockData).toBe(true);
+    expect(block.artifact.deployer!.readsBlockData).toBe(false);
     expect(block.artifact.deployer!.constructorBlockField).toBe('number');
 
     const payable = compile(`${P} contract C { int n; constructor() payable { n = 1; } }`, { deployer: true });
@@ -349,13 +356,58 @@ describe('B7.5: ctor-call-count', () => {
 });
 
 describe('B7.9: the genesis range order', () => {
-  it('orders master, records, containers, transfers and events', () => {
-    const source = `${P} contract C { int n; event E(int x);
-      constructor() payable { n = 1; emit E(2); payable(msg.sender).transfer(1000); } }`;
+  const layoutOf = (source: string): { kinds: string[]; outputs: number; slots: { kind: string; offset: number }[] } => {
     const { artifact } = compile(source, { deployer: true });
     const create = artifact.deployer!.abi.find((fn) => fn.name === 'create')!;
-    expect(create.blockLayout!.slots.map((slot) => slot.kind))
-      .toEqual(['master', 'dataNft', 'satoshiContainer', 'transfer', 'event']);
-    expect(artifact.deployer!.genesisOutputs).toBe(5);
+    const slots = create.blockLayout!.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset }));
+    return { kinds: slots.map((slot) => slot.kind), outputs: artifact.deployer!.genesisOutputs, slots };
+  };
+
+  it('orders master, records, containers, transfers and events', () => {
+    const layout = layoutOf(`${P} contract C { int n; event E(int x);
+      constructor() payable { n = 1; emit E(2); payable(msg.sender).transfer(1000); } }`);
+    expect(layout.kinds).toEqual(['master', 'dataNft', 'satoshiContainer', 'transfer', 'event']);
+    expect(layout.outputs).toBe(5);
+  });
+
+  it('adds the satoshi row for a payable constructor that sends nothing', () => {
+    const layout = layoutOf(`${P} contract C { int n; constructor() payable { n = 1; } }`);
+    expect(layout.kinds).toEqual(['master', 'dataNft', 'satoshiContainer']);
+    expect(layout.outputs).toBe(3);
+  });
+
+  it('keeps one token row per single container and none for a multi container', () => {
+    const single = layoutOf(`${P} pragma tokencontainer single;
+      contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenAmount); } }`);
+    expect(single.kinds).toEqual(['master', 'dataNft', 'tokenContainer']);
+    const multi = layoutOf(`${P} contract C(bytes32 asset) { int n;
+      constructor() { n = int(this.tokens[asset].tokenAmount); } }`);
+    expect(multi.kinds).toEqual(['master', 'dataNft']);
+    expect(multi.outputs).toBe(2);
+  });
+
+  it('mints a HEAD for a sorted collection the constructor does not write', () => {
+    const layout = layoutOf(`${P} contract C { mapping(int => int) m; constructor() {} }`);
+    expect(layout.kinds).toEqual(['master', 'head']);
+    expect(layout.outputs).toBe(2);
+  });
+
+  it('keeps the entries of a collection the constructor writes, with no separate HEAD', () => {
+    const layout = layoutOf(`${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } }`);
+    expect(layout.kinds).toEqual(['master', 'entry']);
+    expect(layout.outputs).toBe(2);
+  });
+
+  it('puts the sidecar group after the range', () => {
+    const layout = layoutOf(`${P} contract C { bytes32 h; constructor(bytes b) { h = keccak256(b); } }`);
+    expect(layout.kinds).toEqual(['master', 'dataNft', 'keccakSideCar']);
+    expect(layout.outputs).toBe(2);
+    expect(layout.slots.at(-1)!.offset).toBe(2);
+  });
+
+  it('has no oracle row for a constructor that reads a block field', () => {
+    const layout = layoutOf(`${P} contract C { int n; constructor() { n = block.number; } }`);
+    expect(layout.kinds).toEqual(['master', 'dataNft']);
+    expect(layout.outputs).toBe(2);
   });
 });

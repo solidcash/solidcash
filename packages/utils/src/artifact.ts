@@ -407,6 +407,8 @@ export type BlockSlotKind =
   | 'readOnlyDataNft'
   | 'blockhashOracle'
   | 'blockInfoOracle'
+  /** A collection's HEAD at birth (A4.4): an own-category mutable entry coin at slot 0. */
+  | 'head'
   | 'keccakSideCar'
   | 'ecrecoverSideCar'
   | 'entry'
@@ -438,6 +440,7 @@ export interface BlockLayoutSlot {
   slotIndex?: number;       // for entry/tokenContainer/transfer/event/eventChunk/tcTransfer
   chunk?: number;           // eventChunk: the payload chunk this output carries (>= 1)
   nftIndex?: number;        // for dataNft/readOnlyDataNft
+  collection?: string;      // for head: the collection whose HEAD this output is
   conditional?: boolean;    // true if slot may be inactive (in if/else branch)
   // entry: a branch delete lowered to an existence-gated soft-delete write (SDK derives it as a write, not a drop)
   softDelete?: boolean;

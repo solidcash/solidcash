@@ -3569,10 +3569,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       Note (implementation, 2026-11-12): done for the ABI. The entry-write-path check is deferred to B7.18,
       where the collection journal replaces those witnesses; a collection-writing constructor therefore keeps
       them for now.
-      Note (implementation, 2026-11-12): `buildGenesisBlockLayout` ranks the constructor's slots in A4.4 order,
-      compacts their offsets, and `genesisOutputs` is its length. The sidecar group, the oracle/HEAD/token/collection
-      rows and their pins are not built; a layout with a sidecar or trailing region keeps today's layout.
-- [ ] **B7.9 Genesis layout, slot base and sidecars.** Add `buildGenesisBlockLayout` next to the block-layout
+      Note (implementation, 2026-11-12): `buildGenesisBlockLayout` ranks the constructor's slots in A4.4 order
+      and compacts their offsets.
+- [x] **B7.9 Genesis layout, slot base and sidecars.** Add `buildGenesisBlockLayout` next to the block-layout
       builder (STT 19434–19731). Build the genesis range of A4.4 from `create`'s layout: keep only output-only
       slots, in the A4.4 order; move the keccak and
       ecrecover sidecar slots to a sidecar group; add the oracle slot when C reads block data; add the HEAD
@@ -3582,6 +3581,18 @@ with a deployer whose constructor writes a collection, and only where today's st
       `emitBlockSlotIndex` (3361–3407), in genesis mode, use `__internal__genesisOutputBase` and these offsets
       in place of `OP_INPUTINDEX`. Locate keccak sidecars (15531–15673) and ecrecover sidecars (15815–16009)
       from `__internal__genesisSidecarBase`.
+      Note (implementation, 2026-11-12): the builder now drops the input-side oracle slots, keeps only a token
+      row for each `tokenRows` entry, adds a satoshi row whenever `satoshiContainer` is not `'none'`, adds a
+      HEAD row (`kind: 'head'`) for each sorted collection the constructor does not write, and keeps the
+      constructor's entry rows. The sidecar slots move after the range to
+      `genesisSidecarBase + position`, and `genesisOutputs` (w_out) counts only the range, not the sidecars.
+      `emitBlockSlotIndex` resolves sidecar slots from `__internal__genesisSidecarBase`. A trailing
+      (runtime-variable) layout keeps today's layout, which no genesis constructor produces yet.
+      The oracle row is unreachable in this backend: a constructor's block read uses the locktime, and a live
+      function's block read refuses the deployer with `code-not-constant` because A5's constant-lock form is
+      not available. The HEAD/token/collection rows' pins are B7.13/B7.18; this item establishes the layout and
+      the indices only. A sorted collection the constructor writes has entry rows and no separate HEAD, as
+      today's genesis mints its HEAD only for an unwritten sorted collection.
 - [ ] **B7.10 Environment and skipped checks.** In genesis mode:
       - `address(this)` is M and `this.activeBytecode` is R, both computed once in the prologue and kept on
         the stack under fixed names;
@@ -3596,8 +3607,9 @@ with a deployer whose constructor writes a collection, and only where today's st
         `OP_TXLOCKTIME OP_DUP OP_CHECKLOCKTIMEVERIFY OP_DROP`, then the range check;
       Note (implementation, 2026-11-12): M, R, `msg.value`, a zero-category `msg.sender` and `address(this)` are
       resolved; the balance journal, the nonzero creator sender and most of the skipped checks are not. The
-      `OP_TXLOCKTIME` form is emitted for block.number/block.timestamp, but the create still reaches an
-      oracle-input read before code generation, so no VM case passes yet.
+      `OP_TXLOCKTIME` form for block.number/block.timestamp passes in the VM: a genesis-only body takes no
+      `__oraclePool` binding and no oracle input index, and a height read from a timestamp locktime (or the
+      reverse) fails.
       - emit none of: `emitDirectGenesisGuard` (11060), `emitTokenCategoryVerification` (36645),
         `emitMasterSelfPreservation` (50415), `emitMintingNftUniqueness` (51592), `emitValuePreservation`
         (55880), `emitOwnCategoryMutableNftConservation` (51806), `emitMasterCommitmentPreservation` (10839),

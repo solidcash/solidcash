@@ -4726,7 +4726,7 @@ are allowed here because these are attacks. Each must fail, in the VM unless the
 - [x] a creator that is asked to answer its own child's constructor. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Regression.** Run at the end of every phase, against the B0.5 baseline; the full suites run at the five
-milestones. Final acceptance ran them at the final HEAD: the full solidc suite is **513 files and 7,835/7,835
+milestones. Final acceptance ran them at the final HEAD: the full solidc suite is **514 files and 7,837/7,837
 tests green** (baseline at master: 7,615 tests, all green; the increase is the deployer work's own cases).
 Eight files that assert the pre-B10 fold's shape compile with the internal `__legacyDeployFold` escape, which
 is what it exists for; the deploy-then-call corpus now expects `DeployedChildCallError`, the sub-RESERVE
@@ -4809,10 +4809,10 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 - [x] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
       `childDeployers`: with the switch off the solidc suite was 7,826/7,826 and solidcash 6,303 passed with 0
       failed (baseline 7,615 solidc). At the final acceptance on this branch the full solidc suite is
-      7,835/7,835 across 513 files and the full solidcash suite 6,303 passed with 0 failed across 1,046 files
+      7,837/7,837 across 514 files and the full solidcash suite 6,303 passed with 0 failed across 1,046 files
       (5 expected fail, 191 skipped, 5 todo), both matching or exceeding the baseline; the spec's seven
       mechanical checks pass. The same two suites are green after the constructor-event and genesis category
-      base changes (solidc 7,835/7,835; solidcash 6,303 passed, 0 failed). The root build regenerates no
+      base changes and the BCMR/collection work (solidc 7,837/7,837; solidcash 6,303 passed, 0 failed). The root build regenerates no
       testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for carry
       `deployer`.
 - [ ] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee

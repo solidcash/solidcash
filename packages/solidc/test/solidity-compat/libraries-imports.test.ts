@@ -387,7 +387,7 @@ describe('inline deploy receiver in a file-level free function', () => {
     const src = 'contract Child { uint public x = 2; }'
       + ' function readFresh() returns (uint) { return (new Child()).x(); }'
       + ' contract C { function f() public returns (uint) { return readFresh(); } }';
-    expect(compileString(src, { evmCompat: true }).contractName).toBe('C');
+    expect(compileString(src, { evmCompat: true, __legacyDeployFold: true } as never).contractName).toBe('C');
   });
 });
 

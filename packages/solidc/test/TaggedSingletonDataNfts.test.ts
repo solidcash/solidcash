@@ -118,7 +118,7 @@ describe('explicit singleton data-NFT index tags', () => {
         function create() public returns (uint8) { return (new Child()).stored(); }
         function check(uint8 expected) public { require(create() == expected); }
       }`, { messageBus: false, evmCompat: true, forceStateful: true, tagSingletonDataNfts: true,
-      allowUnsafeOperations: true });
+      allowUnsafeOperations: true, __legacyDeployFold: true } as never);
     const descriptor = artifacts.Parent.abi.find((entry) => entry.name === 'check')?.deployTargets?.[0];
     expect(descriptor?.childLayoutDigest).toBe(childStateLayoutDigest(artifacts.Child.stateLayout!));
     expect(artifacts.Child.stateLayout).toMatchObject({ dataNftCount: 1, taggedDataNfts: true });

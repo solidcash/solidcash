@@ -1,7 +1,6 @@
-// Calling a method on a freshly-deployed child in the same transaction is rejected unless the method folds
-// into the deploy genesis. Deterministic branches now fold, but a runtime loop still cannot be represented
-// by the finite genesis recipe. The unfolded call would co-spend the child, which this tx creates as an
-// output, and a UTXO cannot be both created and spent in one transaction.
+// Calling a method on a freshly-deployed child in the same transaction is refused. Since B10 the child is
+// created through its deployer, and a call on it cannot be bound at its creation; call it in a later
+// transaction. (The old fold path refused the same shape as DeployThenCallError.)
 contract Child(bytes20 owner) {
     int counter;
     function configure(int target) {

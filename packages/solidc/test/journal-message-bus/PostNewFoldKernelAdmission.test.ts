@@ -3,6 +3,8 @@ import { compileString } from '../../src/compiler.js';
 
 const KERNEL = {
   forceStateful: true, messageBus: true, messageBusKernel: true, maximumInputBytes: 1_000_000,
+  // The admission rules exist for the pre-B10 fold recipes; the legacy path is what they describe.
+  __legacyDeployFold: true,
 } as const;
 
 type KernelHandler = NonNullable<ReturnType<typeof compileString>['messageBus']>['handlers'][number];

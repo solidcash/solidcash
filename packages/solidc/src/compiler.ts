@@ -21739,10 +21739,20 @@ function gatherDeployerChildren(
   // The deployer program is a synthetic compile of C's constructor: it cannot create children.
   if (options.__deployerProgram !== undefined) return undefined;
   const knownNames = new Set(ast.importedContracts.map((contract) => contract.name));
-  const named = directNewContractNames(ast.contract, knownNames, ast.freeFunctions ?? []);  if (named.size === 0) return undefined;
+  const named = directNewContractNames(
+    ast.contract, knownNames, freeFunctionsReachedFrom(ast.contract, ast.freeFunctions ?? []),
+  );
+  if (named.size === 0) return undefined;
   const childOptions = { ...referencedChildCompilerOptions(options), deployer: true };
   const map = new Map<string, DeployerChild>();
+  const contractNodes = new Map<string, ContractNode>();
+  for (const declaration of ast.importedContracts) contractNodes.set(declaration.name, declaration);
   for (const name of named) {
+    // A stateless child never gets a deployer (B8.1); its `new` keeps today's embedding. The library self-deploy
+    // cases reach here with the primary's own name and no state: skipping is what lets the existing bytecode
+    // reference path build them instead of reporting a deployer cycle.
+    const node = name === ast.contract.name ? ast.contract : contractNodes.get(name);
+    if (node !== undefined && node.stateVariables.length === 0 && node.collections.length === 0) continue;
     if (name === ast.contract.name) throw new DeployCycleError(ast.contract, name);
     const counter = options.__deployerChildCompileCounter;
     if (counter !== undefined) counter.count += 1;
@@ -21868,6 +21878,40 @@ function injectCreatedChildrenLocals(ast: Ast, children: ReadonlyMap<string, Dep
   }
 }
 
+/**
+ * The free functions the contract can reach by bare-name calls, transitively. A module's free functions are not
+ * all part of every contract: compiling a child standalone must not see a `new` in a helper only the *creator*
+ * calls, or it reports a creation cycle against itself.
+ */
+function freeFunctionsReachedFrom(
+  contract: ContractNode, freeFunctions: FunctionDefinitionNode[],
+): FunctionDefinitionNode[] {
+  if (freeFunctions.length === 0) return [];
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  for (const fn of freeFunctions) {
+    const list = byName.get(fn.name) ?? [];
+    list.push(fn);
+    byName.set(fn.name, list);
+  }
+  const reached = new Set<FunctionDefinitionNode>();
+  const queue: FunctionDefinitionNode[] = [];
+  const visit = (fn: FunctionDefinitionNode): void => {
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode)) return;
+      for (const callee of byName.get(node.identifier.name) ?? []) {
+        if (reached.has(callee)) continue;
+        reached.add(callee);
+        queue.push(callee);
+      }
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+  };
+  for (const fn of [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]) {
+    if (fn !== undefined) visit(fn);
+  }
+  while (queue.length > 0) visit(queue.pop()!);
+  return [...reached];
+}
+
 /** The names a direct `new` in `contract` (or in a retained free function) quotes, without the transitive closure. */function directNewContractNames(
   contract: ContractNode, knownNames: Set<string>, freeFunctions: FunctionDefinitionNode[],
 ): Set<string> {
@@ -21881,6 +21925,9 @@ function injectCreatedChildrenLocals(ast: Ast, children: ReadonlyMap<string, Dep
       return;
     }
     if (!(value instanceof Node)) return;
+    // A call node may carry its resolved body (a library member, an inlined helper). Those bodies are walked as
+    // roots when they belong to this contract; a library's `new` is the library's own deployment, not this one's.
+    if (value instanceof FunctionDefinitionNode) return;
     if (value instanceof InstantiationNode
       && (knownNames.has(value.identifier.name) || value.identifier.name === contract.name)) {
       names.add(value.identifier.name);

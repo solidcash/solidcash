@@ -34065,11 +34065,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NIP, loc);
       this.removeFromStack(this.getStackIndex(readHash));
     }
-    // A kept/logged value is the pushdata-encoded entry value; a scalar caller stores/compares the raw value.
-    if (node.arrayIndex === undefined && plan !== undefined
-      && (plan.base !== undefined || plan.compared.length > 0 || plan.turn !== undefined || plan.log !== undefined)) {
-      this.emitPushdataDecodeLastField(node.collection!.innermostValueType, loc);
-    }
     if (node.arrayIndex) this.emitArrayElementExtract(node, loc);
     return true;
   }

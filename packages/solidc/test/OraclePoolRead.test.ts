@@ -238,7 +238,11 @@ describe('a creator of a bound contract', () => {
 
   it('publishes the binding as the deployed child\'s forwarded argument', () => {
     const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
-    const maker = compileString(STATEFUL_MAKER, { ...options, primaryContractName: 'Maker' });
+    // The binding-forwarding shape predates B10; the legacy fold path is the one that carries a block-reading
+    // child (a deployer refuses `child-reads-block-data`).
+    const maker = compileString(STATEFUL_MAKER, {
+      ...options, primaryContractName: 'Maker', __legacyDeployFold: true,
+    } as never);
     const child = compileString(STATEFUL_MAKER, { ...options, primaryContractName: 'Child' });
     expect(child.constructorInputs.map((entry) => entry.name)).toEqual([ORACLE_POOL_PARAMETER]);
     expect(maker.constructorInputs.map((entry) => entry.name)).toEqual([ORACLE_POOL_PARAMETER]);

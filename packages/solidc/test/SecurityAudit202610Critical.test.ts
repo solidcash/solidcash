@@ -519,7 +519,8 @@ describe('October 2026 critical holes', () => {
   it('DX-6 a deploy call cannot rewrite an unaccessed record, and the deploy can', async () => {
     const src = `${P} contract Child() { int y; function ping() { require(true); } }`
       + ' contract Factory() { int x; function create() { Child c = new Child(); require(c.length > 0); } }';
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true,
+      __legacyDeployFold: true } as never;
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'Factory' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
     const provider = createTestProvider();
@@ -776,7 +777,8 @@ describe('October 2026 critical holes', () => {
       + ' contract C { int x; enumerable mapping(int => int) bal;'
       + ' function create(int expected) { int sum = 0; for (int v of this.bal) { sum = sum + v; }'
       + ' Child child = new Child(); require(sum == expected); require(child.length > 0); } }';
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true,
+      __legacyDeployFold: true } as never;
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'C' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
     const provider = createTestProvider();
@@ -830,7 +832,8 @@ describe('October 2026 critical holes', () => {
       + ' function create(int[] ks, int v) {'
       + ' for (int i = 0; i < ks.length; i = i + 1) { this.m[ks[i]] = v; }'
       + ' Child child = new Child(); require(child.length > 0); require(true); } }';
-    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true };
+    const options = { messageBus: false as const, forceStateful: true, allowUnsafeOperations: true,
+      __legacyDeployFold: true } as never;
     const factoryArtifact = compileString(src, { ...options, primaryContractName: 'C' });
     const childArtifact = compileString(src, { ...options, primaryContractName: 'Child' });
     const provider = createTestProvider();

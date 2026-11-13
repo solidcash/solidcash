@@ -62,6 +62,10 @@ function keeperView(node: DevnetNode, network: Network): NetworkProvider {
     getUtxos: (address) => byLock(addressToLockScript(address)),
     getUtxosForLockingBytecode: (lock) => byLock(typeof lock === 'string' ? hexToBin(lock) : lock),
     getBlockHeight: async () => node.getTip()?.height ?? 0,
+    getMedianTimePast: async () => {
+      const tip = node.getTip();
+      return tip === undefined ? 0 : computeMedianTimePast(node, tip.height);
+    },
     getRawTransaction: async (txid) => {
       const raw = node.getRawTx(txid);
       if (raw === undefined) throw new Error(`devnet transaction ${txid} not found`);

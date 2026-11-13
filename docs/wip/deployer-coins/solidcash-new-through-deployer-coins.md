@@ -21,7 +21,7 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 16 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 15 unticked ones name the shape the
 shipped SDK path refuses (block-field readers and their locktimes, `childContainers`/single token rows and a
 creating call's payments, constructor ecrecover, per-slot budget padding for a constructor loop, and the
 multi-site/multi-level creating cases); every Part D line is filled, including D13 from the shipped
@@ -4672,7 +4672,7 @@ their contract with `deployer: true`:
 - [x] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(covered by `DeployerConstructorCall.test.ts`: `binds both slots of a two-call constructor` drives the real create with two callees, and `DeployerCreation.e2e`'s two-slot case deploys both and calls the child)*
 - [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered: a void callee's record is not exercised on the SDK path; the compiler VM cases cover it)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
-- [ ] the same against a registry compiled without the option, and against a callee compiled with *(not covered by an e2e: `assertDeployerCallee` throws `DeployerCalleeError` for a callee that is not record-sound; the e2e path is not exercised)*
+- [x] the same against a registry compiled without the option, and against a callee compiled with *(covered by `DeployerCreation.e2e`: `refuses a void callee that does not publish records`, `refuses a callee whose called arm is unsafe`, and `refuses a callee that is not record-sound before building` each expect `DeployerCalleeError` before building)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
 - [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(not covered: a void USDT-shaped callee is not exercised)*

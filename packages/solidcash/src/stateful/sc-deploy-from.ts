@@ -142,6 +142,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     );
   }
   const childArtifact = (options.childArtifact
+    ?? options.childArtifacts?.[deployTarget.contractName]
     ?? (deployTarget ? (factory as any)._getChild(deployTarget.contractName) : undefined)) as T;
   if (!childArtifact) {
     throw new Error(
@@ -406,6 +407,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const childCount = fundingUtxos.length;
   if (childCount === 0) {
     throw new Error('deployFrom needs at least one funding UTXO (fundingUtxo or a non-empty fundingUtxos).');
+  }
+  if (options.deployments !== undefined && options.deployments !== childCount) {
+    throw new DeployerPrepError(
+      `This call creates ${childCount} child${childCount === 1 ? '' : 'ren'}, but deployments is `
+      + `${options.deployments}; pass one funding coin per child and the matching count`,
+    );
   }
   for (const fu of fundingUtxos) {
     if (fu.vout !== 0) {
@@ -2070,7 +2077,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const childStateful = statefulChildren[0];
 
   return {
-    factory, child: childStateful, tx, childCategoryId,
+    factory,
+    child: childStateful,
+    children: statefulChildren,
+    childCategoryIds: fundingUtxos.map((fu) => fu.txid),
+    tx,
+    childCategoryId,
     ...(preparsed === undefined ? {} : { prepTransactions: preparsed.preps.map((prep) => prep.transactionHex) }),
   };
 }

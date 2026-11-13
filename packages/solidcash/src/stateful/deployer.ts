@@ -606,6 +606,13 @@ export function runDeployerInputsLocal(
   for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
     const state = vm.evaluate({ transaction, sourceOutputs, inputIndex }) as AuthenticationProgramStateCommon;
     if (vm.stateSuccess(state) !== true) {
+      if ((globalThis as any).process?.env?.DEBUG_DEPLOYER_VM) {
+        const insns = (state as any).instructions ?? [];
+        const at = (state as any).ip ?? 0;
+        console.error('DEPFAIL', inputIndex, (state as any).error, 'ip', at,
+          insns.slice(Math.max(0, at - 8), at + 2).map((ins: any, k: number) => `${Math.max(0, at - 8) + k}:${(ins.opcode ?? 0).toString(16)}`).join(' '),
+          'stack', ((state as any).stack ?? []).slice(-4).map((x: Uint8Array) => `${x.length}:${binToHex(x).slice(0, 16)}`).join('|'));
+      }
       const error = state.error ?? 'the VM rejected the input';
       throw new DeployerPrepError(
         `Input ${inputIndex} failed the local run at instruction ${state.ip}/${state.instructions.length}: ${error}`,
@@ -731,6 +738,7 @@ export async function deployThroughDeployer<T extends Artifact>(
   if (artifact.stateLayout === undefined) throw new DeployerPathError(`Contract '${artifact.contractName}' is not stateful`);
   if (artifact.delegateOnly === true) throw new DeployerPathError('A delegate-only facet has no deployer genesis');
   const { Contract } = await import('../Contract.js');
+  const { planGenesisIdentity, identityRecord } = await import('../bcmr/identity.js');
   const { deriveDeployCommitments } = await import('./sc-derive-deploy-commitments.js');
   const { getDataNftAddress, getSatoshiContainerAddress, getTokenContainerAddress } = await import('./covenant-helpers.js');
   const { addressToLockScript } = await import('../utils.js');
@@ -803,16 +811,20 @@ export async function deployThroughDeployer<T extends Artifact>(
     contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n, options,
   )).stateCommitments;
 
-  // A14 item 3 keeps the category's identity output at output 0. B7.12 has not yet emitted its pin or counted it
-  // in `create`'s census, so `create` refuses a transaction that carries it. Until that compiler item lands, a
-  // deployment through the deployer creates the contract without a BCMR identity, and a caller that asks for one
-  // is refused rather than given an identity record that no output backs.
-  if (options.identity !== undefined || options.bcmr !== undefined) {
+  // A14 item 3: output 0 is the category's authhead identity, and `create` pins it when
+  // `__internal__identity` is set (B7.12's `emitGenesisIdentityPin`). The genesis range starts after it.
+  const identity = planGenesisIdentity({
+    category: categoryId,
+    ...(options.identity === undefined ? {} : { identity: options.identity }),
+    deployerLock: options.senderLockingBytecode
+      ?? (isP2pkhLock(funderLock) ? funderLock : addressToLockScript(options.changeAddress)),
+  });
+  if (options.bcmr !== undefined) {
     throw new DeployerPathError(
-      'Deploy<C> does not pin the category identity output yet (B7.12); omit identity/bcmr to deploy through it',
+      'A registry publication (bcmr) is not built through Deploy<C> yet; pass identity only',
     );
   }
-  const leading: import('../interfaces.js').Output[] = [];
+  const leading: import('../interfaces.js').Output[] = [identity.output];
   const outbase = leading.length;
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
@@ -843,7 +855,6 @@ export async function deployThroughDeployer<T extends Artifact>(
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[index] ?? '' } },
     });
   }
-
   const payable = constructorAbi?.modifiers?.includes('payable') === true;
   let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
   if (deployValue > 0n && deployValue < RESERVE) {
@@ -892,7 +903,7 @@ export async function deployThroughDeployer<T extends Artifact>(
       value: deployValue,
       senderCategory: new Uint8Array(32),
       authorIndex: 1,
-      identity: false,
+      identity: true,
       budgetPad: new Uint8Array(),
       synthetic: {
         __internal__genesisOutputBase: BigInt(outbase),
@@ -909,6 +920,20 @@ export async function deployThroughDeployer<T extends Artifact>(
   });
   builder.addInput(prep.deployerCoin, deployerUnlocker);
   builder.addInput(prep.authorCoin, options.funder);
+  // A4.4 aligns the sidecar group at the same input and output index. The identity output shifts the outputs but
+  // has no input, so a sidecar-bearing creation spends the prep's own change coin as the neutral filler. It is a
+  // real wallet coin at the change lock, and its value returns in the change output.
+  const fillers: Utxo[] = [];
+  if (deployer.sidecars.keccak + deployer.sidecars.ecrecover > 0 && outbase > 0) {
+    if (prep.changeCoin === undefined) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' has constructor side-cars and a leading identity output, which needs a filler `
+        + 'input; the prep left no change coin to use as one',
+      );
+    }
+    fillers.push(prep.changeCoin);
+    builder.addInput(prep.changeCoin, options.funder);
+  }
   const outputTotal = outputs.reduce((sum, output) => sum + output.amount, 0n);
   const provisionalFee = options.fee ?? 1000n;
   if (prep.authorCoin.satoshis < outputTotal + provisionalFee) {
@@ -956,7 +981,8 @@ export async function deployThroughDeployer<T extends Artifact>(
     }
   }
 
-  const change = prep.authorCoin.satoshis - outputTotal - provisionalFee;
+  const fillerTotal = fillers.reduce((sum, filler) => sum + filler.satoshis, 0n);
+  const change = prep.authorCoin.satoshis + fillerTotal - outputTotal - provisionalFee;
   if (change >= DUST) builder.addOutput({ to: options.changeAddress, amount: change });
   const locktime = await deployerLocktime(deployer, options.provider);
   if (locktime !== undefined) builder.setLocktime(locktime);
@@ -977,6 +1003,7 @@ export async function deployThroughDeployer<T extends Artifact>(
     contract: StatefulContract.withCategory(contract, categoryId) as never,
     tx: details,
     categoryId,
+    identity: identityRecord(identity, creationTxid),
     prepTransactions: preps.map((entry) => entry.transactionHex),
   };
 }

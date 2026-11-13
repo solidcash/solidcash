@@ -8,6 +8,7 @@ import { SignatureTemplate } from '../../src/index.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { resolveIdentity } from '../../src/bcmr/identity.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { computeSideCarStandIn } from '../../src/stateful/stateful-abi-resolve.js';
@@ -46,6 +47,30 @@ describe('a top-level deployment through Deploy<C>', () => {
     expect(result.prepTransactions).toHaveLength(1);
     expect(await verifyBirth(provider, result.categoryId, [artifact.deployer!])).toBe(true);
     expect(result.contract.categoryId).toBe(result.categoryId);
+  });
+
+  it('puts the category identity at output 0 and resolves it (B7.12, A14 item 3)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '13'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    // Output 0 holds the category's mutable authhead NFT, and the deployment reports the identity record.
+    const identityOutput = result.tx.outputs[0];
+    expect(binToHex(identityOutput.token!.category)).toBe(result.categoryId);
+    expect(identityOutput.token?.nft?.capability).toBe('mutable');
+    expect(result.identity).toMatchObject({
+      txid: result.tx.txid, vout: 0, category: result.categoryId,
+    });
+    const resolved = await resolveIdentity(provider, result.categoryId);
+    expect(resolved?.txid).toBe(result.tx.txid);
+    expect(Buffer.from(resolved!.lockingBytecode)).toEqual(Buffer.from(identityOutput.lockingBytecode));
   });
 
   it('uses a prep built beforehand and reads its category', async () => {

@@ -117,6 +117,8 @@ describe('B9.5: a creating call through Deploy<C>', () => {
       funder, changeAddress: change.address,
     });
     expect(result.prepTransactions).toHaveLength(2);
+    expect(result.children).toHaveLength(2);
+    expect(result.childCategoryIds).toEqual(result.children!.map((child) => child.categoryId));
     const state = await result.factory.getState();
     expect((state as { childCount?: bigint }).childCount).toBe(2n);
   });
@@ -159,6 +161,32 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     expect((state as { n?: bigint }).n).toBe(7n);
     const factoryState = await result.factory.getState();
     expect((factoryState as { childCount?: bigint }).childCount).toBe(1n);
+  });
+
+  it('refuses a deployments count that disagrees with the funding coins', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child { int n; }
+      contract CountFactory { int made;
+        function make() { new Child(); made = made + 1; }
+      }`, { allowUnsafeOperations: true } as never);
+    const deploymentFunding: Utxo = { txid: 'd1'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(artifacts.CountFactory, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { made: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'd2'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    await expect(StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact: artifacts.Child, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address, deployments: 2,
+    })).rejects.toThrow(/creates 1 child, but deployments is 2/);
   });
 
   it('refuses a value passed to a deployer child', async () => {

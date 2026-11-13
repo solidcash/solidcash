@@ -88,10 +88,12 @@ describe('A12: paths and refusals', () => {
       .rejects.toBeInstanceOf(DeployerPathError);
   });
 
-  it('a requested BCMR identity is refused until Deploy<C> pins it', async () => {
+  it('a BCMR registry publication is refused until Deploy<C> builds one', async () => {
+    // The identity itself is pinned at output 0 (DeployerCreation.e2e); a registry publication needs the metadata
+    // probe, which the deployer path does not build yet, so it is refused rather than silently omitted.
     const { provider, fundingUtxo } = await funded();
     const artifact = compileString(C, { deployer: true, messageBus: false });
-    await expect(deploy(provider, artifact, fundingUtxo, { identity: { owner: authorLock() } }))
-      .rejects.toThrow(/identity output/);
+    await expect(deploy(provider, artifact, fundingUtxo, { bcmr: { name: 'C', timestamp: 1 } as never }))
+      .rejects.toThrow(/registry publication/);
   });
 });

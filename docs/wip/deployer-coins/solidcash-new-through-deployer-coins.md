@@ -4616,8 +4616,10 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       0 B, 0 B; 0 B. Master already settles universal void records, so `'all'` changes the ABI only (the
       plan's recorded deviation). Estimated: 20 bytes plus 8.5 per argument per function, and about 100 once.
 - [ ] **D18.** The created-children list: (B8.12) bytes added to a marked creator per arm, once for the
-      shared check, and per `new` site, and the marker: ____ B, ____ B, ____ B, 23 B; (B7.15) bytes step 8
-      adds to Deploy<C> of a sender-reading child: ____ B; (B9.12) bytes added to a creation: ____ B.
+      shared check, and per `new` site, and the marker: 47 B for one arm and one site together (parameter,
+      list check and marker); the split is not separable at this emission. (B7.15) bytes step 8 adds to
+      Deploy<C> of a sender-reading child: 194 B (408 B plain against 602 B with the sender and its list);
+      (B9.12) bytes added to a creation: ____ B.
       Estimated 6, 30, 6, 23, 70 and 33. And the same
       for a child that does not read the sender, which must be 0 throughout.
 - [ ] **D19.** (B0.6, B9.12) Required container rows: the bytes they add to Deploy<C> for the pools' shape

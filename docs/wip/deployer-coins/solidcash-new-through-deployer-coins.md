@@ -3480,7 +3480,10 @@ with a deployer whose constructor writes a collection, and only where today's st
       contract that has public functions; a C compiled under evmCompat with public state variables; a C with
       functions that have no visibility modifier; a C with its own `create` and `sweep` functions; a C with
       `receive` and `fallback`; and the check throws for a program to which a test hook added a third entry.
-- [ ] **B7.5 What the constructor does.** On the deployer program, after its semantic passes, compute:
+- [ ] **B7.5 What the constructor does.** *(2026-11-13: the walker now refuses a collection read in a loop, a
+      call in a loop whose callee accesses a collection, a collection write that is not a statement of its own,
+      the balance read a constructor also sends against, and a base-argument read; `ctor-construction-order`
+      and `ctor-call-helper` remain unbuilt, and the full statement/group rules of A4.1 are partial.)* On the deployer program, after its semantic passes, compute:
       - every `ctor-…` reason of A4.1. Raise the first one found (A4.1 says how) and build no deployer;
       - `callSlots`, from `create`'s `externalCalls`. A call slot is refused when it has
         `inlineLoopDispatch`, `loopArrayVar`, `batchInvocations`, `fnPtrCall`, `addressIsMsgSender` or a

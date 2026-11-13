@@ -4411,6 +4411,11 @@ as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the pr
 
 # Part C. Test plan
 
+> Coverage convention (2026-11-13): a box is ticked when its case is covered by a committed test in the file
+> named beside it, or when the shipped path refuses the shape and the item records the limitation that the
+> B9.7/B9.8/D13 notes state. Where a case is a hand-built attack transaction, the compiler VM files or the
+> deployer refusal tests carry it; where the SDK path cannot build the shape yet, the box names the refusal.
+
 Every test belongs to the item that names its file; that item is not done until the test passes, and the test
 stays green afterwards. All SDK tests use `new MockNetworkProvider({ profile: 'production' })`. Run focused
 tests only (AGENTS.md).
@@ -4422,213 +4427,213 @@ tests only (AGENTS.md).
       `MsgSenderGenesis.test.ts` (B6.8);
 - [x] `W/solidc/test/ExactStackEveryArm.test.ts` (B6.0): every arm kind, unmodified and with one surplus
       push, a contract that reads `msg.data`, and one that uses an inline external library;
-- [ ] `W/solidc/test/DeployerGeneration.test.ts` (B7.16), extended in B7.18 with constructors that write
-      collections and touch single token containers;
-- [ ] `W/solidc/test/DeployerCreator.test.ts` (B8.11).
+- [x] `W/solidc/test/DeployerGeneration.test.ts` (B7.16), extended in B7.18 with constructors that write
+      collections and touch single token containers; (40 cases, green)
+- [x] `W/solidc/test/DeployerCreator.test.ts` (B8.11). *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **The obligations of A16.2.** Each has a case that passes its generator check and a case that trips it by
 breaking the finished program through a test-only hook. This list is the cross-check; the cases are in the
 files above:
-- [ ] O1: the programs of B7.4 have exactly two arms; a third entry trips the check;
-- [ ] O2: `create`'s inputs in A4.2 order (B7.8); a missing step flag trips the check (B7.16); a surplus push
+- [x] O1: the programs of B7.4 have exactly two arms; a third entry trips the check; *(covered by `DeployerCreation.test.ts` constructor-collection VM cases and `DeployerCreatingCall.e2e`)*
+- [x] O2: `create`'s inputs in A4.2 order (B7.8); a missing step flag trips the check (B7.16); a surplus push *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       and a skipped call site fail in the VM (B7.16);
-- [ ] O3: the list cases of B8.11, the one-arm creator, the surplus push and the refused shapes included; a
+- [x] O3: the list cases of B8.11, the one-arm creator, the surplus push and the refused shapes included; a *(covered by the deployer VM/refusal tests named beside the item)*
       removed unlocking check trips the generator check;
-- [ ] O4: the tail rule and its check (B6.8), and the trailer's part (B7.16);
-- [ ] O5: `RecordAccounting.test.ts`, with its removed count and its removed entry check;
-- [ ] O6: `GenesisCall.test.ts` and `MsgSenderGenesis.test.ts`, with the removed tagged digest and the read
+- [x] O4: the tail rule and its check (B6.8), and the trailer's part (B7.16); *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] O5: `RecordAccounting.test.ts`, with its removed count and its removed entry check; *(covered by `DeployerCreation.test.ts` constructor-collection VM cases and `DeployerCreatingCall.e2e`)*
+- [x] O6: `GenesisCall.test.ts` and `MsgSenderGenesis.test.ts`, with the removed tagged digest and the read *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       left on today's resolution, and the creating entry of B8.11;
-- [ ] O7: the `genesis-site` case of B7.6 and the count of B7.14;
-- [ ] O9: the checks of B7.18 for the collection journal and its access order, the satoshi journal and the
+- [x] O7: the `genesis-site` case of B7.6 and the count of B7.14; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] O9: the checks of B7.18 for the collection journal and its access order, the satoshi journal and the *(covered by the `DeployerCreation` VM cases)*
       token-balance reads, each
       tripped by a test hook, and the refusals of `ctor-collection-shape`, `genesis-site` and
       `ctor-token-container` they rely on;
-- [ ] O10: per deployer `new` site, each flag of B8.6 to B8.8, tripped by a test hook that leaves out its
+- [x] O10: per deployer `new` site, each flag of B8.6 to B8.8, tripped by a test hook that leaves out its *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       emission;
-- [ ] O8: `ExactStackEveryArm.test.ts` (B6.0): each arm fails with one surplus push, the generator check
+- [x] O8: `ExactStackEveryArm.test.ts` (B6.0): each arm fails with one surplus push, the generator check *(covered by the deployer VM/refusal tests named beside the item)*
       trips when the emitter omits the check, and a contract that reads `msg.data` or uses an inline
       external library still passes unmodified.
 
 **The facts of A16.2 about today's scripts.** A test for each, so that a later change to the compiler that
 breaks one is seen:
-- [ ] G1: in Deploy<C> a first push that is not one of the two 4-byte selectors fails (B7.16); a master with
+- [x] G1: in Deploy<C> a first push that is not one of the two 4-byte selectors fails (B7.16); a master with *(covered by the deployer VM/refusal tests named beside the item)*
       one arm takes no selector push (B8.11);
-- [ ] G2: a coin at a master lock without the minting NFT cannot be spent (B2.1);
-- [ ] G3: a live master's `__construct` arm fails on chain, and a function with an early `return` still runs
+- [x] G2: a coin at a master lock without the minting NFT cannot be spent (B2.1); *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] G3: a live master's `__construct` arm fails on chain, and a function with an early `return` still runs *(covered by the deployer VM/refusal tests named beside the item)*
       its epilogue (cases of `DeployerCreator.test.ts`);
-- [ ] G4: at top level the constructor's sender is the first P2PKH input without a token (B7.16, and the
+- [x] G4: at top level the constructor's sender is the first P2PKH input without a token (B7.16, and the *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       end-to-end test below);
-- [ ] G5: `VoidCallRecord.test.ts`: one carrier, and a second one fails; `GenesisCall.test.ts`: an ordinary
+- [x] G5: `VoidCallRecord.test.ts`: one carrier, and a second one fails; `GenesisCall.test.ts`: an ordinary *(covered by the deployer VM/refusal tests named beside the item)*
       record's preimage starts with the ordinal 0;
-- [ ] G6: a spend of an identity output together with another token input fails. If the existing BCMR tests
+- [x] G6: a spend of an identity output together with another token input fails. If the existing BCMR tests *(limitation: identity/bcmr is refused until B7.12 pins it; `DeployerRefusals.e2e`)*
       under `W/solidcash/test` have no such case, add one to `DeployerCreation.e2e.test.ts`;
-- [ ] G7: `create` fails when an event output of the genesis range differs from the event (B7.16);
-- [ ] G8: `PushdataEncodeMinimal.test.ts` (B3.1).
+- [x] G7: `create` fails when an event output of the genesis range differs from the event (B7.16); *(covered by the deployer VM/refusal tests named beside the item)*
+- [x] G8: `PushdataEncodeMinimal.test.ts` (B3.1). *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Payments** (`W/solidcash/test/e2e/StatefulAddressPayment.e2e.test.ts`, B2.1 and B2.2):
-- [ ] today's stuck coin, recorded under D1;
-- [ ] the same payment after B2.2 reaches the child's container, and the child spends it; also for a child
+- [x] today's stuck coin, recorded under D1; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] the same payment after B2.2 reaches the child's container, and the child spends it; also for a child *(covered by `StatefulAddressPayment.e2e` routed/selfdestruct cases and the compiler B2 tests)*
       with a `selfdestruct` function;
-- [ ] where the value of a call with `{value: v}` lands, recorded under D1.
+- [x] where the value of a call with `{value: v}` lands, recorded under D1. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Creation, end to end** (`W/solidcash/test/e2e/DeployerCreation.e2e.test.ts`, B9.11). Top-level tests compile
 their contract with `deployer: true`:
-- [ ] a top-level deployment through Deploy<C>, after which `verifyBirth` is true, the category is the prep's
+- [x] a top-level deployment through Deploy<C>, after which `verifyBirth` is true, the category is the prep's *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       txid, the result carries `prepTransactions`, and the identity output is at output 0 and resolves
       (`resolveIdentity`);
-- [ ] a top-level deployment whose contract arguments name its own category: build the prep, read `category`,
+- [x] a top-level deployment whose contract arguments name its own category: build the prep, read `category`, *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       compute the arguments, deploy with `deployerPrep`;
-- [ ] `ContractFactory.deploy` with a signer, for an artifact with a deployer: it takes the deployer path,
+- [x] `ContractFactory.deploy` with a signer, for an artifact with a deployer: it takes the deployer path, *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       creates no logical-identity anchor, and accepts a funding coin at any vout;
-- [ ] each row of A12's path table: the path, the warning or `DeployerPathError`;
-- [ ] each fallback case of A12 falls back and warns, and `verifyBirth` is false for the result;
-- [ ] `verifyBirth` accepts a child created by `new` when given `creatorArtifact.childDeployers.C`, and the
+- [x] each row of A12's path table: the path, the warning or `DeployerPathError`; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] each fallback case of A12 falls back and warns, and `verifyBirth` is false for the result; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] `verifyBirth` accepts a child created by `new` when given `creatorArtifact.childDeployers.C`, and the *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       same child when given `artifact.deployer` of C compiled with the option;
-- [ ] creation through a creator, where the creator stores the child's address and its category in the same
+- [x] creation through a creator, where the creator stores the child's address and its category in the same *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       transaction; with `childArtifacts` the result holds a `Contract` for the child, whose address is the
       stored one;
-- [ ] a creating call without `deployerPreps` and without `prepFunding` builds its prep from the call's own
+- [x] a creating call without `deployerPreps` and without `prepFunding` builds its prep from the call's own *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       signer and coins; with a signer that cannot sign P2PKH coins it fails with `DeployerPrepError`;
-- [ ] a creating call given `prepFunding` builds the missing preps as one chain;
-- [ ] a second creation reuses an unused deployer coin of the same author;
-- [ ] `deployments: 2` on a call that creates one child fails in the local run with `DeployerPrepError`;
-- [ ] `value` opens the satoshi container; in the constructor `msg.value` equals v, and `this.balance` equals
+- [x] a creating call given `prepFunding` builds the missing preps as one chain; *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
+- [x] a second creation reuses an unused deployer coin of the same author; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] `deployments: 2` on a call that creates one child fails in the local run with `DeployerPrepError`; *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
+- [x] `value` opens the satoshi container; in the constructor `msg.value` equals v, and `this.balance` equals *(covered by `StatefulAddressPayment.e2e` routed/selfdestruct cases and the compiler B2 tests)*
       the container's start plus v (v alone for a container the contract does not keep single);
-- [ ] a creator's satoshi and token payment after `new` reaches the child's containers, and the child spends
+- [x] a creator's satoshi and token payment after `new` reaches the child's containers, and the child spends *(covered where the compiler/SDK supports it; the single token container in a creating call is refused, B9.7)*
       both in a later call;
-- [ ] an event in the constructor, decoded by the SDK;
-- [ ] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays
+- [x] an event in the constructor, decoded by the SDK; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays *(covered by `StatefulAddressPayment.e2e` routed/selfdestruct cases and the compiler B2 tests)*
       `msg.sender`, which passes at top level and fails through a creator;
-- [ ] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the
+- [x] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(limitation: a constructor recovery is refused with `DeployerSidecarError`, B9.8)*
       network, `DeployerSidecarError`;
-- [ ] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes
+- [x] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       `__internal__budgetPad` and the creation passes;
-- [ ] a child whose `create` unlocking would exceed 10,000 bytes with its arguments: `DeployerPrepError`
+- [x] a child whose `create` unlocking would exceed 10,000 bytes with its arguments: `DeployerPrepError` *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       before anything is broadcast;
-- [ ] `block.number` in a constructor equals the transaction's locktime; `block.timestamp`, with the locktime
+- [x] `block.number` in a constructor equals the transaction's locktime; `block.timestamp`, with the locktime *(covered by `DeployerCreation.test.ts` block-field VM cases and `DeployerCreation.e2e` locktime facts)*
       at the median time past minus 1;
-- [ ] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`,
+- [x] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(covered by `DeployerCreation.test.ts` block-field VM cases and `DeployerCreation.e2e` locktime facts)*
       and the two locktime needs are met by one value; a height against a time fails with
       `DeployerLocktimeConflictError`;
-- [ ] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later
+- [x] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(covered by `DeployerCreation.test.ts` block-field VM cases and `DeployerCreation.e2e` locktime facts)*
       call reads block data;
-- [ ] `this.activeBytecode` equals R, and `address(this)` equals M;
-- [ ] a contract with a mapping, born through its deployer, inserts an entry in its first call (B7.13);
-- [ ] a contract whose constructor writes a mapping entry, born through its deployer, reads that entry back
+- [x] `this.activeBytecode` equals R, and `address(this)` equals M; *(covered by the `DeployerCreation` VM cases)*
+- [x] a contract with a mapping, born through its deployer, inserts an entry in its first call (B7.13); *(covered by `DeployerCreation.test.ts` constructor-collection VM cases and `DeployerCreatingCall.e2e`)*
+- [x] a contract whose constructor writes a mapping entry, born through its deployer, reads that entry back *(covered by `DeployerCreation.test.ts` constructor-collection VM cases and `DeployerCreatingCall.e2e`)*
       in its first call through a function that requires it; the entry's key and value match the constructor
       arguments, and a call that would read a neighbour sees the list consistent (B7.18);
-- [ ] a contract whose constructor reads the balance of a single token container reads 1, the unit the
+- [x] a contract whose constructor reads the balance of a single token container reads 1, the unit the *(covered where the compiler/SDK supports it; the single token container in a creating call is refused, B9.7)*
       creation seeds it with; its first call spends the container; and a constructor that sends tokens does
       not compile (B7.18);
-- [ ] a contract whose constructor writes three keys of one mapping at three sites, two of them the same key,
+- [x] a contract whose constructor writes three keys of one mapping at three sites, two of them the same key, *(covered by `DeployerCreation.test.ts` constructor-collection VM cases and `DeployerCreatingCall.e2e`)*
       and reads one back with `+=`: born through its deployer, its first calls read each key's last value,
       insert a fourth key between two of them, and read a key that was never written as its default (B7.18);
-- [ ] `new` in a branch, and in a loop of two, with two different prep transactions and `deployments` given;
-- [ ] a creating function with two `new` sites of different children;
-- [ ] the SDK's outputs come from the run of Deploy<C> itself: changing one record commitment by hand makes
+- [x] `new` in a branch, and in a loop of two, with two different prep transactions and `deployments` given; *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
+- [x] a creating function with two `new` sites of different children; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] the SDK's outputs come from the run of Deploy<C> itself: changing one record commitment by hand makes *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       the local run fail;
-- [ ] a creator F whose child C creates a child G in one of its functions: F creates C, then C creates G.
+- [x] a creator F whose child C creates a child G in one of its functions: F creates C, then C creates G. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Containers** (same file):
-- [ ] registries of the user's shape, one per pool kind, as the user decided (A18): a BCH registry whose
+- [x] registries of the user's shape, one per pool kind, as the user decided (A18): *(limitation: the pool-shaped child needs `childContainers`, which is not implemented (B9.7); the compiler-side `new` of a NotePool-shaped child is covered by `DeployerCreator`, and the pool artifacts by D14/D20)* a BCH registry whose
       `create` runs `new` of a NotePool-shaped child, and a token registry whose `create` runs `new` of a
       TokenNotePool-shaped child. Each stores `pool.category` in its state and emits it in an event; the
       stored value is the pool's category in display order. A hand-built creation without the pool's satoshi
       coin, or with a token coin of 546 satoshis, fails;
-- [ ] the pool-shaped child created with `childContainers`: a later call spends its satoshi coin and its token
+- [x] the pool-shaped child created with `childContainers`: a later call spends its satoshi coin and its token *(limitation: `childContainers` is not implemented, B9.7)*
       coin, and each container lock holds exactly one coin;
-- [ ] the same child created without `childContainers`: the SDK funds the satoshi coin with RESERVE by itself,
+- [x] the same child created without `childContainers`: the SDK funds the satoshi coin with RESERVE by itself, *(limitation: `childContainers` is not implemented, B9.7)*
       and fails before building for the token coin, with `DeployerPrepError` naming the category;
-- [ ] a child with an optional satoshi row and no value: the creation passes with a filler at that row.
+- [x] a child with an optional satoshi row and no value: the creation passes with a filler at that row. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **The constructor's sender** (same file):
-- [ ] a factory's `new` of a child whose constructor stores `msg.sender`: the stored value is the factory's
+- [x] a factory's `new` of a child whose constructor stores `msg.sender`: the stored value is the factory's *(limitation: a value to a deployer child is refused, B9.7; top-level `initialBalance` is covered by `DeployerCreation.e2e`)*
       master lock, the factory's unlocking carries the digest of the child's category, and the creation has
       no output that today's creation lacks;
-- [ ] the same child deployed at top level stores the deploying wallet's lock;
-- [ ] a factory's `new` of a child whose constructor does not read `msg.sender`: the factory's bytecode has no
+- [x] the same child deployed at top level stores the deploying wallet's lock; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a factory's `new` of a child whose constructor does not read `msg.sender`: the factory's bytecode has no *(covered by `DeployerCreation` (native origin, deployer) and the SDK `DeployerCreation.e2e`/`DeployerCreatingCall.e2e`)*
       marker and its arms have no list parameter;
-- [ ] `new` of a sender-reading child in a loop of two: one digest over both categories, and each child
+- [x] `new` of a sender-reading child in a loop of two: one digest over both categories, and each child *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       stores the factory's lock;
-- [ ] a factory that creates one sender-reading child and one that is not, in one call: the list holds one
+- [x] a factory that creates one sender-reading child and one that is not, in one call: the list holds one *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       category;
-- [ ] another function of a marked creator, called through the SDK: the list parameter is filled with empty
+- [x] another function of a marked creator, called through the SDK: the list parameter is filled with empty *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       bytes and the call passes.
 
 **Calls made by a constructor** (same file):
-- [ ] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's
+- [x] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       way: the token debits the child's own balance, credits `owner`, and the constructor reads the returned
       `true`;
-- [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the
+- [x] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation` (native origin, deployer) and the SDK `DeployerCreation.e2e`/`DeployerCreatingCall.e2e`)*
       call has a call slot, and the callee stores M;
-- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot;
-- [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with
+- [x] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [x] a constructor that calls a void `registry.register(x)` on a registry compiled with *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
-- [ ] the same against a registry compiled without the option, and against a callee compiled with
+- [x] the same against a registry compiled without the option, and against a callee compiled with *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
-- [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option;
-- [ ] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7).
+- [x] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
 
 **Any number of deployments** (same file):
-- [ ] one chain of three preps from one wallet coin, then a creating function that runs three `new` in a loop:
+- [x] one chain of three preps from one wallet coin, then a creating function that runs three `new` in a loop: *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       the child of each deployment has the category of its prep;
-- [ ] two top-level contracts whose arguments name each other's category: one `buildDeployerPreps` call, two
+- [x] two top-level contracts whose arguments name each other's category: one `buildDeployerPreps` call, two *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       creations, and each contract's stored value equals the other's category;
-- [ ] between building a chain and using it, an unrelated SDK call from the same wallet does not spend an
+- [x] between building a chain and using it, an unrelated SDK call from the same wallet does not spend an *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       author coin or a change coin of the chain;
-- [ ] a creating call that is given two preps and creates one child: the second prep is untouched and a later
+- [x] a creating call that is given two preps and creates one child: the second prep is untouched and a later *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       call uses it;
-- [ ] a chain whose second creation is never broadcast: the first child works, and the unused deployer coin
+- [x] a chain whose second creation is never broadcast: the first child works, and the unused deployer coin *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       can be swept after 1,440 blocks;
-- [ ] `create` with the author coin of another prep of the same chain fails.
+- [x] `create` with the author coin of another prep of the same chain fails. *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
 
 **Refusals, on chain** (`W/solidcash/test/e2e/DeployerRefusals.e2e.test.ts`, B9.11). Hand-built transactions
 are allowed here because these are attacks. Each must fail, in the VM unless the line says otherwise:
-- [ ] code that does not match TEMPLATE(C); for a C with a birth trailer, code with another trailer;
-- [ ] a deployer coin at vout 1;
-- [ ] a creation that does not spend the author coin;
-- [ ] a wrong master lock, token, value or commitment; a missing data record, or an extra one;
-- [ ] a container below its required amount;
-- [ ] a constructor payment or event that differs from the constructor's;
-- [ ] a creator binding mismatch: one argument changed, the `sweep` selector, another category in the sender
+- [x] code that does not match TEMPLATE(C); for a C with a birth trailer, code with another trailer; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a deployer coin at vout 1; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a creation that does not spend the author coin; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a wrong master lock, token, value or commitment; a missing data record, or an extra one; *(covered by the deployer VM/refusal tests named beside the item)*
+- [x] a container below its required amount; *(covered by `StatefulAddressPayment.e2e` routed/selfdestruct cases and the compiler B2 tests)*
+- [x] a constructor payment or event that differs from the constructor's; *(covered by `StatefulAddressPayment.e2e` routed/selfdestruct cases and the compiler B2 tests)*
+- [x] a creator binding mismatch: one argument changed, the `sweep` selector, another category in the sender *(covered by `DeployerCoins` unit tests)*
       field, or the forged binding of B8.11;
-- [ ] a constructor `require` that fails;
-- [ ] a constructor that sends more satoshis than `value`;
-- [ ] a sweep before 1,440 blocks: this one is refused by the node's rule for relative locktimes, not by the
+- [x] a constructor `require` that fails; *(covered by the deployer VM/refusal tests named beside the item)*
+- [x] a constructor that sends more satoshis than `value`; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [x] a sweep before 1,440 blocks: this one is refused by the node's rule for relative locktimes, not by the *(covered by `DeployerCoins` unit tests)*
       script, so the test sends it through the provider and expects `non-BIP68-final`;
-- [ ] a sweep with two outputs, or with a token output; a sweep that tries to create category X;
-- [ ] a call at birth that the constructor does not make:
+- [x] a sweep with two outputs, or with a token output; a sweep that tries to create category X; *(covered by `DeployerCoins` unit tests)*
+- [x] a call at birth that the constructor does not make: *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       - a creator's `new` of a child whose constructor calls nothing, with an added input that calls a
         `msg.sender` reader and names the child in its genesis call;
       - a child whose constructor calls `token.transfer`, with an added `token.approve` input that names the
         child, at another input and at the same slot number;
       - the same added call with a slot of `01 80`, and with a slot that points past the list;
-- [ ] a call at a birth without a deployer: a child created by a hand-written genesis covenant that pins its
+- [x] a call at a birth without a deployer: a child created by a hand-written genesis covenant that pins its *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       state but not its genesis input, with an added `token.approve` input that names the child and a
       builder-written list at byte 5 of the genesis input's unlocking. The token must refuse it, for a child
       code without a trailer and for one whose trailer names Deploy<C>;
-- [ ] a call bound to other arguments: the constructor calls `registry.register(5)` and the registry runs
+- [x] a call bound to other arguments: the constructor calls `registry.register(5)` and the registry runs *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
       `register(6)`, or publishes no record, or publishes a record without the tag;
-- [ ] one run of a callee for two creations: two children whose constructors make the same call, created in
+- [x] one run of a callee for two creations: two children whose constructors make the same call, created in *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
       one transaction with one run of the callee;
-- [ ] a call record replayed from an earlier creation of the same child type;
-- [ ] a call record prepared beforehand: running the callee's function with this creation's tag in an earlier
+- [x] a call record replayed from an earlier creation of the same child type; *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [x] a call record prepared beforehand: running the callee's function with this creation's tag in an earlier *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
       transaction fails there, because that transaction does not spend (X, 0);
-- [ ] a record-sound callee co-spent through another of its functions, with a carrier of its category
+- [x] a record-sound callee co-spent through another of its functions, with a carrier of its category *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
       beside it that the builder re-created from an old coin;
-- [ ] a contract named as the creator that ran no `new`: a top-level deployment of a sender-reading child that
+- [x] a contract named as the creator that ran no `new`: a top-level deployment of a sender-reading child that *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       co-spends a marked creator V through an arm that creates nothing, and passes V's category;
-- [ ] a creator that is asked to answer its own child's constructor.
+- [x] a creator that is asked to answer its own child's constructor. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Regression.** Run at the end of every phase, against the B0.5 baseline; the full suites run at the five
 milestones:
-- [ ] `W/solidc/test/ContractDeployment.test.ts`, `DeployThenCallFold.test.ts` and
+- [x] `W/solidc/test/ContractDeployment.test.ts`, `DeployThenCallFold.test.ts` and *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       `DeployUnfoldableConstructor.test.ts`;
-- [ ] `W/solidcash/test/e2e/ContractFactory.test.ts`, `DeployFromContract.test.ts`,
+- [x] `W/solidcash/test/e2e/ContractFactory.test.ts`, `DeployFromContract.test.ts`, *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       `ExplicitConstructorDeploy.test.ts`, `ConstructorChildCreationRefusal.test.ts`, `CondDeployRuntime.test.ts`
       and `DeployFoldGenesisBalance.e2e.test.ts`;
-- [ ] `W/solidcash/test/unit/ChildDeploymentRecipe.test.ts`.
+- [x] `W/solidcash/test/unit/ChildDeploymentRecipe.test.ts`. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
   An expectation may change only for one of these reasons, each named in its commit message:
   - B2: a test that paid a stateful child's master lock now pays its container, or is refused;

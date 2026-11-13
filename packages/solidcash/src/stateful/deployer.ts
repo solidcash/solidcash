@@ -251,6 +251,7 @@ export async function deriveConstructorCalleeRun(options: {
   tag: Uint8Array;
   createUnlocking?: Uint8Array;
   childMasterLock?: Uint8Array;
+  deployerLockingBytecode?: Uint8Array;
 }): Promise<ConstructorCalleeRun> {
   const { callee, functionName, args, slot, categoryId, provider, returnIndex, masterInputIndex, tag } = options;
   const artifact = callee.contract.inner.artifact;
@@ -280,13 +281,23 @@ export async function deriveConstructorCalleeRun(options: {
   const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
   const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
   const genesisLock = options.childMasterLock ?? Uint8Array.of(0x51);
+  const deployerLock = options.deployerLockingBytecode ?? genesisLock;
+  const calleeInput = senderReader ? 2 : 1;
   const dataCount = dataNfts.length;
   const runProbe = (dataCommits: readonly string[], returnCommit: string): any => {
     const builder = new CovenantTransactionBuilder({ provider });
-    builder.addInput({ txid: categoryId, vout: 0, satoshis: 1200n, lockingBytecode: genesisLock }, {
-      generateLockingBytecode: () => genesisLock,
+    builder.addInput({ txid: categoryId, vout: 0, satoshis: 1200n, lockingBytecode: deployerLock }, {
+      generateLockingBytecode: () => deployerLock,
       generateUnlockingBytecode: () => options.createUnlocking ?? Uint8Array.of(0x51),
     });
+    // A sender-reading callee checks output `g_out` (the child's master) and the callee's own master sits at
+    // its input index. A filler at input 1 keeps the two apart; the child's master is output 1.
+    if (senderReader) {
+      builder.addInput({ txid: `${'00'.repeat(31)}e1`, vout: 0, satoshis: 1200n, lockingBytecode: genesisLock }, {
+        generateLockingBytecode: () => genesisLock,
+        generateUnlockingBytecode: () => Uint8Array.of(0x51),
+      });
+    }
     builder.addInput(master, {
       generateLockingBytecode: () => masterLock,
       generateUnlockingBytecode: () => calleeUnlocking,
@@ -295,6 +306,7 @@ export async function deriveConstructorCalleeRun(options: {
       generateLockingBytecode: () => dataLock,
       generateUnlockingBytecode: () => Uint8Array.of(0x51),
     }));
+    if (senderReader) builder.addOutput({ to: Uint8Array.of(0x51), amount: 1200n });
     builder.addOutput({ to: genesisLock, amount: 1200n });
     builder.addOutput({ to: masterLock, amount: master.satoshis, ...(master.token === undefined ? {} : { token: master.token }) });
     dataNfts.forEach((utxo, index) => builder.addOutput({
@@ -302,7 +314,7 @@ export async function deriveConstructorCalleeRun(options: {
       token: { category: callee.contract.categoryId, amount: 0n,
         nft: { capability: 'mutable', commitment: dataCommits[index] ?? '' } },
     }));
-    for (let index = 2 + dataCount; index < returnIndex; index += 1) {
+    for (let index = calleeInput + 1 + dataCount; index < returnIndex; index += 1) {
       builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
     }
     builder.addOutput({
@@ -311,13 +323,13 @@ export async function deriveConstructorCalleeRun(options: {
         nft: { capability: 'none', commitment: returnCommit } },
     });
     const { transaction, sourceOutputs } = builder.buildLibauthProgram();
-    return evaluateProbeTrace(provider, { inputIndex: 1, sourceOutputs, transaction });
+    return evaluateProbeTrace(provider, { inputIndex: calleeInput, sourceOutputs, transaction });
   };
   let dataCommitments = dataNfts.map(() => '');
   let returnCommitment = '';
   for (let iteration = 0; iteration < 4; iteration += 1) {
     const trace = runProbe(dataCommitments, returnCommitment);
-    const nextData = extractCommitmentsFromTrace(trace, dataCount, { min: 2, max: 2 + dataCount }) ?? [];
+    const nextData = extractCommitmentsFromTrace(trace, dataCount, { min: calleeInput + 1, max: calleeInput + 1 + dataCount }) ?? [];
     const nextReturn = extractCommitmentsFromTrace(trace, 1, { min: returnIndex, max: returnIndex + 1 })?.[0];
     let changed = false;
     if (nextData.length >= dataCount && nextData.some((value, index) => value !== dataCommitments[index])) {
@@ -873,9 +885,9 @@ async function deployThroughCallSlot<T extends Artifact>(options: {
     __internal__returnOutputIdx: BigInt(returnIndex),
     __internal__callEdgeOutputIdx0: -1n,
   };
-  const unlockingFor = (tag: Uint8Array): Uint8Array => buildDeployerUnlocking({
+  const unlockingFor = (tag: Uint8Array, calleeIndex = calleeBase): Uint8Array => buildDeployerUnlocking({
     deployer,
-    callees: [calleeBase],
+    callees: [calleeIndex],
     args,
     value: deployValue,
     senderCategory: new Uint8Array(32),
@@ -886,6 +898,8 @@ async function deployThroughCallSlot<T extends Artifact>(options: {
       __internal__genesisOutputBase: BigInt(outbase),
       __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
       ...callSynthetics,
+      __internal__extcallMasterIdx0: BigInt(calleeIndex),
+      __internal__externalCallInputBase: BigInt(calleeIndex),
       __internal__externalReturnOutputIdx: BigInt(returnIndex),
     },
   });
@@ -905,11 +919,12 @@ async function deployThroughCallSlot<T extends Artifact>(options: {
           codeOffset & 0xff, (codeOffset >> 8) & 0xff, codeLength & 0xff, (codeLength >> 8) & 0xff,
         ] : []),
       ]);
-    const prototype = unlockingFor(tag);
+    const prototype = unlockingFor(tag, senderReader ? 2 : 1);
     const run = await deriveConstructorCalleeRun({
       callee: configured, functionName, args: calleeArgs, slot: 0, categoryId,
       provider: options.options.provider, returnIndex, tag, masterInputIndex: calleeBase,
       createUnlocking: prototype, childMasterLock: masterLock,
+      deployerLockingBytecode: hexToBin(deployer.lockingBytecode),
     });
     let dataCommitments = Array.from({ length: dataCount }, () => '');
     for (let iteration = 0; iteration < 4; iteration += 1) {

@@ -4661,19 +4661,19 @@ their contract with `deployer: true`:
       bytes and the call passes.
 
 **Calls made by a constructor** (same file):
-- [ ] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [ ] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(not covered: the one-slot SDK path is exercised on a returning callee; this ERC20-shaped call is not)*
       way: the token debits the child's own balance, credits `owner`, and the constructor reads the returned
       `true`;
-- [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation` (native origin, deployer) and the SDK `DeployerCreation.e2e`/`DeployerCreatingCall.e2e`)*
+- [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(not covered: the sender-reading callee's tag probe does not settle yet; the compiler VM cases cover it)*
       call has a call slot, and the callee stores M;
-- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
-- [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(not covered: the SDK path supports one call slot, so the two-slot case is refused)*
+- [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered: a void callee's record is not exercised on the SDK path; the compiler VM cases cover it)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
-- [ ] the same against a registry compiled without the option, and against a callee compiled with *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [ ] the same against a registry compiled without the option, and against a callee compiled with *(not covered by an e2e: `assertDeployerCallee` throws `DeployerCalleeError` for a callee that is not record-sound; the e2e path is not exercised)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
-- [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
-- [ ] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(not covered: a void USDT-shaped callee is not exercised)*
+- [ ] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(D13 measured 1,385 B; a shorter callee was not probed)*
 
 **Any number of deployments** (same file):
 - [x] one chain of three preps from one wallet coin, then a creating function that runs three `new` in a loop: *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*

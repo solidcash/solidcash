@@ -284,6 +284,8 @@ export interface DeployFromResult<T extends Artifact = Artifact> {
   children?: ConnectedStatefulContract<T>[];
   /** Every child's category, in run order; `childCategoryId` is the first. */
   childCategoryIds?: string[];
+  /** The prep transactions this creating call built and broadcast (A14). */
+  prepTransactions?: string[];
 }
 
 export interface SplitOptions {

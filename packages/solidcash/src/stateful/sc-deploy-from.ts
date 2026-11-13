@@ -4,6 +4,7 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   buildChunkCommitment,
@@ -28,7 +29,7 @@ import {
   type Artifact,
   type StateValue,
 } from '@solidcash/utils';
-import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
+import { encodeFunctionArgument, type ConstructorArgument, type FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
 import { ownCoinRefusal, signerFundingCoins } from '../framed/deploy/own-coin.js';
 import { takesOraclePool } from '../oracle/pool/reader.js';
@@ -52,7 +53,10 @@ import {
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
-import { DeployerPrepError } from './deployer.js';
+import {
+  buildDeployerPreps, broadcastDeployerPreps, buildDeployerUnlocking, DeployerPrepError,
+  type DeployerPrep,
+} from './deployer.js';
 import { evalComputedKey, keyArguments } from './route-expression-key.js';
 import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
@@ -145,16 +149,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
     );
   }
   const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
-  if (childDeployer !== undefined) {
-    // The creator's bytecode binds a Deploy<C> unlocking at this site. deployFrom's output layout still builds today's
-    // embedded genesis (funding coin as the child's category), which that binding refuses, so refuse here rather
-    // than sign a transaction the creator will reject.
-    throw new DeployerPrepError(
-      `'${deployFunctionName}' creates '${deployTarget.contractName}' through Deploy<C>; the creating-call builder `
-        + 'for deployer children is not implemented in this SDK build (B9.5). Top-level deployment through the '
-        + 'deployer is available.',
-    );
-  }
   const bakedConstructorArgumentCount = childArtifact.constructorInputs.length;
   // A bound child takes its creator's own pool binding last, as the creator's covenant builds the child's lock.
   const creatorBinding = (): Uint8Array => {
@@ -255,9 +249,98 @@ export async function deployFromStatefulContract<T extends Artifact>(
     );
   }
 
+  // A deployer child is born from a one-shot deployer coin (A14): build and broadcast its prep first, then spend
+  // the prep's deployer and author coins in the creating call. The deployer coin replaces the old genesis funding
+  // input at the creator's `deploy` slot; the author coin follows it so tx.origin is the deploying wallet.
+  const prepFunding = options.prepFunding?.fundingUtxos
+    ?? options.fundingUtxos ?? (options.fundingUtxo === undefined ? [] : [options.fundingUtxo]);
+  let preparsed: { preps: DeployerPrep[]; deployerUnlockers: Unlocker[]; authorCoins: Utxo[] } | undefined;
+  if (childDeployer !== undefined) {
+    if (prepFunding.length === 0) {
+      throw new DeployerPrepError('A deployer creating call needs prepFunding (or fundingUtxo) for its preps');
+    }
+    const changeLock = changeAddress === undefined
+      ? funder.generateLockingBytecode()
+      : addressToLockScript(changeAddress);
+    const authorSigner = options.prepFunding?.authorSigner ?? funder;
+    const built = options.deployerPreps === undefined
+      ? await buildDeployerPreps({
+        children: prepFunding.map(() => ({ contractName: childArtifact.contractName, deployer: childDeployer })),
+        fundingUtxos: prepFunding,
+        authorSigner,
+        authorLockingBytecode: options.prepFunding?.authorLockingBytecode ?? funder.generateLockingBytecode(),
+        changeLockingBytecode: changeLock,
+        provider,
+      })
+      : { preps: options.deployerPreps };
+    await broadcastDeployerPreps(built.preps, provider);
+    const createInputs = childDeployer.abi.find((entry) => entry.name === 'create')?.inputs ?? [];
+    const publicNames = createInputs.filter((input) => !input.name.startsWith('__internal__'))
+      .map((input) => input.name);
+    const constructorCount = childArtifact.constructorInputs.length;
+    const contractCount = publicNames.length - constructorCount;
+    const values: Record<string, FunctionArgument> = {};
+    for (let index = 0; index < contractCount; index += 1) {
+      const source = deployTarget.contractArgs?.[index];
+      if (source === null || source === undefined) continue;
+      const argIndex = deployAbi.inputs.findIndex((input) => input.name === source);
+      if (argIndex >= 0) values[publicNames[index]] = deployFunctionArgs[argIndex] as FunctionArgument;
+    }
+    childConstructorArgs.forEach((argument, index) => {
+      const name = publicNames[contractCount + index];
+      if (name !== undefined) values[name] = argument as FunctionArgument;
+    });
+    const senderCategory = Uint8Array.from(hexToBin(factory.categoryId)).reverse();
+    const deployValue = options.childValue ?? 0n;
+    const typeOf = new Map(createInputs.map((input) => [input.name, input.type]));
+    const pushArgument = (name: string, value: FunctionArgument): Uint8Array => {
+      const type = typeOf.get(name);
+      if (type === undefined) throw new DeployerPrepError(`The child create has no input '${name}'`);
+      if (typeof value !== 'bigint' && typeof value !== 'number' && typeof value !== 'string'
+        && !(value instanceof Uint8Array)) {
+        throw new DeployerPrepError(`The child create argument '${name}' needs a concrete value`);
+      }
+      return encodePushdataValue(value as StateValue, type, childArtifact.structs);
+    };
+    // Q = push(senderCategory) ‖ push(value) ‖ push(c_k) … push(c_1); A = push(p_n) … push(p_1) (A4.2).
+    const qParts: Uint8Array[] = [
+      encodePushdataValue(senderCategory, 'bytes32'),
+      encodePushdataValue(deployValue, 'bigint'),
+    ];
+    for (let index = constructorCount - 1; index >= 0; index -= 1) {
+      qParts.push(pushArgument(publicNames[contractCount + index], childConstructorArgs[index]));
+    }
+    const aParts: Uint8Array[] = [];
+    for (let index = contractCount - 1; index >= 0; index -= 1) {
+      const name = publicNames[index];
+      const value = values[name];
+      if (value !== undefined) aParts.push(pushArgument(name, value));
+    }
+    const boundBytes = new Uint8Array([...qParts, ...aParts].flatMap((part) => [...part]));
+    const deployerUnlockers: Unlocker[] = built.preps.map(() => ({
+      generateLockingBytecode: () => hexToBin(childDeployer.lockingBytecode),
+      generateUnlockingBytecode: ({ inputIndex }) => buildDeployerUnlocking({
+        deployer: childDeployer,
+        callees: Array.from({ length: childDeployer.callSlots }, () => undefined),
+        boundBytes,
+        authorIndex: inputIndex + 1,
+        identity: false,
+        budgetPad: new Uint8Array(),
+        synthetic: {
+          __internal__genesisOutputBase: BigInt(inputIndex),
+          __internal__genesisSidecarBase: BigInt(inputIndex + childDeployer.genesisOutputs),
+        },
+        forBroadcast: true,
+      }),
+    }));
+    preparsed = { preps: built.preps, deployerUnlockers, authorCoins: built.preps.map((prep) => prep.authorCoin) };
+  }
+
   // Funding UTXOs: one per child (a loop `for (i<n) new C()` mints N children, and a balanced contract block
   // needs N funding inputs). fundingUtxos supersedes the single fundingUtxo; default = [fundingUtxo] (1 child).
-  const fundingUtxos = options.fundingUtxos ?? [options.fundingUtxo];
+  const fundingUtxos = preparsed === undefined
+    ? options.fundingUtxos ?? [options.fundingUtxo]
+    : preparsed.preps.map((prep) => prep.deployerCoin);
   const childCount = fundingUtxos.length;
   if (childCount === 0) {
     throw new Error('deployFrom needs at least one funding UTXO (fundingUtxo or a non-empty fundingUtxos).');
@@ -273,13 +356,15 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // Child i's category is fundingUtxos[i].txid, so each coin is proven at the funder's own lock before anything is
   // signed: a coin a provider lists there but that sits at another lock would hand the category to its owner.
   const funderLock: Uint8Array = funder.generateLockingBytecode();
-  for (const fu of fundingUtxos) {
-    const coinRefusal = await ownCoinRefusal(provider, fu, funderLock, { role: 'funder', tokenFree: true });
-    if (coinRefusal !== undefined) throw new Error(coinRefusal);
+  if (preparsed === undefined) {
+    for (const fu of fundingUtxos) {
+      const coinRefusal = await ownCoinRefusal(provider, fu, funderLock, { role: 'funder', tokenFree: true });
+      if (coinRefusal !== undefined) throw new Error(coinRefusal);
+    }
   }
 
   // child i's category = fundingUtxos[i].txid. The first child's category doubles as the returned handle's.
-  const childCategoryId = fundingUtxos[0].txid;
+  const childCategoryId = preparsed?.preps[0]?.category ?? fundingUtxos[0].txid;
   const addressType = options.addressType ?? factory.inner.addressType;
   // Large factory redeems make deploy transactions substantially larger than ordinary calls. Size the default
   // conservatively from the authenticated layout; callers can still provide an exact fee explicitly.
@@ -1426,7 +1511,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
       ...eventPlaceholderOutputs, ...returnEventPlaceholders, ...childProbeOutputs,
       ...deployTrailingOutputs, ...dynamicWriteChunkOutputs],
     [...entryExtraInputs, ...containerInputs, ...tokenContainerInputs,
-      ...fundingUtxos.map((fu) => ({ utxo: fu, unlocker: funder })),
+      ...fundingUtxos.flatMap((fu, index) => [
+        { utxo: fu, unlocker: preparsed?.deployerUnlockers[index] ?? funder },
+        ...(preparsed === undefined ? [] : [{ utxo: preparsed.authorCoins[index], unlocker: funder }]),
+      ]),
       ...deployTrailingInputs],
     entryInfos.length,
     childLayout!.dataNftCount,
@@ -1549,8 +1637,9 @@ export async function deployFromStatefulContract<T extends Artifact>(
 
   // Funding UTXOs for the children's token genesis - N inputs, one per child (a balanced contract block: N
   // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
-  for (const fu of fundingUtxos) {
-    builder.addInput(fu, funder);
+  for (const [index, fu] of fundingUtxos.entries()) {
+    builder.addInput(fu, preparsed?.deployerUnlockers[index] ?? funder);
+    if (preparsed !== undefined) builder.addInput(preparsed.authorCoins[index], funder);
   }
 
   // Trailing run after the funding input: one funder pad at the deployDataNft output-only slot, then the
@@ -1757,7 +1846,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const totalDynamicChunkCost = dataNftAmount * BigInt(dynamicWriteChunkOutputs.length);
   const eventCost = dataNftAmount * BigInt(eventPlaceholderOutputs.length);
   const returnEventCost = returnEventPlaceholders.length > 0 ? 800n : 0n;
-  const totalFundingSats = fundingUtxos.reduce((sum, fu) => sum + fu.satoshis, 0n);
+  const totalFundingSats = fundingUtxos.reduce((sum, fu) => sum + fu.satoshis, 0n)
+    + (preparsed?.authorCoins.reduce((sum, coin) => sum + coin.satoshis, 0n) ?? 0n);
   const trailingPadSats = deployTrailingInputs[0]?.utxo.satoshis ?? 0n;
   // tokenTransferCost = dust for each tcTransfer output (the token container's own satoshis fund only its
   // recreated remainder; each transfer output's dust comes from the funding inputs).
@@ -1800,5 +1890,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   }
   const childStateful = statefulChildren[0];
 
-  return { factory, child: childStateful, tx, childCategoryId };
+  return {
+    factory, child: childStateful, tx, childCategoryId,
+    ...(preparsed === undefined ? {} : { prepTransactions: preparsed.preps.map((prep) => prep.transactionHex) }),
+  };
 }

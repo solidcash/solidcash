@@ -79,7 +79,7 @@ describe('B8.6: the site binds the deployer instead of embedding the child', () 
       contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`;
     const asm = binding(source);
     // push(0x04 ‖ af341413 ‖ byte(0)): the create selector and an empty callee list.
-    expect(asm).toContain('OP_6 OP_SPLIT 0604af34141300 OP_EQUALVERIFY');
+    expect(asm).toContain('OP_6 OP_SPLIT OP_SWAP 04af34141300 OP_EQUALVERIFY');
     expect(asm).toContain('OP_INPUTBYTECODE OP_6 OP_SPLIT');
   });
 
@@ -90,7 +90,7 @@ describe('B8.6: the site binds the deployer instead of embedding the child', () 
       contract Parent { int m; function make(address a, address b) { Child c = new Child(a, b); m = 1; } }`;
     const creator = compile(source);
     expect(creator.childDeployers!.Child.callSlots).toBe(2);
-    expect(binding(source)).toContain('0604af34141304');
+    expect(binding(source)).toContain('04af34141304');
   });
 
   it('gets the arguments from args and the parentheses from the constructor', () => {

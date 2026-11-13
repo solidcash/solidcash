@@ -23695,7 +23695,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();
     this.popFromStack();
     this.pushToStack('(value)');
-    this.emit(new Uint8Array([0x01, 0x20]), locationData); // the 32-byte push prefix
+    this.emit(new Uint8Array([0x20]), locationData); // the 32-byte category push prefix
     this.pushToStack('(value)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData);
@@ -23752,12 +23752,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(6n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.popFromStack();
-    this.pushToStack('(value)');
+    this.pushToStack('(head)');
     this.pushToStack('(unlockingRest)');
+    // OP_SPLIT leaves the right half on top; swap the head above it so the prefix comparison reads the head and
+    // the rest survives for step 4b.
+    this.emit(Op.OP_SWAP, locationData);
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
     const selector = abi.abi.find((entry) => entry.name === 'create')?.selector;
     if (selector === undefined) throw new Error('The child deployer has no create selector');
     const prefix = new Uint8Array([0x04, ...hexToBin(selector), 2 * abi.callSlots]);
-    this.emit(encodeDataPush(prefix), locationData);
+    this.emit(prefix, locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
     // The prefix constant is untracked; the comparison consumes it and the head, leaving the rest.
     this.popFromStack();
@@ -23782,7 +23786,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Step 4c: d_in's lock is DEPLOY(C), and d_out carries X ‖ 0x02.
     this.emitBlockSlotIndex('deploy', site, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);
-    this.emit(encodeDataPush(hexToBin(abi.lockingBytecode)), locationData);
+    this.emit(hexToBin(abi.lockingBytecode), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.emitBlockSlotIndex('deploy', site, locationData);
     this.emit(Op.OP_OUTPOINTTXHASH, locationData);
@@ -23790,7 +23794,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(xName);
     this.emit(Op.OP_DUP, locationData);
     this.pushToStack('(value)');
-    this.emit(encodeDataPush(new Uint8Array([0x02])), locationData);
+    this.emit(new Uint8Array([0x02]), locationData);
     this.pushToStack('(value)');
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);

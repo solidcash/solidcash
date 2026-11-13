@@ -483,7 +483,7 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
   }
 
   const encoded: Uint8Array[] = [];
-  for (const input of create.inputs) {
+  for (const input of options.boundBytes === undefined ? create.inputs : []) {
     const known = values.get(input.name);
     if (known !== undefined) {
       encoded.push(known);
@@ -513,6 +513,9 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
       synthetic.push(value);
     }
     for (const name of ['__internal__creatorListPos', '__internal__creatorList', '__internal__creatorInputIdx']) {
+      // A child whose constructor does not read msg.sender has no such input; pushing the defaults would leave
+      // create's exact-stack check three items too deep.
+      if (!create.inputs.some((input) => input.name === name)) continue;
       const value = values.get(name);
       if (value !== undefined) creatorValues.push(value);
     }

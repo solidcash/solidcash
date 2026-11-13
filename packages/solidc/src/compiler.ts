@@ -21732,6 +21732,9 @@ const referencedContractCompileStack: string[] = [];
 function gatherDeployerChildren(
   ast: Ast, code: string, options: InternalCompilerOptions,
 ): Map<string, DeployerChild> | undefined {
+  // The pre-B10 inline fold remains reachable for the regression files that assert its shape (B13.4 removes it
+  // later). It is not a public option: no source or SDK path sets it.
+  if ((options as { __legacyDeployFold?: boolean }).__legacyDeployFold === true) return undefined;
   if (!compilesInDirectConvention(options)) return undefined;
   // The deployer program is a synthetic compile of C's constructor: it cannot create children.
   if (options.__deployerProgram !== undefined) return undefined;

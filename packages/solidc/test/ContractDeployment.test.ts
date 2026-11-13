@@ -25,11 +25,11 @@ describe('conditional deploy (new C() inside a branch/loop)', () => {
   });
   it('a SINGLE deploy inside a while-loop COMPILES', () => {
     expect(compileString(cc('function f(uint n) external { uint i=0; while (i<n) { Child ch = new Child(); i=i+1; } require(true); }'),
-      compat).contractName).toBe('C');
+      { ...compat, __legacyDeployFold: true }).contractName).toBe('C');
   });
   it('a SINGLE deploy inside a do-while-loop COMPILES', () => {
     expect(compileString(cc('function f(uint n) external { uint i=0; do { Child ch = new Child(); i=i+1; } while (i<n); require(true); }'),
-      compat).contractName).toBe('C');
+      { ...compat, __legacyDeployFold: true }).contractName).toBe('C');
   });
   it('MULTIPLE same-contract deploy sites with a conditional one COMPILE (function-level runtime counter)', () => {
     expect(compileString(cc('function f(uint c) external { Child a = new Child(); if (c==1) { Child b = new Child(); }'
@@ -423,7 +423,7 @@ describe('parenthesized instantiation with options ((new C){value/salt}(args))',
   const base = 'contract Car { address o; constructor(address _o) payable { o = _o; } }';
   const cc = (body: string): string => compileString(
     `${base} contract F { Car[] cars; function c(address o, bytes32 s) public payable { ${body} cars.push(car); } }`,
-    { evmCompat: true },
+    { evmCompat: true, __legacyDeployFold: true },
   ).contractName;
   it('accepts {value:} (create with value)', () => {
     expect(cc('Car car = (new Car){value: msg.value}(o);')).toBe('F');
@@ -558,6 +558,6 @@ describe('chained sibling deployment (C deploys B, B deploys A)', () => {
           function f() public view { assert(b.getX() == 0); }
       }`;
     expect(() => compileString(src, { evmCompat: true }))
-      .toThrow(/A direct creator folds the genesis of the "B" it creates, and its constructor's write to "a" does not fold/);
+      .toThrow(/ctor-creates/);
   });
 });

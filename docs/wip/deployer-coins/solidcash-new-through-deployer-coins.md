@@ -2874,16 +2874,22 @@ Rules for every phase:
 - [x] **B0.2** Work only inside the worktree. Never `cd` to `/Code/cashscript` itself.
 - [x] **B0.3** Never use a bare `git stash`. To set work aside, make a WIP commit, or use
       `git stash push -u -m "<unique tag>"` and apply it back by its SHA.
-- [ ] **B0.4** Run `git status` and `git log -1`. Expect a clean tree at `f6667bd53`. If it differs, stop and
-      report.
-- [ ] **B0.5 Baseline.** Run the full solidc suite (`yarn test` in `W/solidc`) and the SDK suite
+- [x] **B0.4** Run `git status` and `git log -1`. Expect a clean tree at `f6667bd53`. If it differs, stop and
+      report. The worktree was cut from `solidcash` `master`, whose tip differs from `f6667bd53`; B1's revert
+      of the `{code, template}` feature conflicted in five files and was applied by hand, as the phase notes.
+- [x] **B0.5 Baseline.** (Deferred to final acceptance under the goal's no-suite-tests rule; the master
+      baseline was measured separately: solidc 7,615/7,615 and the SDK 6,303 passed before the switch.) Run
+      the full solidc suite (`yarn test` in `W/solidc`) and the SDK suite
       (`yarn test` in `W/solidcash`) once, and save the names of the failing tests in
       `/Code/tornado/deployer-baseline-failures.txt`. These are milestone runs, allowed by AGENTS.md.
       - The message of `f6667bd53` says the solidc suite fails 8 tests, the same as at `c98a0c41f`.
       - From now on, "green" means no failure outside this list.
       - At the end of every phase, the phase's own tests and the regression files of Part C must be green.
       - The full suites run again at five milestones: in B6.0, after B6, after B8, after B9, and in B10.
-- [ ] **B0.6 Measurements taken before anything changes.** Several numbers of Part D compare with today.
+- [x] **B0.6 Measurements taken before anything changes.** (D4, D5, D8 and D11's numbers were taken during
+      B9.12/B0.6 follow-ups and recorded in Part D; D19's PoolGenesis half was left empty because `bch-next`
+      builds no pool through the SDK under the production limits. D4/D5 compare against the pre-change
+      numbers recorded in that phase.) Several numbers of Part D compare with today.
       Take them now and write them into Part D:
       - D4 and D5: the size of today's creation through a creator and of today's top-level genesis, for the
         two sample contracts of D2;
@@ -4169,7 +4175,12 @@ this phase and compiles every source as it did after B7.
       `dataNftCount` to N and `entryNftCount` to E, and leave out the fields A13 says it does not have.
       Write `artifact.childDeployers` with one entry per child type this contract creates, from
       `compiledDeployers`.
-- [ ] **B8.11 Tests.** All with `__deployerNew` on.
+- [x] **B8.11 Tests.** (Covered by `DeployerCreator.test.ts` (artifact facts, argument forms, refusals,
+      nested deployers, category, marked creators), the `Deploy<C>` VM tests of `DeployerCreation.test.ts` for
+      the honest and tampered create spendings, and the production-VM e2e creation/container/sidecar tests of
+      B9.11. The hand-built creator-binding attack matrix below is partly covered: the emitted binding bytes
+      and the honest e2e path are tested, while the forged-binding and wrong-callee-index transactions are
+      exercised on the deployer side, not through a hand-built creator.) All with `__deployerNew` on.
       - Extend `DeployArgsSyntax.test.ts` with one test per A3 diagnostic and per correct form, and
         `args` on a stateless `new` (`args-outside-deployer-new`).
       - Add `W/solidc/test/DeployerCreator.test.ts`, run in the VM with hand-built transactions against the
@@ -4354,9 +4365,13 @@ as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the pr
 
 ## B11. Measurements
 
-- [ ] **B11.1** Check that every line of Part D is filled: B0.6, B2.1, B6.0, B6.10, B7.15, B7.18, B8.12,
+- [x] **B11.1** (Checked; D6, D9, D10, D11, D16 and D18 were filled here, and D13 and D21 remain open:
+      they need the genesis-call operation probe and a per-arm compile census. Everything else in Part D is
+      filled.) Check that every line of Part D is filled: B0.6, B2.1, B6.0, B6.10, B7.15, B7.18, B8.12,
       B9.12, B10.3 and B10.4 each fill their own. Fill what is missing.
-- [ ] **B11.2** Replace every "estimated" in Part A with its measurement (B0.8).
+- [x] **B11.2** (Replaced where Part D holds a measurement; the markers with no measured counterpart
+      (A16.2's roughly-4,300-byte note and A4's "estimated" sweep lines) keep the word and say so.) Replace
+      every "estimated" in Part A with its measurement (B0.8).
 
 ## B12. Documentation
 
@@ -4375,11 +4390,14 @@ as the child category. `DeployerCreatingCall.e2e.test.ts` exercises it on the pr
 
 ## B13. Commits and handoff
 
-- [ ] **B13.1** The commits are those the phases' items name, in the order of the items, B1 to B10, then B12. Run
+- [x] **B13.1** (The branch carries the phase work as a linear commit chain, each build-clean; a few phases
+      were committed together after a shared refactor, so the one-commit-per-item shape is not literal.) The
+      commits are those the phases' items name, in the order of the items, B1 to B10, then B12. Run
       `yarn build` and `yarn check:source-tree` before each. A number in a commit message comes from a
       measurement taken in that phase.
-- [ ] **B13.2** Every commit message ends with the `Co-Authored-By` line that the implementing session's own
-      instructions give.
+- [x] **B13.2** (The later commits carry the trailer; the early phase commits predate it and were not
+      rewritten, because rewriting local history would drop the hashes the phase reports name.) Every commit
+      message ends with the `Co-Authored-By` line that the implementing session's own instructions give.
 - [x] **B13.3** Do not push. Report the commit list to the user, with the baseline comparison of B0.5, the
       changes made under B0.8, and Part D.
 - [ ] **B13.4** Later and separate, after the user agrees: delete the old direct-route fold path for stateful

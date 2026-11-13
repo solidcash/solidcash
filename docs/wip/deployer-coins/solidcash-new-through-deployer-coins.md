@@ -4574,12 +4574,12 @@ their contract with `deployer: true`:
       txid, the result carries `prepTransactions`, and the identity output is at output 0 and resolves
       (`resolveIdentity`); *(covered by `DeployerCreation.e2e`: the category/verifyBirth/prep cases and the
       identity case)*
-- [ ] a top-level deployment whose contract arguments name its own category: build the prep, read `category`, *(not covered by a committed test)*
+- [x] a top-level deployment whose contract arguments name its own category: build the prep, read `category`, *(covered by `DeployerCreation.e2e`: the Self case builds the prep first and passes the category as the runtime argument)*
       compute the arguments, deploy with `deployerPrep`;
 - [x] `ContractFactory.deploy` with a signer, for an artifact with a deployer: it takes the deployer path, *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       creates no logical-identity anchor, and accepts a funding coin at any vout;
-- [ ] each row of A12's path table: the path, the warning or `DeployerPathError`; *(only the fallback and viaDeployer rows are covered, by `DeployerRefusals.e2e`)*
-- [ ] each fallback case of A12 falls back and warns, and `verifyBirth` is false for the result; *(the fallback path is covered; the false `verifyBirth` assertion is not)*
+- [x] each row of A12's path table: the path, the warning or `DeployerPathError`; *(covered by `DeployerRefusals.e2e`: no deployer, unsupported, default, fallback and error rows)*
+- [x] each fallback case of A12 falls back and warns, and `verifyBirth` is false for the result; *(covered by `DeployerRefusals.e2e`'s fallback case, which now asserts `verifyBirth` false)*
 - [x] `verifyBirth` accepts a child created by `new` when given `creatorArtifact.childDeployers.C`, and the *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       same child when given `artifact.deployer` of C compiled with the option;
 - [x] creation through a creator, where the creator stores the child's address and its category in the same *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*

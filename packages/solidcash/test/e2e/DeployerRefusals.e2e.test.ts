@@ -6,7 +6,7 @@ import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitau
 import { compileString } from '../direct-compile.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { DeployerPathError } from '../../src/stateful/deployer.js';
+import { DeployerPathError, verifyBirth } from '../../src/stateful/deployer.js';
 import { clearGenesisReservations } from '../../src/stateful/genesis-reservations.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -66,6 +66,8 @@ describe('A12: paths and refusals', () => {
       const result = await deploy(provider, artifact, fundingUtxo, { salt: Uint8Array.of(1, 2, 3) });
       expect(result.categoryId).toBe(fundingUtxo.txid);
       expect(warn.mock.calls.some(([message]) => String(message).includes('salt'))).toBe(true);
+      // The fallback used today's genesis, so no deployer coin created this category.
+      expect(await verifyBirth(provider, result.categoryId, [artifact.deployer!])).toBe(false);
     } finally {
       warn.mockRestore();
     }

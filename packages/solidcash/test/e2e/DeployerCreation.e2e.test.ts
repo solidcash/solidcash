@@ -10,6 +10,7 @@ import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { resolveIdentity } from '../../src/bcmr/identity.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { computeSideCarStandIn } from '../../src/stateful/stateful-abi-resolve.js';
 import { DeployerSidecarError } from '../../src/stateful/deployer.js';
@@ -103,6 +104,36 @@ describe('a top-level deployment through Deploy<C>', () => {
     });
     expect(result.categoryId).toBe(prep.category);
     expect(result.prepTransactions).toEqual([prep.transactionHex]);
+  });
+
+  it('deploys a contract whose runtime argument is its own category from a prep built first (A14 item 3)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(
+      `${P} contract Self { bytes32 self; constructor(bytes32 c) { self = c; } }`,
+      { deployer: true, messageBus: false },
+    );
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '18'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const signer = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const { prep } = await buildDeployerPrep({
+      children: [{ deployer: artifact.deployer!, contractName: artifact.contractName }],
+      fundingUtxos: [fundingUtxo],
+      authorSigner: signer,
+      authorLockingBytecode: authorLock,
+      changeLockingBytecode: authorLock,
+      provider,
+    });
+    // The category is the prep's txid; the runtime argument names it in the VM's byte order.
+    const categoryBytes = Uint8Array.from(hexToBin(prep.category)).reverse();
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: signer, changeAddress: change.address,
+      senderLockingBytecode: authorLock, initArgs: [categoryBytes], deployerPrep: prep, viaDeployer: true,
+    });
+    expect(result.categoryId).toBe(prep.category);
+    expect(((await result.contract.getState()) as { self?: Uint8Array }).self).toEqual(categoryBytes);
   });
 
   it('ContractFactory.deploy takes the deployer path and the born contract is callable', async () => {

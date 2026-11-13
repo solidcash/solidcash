@@ -2258,6 +2258,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedWrittenCollections: Set<string> = new Set(); // sorted collections written in the current function
   private dataNftCount: number = 0;
   private pendingStateWrites: Map<string, string> = new Map(); // "nftIndex:fieldIndex" -> stack name
+
   private hasStateAccess: boolean = false;
   private journalSlotsByFunctionId: Map<number, StateVariableNode[]> = new Map();
   // X105. Which of those ids actually WRITE a slot. A route-reachable pure reader is journalled so it
@@ -26276,7 +26277,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The int-like branch is shared via a subroutine when used >=2 times.
     if (isIntLike) {
       if (this.intEncodeSlot.id === undefined) this.intEncodeSlot.id = this.allocateCompactHelperId();
-      if (this.invokeSubroutineIfDefined(this.intEncodeSlot.id, locationData)) {
+      // In a genesis body the inline ladder keeps the transformed value in place; the outlined helper's frame
+      // left a raw copy under the encoded value, which a held read then stored in scalar state.
+      if (this.currentFunction?.genesisMode !== true
+        && this.invokeSubroutineIfDefined(this.intEncodeSlot.id, locationData)) {
         this.popFromStack();
         this.pushToStack('(value)');
         return;
@@ -27240,8 +27244,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const stackIdx = this.getStackIndex(stackName);
       this.emit(encodeInt(BigInt(stackIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
-      // The picked value is pushdata-encoded - decode it
-      this.emitPushdataDecodeLastField(sv.type, locationData);
+      // The picked value is pushdata-encoded outside a genesis body; a genesis slot holds the raw value.
+      if (this.currentFunction?.genesisMode !== true) this.emitPushdataDecodeLastField(sv.type, locationData);
       this.pushToStack('(value)');
     };
     const fromState = (): void => {
@@ -27313,8 +27317,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // persist an out-of-range value (the decode-time check would brick the field on its next read).
     this.emitAssignmentRangeCheck(sv.type, node.expression.type, locationData);
 
-    // 2. Encode to pushdata format
-    this.emitPushdataEncode(sv.type, locationData);
+    // 2. Encode to pushdata format. A genesis body keeps the raw value on its state slot and encodes once at
+    // settlement; this keeps a held constructor read (raw) and a literal on the same representation.
+    if (this.currentFunction?.genesisMode !== true) this.emitPushdataEncode(sv.type, locationData);
 
     this.framedFieldWritten(sv, key, node);
 
@@ -34061,7 +34066,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(this.getStackIndex(readHash));
     }
     // A kept/logged value is the pushdata-encoded entry value; a scalar caller stores/compares the raw value.
-    if (node.arrayIndex === undefined
+    if (node.arrayIndex === undefined && plan !== undefined
       && (plan.base !== undefined || plan.compared.length > 0 || plan.turn !== undefined || plan.log !== undefined)) {
       this.emitPushdataDecodeLastField(node.collection!.innermostValueType, loc);
     }
@@ -39022,6 +39027,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
               // return journal slots into the physical route frame. Their runtime height can grow independently
               // of the route traversal's top-relative model, but the entry frame remains anchored at the bottom.
               this.emitPickSettlementValue(stackName, locationData, node);
+              if (this.currentFunction?.genesisMode === true) {
+                const fieldType = this.physicalFieldType(sv);
+                this.pushToStack('(value)');
+                this.emitPushdataEncode(fieldType, locationData);
+                this.popFromStack();
+              }
             }
             this.pushToStack('(value)');
           } else {
@@ -39083,7 +39094,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // Verify output commitment matches reconstructed commitment
           this.emitDataNftOutputCommitment(compactOffset, locationData);
           this.pushToStack('(value)');
-
+          if (this.currentFunction?.genesisMode === true
+            && (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SCDEBUG_RECORD === '1') {
+            this.emit(Op.OP_2DUP, locationData);
+          }
           this.emit(Op.OP_EQUALVERIFY, locationData);
           this.popFromStack(2);
         }

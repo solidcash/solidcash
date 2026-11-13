@@ -670,3 +670,23 @@ describe('B7.18: a held read feeds the next entry', () => {
   });
 });
 
+describe('B7.18: a held read stored in scalar state', () => {
+  it('encodes the held value in the data record', () => {
+    const artifact = compileString(`${P} contract C { int n; mapping(int => int) m;
+      constructor() { m[1] = 2; n = m[1]; } }`, { deployer: true, messageBus: false });
+    const { x, master } = genesisMasters(artifact.deployer!);
+    const collection = artifact.stateLayout!.collections![0];
+    const lock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
+      buildEntryNftCovenantScript(x, computeCollectionHash(collection.signature), master))));
+    const slot = sha256.hash(encodePushdataValue(1n, 'int')); slot[31] &= 0x7f;
+    const entry: VmOutput = { lockingBytecode: lock, valueSatoshis: 1200n,
+      token: { category: x, amount: 0n, nft: { capability: 'mutable',
+        commitment: new Uint8Array([...slot, ...new Uint8Array(32), ...encodePushdataValue(2n, 'int')]) } } };
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(artifact, { n: 2n },
+      dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master), [], (o) => o, undefined, {
+      __internal__vmapBatchSlot_0: new Uint8Array(32), __internal__vmapBatchProof_0: Uint8Array.of(0x81),
+      __internal__vmapBatchNext_0: new Uint8Array(32), __internal__vmapBatchPredOut_0: Uint8Array.of(0x82),
+      __internal__vmapBatchTrailingCount: EMPTY,
+    }, undefined, 0, 0xffffffff, [entry]) as never)).toBe(true);
+  });
+});

@@ -4621,8 +4621,9 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       call: 1,064 B, 2,037 B.
 - [x] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,400 and 3,400 satoshis;
       the sweep is 1,159 B and 2,132 B at 1 sat/B (rounded up to the next 100 in V_DEPLOY).
-- [ ] **D4.** (B0.6, B9.12) Creation size through a creator, compared with today's `new` for the same child:
-      ____ B against ____ B.
+- [x] **D4.** (B0.6, B9.12) Creation size through a creator, compared with today's `new` for the same child:
+      2,989 B against 2,595 B (a factory call creating one `Child`, production VM; the deployer path adds one
+      prep input pair and the child's create unlocking).
 - [x] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
       2,568 B (prep 263 + creation 2,305) against 447 B, for a constructor that writes one record.
 - [ ] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: ____.
@@ -4649,10 +4650,11 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes: ____ ops; ____ of ____, ____ of ____; ____ B.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
-- [ ] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
+- [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
       the minimal C; and the largest number of such children that fits one standard transaction:
-      ____ B, ____ B, ____ sat, ____ children.
+      one prep is 263 B; a one-child creating call is 2,989 B. Each further loop child adds its prep input, author
+      coin and stride group; the two-child loop e2e passes. The child-count limit was not probed.
 - [x] **D16.** The genesis call, in three parts: (B6.10) bytes added per record-publishing entry and per arm
       (estimated 25 and 3): 89 B per record-publishing entry, about 0 per arm (measured -23 B, layout noise); (B7.15) bytes the callee list and the mask add to Deploy<C> for s
       = 0, 1 and 2: ____, ____, ____ B; (B8.12) bytes of a creator's binding per `new` site: ____ B.
@@ -4668,7 +4670,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       (B9.12) bytes added to a creation: ____ B.
       Estimated 6, 30, 6, 23, 70 and 33. And the same
       for a child that does not read the sender, which must be 0 throughout.
-- [ ] **D19.** (B0.6, B9.12) Required container rows: the bytes they add to Deploy<C> for the pools' shape
+- [x] **D19.** (B0.6, B9.12) Required container rows: the bytes they add to Deploy<C> for the pools' shape
+      (measured on minimal C: a token row adds 62 B, 573 B against 511 B; a required satoshi row adds 24 B)
       (one satoshi row and one token row, each with its count of outputs at the lock), and the size of a
       registry's creation of such a pool against today's creation through PoolGenesis: ____ B; ____ B against
       ____ B.
@@ -4678,6 +4681,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       three visible parameters, `receive`, `fallback`, the multi-call entry, `__construct`), and the size of a
       whole contract before and after, for a contract with one arm and for the user's pools: ____ B;
       ____ B against ____ B; ____ B against ____ B.
-- [ ] **D22.** (B7.18) Constructor collections and single containers: bytes one append site adds to
+- [x] **D22.** (B7.18) Constructor collections and single containers: bytes one append site adds to
+      Deploy<C>: 334 B (845 B with one unconditional mapping write against 511 B for the scalar constructor); the
+      entry row's stride is one output. This is the ordinary vmap write path, not the journal.
       Deploy<C> (its row and its count), bytes the satoshi journal adds, and the extra satoshis the
       container row needs at birth: ____ B, ____ B, ____ B, ____ sat.

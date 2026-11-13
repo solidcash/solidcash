@@ -925,35 +925,16 @@ function encodeGenericPushdataValue(data: Uint8Array, isIntLike: boolean): Uint8
     return new Uint8Array([0x00]);
   }
 
-  if (isIntLike) {
-    // 1-byte value: check for OP_1NEGATE and OP_1-OP_16
-    if (data.length === 1) {
-      const byte = data[0];
-
-      // Check for 0x81 (-1 in script number) -> OP_1NEGATE (0x4f)
-      if (byte === 0x81) {
-        return new Uint8Array([0x4f]);
-      }
-
-      // Check for 1-16 -> OP_1-OP_16 (0x51-0x60)
-      // We need to interpret the byte as a script number first
-      const numResult = vmNumberToBigInt(data, { maximumVmNumberByteLength: VM_NUMBER_MAX_BYTE_LENGTH });
-      if (!isVmNumberError(numResult)) {
-        const num = numResult;
-        if (num >= 1n && num <= 16n) {
-          return new Uint8Array([0x50 + Number(num)]);
-        }
-      }
-
-      // Standard 1-byte pushdata: 0x01 <byte>
-      return new Uint8Array([0x01, byte]);
-    }
-
-    // Multi-byte: standard pushdata framing
-    return standardPushdataFrame(data);
+  // A9: a one-byte byte string has one minimal encoding, whatever its type: 0x81 is OP_1NEGATE, 0x01 to
+  // 0x10 are OP_1 to OP_16, and every other byte (0x00 and 0x80 included) takes the 0x01 frame. The compiler's
+  // emitPushdataEncode emits the same bytes, and a creator's binding compares them verbatim.
+  if (data.length === 1) {
+    const byte = data[0];
+    if (byte === 0x81) return new Uint8Array([0x4f]);
+    if (byte >= 0x01 && byte <= 0x10) return new Uint8Array([0x50 + byte]);
+    return new Uint8Array([0x01, byte]);
   }
-
-  // Non-int types: just standard pushdata framing (no special opcodes for small values)
+  void isIntLike;
   return standardPushdataFrame(data);
 }
 

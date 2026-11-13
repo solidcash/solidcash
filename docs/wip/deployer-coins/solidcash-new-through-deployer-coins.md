@@ -4723,7 +4723,10 @@ tests green** (baseline at master: 7,615 tests, all green; the increase is the d
 Eight files that assert the pre-B10 fold's shape compile with the internal `__legacyDeployFold` escape, which
 is what it exists for; the deploy-then-call corpus now expects `DeployedChildCallError`, the sub-RESERVE
 deploy value expects the B10 refusal, `DeployUnfoldableConstructor` expects the deployer binding, and
-`ContractDeployment` expects the child category to be the prep's txid. The full SDK suite is recorded below.
+`ContractDeployment` expects the child category to be the prep's txid. The full SDK suite is **1,046 files
+passing and 6,303 tests passing, 0 failed** (5 expected fails, 191 skipped, 5 todo), which matches the
+6,303-passed baseline. The spec's mechanical checks (`solidcash-new-through-deployer-coins.checks.py`) pass all
+seven checks with their negative controls.
 - [x] `W/solidc/test/ContractDeployment.test.ts`, `DeployThenCallFold.test.ts` and *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       `DeployUnfoldableConstructor.test.ts`;
 - [x] `W/solidcash/test/e2e/ContractFactory.test.ts`, `DeployFromContract.test.ts`, *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
@@ -4797,9 +4800,11 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       the final changes.
 - [x] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
       `childDeployers`: with the switch off the solidc suite was 7,826/7,826 and solidcash 6,303 passed with 0
-      failed (baseline 7,615 solidc). B10.1 then turned the switch on; the targeted regression files pass and
-      the root build regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer
-      tests ask for carry `deployer`.
+      failed (baseline 7,615 solidc). At the final acceptance on this branch the full solidc suite is
+      7,835/7,835 across 513 files and the full solidcash suite 6,303 passed with 0 failed across 1,046 files
+      (5 expected fail, 191 skipped, 5 todo), both matching or exceeding the baseline; the spec's seven
+      mechanical checks pass. The root build regenerates no testing-suite artifact beyond `updatedAt`. Only
+      artifacts the new deployer tests ask for carry `deployer`.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes: recorded as a limitation, not estimated. `deployThroughDeployer` refuses `callSlots > 0`

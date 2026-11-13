@@ -150,6 +150,11 @@ export async function deployFromStatefulContract<T extends Artifact>(
     );
   }
   const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
+  // `constructorInputs` are a stateful contract's immutable contract parameters; the runtime
+  // constructor's arguments are the `__construct` entry's inputs. Only the latter are `new C(...)`'s
+  // parentheses and the child's constructor rows.
+  const runtimeConstructorInputs = (childArtifact as unknown as { abi?: { name: string; inputs?: unknown[] }[] })
+    .abi?.find((entry) => entry.name === '__construct')?.inputs?.length ?? 0;
   const bakedConstructorArgumentCount = childArtifact.constructorInputs.length;
   // A bound child takes its creator's own pool binding last, as the creator's covenant builds the child's lock.
   const creatorBinding = (): Uint8Array => {
@@ -198,13 +203,6 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const bakedChildConstructorArgs = Array.from({ length: bakedConstructorArgumentCount }, (_, index) => (
     derivedContractArgs[index] !== undefined ? derivedContractArgs[index] : childConstructorArgs[index]
   )).filter((value) => value !== undefined) as ConstructorArgument[];
-  // A genesis `__construct` witness list is the contract parameters followed by the runtime constructor's.
-  const sourcedContractCount = derivedContractArgs.filter((value) => value !== undefined).length;
-  const childInitArgs = [
-    ...bakedChildConstructorArgs,
-    ...childConstructorArgs.slice(sourcedContractCount > 0 ? 0 : Math.min(childConstructorArgs.length,
-      bakedConstructorArgumentCount)),
-  ] as ConstructorArgument[];
   // create2 salt: build the child with the salt the deploy covenant pins (composed with the self-pin).
   // Resolve from an explicit childSalt, else the recorded `new C{salt}()` mapping (a forwarded deploy param
   // or a hex literal). A computed salt with no explicit childSalt is an error (the address can't be rebuilt).
@@ -314,7 +312,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const createInputs = childDeployer.abi.find((entry) => entry.name === 'create')?.inputs ?? [];
     const publicNames = createInputs.filter((input) => !input.name.startsWith('__internal__'))
       .map((input) => input.name);
-    const constructorCount = childArtifact.constructorInputs.length;
+    const constructorCount = runtimeConstructorInputs;
     const contractCount = publicNames.length - constructorCount;
     const values: Record<string, FunctionArgument> = {};
     for (let index = 0; index < contractCount; index += 1) {
@@ -623,7 +621,9 @@ export async function deployFromStatefulContract<T extends Artifact>(
       funder,
       fundingUtxo: { ...(prepFunding[0] ?? options.fundingUtxo), vout: 0 },
       initialState: options.childInitialState,
-      initArgs: childInitArgs,
+      // `__construct` takes the runtime constructor's arguments; the contract parameters are already
+      // baked into `childContracts[0]`.
+      initArgs: childConstructorArgs,
       changeAddress: changeAddress ?? '',
     };
     const derived = await deriveDeployCommitments(
@@ -1312,13 +1312,23 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // pins `row value <= journal balance`, where the balance is the deploy value its Q carries: the row holds
   // exactly that value, since a larger row would mint satoshis the child was not given. A payable child with no
   // value therefore needs a zero-sat row, below the relay dust limit - refuse and name the option instead.
-  if (childDeployer !== undefined && childDeployer.tokenRows.length > 0) {
-    // A14 item 11: a token row needs at least one unit of its category from the paying wallet. deployFrom has no
-    // coin of that category to open it with, so refuse before building rather than mint a row without its token.
-    throw new DeployerPrepError(
-      `'${childArtifact.contractName}' keeps its token container inside a single coin; a creating call cannot `
-      + 'open it (the paying wallet has no coin of that category to pass)',
-    );
+  // A14 item 11: a single token container opens from a one-unit coin of its category, supplied by the paying
+  // wallet. The coin's whole value and its one unit go to the child's token container; no change is needed.
+  const childTokenSeeds = new Map<number, { utxo: Utxo; unlocker: Unlocker }>();
+  if (childDeployer !== undefined) {
+    for (const row of childDeployer.tokenRows) {
+      const asset = String((bakedChildConstructorArgs as unknown[])[row] ?? '').toLowerCase();
+      const supplied = options.childTokenContainers?.find(({ utxo }) => utxo.token !== undefined
+        && utxo.token.category.toLowerCase() === asset && utxo.token.amount === 1n);
+      if (supplied === undefined) {
+        const name = childArtifact.constructorInputs[row]?.name ?? `parameter ${row}`;
+        throw new DeployerPrepError(
+          `'${childArtifact.contractName}' keeps its token container '${name}' single; pass a one-unit coin of `
+          + 'its category in childTokenContainers',
+        );
+      }
+      childTokenSeeds.set(row, supplied);
+    }
   }
   const childSatoshiRow = (cc: (typeof childContracts)[number], cat: string): { to: string | Uint8Array; amount: bigint } => {
     const abi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
@@ -1373,6 +1383,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const childDeployerAbi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
     if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
       childExtraOutputs.push(childSatoshiRow(cc, cat));
+    }
+    for (const row of childDeployerAbi?.tokenRows ?? []) {
+      const seed = childTokenSeeds.get(row)!;
+      childExtraOutputs.push({
+        to: getTokenContainerAddress(cc, cat, seed.utxo.token!.category),
+        amount: seed.utxo.satoshis,
+        token: { category: seed.utxo.token!.category, amount: 1n },
+      });
     }
     if (isLoopValueDeploy) {
       childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });
@@ -1799,6 +1817,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   for (const ti of tokenContainerInputs) {
     builder.addInput(ti.utxo, ti.unlocker);
   }
+  // The paying wallet's one-unit coins for each child's single token container.
+  for (const seed of childTokenSeeds.values()) builder.addInput(seed.utxo, seed.unlocker);
 
   // Funding UTXOs for the children's token genesis - N inputs, one per child (a balanced contract block: N
   // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.

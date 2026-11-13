@@ -1317,7 +1317,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const childTokenSeeds = new Map<number, { utxo: Utxo; unlocker: Unlocker }>();
   if (childDeployer !== undefined) {
     for (const row of childDeployer.tokenRows) {
-      const asset = String((bakedChildConstructorArgs as unknown[])[row] ?? '').toLowerCase();
+      const raw = (bakedChildConstructorArgs as unknown[])[row];
+      const asset = (typeof raw === 'string' ? raw : raw instanceof Uint8Array ? binToHex(raw) : '').toLowerCase();
       const supplied = options.childTokenContainers?.find(({ utxo }) => utxo.token !== undefined
         && utxo.token.category.toLowerCase() === asset && utxo.token.amount === 1n);
       if (supplied === undefined) {

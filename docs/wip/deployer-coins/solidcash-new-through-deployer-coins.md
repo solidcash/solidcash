@@ -4812,6 +4812,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       genesis-call checks are exercised on hand-built spends in the solidc tests). No production SDK creation
       with a constructor call exists from which to measure the cost, digest iterations, or a shortest
       unlocking; wiring the callee resolution into the deployer path is the work that would fill this line.
+      The tick records this limitation, not a measurement: the item's precondition (a shipped creation with a
+      constructor call) does not exist, so there is no cost to report against a limit.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for

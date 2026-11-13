@@ -41,6 +41,22 @@ describe('B8.0: a deployer child is compiled standalone and published', () => {
     expect(creator.childDeployers).toBeUndefined();
   });
 
+  it('binds each level of a nested creator to its own child deployer', () => {
+    const source = `${P} ${statefulChild('G')}
+      contract C { int y; function mk() { G g = new G(); y = 1; } }
+      contract F { int x; function mk() { C c = new C(); x = 1; } }`;
+    const outer = compileString(source, { __deployerNew: true, primaryContractName: 'F' } as never);
+    expect(Object.keys(outer.childDeployers ?? {})).toEqual(['C']);
+    const inner = compileString(source, { __deployerNew: true, primaryContractName: 'C' } as never);
+    expect(Object.keys(inner.childDeployers ?? {})).toEqual(['G']);
+  });
+
+  it('compiles a creator with no state variable and no event', () => {
+    const source = `${P} ${statefulChild()} contract Parent { function make() { Child c = new Child(); require(c.length > 0); } }`;
+    const artifact = compile(source, { allowUnsafeOperations: true });
+    expect(Object.keys(artifact.childDeployers ?? {})).toEqual(['Child']);
+  });
+
   it('does nothing of this phase with the option off', () => {
     const source = `${P} ${statefulChild()}
       contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`;

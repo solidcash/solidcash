@@ -4652,21 +4652,24 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       prep input pair and the child's create unlocking).
 - [x] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
       2,568 B (prep 263 + creation 2,305) against 447 B, for a constructor that writes one record.
-- [ ] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: ____.
+- [x] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: 90,597 ops of a
+      1,645,600 budget (800 per byte of the input's 2,057-byte unlocking and redeem), 5.5% used; the author
+      coin's P2PKH input costs 28,217. Measured on a production-profile creation (2,408-byte transaction).
 - [x] **D7.** (B6.10) The genesis step's size in a contract that has it (estimated about 140 B), reported
       against the 100 B the user named: 300 B (shared resolution, entry size and (X, 0) checks, and the
       `OP_INVOKE` site; the shared body itself is about 270 B).
 - [x] **D8.** (B0.6, B6.10) The size of a contract that reads `msg.sender` three times and returns a value:
       1,944 B before, 2,278 B after (+334 B; the shared helper is emitted once and invoked at each read).
-- [ ] **D9.** (B7.15) For a block reader compiled with `deployer: true`: C's size with the constant-lock
-      oracle form, compared with the sentinel form of its plain compile: ____ B against ____ B.
+- [x] **D9.** (B7.15) For a block reader compiled with `deployer: true`: C's size with the constant-lock
+      oracle form, compared with the sentinel form of its plain compile: 467 B against 467 B (the contract's
+      own code is unchanged); Deploy<C> is 523 B.
 - [ ] **D10.** (B9.12) The operation cost of the creator's binding check, which reads and splits the
       deployer's unlocking of up to 10 kB, against the creator input's budget: ____ ops of ____.
-- [ ] **D11.** (B0.6, B8.12) What the second compile costs where it runs: the compile time of a creator with
+- [x] **D11.** (B0.6, B8.12) What the second compile costs where it runs: the compile time of a creator with
       one `new` against the same creator with the `new` removed, the compile time of C with and without
-      `deployer: true`, and the bytes one `DeployerAbi` adds to an artifact file: ____ s against ____ s,
-      ____ s against ____ s, ____ B. Also the solidc suite's time before and after this work: ____ min against
-      ____ min.
+      `deployer: true`, and the bytes one `DeployerAbi` adds to an artifact file: 35.4 ms against 13.6 ms,
+      33.2 ms against 14.7 ms (10-compile means), 4,733 B. The solidc suite's time was not re-measured after
+      the final changes.
 - [x] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
       `childDeployers`: with the switch off the solidc suite was 7,826/7,826 and solidcash 6,303 passed with 0
       failed (baseline 7,615 solidc). B10.1 then turned the switch on; the targeted regression files pass and
@@ -4683,7 +4686,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       coin and stride group; the two-child loop e2e passes. The child-count limit was not probed.
 - [x] **D16.** The genesis call, in three parts: (B6.10) bytes added per record-publishing entry and per arm
       (estimated 25 and 3): 89 B per record-publishing entry, about 0 per arm (measured -23 B, layout noise); (B7.15) bytes the callee list and the mask add to Deploy<C> for s
-      = 0, 1 and 2: ____, ____, ____ B; (B8.12) bytes of a creator's binding per `new` site: ____ B.
+      = 0, 1 and 2: 511, 918, 1,591 B; (B8.12) bytes of a creator's binding per `new` site: -85 B (the binding
+      replaces the embedded child code, so the creator shrinks).
 - [x] **D17.** (B6.10) Void records and record accounting: the bytes `callRecords: 'all'` adds to a contract
       with no returning function and three void functions of 0, 1 and 2 arguments, and to a contract that
       already has a returning function; the bytes B6.4 adds to a contract whose arms did not all count:
@@ -4693,7 +4697,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       shared check, and per `new` site, and the marker: 47 B for one arm and one site together (parameter,
       list check and marker); the split is not separable at this emission. (B7.15) bytes step 8 adds to
       Deploy<C> of a sender-reading child: 194 B (408 B plain against 602 B with the sender and its list);
-      (B9.12) bytes added to a creation: ____ B.
+      (B9.12) bytes added to a creation: +394 B for one child against today's embedded `new` (2,989 B against
+      2,595 B, D4).
       Estimated 6, 30, 6, 23, 70 and 33. And the same
       for a child that does not read the sender, which must be 0 throughout.
 - [x] **D19.** (B0.6, B9.12) Required container rows: the bytes they add to Deploy<C> for the pools' shape

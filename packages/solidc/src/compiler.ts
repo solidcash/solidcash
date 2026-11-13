@@ -21735,12 +21735,12 @@ function gatherDeployerChildren(
   // The pre-B10 inline fold remains reachable for the regression files that assert its shape (B13.4 removes it
   // later). It is not a public option: no source or SDK path sets it.
   if ((options as { __legacyDeployFold?: boolean }).__legacyDeployFold === true) return undefined;
-  if (!compilesInDirectConvention(options)) return undefined;
+  if (options.__deployerNew !== true || !compilesInDirectConvention(options)) return undefined;
   // The deployer program is a synthetic compile of C's constructor: it cannot create children.
   if (options.__deployerProgram !== undefined) return undefined;
   const knownNames = new Set(ast.importedContracts.map((contract) => contract.name));
   const named = directNewContractNames(ast.contract, knownNames, ast.freeFunctions ?? []);  if (named.size === 0) return undefined;
-  const childOptions = { ...referencedChildCompilerOptions(options), deployer: true };
+  const childOptions = { ...referencedChildCompilerOptions(options), deployer: true, __deployerNew: true };
   const map = new Map<string, DeployerChild>();
   for (const name of named) {
     if (name === ast.contract.name) throw new DeployCycleError(ast.contract, name);
@@ -21752,11 +21752,7 @@ function gatherDeployerChildren(
     const artifact = result.artifact;
     if (artifact === undefined) continue;
     const abi = artifact.deployer;
-    // A5 refuses a live block reader's deployer as `code-not-constant` (the constant-lock form this backend
-    // lacks); the creator-side name for the same child fact is A15's `child-reads-block-data`.
-    const reason = artifact.deployerUnsupported === 'code-not-constant' && artifact.usesBlockOracle === true
-      ? 'child-reads-block-data'
-      : artifact.deployerUnsupported;
+    const reason = artifact.deployerUnsupported;
     if (abi === undefined && (reason === undefined || reason === 'not-stateful-direct')) continue;
     map.set(name, { name, artifact, abi, reason });
   }

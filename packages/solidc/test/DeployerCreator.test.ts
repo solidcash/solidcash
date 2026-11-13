@@ -57,12 +57,12 @@ describe('B8.0: a deployer child is compiled standalone and published', () => {
     expect(Object.keys(artifact.childDeployers ?? {})).toEqual(['Child']);
   });
 
-  it('runs by default: a direct stateful new binds the deployer', () => {
+  it('does nothing of this phase with the option off', () => {
     const source = `${P} ${statefulChild()}
       contract Parent { int m; function make() { Child c = new Child(); m = 1; } }`;
-    const creator = compileString(source, { allowUnsafeOperations: true });
-    expect(Object.keys(creator.childDeployers ?? {})).toEqual(['Child']);
-    expect(creator.bytecode).toContain('OP_INPUTBYTECODE');
+    const creator = compileString(source);
+    expect(creator.childDeployers).toBeUndefined();
+    expect(creator.bytecode).not.toContain('OP_INPUTBYTECODE');
   });
 
   it('refuses a contract that creates itself', () => {
@@ -189,8 +189,8 @@ describe('B8.2/B8.3: the argument forms and their diagnostics', () => {
   });
 
   it('refuses a child that reads block data', () => {
-    refusal(`${P} contract C { int n; constructor() { n = 1; }
-      function bump() { n = int(block.number); } }
+    refusal(`${P} contract C { int n; constructor() { n = int(block.number); }
+      function bump() { n = n + 1; } }
       contract Parent { int m; function make() { C c = new C(); m = 1; } }`,
     /child-reads-block-data/);
   });

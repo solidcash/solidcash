@@ -894,7 +894,21 @@ function arrangeDeployerParameters(ast: Ast, box: DeployerProgramBox | undefined
     ] : []),
     parameter(PrimitiveType.BIGINT, '__internal__genesisOutputBase'),
     parameter(PrimitiveType.BIGINT, '__internal__genesisSidecarBase'),
-    ...passParameters,
+    ...(() => {
+      const callSlots = (create.externalCalls ?? []).filter(
+        (slot) => !slot.loopArrayVar && !slot.inlineLoopDispatch,
+      );
+      const params = [...passParameters];
+      if (callSlots.length <= 1) return params;
+      const at = params.findIndex((entry) => entry.name === '__internal__externalCallInputBase');
+      if (at < 0) return params;
+      const existing = new Set(params.map((entry) => entry.name));
+      const witnesses = callSlots.map((slot, index) => parameter(
+        PrimitiveType.BIGINT, `__internal__extcallMasterIdx${slot.slotIndex ?? index}`,
+      )).filter((entry) => !existing.has(entry.name));
+      params.splice(at + 1, 0, ...witnesses);
+      return params;
+    })(),
     parameter(new BytesType(), '__internal__code'),
     ...contractParameters,
     ...sourceParameters,

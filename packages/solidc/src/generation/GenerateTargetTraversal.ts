@@ -11769,17 +11769,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitGenesisCalleeBindings(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
-    this.emitDropUntrackedStackItems(loc);
     const slots = node.externalCalls ?? [];
-    for (const slot of slots) {
-      this.emitSlotMasterIndex(slot, loc);
+    // The create epilogue's frame is exactly its ABI parameters plus the prologue locals. Body temporaries
+    // (`(value)`, edge flags, constructor locals) may remain in the model after the body; remove them from the
+    // model, then drop the matching runtime items, so top-relative local indices name the right stack slots.
+    const keep = new Set<string>([
+      ...node.parameters.map((parameter) => parameter.name),
+      '(gen_x)', '(gen_cat)', '(gen_m)', '(gen_r)', '(gen_call_mask)', '(gen_call_base)', '(gen_callees)',
+    ]);
+    for (const [position, slot] of slots.entries()) {
+      keep.add(`(gen_call_master_${slot.slotIndex ?? position})`);
+    }
+    while (this.stack.length > 0 && !keep.has(this.stack[0]!)) this.stack.shift();
+    this.emitDropUntrackedStackItems(loc);
+    const maskAtStart = this.getStackIndex('(gen_call_mask)');
+    if (maskAtStart > 0) {
+      this.emit(encodeInt(BigInt(maskAtStart)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(mask_copy)');
+      this.emit(encodeInt(BigInt(maskAtStart + 1)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(maskAtStart + 1);
+      this.stack[0] = '(gen_call_mask)';
+    }
+    for (const [position, slot] of slots.entries()) {
+      const slotIndex = slot.slotIndex ?? position;
+      const masterLocal = `(gen_call_master_${slotIndex})`;
+      if (this.getStackIndex(masterLocal, true) >= 0) {
+        this.emitPickAt(this.getStackIndex(masterLocal), loc);
+      } else {
+        this.emitSlotMasterIndex(slot, loc);
+      }
       this.emit(Op.OP_2, loc);
       this.emit(Op.OP_NUM2BIN, loc);
       this.pushToStack('(master_u16)');
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__genesisCallees'))), loc);
+      const calleesLocal = this.getStackIndex('(gen_callees)', true) >= 0
+        ? '(gen_callees)' : '__internal__genesisCallees';
+      this.emit(encodeInt(BigInt(this.getStackIndex(calleesLocal))), loc);
       this.emit(Op.OP_PICK, loc);
       this.pushToStack('(callee_list)');
-      this.emit(encodeInt(BigInt(2 * slot.slotIndex)), loc);
+      this.emit(encodeInt(BigInt(2 * slotIndex)), loc);
       this.pushToStack('(callee_offset)');
       this.emit(Op.OP_SPLIT, loc);
       this.popFromStack(2);
@@ -11789,30 +11819,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(this.getStackIndex('(list_left)'));
       this.emit(Op.OP_2, loc);
       this.emit(Op.OP_SPLIT, loc);
-      this.popFromStack(2);
+      // The `OP_2` is an untracked operand of SPLIT; only the list remainder is on the model.
+      this.popFromStack(1);
       this.pushToStack('(list_entry)');
       this.pushToStack('(list_rest)');
       this.emit(Op.OP_DROP, loc);
       this.removeFromStack(this.getStackIndex('(list_rest)'));
       this.emit(Op.OP_EQUALVERIFY, loc);
       this.popFromStack(2);
-      // Set the slot's bit in the mask held on the alternate stack.
-      this.emit(Op.OP_FROMALTSTACK, loc);
+      this.emit(Op.OP_DUP, loc);
       this.pushToStack('(mask)');
-      this.emit(encodeInt(BigInt(1 << slot.slotIndex)), loc);
+      this.emit(encodeInt(BigInt(1 << slotIndex)), loc);
       this.pushToStack('(bit)');
       this.emit(Op.OP_ADD, loc);
       this.popFromStack(2);
       this.pushToStack('(mask)');
-      this.emit(Op.OP_TOALTSTACK, loc);
-      this.popFromStack();
+      this.emit(Op.OP_NIP, loc);
+      this.removeFromStack(1);
+      this.stack[0] = '(gen_call_mask)';
     }
-    this.emit(Op.OP_FROMALTSTACK, loc);
+    this.emit(Op.OP_DUP, loc);
     this.pushToStack('(mask)');
     this.emit(encodeInt(BigInt((1 << slots.length) - 1)), loc);
     this.pushToStack('(expected_mask)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
+    this.emit(Op.OP_DROP, loc);
+    this.removeFromStack(this.getStackIndex('(gen_call_mask)'));
   }
 
   /** A4.3 step 14: the callee list is exactly 2s bytes. */
@@ -11821,7 +11854,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       location: this.currentFunction.body.location, positionHint: PositionHint.END,
     };
     this.emitDropUntrackedStackItems(loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__genesisCallees'))), loc);
+    const calleesLocal = this.getStackIndex('(gen_callees)', true) >= 0
+      ? '(gen_callees)' : '__internal__genesisCallees';
+    this.emit(encodeInt(BigInt(this.getStackIndex(calleesLocal))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(callees)');
     this.emit(Op.OP_SIZE, loc);
@@ -11960,7 +11995,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     cat('(gen_m)');
     if ((node.externalCalls?.length ?? 0) > 0) {
       this.emit(Op.OP_0, loc);
-      this.emit(Op.OP_TOALTSTACK, loc);
+      this.pushToStack('(gen_call_mask)');
+      const copy = (name: string, local: string): void => {
+        const index = this.getStackIndex(name, true);
+        if (index < 0) return;
+        this.emit(encodeInt(BigInt(index)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.pushToStack(local);
+      };
+      copy('__internal__externalCallInputBase', '(gen_call_base)');
+      copy('__internal__genesisCallees', '(gen_callees)');
+      for (const [position, slot] of (node.externalCalls ?? []).entries()) {
+        const slotIndex = slot.slotIndex ?? position;
+        copy(`__internal__extcallMasterIdx${slotIndex}`, `(gen_call_master_${slotIndex})`);
+      }
     }
   }
 

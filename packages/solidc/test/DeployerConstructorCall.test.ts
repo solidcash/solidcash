@@ -265,4 +265,93 @@ describe('A7: a constructor call in create', () => {
     } };
     expect(vm.stateSuccess(vm.evaluate(program as never))).not.toBe(true);
   });
+
+  it('binds both slots of a two-call constructor', () => {
+    const source = `${P} interface IA { function f(int x) external returns (bool); }
+      interface IB { function g(int x) external returns (bool); }
+      contract T1 { bool a; function f(int x) external returns (bool) { a = true; return true; } }
+      contract T2 { bool b; function g(int x) external returns (bool) { b = true; return true; } }
+      contract C { bool ok; constructor(IA x, IB y) { ok = x.f(1); y.g(2); } }`;
+    const caller = compileString(source, {
+      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'C',
+    } as never);
+    const calleeA = compileString(source, {
+      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'T1',
+    } as never);
+    const calleeB = compileString(source, {
+      deployer: true, messageBus: false, genesisCalls: true, primaryContractName: 'T2',
+    } as never);
+    const x = masters(caller.deployer!).x;
+    const aMaster = masters(calleeA.deployer!, 7);
+    const bMaster = masters(calleeB.deployer!, 10);
+    const selectorA = calleeA.abi.find((entry) => entry.name === 'f')!.selector!;
+    const selectorB = calleeB.abi.find((entry) => entry.name === 'g')!.selector!;
+    const tagA = new Uint8Array([...x.slice().reverse(), 0, 0, DEPLOYER_INPUT & 0xff, 0]);
+    const tagB = new Uint8Array([...x.slice().reverse(), 1, 0, DEPLOYER_INPUT & 0xff, 0]);
+    const digestA = callDigest(tagA, selectorA, Uint8Array.of(0x01));
+    const digestB = callDigest(tagB, selectorB, Uint8Array.of(0x02));
+    const runA = calleeRun({
+      callee: calleeA, calleeSeed: 7, callerX: x.slice().reverse(), callerSlot: 0,
+      gIn: DEPLOYER_INPUT, gOut: OUTBASE,
+      unlock: createUnlockingBytecode('p2sh32', aMaster.redeem, [Uint8Array.of(0x01), tagA, Uint8Array.of(9)]),
+      inputIndex: 7, returnIndex: 9, callDigest: digestA,
+      record: (d) => new Uint8Array([...d, 0x01, 0x51]),
+    });
+    const runB = calleeRun({
+      callee: calleeB, calleeSeed: 10, callerX: x.slice().reverse(), callerSlot: 1,
+      gIn: DEPLOYER_INPUT, gOut: OUTBASE,
+      unlock: createUnlockingBytecode('p2sh32', bMaster.redeem, [Uint8Array.of(0x02), tagB, Uint8Array.of(12)]),
+      inputIndex: 10, returnIndex: 12, callDigest: digestB,
+      record: (d) => new Uint8Array([...d, 0x01, 0x51]),
+    });
+    const values: Record<string, Uint8Array> = {
+      __internal__budgetPad: EMPTY,
+      __internal__authorIndex: Uint8Array.of(0x01),
+      __internal__identity: EMPTY,
+      __internal__genesisOutputBase: Uint8Array.of(OUTBASE),
+      __internal__genesisSidecarBase: Uint8Array.of(OUTBASE + 2),
+      __internal__externalCallInputBase: Uint8Array.of(7),
+      __internal__extcallMasterIdx0: Uint8Array.of(7),
+      __internal__extcallMasterIdx1: Uint8Array.of(10),
+      __internal__extcallAnchorIdx0: Uint8Array.of(0x81),
+      __internal__extcallAnchorIdx1: Uint8Array.of(0x81),
+      __internal__externalReturnOutputIdx0: Uint8Array.of(9),
+      __internal__externalReturnOutputIdx1: Uint8Array.of(12),
+      __internal__callEdgeOutputIdx0: Uint8Array.of(0x81),
+      __internal__callEdgeOutputIdx1: Uint8Array.of(0x81),
+      __internal__code: hexToBin(caller.deployer!.code),
+      __internal__deployValue: EMPTY,
+      __internal__msgSenderCategory: new Uint8Array(32),
+      __internal__genesisCallees: Uint8Array.of(7, 0, 10, 0),
+      x: aMaster.master,
+      y: bMaster.master,
+    };
+    const outputs: VmOutput[] = Array.from({ length: OUTBASE }, () => ({
+      lockingBytecode: TOKENLESS, valueSatoshis: 1000n,
+    }));
+    outputs.push(
+      { lockingBytecode: masters(caller.deployer!).master, valueSatoshis: 1200n,
+        token: { category: x, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } } },
+      dataOutput(caller, { ok: 1n }, x, masters(caller.deployer!).master),
+      ...runA.outputs,
+      ...runB.outputs,
+    );
+    const inputs = [dummyInput(0), dummyInput(1), dummyInput(2), {
+      ...dummyInput(DEPLOYER_INPUT), unlockingBytecode: createUnlock(caller.deployer!, values),
+    }, ...Array.from({ length: 3 }, (_, i) => dummyInput(4 + i)), runA.input, runA.dataInput,
+    dummyInput(9), runB.input, runB.dataInput];
+    const fillerSource = { lockingBytecode: TOKENLESS, valueSatoshis: 10_000n };
+    const sources: SourceOutputs = [
+      fillerSource, fillerSource, fillerSource,
+      { lockingBytecode: hexToBin(caller.deployer!.lockingBytecode), valueSatoshis: 1200n },
+      fillerSource, fillerSource, fillerSource,
+      runA.source, runA.dataSource, fillerSource, runB.source, runB.dataSource,
+    ];
+    const program = { inputIndex: DEPLOYER_INPUT, sourceOutputs: sources, transaction: {
+      version: 2, locktime: 0, inputs, outputs,
+    } };
+    const state = vm.evaluate(program as never) as any;
+    expect(vm.stateSuccess(state)).toBe(true);
+  });
+
 });

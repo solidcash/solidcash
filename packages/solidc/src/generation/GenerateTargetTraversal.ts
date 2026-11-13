@@ -4480,8 +4480,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.framedReservesValidatorHash) this.poolTopLevelConstants(node);
 
     // O4 (B6.4): the code tail, after optimisation and after any sharing pass that prepends definitions.
-    if (!this.framedMaster) {
-      const contract = node.contract;
+    // A stateless script is not a stateful master and keeps its exact bytes.
+    const contract = node.contract;
+    const statefulMaster = contract.stateVariables.length > 0 || contract.collections.length > 0
+      || contract.readsBlockhash || contract.deploysStatefulChild || contract.deploysWithValue
+      || this.compilerOptions.forceStateful === true
+      || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
+    if (!this.framedMaster && statefulMaster) {
       const tailInfo = this.codeTailFlags(contract);
       const tail = tailInfo.flags;
       if (tail !== 0) contract.codeMarkerFlags = tail;
@@ -7799,6 +7804,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitExactStackCheck(node: FunctionDefinitionNode): void {
     if (this.framedMaster) return;
+    // O8 concerns an arm of a stateful master; a stateless script keeps its exact bytes.
+    if (this.currentFunction?.blockLayout === undefined) return;
+    // A body another body invokes (an OP_DEFINE subroutine) receives only the declared arguments; the entry
+    // boundary is checked by the arm that dispatches to it.
+    if (this.isDefineSubTraversal) return;
     if (node.isEntryPoint !== true && node.name !== '__construct') return;
     if (node.messageBusRoute === true || node.graphEmissionHandler === true) return;
     if (node.nativeSelfBatchDispatcher === true || node.callBatchCandidate === true) return;

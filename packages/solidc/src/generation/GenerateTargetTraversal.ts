@@ -52624,9 +52624,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, loc);               // [idx]
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);       // [idx, out_cat(32, immutable)]
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32Inline(loc);                 // [idx, out_cat, own_cat_32]
+    if (this.currentFunction?.genesisMode === true) {
+      // A genesis body's own category is X, computed by the prologue: the deployer input carries no token.
+      this.emitPickTrackedFromBottom('(gen_x)', loc);
+    } else {
+      this.emitMasterInputIndex(loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emitTakeFirst32Inline(loc);
+    }
     this.emit(Op.OP_EQUALVERIFY, loc);               // [idx]
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
@@ -52682,7 +52687,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(genesis_prefix)');
       this.emitPickTrackedFromBottom('(gen_x)', loc);
       this.pushToStack('(tag_x)');
-      this.emit(Op.OP_REVERSEBYTES, loc);
+      // The tag's X is what OP_OUTPOINTTXHASH returns: the callee compares the tag's first 32 bytes with it.
       this.emit(Op.OP_CAT, loc);
       this.popFromStack(2);
       this.pushToStack('(genesis_prefix)');

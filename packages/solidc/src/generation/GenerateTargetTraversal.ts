@@ -38737,7 +38737,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitMasterInputIndex(locationData, extraStackOffset);
     }
-    this.emitOwnerSide(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    // A genesis body's input is the one-shot deployer coin, which carries no token; the category base is that
+    // input's outpoint transaction hash (the child's X, A4.2/A10).
+    if (this.currentFunction?.genesisMode === true) {
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    } else {
+      this.emitOwnerSide(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    }
     // Sites that took the base inline before the owner slot reached them keep that form outside framed: a shared
     // take's OP_INVOKE splits the region the outliner would have extracted whole.
     if (directInlineTake && !this.framedMaster) this.emitTakeFirst32Inline(locationData);
@@ -38752,8 +38758,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // owner must inline this check so emitMasterInputIndex can read that authenticated owner from the local frame;
     // invoking the shared helper would silently compare against the executing implementation input instead.
     // Raw emit: callers manage the stack tracker.
+    // The shared body is captured in the ordinary (call) context, where the owner's category is the input's token
+    // category. A genesis body's input is the tokenless deployer coin, so it must inline the outpoint-hash form.
     if (!this.framedMaster && !this.usesMessageBusOwnerBlockBase()
       && !this.usesProxyStateBlockBase()
+      && this.currentFunction?.genesisMode !== true
       && this.invokeSubroutineIfDefined(
         GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID, locationData)) {
       return;
@@ -38769,7 +38778,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.emitMasterInputIndex(locationData, untrackedStackItems);
     }
-    this.emitOwnerSide(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    // A genesis body's input is the one-shot deployer coin, which carries no token: the child's category is
+    // that input's outpoint transaction hash (X), not its token category (A4.2/A10).
+    if (this.currentFunction?.genesisMode === true) {
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    } else {
+      this.emitOwnerSide(Op.OP_UTXOTOKENCATEGORY, Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    }
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);

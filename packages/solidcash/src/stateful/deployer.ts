@@ -807,9 +807,10 @@ export async function deployThroughDeployer<T extends Artifact>(
       );
     }
   }
-  const commitments = (await deriveDeployCommitments(
+  const derived = await deriveDeployCommitments(
     contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n, options,
-  )).stateCommitments;
+  );
+  const commitments = derived.stateCommitments;
 
   // A14 item 3: output 0 is the category's authhead identity, and `create` pins it when
   // `__internal__identity` is set (B7.12's `emitGenesisIdentityPin`). The genesis range starts after it.
@@ -869,6 +870,18 @@ export async function deployThroughDeployer<T extends Artifact>(
     // A required row also holds RESERVE: it is the container's own opening balance (A5).
     const containerAmount = deployer.satoshiContainer === 'required' ? RESERVE + deployValue : deployValue;
     outputs.push({ to: getSatoshiContainerAddress(contract as never, categoryId), amount: containerAmount });
+  }
+  const constructorEvents = constructorAbi?.emits ?? [];
+  if (constructorEvents.length > 0) {
+    const { getEventNftAddress } = await import('./covenant-helpers.js');
+    for (const [index, emitInfo] of constructorEvents.entries()) {
+      outputs.push({
+        to: getEventNftAddress(contract as never, categoryId, emitInfo.eventSignature),
+        amount: dataNftAmount,
+        token: { category: categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: derived.eventCommitments?.[index] ?? '' } },
+      });
+    }
   }
   for (const tokenRow of deployer.tokenRows) {
     const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
@@ -997,8 +1010,38 @@ export async function deployThroughDeployer<T extends Artifact>(
   await broadcastDeployerPreps(preps, options.provider);
   const creationTxid = await options.provider.sendRawTransaction(creationHex);
   releaseDeployerAuthorReservations(preps);
+  // Decode the constructor's events from the creation's outputs, so a caller sees them like a call receipt.
+  const receiptEvents: import('../interfaces.js').ReceiptEvent[] = [];
+  if (constructorEvents.length > 0) {
+    const { getEventNftAddress } = await import('./covenant-helpers.js');
+    const { parseEventCommitment } = await import('./StateReader.js');
+    const eventDefinitions = artifact.events ?? [];
+    const byLock = new Map<string, (typeof eventDefinitions)[number]>();
+    for (const emitInfo of constructorEvents) {
+      const definition = eventDefinitions.find((candidate) => candidate.signature === emitInfo.eventSignature);
+      if (definition === undefined) continue;
+      byLock.set(binToHex(addressToLockScript(
+        getEventNftAddress(contract as never, categoryId, definition.signature),
+      )), definition);
+    }
+    for (const out of transaction.outputs) {
+      const commitment = out.token?.nft?.commitment;
+      if (commitment === undefined) continue;
+      const definition = byLock.get(binToHex(out.lockingBytecode));
+      if (definition === undefined) continue;
+      const commitmentHex = typeof commitment === 'string' ? commitment : binToHex(commitment);
+      try {
+        receiptEvents.push({
+          event: definition.name,
+          eventSignature: definition.signature,
+          args: parseEventCommitment(commitmentHex, definition, stateLayout.structs) as Record<string, unknown>,
+        });
+      } catch { /* an unparseable event stays undecoded rather than failing the deployment */ }
+    }
+  }
   const details = attachWait({
     ...transaction, txid: creationTxid, hex: creationHex,
+    ...(receiptEvents.length === 0 ? {} : { events: receiptEvents }),
   } as TransactionDetails, options.provider);
 
   return {

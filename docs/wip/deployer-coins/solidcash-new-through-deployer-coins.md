@@ -4594,7 +4594,7 @@ their contract with `deployer: true`:
       the container's start plus v (v alone for a container the contract does not keep single);
 - [ ] a creator's satoshi and token payment after `new` reaches the child's containers, and the child spends *(not covered: a creating call refuses a child that keeps a token container single, B9.7)*
       both in a later call;
-- [ ] an event in the constructor, decoded by the SDK; *(not covered: the genesis event pin in `create` builds the event covenant on a stack whose order it misreads under genesis mode — the local run splits a 31-byte script fragment at 32 (`OP_SPLIT`, length 0) before the commitment check; the SDK builds the row but the create rejects it)*
+- [x] an event in the constructor, decoded by the SDK; *(covered by `DeployerCreation.e2e`: the create mints the event NFT and the receipt decodes `Ping(5)`. The genesis category base now reads the deployer input's outpoint hash, since the deployer coin carries no token)*
 - [ ] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays *(compiler VM cases exist in `DeployerCreation.test`; the SDK creation is not covered)*
       `msg.sender`, which passes at top level and fails through a creator;
 - [ ] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(keccak is covered by `DeployerCreation.e2e`; ecrecover is not: a constructor recovery is refused with `DeployerSidecarError`, B9.8)*

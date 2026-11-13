@@ -10,7 +10,9 @@ import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { resolveIdentity } from '../../src/bcmr/identity.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { getEventNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { getEventNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { keccakComputeLockingBytecode } from '@solidcash/utils';
 import { computeSideCarStandIn } from '../../src/stateful/stateful-abi-resolve.js';
 import { DeployerSidecarError } from '../../src/stateful/deployer.js';
@@ -134,6 +136,35 @@ describe('a top-level deployment through Deploy<C>', () => {
     });
     expect(result.categoryId).toBe(prep.category);
     expect(((await result.contract.getState()) as { self?: Uint8Array }).self).toEqual(categoryBytes);
+  });
+
+  it('mints and decodes a constructor event\'s NFT (A14 item 3)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(
+      `${P} contract E { int n; event Ping(int x); constructor() { n = 1; emit Ping(5); } }`,
+      { deployer: true, messageBus: false },
+    );
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '19'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const eventAddress = getEventNftAddress(result.contract.inner, result.categoryId, 'Ping(int256)');
+    const eventOutput = result.tx.outputs.find((output) => output.token?.nft?.capability === 'none'
+      && output.token.nft.commitment.length > 0);
+    expect(eventOutput).toBeDefined();
+    const rendered = lockingBytecodeToCashAddress({
+      bytecode: eventOutput!.lockingBytecode, prefix: 'bchtest', tokenSupport: true,
+    });
+    if (typeof rendered === 'string') throw new Error(rendered);
+    expect(rendered.address).toBe(eventAddress);
+    expect(result.tx.events).toHaveLength(1);
+    expect(result.tx.events![0]).toMatchObject({ event: 'Ping', eventSignature: 'Ping(int256)' });
+    expect(result.tx.events![0].args.x).toBe(5n);
   });
 
   it('ContractFactory.deploy takes the deployer path and the born contract is callable', async () => {

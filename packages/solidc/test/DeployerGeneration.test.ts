@@ -288,6 +288,18 @@ describe('B7.5: what the constructor does', () => {
 describe('B7.5: the collection shape of a constructor', () => {
   const reasonOf = (source: string): string | undefined => compile(source, { deployer: true }).artifact.deployerUnsupported;
 
+  it('refuses a base constructor argument that reads state', () => {
+    const source = `${P} contract B(int x) { int pb; }
+      contract D is B(b) { int b; constructor() {} }`;
+    expect(reasonOf(source)).toBe('ctor-base-argument');
+  });
+
+  it('allows a literal base constructor argument', () => {
+    const source = `${P} contract B(int x) { int pb; }
+      contract D is B(5) { int b; constructor() {} }`;
+    expect(reasonOf(source)).toBeUndefined();
+  });
+
   it('refuses a collection read in a loop', () => {
     const source = `${P} contract C { int n; mapping(int => int) m;
       constructor() { for (int i = 0; i < 2; i++) { n = m[i]; } } }`;

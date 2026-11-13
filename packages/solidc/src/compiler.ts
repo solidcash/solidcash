@@ -768,6 +768,31 @@ function prepareDeployerContract(ast: Ast, options: InternalCompilerOptions): vo
  * B7.3: compile Deploy<C> from C's pristine resolved tree. The program carries only `create` and `sweep`; its
  * artifact is the redeem script A13 publishes, and the box carries what B7.14 needs from the second compile.
  */
+/** B7.5 `ctor-base-argument`: a base constructor argument must not read state or have a side effect. */
+function baseConstructorArgumentReadsState(contract: ContractNode): boolean {
+  const stateNames = new Set(contract.stateVariables.map((state) => state.name));
+  for (const invocation of contract.parentInvocations ?? []) {
+    for (const argument of invocation.args ?? []) {
+      let found = false;
+      walkInvocationAst(argument, (visited) => {
+        if (visited instanceof MappingAccessNode || visited instanceof StateAccessNode
+          || visited instanceof MappingAssignNode || visited instanceof MappingFieldAssignNode
+          || visited instanceof MappingDeleteNode || visited instanceof AssignmentExpressionNode
+          || (visited instanceof FieldAccessNode && visited.name === 'balance')) {
+          found = true;
+        }
+        if (visited instanceof IdentifierNode && stateNames.has(visited.name)) found = true;
+        if (visited instanceof FunctionCallNode) found = true;
+        if (visited instanceof UnaryOpNode && (visited.operator === UnaryOperator.PREFIX_INCREMENT
+          || visited.operator === UnaryOperator.PREFIX_DECREMENT || visited.operator === UnaryOperator.POSTFIX_INCREMENT
+          || visited.operator === UnaryOperator.POSTFIX_DECREMENT)) found = true;
+      }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+      if (found) return true;
+    }
+  }
+  return false;
+}
+
 function compileDeployerProgram(
   sourceAst: Ast,
   code: string,
@@ -775,6 +800,7 @@ function compileDeployerProgram(
   constants: import('./generation/deployerConstants.js').DeployerConstants,
 ): { artifact: Artifact; box: DeployerProgramBox } | { reason: string } {
   const box: DeployerProgramBox = {};
+  if (baseConstructorArgumentReadsState(sourceAst.contract)) return { reason: 'ctor-base-argument' };
   if (options.__deployerTestBox?.forceReason !== undefined) {
     box.forceReason = options.__deployerTestBox.forceReason;
   }

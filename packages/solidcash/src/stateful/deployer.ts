@@ -746,7 +746,14 @@ export async function deployThroughDeployer<T extends Artifact>(
   let prep = prepOption;
   if (prep === undefined) {
     const built = await buildDeployerPrep({
-      children: [{ deployer, contractName: artifact.contractName }],
+      children: [{
+        deployer,
+        contractName: artifact.contractName,
+        // The author coin pays the creation's fee (the caller's, or the default) and, when the constructor
+        // co-spends shared side-cars, the change that covers their recreations' fees.
+        authorValue: defaultAuthorValue(deployer) + (options.fee ?? 0n)
+          + (deployer.sidecars.keccak + deployer.sidecars.ecrecover > 0 ? 20_000n : 0n),
+      }],
       fundingUtxos: [options.fundingUtxo],
       authorSigner: options.funder,
       authorLockingBytecode,
@@ -903,7 +910,7 @@ export async function deployThroughDeployer<T extends Artifact>(
   builder.addInput(prep.deployerCoin, deployerUnlocker);
   builder.addInput(prep.authorCoin, options.funder);
   const outputTotal = outputs.reduce((sum, output) => sum + output.amount, 0n);
-  const provisionalFee = 1000n;
+  const provisionalFee = options.fee ?? 1000n;
   if (prep.authorCoin.satoshis < outputTotal + provisionalFee) {
     throw new DeployerPrepError(
       `The author coin of '${artifact.contractName}' holds ${prep.authorCoin.satoshis} satoshis, but its creation `
@@ -911,6 +918,44 @@ export async function deployThroughDeployer<T extends Artifact>(
     );
   }
   for (const output of outputs) builder.addOutput(output);
+
+  // A14 item 6: the deployer's constructor side-cars come from the shared pool, at salt 0, already on the network.
+  // Each is spent and recreated at the same index after the genesis range (A4.4), so the deployer's create can read
+  // it. A missing shared coin is refused rather than minted: the pool is one for every deployment.
+  if (deployer.sidecars.ecrecover > 0) {
+    throw new DeployerSidecarError('ecrecover');
+  }
+  if (deployer.sidecars.keccak > 0) {
+    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const { buildKeccakComputeSidecar } = await import('../keccak/keccakComputeSidecar.js');
+    const zeroSalt = new Uint8Array(32);
+    const sharedLock = keccakComputeLockingBytecode(zeroSalt, true);
+    const pool = (await options.provider.getUtxosForLockingBytecode(sharedLock))
+      .filter((utxo) => utxo.token?.nft?.capability === 'mutable');
+    const params = constructorAbi?.keccakPreimageParams ?? [];
+    const visible = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const visibleArgs = [...constructorArgs, ...(options.initArgs ?? [])];
+    const preimages = params.map((name) => {
+      const index = name === undefined ? -1 : visible.findIndex((input) => input.name === name);
+      const value = index >= 0 ? visibleArgs[index] : undefined;
+      return value instanceof Uint8Array ? value : null;
+    });
+    if (preimages.some((preimage) => preimage === null)) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' hashes a constructor value the SDK cannot replay; pass it as a byte argument`,
+      );
+    }
+    const batches = Math.ceil(preimages.length / 3);
+    if (pool.length < batches) throw new DeployerSidecarError('keccak');
+    for (let batch = 0; batch < batches; batch += 1) {
+      const sidecar = buildKeccakComputeSidecar(
+        preimages.slice(batch * 3, batch * 3 + 3) as Uint8Array[], zeroSalt, pool[batch], true,
+      );
+      builder.addInput(pool[batch], sidecar.unlocker);
+      builder.addOutput(sidecar.recreate);
+    }
+  }
+
   const change = prep.authorCoin.satoshis - outputTotal - provisionalFee;
   if (change >= DUST) builder.addOutput({ to: options.changeAddress, amount: change });
   const locktime = await deployerLocktime(deployer, options.provider);

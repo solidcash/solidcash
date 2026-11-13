@@ -11,6 +11,8 @@ import { computeSideCarStandIn } from './stateful-abi-resolve.js';
 
 export interface ResolveStatefulKeccakLoopHost {
   readonly categoryId: string;
+  /** A14 item 6: a shared-pool salt (all zeros for Deploy<C>) replaces the category-branded one. */
+  readonly sidecarSalt?: Uint8Array;
   readonly inner: {
     readonly provider: NetworkProvider & {
       getUtxosForLockingBytecode(lockingBytecode: Uint8Array): Promise<Utxo[]>;
@@ -54,7 +56,7 @@ export async function resolveStatefulKeccakLoop(
     throw new Error('stateful dynamic keccak256 loop: the front-region inputs (external reads / blockhash '
       + 'oracles) do not fill the slots before the trailing side-car region; cannot position the loop.');
   }
-  const salt = hexToBin(host.categoryId).slice().reverse();
+  const salt = host.sidecarSalt?.slice() ?? hexToBin(host.categoryId).slice().reverse();
   // A preceding mapping loop whose input and output widths differ forces the shifted side-car covenant: the
   // recreated side-car output must land past the mapping outputs (delta = outputCount - inputCount).
   const outputDelta = trailingPredecessors.outputs.length - trailingPredecessors.inputs.length;

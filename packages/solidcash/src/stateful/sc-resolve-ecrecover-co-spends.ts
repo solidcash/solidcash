@@ -43,6 +43,8 @@ const inertFunder = async (
 
 export interface ResolveEcrecoverCoSpendsHost {
   readonly categoryId: string;
+  /** A14 item 6: a shared-pool salt (all zeros for Deploy<C>) replaces the category-branded one. */
+  readonly sidecarSalt?: Uint8Array;
   readonly inner: {
     readonly provider: NetworkProvider & {
       getUtxosForLockingBytecode(lockingBytecode: Uint8Array): Promise<Utxo[]>;
@@ -77,9 +79,9 @@ export async function resolveEcrecoverComputeCoSpends(
   const calls = selectedCalls ?? abiFunction.ecrecoverArgParams
     ?? Array.from({ length: layoutCallCount }, () => [null, null, null, null] as const);
   const evmFlags = abiFunction.ecrecoverEvmFlags ?? Array.from({ length: calls.length }, () => false);
-  const salt = selectedCalls || options.graphExecution
+  const salt = host.sidecarSalt?.slice() ?? (selectedCalls || options.graphExecution
     ? new Uint8Array(32)
-    : hexToBin(host.categoryId).slice().reverse();
+    : hexToBin(host.categoryId).slice().reverse());
   if (calls.length === 0 || !host.categoryId) {
     return { coSpends: [], argBlobs: [], evmPreimages: [], salt };
   }

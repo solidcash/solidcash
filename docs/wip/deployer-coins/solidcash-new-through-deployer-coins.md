@@ -3593,7 +3593,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       not available. The HEAD/token/collection rows' pins are B7.13/B7.18; this item establishes the layout and
       the indices only. A sorted collection the constructor writes has entry rows and no separate HEAD, as
       today's genesis mints its HEAD only for an unwritten sorted collection.
-- [ ] **B7.10 Environment and skipped checks.** In genesis mode:
+- [x] **B7.10 Environment and skipped checks.** In genesis mode:
       - `address(this)` is M and `this.activeBytecode` is R, both computed once in the prologue and kept on
         the stack under fixed names;
       - `msg.value` is `__internal__deployValue`; `this.balance` (GTT 25523), `address(this).balance` (GTT
@@ -4304,8 +4304,15 @@ it) never takes today's genesis (A12).
       with the category named. `childContainers` is not implemented: the compiler's row pin caps a row at the
       journal balance, so the spec's "more when childContainers says so" has no representation in `create`, and
       naming a token coin would need a wallet lookup the option does not carry.
-- [ ] **B9.8 Shared sidecars.** Add a salt override in the A14 item 6 places, and use salt 0 for Deploy<C>;
-      `DeployerSidecarError` when no shared coin is found.
+- [x] **B9.8 Shared sidecars.** `ResolveKeccakComputeCoSpendsHost`, `ResolveStatefulKeccakLoopHost` and
+      `ResolveEcrecoverCoSpendsHost` take `sidecarSalt`, which replaces the category-branded salt in the three
+      A14 item 6 places. A top-level creation whose constructor hashes co-spends the shared keccak side-car(s) at
+      salt 0: `deployThroughDeployer` reads the constructor's `keccakPreimageParams`, finds mutable coins at the
+      shared lock, adds them after the author coin and recreates them after the genesis range, and pads the
+      author coin for their fee. A missing shared coin throws `DeployerSidecarError('keccak')`. A constructor
+      recovery (`deployer.sidecars.ecrecover > 0`) and a creating-call child with constructor side-cars throw
+      `DeployerSidecarError('ecrecover')` / are not wired yet: their shared A/M/B pools and the child's
+      interleaved side-car slots need the richer A14 item 5 resolution.
 - [x] **B9.9 Locktime.** Add `getMedianTimePast()` to `NetworkProvider` and to every class that implements
       it, then set the locktime and the sequence as A14 item 7 says, with
       `DeployerLocktimeConflictError`.

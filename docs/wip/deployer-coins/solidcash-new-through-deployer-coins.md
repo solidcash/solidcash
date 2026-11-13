@@ -3883,7 +3883,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       - a callee T′ with an `unsafe` entry: its artifact has `recordSound: false`, its code has no marker,
         and no creation that calls it passes.
 - [x] **B7.17** Run `yarn build`, then commit: "feat(solidc): generate Deploy<C> for stateful contracts".
-- [x] **B7.18 Collections and single token containers in the constructor (A4.4, A5).** The user's decision c
+- [ ] **B7.18 Collections and single token containers in the constructor (A4.4, A5).** The user's decision c
       (A18). Lift the two refusals only where A3 rule 4 and A4.1 allow, and build "The collection rows" and
       the fixed starts of A5.
       - **Test first.** Confirm by a test what a direct function's write of a mapping entry pins today: the

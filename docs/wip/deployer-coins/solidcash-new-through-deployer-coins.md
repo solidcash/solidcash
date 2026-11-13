@@ -4813,7 +4813,10 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       7,837/7,837 across 514 files and the full solidcash suite 6,303 passed with 0 failed across 1,046 files
       (5 expected fail, 191 skipped, 5 todo), both matching or exceeding the baseline; the spec's seven
       mechanical checks pass. The same two suites are green after the constructor-event and genesis category
-      base changes and the BCMR/collection work (solidc 7,837/7,837; solidcash 6,303 passed, 0 failed). The root build regenerates no
+      base changes, the BCMR/collection work and the constructor-call path (solidc 7,837/7,837; solidcash
+      6,303 passed, 0 failed). The solidcash run used `--testTimeout=600000`: the default 120 s deadline timed out
+      one 30 s message-bus case (`AtomicMessageBusCompose`'s heterogeneous child rows) under the full-suite load,
+      and that case passes alone in 30.5 s. The root build regenerates no
       testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for carry
       `deployer`.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee

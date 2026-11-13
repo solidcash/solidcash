@@ -4152,7 +4152,7 @@ this phase and compiles every source as it did after B7.
 - [x] **B8.8 Value.** For a deployer `new`: count v as an outgoing amount in the creator's satoshi container
       conservation (53987–54029) and in the per-slot check (56031–56052), and emit no `{value}` transfer to
       the child's master lock (22636–22671, 46097–46113 and 46016–46037). Set the site's O10 flag for step 6.
-- [ ] **B8.9 Loops, branches and the message bus.**
+- [x] **B8.9 Loops, branches and the message bus.**
       - Make the inline path compute d_in = base + counter and d_out = slotBase + counter × w_out(C)
         (45815–45840), and keep the guards at 22592 and 9205–9212.
       - Add a flag `deploysThroughDeployer` to every function with a deployer `new`, and keep such functions

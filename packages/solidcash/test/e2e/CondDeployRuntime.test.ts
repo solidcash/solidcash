@@ -12,7 +12,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // Each factory here exercises a conditional/loop/multi-site deploy with a deliberately unguarded deploy entry
 // (these tests cover the deploy mechanic, not caller authorization), so compile with the explicit opt-in.
-const DEPLOY_OPTS = { allowUnsafeOperations: true, __legacyDeployFold: true } as const;
+const DEPLOY_OPTS = { allowUnsafeOperations: true } as const;
 
 // A conditional deploy: `if (c == 1) new Child()` inside a factory function. The genesis is verified INLINE at
 // the creation site (emitInlineDeployVerification), so when the branch fires the child genesis is co-spent and

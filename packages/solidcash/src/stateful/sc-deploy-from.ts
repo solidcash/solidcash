@@ -303,6 +303,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
     });
     const senderCategory = Uint8Array.from(hexToBin(factory.categoryId)).reverse();
     const deployValue = options.childValue ?? 0n;
+    // In a loop each child's group is stride outputs wide; the k-th deployer input's OUTBASE is its input index
+    // plus k stride-steps when no output-only slot precedes the deploy slot.
+    const childStride = 1 + (deployTarget.dataNftCount ?? 0) + (deployTarget.entryNftCount ?? 0)
+      + (deployValue > 0n ? 1 : 0);
     const typeOf = new Map(createInputs.map((input) => [input.name, input.type]));
     const pushArgument = (name: string, value: FunctionArgument): Uint8Array => {
       const type = typeOf.get(name);
@@ -328,21 +332,24 @@ export async function deployFromStatefulContract<T extends Artifact>(
       if (value !== undefined) aParts.push(pushArgument(name, value));
     }
     const boundBytes = new Uint8Array([...qParts, ...aParts].flatMap((part) => [...part]));
-    const deployerUnlockers: Unlocker[] = built.preps.map(() => ({
+    const deployerUnlockers: Unlocker[] = built.preps.map((_prep, childIndex) => ({
       generateLockingBytecode: () => hexToBin(childDeployer.lockingBytecode),
-      generateUnlockingBytecode: ({ inputIndex }) => buildDeployerUnlocking({
-        deployer: childDeployer,
-        callees: Array.from({ length: childDeployer.callSlots }, () => undefined),
-        boundBytes,
-        authorIndex: inputIndex + 1,
-        identity: false,
-        budgetPad: new Uint8Array(),
-        synthetic: {
-          __internal__genesisOutputBase: BigInt(inputIndex),
-          __internal__genesisSidecarBase: BigInt(inputIndex + childDeployer.genesisOutputs),
-        },
-        forBroadcast: true,
-      }),
+      generateUnlockingBytecode: ({ inputIndex }) => {
+        const outbase = BigInt(inputIndex) + BigInt(childIndex) * BigInt(childStride - 1);
+        return buildDeployerUnlocking({
+          deployer: childDeployer,
+          callees: Array.from({ length: childDeployer.callSlots }, () => undefined),
+          boundBytes,
+          authorIndex: inputIndex + built.preps.length,
+          identity: false,
+          budgetPad: new Uint8Array(),
+          synthetic: {
+            __internal__genesisOutputBase: outbase,
+            __internal__genesisSidecarBase: outbase + BigInt(childDeployer.genesisOutputs),
+          },
+          forBroadcast: true,
+        });
+      },
     }));
     preparsed = { preps: built.preps, deployerUnlockers, authorCoins: built.preps.map((prep) => prep.authorCoin) };
   }
@@ -1522,10 +1529,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
       ...eventPlaceholderOutputs, ...returnEventPlaceholders, ...childProbeOutputs,
       ...deployTrailingOutputs, ...dynamicWriteChunkOutputs],
     [...entryExtraInputs, ...containerInputs, ...tokenContainerInputs,
-      ...fundingUtxos.flatMap((fu, index) => [
-        { utxo: fu, unlocker: preparsed?.deployerUnlockers[index] ?? funder },
-        ...(preparsed === undefined ? [] : [{ utxo: preparsed.authorCoins[index], unlocker: funder }]),
-      ]),
+      ...fundingUtxos.map((fu, index) => ({ utxo: fu, unlocker: preparsed?.deployerUnlockers[index] ?? funder })),
+      ...(preparsed === undefined ? [] : preparsed.authorCoins.map((utxo) => ({ utxo, unlocker: funder }))),
       ...deployTrailingInputs],
     entryInfos.length,
     childLayout!.dataNftCount,
@@ -1650,7 +1655,9 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // deploy output groups need N balancing inputs). Each is at vout 0 so its txid sources the child's category.
   for (const [index, fu] of fundingUtxos.entries()) {
     builder.addInput(fu, preparsed?.deployerUnlockers[index] ?? funder);
-    if (preparsed !== undefined) builder.addInput(preparsed.authorCoins[index], funder);
+  }
+  if (preparsed !== undefined) {
+    for (const authorCoin of preparsed.authorCoins) builder.addInput(authorCoin, funder);
   }
 
   // Trailing run after the funding input: one funder pad at the deployDataNft output-only slot, then the

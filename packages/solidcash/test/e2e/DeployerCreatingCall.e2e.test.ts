@@ -79,4 +79,45 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     const factoryState = await result.factory.getState();
     expect((factoryState as { childCount?: bigint }).childCount).toBe(1n);
   });
+
+  it('creates two children from a loop', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child(bytes20 owner) { int counter; }
+      contract LoopFactory { int childCount;
+        function makeTwo(bytes20 owner) {
+          for (int i = 0; i < 2; i = i + 1) { new Child(owner); }
+          childCount = childCount + 2;
+        }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const factoryArtifact = artifacts.LoopFactory;
+    const childArtifact = artifacts.Child;
+    expect(factoryArtifact.childDeployers?.Child).toBeDefined();
+
+    const deploymentFunding: Utxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+
+    const prepOne: Utxo = { txid: 'e2'.repeat(32), vout: 0, satoshis: 100000n };
+    const prepTwo: Utxo = { txid: 'e3'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepOne);
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepTwo);
+
+    const result = await StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'makeTwo',
+      deployFunctionArgs: [alicePkh], childArtifact, childConstructorArgs: [alicePkh],
+      fundingUtxos: [prepOne, prepTwo], deployments: 2,
+      funder, changeAddress: change.address,
+    });
+    expect(result.prepTransactions).toHaveLength(2);
+    const state = await result.factory.getState();
+    expect((state as { childCount?: bigint }).childCount).toBe(2n);
+  });
 });

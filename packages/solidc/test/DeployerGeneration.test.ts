@@ -271,6 +271,48 @@ describe('B7.5: what the constructor does', () => {
   });
 });
 
+describe('B7.5: the collection shape of a constructor', () => {
+  const reasonOf = (source: string): string | undefined => compile(source, { deployer: true }).artifact.deployerUnsupported;
+
+  it('refuses a collection read in a loop', () => {
+    const source = `${P} contract C { int n; mapping(int => int) m;
+      constructor() { for (int i = 0; i < 2; i++) { n = m[i]; } } }`;
+    expect(reasonOf(source)).toBe('ctor-collection-shape');
+  });
+
+  it('refuses a call in a loop whose callee accesses a collection', () => {
+    const source = `${P} contract C { int n; mapping(int => int) m;
+      function peek(int k) internal returns (int) { return m[k]; }
+      constructor() { while (n < 2) { n = peek(n) + 1; } } }`;
+    expect(reasonOf(source)).toBe('ctor-collection-shape');
+  });
+
+  it('refuses a constructor that reads the balance and sends satoshis', () => {
+    const source = `${P} contract C { int n;
+      constructor() payable { int b = address(this).balance; this.transfer(msg.sender, 1); n = b; } }`;
+    expect(reasonOf(source)).toBe('ctor-collection-shape');
+  });
+
+  it('allows a balance read with no send', () => {
+    const source = `${P} contract C { int n; constructor() payable { n = address(this).balance; } }`;
+    expect(reasonOf(source)).toBeUndefined();
+  });
+});
+
+describe('B7.5: reasons with no source shape use the test hook', () => {
+  it('surfaces code-not-constant through the hook', () => {
+    const box = { forceReason: 'code-not-constant' };
+    const { artifact } = compile(STATEFUL, { deployer: true, __deployerTestBox: box } as never);
+    expect(artifact.deployerUnsupported).toBe('code-not-constant');
+  });
+
+  it('surfaces ctor-call-unbound through the hook', () => {
+    const box = { forceReason: 'ctor-call-unbound' };
+    const { artifact } = compile(STATEFUL, { deployer: true, __deployerTestBox: box } as never);
+    expect(artifact.deployerUnsupported).toBe('ctor-call-unbound');
+  });
+});
+
 describe('B7.5: ctor-call-count', () => {
   it('refuses more than 37 call slots', () => {
     const calls = Array.from({ length: 38 }, (_, i) => `a = i.f(${i});`).join('');

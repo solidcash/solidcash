@@ -114,6 +114,7 @@ import {
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
+  ExpressionStatementNode,
   IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayNode, NewArrayNode,
@@ -632,6 +633,8 @@ interface DeployerProgramBox {
   collectionRows?: { collection: string; appendSites: number }[];
   /** Set when a `ctor-…` reason ends the deployer build. */
   reason?: string;
+  /** Test hook: raise this `ctor-…` reason, for a reason with no known source shape. */
+  forceReason?: string;
   /** The dispatched arms the finished program carries, by internal name. */
   arms?: string[];
 }
@@ -772,6 +775,9 @@ function compileDeployerProgram(
   constants: import('./generation/deployerConstants.js').DeployerConstants,
 ): { artifact: Artifact; box: DeployerProgramBox } | { reason: string } {
   const box: DeployerProgramBox = {};
+  if (options.__deployerTestBox?.forceReason !== undefined) {
+    box.forceReason = options.__deployerTestBox.forceReason;
+  }
   const inner = {
     ...options,
     deployer: false,
@@ -902,6 +908,8 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
   const refuse = (reason: string, detail: string): never => {
     throw new DeployerUnsupportedError(create, reason, detail);
   };
+  // Test hooks: a reason with no known source shape (A4.1), requested explicitly by a unit test.
+  if (box?.forceReason !== undefined) refuse(box.forceReason, 'requested by the test hook');
 
   const slots = create.externalCalls ?? [];
   if (slots.length > 37) refuse('ctor-call-count', 'the constructor has more than 37 call slots');
@@ -939,12 +947,30 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
     }
   }
 
+  // A function whose body touches a collection cannot be called from a loop of the constructor.
+  const collectionAccessFns = new Set<string>();
+  for (const fn of contract.functions) {
+    if (fn.body === undefined) continue;
+    let touches = false;
+    walkInvocationAst(fn.body, (visited) => {
+      if (visited instanceof MappingAccessNode || visited instanceof MappingAssignNode
+        || visited instanceof MappingFieldAssignNode || visited instanceof MappingDeleteNode) touches = true;
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    if (touches) collectionAccessFns.add(fn.name);
+  }
+  let constructorSends = false;
+  walkInvocationAst(create.body, (visited) => {
+    if (visited instanceof TransferStatementNode || visited instanceof AddressTransferStatementNode
+      || visited instanceof AddressSendExpressionNode) constructorSends = true;
+  }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+
   let blockNumber = false;
   let blockTimestamp = false;
+  let readsBalance = false;
   let conditionalDepth = 0;
   let loopDepth = 0;
   const seen = new Set<Node>();
-  const walk = (node: Node): void => {
+  const walk = (node: Node, parent?: Node): void => {
     if (seen.has(node)) return;
     seen.add(node);
     if (node instanceof SelfdestructStatementNode) refuse('ctor-selfdestruct', 'the constructor contains selfdestruct');
@@ -993,8 +1019,20 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
     if (node instanceof ParameterNode && node.type instanceof FunctionType) {
       refuse('ctor-function-value', `parameter '${node.name}' is a function value`);
     }
+    if (node instanceof FieldAccessNode && node.name === 'balance') readsBalance = true;
+    if (node instanceof MappingAccessNode && loopDepth > 0) {
+      refuse('ctor-collection-shape', 'the constructor reads a collection in a loop');
+    }
     if (node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode) {
       if (loopDepth > 0) refuse('ctor-collection-shape', 'the constructor writes a collection in a loop');
+      // The write must be a statement of its own: not an operand of another expression.
+      if (!(parent instanceof BlockNode) && !(parent instanceof ExpressionStatementNode)) {
+        refuse('ctor-collection-shape', 'a collection write is not a statement of its own');
+      }
+    }
+    if (loopDepth > 0 && node instanceof FunctionCallNode
+      && collectionAccessFns.has(node.identifier.name)) {
+      refuse('ctor-collection-shape', `the constructor calls '${node.identifier.name}', which accesses a collection, in a loop`);
     }
     if ((node instanceof EmitStatementNode || node instanceof TransferStatementNode
       || node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)
@@ -1017,8 +1055,8 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
     for (const [key, child] of Object.entries(node)) {
       if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable', 'type',
         'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
-      if (child instanceof Node) walk(child);
-      else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item);
+      if (child instanceof Node) walk(child, node);
+      else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item, node);
     }
     if (loop) loopDepth -= 1;
     if (branch) conditionalDepth -= 1;
@@ -1026,6 +1064,9 @@ function inspectDeployerConstructor(ast: Ast, options: InternalCompilerOptions):
   walk(create.body);
   if (blockNumber && blockTimestamp) {
     refuse('ctor-block-data', 'the constructor reads both block.number and block.timestamp');
+  }
+  if (readsBalance && constructorSends) {
+    refuse('ctor-collection-shape', 'the constructor reads the balance and sends satoshis');
   }
 
   const boxTarget = options.__deployerProgram!.box;
@@ -1148,7 +1189,7 @@ type InternalCompilerOptions = CompilerOptions & {
   /** Test-only observation of the constants B7.2 derives for a deployer. */
   __deployerConstantsBox?: { constants?: import('./generation/deployerConstants.js').DeployerConstants };
   /** Test-only hooks for the deployer generator checks. */
-  __deployerTestBox?: { thirdArm?: boolean };
+  __deployerTestBox?: { thirdArm?: boolean; forceReason?: string };
   /**
    * B8.0: the direct children a creator's `new` names, each compiled standalone with its deployer before the
    * creator's semantic passes run. B8.1's predicate is membership in this map.
@@ -1165,6 +1206,7 @@ type InternalCompilerOptions = CompilerOptions & {
     box?: DeployerProgramBox;
     /** Test hook: add a third entry, so B7.4's arms check can be shown to throw. */
     readonly thirdArm?: boolean;
+    readonly forceReason?: string;
   };
   /** Compiler-owned shared state propagated through binder/recovery recursion. */
   __internalAttemptFailureState?: InternalAttemptFailureState;

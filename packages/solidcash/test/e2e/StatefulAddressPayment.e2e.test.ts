@@ -13,6 +13,9 @@ import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
+import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
+import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { Contract } from '../../src/index.js';
 
@@ -46,6 +49,134 @@ describe('a payment to a new result (B2.1)', () => {
     // the source's payment is no longer an error.
     const source = `${CHILD}\n${FACTORY}`;
     expect(() => compileStringMulti(source, { allowUnsafeOperations: true })).not.toThrow();
+  });
+
+  it('an SDK creation pays the child\'s satoshi container and the child spends it (B2.2)', async () => {
+    const mock = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const source = `
+contract Child {
+    int x;
+    constructor() { x = 1; }
+    function spend(address to, int amount) { this.transfer(to, amount); x = 2; }
+}
+contract Factory {
+    int deployments;
+    function make() {
+        Child child = new Child();
+        this.transfer(child, 5000);
+        deployments = deployments + 1;
+    }
+}`;
+    const artifacts = compileStringMulti(source, { allowUnsafeOperations: true } as never);
+    const factoryArtifact = artifacts.Factory;
+    const childArtifact = artifacts.Child;
+    expect(factoryArtifact.childDeployers?.Child).toBeDefined();
+
+    const deploymentFunding: Utxo = { txid: 'a1'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider: mock, fundingUtxo: deploymentFunding, funder,
+      initialState: { deployments: 0n }, initialBalance: 10000n,
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+
+    const prepFunding: Utxo = { txid: 'a2'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    const result = await StatefulContract.deployFrom({
+      provider: mock, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address,
+    });
+
+    // The routed payment is at the child's satoshi-container lock, not its master lock.
+    const containerAddress = getSatoshiContainerAddress(
+      (result.child as any).inner ?? (result.child as any), result.childCategoryId,
+    );
+    const paid = (await mock.getUtxos(containerAddress)).filter((u) => u.satoshis === 5000n);
+    expect(paid).toHaveLength(1);
+
+    // A later call of the child spends that coin: it is an input, and the send it authorizes is an output.
+    const signer = await mock.getSigner(0);
+    await mock.seedUtxo(signer.getAddress(), { txid: 'a3'.repeat(32), vout: 0, satoshis: 100000n });
+    const child = new StatefulContract(result.childCategoryId, childArtifact, signer);
+    const sent = await child.spend(alicePkh, 4000).send();
+    expect(sent.inputs.some((input) => Buffer.from(input.outpointTransactionHash).toString('hex') === paid[0].txid
+      && input.outpointIndex === paid[0].vout)).toBe(true);
+    const recipientLock = encodeLockingBytecodeP2pkh(alicePkh);
+    expect(sent.outputs.some((output) => output.valueSatoshis === 4000n
+      && Buffer.from(output.lockingBytecode).equals(Buffer.from(recipientLock)))).toBe(true);
+    expect(((await child.getState()) as { x?: bigint }).x).toBe(2n);
+  });
+
+  it('a routed payment funds a child with a selfdestruct entry and the destroy reclaims it (B2.2)', async () => {
+    const mock = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+contract Child {
+    int x;
+    constructor() { x = 1; }
+    function bye() selfdestruct { }
+}
+contract Factory {
+    int d;
+    function make() { Child c = new Child(); this.transfer(c, 5000); d = 1; }
+}`, { allowUnsafeOperations: true } as never);
+    const deploymentFunding: Utxo = { txid: 'b1'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(artifacts.Factory, [], {
+      provider: mock, fundingUtxo: deploymentFunding, funder,
+      initialState: { d: 0n }, initialBalance: 10000n,
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'b2'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    const result = await StatefulContract.deployFrom({
+      provider: mock, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact: artifacts.Child, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address,
+    });
+    const containerAddress = getSatoshiContainerAddress(
+      (result.child as any).inner ?? (result.child as any), result.childCategoryId,
+    );
+    expect((await mock.getUtxos(containerAddress)).filter((u) => u.satoshis === 5000n)).toHaveLength(1);
+
+    const signer = await mock.getSigner(0);
+    await mock.seedUtxo(signer.getAddress(), { txid: 'b3'.repeat(32), vout: 0, satoshis: 100000n });
+    const child = new StatefulContract(result.childCategoryId, artifacts.Child, signer);
+    const destroyed = await StatefulContract.destroy({
+      provider: mock, contract: child,
+      destroyFunctionName: 'bye', destroyFunctionArgs: [],
+      recipient: change.address, fee: 2000n,
+    });
+    // The routed 5,000 satoshis come back out of the container, and nothing is left at its lock.
+    expect(destroyed.totalReclaimed).toBeGreaterThanOrEqual(5000n);
+    expect(await mock.getUtxos(containerAddress)).toHaveLength(0);
+  });
+
+  it('a call with {value: v} pins its transfer at the address operand (B2.1, D1)', () => {
+    // D1's finding stands for a value-carrying call: its transfer is pinned at the address as given, which for a
+    // stateful callee is the master lock (stuck), never a container lock. The routed new-result payment above is
+    // the contrasting case: that one derives the container lock, and this one publishes no routing recipe.
+    const artifact = compileString(`
+interface ICallee { function poke() external; }
+contract Caller {
+    int d;
+    function sendTo(address target) { ICallee(target).poke{value: 1000}(); d = 1; }
+}`, { allowUnsafeOperations: true, messageBus: false } as never);
+    const fn = artifact.abi.find((entry) => entry.name === 'sendTo')!;
+    // The value transfer and the call's own transfer carrier both occupy a transfer slot; the satoshi container is
+    // the source, and neither transfer names a container destination.
+    expect(fn.transferCount).toBe(2);
+    expect(fn.blockLayout?.slots.filter((slot) => slot.kind === 'transfer')).toHaveLength(2);
+    expect(fn.blockLayout?.slots.some((slot) => slot.kind === 'satoshiContainer')).toBe(true);
+    expect(fn.transfers ?? []).toHaveLength(0);
   });
 
   it('a payment to a stateful contract value that is not a new result is refused (B2.3)', () => {

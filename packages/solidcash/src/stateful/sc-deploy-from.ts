@@ -512,7 +512,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
 
   // Compute child's initial state commitments
   const childSeedState: Record<string, StateValueType> = { ...(options.childInitialState ?? {}) };
-  const needsGenesisRecipeEvaluator = !!deployTarget.genesisState || (deployTarget.genesisEntries?.length ?? 0) > 0;
+  const needsGenesisRecipeEvaluator = !!deployTarget.genesisState || (deployTarget.genesisEntries?.length ?? 0) > 0
+    || (deployAbi.transfers?.length ?? 0) > 0;
   const genesisRecipeModule = needsGenesisRecipeEvaluator
     ? await import('../message-bus/compose.js') : undefined;
   const evaluateGenesisRecipe = genesisRecipeModule?.evaluateChildDeploymentRecipe;
@@ -1394,31 +1395,70 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const containerInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
   const containerOutputs: Array<{ to: string | Uint8Array; amount: bigint }> = [];
   if (hasSatoshiContainer) {
-    const childValue = options.childValue;
-    if (childValue === undefined || childValue <= 0n) {
+    const childValue = options.childValue ?? 0n;
+    // Every BCH transfer the function makes is funded by the factory's own satoshi container (A8). A payment
+    // whose destination is a `new` result is routed to that child's satoshi container lock (B2.2); a payment to
+    // a forwarded address goes to that address's lock. A `new C{value: v}` transfer keeps its own slot.
+    const transferAmount = (recipe: unknown): bigint => {
+      const value = evaluateGenesisRecipe!(
+        recipe as never, deployFunctionArgs, genesisInputTypes,
+        artifactUsesSolidityAbi(factory.inner.artifact), undefined, callerValueIdentity,
+      );
+      if (typeof value === 'bigint') return value;
+      if (typeof value === 'number') return BigInt(value);
+      throw new Error(`Deploy function '${deployFunctionName}' has a transfer whose amount is not concrete.`);
+    };
+    const routed: Array<{ to: string | Uint8Array; amount: bigint }> = [];
+    for (const [index, transfer] of (deployAbi.transfers ?? []).entries()) {
+      const amount = transferAmount(transfer.amountRecipe ?? transfer.amount);
+      const recipient = transfer.recipient;
+      if (recipient.kind === 'expression' && deployTarget !== undefined) {
+        const childIndex = (deployAbi.transfers?.length ?? 0) === childCount ? index : 0;
+        const child = childContracts[childIndex];
+        routed.push({ to: getSatoshiContainerAddress(child, fundingUtxos[childIndex].txid), amount });
+        continue;
+      }
+      if (recipient.kind === 'forward' && recipient.paramIndex !== undefined) {
+        const argument = deployFunctionArgs[recipient.paramIndex];
+        const to = typeof argument === 'string' ? addressToLockScript(argument) : argument;
+        if (!(to instanceof Uint8Array)) {
+          throw new Error(
+            `Deploy function '${deployFunctionName}' transfers to '${String(argument)}', which is not a lock.`,
+          );
+        }
+        routed.push({ to, amount });
+        continue;
+      }
       throw new Error(
-        `Deploy function '${deployFunctionName}' sends value to the child (new C{value:...}()); pass `
-        + 'childValue (the sats transferred from the factory\'s satoshi container to the child).',
+        `Deploy function '${deployFunctionName}' has a transfer whose recipient the SDK cannot resolve `
+        + `(kind '${recipient.kind}').`,
       );
     }
-    const totalValue = isLoopValueDeploy ? childValue * BigInt(childCount) : childValue;
+    if (!isLoopValueDeploy && childValue > 0n) {
+      routed.push({ to: childContractUnsalted.address, amount: childValue });
+    }
+    const totalValue = routed.reduce((sum, entry) => sum + entry.amount, 0n)
+      + (isLoopValueDeploy ? childValue * BigInt(childCount) : 0n);
+    if (totalValue === 0n) {
+      throw new Error(
+        `Deploy function '${deployFunctionName}' has a satoshi-container slot but no transfer to make.`,
+      );
+    }
     const satAddr = getSatoshiContainerAddress(factory.inner, factory.categoryId);
     const satUtxo = (await provider.getUtxos(satAddr)).find((u) => u.satoshis > totalValue);
     if (!satUtxo) {
       throw new Error(
         `Factory '${factory.name}' has no satoshi container with > ${totalValue} sats at ${satAddr}. Deploy `
-        + 'the factory with an initialBalance to fund new C{value:}() transfers.',
+        + 'the factory with an initialBalance to fund its transfers.',
       );
     }
     containerInputs.push({
       utxo: satUtxo, unlocker: createSatoshiContainerUnlocker(factory.inner, 0, factory.categoryId),
     });
     containerOutputs.push({ to: satAddr, amount: satUtxo.satoshis - totalValue });    // recreate the container
-    // Straight-line / conditional: one separate transfer output. Loop: the N transfers are interleaved into
-    // the child groups (added in the child-output construction below), so no separate transfer here.
-    if (!isLoopValueDeploy) {
-      containerOutputs.push({ to: childContractUnsalted.address, amount: childValue });
-    }
+    // Straight-line / conditional: one separate transfer output per transfer. Loop: the value transfers are
+    // interleaved into the child groups (added in the child-output construction below).
+    if (!isLoopValueDeploy) containerOutputs.push(...routed);
   }
 
   // A deploy function that transfers CashTokens - e.g. to the freshly-created child - co-spends the factory's

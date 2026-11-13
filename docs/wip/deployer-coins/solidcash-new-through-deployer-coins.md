@@ -4699,11 +4699,13 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       failed (baseline 7,615 solidc). B10.1 then turned the switch on; the targeted regression files pass and
       the root build regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer
       tests ask for carry `deployer`.
-- [ ] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
+- [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
-      still passes: not measured; no constructor-call creation fixture runs under the production VM yet (the
-      compiler-side genesis-call VM tests exercise the checks on hand-built spends), and `create`'s call-slot
-      resolution is not wired into `deployThroughDeployer`.
+      still passes: recorded as a limitation, not estimated. `deployThroughDeployer` refuses `callSlots > 0`
+      before building, because the compiler's `create` cannot yet run a callee in the VM (the compiler-side
+      genesis-call checks are exercised on hand-built spends in the solidc tests). No production SDK creation
+      with a constructor call exists from which to measure the cost, digest iterations, or a shortest
+      unlocking; wiring the callee resolution into the deployer path is the work that would fill this line.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
@@ -4744,5 +4746,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 - [x] **D22.** (B7.18) Constructor collections and single containers: bytes one append site adds to
       Deploy<C>: 334 B (845 B with one unconditional mapping write against 511 B for the scalar constructor); the
       entry row's stride is one output. This is the ordinary vmap write path, not the journal.
-      Deploy<C> (its row and its count), bytes the satoshi journal adds, and the extra satoshis the
-      container row needs at birth: ____ B, ____ B, ____ B, ____ sat.
+      Container rows: an optional satoshi row adds 20 B to Deploy<C> (531 against 511), a required row 24 B
+      (the extra 4 B is the single-container count check, 535); a `this.balance` journal read adds 1 B more
+      (532), and a constructor that sends satoshis adds 134 B (665). At birth a required row needs 1,200
+      satoshis (RESERVE) beyond the deploy value; an optional row holds exactly the deploy value, and a value
+      from 1 to 1,199 is raised to 1,200.

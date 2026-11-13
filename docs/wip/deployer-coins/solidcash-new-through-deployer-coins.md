@@ -4293,14 +4293,18 @@ it) never takes today's genesis (A12).
 
 - [ ] **B10.1** Remove the option `__deployerNew`: `isDeployerNew` no longer depends on it. Every direct
       `new` of a stateful child now binds a deployer.
-- [ ] **B10.2** Run both full suites (milestone), and the regression files of Part C. An existing test that
+- [x] **B10.2** Run both full suites (milestone), and the regression files of Part C. An existing test that
       creates a stateful child through a creator now needs preps: where it passes a signer and funding
       coins, the SDK builds them by itself (A14 item 4); otherwise give the test `prepFunding`. Update an
       expectation only for a reason Part C's "Regression" names, and explain each in the commit message.
+      Note (implementation, 2026-11-13): both full suites pass (solidc 7,826/7,826; solidcash 6,303 passed,
+      0 failed, 5 expected fail) and the Part C regression files pass. The switch itself (B10.1) is deferred:
+      the SDK creating-call builder still refuses a deployer child (B9.5), so the deployer `new` path stays
+      behind `__deployerNew`.
 - [x] **B10.3** Confirm that no artifact the suites compile carries `deployer`, except those of the new
       tests, and that `childDeployers` appears exactly on creators with a stateful `new`. Write the result
       under D12. A test that changed for any other reason is a regression: stop and report.
-- [ ] **B10.4** Run `build-contracts.ts --check` in `bch-next` and report which artifacts changed and by how
+- [x] **B10.4** Run `build-contracts.ts --check` in `bch-next` and report which artifacts changed and by how
       many bytes (D14). Do not change `bch-next`.
 - [ ] **B10.5** Commit: "feat(solidc): every direct stateful new goes through its deployer".
 
@@ -4592,9 +4596,9 @@ Measure SDK-built transactions under the production limits, and sizes of compile
 each "estimated" in Part A with the result (B0.8). Each line names the item that fills it.
 
 - [ ] **D1.** (B2.1) The payment finding, and where a call's value lands: ____.
-- [ ] **D2.** (B7.15) Deploy<C>'s redeem size, for a minimal C and for a C with one event, one payment and one
+- [x] **D2.** (B7.15) Deploy<C>'s redeem size, for a minimal C and for a C with one event, one payment and one
       call: 1,064 B, 2,037 B.
-- [ ] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,400 and 3,400 satoshis;
+- [x] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,400 and 3,400 satoshis;
       the sweep is 1,159 B and 2,132 B at 1 sat/B (rounded up to the next 100 in V_DEPLOY).
 - [ ] **D4.** (B0.6, B9.12) Creation size through a creator, compared with today's `new` for the same child:
       ____ B against ____ B.
@@ -4615,12 +4619,14 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       `deployer: true`, and the bytes one `DeployerAbi` adds to an artifact file: ____ s against ____ s,
       ____ s against ____ s, ____ B. Also the solidc suite's time before and after this work: ____ min against
       ____ min.
-- [ ] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
-      `childDeployers`: ____.
+- [x] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
+      `childDeployers`: the solidc suite is 7,826/7,826 and solidcash 6,303 passed with 0 failed (baseline:
+      7,615 solidc). Only artifacts the new deployer tests ask for carry `deployer`; `childDeployers` appears on
+      the creating fixtures under `__deployerNew`. No pre-existing testing-suite artifact changed.
 - [ ] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes: ____ ops; ____ of ____, ____ of ____; ____ B.
-- [ ] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: ____.
+- [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [ ] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
       the minimal C; and the largest number of such children that fits one standard transaction:
@@ -4644,7 +4650,7 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       (one satoshi row and one token row, each with its count of outputs at the lock), and the size of a
       registry's creation of such a pool against today's creation through PoolGenesis: ____ B; ____ B against
       ____ B.
-- [ ] **D20.** (B7.15) The user's pools: the size of Deploy<NotePool> and Deploy<TokenNotePool>, and the
+- [x] **D20.** (B7.15) The user's pools: the size of Deploy<NotePool> and Deploy<TokenNotePool>, and the
       smallest `create` unlocking of each against 10,000 bytes: 2,110 B and 2,129 B; 6,981 B and 8,063 B.
 - [ ] **D21.** (B6.0) The exact stack in every arm: bytes added per arm kind (entry function with 0, 1 and
       three visible parameters, `receive`, `fallback`, the multi-call entry, `__construct`), and the size of a

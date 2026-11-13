@@ -21,9 +21,12 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the unticked ones name the shape the
-shipped SDK path refuses; in Part D every line but D13 is filled (D13's measurement has no shipped precondition,
-so it is kept unticked with its limitation). The Part D measurements come from SDK-built transactions.
+in Part C the ticked cases name the committed test that covers them and the 24 unticked ones name the shape the
+shipped SDK path refuses (constructor call slots, constructor collection rows, block-field readers,
+`childContainers`/single token rows, constructor ecrecover and the multi-site/multi-level cases); in Part D
+every line but D13 is filled (D13's measurement has no shipped precondition, so it is kept unticked with its
+limitation). Constructor events, the identity output, the public options/result lists and the self-category
+deployment are implemented and tested. The Part D measurements come from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -4654,19 +4657,19 @@ their contract with `deployer: true`:
       bytes and the call passes.
 
 **Calls made by a constructor** (same file):
-- [x] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [ ] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       way: the token debits the child's own balance, credits `owner`, and the constructor reads the returned
       `true`;
-- [x] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation` (native origin, deployer) and the SDK `DeployerCreation.e2e`/`DeployerCreatingCall.e2e`)*
+- [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation` (native origin, deployer) and the SDK `DeployerCreation.e2e`/`DeployerCreatingCall.e2e`)*
       call has a call slot, and the callee stores M;
-- [x] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
-- [x] a constructor that calls a void `registry.register(x)` on a registry compiled with *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [ ] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
-- [x] the same against a registry compiled without the option, and against a callee compiled with *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [ ] the same against a registry compiled without the option, and against a callee compiled with *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
-- [x] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
-- [x] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
+- [ ] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
 
 **Any number of deployments** (same file):
 - [x] one chain of three preps from one wallet coin, then a creating function that runs three `new` in a loop: *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
@@ -4706,14 +4709,14 @@ are allowed here because these are attacks. Each must fail, in the VM unless the
       state but not its genesis input, with an added `token.approve` input that names the child and a
       builder-written list at byte 5 of the genesis input's unlocking. The token must refuse it, for a child
       code without a trailer and for one whose trailer names Deploy<C>;
-- [x] a call bound to other arguments: the constructor calls `registry.register(5)` and the registry runs *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [x] a call bound to other arguments: the constructor calls `registry.register(5)` and the registry runs *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
       `register(6)`, or publishes no record, or publishes a record without the tag;
-- [x] one run of a callee for two creations: two children whose constructors make the same call, created in *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [x] one run of a callee for two creations: two children whose constructors make the same call, created in *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
       one transaction with one run of the callee;
-- [x] a call record replayed from an earlier creation of the same child type; *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
-- [x] a call record prepared beforehand: running the callee's function with this creation's tag in an earlier *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [x] a call record replayed from an earlier creation of the same child type; *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [x] a call record prepared beforehand: running the callee's function with this creation's tag in an earlier *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
       transaction fails there, because that transaction does not spend (X, 0);
-- [x] a record-sound callee co-spent through another of its functions, with a carrier of its category *(covered by the compiler VM files `GenesisCall`/`VoidCallRecord`/`MsgSenderGenesis` and `DeployerGeneration`/`DeployerCreator`; the SDK top-level path refuses a constructor call slot, B7.11/D13)*
+- [x] a record-sound callee co-spent through another of its functions, with a carrier of its category *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
       beside it that the builder re-created from an old coin;
 - [x] a contract named as the creator that ran no `new`: a top-level deployment of a sender-reading child that *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       co-spends a marked creator V through an arm that creates nothing, and passes V's category;

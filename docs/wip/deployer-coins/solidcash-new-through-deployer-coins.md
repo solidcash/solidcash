@@ -4580,8 +4580,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       the sweep is 1,159 B and 2,132 B at 1 sat/B (rounded up to the next 100 in V_DEPLOY).
 - [ ] **D4.** (B0.6, B9.12) Creation size through a creator, compared with today's `new` for the same child:
       ____ B against ____ B.
-- [ ] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
-      ____ B against ____ B.
+- [x] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
+      2,568 B (prep 263 + creation 2,305) against 447 B, for a constructor that writes one record.
 - [ ] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: ____.
 - [x] **D7.** (B6.10) The genesis step's size in a contract that has it (estimated about 140 B), reported
       against the 100 B the user named: 300 B (shared resolution, entry size and (X, 0) checks, and the

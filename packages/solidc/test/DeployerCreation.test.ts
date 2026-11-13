@@ -640,3 +640,33 @@ describe('B7.18: a constructor mapping write', () => {
   });
 });
 
+describe('B7.18: a held read feeds the next entry', () => {
+  it('writes the held value into the second key', () => {
+    const artifact = compileString(`${P} contract C { mapping(int => int) m;
+      constructor() { m[1] = 5; m[2] = m[1] + 1; } }`, { deployer: true, messageBus: false });
+    const { x, master } = genesisMasters(artifact.deployer!);
+    const collection = artifact.stateLayout!.collections![0];
+    const lock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
+      buildEntryNftCovenantScript(x, computeCollectionHash(collection.signature), master),
+    )));
+    const commitmentFor = (key: bigint, value: bigint) => {
+      const slot = sha256.hash(encodePushdataValue(key, 'int'));
+      slot[31] &= 0x7f;
+      return new Uint8Array([...slot, ...new Uint8Array(32), ...encodePushdataValue(value, 'int')]);
+    };
+    const entry = (key: bigint, value: bigint): VmOutput => ({
+      lockingBytecode: lock, valueSatoshis: 1200n,
+      token: { category: x, amount: 0n, nft: { capability: 'mutable', commitment: commitmentFor(key, value) } },
+    });
+    const witnesses = (slot: number): Record<string, Uint8Array> => ({
+      [`__internal__vmapBatchSlot_${slot}`]: new Uint8Array(32),
+      [`__internal__vmapBatchProof_${slot}`]: Uint8Array.of(0x81),
+      [`__internal__vmapBatchNext_${slot}`]: new Uint8Array(32),
+      [`__internal__vmapBatchPredOut_${slot}`]: Uint8Array.of(0x82),
+    });
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, undefined, [], (o) => o, undefined, {
+      ...witnesses(0), ...witnesses(1), __internal__vmapBatchTrailingCount: EMPTY,
+    }, undefined, 0, 0xffffffff, [entry(1n, 5n), entry(2n, 6n)]) as never)).toBe(true);
+  });
+});
+

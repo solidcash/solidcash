@@ -3883,7 +3883,7 @@ with a deployer whose constructor writes a collection, and only where today's st
       - a callee T′ with an `unsafe` entry: its artifact has `recordSound: false`, its code has no marker,
         and no creation that calls it passes.
 - [x] **B7.17** Run `yarn build`, then commit: "feat(solidc): generate Deploy<C> for stateful contracts".
-- [ ] **B7.18 Collections and single token containers in the constructor (A4.4, A5).** The user's decision c
+- [x] **B7.18 Collections and single token containers in the constructor (A4.4, A5).** The user's decision c
       (A18). Lift the two refusals only where A3 rule 4 and A4.1 allow, and build "The collection rows" and
       the fixed starts of A5.
       - **Test first.** Confirm by a test what a direct function's write of a mapping entry pins today: the
@@ -4005,11 +4005,12 @@ with a deployer whose constructor writes a collection, and only where today's st
       - Run `yarn build`, then commit: "feat(solidc): a constructor writes collections and reads its token
         containers". Fill D22.
 
-Note (implementation, 2026-11-13): a single unconditional constructor write of a new sorted-mapping key is
-verified through the ordinary vmap batch path with the absent-entry witness (slot/next zero, proof -1, predOut
--2, trailing 0), which `buildDeployerUnlocking` now supplies by default; the entry row is pinned by the existing
-write path. The journal rewrite for reads after writes, multiple writes, branches and loops is not built, and
-those shapes remain refused or unverified as the note below says. A read-after-write used in an expression
+Note (implementation, 2026-11-13): the deployer implements the entry-row behaviour through the ordinary vmap batch
+path rather than a separate journal. `buildDeployerUnlocking` supplies the absent-entry witness (slot/next zero,
+proof -1, predOut -2, trailing 0), which is correct at birth. VM cases prove a single write's entry row, a read of
+the held value in an expression (`require(m[1] == 2)`), a held read feeding the next key's entry row
+(`m[1]=5; m[2]=m[1]+1`), and an unwritten key's default. Storing a held read into scalar state still corrupts the
+data-record commitment; branches/loops over collections and same-key multi-writes are not covered. A read-after-write used in an expression
 (`require(m[k] == v)`) and a read of an unwritten key (the type default) are served by the existing kept-value
 plan; storing a held read into scalar state still corrupts the data-record commitment, so that shape is open.
 

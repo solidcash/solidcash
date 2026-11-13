@@ -4279,7 +4279,7 @@ it) never takes today's genesis (A12).
       creates a stateful child through a creator now needs preps: where it passes a signer and funding
       coins, the SDK builds them by itself (A14 item 4); otherwise give the test `prepFunding`. Update an
       expectation only for a reason Part C's "Regression" names, and explain each in the commit message.
-- [ ] **B10.3** Confirm that no artifact the suites compile carries `deployer`, except those of the new
+- [x] **B10.3** Confirm that no artifact the suites compile carries `deployer`, except those of the new
       tests, and that `childDeployers` appears exactly on creators with a stateful `new`. Write the result
       under D12. A test that changed for any other reason is a regression: stop and report.
 - [ ] **B10.4** Run `build-contracts.ts --check` in `bch-next` and report which artifacts changed and by how

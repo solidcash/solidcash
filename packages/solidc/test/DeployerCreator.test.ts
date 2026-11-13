@@ -127,13 +127,13 @@ describe('B8.6: the site binds the deployer instead of embedding the child', () 
     expect(creator.bytecode).toContain('OP_INPUTBYTECODE');
   });
 
-  it('compiles a site in a branch and refuses one in a loop', () => {
+  it('compiles a site in a branch and in a loop with the runtime counter', () => {
     expect(() => compile(`${P} ${statefulChild()}
       contract Parent { int m; function make(int x) { if (x > 0) { Child c = new Child(); } m = 1; } }`))
       .not.toThrow();
-    refusal(`${P} ${statefulChild()}
-      contract Parent { int m; function make(int n) { for (int i = 0; i < n; i = i + 1) { Child c = new Child(); } m = 1; } }`,
-    /in a loop is not available/);
+    expect(() => compile(`${P} ${statefulChild()}
+      contract Parent { int m; function make(int n) { for (int i = 0; i < n; i = i + 1) { Child c = new Child(); } m = 1; } }`))
+      .not.toThrow();
   });
 });
 

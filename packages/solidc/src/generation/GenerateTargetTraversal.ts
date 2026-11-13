@@ -23860,11 +23860,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDeployerNewSite(node: InstantiationNode, locationData: SingleLocationData): Node {
     const abi = node.deployerAbi;
     if (abi === undefined) throw new Error('A deployer `new` has no DeployerAbi');
-    // B8.9's per-iteration d_in/d_out counter is not built yet: a fixed site would reuse iteration 0's indices.
-    if (this.plainLoopDepth > 0) {
-      throw new DeployerUnsupportedError(node, 'creator-shape',
-        'a deployer `new` in a loop is not available in this build');
-    }
     const site = this.deployCounter++;
     this.deployRoutingCounters.set(node, site);
     node.creationBytecode = abi.code;
@@ -23948,7 +23943,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
 
     // Step 3: <Q> <A> <d_in> OP_INPUTBYTECODE, with nothing in between.
-    this.emitBlockSlotIndex('deploy', site, locationData);
+    this.emitDeployerInputIndex(site, locationData);
     this.emit(Op.OP_INPUTBYTECODE, locationData);
     this.pushToStack('(unlocking)');
 
@@ -23988,11 +23983,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
 
     // Step 4c: d_in's lock is DEPLOY(C), and d_out carries X ‖ 0x02.
-    this.emitBlockSlotIndex('deploy', site, locationData);
+    this.emitDeployerInputIndex(site, locationData);
     this.emit(Op.OP_UTXOBYTECODE, locationData);
     this.emit(hexToBin(abi.lockingBytecode), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
-    this.emitBlockSlotIndex('deploy', site, locationData);
+    this.emitDeployerInputIndex(site, locationData);
     this.emit(Op.OP_OUTPOINTTXHASH, locationData);
     const xName = `__deploy_x_${site}`;
     this.pushToStack(xName);
@@ -24003,7 +23998,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(expectedCategory)');
-    this.emitDeployerChildOutputIndex(site, locationData);
+    this.emitDeployerChildOutputIndex(site, 1 + node.deployedDataNftCount + node.deployedEntryNftCount
+      + (hasEffectiveCallValue(node.callOptions?.value) ? 1 : 0), locationData);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
     this.pushToStack('(value)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
@@ -24013,20 +24009,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.createsSenderReadingChild === true) this.appendCreatedChild(xName, locationData);
 
     // Step 5: the expression is the child's master locking bytecode at d_out.
-    this.emitDeployerChildOutputIndex(site, locationData);
+    this.emitDeployerChildOutputIndex(site, 1 + node.deployedDataNftCount + node.deployedEntryNftCount
+      + (hasEffectiveCallValue(node.callOptions?.value) ? 1 : 0), locationData);
     this.emit(Op.OP_OUTPUTBYTECODE, locationData);
     this.pushToStack('(value)');
     return node;
   }
 
+  /** `masterInputIndex + inputBase [+ counter]`: the deployer input this site reads. */
+  private emitDeployerInputIndex(site: number, locationData: SingleLocationData): void {
+    if (this.plainLoopDepth === 0) {
+      this.emitBlockSlotIndex('deploy', site, locationData);
+      return;
+    }
+    const slotBase = this.getBlockSlotOffset('deploy', site);
+    const inputBase = slotBase - this.countOutputOnlySlotsBefore(slotBase);
+    this.emitMasterInputIndex(locationData);
+    if (inputBase > 0) {
+      this.emit(encodeInt(BigInt(inputBase)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    const counter = this.getStackIndex(this.inlineDeployCounterName);
+    this.emit(encodeInt(BigInt(counter + 1)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_ADD, locationData);
+  }
+
   /** The absolute output index of the child master this site creates, from the master input index. */
-  private emitDeployerChildOutputIndex(site: number, locationData: SingleLocationData): void {
+  private emitDeployerChildOutputIndex(site: number, stride: number, locationData: SingleLocationData): void {
     this.emitMasterInputIndex(locationData);
     const offset = this.getBlockSlotOffset('deploy', site);
     if (offset > 0) {
       this.emit(encodeInt(BigInt(offset)), locationData);
       this.emit(Op.OP_ADD, locationData);
     }
+    if (this.plainLoopDepth === 0) return;
+    const counter = this.getStackIndex(this.inlineDeployCounterName);
+    this.emit(encodeInt(BigInt(counter + 1)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    if (stride !== 1) {
+      this.emit(encodeInt(BigInt(stride)), locationData);
+      this.emit(Op.OP_MUL, locationData);
+    }
+    this.emit(Op.OP_ADD, locationData);
   }
 
   /** B8.10: the deploy-target record a deployer child publishes for the SDK. */

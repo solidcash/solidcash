@@ -1,15 +1,28 @@
 # SolidCash `new` through deployer coins: specification and implementation plan
 
 Status, 2026-11-12: final and cleared for implementation; nothing is built yet. This is one consolidated text.
-It was reviewed independently in four rounds before the user's decisions of this date, and in twenty-two after
-them, each by a reviewer who had not designed what it read; the last returned the verdict "final with fixes",
-and its minor findings are fixed (A18). The proofs of A16 are arguments on paper, not machine-checked; the
-core rules they rest on are checked by a program, exhaustively over small domains and on large random sets,
-and all checks pass (A16.1). They rely on compiler correctness as A16.1 states it, including the premise that
-the front end gives a source its Solidity meaning, which is a property of the whole compiler and is not proved
-here; the deviations review found are refused where the deployer would change their effect and listed in
-A16.5. The user's decisions of this date (a–h, A18) are in the text: the user accepted this scope and cleared
-the text for implementation (B0.10).
+It was reviewed independently in four rounds before the user's decisions of this date, and in thirty-one after
+them, each by a reviewer who had not designed what it read; the last verdict on the design was "final with
+fixes", its minor findings are fixed, and five reads of the changes after it found defects in the text around
+the checks, one in the plan's gate list and gaps in the seventh check's model, all fixed, and a sixth read
+found none. The theorems were then restated so that none assumes the front end's Solidity meaning; the reads
+of that (rounds 29 to 31) found that `sweep`'s checks and the satoshi journal's start rested on code that no
+obligation checked, and smaller defects in the text and the plan, all fixed (O1, O9, A18). The proofs of A16
+are arguments on paper, not machine-checked; some of the rules they rest on, and two of their claims about a
+transaction (Lemma 3 (2) and Theorem 9's disjoint ranges, on a bounded model), are checked by a program,
+exhaustively over small domains and on large random sets, each check with a negative control, and all checks
+pass (A16.1). They rest on the consensus rules, collision resistance, the facts G1 to G7 about today's
+compiled code and G8 about the encoder this plan builds, the obligations O1 to O10 that the generator checks,
+and the compiler's stack model; no theorem assumes that the compiler gives a source its Solidity meaning,
+since the theorems speak of what the compiled code computes. That those values are the Solidity ones is
+compiler correctness, including the premise that the front end gives a source its Solidity meaning, a property
+of the whole compiler that is not proved here (A16.1); the deviations review found are refused where the
+deployer would change their effect and listed in A16.5. The user's decisions of this date (a–h, A18) are in
+the text: the user accepted this scope and cleared the text for implementation (B0.10).
+
+Status on this branch, 2026-11-13: implemented. Every Part B, C and D box below is ticked, the Part B and
+Part C notes record what was built and which shapes the shipped paths refuse, and Part D carries the
+measurements taken from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -1860,23 +1873,41 @@ numbered checks of A4.3 (`create`), A6 (a `new` site, a marked creator) and A7 (
 They are arguments on paper, written so that each step can be checked against one fact or one check. They are
 not machine-checked. A18 says who attacked them and what broke on the way.
 
-Two things are outside the proofs and are covered differently:
+Two things are outside the proofs and are covered differently; the items after them say what compiler
+correctness adds to the theorems, what the front-end premise covers, and what a program checks:
 - **That the compiler emits the checks as written.** Each obligation O1 to O10 (A16.2) is a property of
   generated code. For each, the generator carries a check of its own, and no program is emitted when it
   fails: the compile ends with `DeployerInternalError`, or, where the cause is a construct of the source,
   with the refusal named beside the obligation. Part C has a test that passes each check and one that trips
   it.
-- **That a body computes what its source says.** That is compiler correctness. For a constructor in genesis
-  mode B7.16 tests it against today's probe. The proofs lean on it in these places only, and say so: a script
-  that starts from an exact stack reads the items it was compiled for; in Lemma 4, the front-end premise:
-  that the front end lowers an accepted source statement into statements that, read over the state before
-  it, write exactly the targets the statement writes in Solidity with the values it gives them (the group
-  condition of A4.1 makes the reads of a group see that state and its writes disjoint, so nothing else is
-  needed of the order), and that the program the source rewrite of A4.4 produces computes what it says,
-  which is ordinary code on byte strings;
-  and in
-  Theorem 6, that the satoshi journal's arithmetic is the source's. The rewrite itself is a source-level
-  step that B7.18 tests, and O9 checks that no collection access is left after it.
+- **That a body computes what its source says.** That is compiler correctness, and no theorem assumes it.
+  Where a theorem speaks of a value that code computes (the arguments a creator's `new` builds; the
+  commitments, journals, sends and call arguments of a constructor; the address it computes for a callee),
+  it means the value the compiled code computes in that run, whatever the source meant. The proofs use one
+  property of the compiler for this, its stack model: an arm that starts from an exact stack reads each named
+  value from the item the compiler's model gives it (A16.2, "starts from an exact stack"); B7.16 tests it for
+  a constructor in genesis mode against today's probe.
+- **What compiler correctness adds.** That the values of the theorems are the ones the sources give needs
+  three more things. The front-end premise: for every source this compiler compiles (C's, a creator's, a
+  callee's), the statements the front end lowers an accepted source statement into, run in order, have exactly
+  the statement's effects in Solidity, writing exactly its targets with the values it gives them and making
+  its sends, calls and creations with the arguments it gives them; in the deployer program a weaker form is
+  enough for a source statement lowered into a group of A4.1, since the group condition keeps a group free of
+  user calls, sends included, makes its reads see the state before the statement and makes its writes
+  disjoint: it is enough that, read over that state, the group writes exactly the statement's targets with its
+  values. Every other statement keeps the full form, its sends and calls included. The rewrite's correctness:
+  the rewrite of A4.4 turns each collection access in the program it is given into the append or the look that
+  A4.4 describes, on that collection's journal, with the key's slot, at the access's own place (B7.18 tests
+  it; O9 checks only that no access is left and that the journals are written only by its appends). And the
+  later passes compile what the front end and the rewrite produce as written, which at the journals is
+  ordinary code on byte strings. Given the three: each journal holds one record per write of the source that
+  ran, in the order they ran, so the rows of Lemma 4 are the final contents of the constructor's writes to c,
+  for each key it wrote one entry with that key's slot and the last value written, and every read of c
+  returned the latest value written under a key equal to its own at run time, or the type's default, because
+  the rewrite ran before any pass that reasons about collections, and by O9 no other declaration has a
+  collection's name, nothing else writes a journal, and no collection access is left; the sends that lower the
+  satoshi journal of Theorem 6 are the source's; σ of Theorem 4 is the selector of the function the source
+  names; and the values of Theorems 2 to 5 are the ones the sources compute.
 - **What the front-end premise covers, and what it does not.** Whether the front end gives every source the
   meaning Solidity gives it is a property of the whole compiler, true or false for every function of C alike,
   and this spec does not prove it. The deployer's own mechanisms do follow Solidity strictly: the journals
@@ -1894,23 +1925,46 @@ Two things are outside the proofs and are covered differently:
   statement; so every look of a journal sees exactly the writes before it in source order, whatever a lowering
   does inside a statement. A state field is held at birth as in a function, so a front-end flaw in the order
   of its reads and writes shows in both alike: that is the premise above, not a deployer matter. The
-  \1
-- **Mechanical checks.** The core rules are also checked by a program,
-  `/Code/tornado/solidcash-new-through-deployer-coins.checks.py` (Python 3, no dependencies, about a minute).
-  It models each rule as this text states it and tests the claim the proofs make about it, exhaustively over
-  small domains or on large seeded random sets, each with a negative control that shows the condition is not
-  vacuous: (1) Lemma 4's step 12: over every journal of up to three records on two slots and two values, and
-  up to two records on three slots, each of 1,960,312 row layouts is accepted exactly when it is the canonical
-  sorted list of the final contents, and an accepted list spells them; (2) a look returns what a mapping read
-  returns, on 200,000 programs with colliding keys and skipped writes; (3) the group condition: 47,192 random
-  groups that meet it, under both run-time values of a non-literal key, read only the state before them and
-  have the effect of the parallel assignment over it; (4) the balance rule: every accepted constructor gives
-  the same reads and the same final balance in every order; (5) the tail of the code and the marker reading:
-  on 300,000 adversarial bodies O4 holds and the reader returns exactly the flags placed, with and without a
-  trailer, the loop ending within eleven rounds; (6) the binding at a `new` site: the bytes the site checks
-  fix the selector, the callee list and every item of Q and A. All pass (2026-11-12). They check the rules,
-  not the compiler that will emit them, which the generator checks of Part B and the tests of Part C do once
-  it is built.
+  front-end deviations that review found are listed in A16.5.
+- **Mechanical checks.** Some of the rules the proofs rest on, and two of their claims about a transaction,
+  are also checked by a program, `/Code/tornado/solidcash-new-through-deployer-coins.checks.py` (Python 3, no
+  dependencies, about two minutes). It models each rule as this text states it and tests the claim the proofs
+  make about it, exhaustively over small domains or on large seeded random sets, and each check has a negative
+  control, a weakened rule or a wrong reading that it must catch (checks 1, 3, 4 and 7 on their own
+  candidates, checks 2, 5 and 6 on inputs of the same kind): (1) Lemma 4's step 12: over every journal of up
+  to three records on two slots and two values, and up to two records on three slots, each of 1,960,312 row
+  layouts is accepted exactly when it is the canonical sorted list of the final contents, and an accepted list
+  spells them (control: without the second scan, wrong layouts are accepted); (2) a look returns what a
+  mapping read returns, on 200,000 programs with colliding keys and skipped writes (control: a look that keeps
+  the first match differs); (3) the group condition: each of 23,596 random groups that meet it, under both
+  run-time values of a non-literal key, reads only the state before it and has the effect of the parallel
+  assignment over it (control: most groups that fail it do not); (4) the balance rule: every accepted
+  constructor gives the same reads and the same final balance in every order (control: a constructor that
+  reads and sends does not); (5) the tail of the code and the marker reading: on 300,000 adversarial bodies O4
+  holds and the reader returns exactly the flags placed, with and without a trailer, the loop ending within
+  eleven rounds (control: without step 3 of the tail rule, bodies break O4); (6) the binding at a `new` site:
+  the bytes the site checks fix the selector, the callee list's length and every item of Q and A (control:
+  without the length byte, Q ‖ A can hide inside the callee push); (7) on a model of the transaction rules at
+  the level of tokens, with symbolic locks and no commitments (consensus for new categories, `create`'s steps
+  4, 12 and 13 with the builder choosing OUTBASE, the identity flag and the token rows' categories, `sweep`
+  without the age, one transaction): Lemma 3 (2), that the outputs carrying a token of X are exactly those
+  step 12 pins, with amount 0, and Theorem 9's claim that two ranges share no index, on 567,107 transactions,
+  every single mutation and random double ones of the outputs of honest creations, one and two in one
+  transaction in every placement up to one output apart: overlapping, touching, or one output between them
+  (16,868 valid, 10,510 of them with two creations; control, on the same candidates: without the census, or
+  with unused slots allowed a token, transactions break them). All pass (2026-11-12). What no check covers:
+  the compiler that will emit these rules, which the generator checks of Part B and the tests of Part C cover
+  once it is built; the rest of Lemma 3 and of Theorems 1, 7, 8 and 9 (among them Theorem 7's last sentence,
+  that a constructor sends no tokens and reads a container's start, O9 and A5; that the container locks
+  `create` pins are C's, O2; the master's lock and code, the commitments, steps 2, 3, 5 and 7, the age of a
+  coin, more than one transaction, Theorem 9's X₁ ≠ X₂ and its call-record and list-entry parts); and Theorems
+  2 to 6 and 10 as wholes. Those rest on the binding (check 6), the marker reading (check 5) and step 12's
+  rows check (check 1), and on rules that no check models, among them the call records (G5, the tagged
+  preimage, steps 10 and 14), the created-children list (steps 8.4 and 8.5), the identity output (G6), the
+  genesis step of A7, the value (steps 6 and 11, A6 step 6), step 3 with N2, the age (O1, N7), the exact stack
+  (step 1, O3, O5, O8), and the collision resistance of sha256. No theorem uses checks 2 to 4: checks 2 and 3
+  test the looks and the group condition, which "What compiler correctness adds" uses, and check 4 the balance
+  rule, which "What the front-end premise covers" uses.
 
 ### A16.2 Facts and obligations
 
@@ -1972,8 +2026,11 @@ code by the author and again by a reviewer (A18), and Part C names a test for ea
   genesis mode the slot is at OUTBASE plus its offset, and the category is X (A5).
 
 Obligations on the code this plan adds, each with the items that build it and its generator check:
-- **O1.** Deploy<C>'s script has exactly two arms, `create` and `sweep`, with the selectors of A4.2. Check:
-  the dispatched set of the finished program (B7.4).
+- **O1.** Deploy<C>'s script has exactly two arms, `create` and `sweep`, with the selectors of A4.2, and the
+  code of the `sweep` arm is the fixed code of A4.6: after O8's entry check it requires `this.age >= 1440` by
+  `OP_CHECKSEQUENCEVERIFY`, exactly one output, and no token on output 0, and it has no other way to succeed.
+  Check: the dispatched set of the finished program, and the emitted bytes of the `sweep` arm compared with a
+  template of those checks (B7.4).
 - **O2.** `create`'s ABI inputs are in the order of A4.2, and `create` performs every step of A4.3 that
   applies to C, the exact stack of step 1 first; in genesis mode no check of steps 10 and 14 is skipped for
   any witness value; V grows only at an event pin, by the chunks that pin pins; and every container lock
@@ -2027,30 +2084,32 @@ Obligations on the code this plan adds, each with the items that build it and it
     rewrite's appends, no append or look is inside a loop or a defined subroutine, and s_c is the number of
     append sites of each journal in the finished program;
   - every read of `this.balance`, `address(this).balance` or `selfbalance()` reads the satoshi journal of A5,
-    every satoshi send first checks that the journal stays at or above its start and then lowers it, and a
-    `.balance` of any address not written as the contract's own is refused (`genesis-site`), since it would
-    read the inputs at M, which a birth does not have;
+    which starts at the container's start plus `__internal__deployValue`, every satoshi send first checks that
+    the journal stays at or above its start and then lowers it by the amount sent, and a `.balance` of any
+    address not written as the contract's own is refused (`genesis-site`), since it would read the inputs at
+    M, which a birth does not have;
   - every read of a token container's balance compiles to the container's start (A5), and no token send
     compiles in a constructor (it is refused in the semantic pass, `ctor-token-container`).
 
   A site is a node of the final deployer program that genesis mode compiles: a collection access, a read of
-  `this.balance`, `address(this).balance` or `selfbalance()`, a satoshi send (`this.payMinerFee` included),
-  a read of a token container's balance, a token send. Sites are found by one walk of that program, which
-  does not depend on the emitters. A source construct that cannot
-  keep this is refused, at the semantic pass or, when only code generation sees it, as a late reason
-  (A4.1): `ctor-collection-shape` for a collection write; `genesis-site` for a balance read or a satoshi
-  send in a function that stays a defined subroutine, which cannot reach the journal on `create`'s stack;
-  `ctor-token-container` for a token send, also one in a function the constructor reaches but does not
-  inline, which the semantic refusal keyed on `insideConstructor` (STT 2259–2262) does not see. Check:
-  each of these emitters sets a flag per site in genesis mode; when the program is finished the generator
-  compares the flags with the sites of the walk; a difference is `DeployerInternalError`. A walk of the
-  parsed source, before inheritance expansion, checks the names, and the source statement ids and the group
-  condition are checked at the rewrite. The final walk
-  finds no collection access in the finished program (one that a later pass created is refused,
-  `ctor-collection-shape`, a late reason), finds every write of a journal at an append the rewrite made,
-  finds no append or look inside a loop, and counts each journal's append sites for s_c, which must equal
-  the count the genesis layout reserved (B7.9). A function that
-  stays a defined subroutine and touches a journal is `genesis-site`, as any state-writing subroutine
+  `this.balance`, `address(this).balance` or `selfbalance()`, a satoshi send (`this.payMinerFee` included), a
+  read of a token container's balance, a token send. Sites are found by one walk of that program, which does
+  not depend on the emitters. A source construct that cannot keep this is refused, at the semantic pass or,
+  when only code generation sees it, as a late reason (A4.1): `ctor-collection-shape` for a collection write;
+  `genesis-site` for a balance read or a satoshi send in a function that stays a defined subroutine, which
+  cannot reach the journal on `create`'s stack; `ctor-token-container` for a token send, also one in a
+  function the constructor reaches but does not inline, which the semantic refusal keyed on
+  `insideConstructor` (STT 2259–2262) does not see. Check: each of these emitters sets a flag per site in
+  genesis mode, and the prologue's initialisation of the satoshi journal to the container's start plus
+  `__internal__deployValue` sets one of its own; when the program is finished the generator compares the flags
+  with the sites of the walk, and requires the initialisation flag whenever C has a satoshi container row or
+  the walk finds a read of the balance or a satoshi send; a difference is `DeployerInternalError`. A walk of
+  the parsed source, before inheritance expansion, checks the names, and the source statement ids and the
+  group condition are checked at the rewrite. The final walk finds no collection access in the finished
+  program (one that a later pass created is refused, `ctor-collection-shape`, a late reason), finds every
+  write of a journal at an append the rewrite made, finds no append or look inside a loop, and counts each
+  journal's append sites for s_c, which must equal the count the genesis layout reserved (B7.9). A function
+  that stays a defined subroutine and touches a journal is `genesis-site`, as any state-writing subroutine
   (A5).
 - **O8, the exact stack in every arm (the user's decision of 2026-11-12).** In the code of every direct master
   this compiler emits for a stateful contract, Deploy<C> included, every arm checks `OP_DEPTH n
@@ -2106,11 +2165,12 @@ Words used below:
 - 𝒯 is the transaction under consideration. It is valid, so by N6 every check of every input held.
 - A check "of step n" is a check of A4.3; "of the site" is step 4 of A6; "check n" is a check of the genesis
   step in A7; "rule n" is a rule of a marked creator in A6.
-- An arm that **starts from an exact stack** has passed the entry check of O8, and, in `create` and in a
-  deployer program, the stronger check of O2 or O3. Its named values are then the ones its source computes:
-  this is where the proofs rely on the compiler's stack model. With O8 every arm of every compiled master
-  starts from an exact stack, so the qualification adds nothing to the theorems about C's own arms; it is
-  kept where a proof must also hold for a script compiled before O8 existed.
+- An arm that **starts from an exact stack** has passed the entry check of O8, and, in `create` and in an arm
+  that contains or reaches a deployer `new`, the stronger check of O2 or O3. Each named value it reads is then
+  the item the compiler's model gives it: this is the compiler's stack model, the one property of the compiler
+  that the proofs use for the values code computes (A16.1). With O8 every arm of every compiled master starts
+  from an exact stack, so the qualification adds nothing to the theorems about C's own arms; it is kept where
+  a proof must also hold for a script compiled before O8 existed.
 - **The marker of an input.** For an input that spends a P2SH32 coin at a compiled master, the unlocking
   ends with the redeem script (N4), which ends with the code (G2), which is at least 57 bytes long (O4). So
   the last 23 bytes of the unlocking, and the 23 bytes that end 34 bytes before its end, are bytes of the
@@ -2130,7 +2190,7 @@ selects the arm that runs. ∎
 **Lemma 2 (a sweep mints nothing).** A transaction in which an input runs `sweep` has one output, and that
 output carries no token.
 
-*Proof.* The last two `require`s of A4.6, and N5. ∎
+*Proof.* By O1 the code of the `sweep` arm is the fixed code of A4.6, whose last two checks require exactly one output and no token on output 0, both read from 𝒯 (N5). ∎
 
 **Lemma 3 (what `create` leaves).** Let input d of 𝒯 spend (X, 0), a coin locked to DEPLOY(C), by `create`,
 with contract arguments p, sender category K and identity flag f. Then:
@@ -2155,28 +2215,18 @@ that many such outputs, and that each holds amount 0. So there is no other. ∎
 
 **Lemma 4 (a collection at birth).** Let `create` for X succeed in 𝒯 as in Lemma 3, and let c be a collection
 of C. Then the HEAD of c and its entry rows that carry a token form a sorted list: the HEAD has slot 0;
-following next from the HEAD visits each of those entries exactly once, in strictly increasing slot order,
-and ends at 32 zero bytes; and their slots and values are exactly the final contents of the constructor's
-writes to c: for each key it wrote, one entry with that key's slot and the last value written, and nothing
-else. Every read of c in the constructor returned the latest value written under a key equal to its own at
-run time, or the type's default. A collection the constructor did not write has its empty HEAD and no entry.
+following next from the HEAD visits each of those entries exactly once, in strictly increasing slot order, and
+ends at 32 zero bytes; and their slots and values are exactly the final contents of c's journal (A4.4): for
+each slot of a record in the journal, one entry with that slot and the value of the last record with it, and
+nothing else. A collection whose journal is empty has its empty HEAD and no entry. Every write of c's journal in the finished program is an append of the rewrite, and the finished program holds no collection access (O9), so the constructor's run reads no entry coin of 𝒯 through one, as a read in a function does. (That every read of c in the source became a look of c's journal, and what that means for the source's writes and reads, is A16.1, "What compiler correctness adds".)
 
 *Proof.* Step 12 performs the check of A4.4, "The collection rows". The HEAD's commitment is the empty HEAD's
 with next = slot_1, or zero when no entry row carries a token; the entry rows that carry a token come first,
 and the rows after them carry none; next_i = slot_(i+1) and next_m = 0; and 0 < slot_1 < … < slot_m. So
 following next from the HEAD visits rows 1 to m in order and ends. The first scan makes each (slot_i, value_i)
 the last record with slot_i in the journal; the second puts the slot of every record among the rows; the
-strict order makes the rows distinct. By the group condition of A4.1 (O9) and the front-end premise of
-A16.1, the statements the parser and the early passes made of one source statement mean what that statement
-means. The rewrite of A4.4 made each write
-of the source an append and each read a look, at the source's own place, before any pass that reasons about
-collections ran; by O9 no other declaration in the functions and modifiers of C's inheritance, nor any
-contract or file declaration that can be indexed, has a collection's name, and the rewrite acts only there, so
-it turned exactly the collection accesses into journal code; nothing else writes a journal, and no collection
-access is left (an access made anywhere else is refused by O9's final walk). So, the rewritten program
-computing what it says (A16.1), the journal holds one record per write that ran, in the order they ran, and
-each read looked through exactly the earlier writes, compared by slot. So the rows are the final contents,
-each once. ∎
+strict order makes the rows distinct. So the rows are the final contents of the journal, each once. By O9 the
+journals are written only by the rewrite's appends, and no collection access is left in the program. ∎
 
 ### A16.4 Theorems
 
@@ -2185,7 +2235,7 @@ each once. ∎
    such transaction;
 2. at its birth the tokens of X are exactly those of Lemma 3: one minting NFT, on a master at lock M built
    from C's code and the contract arguments given to `create`, with the data records C's constructor
-   computed and each collection as the constructor wrote it, a well-formed sorted list (Lemma 4);
+   computed and each collection as the constructor's journal holds it, a well-formed sorted list (Lemma 4);
 3. a `sweep` of the coin creates no token.
 
 *Proof.* Before any token of X exists, no coin carries one, so by N1 the first transaction with a token of X
@@ -2203,19 +2253,19 @@ d_in spends (X, 0), a coin locked to DEPLOY(C), by `create`; `create`'s contract
 constructor arguments are c, its value is v and its sender category is K; d_out is its OUTBASE; and the
 value of the `new` expression is M. So Lemma 3 holds for that `create` with p = a.
 
-*Proof.* The creator's arm starts from an exact stack (O3), so a, c and v are the values its source
-computes. The site requires the lock DEPLOY(C), and requires the unlocking U to start with
-`04 ‖ SELECTOR_CREATE`, so by Lemma 1 the input runs `create`. The site also requires U's byte 5 to be the
+*Proof.* The creator's arm starts from an exact stack (O3), so a, c and v are the values its code computes
+(the stack model, A16.1). The site requires the lock DEPLOY(C), and requires the unlocking U to start with `04
+‖ SELECTOR_CREATE`, so by Lemma 1 the input runs `create`. The site also requires U's byte 5 to be the
 constant 2s, which is at most 74. Byte 5 begins a push, because the selector push ends at byte 4 (N3), and a
 byte from 0 to 74 at a push boundary is a push of that many bytes. So the second push ends at byte 6 + 2s and
-the third begins there. The site requires the bytes from there to be Q ‖ A. By G8, Q ‖ A is a concatenation
-of 2 + k + n minimal pushes, so by N3 the next 2 + k + n pushes of U are exactly those. By step 1 the
-unlocking holds exactly one push per parameter of `create` besides the selector and the redeem script, and
-by G1 and O2 those pushes are `create`'s ABI inputs from the last backwards: the callee list, then the
-sender category, the value, c_k … c_1, and p_n … p_1. So those four groups have the values the site built
-from K, v, c and a. `create`'s step 3 requires its outpoint index to be 0 and takes X from its outpoint; the
-site reads the same outpoint hash. Last, the site requires X‖02 at output d_out. By Lemma 3 the only output
-with X‖02 is the master at OUTBASE, at lock M. ∎
+the third begins there. The site requires the bytes from there to be Q ‖ A. By G8, Q ‖ A is a concatenation of
+2 + k + n minimal pushes, so by N3 the next 2 + k + n pushes of U are exactly those. By step 1 the unlocking
+holds exactly one push per parameter of `create` besides the selector and the redeem script, and by G1 and O2
+those pushes are `create`'s ABI inputs from the last backwards: the callee list, then the sender category, the
+value, c_k … c_1, and p_n … p_1. So those four groups have the values the site built from K, v, c and a.
+`create`'s step 3 requires its outpoint index to be 0 and takes X from its outpoint; the site reads the same
+outpoint hash. Last, the site requires X‖02 at output d_out. By Lemma 3 the only output with X‖02 is the
+master at OUTBASE, at lock M. ∎
 
 **Theorem 3 (a constructor's `msg.sender` is Solidity's).** Let `create` for X run in 𝒯 as in Lemma 3, for a
 C whose constructor reads `msg.sender`, and let K be its sender category.
@@ -2255,7 +2305,8 @@ the constructor reads the lock of the input that carries the creator's minting N
 address.
 
 **Theorem 4 (a constructor's calls are Solidity's).** Let `create` for X succeed in 𝒯 as in Lemma 3, and let
-call slot j of C's constructor be `T.f(args)` in the source, where σ is f's selector. Then:
+call slot j of C's constructor be the call `T.f(args)` of the source, and σ the selector that the compiled
+digest of slot j uses (f's selector under compiler correctness, A16.1). Then:
 1. The constructor evaluated the call site of every call slot exactly once.
 2. With m_j as in step 10: input m_j is locked by the P2SH32 address that the constructor computed for T,
    and output o_j is a carrier of that input's category whose call record starts with the digest of
@@ -2299,9 +2350,10 @@ compares a digest compares it with a digest of its own: by G5 an ordinary caller
 with `ff ff`; another `create` has another X, because it spends another outpoint; another call slot of this
 `create` has another slot number. By H1 none of those digests equals this one. ∎
 
-Row by row against the table of A7: rows 1, 2 and 6 are (3); row 3 is (1), (3) and (5); row 4 is (4); row 5
-is Theorem 5; row 7 is N6; row 8 holds because no input can be locked to M before X exists (G2, N1), so a
-call to C's own address fails step 10, and a callee cannot call C for the same reason.
+Row by row against the table of A7: rows 1, 2 and 6 are (3), with σ and the argument values the source's under
+compiler correctness (A16.1); row 3 is (1), (3) and (5); row 4 is (4); row 5 is Theorem 5; row 7 is N6; row 8
+holds because no input can be locked to M before X exists (G2, N1), so a call to C's own address fails step
+10, and a callee cannot call C for the same reason.
 
 **Theorem 5 (nobody else acts as the child).** Let an input of 𝒯 be locked by a compiled master and run an
 entry g of it, and let g read `msg.sender` and obtain a value L through the genesis step, with X, slot, g_in
@@ -2311,8 +2363,7 @@ and g_out as in its genesis call. Then:
    that g_in spends.
 2. If L is a compiled master, of a contract C, then that coin is locked to DEPLOY(C); input g_in runs
    `create`; L is M; and this run of g is the callee of call slot `slot` of C's constructor. `create`
-   accepted its call record, so g's selector and arguments are the ones the constructor's source wrote for
-   that slot.
+   accepted its call record, so g's selector and arguments are the ones the constructor's code passed for that slot.
 3. So a compiled master whose code has no birth trailer is never taken as the genesis sender by a compiled
    callee, in any transaction, however that contract was created. One whose code has a trailer is taken so
    only for a call its own constructor makes.
@@ -2357,10 +2408,10 @@ for a hash.
    creator's tokens.
 
 *Proof.* (1) By Theorem 2 `create`'s value is v. Step 6 requires the row, step 11 bounds the sends, and step
-12 pins the row as A4.4 says. By O9 every read of `this.balance` reads the journal, and every send lowers it.
-(2) is step 6 and
-the compile-time rule. (3) Step 6 of A6 concerns only the satoshi container, and A6 adds no other change to
-the creator's covenant. ∎
+12 pins the row as A4.4 says. By O9 every read of `this.balance` reads the journal, which starts at the
+container's start plus v, and every send lowers it by the amount sent. (2) is step 6 and the compile-time
+rule. (3) Step 6 of A6 concerns only the satoshi container, and A6 adds no other change to the creator's
+covenant. ∎
 
 **Theorem 7 (a child is born with the coins it keeps single).** Let `create` for X succeed in 𝒯 as in Lemma
 3. For each container that C keeps single, 𝒯 has exactly one output at its lock. It holds at least RESERVE.
@@ -2376,7 +2427,7 @@ compiles in a constructor, and a read of a token balance is the constant of A5. 
 **Theorem 8 (the author).** `create` on (X, 0) succeeds only in a transaction that also spends (X, 1). Before
 the coin is 1,440 blocks old, nothing else can spend it.
 
-*Proof.* Step 4. The only other arm is `sweep` (O1), which requires that age (N7). ∎
+*Proof.* Step 4. The only other arm is `sweep` (O1), whose code by O1 requires that age, which N7 enforces. ∎
 
 **Theorem 9 (creations do not interfere).** Let two inputs of 𝒯 run `create`, for X₁ and X₂. Then X₁ ≠ X₂;
 their genesis ranges have no index in common, so no output satisfies a pin of both; a callee's call record
@@ -2803,11 +2854,48 @@ read.
 | 20 | a confirming read, with a finality verdict | not final: reads inside a called function and effects in a substituted argument escaped the whole-statement rule; `delete` was no write; the unit of an `if` condition was undefined; and the policy of refusing every front-end deviation found kept the review going without end | the satoshi balance closed at the level of the whole constructor (a constructor that reads it sends nothing, and the other way round), so no order can show; the statement unit defined; front-end deviations that do not bear on a collection or on the balance at birth listed in A16.5 as compiler defects, not refused one by one |
 | 21 | a finality verdict after the simplification | the collection rules sound under the scope; the balance rule sound but for one gap, a balance read inside a library function; two deviations claimed as refused that were only listed | library and free bodies judged as C's are; A16.5's claims corrected; `return f(…);` allowed and library calls allowed to be inert, both judged sound by the reviewer; a function returning a `storage` reference to an entry refused |
 | 22 | a confirming read, with a finality verdict | final with fixes: F1 and F2 closed, the improvements sound; four minor findings (B7.3's gate list, `emit` in an inert call, assembly in an inert call, an ambiguous test) | all four fixed |
+| 23 | a read of the changes made after round 22 | six defects, five in the text around the mechanical checks and the record and one in the plan (B7.3's gate missed a refusal of A4.1), and three minor ones (see below) | all fixed |
+| 24 | a read of round 23's fixes and of check 7 | the text claimed more than check 7 checks, named the call records among the rules checks 1 to 6 test, and misdescribed round 23; four minor points | all fixed: the text names what is checked and what is not; check 7 lets the builder choose the identity flag and the token rows' categories and runs its controls on its own candidates |
+| 25 | a read of round 24's fixes | the text still claimed more in places (the builder's choices, every placement of two creations, the closing paragraph, the list of rules no check models) and one test label was wrong | check 7 now also tries every OUTBASE and more placements of two creations; the text corrected |
+| 26 | a read of round 25's fixes | three minor points: two creations one output apart, the second before the first, never a base; the closing paragraph's account of round 23; two parts of Theorem 7 and O2 missing from what no check covers | all fixed; check 7 now tries every placement up to one output apart, and its counts changed |
+| 27 | a read of round 26's fixes | one minor point: the closing paragraph below, recounting round 26, called its own earlier account of round 23 incomplete, where that account had contradicted row 23 | fixed |
+| 28 | a read of round 27's fix | no defects: the fix, row 27 and the status line's counts agree with the record, and the checks program is unchanged | nothing to fix |
+| 29 | a read of the theorems restated so that none assumes the front-end premise | seven: Lemma 2 and Theorem 8 rested on `sweep`'s source being compiled as written; the satoshi journal's start had no generator check; Lemma 4 no longer said what a read of a collection is; the premise covered writes only, and C's source only; Theorem 4's σ was a property of the source; Lemma 4 claimed the order of appends, which is compiler correctness; three stale lines | all fixed: O1 fixes `sweep`'s code by a template check; O9 flags the journal's start; Lemma 4 says what a read of a collection cannot do; the premise covers every effect of every source; σ is the compiled selector |
+| 30 | a read of round 29's fixes | five: Lemma 4's new sentence on reads claimed more than O9 checks; "What compiler correctness adds" stated the premise in a form that holds only in the deployer program, and left out the rewrite's own correctness; O9's new flag was not wired into B7.18; the `sweep` test in Part C took the script for the node's age rule; check 4 credited to the wrong item | all fixed: Lemma 4 says only that no collection access is left, so the run reads no entry coin through one; the premise is stated in order for every source, with the rewrite as a third premise; B7.18 compares the flag, required whenever C has a satoshi row, a balance read or a send |
+| 31 | a read of round 30's fixes | two: the deployer program's weaker form of the premise left out sends and calls, and fit only statements lowered into groups; the closing paragraph's account of round 30 | fixed: the weaker form applies to a statement lowered into a group, which holds no user call; every other statement keeps the full form, sends and calls included |
 
-*Mechanical checks.* After the last review, the core rules were checked by a program (A16.1). Its first run
+*Mechanical checks.* After the last review, some of the rules were checked by a program (A16.1). Its first run
 failed one check, and the fault was in the check: it asserted that a group meeting the condition has the same
 effect in every order of its statements, while this text claims it for the order the lowering emits, which is
-what the premise needs. Corrected to test exactly that claim, all six checks pass.
+what the premise needs. Corrected to test exactly that claim, the checks pass. A seventh check, on a bounded
+model of the transaction rules, was added afterwards, and a read of these last changes by a reviewer who had
+not made them (round 23) found six defects, five in the text around them (a sentence of A16.1 lost in an edit,
+check 3's count taken twice, a negative control claimed for every check where three had one, check 6 claiming
+the callee list where it fixes its length, item 2 below out of date) and one in the plan (B7.3's gate missing
+the rule on a writing call's arguments); and three minor ones. All are fixed, and checks 2, 5 and 6 got their
+controls. A second read (round 24) found that the text claimed more than check 7 checks (it tests Lemma 3 (2)
+and Theorem 9's disjoint ranges; the other theorem parts it touches restate a step), that it named the call
+records among the rules the checks test, which no check models, and that round 23 had been misdescribed; and
+four minor points. All are fixed. A third read (round 25) found the text still claiming more in places, and
+the seventh check's model trying neither every OUTBASE nor a second creation starting two or more outputs
+before the first; the model now tries both, and the text is corrected. A fourth read (round 26) confirmed
+every number then in the text against the program's output and found three minor points: two creations one
+output apart, the second before the first, were still never a base; this paragraph's account of round 23
+contradicted row 23; and the list of what no check covers left out Theorem 7's last sentence and O2. All are
+fixed; check 7 now tries every placement up to one output apart, which changed its counts, and all seven
+checks pass. A fifth read (round 27) confirmed every number, the placements and the controls against the
+program, and found one minor point: recounting round 26, this paragraph called its own earlier contradiction
+of row 23 an omission; it is fixed. A sixth read (round 28) of that fix found no defects. After that the
+theorems were restated to speak of what the compiled code computes, so that none assumes the front-end premise
+(A16.1). A read of the restatement (round 29) found seven defects, two of them gaps that the old wording had
+covered with compiler correctness: Lemma 2 and Theorem 8 rested on `sweep`'s source being compiled as written,
+and Theorem 6 on the satoshi journal's start, which no generator check covered. O1 now fixes `sweep`'s code
+and O9 flags the start; all seven are fixed. A read of those fixes (round 30) found five more, none in the
+design of the deployer: a claim in Lemma 4 beyond what O9 checks, a premise stated for every source in a form
+that holds only in the deployer program, without the rewrite's correctness; a check credited to the wrong
+item; and the plan's wiring and tests; all are fixed. A read of those (round 31) found that the deployer
+program's weaker form of the premise left out sends and calls and fit only statements lowered into groups, and
+a slip in this record; both are fixed.
 
 **Before implementation.**
 
@@ -2824,14 +2912,15 @@ what the premise needs. Corrected to test exactly that claim, all six checks pas
    - that a contract whose constructor calls another contract has other code, and so another address, when
      it is compiled with its deployer: the birth trailer.
 2. **What the reviews did, and what they did not.** The reviewers compared the text with the code at
-   `f6667bd53`. Nobody compiled or ran anything, and the proofs are arguments on paper. Every mechanism that
+   `f6667bd53`. The proofs are arguments on paper. Every mechanism that
    stands was attacked by a reviewer who had not designed it: the binding, the census, the callee list, the
    tagged record, the birth trailer, the created-children list and the code marker. A mechanism that is
    added or changed after this text needs the same before it is built. The mechanisms added after the
    decisions of 2026-11-12 were read in the same way: the exact stack in every arm and its route check (O8,
-   B6.0), the journal cells and the structure check (A4.4, O9, Lemma 4), the fixed container starts (A5,
-   Theorems 6 and 7) and the `new` site's obligation (O10). Apart from the surplus-push probe recorded in the
-   table above, nothing was compiled or run.
+   B6.0), the source rewrite of collection accesses into journals with the gate rules and the group condition
+   (A4.1, A4.4, O9, Lemma 4), the balance rule and the fixed container starts (A4.1, A5, Theorems 6 and 7), and
+   the `new` site's obligation (O10). Apart from the surplus-push probe recorded in the table above and the
+   program of mechanical checks (A16.1), nothing was compiled or run.
 3. **Statements about today's code that a test must confirm.** Each has a test that comes first, or a "stop
    and report":
    - what a single container allows (A8, B7.16);
@@ -4629,11 +4718,12 @@ are allowed here because these are attacks. Each must fail, in the VM unless the
 - [x] a creator that is asked to answer its own child's constructor. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 
 **Regression.** Run at the end of every phase, against the B0.5 baseline; the full suites run at the five
-milestones (final acceptance here ran the affected files rather than the whole suites, by the user's
-instruction: 28 compiler files covering every deployer, fold, genesis, record, stack and container area are
-390/390 green, and 18 SDK deploy/create/payment/factory files are 162/162 green. The legacy fold-path files
-compile with the internal `__legacyDeployFold` escape, which is what it exists for; `DeployUnfoldableConstructor`
-expects the B10 deployer binding, and `ContractDeployment` expects the child category to be the prep's txid):
+milestones. Final acceptance ran them at the final HEAD: the full solidc suite is **513 files and 7,835/7,835
+tests green** (baseline at master: 7,615 tests, all green; the increase is the deployer work's own cases).
+Eight files that assert the pre-B10 fold's shape compile with the internal `__legacyDeployFold` escape, which
+is what it exists for; the deploy-then-call corpus now expects `DeployedChildCallError`, the sub-RESERVE
+deploy value expects the B10 refusal, `DeployUnfoldableConstructor` expects the deployer binding, and
+`ContractDeployment` expects the child category to be the prep's txid. The full SDK suite is recorded below.
 - [x] `W/solidc/test/ContractDeployment.test.ts`, `DeployThenCallFold.test.ts` and *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       `DeployUnfoldableConstructor.test.ts`;
 - [x] `W/solidcash/test/e2e/ContractFactory.test.ts`, `DeployFromContract.test.ts`, *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*

@@ -43,8 +43,9 @@ describe('dynamic-write array split with array-element external call', () => {
     const bundle = compileStringSplit(SOURCE, {
       evmCompat: true,
       messageBus: true,
-      maxShardBytes: 4000,
-      maximumInputBytes: 4000,
+      // O8's exact-stack check adds a few bytes to each arm; keep the shard ceiling above the closure's new size.
+      maxShardBytes: 4100,
+      maximumInputBytes: 4100,
     });
     expect(bundle.manifest.facets.length).toBeGreaterThan(0);
   });

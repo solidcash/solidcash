@@ -41,9 +41,10 @@ describe('atomic verifier bytecode specialization', () => {
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       // B+F1 void-record/edge overhead on the direct verifier, then 70 B on both for the record lock a master rebuilds,
       // which carries the data-record covenant's authority bind and category, each now defined once (590aca164).
-      direct: 842,
-      composed: 1960,
-      frameworkTax: 1118,
+      // +26 B direct / +3 B composed for O8's exact-stack check, which every stateful arm now carries.
+      direct: 868,
+      composed: 1963,
+      frameworkTax: 1095,
     });
     expect(composed).toBeLessThanOrEqual(1985);
     expect(composed - direct).toBeLessThanOrEqual(1360);

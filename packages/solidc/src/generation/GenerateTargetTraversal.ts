@@ -23239,7 +23239,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // no redeem script is built and nothing is hashed.
       this.emitSelfLockingBytecode(locationData);
       this.pushToStack('(value)');
-    } else if (node.parameters.length === 0 || !bakesCtorArgs) {
+    } else if (bakedArguments === 0) {
+      // Master's post-feature shape: a `new C()` with no baked arguments embeds the body as is, even when C has
+      // synthetic constructor parameters. B1 removed the `{code, template}` option, not this behaviour.
       this.emit(bodyBytecode!, locationData);
       this.pushToStack('(redeemScript)');
     } else {

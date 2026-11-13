@@ -3650,6 +3650,9 @@ with a deployer whose constructor writes a collection, and only where today's st
       alone; the marker/edge checks around the call are the next suspect.
 - [ ] **B7.12 Epilogue (O2).** Emit steps 11 to 15 of A4.3.
       - Step 11: sum the constructor's satoshi sends and compare them with the value.
+      Note (implementation, 2026-11-13): the satoshi row is pinned (empty category, at least the journal's final
+      balance) and its VM cases pass. The token, HEAD and collection-entry row pins are not built; the layout
+      rows exist (B7.9).
       - Step 12: the A4.4 pins at OUTBASE. The master: lock M, `X‖02`, value RESERVE, empty commitment,
         amount 0. The oracle, when C reads block data: lock `blockOracleLockingBytecode(X)`, derived with
         `blockOracleLockDerivationScript()`; `X‖01`; commitment `__internal__oracleOwner ‖ unset fields`,

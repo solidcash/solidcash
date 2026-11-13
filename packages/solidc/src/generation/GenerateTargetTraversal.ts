@@ -11668,6 +11668,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitGenesisCreateEpilogue(node: FunctionDefinitionNode): void {
     const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
     this.emitGenesisMasterPin(node);
+    this.emitGenesisRowPins(node);
     this.emitGenesisCensus();
     if (this.compactOffsetMap.size > 0) this.emitAutoCovenantVerification(node);
     if ((node.externalCalls?.length ?? 0) > 0) {
@@ -11899,6 +11900,143 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_TOALTSTACK, loc);
     }
+  }
+
+  /**
+   * A4.4 step 12 for the non-master rows: the satoshi container's category/amount, each single token row, and the
+   * HEAD of every sorted collection the constructor does not write. Entry rows are B7.18.
+   */
+  private emitGenesisRowPins(node: FunctionDefinitionNode): void {
+    const layout = node.blockLayout;
+    if (layout === undefined) return;
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const names = (this.compilerOptions as {
+      __deployerProgram?: { box?: { contractParameterNames?: string[] } };
+    }).__deployerProgram?.box?.contractParameterNames ?? [];
+    for (const slot of layout.slots) {
+      if (slot.kind === 'satoshiContainer') this.emitGenesisSatoshiRowPin(slot.offset, loc);
+    }
+  }
+
+  /** `[..]` -> `[.., outidx]`: OUTBASE + the row's offset. */
+  private emitGenesisRowIndex(offset: number, loc: SingleLocationData): void {
+    this.emitPickTrackedFromBottom('__internal__genesisOutputBase', loc);
+    if (offset > 0) {
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.pushToStack('(outidx)');
+  }
+
+  private emitGenesisSatoshiRowPin(offset: number, loc: SingleLocationData): void {
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.popFromStack();
+    this.pushToStack('(outcat)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(zero)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    // The row holds at least the journal's final balance (A5): start + value - the sends that ran.
+    this.emitGenesisBalance(loc);
+    this.pushToStack('(value)');
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.popFromStack();
+    this.pushToStack('(outvalue)');
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  private emitGenesisTokenRowPin(offset: number, parameter: string, loc: SingleLocationData): void {
+    // Category: the parameter, in the VM's byte order (reverse the display-order value), no capability.
+    this.emitPickTrackedFromBottom(parameter, loc);
+    this.emit(Op.OP_REVERSEBYTES, loc);
+    this.pushToStack('(expectcat)');
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.popFromStack();
+    this.pushToStack('(outcat)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.popFromStack();
+    this.pushToStack('(amount)');
+    this.emit(Op.OP_1, loc);
+    this.pushToStack('(one)');
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack(2);
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.popFromStack();
+    this.pushToStack('(commitment)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(empty)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
+    this.emit(encodeInt(1200n), loc);
+    this.pushToStack('(reserve)');
+    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  private emitGenesisHeadPin(offset: number, collectionHash: Uint8Array, loc: SingleLocationData): void {
+    // Lock = the collection's entry P2SH32 for (X, M).
+    this.emitPickTrackedFromBottom('(gen_x)', loc);
+    this.pushToStack('(headcategory)');
+    this.emitBoundEntryP2sh32(collectionHash, loc, { stack: '(gen_m)' });
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTBYTECODE, loc);
+    this.popFromStack();
+    this.pushToStack('(outlbc)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    // X‖01, amount 0, empty commitment, RESERVE.
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+    this.popFromStack();
+    this.pushToStack('(outcat)');
+    this.emitPickTrackedFromBottom('(gen_x)', loc);
+    this.pushToStack('(base)');
+    this.emit(new Uint8Array([0x01]), loc);
+    this.pushToStack('(one)');
+    this.emit(Op.OP_CAT, loc);
+    this.popFromStack(2);
+    this.pushToStack('(expectcat)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENAMOUNT, loc);
+    this.popFromStack();
+    this.pushToStack('(amount)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(zero)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    this.popFromStack();
+    this.pushToStack('(commitment)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(empty)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.emitGenesisRowIndex(offset, loc);
+    this.emit(Op.OP_OUTPUTVALUE, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
+    this.emit(encodeInt(1200n), loc);
+    this.pushToStack('(reserve)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
   }
 
   private emitGenesisMasterPin(node: FunctionDefinitionNode): void {

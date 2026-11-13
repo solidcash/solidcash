@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
-import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
+import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import {
   asmToScript, buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode,
   type Artifact, type DeployerAbi,
@@ -116,6 +116,36 @@ function createSpend(
     token: { category: x, amount: 0n, nft: { capability: 'minting', commitment: EMPTY } },
   }));
   outputs.push(record ?? recordOutput(artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master));
+  // A4.4's satoshi and single-token rows are pinned by create; fill them unless the caller supplies its own
+  // outputs (the send test's row and transfer).
+  if (extraOutputs.length === 0) {
+    const create = deployer.abi.find((entry) => entry.name === 'create');
+    const layout = create?.blockLayout;
+    if (layout !== undefined) {
+      const rawValue = valueOverrides.__internal__deployValue;
+      const deployValue = rawValue === undefined || rawValue.length === 0 ? 0n : vmNumberToBigInt(rawValue) as bigint;
+      for (const slot of layout.slots) {
+        if (slot.kind === 'satoshiContainer') {
+          outputs.push({
+            lockingBytecode: TOKENLESS,
+            valueSatoshis: (layout.singleSatoshiContainer === true ? 1200n : 0n) + deployValue,
+          });
+        } else if (slot.kind === 'tokenContainer' && slot.slotIndex !== undefined) {
+          const argument = contractArgs[slot.slotIndex];
+          if (argument !== undefined) {
+            outputs.push({
+              lockingBytecode: TOKENLESS,
+              valueSatoshis: 1200n,
+              token: {
+                category: Uint8Array.from(argument.value).reverse(),
+                amount: 1n,
+              },
+            });
+          }
+        }
+      }
+    }
+  }
   outputs.push(...extraOutputs);
   const values: Record<string, Uint8Array> = {
     __internal__budgetPad: EMPTY,
@@ -193,9 +223,16 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
 
   it('reads one unit for a container the contract keeps single', () => {
     const artifact = compileString(tokenStart('pragma tokencontainer single;'), { deployer: true, messageBus: false });
-    expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
+    const category = Uint8Array.from(asset).reverse();
+    const tokenSource: SourceOutputs[number] = {
+      lockingBytecode: TOKENLESS, valueSatoshis: 1200n, token: { category, amount: 1n },
+    };
+    const tokenInput: VmInput = { ...dummyInput(4), outpointTransactionHash: category, outpointIndex: 0 };
+    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
       artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
-    ), [{ name: 'asset', value: asset }]) as never)).toBe(true);
+    ), [{ name: 'asset', value: asset }], (output) => output, undefined, {}, undefined, 0, 0xffffffff,
+    [], [tokenInput], [tokenSource]);
+    expect(vm.verify(spend as never)).toBe(true);
   });
 
   it('reads zero for any other container', () => {

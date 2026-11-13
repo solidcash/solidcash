@@ -7,7 +7,8 @@ import { compileString } from '../direct-compile.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
-import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { getEntryNftAddress, getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { resolveIdentity } from '../../src/bcmr/identity.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { getEventNftAddress } from '../../src/stateful/covenant-helpers.js';
@@ -280,5 +281,66 @@ describe('a top-level deployment through Deploy<C>', () => {
     );
     const rows = (await provider.getUtxos(rowAddress)).filter((u) => u.satoshis === 3200n);
     expect(rows).toHaveLength(1);
+  });
+
+  it('publishes a BCMR registry after the identity (A10, G6)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const fundingUtxo: Utxo = { txid: '36'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+      bcmr: { name: 'Test token', description: 'published through Deploy<C>' },
+    });
+    expect(result.registry).toBeDefined();
+    const identities = Object.values(result.registry!.registry.identities);
+    const snapshot = Object.values(identities[0] as Record<string, { name?: string }>)[0];
+    expect(snapshot.name).toBe('Test token');
+    // Output 0 is the authhead; output 1 is the publication, a tokenless data carrier.
+    expect(result.tx.outputs[1].token).toBeUndefined();
+    expect(result.tx.outputs[1].lockingBytecode.length).toBeGreaterThan(0);
+  });
+
+  it('mints a constructor mapping entry and an unwritten collection\'s HEAD (B7.13, B7.18)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const deploy = async (source: string, txid: string) => {
+      const artifact = compileString(source, { deployer: true, messageBus: false });
+      const fundingUtxo: Utxo = { txid, vout: 0, satoshis: 500_000n };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return { artifact, result: await StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock,
+      }) };
+    };
+    const written = await deploy(`${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } }`,
+      '37'.repeat(32));
+    const entryAddress = getEntryNftAddress(
+      (written.result.contract as any).inner ?? written.result.contract as any,
+      written.result.categoryId, 'm',
+    );
+    const entryLock = binToHex(addressToLockScript(entryAddress));
+    const entry = written.result.tx.outputs.find(
+      (output) => binToHex(output.lockingBytecode) === entryLock,
+    );
+    expect(entry?.token?.nft?.capability).toBe('mutable');
+    expect(binToHex(entry!.token!.nft!.commitment!)).not.toBe('');
+
+    const unwritten = await deploy(`${P} contract C { mapping(int => int) m; constructor() { } }`,
+      '38'.repeat(32));
+    const headAddress = getEntryNftAddress(
+      (unwritten.result.contract as any).inner ?? unwritten.result.contract as any,
+      unwritten.result.categoryId, 'm',
+    );
+    const head = unwritten.result.tx.outputs.find(
+      (output) => binToHex(output.lockingBytecode) === binToHex(addressToLockScript(headAddress)),
+    );
+    expect(binToHex(head!.token!.nft!.commitment!)).toBe('00'.repeat(128));
   });
 });

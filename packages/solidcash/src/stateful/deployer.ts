@@ -225,10 +225,15 @@ export interface DeployerPrep {
 const RESERVE = 1200n;
 const DUST = 600n;
 
+/** The fee a creation carries when its caller states none: Deploy<C>'s unlocking dominates the transaction size. */
+export function defaultDeployerFee(deployer: DeployerAbi): bigint {
+  return BigInt(Math.max(1000, 1500 + hexToBin(deployer.bytecode).length + 200 * deployer.genesisOutputs));
+}
+
 /** What output 1 of a prep needs: RESERVE per genesis output, the identity output, and a create fee allowance. */
 export function defaultAuthorValue(deployer: DeployerAbi): bigint {
   const nfts = BigInt(Math.max(1, deployer.genesisOutputs)) + 1n;
-  return RESERVE * (nfts + 1n) + 2000n;
+  return RESERVE * (nfts + 1n) + defaultDeployerFee(deployer) + 2000n;
 }
 
 function assertSpendableFunding(utxos: readonly Utxo[], signer: Unlocker, allowAnyAuthorLock = false): void {
@@ -820,12 +825,22 @@ export async function deployThroughDeployer<T extends Artifact>(
     deployerLock: options.senderLockingBytecode
       ?? (isP2pkhLock(funderLock) ? funderLock : addressToLockScript(options.changeAddress)),
   });
-  if (options.bcmr !== undefined) {
-    throw new DeployerPathError(
-      'A registry publication (bcmr) is not built through Deploy<C> yet; pass identity only',
-    );
-  }
-  const leading: import('../interfaces.js').Output[] = [identity.output];
+  // A publication is a tokenless data carrier after the identity (A10). A metadata probe is not needed for a
+  // contract that does not answer IERC20Metadata; one that does must state its fields in the publication.
+  const prepared = options.bcmr === undefined
+    ? {}
+    : await (await import('../bcmr/deployment.js')).prepareMetadata({
+      artifact,
+      category: categoryId,
+      deploy: options,
+      probe: async () => {
+        throw new DeployerPathError('this deployment cannot run a metadata probe');
+      },
+      tokenSatoshis: options.dataNftAmount ?? 1200n,
+    });
+  const leading: import('../interfaces.js').Output[] = options.bcmr === undefined
+    ? [identity.output]
+    : (await import('../bcmr/deployment.js')).leadingOutputs(identity, prepared);
   const outbase = leading.length;
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
@@ -837,26 +852,17 @@ export async function deployThroughDeployer<T extends Artifact>(
       `Contract '${artifact.contractName}' has ${deployer.callSlots} constructor call slots, which the compiler's deployer cannot run in the VM yet`,
     );
   }
-  if (deployer.collectionRows.length > 0 || deployer.readsBlockData
-    || deployer.constructorBlockField !== undefined) {
+  if (deployer.readsBlockData || deployer.constructorBlockField !== undefined) {
     throw new DeployerPathError(
-      `Contract '${artifact.contractName}' needs a genesis layout or a constructor block-field probe the `
-      + "compiler's deployer does not build yet",
+      `Contract '${artifact.contractName}' needs a constructor block-field probe the compiler's deployer `
+      + 'does not build yet',
     );
   }
 
   const outputs: import('../interfaces.js').Output[] = [...leading];
-  outputs.push({
-    to: masterLock,
-    amount: masterAmount,
-    token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-  });
-  for (let index = 0; index < stateLayout.dataNftCount; index++) {
-    outputs.push({
-      to: dataNftAddress,
-      amount: dataNftAmount,
-      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: commitments[index] ?? '' } },
-    });
+  const createLayout = deployer.abi.find((entry) => entry.name === 'create')?.blockLayout;
+  if (createLayout === undefined) {
+    throw new DeployerPathError(`Deployer of '${artifact.contractName}' has no create block layout`);
   }
   const payable = constructorAbi?.modifiers?.includes('payable') === true;
   let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
@@ -865,38 +871,128 @@ export async function deployThroughDeployer<T extends Artifact>(
     // row's amount, so the journal's balance (which the row may not exceed) is raised with it.
     deployValue = RESERVE;
   }
-  const needsSatoshiRow = deployer.satoshiContainer !== 'none';
-  if (needsSatoshiRow) {
-    // A required row also holds RESERVE: it is the container's own opening balance (A5).
-    const containerAmount = deployer.satoshiContainer === 'required' ? RESERVE + deployValue : deployValue;
-    outputs.push({ to: getSatoshiContainerAddress(contract as never, categoryId), amount: containerAmount });
-  }
   const constructorEvents = constructorAbi?.emits ?? [];
-  if (constructorEvents.length > 0) {
-    const { getEventNftAddress } = await import('./covenant-helpers.js');
-    for (const [index, emitInfo] of constructorEvents.entries()) {
-      outputs.push({
-        to: getEventNftAddress(contract as never, categoryId, emitInfo.eventSignature),
-        amount: dataNftAmount,
-        token: { category: categoryId, amount: 0n,
-          nft: { capability: 'none', commitment: derived.eventCommitments?.[index] ?? '' } },
-      });
+  const entryCommitments = [...(derived.entryCommitments ?? []), ...(derived.trailingEntryCommitments ?? [])];
+  const headCommitment = new Uint8Array(128);
+  let entryIndex = 0;
+  let dataIndex = 0;
+  let eventIndex = 0;
+  let transferIndex = 0;
+  for (const slot of createLayout.slots) {
+    switch (slot.kind) {
+      case 'master':
+        outputs.push({
+          to: masterLock,
+          amount: masterAmount,
+          token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+        });
+        break;
+      case 'dataNft': {
+        const nftIndex = slot.nftIndex ?? dataIndex;
+        outputs.push({
+          to: dataNftAddress,
+          amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: commitments[nftIndex] ?? '' } },
+        });
+        dataIndex += 1;
+        break;
+      }
+      case 'entry':
+      case 'head': {
+        const collection = slot.collection
+          ?? constructorAbi?.entryAccesses?.[slot.slotIndex ?? -1]?.collection;
+        if (collection === undefined) {
+          throw new DeployerPathError(`A ${slot.kind} slot of '${artifact.contractName}' names no collection`);
+        }
+        const { getEntryNftAddress } = await import('./covenant-helpers.js');
+        const commitment = slot.kind === 'head'
+          ? headCommitment
+          : entryCommitments[entryIndex];
+        if (slot.kind === 'entry') entryIndex += 1;
+        if (commitment === undefined) {
+          throw new DeployerPrepError(
+            `The constructor's write to '${collection}' has no derived entry commitment`,
+          );
+        }
+        outputs.push({
+          to: getEntryNftAddress(contract as never, categoryId, collection),
+          amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable',
+              commitment: typeof commitment === 'string' ? commitment : binToHex(commitment) } },
+        });
+        break;
+      }
+      case 'satoshiContainer':
+        // A required row also holds RESERVE: it is the container's own opening balance (A5).
+        outputs.push({
+          to: getSatoshiContainerAddress(contract as never, categoryId),
+          amount: deployer.satoshiContainer === 'required' ? RESERVE + deployValue : deployValue,
+        });
+        break;
+      case 'tokenContainer': {
+        const tokenRow = slot.slotIndex;
+        if (tokenRow === undefined) throw new DeployerPathError('A token container slot names no parameter');
+        const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
+        const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
+          && utxo.token.category.toLowerCase() === String(constructorArgs[tokenRow] ?? '').toLowerCase());
+        if (supplied === undefined) {
+          throw new DeployerPrepError(
+            `'${artifact.contractName}' keeps its token container '${name}' single; pass a coin of its category `
+            + 'in tokenContainers',
+          );
+        }
+        outputs.push({
+          to: getTokenContainerAddress(contract as never, categoryId, supplied.utxo.token!.category),
+          amount: supplied.utxo.satoshis,
+          token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
+        });
+        break;
+      }
+      case 'event':
+      case 'eventChunk': {
+        const emitInfo = constructorEvents[eventIndex];
+        if (emitInfo === undefined) {
+          throw new DeployerPathError(`'${artifact.contractName}' has an event slot the constructor does not emit`);
+        }
+        const { getEventNftAddress } = await import('./covenant-helpers.js');
+        outputs.push({
+          to: getEventNftAddress(contract as never, categoryId, emitInfo.eventSignature),
+          amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'none', commitment: derived.eventCommitments?.[eventIndex] ?? '' } },
+        });
+        if (slot.kind === 'event') eventIndex += 1;
+        break;
+      }
+      case 'keccakSideCar':
+      case 'ecrecoverSideCar':
+        // A4.4 places the side-car group at the side-car base, after the genesis range; the side-car block below
+        // appends both its inputs and its recreated outputs.
+        break;
+      case 'transfer':
+      case 'tcTransfer': {
+        const transfer = derived.transferOutputs?.[transferIndex];
+        if (transfer === undefined) {
+          throw new DeployerPathError(`'${artifact.contractName}' has a transfer slot the constructor does not send`);
+        }
+        outputs.push({ to: transfer.lockingBytecode, amount: transfer.amount });
+        transferIndex += 1;
+        break;
+      }
+      default:
+        throw new DeployerPathError(
+          `The create layout of '${artifact.contractName}' has a slot kind (${slot.kind}) this deployment does `
+          + 'not build',
+        );
     }
   }
-  for (const tokenRow of deployer.tokenRows) {
-    const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
-    const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-      && utxo.token.category.toLowerCase() === String(constructorArgs[tokenRow] ?? '').toLowerCase());
-    if (supplied === undefined) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' keeps its token container '${name}' single; pass a coin of its category in tokenContainers`,
-      );
-    }
-    outputs.push({
-      to: getTokenContainerAddress(contract as never, categoryId, supplied.utxo.token!.category),
-      amount: supplied.utxo.satoshis,
-      token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
-    });
+  if (outputs.length !== leading.length + deployer.genesisOutputs) {
+    throw new DeployerPrepError(
+      `The creation of '${artifact.contractName}' laid out ${outputs.length - leading.length} genesis outputs, but `
+      + `its deployer pins ${deployer.genesisOutputs}`,
+    );
   }
 
   // The create's public parameters: C's contract parameters, then its constructor parameters.
@@ -950,7 +1046,9 @@ export async function deployThroughDeployer<T extends Artifact>(
     builder.addInput(prep.changeCoin, options.funder);
   }
   const outputTotal = outputs.reduce((sum, output) => sum + output.amount, 0n);
-  const provisionalFee = options.fee ?? 1000n;
+  // The creation carries Deploy<C>'s whole unlocking, so its fee must cover that size at 1 sat/B even when the
+  // caller states no fee. A caller's own fee still wins.
+  const provisionalFee = options.fee ?? defaultDeployerFee(deployer);
   if (prep.authorCoin.satoshis < outputTotal + provisionalFee) {
     throw new DeployerPrepError(
       `The author coin of '${artifact.contractName}' holds ${prep.authorCoin.satoshis} satoshis, but its creation `
@@ -1049,6 +1147,7 @@ export async function deployThroughDeployer<T extends Artifact>(
     tx: details,
     categoryId,
     identity: identityRecord(identity, creationTxid),
+    ...(prepared.registry === undefined ? {} : { registry: prepared.registry }),
     prepTransactions: preps.map((entry) => entry.transactionHex),
   };
 }

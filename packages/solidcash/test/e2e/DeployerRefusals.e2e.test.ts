@@ -86,16 +86,16 @@ describe('A12: paths and refusals', () => {
     const artifact = compileString(source, { deployer: true, messageBus: false });
     expect(artifact.constructorWritesCollections).toBe(true);
     const { provider, fundingUtxo } = await funded();
-    await expect(deploy(provider, artifact, fundingUtxo, { viaDeployer: true }))
-      .rejects.toBeInstanceOf(DeployerPathError);
+    const result = await deploy(provider, artifact, fundingUtxo, { viaDeployer: true });
+    expect(await verifyBirth(provider, result.categoryId, [artifact.deployer!])).toBe(true);
   });
 
-  it('a BCMR registry publication is refused until Deploy<C> builds one', async () => {
-    // The identity itself is pinned at output 0 (DeployerCreation.e2e); a registry publication needs the metadata
-    // probe, which the deployer path does not build yet, so it is refused rather than silently omitted.
+  it('builds the BCMR registry publication after the identity', async () => {
+    // DeployerCreation.e2e asserts the publication's shape; this path-table entry pins that a stated publication is
+    // built rather than silently omitted.
     const { provider, fundingUtxo } = await funded();
     const artifact = compileString(C, { deployer: true, messageBus: false });
-    await expect(deploy(provider, artifact, fundingUtxo, { bcmr: { name: 'C', timestamp: 1 } as never }))
-      .rejects.toThrow(/registry publication/);
+    const result = await deploy(provider, artifact, fundingUtxo, { bcmr: { name: 'C' } });
+    expect(result.registry).toBeDefined();
   });
 });

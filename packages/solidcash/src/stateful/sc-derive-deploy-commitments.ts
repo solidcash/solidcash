@@ -603,8 +603,10 @@ export async function deriveDeployCommitments<T extends Artifact>(
         });
       }
       for (const tokenRow of deployerAbi.tokenRows) {
+        const rowValue = contract.constructorArgs[tokenRow];
+        const rowCategory = rowValue instanceof Uint8Array ? binToHex(rowValue) : String(rowValue ?? '');
         const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-          && utxo.token.category.toLowerCase() === String(contract.constructorArgs[tokenRow] ?? '').toLowerCase());
+          && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
         if (supplied === undefined) continue;
         probeBuilder.addOutput({
           to: getTokenContainerAddress(contract, categoryId, supplied.utxo.token!.category),

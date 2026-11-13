@@ -1494,8 +1494,10 @@ export async function deployThroughDeployer<T extends Artifact>(
         const tokenRow = slot.slotIndex;
         if (tokenRow === undefined) throw new DeployerPathError('A token container slot names no parameter');
         const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
+        const rowValue = constructorArgs[tokenRow];
+        const rowCategory = rowValue instanceof Uint8Array ? binToHex(rowValue) : String(rowValue ?? '');
         const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-          && utxo.token.category.toLowerCase() === String(constructorArgs[tokenRow] ?? '').toLowerCase());
+          && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
         if (supplied === undefined) {
           throw new DeployerPrepError(
             `'${artifact.contractName}' keeps its token container '${name}' single; pass a coin of its category `

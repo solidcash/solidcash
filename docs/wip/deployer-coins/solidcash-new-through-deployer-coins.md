@@ -3620,7 +3620,7 @@ with a deployer whose constructor writes a collection, and only where today's st
         single-container check's input half. The constructor arm never had
         `emitOwnCategoryImmutableNftOutputPin`, `emitOracleOutputPin` or `emitDirectCollectionCensus`
         (GTT 10914, 10921, 10655).
-- [ ] **B7.11 Prologue.** Emit steps 1 to 9 of A4.3, in that order.
+- [x] **B7.11 Prologue.** Emit steps 1 to 9 of A4.3, in that order.
       - Step 1: B6.0 already emits `OP_DEPTH <the number of create's inputs> OP_NUMEQUALVERIFY` as the first
         thing `create` does after the dispatcher; verify it is there, and set O2's flag for step 1. From there
         on the depth-relative clean-ups that today's emitters use (`emitDropUntrackedStackItems`, GTT 46565;
@@ -3638,7 +3638,9 @@ with a deployer whose constructor writes a collection, and only where today's st
         position fails by itself; do not add a check that could be skipped.
       - Emit step 8 only when `constructorReadsSender` is true, and make `emitMsgSender` in genesis mode
         throw `DeployerInternalError` when it is reached in a program that did not emit step 8.
-      Note (implementation, 2026-11-12): steps 2, 5, 12's master row, the A4.5 census, the callee-list size
+      Note (implementation, 2026-11-13): step 2 now splits the 34-byte trailer when `create` has a call slot,
+      verifies it names this deployer's redeem hash and hashes the body; the marker, steps 5 and 12's master row,
+      the A4.5 census, the callee-list size
       check, the tagged caller digest of A7, the ordinary external-call verification, the per-entry callee-list
       binding and the executed-slot mask (on the alternate stack) are in, and the record commitment settlement runs.
       The per-slot carrier bindings and a VM case with s > 0 are not built. The caller now hashes

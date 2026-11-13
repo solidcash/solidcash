@@ -11696,9 +11696,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('__internal__code'))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(codecopy)');
-    this.emit(Op.OP_SHA256, loc);
-    this.popFromStack();
-    this.pushToStack('(hash)');
+    if ((node.externalCalls?.length ?? 0) > 0) {
+      // C's constructor calls a contract, so its code is body || 20 || D(C) || 75 (B6.4/B7.14). Split the trailer,
+      // verify it names this deployer's redeem hash, and hash the body.
+      this.emit(Op.OP_DUP, loc);
+      this.pushToStack('(codecopy2)');
+      this.emit(Op.OP_SIZE, loc);
+      this.pushToStack('(codeSize)');
+      this.emit(encodeInt(34n), loc);
+      this.pushToStack('(trailerSize)');
+      this.emit(Op.OP_SUB, loc);
+      this.popFromStack(2);
+      this.pushToStack('(bodySize)');
+      this.emit(Op.OP_SPLIT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(body)');
+      this.pushToStack('(trailer)');
+      // D(C) = hash256(redeem) sits inside this input's own P2SH32 lock aa20 || D || 87.
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.pushToStack('(deployLock)');
+      this.emit(encodeInt(2n), loc);
+      this.pushToStack('(two)');
+      this.emit(Op.OP_SPLIT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(lockHead)');
+      this.pushToStack('(hashRest)');
+      this.emit(Op.OP_NIP, loc);
+      this.popFromStack();
+      this.emit(encodeInt(32n), loc);
+      this.pushToStack('(thirtyTwo)');
+      this.emit(Op.OP_SPLIT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(redeemHash)');
+      this.pushToStack('(suffix)');
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack();
+      this.emit(new Uint8Array([0x20]), loc);
+      this.pushToStack('(push32)');
+      this.emit(Op.OP_SWAP, loc);
+      [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(expectedTrailer)');
+      this.emit(new Uint8Array([0x75]), loc);
+      this.pushToStack('(drop)');
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(expectedTrailer)');
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+      this.emit(Op.OP_SHA256, loc);
+      this.popFromStack();
+      this.pushToStack('(hash)');
+      this.emit(Op.OP_NIP, loc);
+      this.removeFromStack(this.getStackIndex('(codecopy)'));
+    } else {
+      this.emit(Op.OP_SHA256, loc);
+      this.popFromStack();
+      this.pushToStack('(hash)');
+    }
     this.emit(template, loc);
     this.pushToStack('(template)');
     this.emit(Op.OP_EQUALVERIFY, loc);

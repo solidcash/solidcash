@@ -417,6 +417,11 @@ export default class MemCashNetworkProvider implements NetworkProvider {
     return (await this.request<{ height: number }>('devnet.info')).height;
   }
 
+  /** The node's tip median-time-past, the same value its own locktime finality reads. */
+  async getMedianTimePast(): Promise<number> {
+    return this.getBlockTime();
+  }
+
   async getRawTransaction(txid: string): Promise<string> {
     return this.request<string>('blockchain.transaction.get', txid);
   }

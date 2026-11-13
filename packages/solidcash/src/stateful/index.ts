@@ -301,3 +301,13 @@ export {
   type BalancedAssemblyView,
   type BalancedBlockPlacement,
 } from './balancedBlocks.js';
+export {
+  buildDeployerPrep, buildDeployerPreps, buildDeployerSweep, buildDeployerUnlocking,
+  broadcastDeployerPreps, decodeDeployerPrep, decideDeployerPath, deployerFallbackCase,
+  deployerLocktime, encodeDeployerCallees, extractDeployBindingFromTrace, releaseDeployerAuthorReservations,
+  runDeployerInputsLocal, verifyBirth,
+  DeployerCalleeError, DeployerLocktimeConflictError, DeployerPathError, DeployerPrepError, DeployerSidecarError,
+  type BuildDeployerPrepsOptions, type BuildDeployerUnlockingOptions, type DeployerChild,
+  type DeployerFallbackCase, type DeployerInputRun, type DeployerPathDecision, type DeployerPrep,
+  type DeployerSweepCoin, type DeployerSweepResult,
+} from './deployer.js';

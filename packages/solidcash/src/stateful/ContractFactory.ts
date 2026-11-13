@@ -49,6 +49,10 @@ export interface DeployContractOptions {
    * creates states its creator's, which is the `factory` a pair records.
    */
   senderLockingBytecode?: Uint8Array;
+  /** Deploy through the artifact's Deploy<C>; an artifact without one refuses (A12). */
+  viaDeployer?: boolean;
+  /** A prep built beforehand, whose deployer coin this deployment spends. */
+  deployerPrep?: import('./deployer.js').DeployerPrep;
   /** `split: 'func'` bundle. Genesis mints a master pool at each shard lock, and funding counts those pools. */
   functionSplit?: FunctionSplitBundle;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
@@ -395,7 +399,6 @@ export class ContractFactory<T extends Artifact = Artifact> {
         },
       } as T
       : this.artifact;
-
     let { fundingUtxo, funder, changeAddress } = overrides;
     if (!fundingUtxo) {
       if (!signer) {
@@ -434,17 +437,25 @@ export class ContractFactory<T extends Artifact = Artifact> {
       throw new Error('ContractFactory.deploy needs a funder + changeAddress (from a Signer runner or overrides).');
     }
 
+    // A12: only the deployer path omits the logical-identity anchor; a fallback case keeps today's genesis, anchor
+    // included.
+    const { decideDeployerPath } = await import('./deployer.js');
+    const deployerPath = this.artifact.deployer !== undefined && overrides.viaDeployer !== false
+      ? decideDeployerPath(this.artifact, { ...overrides, funder, fundingUtxo })
+      : undefined;
+    const deployerArtifact = deployerPath?.path === 'deployer';
+
     if (signer) await signer.provider.prepareSigner?.(signer);
-    const nonceReservation = signer && overrides.logicalNonce !== false
+    const nonceReservation = signer && !deployerArtifact && overrides.logicalNonce !== false
       ? signer.reserveTransactionNonce() : undefined;
-    const logicalIdentity = nonceReservation ? {
+    const logicalIdentity = deployerArtifact ? undefined : nonceReservation ? {
       deployer: signer!.getAddress(), nonce: nonceReservation.nonce,
       address: deriveLogicalCreateAddress(signer!.getAddress(), nonceReservation.nonce),
     } : overrides.logicalIdentity;
     const logicalAddress = logicalIdentity?.address;
     let result: Awaited<ReturnType<typeof SC.deploy<T>>>;
     try {
-      const identityAnchors = overrides.identityAnchors ?? (logicalAddress ? [{
+      const identityAnchors = deployerArtifact ? undefined : overrides.identityAnchors ?? (logicalAddress ? [{
         to: logicalAddress,
         commitment: buildLogicalIdentityCommitment(
           logicalIdentity!.deployer, logicalIdentity!.nonce,
@@ -480,7 +491,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrideInitArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
-        identityAnchors,
+        ...(identityAnchors === undefined ? {} : { identityAnchors }),
+        ...(overrides.viaDeployer === undefined ? {} : { viaDeployer: overrides.viaDeployer }),
+        ...(overrides.deployerPrep === undefined ? {} : { deployerPrep: overrides.deployerPrep }),
         ...(overrides.identity === undefined ? {} : { identity: overrides.identity }),
         ...(overrides.bcmr === undefined ? {} : { bcmr: overrides.bcmr }),
         ...(overrides.nativeToken === undefined ? {} : { nativeToken: overrides.nativeToken }),

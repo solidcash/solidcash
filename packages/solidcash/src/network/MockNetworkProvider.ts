@@ -594,6 +594,7 @@ export default class MockNetworkProvider implements NetworkProvider {
         getUtxosByTokenCategory: (categoryId: string) => this.getUtxosByTokenCategory(categoryId),
       }),
       getBlockHeight: () => this.getBlockHeight(),
+      getMedianTimePast: () => this.getMedianTimePast(),
       getRawTransaction: (txid) => this.getRawTransaction(txid),
       sendRawTransaction: async (txHex) => this.publishOraclePoolTransaction(txHex),
     };
@@ -700,6 +701,11 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   async getBlockHeight(): Promise<number> {
     return this.blockHeight;
+  }
+
+  /** The mock's own validation uses the tip timestamp as its median-time-past. */
+  async getMedianTimePast(): Promise<number> {
+    return this.getBlockTime();
   }
 
   // Test helper mirroring RegtestNetworkProvider: advance the simulated chain tip so height-mode locktimes

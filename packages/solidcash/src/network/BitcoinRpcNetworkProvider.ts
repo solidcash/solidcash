@@ -8,6 +8,18 @@ import {
   type SendRawTransaction,
 } from '@mr-zwets/bchn-api-wrapper';
 
+interface GetBlockHash {
+  method: 'getblockhash';
+  params: [height: number];
+  response: string;
+}
+
+interface GetBlockHeaderTime {
+  method: 'getblockheader';
+  params: [hash: string, verbosity: true];
+  response: { mediantime: number };
+}
+
 export default class BitcoinRpcNetworkProvider implements NetworkProvider {
   private rpcClient: BchnRpcClient;
 
@@ -42,6 +54,13 @@ export default class BitcoinRpcNetworkProvider implements NetworkProvider {
 
   async getBlockHeight(): Promise<number> {
     return this.rpcClient.request<GetBlockCount>('getblockcount');
+  }
+
+  async getMedianTimePast(): Promise<number> {
+    const height = await this.rpcClient.request<GetBlockCount>('getblockcount');
+    const hash = await this.rpcClient.request<GetBlockHash>('getblockhash', height);
+    const header = await this.rpcClient.request<GetBlockHeaderTime>('getblockheader', hash, true);
+    return header.mediantime;
   }
 
   async getRawTransaction(txid: string): Promise<string> {

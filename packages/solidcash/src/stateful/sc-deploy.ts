@@ -37,6 +37,7 @@ import { deriveDeployCommitments } from './sc-derive-deploy-commitments.js';
 import { headSentinelCommitment } from './SortedList.js';
 import type { ConnectedStatefulContract } from './StatefulContract.js';
 import type { DeployOptions, DeployResult } from './stateful-lifecycle-types.js';
+import { decideDeployerPath, deployThroughDeployer, DeployerPathError } from './deployer.js';
 import { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { withOraclePoolArgument } from '../oracle/pool/reader.js';
 import {
@@ -57,6 +58,16 @@ export async function deployStatefulContract<T extends Artifact>(
 ): Promise<DeployResult<T>> {
   if (!artifact.stateLayout) {
     throw new Error(`Contract ${artifact.contractName} is not a stateful contract`);
+  }
+  const deployerPath = decideDeployerPath(artifact, options);
+  if (deployerPath.path === 'error') throw new DeployerPathError(deployerPath.message);
+  if (deployerPath.path === 'genesis' && deployerPath.warning !== undefined) {
+    console.warn(deployerPath.warning);
+  }
+  if (deployerPath.path === 'deployer') {
+    return deployThroughDeployer(
+      artifact, callerConstructorArgs, options, options.deployerPrep,
+    );
   }
   if (mintsOraclePool(options.oraclePool)) {
     // The pool goes first, in transactions of its own, so the constructor can read it; one info coin per master.

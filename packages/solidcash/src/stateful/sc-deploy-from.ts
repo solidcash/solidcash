@@ -52,6 +52,7 @@ import {
   getSatoshiContainerAddress,
   getTokenContainerAddress,
 } from './covenant-helpers.js';
+import { DeployerPrepError } from './deployer.js';
 import { evalComputedKey, keyArguments } from './route-expression-key.js';
 import { callRecordDigest } from './call-record.js';
 import { returnEventNftCommitment } from './return-event-nft-commitment.js';
@@ -141,6 +142,17 @@ export async function deployFromStatefulContract<T extends Artifact>(
     throw new Error(
       `No child artifact for deploy function '${deployFunctionName}'. Pass childArtifact or register it `
       + 'with factory.registerChild(artifact).',
+    );
+  }
+  const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
+  if (childDeployer !== undefined) {
+    // The creator's bytecode binds a Deploy<C> unlocking at this site. deployFrom's output layout still builds today's
+    // embedded genesis (funding coin as the child's category), which that binding refuses, so refuse here rather
+    // than sign a transaction the creator will reject.
+    throw new DeployerPrepError(
+      `'${deployFunctionName}' creates '${deployTarget.contractName}' through Deploy<C>; the creating-call builder `
+        + 'for deployer children is not implemented in this SDK build (B9.5). Top-level deployment through the '
+        + 'deployer is available.',
     );
   }
   const bakedConstructorArgumentCount = childArtifact.constructorInputs.length;

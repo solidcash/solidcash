@@ -122,6 +122,10 @@ export interface DeployOptions {
   metadataProbe?: true;
   /** Internal composition: a split root's facets, which answer its probe's views and publish its container key. */
   splitFacets?: SplitFacets;
+  /** Deploy through the artifact's Deploy<C>; an artifact without one refuses (A12). */
+  viaDeployer?: boolean;
+  /** A prep built beforehand, whose deployer coin this deployment spends. */
+  deployerPrep?: import('./deployer.js').DeployerPrep;
 }
 
 /** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */
@@ -139,6 +143,8 @@ export interface DeployResult<T extends Artifact = Artifact> {
   identity?: IdentityRecord;
   /** The registry the genesis published, with the URIs its publication offers. */
   registry?: PublishedRegistry;
+  /** The prep transactions a deployer deployment broadcast before its creation, in chain order. */
+  prepTransactions?: string[];
 }
 
 export interface UpgradeOptions<T extends Artifact = Artifact> {
@@ -244,6 +250,24 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   changeAddress?: string;
   masterAmount?: bigint;                     // default: 1200n
   dataNftAmount?: bigint;                    // default: 1200n per data NFT
+  /** Preps for a creator whose `new` runs through a deployer, one per deployment in run order (A14 item 4). */
+  deployerPreps?: import('./deployer.js').DeployerPrep[];
+  /** Funding for the preps a creating call has to build, all as one chain before the creation (A14 item 4). */
+  prepFunding?: {
+    fundingUtxos: Utxo[];
+    authorSigner: Unlocker;
+    authorLockingBytecode: Uint8Array;
+  };
+  /** The number of children this call creates; required when the `new` sites are in a branch or a loop. */
+  deployments?: number;
+  /** The paying wallet's coins for a child's containers, by deployment in run order. */
+  childContainers?: Array<{
+    deployment: number;
+    satoshis?: bigint;
+    tokens?: Array<{ categoryId: string; amount: bigint }>;
+  }>;
+  /** The children's own artifacts by contract name, when the caller wants `Contract` objects back. */
+  childArtifacts?: Record<string, Artifact>;
 }
 
 // Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function
@@ -256,6 +280,10 @@ export interface DeployFromResult<T extends Artifact = Artifact> {
   child: ConnectedStatefulContract<T>;       // newly deployed child contract
   tx: TransactionDetails;
   childCategoryId: string;
+  /** Every child this call created, in run order; `child` is the first. */
+  children?: ConnectedStatefulContract<T>[];
+  /** Every child's category, in run order; `childCategoryId` is the first. */
+  childCategoryIds?: string[];
 }
 
 export interface SplitOptions {

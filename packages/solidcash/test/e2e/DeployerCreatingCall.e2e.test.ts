@@ -249,4 +249,39 @@ describe('B9.5: a creating call through Deploy<C>', () => {
       fundingUtxo: prepFunding, funder, changeAddress: change.address,
     })).rejects.toThrow(/payable constructor/);
   });
+
+
+  it('creates one child from a branch', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child(bytes20 owner) { int counter; }
+      contract BranchFactory { int childCount;
+        function makeOne(bool take, bytes20 owner) {
+          if (take) { new Child(owner); childCount = childCount + 1; }
+        }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const factoryArtifact = artifacts.BranchFactory;
+    const childArtifact = artifacts.Child;
+
+    const deploymentFunding: Utxo = { txid: 'f5'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(factoryArtifact, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'f6'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+
+    const result = await StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'makeOne',
+      deployFunctionArgs: [true, alicePkh], childArtifact, childConstructorArgs: [alicePkh],
+      fundingUtxo: prepFunding, deployments: 1, funder, changeAddress: change.address,
+    });
+    expect(result.children).toHaveLength(1);
+    expect((await result.factory.getState() as { childCount?: bigint }).childCount).toBe(1n);
+  });
 });

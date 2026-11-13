@@ -21,7 +21,7 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 19 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 18 unticked ones name the shape the
 shipped SDK path refuses (block-field readers and their locktimes, `childContainers`/single token rows and a
 creating call's payments, constructor ecrecover, per-slot budget padding for a constructor loop, and the
 multi-site/multi-level creating cases); every Part D line is filled, including D13 from the shipped
@@ -29,7 +29,8 @@ constructor-call creations (one and two slots). Constructor events, the identity
 publication, the public options/result lists, the self-category deployment, constructor mapping rows (written
 entries, unwritten HEADs and repeated writes), a first call that inserts or reads a mapping entry, and
 constructor calls against record-sound callees through `constructorCallees` (one or more slots, a multi-method
-selector, a void callee, and the non-record-sound refusal) are implemented and tested. The Part D measurements
+selector, a void callee, and the non-record-sound refusal) and a creating call's branch and loop `new`
+placements are implemented and tested. The Part D measurements
 come from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
@@ -4630,7 +4631,7 @@ their contract with `deployer: true`:
 - [x] a contract whose constructor writes three keys of one mapping at three sites, two of them the same key, *(covered by `DeployerCreation.e2e`: the creation pins two rows, the first calls read 11, 20, then insert 30 and read 0 for an unwritten key)*
       and reads one back with `+=`: born through its deployer, its first calls read each key's last value,
       insert a fourth key between two of them, and read a key that was never written as its default (B7.18);
-- [ ] `new` in a branch, and in a loop of two, with two different prep transactions and `deployments` given; *(the loop of two is covered; the branch case is not)*
+- [x] `new` in a branch, and in a loop of two, with two different prep transactions and `deployments` given; *(covered by `DeployerCreatingCall.e2e`: `creates two children from a loop` builds two preps, and `creates one child from a branch` gives `deployments: 1` for a conditional `new`)*
 - [ ] a creating function with two `new` sites of different children; *(not covered)*
 - [x] the SDK's outputs come from the run of Deploy<C> itself: changing one record commitment by hand makes *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       the local run fail;

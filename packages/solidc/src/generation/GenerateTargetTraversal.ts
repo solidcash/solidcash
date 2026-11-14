@@ -17441,6 +17441,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(locationData);
     this.emit(encodeInt(BigInt(inputSlots)), locationData);
     this.emit(Op.OP_ADD, locationData);
+    // A call that publishes its record (`__internal__returnOutputIdx >= 0`) materializes the returnEvent slot, and
+    // the builder then holds every output-only slot of the block open with an input (stb-build-inputs), so the
+    // entries follow the whole block. A plain call keeps the compact base above.
+    const hasReturnSlot = (this.currentFunction.blockLayout?.slots ?? [])
+      .some((slot) => slot.kind === 'returnEvent' && slot.offset < blockSize);
+    if (noInputSlots > 0 && hasReturnSlot && this.currentFunction.blockLayout?.trailingBase === undefined
+      && this.getStackIndex('__internal__returnOutputIdx', true) >= 0) {
+      this.emitPickTrackedFromBottom('__internal__returnOutputIdx', locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+      if (noInputSlots > 1) {
+        this.emit(encodeInt(BigInt(noInputSlots)), locationData);
+        this.emit(Op.OP_MUL, locationData);
+      }
+      this.emit(Op.OP_ADD, locationData);
+    }
 
     // Add sum of prior iteration counts (runtime values from _collectionIterCount_0..iterIdx-1)
     for (let j = 0; j < iterIdx; j++) {
@@ -32199,8 +32215,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || payload instanceof AbiEncodeWithSignatureNode)) return undefined;
     if (payload.parameters.length === 0) return undefined;
     // The encoders' formats (visitAbiEncodeWithSelector and its siblings): EVM words for every form under
-    // evmCompat, else one SolidCash push per argument.
-    if (!(payload instanceof AbiEncodeWithSelectorNode) && !this.compilerOptions.evmCompat) {
+    // evmCompat, else one SolidCash push per argument (`abi.encodeWithSelector` included).
+    if (!this.compilerOptions.evmCompat) {
       payload.parameters.forEach((parameter, index) => {
         const type = parameter.type;
         if (!type || type instanceof StructType || type instanceof ArrayType || type instanceof TupleType) {

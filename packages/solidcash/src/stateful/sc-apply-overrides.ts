@@ -12,6 +12,7 @@ import {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import { loadFixedEffectEntries } from '../message-bus/fixed-effect-entries.js';
 import { addressToLockScript } from '../utils.js';
@@ -34,6 +35,8 @@ export interface ApplyOverridesHost {
   parentContract?: StatefulContract;
   callerLockingBytecode?: Uint8Array;
   callerCategoryId?: string;
+  /** The shared side-car pool (salt 0) a build laid out to run off input 0 takes its side-cars from. */
+  sharedSidecarPool?: NetworkProvider;
   functionName?: string;
   functionArgs?: any[];
   stateOverrides: Array<{ name: string; value: StateValueType }>;
@@ -212,6 +215,7 @@ export async function applyOverrides(
           && { callerLockingBytecode: host.callerLockingBytecode }),
         ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
+        ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
         ...(host.compilerRoute && {
           abiFunction: host.compilerRoute.abiFunction,
           compilerRouteSelector: host.compilerRoute.selector,
@@ -356,6 +360,7 @@ export async function applyOverrides(
           && { callerLockingBytecode: host.callerLockingBytecode }),
         ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
+        ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
         ...(host.compilerRoute && {
           abiFunction: host.compilerRoute.abiFunction,
           compilerRouteSelector: host.compilerRoute.selector,
@@ -397,6 +402,7 @@ export async function applyOverrides(
           && { callerLockingBytecode: host.callerLockingBytecode }),
           ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
+          ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
           drainTokenContainers: drainedTokenContainers,
           ...(host.compilerRoute && {
             abiFunction: host.compilerRoute.abiFunction,

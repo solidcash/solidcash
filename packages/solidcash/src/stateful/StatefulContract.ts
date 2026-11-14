@@ -5363,6 +5363,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _resolveKeccakComputeCoSpends(
     abiFunction: AbiFunction, args: any[],
     probeCtx?: ResolveKeccakProbeCtx,
+    sharedSidecarPool?: NetworkProvider,
   ): Promise<{
       coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>;
       preimages: Array<Uint8Array | null>;
@@ -5373,7 +5374,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return resolveKeccakComputeCoSpendsImpl(
       {
         categoryId: this.categoryId,
-        inner: this.inner as any,
+        // A shared pool (salt 0) is listed through the view the caller gives; it is not minted on demand.
+        ...(sharedSidecarPool !== undefined && { sidecarSalt: new Uint8Array(32) }),
+        inner: (sharedSidecarPool === undefined ? this.inner : {
+          bytecode: this.inner.bytecode, artifact: this.inner.artifact, provider: sharedSidecarPool,
+        }) as any,
         extractStatefulKeccakPreimages: (...a: any[]) => (this as any)._extractStatefulKeccakPreimages(...a),
         evalComputedKey: (...a: any[]) => (evalComputedKey as any)(...a),
       },
@@ -5390,6 +5395,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _resolveEcrecoverComputeCoSpends(
     abiFunction: AbiFunction, args: any[], selectedCalls?: readonly GraphEcrecoverCall[],
     options: { deferUnresolved?: boolean; graphExecution?: boolean } = {},
+    sharedSidecarPool?: NetworkProvider,
   ): Promise<{
       coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>;
       argBlobs: Array<Uint8Array | null>;
@@ -5397,7 +5403,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       salt: Uint8Array;
     }> {
     return resolveEcrecoverComputeCoSpendsImpl(
-      { categoryId: this.categoryId, inner: this.inner as any },
+      sharedSidecarPool === undefined
+        ? { categoryId: this.categoryId, inner: this.inner as any }
+        : { categoryId: this.categoryId, sidecarSalt: new Uint8Array(32), inner: { provider: sharedSidecarPool } as any },
       abiFunction, args, selectedCalls, options,
     );
   }
@@ -5585,11 +5593,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     dataNftUtxos: Utxo[], dataNftUnlockers: Unlocker[],
     frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
     trailingPredecessors: { inputs: UnlockableUtxo[]; outputs: Output[] } = { inputs: [], outputs: [] },
+    sharedSidecarPool?: NetworkProvider,
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
     return resolveStatefulKeccakLoopImpl(
       {
         categoryId: this.categoryId,
-        inner: this.inner as any,
+        // A shared pool (salt 0) is listed through the view the caller gives; it is not minted on demand.
+        ...(sharedSidecarPool !== undefined && { sidecarSalt: new Uint8Array(32) }),
+        inner: (sharedSidecarPool === undefined ? this.inner : { provider: sharedSidecarPool }) as any,
         frontRegionRecreate: (u: UnlockableUtxo) => this._frontRegionRecreate(u),
         createVirtualMachine: (provider: any) => createVirtualMachineBch2026ForProvider(provider),
         generateLibauthSourceOutputs: (inputs: any) => generateLibauthSourceOutputs(inputs),
@@ -6983,6 +6994,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
        * lock-only placeholder unlocker is sufficient here - never use one outside the probe path.
        */
       callerIdentityUtxos?: UnlockableUtxo[];
+      /**
+       * The shared side-car pool (salt 0) the keccak256 and ecrecover side-cars come from, listed through this view, for
+       * a build laid out to run off input 0: a branded side-car is spendable only beside input 0 of its category.
+       */
+      sharedSidecarPool?: NetworkProvider;
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
@@ -12880,6 +12896,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           deferUnresolved: true,
           graphExecution: graphRuntime.messageBusGraphExecution === true,
         },
+        overrides?.sharedSidecarPool,
       );
       ecrecoverComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       ecrecoverComputeRecreates = resolution.coSpends.map((cs) => cs.recreate);
@@ -12969,7 +12986,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const loop = await this._resolveStatefulKeccakLoop(
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
-        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors,
+        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors, overrides?.sharedSidecarPool,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
@@ -12981,7 +12998,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, slotInputs: keccakProbeSlotInputs,
         locktime: maxBhLocktime,
-      });
+      }, overrides?.sharedSidecarPool);
       keccakLoopSideCars = resolution.chain?.sideCars ?? [];
       keccakLoopRecreates = resolution.chain?.recreates ?? [];
     } else if ((abiFunction?.keccakCompute || entryAbiFunction?.keccakCompute
@@ -13023,7 +13040,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ...(delegatedKeccak && {
           artifactBytecode: executingGroup?.externalContract.inner.bytecode,
         }),
-      });
+      }, overrides?.sharedSidecarPool);
       keccakComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       keccakComputeCommitments = resolution.coSpends.map((cs) => binToHex(cs.commitment));
       if (resolution.preimages.some((preimage) => preimage === null)) {
@@ -14447,6 +14464,15 @@ export class StatefulFunctionCall {
   withCallerIdentity(lockingBytecode: Uint8Array, categoryId?: string): this {
     this.callerLockingBytecode = Uint8Array.from(lockingBytecode);
     if (categoryId !== undefined && categoryId.length > 0) this.callerCategoryId = categoryId;
+    return this;
+  }
+
+  /** The shared side-car pool (salt 0) a build laid out to run off input 0 takes its side-cars from. */
+  private sharedSidecarPool?: NetworkProvider;
+
+  /** @internal Take this call's keccak256 and ecrecover side-cars from the shared pool, listed through `pool`. */
+  _withSharedSidecarPool(pool: NetworkProvider): this {
+    this.sharedSidecarPool = pool;
     return this;
   }
 

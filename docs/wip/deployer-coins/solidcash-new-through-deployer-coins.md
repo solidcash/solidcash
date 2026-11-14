@@ -4870,10 +4870,10 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 - [x] **D19.** (B0.6, B9.12) Required container rows: the bytes they add to Deploy<C> for the pools' shape
       (measured on minimal C: a token row adds 62 B, 573 B against 511 B; a required satoshi row adds 24 B)
       (one satoshi row and one token row, each with its count of outputs at the lock). The registry's creation
-      of such a pool is not measured: a creating call refuses a child that keeps a token container single
-      (B9.7), so the SDK cannot build the pool's two-row creation; `bch-next` also has no SDK PoolGenesis
-      build under the production limits, which B0.6 allows leaving empty with this report. No byte figure is
-      asserted for it.
+      of such a pool is measured on the shipped creator: a BCH pool with one satoshi row is 4,929 B, and a token
+      pool with one satoshi row and one token row is 5,672 B (`DeployerRegistry.e2e` on the production profile).
+      `bch-next` has no SDK PoolGenesis build under the production limits, which B0.6 allows leaving empty with
+      this report.
 - [x] **D20.** (B7.15) The user's pools: the size of Deploy<NotePool> and Deploy<TokenNotePool>, and the
       smallest `create` unlocking of each against 10,000 bytes: 2,110 B and 2,129 B; 6,981 B and 8,063 B.
 - [x] **D21.** (B6.0) The exact stack in every arm: bytes added per arm kind (entry function with 0, 1 and

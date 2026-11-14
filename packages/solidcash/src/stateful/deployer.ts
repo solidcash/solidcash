@@ -1675,14 +1675,14 @@ export async function deployThroughDeployer<T extends Artifact>(
         { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
       );
     } catch (error) {
-      const scalarWithToken = (constructorAbi?.entryAccesses?.length ?? 0) === 0
+      const scalarLayout = (constructorAbi?.entryAccesses?.length ?? 0) === 0
         && (constructorAbi?.emits?.length ?? 0) === 0
         && (constructorAbi?.transferCount ?? 0) === 0
         && deployer.callSlots === 0
         && deployer.satoshiContainer === 'none'
         && deployer.sidecars.keccak === 0 && deployer.sidecars.ecrecover === 0
-        && deployer.tokenRows.length > 0;
-      if (!scalarWithToken || !/Failed to derive|oscillation|operation cost|budget/i.test(
+        && createLayout.slots.every((slot) => ['master', 'dataNft', 'tokenContainer'].includes(slot.kind));
+      if (!scalarLayout || !/Failed to derive|oscillation|operation cost|budget/i.test(
         String((error as Error).message),
       )) throw error;
       const learned = await learnScalarCreateCommitments({

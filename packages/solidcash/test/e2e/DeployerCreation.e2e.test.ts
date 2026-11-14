@@ -884,4 +884,5 @@ describe('a top-level deployment through Deploy<C>', () => {
     expect((await result.contract.getState() as { n?: bigint }).n).toBe(2n);
   });
 
+
 });

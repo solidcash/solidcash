@@ -18108,7 +18108,6 @@ function compileResolvedAst(
       const detail = reason === 'not-stateful-direct'
         ? 'a deployer exists only for a direct stateful contract'
         : reason === 'blockhash-ring' ? 'a blockhash ring would have to be minted at genesis'
-          : reason === 'code-not-constant' ? 'a function of C reads block data, so its code is not the same for every category'
           : reason === 'lock-composition' ? 'its master lock is not the plain pin and code P2SH32 lock'
           : reason === 'param-type' ? 'a constructor parameter has a struct, array or function type'
             : 'an inline external library puts an OP_DROP between the pin and the arguments';

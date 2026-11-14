@@ -64,10 +64,10 @@ bounds (D22); B8.8's `value` through creating calls; A14 item 4, a creating call
 (Q ‖ A read from the trace, run order, conditional and loop `new`, runtime-loop payments in satoshis, tokens and
 NFTs, the trailing outputs after a loop of `new` per B8.9, and each child's budget pad); one top-level creation
 path in which constructor calls combine with collection writes, events, sends and side-cars, with ERC20-,
-USDT- and registry-shaped callees, and callees that iterate a collection, make a low-level call, hash in a loop
-(side-cars from the shared salt-0 pool) or key a sorted mapping by `msg.sender` from a run-sized block (a callee
-that recovers keys in a loop stays refused: its compiled loop reads side-cars where the block's records follow
-the master); and a live block reader created through Deploy<C>. This backend has no
+USDT- and registry-shaped callees, and callees that iterate a collection, make a low-level call, hash or recover
+keys in a loop (side-cars from the shared salt-0 pool), or key a sorted mapping by `msg.sender` from a run-sized
+block (a callee that recovers keys through a helper inside a loop stays refused: every turn would read the
+helper's one fixed slot); and a live block reader created through Deploy<C>. This backend has no
 per-instance oracle row: a block read names an oracle pool by the contract argument `__oraclePool`, which A
 carries, so C's code is constant and the pool is minted first in transactions of its own; a child that reads
 block data is still refused (A15). The pre-B10 SDK tests were updated by the rules of Part C's "Regression".

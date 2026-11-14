@@ -725,6 +725,11 @@ require(ecrecoverEvm(digest, v, r, s) == signer);
   `ecrecoverEvm` adds a keccak side-car). The SDK co-spends them; a real network needs them provisioned, one per
   call site. Prefer `checkDataSig` when the key is known. See https://solidcash.org/docs/language/cryptography
   and https://solidcash.org/docs/language/computation-sidecars
+- A stateful function's loop that calls `ecrecover*` directly reads three side-car inputs per turn after the
+  function's block. The compiler refuses it (`RecoveryLoopSideCarError`) beside a recovery outside the loop or
+  through a helper, beside a second recovery loop, or beside another user of that region (a keccak256 loop, a
+  collection walk, dynamic state, mapping writes, payments or events in a runtime loop): give the loop a function
+  of its own.
 - Bare Solidity `ecrecover(hash, v, r, s)` exists only with compiler option `ecrecover: 'p2pkh'` or `'evm'`.
 
 ### ABI Encoding

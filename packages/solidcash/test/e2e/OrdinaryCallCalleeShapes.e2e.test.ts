@@ -1,9 +1,10 @@
 /**
  * Ordinary calls of the shapes a constructor's callee takes its block from (A14 item 5): a low-level call whose result
  * the function reads, an entry that iterates a collection, a keccak256 loop on side-cars of the shared pool (salt 0, as
- * a callee off input 0 needs), and a sized entry msg.sender keys, each with its call record published, as a
- * constructor's call always publishes it. Each sent transaction is checked by the VM; each tamper case changes one part
- * of it and expects the covenant that binds that part to refuse.
+ * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
+ * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
+ * always publishes it. Each sent transaction is checked by the VM; each tamper case changes one part of it and expects
+ * the covenant that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -33,7 +34,7 @@ type Sent = { transaction: ReturnType<typeof decodeTransactionUnsafe>; sourceOut
 
 interface Setup {
   provider: MockNetworkProvider;
-  deploy(artifact: Artifact): Promise<DeployResult<Artifact>>;
+  deploy(artifact: Artifact, args?: unknown[]): Promise<DeployResult<Artifact>>;
   wallet(): Promise<Signer>;
   /** Every transaction sent so far, with the outputs its inputs spend. */
   sent: Sent[];
@@ -59,10 +60,10 @@ function setup(): Setup {
     sent.push({ transaction, sourceOutputs });
     return original(hex);
   };
-  const deploy = async (artifact: Artifact): Promise<DeployResult<Artifact>> => {
+  const deploy = async (artifact: Artifact, args: unknown[] = []): Promise<DeployResult<Artifact>> => {
     const fundingUtxo: Utxo = { txid: nextTxid(), vout: 0, satoshis: 2_000_000n };
     await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
-    return StatefulContract.deploy(artifact, [], {
+    return StatefulContract.deploy(artifact, args as never, {
       provider, fundingUtxo, funder, changeAddress: change.address, senderLockingBytecode: authorLock,
     } as never);
   };
@@ -240,4 +241,229 @@ describe('an ordinary call of a sized function that msg.sender keys', () => {
     expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
     expect(await (t.contract as any).owner(addressToLockScript(wallet.getAddress()))).toBe(9n);
   });
+});
+
+type Signed = { h: Uint8Array; v: bigint; r: Uint8Array; s: Uint8Array; key: Uint8Array };
+
+/** A signature by one fixed key, in the little-endian words the native recovery reads, with the key it recovers. */
+async function signed(message: string): Promise<Signed> {
+  const { ethers } = await import('ethers');
+  const wallet = new ethers.Wallet(`0x${'44'.repeat(32)}`);
+  const parsed = ethers.Signature.from(await wallet.signMessage(message));
+  const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+  return {
+    h: little(ethers.hashMessage(message)), v: BigInt(parsed.v), r: little(parsed.r), s: little(parsed.s),
+    key: hexToBin(wallet.signingKey.compressedPublicKey.replace(/^0x/, '')),
+  };
+}
+
+/** Coins of the shared recovery pool (salt 0), `count` of each role. */
+async function seedRecoveryPool(provider: MockNetworkProvider, count: number, tag: number): Promise<void> {
+  const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+  for (const [roleIndex, role] of (['A', 'B2', 'M', 'B3'] as const).entries()) {
+    for (let index = 0; index < count; index += 1) {
+      await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(new Uint8Array(32), role)), {
+        txid: `${tag.toString(16).padStart(2, '0')}${roleIndex.toString(16)}${index.toString(16).padStart(2, '0')}`
+          .padEnd(64, '0'),
+        vout: 0, satoshis: 100_000n,
+        token: { category: 'ed'.repeat(31) + '13', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+  }
+}
+
+/** `sent` with inputs `left` and `right` swapped, with their coins and their outputs. */
+const swapIndexes = (sent: Sent, left: number, right: number): Sent => {
+  const swap = <T>(items: readonly T[]): T[] => items.map((item, at) => (
+    at === left ? items[right]! : at === right ? items[left]! : item));
+  return {
+    sourceOutputs: swap(sent.sourceOutputs),
+    transaction: { ...sent.transaction, inputs: swap(sent.transaction.inputs), outputs: swap(sent.transaction.outputs) },
+  };
+};
+
+describe('an ordinary call whose stateful function recovers keys in a loop', () => {
+  const SCALAR = `${P} contract T(pubkey owner) { int n;
+      function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool) {
+        for (int i = 0; i < k; i++) { require(ecrecoverPubKey(h, v, r, s) == owner); } n = n + 1; return true; } }`;
+  const ARRAY = `${P} contract T(pubkey owner) { int n;
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        for (int i = 0; i < k; i++) { require(ecrecoverPubKey(h[i], v[i], r[i], s[i]) == owner); } n = n + 1; return true; } }`;
+
+  it('reads a triple from the shared pool per iteration after the block, and refuses another key or a moved one',
+    async () => {
+      const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+      const s = setup();
+      const g = await signed('recovery-loop-scalar');
+      const artifact = compileString(SCALAR, compileOptions('T'));
+      const fn = artifact.abi.find((entry) => entry.name === 'f')!;
+      // No recovery slot in the block: master, record and the record slot.
+      expect(fn.ecrecoverTrailingLoop).toBe(true);
+      expect(fn.blockLayout!.slots.map((slot) => slot.kind)).toEqual(['master', 'dataNft', 'returnEvent']);
+      const t = await s.deploy(artifact, [g.key]);
+      await seedRecoveryPool(s.provider, 2, 0xa1);
+      const wallet = await s.wallet();
+      await (t.contract.connect(wallet) as any).call.f(g.h, g.v, g.r, g.s, 2n).emitReturn().send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+
+      // Iteration k reads A at master + 3 + 3k and B2 two inputs on; the middle input is a wallet coin returned at its
+      // own index. Each side-car recreates at its own index.
+      const master = inputAt(sent, addressToLockScript(t.contract.address));
+      const lockA = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'A');
+      const lockB = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B2');
+      const walletLock = addressToLockScript(wallet.getAddress());
+      for (const k of [0, 1]) {
+        const a = master + 3 + 3 * k;
+        expect(same(sent.sourceOutputs[a].lockingBytecode, lockA)).toBe(true);
+        expect(same(sent.sourceOutputs[a + 2].lockingBytecode, lockB)).toBe(true);
+        expect(same(sent.transaction.outputs[a]!.lockingBytecode, lockA)).toBe(true);
+        expect(same(sent.transaction.outputs[a + 2]!.lockingBytecode, lockB)).toBe(true);
+        expect(same(sent.sourceOutputs[a + 1].lockingBytecode, walletLock)).toBe(true);
+        expect(same(sent.transaction.outputs[a + 1]!.lockingBytecode, walletLock)).toBe(true);
+        expect(sent.transaction.outputs[a + 1]!.valueSatoshis).toBe(sent.sourceOutputs[a + 1].valueSatoshis);
+      }
+      // Another key in B's recreation (a byte of its x coordinate): refused by B's covenant and by the master, which
+      // reads it.
+      const forged = withOutput(sent, master + 5, (output) => {
+        const commitment = Uint8Array.from(output.token.nft.commitment);
+        commitment[1] ^= 1;
+        return { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } } };
+      });
+      expect(inputPasses(s.provider, forged, master + 5)).toBe(false);
+      expect(inputPasses(s.provider, forged, master)).toBe(false);
+      // A triple moved: A and B swapped.
+      expect(inputPasses(s.provider, swapIndexes(sent, master + 3, master + 5), master)).toBe(false);
+      // An input other than the shared A covenant where the loop reads A.
+      expect(inputPasses(s.provider, swapIndexes(sent, master + 3, master + 4), master)).toBe(false);
+    });
+
+  it('binds each iteration to its own element\'s arguments in the array form', async () => {
+    const s = setup();
+    const g0 = await signed('recovery-loop-array-0');
+    const g1 = await signed('recovery-loop-array-1');
+    const t = await s.deploy(compileString(ARRAY, compileOptions('T')), [g0.key]);
+    await seedRecoveryPool(s.provider, 2, 0xa2);
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      [g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s], 2n,
+    ).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    // The two triples swapped: each iteration then meets the other message's arguments in its A.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    const swapped = [0, 1, 2].reduce((tx, offset) => swapIndexes(tx, master + 3 + offset, master + 6 + offset), sent);
+    expect(inputPasses(s.provider, swapped, master)).toBe(false);
+  });
+
+  it('hashes each key an ecrecoverEvm loop recovers in its triple\'s keccak side-car', async () => {
+    const { ethers } = await import('ethers');
+    const { ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+    const source = `${P} contract T(bytes20 owner) { int n;
+        function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+          for (int i = 0; i < k; i++) { require(ecrecoverEvm(h[i], v[i], r[i], s[i]) == owner); } n = n + 1; return true; } }`;
+    const s = setup();
+    const g0 = await signed('recovery-loop-evm-0');
+    const g1 = await signed('recovery-loop-evm-1');
+    const owner = hexToBin(new ethers.Wallet(`0x${'44'.repeat(32)}`).address.slice(2));
+    const t = await s.deploy(compileString(source, compileOptions('T')), [owner]);
+    await seedRecoveryPool(s.provider, 2, 0xa3);
+    const lockB = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B');
+    const lockK = keccakComputeLockingBytecode(new Uint8Array(32), true);
+    for (const index of [0, 1]) {
+      await s.provider.seedUtxo(binToHex(lockB), computeSideCarStandIn('recovery-loop-evm-b', lockB, index));
+      await s.provider.seedUtxo(binToHex(lockK), computeSideCarStandIn('recovery-loop-evm-k', lockK, index));
+    }
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      [g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s], 2n,
+    ).withMaxFee(100_000n).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    // Iteration k: A, B and the keccak side-car at master + 3 + 3k; another digest is refused by the master.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    expect(same(sent.sourceOutputs[master + 5].lockingBytecode, lockK)).toBe(true);
+    expect(inputPasses(s.provider, withOutput(sent, master + 5, bumpCommitment), master)).toBe(false);
+  });
+
+  it('lays out the triples before the block of a contract the function calls', async () => {
+    const source = `${P} interface IU { function g(int x) external returns (int); }
+      contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+      contract T(pubkey owner) { int n;
+        function f(IU u, bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+          for (int i = 0; i < k; i++) { require(ecrecoverPubKey(h[i], v[i], r[i], s[i]) == owner); } n = u.g(k);
+          return true; } }`;
+    const s = setup();
+    const g0 = await signed('recovery-loop-call-0');
+    const g1 = await signed('recovery-loop-call-1');
+    const u = await s.deploy(compileString(source, compileOptions('U')));
+    const t = await s.deploy(compileString(source, compileOptions('T')), [g0.key]);
+    await seedRecoveryPool(s.provider, 2, 0xa4);
+    const uLock = addressToLockScript(u.contract.address);
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      uLock, [g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s], 2n,
+    ).withExternalCall(u.contract).emitReturn().send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(4n);
+    // Master, record and record slot, two triples, then the callee's block.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    expect(inputAt(sent, uLock)).toBe(master + 9);
+    // A triple moved past the callee's block.
+    expect(inputPasses(s.provider, swapIndexes(sent, master + 8, master + 9), master)).toBe(false);
+  });
+});
+
+describe('an ordinary call whose keccak256 loop runs beside a call of another contract', () => {
+  const SOURCE = `${P} interface IU { function g(int x) external returns (int); }
+    contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+    contract T { bytes32 h; int n; function f(IU u, bytes b, int k) external returns (bool) {
+      bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; n = u.g(k); return true; } }
+    contract R { bytes32 h; int n; function f(address u, bytes b, int k) external returns (bool) {
+      bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x;
+      (bool ok, bytes memory data) = u.call(abi.encodeWithSelector(IU.g.selector, k));
+      require(ok && data.length > 0); n = n + 1; return true; } }`;
+
+  for (const [primary, b] of [['T', Uint8Array.of(3)], ['R', Uint8Array.of(4, 5, 6)]] as const) {
+    it(`recreates the loop's side-cars before the callee's block (${primary === 'T' ? 'a typed call' : 'a low-level call'})`,
+      async () => {
+        const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+        const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+        const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+        const s = setup();
+        const u = await s.deploy(compileString(SOURCE, compileOptions('U')));
+        const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
+        // The ordinary call co-spends side-cars under the caller's own brand.
+        const lock = keccakComputeLockingBytecode(hexToBin(t.categoryId).slice().reverse(), true);
+        for (const index of [0, 1]) {
+          await s.provider.seedUtxo(binToHex(lock), computeSideCarStandIn(`keccak-loop-call-${primary}`, lock, index));
+        }
+        const uLock = addressToLockScript(u.contract.address);
+        await (t.contract.connect(await s.wallet()) as any).call.f(uLock, b, 2n).withExternalCall(u.contract)
+          .emitReturn().send();
+        const sent = s.sent[s.sent.length - 1]!;
+        expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+        expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+        expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+
+        // The side-cars sit after the caller's block of master, record and record slot, each recreated at its own
+        // index with the digest, and the callee's block follows them.
+        const master = inputAt(sent, addressToLockScript(t.contract.address));
+        const sidecars = sent.transaction.outputs.map((output, index) => (same(output.lockingBytecode, lock) ? index : -1))
+          .filter((index) => index >= 0);
+        expect(sidecars).toEqual([master + 3, master + 4]);
+        for (const index of sidecars) {
+          expect(same(sent.sourceOutputs[index].lockingBytecode, lock)).toBe(true);
+          expect(binToHex(sent.transaction.outputs[index]!.token!.nft!.commitment)).toBe(binToHex(keccak(b)));
+        }
+        expect(inputAt(sent, uLock)).toBe(master + 5);
+        // Another digest: refused by the side-car and by the master that reads it.
+        const forged = withOutput(sent, master + 4, bumpCommitment);
+        expect(inputPasses(s.provider, forged, master + 4)).toBe(false);
+        expect(inputPasses(s.provider, forged, master)).toBe(false);
+        // A side-car moved past the callee's block, as a copy of its input stood at its index before.
+        expect(inputPasses(s.provider, swapIndexes(sent, master + 4, master + 5), master)).toBe(false);
+      });
+  }
 });

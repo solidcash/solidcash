@@ -37,8 +37,11 @@ export interface MaterializeMidBuildOutputsCascadeHost {
   readonly llcOutputsHost: MaterializeLowLevelCallOutputsHost;
   readonly trailingIterationHost: MaterializeTrailingIterationEntriesHost;
   readonly runtimeLoopHost: MaterializeRuntimeLoopTrailingHost;
-  /** Keccak-loop side-car recreations emitted at the start of the trailing band (unless a mapping loop leads). */
-  readonly keccakLoopRecreates: readonly Output[];
+  /**
+   * Keccak-loop side-car recreations emitted at the start of the trailing band (unless a mapping loop leads), less
+   * those a callee block's padding already placed at their own indexes.
+   */
+  pendingKeccakLoopRecreates(builder: object): readonly Output[];
   readonly keccakLoopFollowsTrailingUser: boolean;
 }
 
@@ -77,7 +80,7 @@ export function materializeMidBuildOutputsCascade(
   // Dynamic keccak loop side-cars open the trailing band. When the loop is not preceded by a mapping loop they
   // sit at blockSize, right after every fixed block slot (entries/containers/transfers/events/returnEvent/LLC).
   if (!host.keccakLoopFollowsTrailingUser) {
-    for (const rec of host.keccakLoopRecreates) builder.addOutput(rec);
+    for (const rec of host.pendingKeccakLoopRecreates(builder)) builder.addOutput(rec);
   }
 
   materializeTrailingIterationEntries(

@@ -1131,7 +1131,13 @@ export class FunctionDefinitionNode extends Node implements Named {
   keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
   // in the trailing region; the SDK co-spends one side-car per 136-byte block + the FINAL digest carrier
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery TRIPLE per iteration from the
-  // forward region [master+1+3k]; the SDK co-spends N triples (N = the sig-array length)
+  // forward region [master+1+3k] (a stateful entry's after its block); the SDK co-spends one triple per iteration
+  /**
+   * A stateful entry whose every recovery is a direct call inside a runtime loop. Its block reserves no recovery
+   * slot: iteration k reads its triple at master + blockSize + 3k, the region after the block, as a keccak256 loop
+   * reads its side-cars.
+   */
+  ecrecoverTrailingLoop?: boolean;
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
   // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]

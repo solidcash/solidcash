@@ -972,6 +972,12 @@ export interface AbiFunction {
   /** Closed, source-ordered compute operands, evaluated only from authenticated invocation values. */
   computeSideCarRecipes?: ComputeSideCarRecipesAbi;
   ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery triple per sig-array element
+  /**
+   * A stateful function whose recoveries all run in a loop: its block holds no recovery slot, and iteration k reads
+   * its triple (A, a middle coin, B; or A, B and the keccak side-car for ecrecoverEvm) from the shared pool at
+   * master + blockSize + 3k.
+   */
+  ecrecoverTrailingLoop?: boolean;
 }
 
 /**

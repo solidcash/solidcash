@@ -20373,6 +20373,41 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * Whether every recovery of a direct stateful entry is a call written inside one of its own `while`/`do` loops
+   * (the loops code generation runs as recovery loops). Such an entry's loop reads iteration k's triple at
+   * master + blockSize + 3k, so its block reserves no recovery slot (`ecrecoverTrailingLoop`). A recovery outside
+   * a loop, or in a helper, keeps the fixed slots; an entry that mixes both is refused by code generation.
+   */
+  private recoversOnlyInTrailingLoops(node: FunctionDefinitionNode): boolean {
+    const effects = Math.max(node.recoveryEffectCount ?? 0, node.ecrecoverCallCount ?? 0);
+    if (effects === 0 || !node.body || !node.isEntryPoint || node.name === '__construct'
+      || node.messageBusRoute || node.graphEmissionHandler || this.compilerOptions.composition === 'framed') {
+      return false;
+    }
+    const recovery = new Set<string>([
+      GlobalFunction.ECRECOVER_PUBKEY, GlobalFunction.ECRECOVER_P2PKH, GlobalFunction.ECRECOVER_EVM,
+    ]);
+    let inLoops = 0;
+    const seen = new Set<Node>();
+    const walk = (current: Node, loopDepth: number): void => {
+      if (seen.has(current)) return;
+      seen.add(current);
+      const depth = loopDepth + (current instanceof WhileNode || current instanceof DoWhileNode ? 1 : 0);
+      if (depth > 0 && current instanceof FunctionCallNode && (recovery.has(current.identifier.name)
+        || (current.identifier.name === 'ecrecover' && this.compilerOptions.ecrecover !== undefined))) {
+        inLoops += 1;
+      }
+      for (const [key, value] of Object.entries(current)) {
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value, depth);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, depth);
+      }
+    };
+    walk(node.body, 0);
+    return inLoops === effects;
+  }
+
+  /**
    * The unified front-region auxiliary co-spend band. It allocates every co-spent family that sits between the
    * contract's own data NFTs and the effect tail, in one canonical order, so the SDK's band driver can iterate
    * the emitted blockLayout slots and reproduce input/output indices 1:1. External read/call groups reserve
@@ -20423,14 +20458,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     // it allocates no fixed slots here.
     // A direct unbounded keccak256 chained read keeps NO fixed keccakSideCar slot: its START/CONT/FINAL
     // side-cars ride the trailing region, so the fixed slot would only desynchronize inputs and outputs.
-    if ((node.keccakCompute || (node.ecrecoverEvmCallCount ?? 0) > 0)
+    // A recovery loop's projections hash in the keccak side-car of each loop triple, not in this band.
+    const fixedEvmCalls = node.ecrecoverTrailingLoop ? 0 : (node.ecrecoverEvmCallCount ?? 0);
+    if ((node.keccakCompute || fixedEvmCalls > 0)
       && !node.keccakInLoop && !node.keccakChainReads) {
       // EVM recovery hashes its verified uncompressed public key through the same batched compute side-cars as
       // ordinary keccak256 calls. Appending those preimages to the ordinary call order avoids a second resource
       // family while retaining an unambiguous batch/member index for every call.
       const ordinaryCalls = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256)
         ?? (node.keccakCompute ? 1n : 0n));
-      const kCalls = ordinaryCalls + (node.ecrecoverEvmCallCount ?? 0);
+      const kCalls = ordinaryCalls + fixedEvmCalls;
       const kSlots = Math.ceil(kCalls / 3);
       for (let i = 0; i < kSlots; i++) slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex: i });
     } else if (node.keccakInLoop && node.keccakFixedSlotIndices !== undefined
@@ -20446,8 +20483,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // ecrecover recovery side-cars: each ecrecoverPubKey call rides a consecutive TRIPLE of self-preserving 1:1
     // slots - A (checkpoints the GLV ladder to C1), M (3-way-only pure ladder C1->C2, a funder for a normal 2-way
     // signature), then B (finishes -> commits the recovered pubkey). Codegen reads input[master+offsetA] (bind the
-    // sig args) and output[master+offsetB] (the pubkey). slotIndex = 3*callIndex (+1 M, +2 B).
-    if (node.ecrecoverCompute) {
+    // sig args) and output[master+offsetB] (the pubkey). slotIndex = 3*callIndex (+1 M, +2 B). A recovery loop's
+    // triples follow the block instead (ecrecoverTrailingLoop).
+    if (node.ecrecoverCompute && !node.ecrecoverTrailingLoop) {
       const eCalls = node.ecrecoverCallCount ?? 0;
       for (let i = 0; i < eCalls; i++) {
         slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 3 * i });     // A (checkpoint C1)
@@ -20550,6 +20588,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectTransferStatements(node.body, transferInfos);
       if (transferInfos.length > 0) node.transferInfos = transferInfos;
     }
+    if (this.recoversOnlyInTrailingLoops(node)) node.ecrecoverTrailingLoop = true;
+    else delete node.ecrecoverTrailingLoop;
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
     // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.

@@ -192,7 +192,9 @@ export async function allocateCreateBuilderFunders(
       || trailingDisposalInputs.length > 0
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0
       || (abiFunction as AbiFunction | undefined)?.keccakChainReads === true
-      || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true;
+      || (abiFunction as AbiFunction | undefined)?.keccakLoopReads === true
+      // A recovery loop reads iteration k's triple at blockSize + 3k.
+      || (abiFunction as AbiFunction | undefined)?.ecrecoverTrailingLoop === true;
     // Pre-record geometry: a funder this slot would take for another reason shifts every block behind it.
     const entryFunction = abiFunction as AbiFunction | undefined;
     builder.setVoidRecordSlotCompacted((entryFunction?.outputs?.length ?? 0) === 0

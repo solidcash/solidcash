@@ -41,6 +41,7 @@ import {
   ORACLE_POOL_PARAMETER,
   getDefaultStateValue,
   keccakComputeLockingBytecode,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   sha256 as sha256Sync,
   ripemd160 as ripemd160Sync,
   hash160 as hash160Sync,
@@ -587,6 +588,7 @@ import {
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
 import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
 import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
+import { resolveStatefulEcrecoverLoop as resolveStatefulEcrecoverLoopImpl } from './sc-resolve-stateful-ecrecover-loop.js';
 import {
   keccakProbeTrailingRun,
   resolveKeccakComputeCoSpends as resolveKeccakComputeCoSpendsImpl,
@@ -12873,7 +12875,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         hasCategory: this.categoryId !== undefined,
       });
     }
-    if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId) {
+    // A recovery loop's triples follow the block; they are laid out with the loop below, after the fixed keccak
+    // side-cars a run can read before its loop.
+    const recoveryLoop = abiFunction?.ecrecoverTrailingLoop === true;
+    if ((abiFunction?.ecrecoverCompute || entryAbiFunction?.ecrecoverCompute) && this.categoryId && !recoveryLoop) {
       const ecrecoverAbiFunction = abiFunction?.ecrecoverCompute ? abiFunction : entryAbiFunction!;
       // A selected message-bus handler is represented by a different ABI object than the synthetic route
       // wrapper, but its compute resources still belong to the route owner's balanced block. Treat resources as
@@ -13050,6 +13055,100 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           preimages: resolution.preimages,
         };
       }
+    }
+
+    // A recovery loop reads iteration k's triple at master + blockSize + 3k: the triples ride the trailing band, as a
+    // keccak256 loop's side-cars do, from the shared pool whose locks the loop checks. The probe of the master's run
+    // that learns each iteration's arguments holds the fixed block's coins, the keccak side-cars and entries a run
+    // reads before its loop among them.
+    if (recoveryLoop && abiFunction !== undefined && this.categoryId) {
+      const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
+      const frontStart = 1 + filteredDataNftUtxos.length;
+      const front = padKeccakFront(blockSize).map((input) => ({ input, recreate: this._frontRegionRecreate(input) }));
+      let keccakSlot = 0;
+      for (const slot of abiFunction.blockLayout?.slots ?? []) {
+        const at = slot.offset - frontStart;
+        if (at < 0 || at >= front.length) continue;
+        if (slot.kind === 'keccakSideCar') {
+          const sidecar = keccakComputeCoSpendUtxos[keccakSlot];
+          const commitment = keccakComputeCommitments[keccakSlot];
+          keccakSlot += 1;
+          if (sidecar === undefined || commitment === undefined) continue;
+          front[at] = {
+            input: sidecar,
+            recreate: {
+              to: sidecar.unlocker.generateLockingBytecode(), amount: sidecar.satoshis,
+              token: {
+                category: sidecar.token?.category ?? this.categoryId, amount: sidecar.token?.amount ?? 0n,
+                nft: { capability: 'mutable', commitment },
+              },
+            },
+          };
+        } else if (slot.kind === 'entry') {
+          const entry = keccakProbeSlotInputs.find((candidate) => candidate.offset === slot.offset);
+          if (entry !== undefined) {
+            const input = { ...entry.utxo, unlocker: entry.unlocker };
+            front[at] = { input, recreate: this._frontRegionRecreate(input) };
+          }
+        }
+      }
+      const coinKey = (utxo: Utxo): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+      let middleCoins = 0;
+      // A 2-way recovery's middle input is read by no covenant: a coin of the signer fills it and an output at the same
+      // index returns its value; a mock mints a neutral coin where the call has none. The coin is taken from the
+      // wallet's coins once, so no funder of the call spends it again.
+      const takeMiddleCoin = async (): Promise<{ input: UnlockableUtxo; recreate: Output } | undefined> => {
+        if (this._signer !== undefined) {
+          const reserved = new Set((sharedFunderPool ?? []).map(coinKey));
+          const plain = (utxo: Utxo): boolean => utxo.token === undefined && !consumedSharedFunders.has(coinKey(utxo));
+          const wallet = (earlySignerUtxos ?? await signerFundingCoins(this._signer))
+            .filter((utxo) => plain(utxo) && !reserved.has(coinKey(utxo)))
+            .sort((left, right) => Number(left.vout === 0) - Number(right.vout === 0)
+              || (left.satoshis < right.satoshis ? -1 : left.satoshis > right.satoshis ? 1 : 0));
+          const coin: Utxo | undefined = wallet[0] ?? sharedFunderPool?.find(plain);
+          if (coin !== undefined) {
+            consumedSharedFunders.add(coinKey(coin));
+            const pooled = sharedFunderPool?.findIndex((utxo) => coinKey(utxo) === coinKey(coin)) ?? -1;
+            if (pooled >= 0) sharedFunderPool!.splice(pooled, 1);
+            if (!overrides?.returnProbeOnly) retireSignerUtxos(this._signer, [coin]);
+            const lock = addressToLockScript(this._signer.getAddress());
+            return {
+              input: { ...coin, unlocker: this._signer.unlockP2PKH() },
+              recreate: { to: lock, amount: coin.satoshis },
+            };
+          }
+        }
+        const mint = (this.inner.provider as { addUtxo?: (lock: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
+        if (typeof mint !== 'function') return undefined;
+        middleCoins += 1;
+        const lock = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+        const coin: Utxo = {
+          txid: binToHex(sha256Sync(utf8ToBin(`SolidCash recovery loop middle\0${this.categoryId}:`
+            + `${derivationMasterUtxo.txid}:${derivationMasterUtxo.vout}:${middleCoins}`))),
+          vout: 0, satoshis: 10_000n,
+        };
+        await mint.call(this.inner.provider, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, coin);
+        return {
+          input: {
+            ...coin,
+            unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51) },
+          },
+          recreate: { to: lock, amount: coin.satoshis },
+        };
+      };
+      const loop = await resolveStatefulEcrecoverLoopImpl(
+        {
+          provider: (overrides?.sharedSidecarPool ?? this.inner.provider) as never,
+          vmProvider: this.inner.provider,
+          createVirtualMachine: (provider) => createVirtualMachineBch2026ForProvider(provider as never),
+          generateLibauthSourceOutputs: (inputs) => generateLibauthSourceOutputs(inputs as never),
+          takeMiddleCoin,
+        },
+        abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers, front,
+        maxBhLocktime,
+      );
+      keccakLoopSideCars = loop.sideCars;
+      keccakLoopRecreates = loop.recreates;
     }
 
     const unlockableMaster = {

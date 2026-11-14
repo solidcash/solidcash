@@ -144,7 +144,7 @@ import { YulFunctionCallNode } from './ast/YulAST.js';
 import AstBuilder, { lvalueKeyUnitsBuilt } from './ast/AstBuilder.js';
 import { Class, GlobalFunction, TimeOp } from './ast/Globals.js';
 import { ThrowingErrorListener, type SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
-import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
+import GenerateTargetTraversal, { assertRecoveryLoopBand } from './generation/GenerateTargetTraversal.js';
 import { canonicalizeUpsertKeyExpression } from './generation/upsertKeySources.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
 import SolidCashParser from './grammar/SolidCashParser.js';
@@ -18416,6 +18416,7 @@ function compileResolvedAst(
     throwProfile(error);
   }
   mark('codegen');
+  for (const fn of ast.contract.functions) assertRecoveryLoopBand(fn);
 
   const constructorParamLength = ast.contract.parameters.length;
 

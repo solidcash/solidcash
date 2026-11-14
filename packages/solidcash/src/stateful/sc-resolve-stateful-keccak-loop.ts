@@ -80,6 +80,10 @@ export async function resolveStatefulKeccakLoop(
     },
   });
   const sidecarAt = (index: number): Utxo => scUtxos[index] ?? syntheticSidecar(index);
+  // Only a keccak256 call in an outlined helper pushes an ordinal under its side-car index. When every call of the
+  // function is its own, the band's reads carry none, and a one- or two-byte preimage is read as the preimage.
+  const ordinals = (abiFunction.keccakPreimageParams?.length ?? 0)
+    < Number(abiFunction.externalLibraryCalls?.keccak256 ?? 0);
   const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
   const vm = host.createVirtualMachine(host.inner.provider);
   const MAX_ITERS = 64; // budget/standardness cap on runtime keccak side-cars per tx
@@ -127,7 +131,7 @@ export async function resolveStatefulKeccakLoop(
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = host.generateLibauthSourceOutputs(probe.inputs);
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-    const debugReads = scanKeccakBatchReads(trace, keccakInputBase, k);
+    const debugReads = scanKeccakBatchReads(trace, keccakInputBase, k, ordinals);
     let learned = false;
     let reachedNew = false;
     for (const read of debugReads) {

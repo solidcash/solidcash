@@ -735,6 +735,54 @@ export class KeccakSideCarSlotError extends SolidCashError {
   }
 }
 
+/**
+ * A recovery loop of a stateful entry whose side-cars the transaction cannot lay out, refused by name. Iteration k
+ * of the loop reads its triple at master + blockSize + 3k (`ecrecoverTrailingLoop`), which only holds when the loop
+ * is the entry's one recovery family and the one user of the region after its block.
+ */
+export class RecoveryLoopSideCarError extends SolidCashError {
+  constructor(node: Node, public readonly reason: string, detail: string) {
+    super(node, `${reason}: ${detail}`);
+  }
+}
+
+const RECOVERY_LOOP_SIDE_CAR_DETAIL: Record<string, string> = {
+  'recovery-loop-and-fixed-recovery-mix-not-enabled':
+    'this stateful function recovers keys in a loop and also outside it, or through a helper. A loop reads one '
+    + 'recovery triple per iteration from the region after the block, and a recovery outside it reads a fixed slot '
+    + 'the block reserves; the two orders are not laid out together. Recover every key in the loop, or move the '
+    + 'loop into a function of its own',
+  'recovery-loop-twice-not-enabled':
+    'this stateful function recovers keys in two loops. Each loop counts its triples from the end of the block, '
+    + 'so the second would read the first one\'s. Recover the keys in one loop',
+  'recovery-loop-shares-trailing-band':
+    'this stateful function recovers keys in a loop and also uses the region after its block for another runtime '
+    + 'family. The loop reads its triples from the start of that region, where the other family\'s inputs and '
+    + 'outputs are laid out too. Move the loop into a function of its own',
+};
+
+/**
+ * Refuse a recovery loop beside another family that lays out inputs or outputs after the block: each family
+ * counts its own coordinates from blockSize, and none counts the loop's triples. Run on the code generator's final
+ * function facts.
+ */
+export function assertRecoveryLoopBand(fn: FunctionDefinitionNode): void {
+  if (fn.ecrecoverTrailingLoop !== true) return;
+  const other = fn.keccakLoopReads || fn.keccakInLoop ? 'a keccak256 loop'
+    : fn.keccakChainReads ? 'a chained keccak256 preimage'
+      : (fn.collectionIterations?.length ?? 0) > 0 ? 'a collection walk'
+        : (fn.dynamicReads?.length ?? 0) > 0 || (fn.dynamicWrites?.length ?? 0) > 0 ? 'dynamic state chunks'
+          : (fn.entryLoopWrites?.length ?? 0) > 0 || (fn.sortedInsertLoops?.length ?? 0) > 0
+            || (fn.sortedInsertLoopInfo?.length ?? 0) > 0 || (fn.sortedUpsertLoopInfo?.length ?? 0) > 0
+            || (fn.entryAccesses ?? []).some((access) => access.inLoop === true)
+            ? 'mapping entries written in a loop'
+            : (fn.runtimeLoopTransfers?.length ?? 0) > 0 || (fn.runtimeLoopEvents?.length ?? 0) > 0
+              ? 'payments or events from a runtime loop' : undefined;
+  if (other === undefined) return;
+  throw new RecoveryLoopSideCarError(fn, 'recovery-loop-shares-trailing-band',
+    `${RECOVERY_LOOP_SIDE_CAR_DETAIL['recovery-loop-shares-trailing-band']} (here: ${other})`);
+}
+
 const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
   'keccak-loop-and-straight-line-mix-not-enabled':
     'this keccak256 call reads a fixed compute side-car slot that its keccak-loop function did not reserve. A '
@@ -3054,6 +3102,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private directTrailingUserSeen = false;
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
   private ecrecoverLoopActive: boolean = false;     // a dynamic ecrecover loop counter is live on the stack
+  private ecrecoverLoopsEmitted = 0;                // a stateful entry's recovery loops emitted so far (per function)
   private functionMultiSiteDeploy: boolean = false; // 2+ sites w/ a conditional: function counters
   private graphConditionalDeployReachActive: boolean = false;
   private graphRawPayloadEncodeDepth = 0;
@@ -10313,6 +10362,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.currentFunction = node;
     this.callBatchFrame = false;
     this.callBatchRecordViews = false;
+    this.ecrecoverLoopsEmitted = 0;
     // A nested loop that does not own a new upsert must keep the enclosing loop's stream. Each function starts
     // from an empty map so a previous function's stream cannot satisfy this one.
     this.sortedUpsertLoopContexts = new Map();
@@ -18194,8 +18244,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_KECCAK_SLOT, true) >= 0;
     // Stateful EVM recovery appends each verified uncompressed public key to the ordinary keccak call order, so
     // both consumers agree on one batched side-car width. Stateless recovery retains its historical trailing
-    // side-car family below; it has no block layout to share.
-    const callCount = ordinaryCallCount + (layoutBasis ? (layoutBasis.ecrecoverEvmCallCount ?? 0) : 0);
+    // side-car family below; it has no block layout to share. A recovery loop hashes its keys in its own triples.
+    const callCount = ordinaryCallCount + (layoutBasis && !layoutBasis.ecrecoverTrailingLoop
+      ? (layoutBasis.ecrecoverEvmCallCount ?? 0) : 0);
     const batchCount = batchable ? Math.ceil(callCount / 3) : callCount;
     const batchWidth = batchable ? Math.min(3, callCount - batchIndex * 3) : 1;
     // The reaching entry point's side-car slot for this call's batch, when this helper can borrow its layout (see
@@ -18520,6 +18571,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A/B/K (A=+1, B=+2, K=+3). All loop side-cars self-preserve (input idx == output idx) so the same index
     // serves for the input and the recreated output.
     const loopStride = 3n;
+    // A stateless loop's triples follow its input. A stateful entry's follow its block, where the records and fixed
+    // slots end (`ecrecoverTrailingLoop`): A = master + blockSize + 3k, as a keccak256 loop reads master + blockSize
+    // + k. A loop of `new` before it moves that region, as it moves the keccak loop's.
+    const trailingLoop = loop && fn.blockLayout !== undefined && fn.ecrecoverTrailingLoop === true
+      && !this.framedMaster;
+    const loopSlotBase = trailingLoop ? BigInt(fn.blockLayout!.blockSize - 1) : 0n;
     const basisSlots = fn.blockLayout || i !== 0
       ? []
       : (this.ecrecoverSideCarBasis?.blockLayout?.slots ?? [])
@@ -18531,7 +18588,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(this.ecrecoverLoopCounterName) + 1 + extra)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(encodeInt(loopStride), loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_ADD, loc); // master + stride*counter
-      this.emit(encodeInt(slot), loc); this.emit(Op.OP_ADD, loc);                                   // + slot
+      this.emit(encodeInt(loopSlotBase + slot), loc); this.emit(Op.OP_ADD, loc);                    // + slot
+      if (trailingLoop) this.emitDeployerLoopShift(loc, 1 + extra);
     };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
       if (loop) {
@@ -18612,7 +18670,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const ecrecoverKeccakSlot = (ecrecoverLayoutBasis?.blockLayout?.slots ?? []).find(
       (slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === evmKeccakBatchIndex,
     );
-    const statefulEvmKeccak = this.framedMaster || ecrecoverKeccakSlot !== undefined;
+    // A stateful recovery loop's keccak side-car is its triple's third input, which hashes this one key, never a
+    // fixed slot's batch.
+    const statefulEvmKeccak = this.framedMaster || (ecrecoverKeccakSlot !== undefined && !trailingLoop);
     const keccakIdx = (isOutput = false, extra = 0): void => {
       if (loop) { emitLoopSideCarIndex(3n, extra); return; }
       if (this.framedMaster) {
@@ -46081,14 +46141,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // A dynamic (runtime-bound) ecrecover loop reads one recovery TRIPLE per iteration from the forward region
-  // [master+1+3*counter] (A) / [master+2+3*counter] (M or funder) / [master+3+3*counter] (B2/B3). Push a 0-based
-  // counter before OP_BEGIN; emitEcrecoverComputeCall reads triple `counter`, binds argBlob, reads Q, and increments
-  // the counter each iteration.
+  // [master+1+3*counter] (A) / [master+2+3*counter] (M or funder) / [master+3+3*counter] (B2/B3); a stateful entry's
+  // from [master+blockSize+3*counter] on, after its block (`ecrecoverTrailingLoop`). Push a 0-based counter before
+  // OP_BEGIN; emitEcrecoverComputeCall reads triple `counter`, binds argBlob, reads Q, and increments the counter
+  // each iteration.
   private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData): boolean {
     if (this.ecrecoverLoopActive) return false;
     if (this.currentFunctionIsMessageBusRoute) return false;
     if (!this.currentFunction.ecrecoverCompute) return false;
     if (!this.blockHasEcrecoverCall(block)) return false;
+    // A stateful entry's loop reads its triples after the block, which the layout leaves free only when every
+    // recovery of the entry is a call in its loop (`ecrecoverTrailingLoop`).
+    const fn = this.currentFunction;
+    if (fn.blockLayout && !this.framedMaster && fn.name !== '__construct' && this.blockHasDirectEcrecoverCall(block)) {
+      const refuse = (reason: string): never => {
+        throw new RecoveryLoopSideCarError(block, reason, RECOVERY_LOOP_SIDE_CAR_DETAIL[reason]);
+      };
+      if (!fn.ecrecoverTrailingLoop) refuse('recovery-loop-and-fixed-recovery-mix-not-enabled');
+      if (this.ecrecoverLoopsEmitted > 0) refuse('recovery-loop-twice-not-enabled');
+      if (fn.keccakInLoop || this.keccakLoopActive) refuse('recovery-loop-shares-trailing-band');
+      this.ecrecoverLoopsEmitted += 1;
+    }
     this.emit(encodeInt(0n), loc);
     this.pushToStack(this.ecrecoverLoopCounterName);
     this.ecrecoverLoopActive = true;
@@ -46115,6 +46188,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const value of Object.values(node)) {
       if (value instanceof Node) { if (this.blockHasEcrecoverCall(value)) return true; } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.blockHasEcrecoverCall(item)) return true;
+      }
+    }
+    return false;
+  }
+
+  /** A recovery written in `node` itself, not reached through a call: the one a recovery loop reads per iteration. */
+  private blockHasDirectEcrecoverCall(node: Node, seen = new Set<Node>()): boolean {
+    if (seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof FunctionCallNode && (
+      node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
+      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
+    for (const [key, value] of Object.entries(node)) {
+      if (['location', 'type', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+      if (value instanceof Node) {
+        if (this.blockHasDirectEcrecoverCall(value, seen)) return true;
+      } else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node && this.blockHasDirectEcrecoverCall(item, seen)) return true;
       }
     }
     return false;

@@ -4367,6 +4367,7 @@ function buildFunctionAbiMetadata(
         ? func.ecrecoverEvmFlags : func.ecrecoverClosureEvmFlags,
     }),
     ...(func.ecrecoverLoopReads && { ecrecoverLoopReads: true }),
+    ...(func.ecrecoverTrailingLoop && { ecrecoverTrailingLoop: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
       lowLevelCalls: func.lowLevelCalls.map((lc, index) => ({

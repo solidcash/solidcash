@@ -908,6 +908,8 @@ export class StatefulTransactionBuilder {
   private insertLoopPredecessorInputs: UnlockableUtxo[];
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
+  /** Per build: the loop side-cars `_padOutputsToIndex` recreated before a callee block. */
+  private readonly placedTrailingSideCars = new WeakMap<object, Set<string>>();
   private get keccakLoopPrecedesTrailingUser(): boolean {
     return (this.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
       ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
@@ -917,11 +919,13 @@ export class StatefulTransactionBuilder {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
   }
 
+  /** Side-cars a run reads from blockSize on: a keccak chain's or loop's, and a recovery loop's triples. */
   private get keccakSideCarsFollowBlock(): boolean {
     const abiFunction = (this.masterUtxo?.unlocker as {
-      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean };
+      abiFunction?: { keccakChainReads?: boolean; keccakLoopReads?: boolean; ecrecoverTrailingLoop?: boolean };
     })?.abiFunction;
-    return abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true;
+    return abiFunction?.keccakChainReads === true || abiFunction?.keccakLoopReads === true
+      || abiFunction?.ecrecoverTrailingLoop === true;
   }
 
   private blockLayout?: FunctionBlockLayout;
@@ -1278,9 +1282,17 @@ export class StatefulTransactionBuilder {
       ...this.dynamicChunkInputs, ...this.trailingDisposalInputs,
       ...this.externalCallUtxoGroups.flatMap(calleeConsumedInputs),
     ].map((utxo) => `${utxo.txid.toLowerCase()}:${utxo.vout}`));
+    // A loop's side-car before a callee block recreates with its result, at its own index: a copy keeps the old
+    // commitment, which the side-car's covenant and the reading master both refuse.
+    const sideCarRecreates = this._trailingSideCarRecreates();
     while (builder.outputs.length < index) {
       const occupant = this.allInputs[builder.outputs.length];
-      if (occupant?.unlocker && !consumed.has(`${occupant.txid.toLowerCase()}:${occupant.vout}`)) {
+      const key = occupant === undefined ? '' : `${occupant.txid.toLowerCase()}:${occupant.vout}`;
+      const recreate = sideCarRecreates.get(key);
+      if (recreate !== undefined) {
+        builder.addOutput(recreate);
+        this._placedTrailingSideCars(builder).add(key);
+      } else if (occupant?.unlocker && !consumed.has(key)) {
         builder.addOutput({
           to: occupant.unlocker.generateLockingBytecode(),
           amount: occupant.satoshis,
@@ -1290,6 +1302,40 @@ export class StatefulTransactionBuilder {
         builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
       }
     }
+  }
+
+  /**
+   * Each runtime loop side-car's recreation, keyed by its input's outpoint. A keccak loop after a mapping loop recreates
+   * its side-cars past the mapping outputs, not at their own indexes, so none is placed here.
+   */
+  private _trailingSideCarRecreates(): Map<string, Output> {
+    const recreates = new Map<string, Output>();
+    if (this.keccakLoopFollowsTrailingUser) return recreates;
+    this.keccakLoopSideCars.forEach((utxo, index) => {
+      const recreate = this.keccakLoopRecreates[index];
+      if (recreate !== undefined) recreates.set(`${utxo.txid.toLowerCase()}:${utxo.vout}`, recreate);
+    });
+    return recreates;
+  }
+
+  /** The loop side-cars whose recreations `builder` already holds at their own indexes. */
+  private _placedTrailingSideCars(builder: object): Set<string> {
+    let placed = this.placedTrailingSideCars.get(builder);
+    if (placed === undefined) {
+      placed = new Set();
+      this.placedTrailingSideCars.set(builder, placed);
+    }
+    return placed;
+  }
+
+  /** The keccak loop recreations `builder` does not hold yet, in side-car order. */
+  private _pendingKeccakLoopRecreates(builder: object): Output[] {
+    const placed = this.placedTrailingSideCars.get(builder);
+    if (placed === undefined || placed.size === 0) return this.keccakLoopRecreates;
+    return this.keccakLoopRecreates.filter((_recreate, index) => {
+      const utxo = this.keccakLoopSideCars[index];
+      return utxo === undefined || !placed.has(`${utxo.txid.toLowerCase()}:${utxo.vout}`);
+    });
   }
 
   /** Set the change address for funder excess (returned after fee deduction). */
@@ -1981,7 +2027,7 @@ export class StatefulTransactionBuilder {
       runtimeLoopEventOutputs: this.runtimeLoopEventOutputs,
       runtimeLoopTransferOutputs: this.runtimeLoopTransferOutputs,
       loopEntryCommitments: this.loopEntryCommitments,
-      keccakLoopRecreates: this.keccakLoopRecreates,
+      pendingKeccakLoopRecreates: (b) => this._pendingKeccakLoopRecreates(b),
       keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       kernelJournalSettlementOutputPlan: this.kernelJournalSettlementOutputPlan,
       kernelJournalEagerOutputPlan: this.kernelJournalEagerOutputPlan,
@@ -2359,7 +2405,7 @@ export class StatefulTransactionBuilder {
         llcOutputsHost: this._materializeLowLevelCallOutputsHost(),
         trailingIterationHost: this._materializeTrailingIterationEntriesHost(),
         runtimeLoopHost: this._materializeRuntimeLoopTrailingHost(),
-        keccakLoopRecreates: this.keccakLoopRecreates,
+        pendingKeccakLoopRecreates: (b) => this._pendingKeccakLoopRecreates(b),
         keccakLoopFollowsTrailingUser: this.keccakLoopFollowsTrailingUser,
       }),
       lateChunkFrameHost: () => ({

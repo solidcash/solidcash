@@ -1,8 +1,9 @@
 /**
  * A7, A14 item 5: a constructor's callee runs as an ordinary spend inside the creation, so its block holds what its own
  * call would: its satoshi and token containers and their transfers, read-only entries, events under a condition, a wide
- * event's chunks, and its keccak256 and ecrecover side-cars (from the shared pool, A14 item 6). Each creation is checked
- * by the VM; each tamper case changes one output of a finished creation and expects the callee's input to refuse it.
+ * event's chunks, its keccak256 and ecrecover side-cars, and a recovery loop's triples (from the shared pool, A14 item
+ * 6). Each creation is checked by the VM; each tamper case changes one output of a finished creation and expects the
+ * callee's input to refuse it.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -529,11 +530,81 @@ describe('a callee that checks tx.time (A5, A14 item 7)', () => {
   });
 });
 
+describe('a callee that recovers keys in a loop (A7, A14 items 5 and 6)', () => {
+  const SOURCE = `${P} interface I { function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool); }
+    contract T(pubkey owner) { int n; function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool) {
+      for (int i = 0; i < k; i++) { require(ecrecoverPubKey(h, v, r, s) == owner); } n = n + 1; return true; } }
+    contract C { bool ok; constructor(I t, bytes32 h, int v, bytes32 r, bytes32 s) { ok = t.f(h, v, r, s, 2); }
+      function read() { require(ok); } }`;
+
+  it('co-spends a shared triple per iteration after the callee\'s block, and refuses another key or a moved one',
+    async () => {
+      const { ethers } = await import('ethers');
+      const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+      const wallet = new ethers.Wallet(`0x${'44'.repeat(32)}`);
+      const message = 'callee-recovery-loop';
+      const parsed = ethers.Signature.from(await wallet.signMessage(message));
+      const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+      const expected = hexToBin(wallet.signingKey.compressedPublicKey.replace(/^0x/, ''));
+      const salt = new Uint8Array(32);
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('T')), {}, [expected]);
+      const tLock = addressToLockScript(t.contract.address);
+      const c = compileString(SOURCE, compileOptions('C'));
+      const extra = {
+        initArgs: [tLock, little(ethers.hashMessage(message)), BigInt(parsed.v), little(parsed.r), little(parsed.s)],
+        constructorCallees: [{ contract: t.contract }],
+      };
+      // No coin of the shared pool: refused before anything is built.
+      await expect(s.deploy(c, extra)).rejects.toThrow(/No shared ecrecover sidecar coin was found for the callee 'T\.f'/);
+      for (const [roleIndex, role] of (['A', 'B2', 'M', 'B3'] as const).entries()) {
+        for (const index of [0, 1, 2, 3]) {
+          await s.provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
+            txid: `${(0xb0 + roleIndex).toString(16)}${index.toString(16).padStart(2, '0')}`.padEnd(64, '0'), vout: 0,
+            satoshis: 100_000n,
+            token: { category: 'ed'.repeat(31) + '15', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+          });
+        }
+      }
+      const captured = await s.capture(c, extra);
+      expect(verifies(s.provider, captured)).toBe(true);
+      // Iteration k: A at the callee's master + 3 + 3k (after master, record and the record slot), B2 two on, the
+      // middle input a wallet coin with the filler.
+      const master = captured.sourceOutputs.findIndex((output) => same(output.lockingBytecode, tLock));
+      const lockA = ecrecoverComputeLockingBytecode(salt, 'A');
+      const lockB = ecrecoverComputeLockingBytecode(salt, 'B2');
+      for (const k of [0, 1]) {
+        const a = master + 3 + 3 * k;
+        expect(same(captured.sourceOutputs[a].lockingBytecode, lockA)).toBe(true);
+        expect(same(captured.sourceOutputs[a + 2].lockingBytecode, lockB)).toBe(true);
+        expect(same(captured.transaction.outputs[a + 2]!.lockingBytecode, lockB)).toBe(true);
+      }
+      // Another key in B's recreation, and A moved where B is read.
+      const forged = withOutput(captured, master + 5, (output) => {
+        const commitment = Uint8Array.from(output.token.nft.commitment);
+        commitment[1] ^= 1;
+        return { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } } };
+      });
+      expect(inputPasses(s.provider, forged.transaction, forged.sourceOutputs, master)).toBe(false);
+      const swap = <T>(items: readonly T[]): T[] => items.map((item, at) => (
+        at === master + 3 ? items[master + 5]! : at === master + 5 ? items[master + 3]! : item));
+      expect(inputPasses(s.provider, {
+        ...captured.transaction, inputs: swap(captured.transaction.inputs), outputs: swap(captured.transaction.outputs),
+      }, swap(captured.sourceOutputs), master)).toBe(false);
+
+      const created = await s.deploy(c, extra);
+      expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    });
+});
+
 describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)', () => {
-  it('refuses a callee that recovers keys in a loop, before building, with the reason', async () => {
+  it('refuses a callee that recovers keys in a loop through a helper, before building, with the reason', async () => {
     const source = `${P} interface I { function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool); }
-      contract T { int n; function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool) {
-        for (int i = 0; i < k; i++) { require(ecrecoverPubKey(h, v, r, s) != 0x); } n = n + 1; return true; } }
+      contract T { int n;
+        function rec(bytes32 h, int v, bytes32 r, bytes32 s) private returns (pubkey) { return ecrecoverPubKey(h, v, r, s); }
+        function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool) {
+          for (int i = 0; i < k; i++) { require(rec(h, v, r, s) != 0x); } n = n + 1; return true; } }
       contract C { bool ok; constructor(I t, bytes32 h, int v, bytes32 r, bytes32 s) { ok = t.f(h, v, r, s, 2); }
         function read() { require(ok); } }`;
     const s = setup();
@@ -550,7 +621,7 @@ describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)'
       constructorCallees: [{ contract: t.contract }],
     }).then(() => undefined, (error: unknown) => error);
     expect(refusal).toBeInstanceOf(DeployerCalleeError);
-    expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it recovers keys in a loop, which no ordinary call/);
+    expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it recovers keys in a loop through a helper/);
     // The refusal comes before the prep, so nothing was sent.
     expect(sent).toHaveLength(0);
   });

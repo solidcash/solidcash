@@ -3,8 +3,9 @@
  * of its ordinary call's build: the entries, inserts, payments and events of a loop, a dynamic array's chunks, an entry a
  * branch deletes (DS-6), a collection's walk, the blocks of the contracts it calls or reads (a low-level call's among
  * them), the oracle pool coins its block reads co-spend, and a keccak256 loop's side-cars from the shared pool (A14
- * item 6). An entry msg.sender keys is the child's, as the genesis step resolves it. Each creation is checked by the VM;
- * each tamper case changes one part of a finished creation and expects the input that binds it to refuse.
+ * item 6), before the block of a contract it calls. An entry msg.sender keys is the child's, as the genesis step
+ * resolves it. Each creation is checked by the VM; each tamper case changes one part of a finished creation and expects
+ * the input that binds it to refuse.
  *
  * The ordinary build of a loop's payments fails on the production profile (the same call fails as an ordinary call
  * there), so those cases run on the relaxed mock, whose minted coins only pad the build: the creation spends none.
@@ -583,26 +584,65 @@ describe('a callee that hashes in a loop through the shared side-car pool (A7, A
     expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
   });
 
-  it('refuses a callee that hashes in a loop and calls another contract, before anything is sent', async () => {
-    const source = `${P} interface IU { function g(int x) external returns (int); }
-      interface I { function f(IU u, bytes b, int k) external returns (bool); }
-      contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x * 2; } }
-      contract T { bytes32 h; int n; function f(IU u, bytes b, int k) external returns (bool) {
-        bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; n = u.g(k); return true; } }
-      contract C { bool ok; constructor(I t, IU u, bytes b, int k) { ok = t.f(u, b, k); } function read() { require(ok); } }`;
-    const { DeployerCalleeError } = await import('../../src/stateful/deployer.js');
-    const s = setup();
-    const u = await s.deploy(compileString(source, compileOptions('U')));
-    const t = await s.deploy(compileString(source, compileOptions('T')));
-    const sentBefore = s.sent.length;
-    const refusal = await s.deploy(compileString(source, compileOptions('C')), {
-      initArgs: [addressToLockScript(t.contract.address), addressToLockScript(u.contract.address), Uint8Array.of(3), 2n],
-      constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
-    }).then(() => undefined, (error: unknown) => error);
-    expect(refusal).toBeInstanceOf(DeployerCalleeError);
-    expect((refusal as Error).message).toMatch(/it hashes in a loop and calls another contract, which its ordinary call/);
-    expect(s.sent.length).toBe(sentBefore);
-  });
+  it('co-spends the loop\'s side-cars before a nested callee\'s block, and refuses another digest or a moved side-car',
+    async () => {
+      const source = `${P} interface IU { function g(int x) external returns (int); }
+        interface I { function f(IU u, bytes b, int k) external returns (bool); }
+        contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+        contract T { bytes32 h; int n; function f(IU u, bytes b, int k) external returns (bool) {
+          bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; n = u.g(k); return true; } }
+        contract C { bool ok; constructor(I t, IU u, bytes b, int k) { ok = t.f(u, b, k); } function read() { require(ok); } }`;
+      const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+      const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+      const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+      const s = setup();
+      const u = await s.deploy(compileString(source, compileOptions('U')));
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+      for (const index of [0, 1, 2, 3]) {
+        await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-loop-call-callee', sharedLock, index));
+      }
+      const tLock = addressToLockScript(t.contract.address);
+      const uLock = addressToLockScript(u.contract.address);
+      // A one-byte preimage, which a loop's read once took for a call ordinal.
+      const b = Uint8Array.of(3);
+      const c = compileString(source, compileOptions('C'));
+      const extra = {
+        initArgs: [tLock, uLock, b, 2n], constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
+      };
+      const captured = await s.capture(c, extra);
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+      expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+      // The side-cars follow the callee's block of master, record and record slot, each recreated at its own index
+      // with the digest; the nested callee's block follows them.
+      const master = masterInput(captured, tLock);
+      const sidecars = outputsAt(captured, sharedLock);
+      expect(sidecars).toEqual([master + 3, master + 4]);
+      for (const index of sidecars) {
+        expect(same(captured.sourceOutputs[index].lockingBytecode, sharedLock)).toBe(true);
+        expect(binToHex(captured.transaction.outputs[index]!.token!.nft!.commitment)).toBe(binToHex(keccak(b)));
+      }
+      expect(masterInput(captured, uLock)).toBe(master + 5);
+      // Another digest: refused by the side-car and by the callee that reads it.
+      const forged = withOutput(captured, master + 4, bumpCommitment);
+      expect(inputPasses(s.provider, forged, master + 4)).toBe(false);
+      expect(inputPasses(s.provider, forged, master)).toBe(false);
+      // The side-car moved past the nested callee's block.
+      const swap = <T>(items: readonly T[]): T[] => items.map((item, at) => (
+        at === master + 4 ? items[master + 5]! : at === master + 5 ? items[master + 4]! : item));
+      expect(inputPasses(s.provider, {
+        sourceOutputs: swap(captured.sourceOutputs),
+        transaction: {
+          ...captured.transaction, inputs: swap(captured.transaction.inputs), outputs: swap(captured.transaction.outputs),
+        },
+      }, master)).toBe(false);
+
+      const created = await s.deploy(c, extra);
+      expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+      expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(4n);
+      expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+    });
 
   it('takes the fixed side-car of a callee whose block a run sizes from the shared pool too', async () => {
     const { keccakComputeLockingBytecode } = await import('@solidcash/utils');

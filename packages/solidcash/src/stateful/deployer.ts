@@ -632,10 +632,6 @@ async function planCalleeBlockByCall(
   const sidecars = fn.keccakCompute === true || fn.keccakLoopReads === true || fn.keccakChainReads === true
     || fn.ecrecoverCompute === true;
   const sidecarPool = sidecars ? sharedPoolView(provider, context.spent) : undefined;
-  if (fn.keccakLoopReads === true && (callee.externalContracts ?? []).length > 0) {
-    refuse('it hashes in a loop and calls another contract, which its ordinary call does not lay out: that call fails '
-      + 'at the other contract\'s input');
-  }
   const route = { abiFunction: fn, emitReturn: true };
   const { StatefulFunctionCall } = await import('./StatefulContract.js');
   const participant = new StatefulFunctionCall(
@@ -726,18 +722,28 @@ async function planCalleeBlockByCall(
   // Change the build pays back to its pad lock, after the block, is not the callee's: the creation's change takes it.
   let end = built.outputs.length;
   while (end > 0 && lockHex(built.outputs[end - 1]!.to) === binToHex(padLock)) end -= 1;
-  if (built.outputs.slice(0, end).some((output) => lockHex(output.to) === binToHex(padLock))) {
+  // A pad coin the build returns at its own index, as a 2-way recovery's middle input, which no covenant reads, is
+  // a balanced slot: the creation fills it with a wallet coin and the filler.
+  const returnsPad = (output: Output, index: number): boolean => {
+    const input = built.inputs[index];
+    return input !== undefined && output.token === undefined && input.token === undefined
+      && output.amount === input.satoshis && lockHex(input.unlocker.generateLockingBytecode()) === binToHex(padLock);
+  };
+  if (built.outputs.slice(0, end).some((output, index) => lockHex(output.to) === binToHex(padLock)
+    && !returnsPad(output, index))) {
     refuse('the ordinary build of its call pays its pad lock inside its block');
   }
-  const outputs: Output[] = built.outputs.slice(0, end).map((output) => ({
-    to: output.to, amount: output.amount,
-    ...(output.token === undefined ? {} : {
-      token: {
-        category: output.token.category, amount: output.token.amount,
-        ...(output.token.nft === undefined ? {} : { nft: { ...output.token.nft } }),
-      },
-    }),
-  }));
+  const outputs: Output[] = built.outputs.slice(0, end).map((output, index) => (returnsPad(output, index)
+    ? plainFiller()
+    : {
+      to: output.to, amount: output.amount,
+      ...(output.token === undefined ? {} : {
+        token: {
+          category: output.token.category, amount: output.token.amount,
+          ...(output.token.nft === undefined ? {} : { nft: { ...output.token.nft } }),
+        },
+      }),
+    }));
   for (const output of outputs) {
     const nft = output.token?.category === categoryId ? output.token.nft : undefined;
     if (nft !== undefined) nft.commitment = rename(nft.commitment);
@@ -776,9 +782,10 @@ async function planCalleeBlockByCall(
  * 0 of a creation, so a callee co-spends the shared pool's side-cars (salt 0), as Deploy<C> does (A14 item 6). `spent`
  * holds the shared coins the creation already spends; the ones this block takes are added to it.
  *
- * A function whose block a run sizes (loops, keccak256 loops, dynamic state, iterations, its own calls and reads, block
- * reads) or that deletes an entry takes the block of its ordinary call's build instead (`planCalleeBlockByCall`). A
- * function whose own spend needs what a constructor's call cannot carry is refused with `DeployerCalleeError`.
+ * A function whose block a run sizes (loops, keccak256 and recovery loops, dynamic state, iterations, its own calls and
+ * reads, block reads) or that deletes an entry takes the block of its ordinary call's build instead
+ * (`planCalleeBlockByCall`). A function whose own spend needs what a constructor's call cannot carry is refused with
+ * `DeployerCalleeError`.
  */
 export async function planConstructorCalleeBlock(
   call: ConstructorCall, sender: Uint8Array, options: { spent?: Set<string> } = {},
@@ -822,13 +829,17 @@ export async function planConstructorCalleeBlock(
     refuse('it creates a contract, and a creating entry refuses a genesis call (A7): one run could both create a '
       + 'child and answer its constructor');
   }
-  if (fn.ecrecoverLoopReads === true) {
-    refuse('it recovers keys in a loop, which no ordinary call of a stateful contract lays out: the compiled loop reads '
-      + 'recovery k\'s side-cars at the master\'s index plus 1 + 3k to 3 + 3k, over the records and fixed slots that '
-      + 'follow the master, so its ordinary call fails at the master');
+  // A recovery loop whose triples follow the block (ecrecoverTrailingLoop) is laid out by the ordinary build below.
+  // Any other recovery in a loop is a helper's: every iteration reads the helper's one fixed triple, from arguments
+  // that are not the callee's own. An artifact compiled before recovery loops read after the block reads over its
+  // records instead.
+  if (fn.ecrecoverLoopReads === true && fn.ecrecoverTrailingLoop !== true) {
+    refuse('it recovers keys in a loop through a helper: every iteration reads the helper\'s one fixed recovery slot, '
+      + 'from arguments that are not the callee\'s own to lay out');
   }
-  // Regions a run sizes (loops, keccak256 loops, dynamic state, iterations, the callee's own calls and reads, block
-  // reads) and deletes are laid out by the ordinary build of the call; the fixed layout below covers the rest.
+  // Regions a run sizes (loops, keccak256 and recovery loops, dynamic state, iterations, the callee's own calls and
+  // reads, block reads) and deletes are laid out by the ordinary build of the call; the fixed layout below covers the
+  // rest.
   const sized: ReadonlyArray<keyof import('@solidcash/utils').AbiFunction> = [
     'sortedUpsertLoopInfo', 'sortedInsertLoopInfo', 'sortedInsertLoops', 'entryLoopWrites', 'runtimeLoopTransfers',
     'runtimeLoopEvents', 'dynamicWrites', 'dynamicReads', 'collectionIterations', 'externalCalls', 'externalReads',
@@ -839,7 +850,7 @@ export async function planConstructorCalleeBlock(
     'tokenContainer', 'transfer', 'tcTransfer', 'keccakSideCar', 'ecrecoverSideCar',
   ]);
   if (sized.some((field) => Array.isArray(fn[field]) && (fn[field] as unknown[]).length > 0)
-    || fn.keccakLoopReads === true
+    || fn.keccakLoopReads === true || fn.ecrecoverTrailingLoop === true
     || layout.slots.some((slot) => !fixedKinds.has(slot.kind) || slot.softDelete === true)
     || (fn.entryAccesses ?? []).some((access) => access.operations.includes('delete'))) {
     return planCalleeBlockByCall(call, sender, { spent }, refuse);

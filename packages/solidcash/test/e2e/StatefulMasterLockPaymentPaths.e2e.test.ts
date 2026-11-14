@@ -4,14 +4,22 @@
  *
  * - a plain TransactionBuilder send, and a message-bus composition, which never reach the stateful call path;
  * - a framed master, whose prologue requires the minting NFT as a direct master's pin(X) does, and a master compiled
- *   for P2SH20, whose records and container bind the category alone.
+ *   for P2SH20, whose records and container bind the category alone;
+ * - a framed contract's address, its validator lock, whose program requires the category's mutable NFT.
  *
  * A wallet script that holds a minting NFT but binds no SolidCash record or container is still paid.
  */
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
-import { buildDataNftCovenantScript, buildSatoshiContainerCovenantScript, type Artifact } from '@solidcash/utils';
+import {
+  OpcodesBch, binToHex, createVirtualMachineBch2026, decodeAuthenticationInstructions, encodeAuthenticationInstructions,
+  encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress, type Output,
+} from '@bitauth/libauth';
+import {
+  buildDataNftCovenantScript, buildSatoshiContainerCovenantScript, validatorAddress, validatorRedeemScript,
+  type Artifact,
+} from '@solidcash/utils';
 import { compileStringMulti } from '@solidcash/solidc';
+import { framedValidator } from '@solidcash/solidc/runtime';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { Contract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
 import {
@@ -19,7 +27,9 @@ import {
 } from '../../src/stateful/index.js';
 import * as messageBus from '../../src/message-bus/index.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
-import { scriptToLockingBytecode } from '../../src/utils.js';
+import { framedContractAddress } from '../../src/framed/deploy/stateful.js';
+import { satoshiContainerLockingBytecode } from '../../src/framed/deploy/records.js';
+import { addressToLockScript, scriptToLockingBytecode } from '../../src/utils.js';
 import { compileString } from '../direct-compile.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
@@ -129,6 +139,102 @@ contract Vault {
     if (typeof containerAddress === 'string') throw new Error(containerAddress);
     await expect(refusePaymentsToStatefulMasters(provider, [], [{ to: master, amount: 5_000n }]))
       .rejects.toThrow(containerAddress.address);
+  }, 300_000);
+
+  it('refuses a payment to a framed contract\'s address, which spends only its category\'s mutable NFT', async () => {
+    const provider = new MockNetworkProvider({
+      consensusLimits: {
+        maximumInputBytes: 10_000_000, maximumStackItemBytes: 10_000_000, maximumTransactionBytes: 100_000_000,
+      },
+    });
+    const vault = compileStringMulti(`pragma solidcash ^0.50.0;
+contract Vault {
+  int public count;
+  function touch(int by) { this.count = this.count + by; require(true); }
+  receive() external payable { require(true); }
+}`, { composition: 'framed' }).Vault!;
+    const change = lockingBytecodeToCashAddress({ bytecode: aliceLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const fundingUtxo: Utxo = { txid: 'e3'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(binToHex(aliceLock), fundingUtxo);
+    const deployed = await StatefulContract.deploy(vault, [], {
+      provider, fundingUtxo, funder: alice.unlockP2PKH(), changeAddress: change.address,
+    } as never);
+    const { categoryId } = deployed;
+    // The contract's address is addrV(category), where its validator pool sits: coins carrying the mutable NFT.
+    const address = framedContractAddress(provider.network, categoryId);
+    expect(deployed.contract.address).toBe(address);
+    const lock = addressToLockScript(address);
+    const pool = await provider.getUtxosForLockingBytecode(lock);
+    expect(pool.length).toBeGreaterThan(0);
+    expect(pool.every((coin) => coin.token?.category === categoryId && coin.token.nft?.capability === 'mutable'))
+      .toBe(true);
+
+    // On the machine: a coin at the address spent through the only script its lock admits, the validator's redeem.
+    // Holding the pool's mutable NFT the input passes the program's own-token check and fails later, on a transcript
+    // the program cannot read; holding no token, or a fungible amount of the category, it fails that check itself.
+    const redeem = validatorRedeemScript(hexToBin(categoryId), framedValidator.buildValidatorProgram());
+    const instructions = decodeAuthenticationInstructions(redeem);
+    const ownTokenCheck = instructions.findIndex((instruction, at) => instruction.opcode === OpcodesBch.OP_INPUTINDEX
+      && instructions[at + 1]?.opcode === OpcodesBch.OP_UTXOTOKENCATEGORY
+      && instructions[at + 2]?.opcode === OpcodesBch.OP_EQUALVERIFY);
+    expect(ownTokenCheck).toBeGreaterThan(0);
+    const vm = createVirtualMachineBch2026();
+    const failsAt = (token: Output['token']): number => {
+      const state = vm.evaluate({
+        inputIndex: 0,
+        sourceOutputs: [{ lockingBytecode: lock, valueSatoshis: 5_000n, ...(token === undefined ? {} : { token }) }],
+        transaction: {
+          version: 2,
+          locktime: 0,
+          inputs: [{
+            outpointTransactionHash: hexToBin('e4'.repeat(32)), outpointIndex: 0, sequenceNumber: 0xffffffff,
+            unlockingBytecode: Uint8Array.from([...encodeDataPush(Uint8Array.of(0x50)), ...encodeDataPush(redeem)]),
+          }],
+          outputs: [{ lockingBytecode: aliceLock, valueSatoshis: 4_000n }],
+        },
+      });
+      expect(vm.stateSuccess(state)).not.toBe(true);
+      expect(binToHex(encodeAuthenticationInstructions(state.instructions))).toBe(binToHex(redeem));
+      // The machine moves past an instruction whether or not it fails: the failing one is the one before.
+      return state.ip - 1;
+    };
+    const mutable = {
+      category: hexToBin(categoryId), amount: 0n, nft: { capability: 'mutable', commitment: new Uint8Array() },
+    };
+    expect(failsAt(mutable as Output['token'])).toBeGreaterThan(ownTokenCheck + 2);
+    expect(failsAt(undefined)).toBe(ownTokenCheck + 2);
+    expect(failsAt({ category: hexToBin(categoryId), amount: 5n } as Output['token'])).toBe(ownTokenCheck + 2);
+
+    // The SDK refuses such a payment wherever it is sent, naming the contract's satoshi container.
+    const container = lockingBytecodeToCashAddress({
+      bytecode: satoshiContainerLockingBytecode(categoryId), prefix: 'bchtest', tokenSupport: true,
+    });
+    if (typeof container === 'string') throw new Error(container);
+    const refused = refusePaymentsToStatefulMasters(provider, [], [{ to: lock, amount: 5_000n }]);
+    await expect(refused).rejects.toThrow(StatefulMasterPaymentError);
+    await expect(refusePaymentsToStatefulMasters(provider, [], [{ to: address, amount: 5_000n }]))
+      .rejects.toThrow(`${address}, the address of the framed contract with category ${categoryId}`);
+    await expect(refusePaymentsToStatefulMasters(provider, [], [{ to: lock, amount: 5_000n }]))
+      .rejects.toThrow(container.address);
+    const coin: Utxo = { txid: 'e5'.repeat(32), vout: 0, satoshis: 50_000n };
+    await provider.seedUtxo(binToHex(aliceLock), coin);
+    await expect(new TransactionBuilder({ provider })
+      .addInput(coin, alice.unlockP2PKH())
+      .addOutput({ to: address, amount: 6_000n })
+      .addOutput({ to: aliceLock, amount: 43_000n })
+      .send()).rejects.toThrow(container.address);
+    // A validator the transaction spends names the address with no lookup: here a category with nothing on chain.
+    const elsewhere = 'c9'.repeat(32);
+    const elsewhereLock = validatorAddress(hexToBin(elsewhere), framedValidator.buildValidatorProgram());
+    const validatorInput = {
+      txid: 'e6'.repeat(32), vout: 0, satoshis: 1_000n,
+      token: { category: elsewhere, amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } },
+      unlocker: { generateLockingBytecode: () => elsewhereLock, generateUnlockingBytecode: () => new Uint8Array() },
+    };
+    await expect(refusePaymentsToStatefulMasters(new MockNetworkProvider(), [validatorInput as never], [
+      { to: elsewhereLock, amount: 5_000n },
+    ])).rejects.toThrow(`category ${elsewhere}, its validator lock`);
   }, 300_000);
 
   it('recognises a P2SH20 master by its record, and pays a minting-NFT script with none', async () => {

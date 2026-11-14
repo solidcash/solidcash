@@ -6,10 +6,14 @@
  * `new` result to the child's container and refuses or warns on a contract-typed recipient, but a lock passed as
  * `bytes` is known only once a transaction is built. This refuses such an output then, and names the satoshi container
  * the payment belongs at when the chain shows which coin that is.
+ *
+ * A framed contract's address is not a master lock but its validator lock, `addrV(category)`: the P2SH32 of the
+ * category's mutable pin, pushed, before the validator program. The program's first check requires the coin it spends
+ * to carry that pin, the category's mutable NFT, so a payment there is stuck too, and is refused the same way.
  */
 import { binToHex, hexToBin } from '@bitauth/libauth/build/lib/format/hex.js';
 import { lockingBytecodeToCashAddress } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
-import { buildDataNftCovenantScript, buildSatoshiContainerCovenantScript } from '@solidcash/utils';
+import { buildDataNftCovenantScript, buildSatoshiContainerCovenantScript, validatorAddress } from '@solidcash/utils';
 import { isContractUnlocker, type Output, type UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '../utils.js';
@@ -23,9 +27,15 @@ export class StatefulMasterPaymentError extends Error {
     readonly categoryId: string,
     readonly containerAddress: string | undefined,
     tokens: boolean,
+    /** The lock paid: a master lock, or a framed contract's own address, its validator lock. */
+    readonly lockKind: 'master' | 'validator' = 'master',
   ) {
-    super(`Output ${outputIndex} pays ${masterAddress}, the master lock of the stateful contract with category `
-      + `${categoryId}: the master spends only a coin that carries its minting NFT, so this one could never be spent. `
+    super(`Output ${outputIndex} pays ${masterAddress}, `
+      + (lockKind === 'validator'
+        ? `the address of the framed contract with category ${categoryId}, its validator lock: the validator spends `
+          + 'only a coin that carries the mutable NFT of that category, so this one could never be spent. '
+        : `the master lock of the stateful contract with category ${categoryId}: the master spends only a coin that `
+          + 'carries its minting NFT, so this one could never be spent. ')
       + (tokens ? 'Pay the tokens to its token container for that category'
         : containerAddress !== undefined ? `Pay its satoshi container ${containerAddress}`
           : 'Pay its satoshi container')
@@ -34,7 +44,36 @@ export class StatefulMasterPaymentError extends Error {
   }
 }
 
-/** A P2SH32 lock: a direct master's. */
+/** The validator program, part of every framed contract's address; built once, on first need. */
+let validatorProgram: Uint8Array | undefined;
+
+/**
+ * The category whose framed contract's address, `addrV(category)`, is `lock`, when one of `coins` there is that
+ * category's validator: a coin carrying its mutable NFT. Undefined otherwise; only such a coin's category is tried.
+ */
+async function framedCategoryAt(
+  lock: Uint8Array, coins: readonly { token?: { category: string; nft?: { capability: string } } }[],
+): Promise<string | undefined> {
+  if (!isP2sh32(lock)) return undefined;
+  const key = binToHex(lock);
+  const candidates = new Set(coins.flatMap((coin) => (coin.token?.nft?.capability === 'mutable'
+    ? [coin.token.category.toLowerCase()] : [])));
+  for (const categoryId of candidates) {
+    if (validatorProgram === undefined) {
+      const { framedValidator } = await import('@solidcash/solidc/runtime');
+      validatorProgram = framedValidator.buildValidatorProgram();
+    }
+    if (binToHex(validatorAddress(hexToBin(categoryId), validatorProgram)) === key) return categoryId;
+  }
+  return undefined;
+}
+
+/** A framed contract's satoshi container: the container covenant of its category alone. */
+const framedContainerOf = (categoryId: string): Uint8Array => scriptToLockingBytecode(
+  buildSatoshiContainerCovenantScript(hexToBin(categoryId)), 'p2sh32',
+);
+
+/** A P2SH32 lock: a direct master's, or a framed contract's address. */
 const isP2sh32 = (lock: Uint8Array): boolean => lock.length === 35 && lock[0] === 0xaa && lock[1] === 0x20
   && lock[34] === 0x87;
 
@@ -83,13 +122,15 @@ async function solidCashMasterEvidence(
 }
 
 /**
- * Refuse a transaction whose output pays a stateful master lock without that master's minting NFT.
+ * Refuse a transaction whose output pays a stateful master lock without that master's minting NFT, or a framed
+ * contract's address without its validator's mutable NFT.
  *
  * An output carrying a minting NFT recreates a master, and one carrying an NFT of a category an input holds is a record
  * or event of a contract in the transaction; neither is a payment. A lock a stateful contract in the transaction holds
- * its master at is a master lock as the transaction shows. Any other P2SH lock is looked up: one holding a minting NFT
- * is a master lock only when a coin sits at its data record or satoshi container, so a wallet script holding a minting
- * NFT is still paid.
+ * its master at is a master lock as the transaction shows. A lock where a coin carrying a category's mutable NFT sits,
+ * spent by the transaction or on chain, is that category's framed address when it derives as `addrV(category)`. Any
+ * other P2SH lock is looked up: one holding a minting NFT is a master lock only when a coin sits at its data record or
+ * satoshi container, so a wallet script holding a minting NFT is still paid.
  */
 export async function refusePaymentsToStatefulMasters(
   provider: NetworkProvider, inputs: readonly UnlockableUtxo[], outputs: readonly Output[],
@@ -119,10 +160,18 @@ export async function refusePaymentsToStatefulMasters(
       throw new StatefulMasterPaymentError(index, addressOf(lock, provider.network), categoryId,
         getSatoshiContainerAddress(master.unlocker.contract, categoryId), tokens);
     }
+    const framedRefusal = (categoryId: string): StatefulMasterPaymentError => new StatefulMasterPaymentError(index,
+      addressOf(lock, provider.network), categoryId, addressOf(framedContainerOf(categoryId), provider.network),
+      tokens, 'validator');
+    // The lock of a validator the transaction spends is its framed contract's address.
+    const spentValidator = await framedCategoryAt(lock, spent);
+    if (spentValidator !== undefined) throw framedRefusal(spentValidator);
     // A lock the transaction spends a coin from is one of its own covenants: a container, a record.
     if (spent.length > 0) continue;
-    const minting = (await provider.getUtxosForLockingBytecode(lock))
-      .find((coin) => coin.token?.nft?.capability === 'minting');
+    const coins = await provider.getUtxosForLockingBytecode(lock);
+    const validator = await framedCategoryAt(lock, coins);
+    if (validator !== undefined) throw framedRefusal(validator);
+    const minting = coins.find((coin) => coin.token?.nft?.capability === 'minting');
     if (minting === undefined) continue;
     const container = await solidCashMasterEvidence(provider, lock, minting.token!.category);
     if (container === undefined) continue;

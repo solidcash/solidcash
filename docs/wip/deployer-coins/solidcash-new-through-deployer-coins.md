@@ -4611,7 +4611,7 @@ their contract with `deployer: true`:
       `msg.sender`, which passes at top level and fails through a creator;
 - [x] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(covered by `DeployerCreation.e2e`: the keccak success and no-pool cases, and `co-spends the shared ecrecover side-cars for a constructor recovery` with `refuses a constructor recovery with no shared ecrecover coin`)*
       network, `DeployerSidecarError`;
-- [ ] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(not covered; `budgetPad` is passed empty on this path)*
+- [ ] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(not covered, with a measurement: A4.3 step 1 now drops `__internal__budgetPad` first, but the BCH-2026 operation-cost metric also counts the pad's pushed bytes, so a 4,096-byte pad moved the probe's limit from 1,418,400 to 4,696,800 and the failing cost from 1,418,470 to 4,696,878; padding did not fund a 1,000-iteration constructor loop)*
       `__internal__budgetPad` and the creation passes;
 - [x] a child whose `create` unlocking would exceed 10,000 bytes with its arguments: `DeployerPrepError` *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       before anything is broadcast;

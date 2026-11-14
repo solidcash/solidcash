@@ -20,18 +20,20 @@ of the whole compiler that is not proved here (A16.1); the deviations review fou
 deployer would change their effect and listed in A16.5. The user's decisions of this date (a–h, A18) are in
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
-Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 8 unticked ones name the shape the
-shipped SDK path refuses (a live block reader and a creator's locktime negotiation, a constructor's
-token-container balance read, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
-vmap witnesses, the sender-reading callee probe, and the registry-of-the-user's-shape case); every Part D line
-is filled, including D13 from the shipped constructor-call creations (one and two slots). `childContainers` now
-opens a created child's single token container from the paying wallet's coin, and a later call spends it. Constructor events, the identity output and a stated BCMR
+Status on this branch, 2026-11-14: implemented, with the limitations recorded below. Every Part B box is ticked;
+in Part C the ticked cases name the committed test that covers them and the two unticked ones name the shape the
+shipped SDK path still cannot complete (per-slot budget padding for a constructor loop, measured neutral, and the
+success half of a creator's `tx.time` beside a child's `block.timestamp`; its height-versus-time conflict half is
+tested). The live block reader, the constructor's token-container balance read, the ERC20/USDT and registry
+callees, the sender-reading callee probe and registries of the user's shape are implemented and tested. Every
+Part D line is filled, including D13 from the shipped constructor-call creations (one and two slots).
+`childContainers` opens a created child's single satoshi and token containers from the paying wallet's coin, and
+a later call spends them. Constructor events, the identity output and a stated BCMR
 publication, the public options/result lists, the self-category deployment, constructor mapping rows (written
 entries, unwritten HEADs and repeated writes), a first call that inserts or reads a mapping entry, and
 constructor calls against record-sound callees through `constructorCallees` (one or more slots, a multi-method
-selector, a void callee, and the non-record-sound refusal) and a creating call's branch and loop `new`
-placements are implemented and tested. The Part D measurements
+selector, a void callee, a sender-reading callee, and the non-record-sound refusal) and a creating call's branch
+and loop `new` placements are implemented and tested. The Part D measurements
 come from SDK-built transactions.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
@@ -4822,9 +4824,12 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       base changes, the BCMR/collection work and the constructor-call path (solidc 7,840/7,840; solidcash
       6,303 passed, 0 failed). The solidcash run used `--testTimeout=600000`: the default 120 s deadline timed out
       one 30 s message-bus case (`AtomicMessageBusCompose`'s heterogeneous child rows) under the full-suite load,
-      and that case passes alone in 30.5 s. The root build regenerates no
-      testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for carry
-      `deployer`.
+      and that case passes alone in 30.5 s. After the live-block-reader, callee and registry work (2026-11-14) the
+      full suites remain solidc 7,840/7,840 across 514 files and solidcash 6,303 passed, 0 failed across 1,076
+      files (5 expected fail, 191 skipped, 5 todo). The deployer e2e set (creation, creating call, registry,
+      refusals, payments) is 59/59, and two fresh `DeployerCreation.e2e` captures are 33/33 each. The root build
+      regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for
+      carry `deployer`.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes. Measured on the shipped creation of `DeployerCreation.e2e`'s constructor-call case

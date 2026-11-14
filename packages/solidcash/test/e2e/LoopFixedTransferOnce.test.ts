@@ -1,7 +1,9 @@
 /**
- * A payment in a loop the runtime transfer stream does not admit keeps one transfer slot: one register pair, which
- * the epilogue pins to one output. A call that runs it twice fails instead of paying once and dropping the other.
- * Checked under the production limits, and with stock libauth's standard VM against a builder that runs it twice.
+ * A payment in a loop the runtime transfer stream does not admit, and which does not unroll, keeps one transfer slot:
+ * one register pair, which the epilogue pins to one output. A call that runs it twice fails instead of paying once and
+ * dropping the other. A literal-bound loop unrolls into a payment per turn (LiteralBoundLoopEffects.test.ts) unless its
+ * body moves the counter. Checked under the production limits, and with stock libauth's standard VM against a builder
+ * that runs it twice.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -79,15 +81,22 @@ const paymentsTo = (spend: Spend): bigint[] => spend.transaction.outputs
   .map((output: any) => output.valueSatoshis);
 
 describe('a payment in a loop that keeps one transfer slot', () => {
-  it('refuses a literal three-run loop rather than paying once', async () => {
+  it('refuses a literal-bound loop that moves its counter and pays twice, rather than paying once', async () => {
+    // The body moves the counter, so the loop stays rolled with its one transfer slot.
     const { artifact, contract } = await setup(`contract Payout {
     int n;
     function run(bytes20 to) public {
-        for (int i = 0; i < 3; i++) { this.transfer(new LockingBytecodeP2PKH(to), 1500); }
+        for (int i = 0; i < 3; i++) {
+            this.transfer(new LockingBytecodeP2PKH(to), 1500);
+            if (i == 0) { i = i + 1; }
+        }
         this.n = this.n + 1;
     }
 }`);
-    expect(artifact.abi.find((entry: any) => entry.name === 'run')?.runtimeLoopTransfers).toBeUndefined();
+    const run = artifact.abi.find((entry: any) => entry.name === 'run');
+    expect(run?.runtimeLoopTransfers).toBeUndefined();
+    expect(run?.transferCount).toBe(1);
+    // The turns i = 0 and i = 2 both pay.
     await expect(contract.run(toPkh).send()).rejects.toThrow();
   }, 600_000);
 
@@ -117,6 +126,33 @@ describe('a payment in a loop that keeps one transfer slot', () => {
       .filter((index) => index >= 0);
     expect(kPushes).toHaveLength(1);
     instructions[kPushes[0]!] = { opcode: Opcodes.OP_12 } as never;
+    const twice: Spend = structuredClone(call);
+    twice.transaction.inputs[0].unlockingBytecode = encodeAuthenticationInstructions(instructions);
+    expect(verify(twice)).not.toBe(true);
+  }, 600_000);
+
+  it('refuses a run of a loop\'s `to.send` that sends twice, which used to pay the last send only', async () => {
+    const { captured, artifact, contract } = await setup(`contract Payout {
+    int n;
+    function run(int k, address payable to) public {
+        for (int i = 0; i < k; i++) { require(to.send(1500)); }
+        this.n = this.n + 1;
+    }
+}`);
+    expect(artifact.abi.find((entry: any) => entry.name === 'run')?.transferCount).toBe(1);
+    // k = 1 sends once.
+    await contract.run(1n, encodeLockingBytecodeP2pkh(toPkh)).send();
+    const call = captured[captured.length - 1]!;
+    expect(verify(call)).toBe(true);
+    expect(paymentsTo(call)).toEqual([1500n]);
+    // k = 2 sends twice.
+    await expect(contract.run(2n, encodeLockingBytecodeP2pkh(toPkh)).send()).rejects.toThrow();
+    // The same transaction with k = 2 and its one send: the master's input refuses it.
+    const instructions = decodeAuthenticationInstructions(call.transaction.inputs[0].unlockingBytecode);
+    const kPushes = instructions.map((instruction, index) => (instruction.opcode === Opcodes.OP_1 ? index : -1))
+      .filter((index) => index >= 0);
+    expect(kPushes).toHaveLength(1);
+    instructions[kPushes[0]!] = { opcode: Opcodes.OP_2 } as never;
     const twice: Spend = structuredClone(call);
     twice.transaction.inputs[0].unlockingBytecode = encodeAuthenticationInstructions(instructions);
     expect(verify(twice)).not.toBe(true);

@@ -15875,6 +15875,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /**
+   * The transfer indices of the sends (`to.send(v)`) under `block`, through the functions it calls. A send fills a
+   * transfer's register pair; collectTransferIndices leaves sends to the branch census, so a loop adds them here. A
+   * framed body lists a looped send at an output of its own where it makes it, so none is collected for it.
+   */
+  private collectSendIndices(block: Node, indices: Set<number>): void {
+    if (this.framedMaster) return;
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof AddressSendExpressionNode) indices.add(node.transferIndex);
+      if (node instanceof FunctionCallNode && node.resolvedFunction?.body) walk(node.resolvedFunction.body);
+      for (const key in node) {
+        if (key === 'definition' || key === 'resolvedFunction' || key === 'functionReference'
+          || key === 'symbolTable' || key === 'type' || key === 'location') continue;
+        const value = node[key as keyof Node];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) walk(item);
+        }
+      }
+    };
+    walk(block);
+  }
+
   /** Whether every emit under a branch is a runtime-loop event, which keeps no epilogue register. */
   private branchEmitsAreRuntimeLoop(node: BranchNode): boolean {
     let found = false;
@@ -16411,9 +16437,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.collectStateWriteKeys(node.block, stateWriteKeys);
     for (const key of stateWriteKeys) this.preAllocateStateWrite(key, locationData);
 
-    // Transfers: push OP_0 dummies for lockingBytecode + amount
+    // Transfers: push OP_0 dummies for lockingBytecode + amount. A send's register pair is guarded the same way.
     const transferIndices = new Set<number>();
     this.collectTransferIndices(node.block, transferIndices);
+    this.collectSendIndices(node.block, transferIndices);
     for (const idx of transferIndices) {
       this.loopTransferIndices.add(idx);
       if (!this.preAllocatedTransfers.has(idx)) {
@@ -16592,6 +16619,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const transferIndices = new Set<number>();
     this.collectTransferIndices(node.block, transferIndices);
+    this.collectSendIndices(node.block, transferIndices);
     for (const idx of transferIndices) {
       this.loopTransferIndices.add(idx);
       if (!this.preAllocatedTransfers.has(idx)) {
@@ -16796,6 +16824,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const transferIndices = new Set<number>();
     this.collectTransferIndices(node.body, transferIndices);
+    this.collectSendIndices(node.body, transferIndices);
     for (const idx of transferIndices) {
       this.loopTransferIndices.add(idx);
       if (!this.preAllocatedTransfers.has(idx)) {

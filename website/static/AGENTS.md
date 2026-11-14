@@ -439,9 +439,10 @@ try IRisky(target).compute() returns (int r) { this.last = r; } catch { this.las
 
 - Declared at file, contract, library or interface level; events can be overloaded. Each reached `emit` creates
   an immutable NFT output in the contract's category carrying the encoded arguments, not an EVM log.
-- An `emit` in a counter loop creates one output per run. A loop the compiler cannot count from the call (for
-  example a `for` with a literal bound, or one that also changes its counter in the body) has one output for each
-  `emit` in it, and a call that runs such an `emit` twice fails.
+- An `emit` in a counter loop creates one output per run, and so does one in a `for` with a literal bound of at most
+  64 runs, which a direct build (no message bus, not framed) unrolls. A loop the compiler can neither count from the
+  call nor unroll (for example one that also changes its counter in the body) has one output for each `emit` in it,
+  and a call that runs such an `emit` twice fails.
 - Errors are ABI metadata only: a failed spend carries no revert data; the reason shows in preflight and debug.
 - `try` runs its block, but a failed BCH script aborts the whole transaction, so `catch` (also `catch Error(string
   memory r)` and `catch (bytes memory d)`) never runs (warned). evmCompat requires an external call or `new`.
@@ -571,9 +572,10 @@ require(this.outState.balance >= floor);     // satoshi-container outputs of thi
   refuses to send a transaction that pays one, from a contract call, `deployFrom`, a composition or a plain
   `TransactionBuilder`, a lock passed as `bytes` included (`StatefulMasterPaymentError`, which names the satoshi
   container when the chain shows it); pay the container or call one of its payable functions.
-- A payment in a counter loop makes one output per run. In a loop the compiler cannot count from the call (for example
-  one with a literal bound, or one that also changes its counter in the body) each payment has one output, and a call
-  that runs it twice fails.
+- A `this.transfer` or token transfer in a counter loop makes one output per run, and so does any payment, `send`
+  included, in a `for` with a literal bound of at most 64 runs, which a direct build (no message bus, not framed)
+  unrolls. In another loop (for example one that also changes its counter in the body, or an `addr.send` in a counter
+  loop) each payment has one output, and a call that runs it twice fails.
 - `this.payMinerFee(FEE);` (a positive compile-time constant, once, at the top level of a public entry) lets the entry
   take `FEE` more out of the satoshi container with no output for it: the contract pays the miner by omission, and
   the caller needs no coin. Refused in framed composition.

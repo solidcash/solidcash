@@ -16939,7 +16939,12 @@ function compileResolvedAst(
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  // Under the direct convention a fixed loop that pays, sends or emits unrolls too: the counter-loop lowering below
+  // admits no literal-bound `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's
+  // effect has one output register for every turn. A framed body binds a looped effect where it makes it; a
+  // message-bus compile keeps the loop its route admission saw.
+  const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed' && !mergedCompilerOptions.messageBus;
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
   // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer
   // analysis to classify legacy-unroll refusals, while kernel execution was already lowered at admission.
@@ -17319,8 +17324,8 @@ function compileResolvedAst(
   // constant. N==0 unrolls to zero iterations, eliminating the provably-dead loop before its body (e.g. a vmap
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
-  // these post-inline new-array-bound loops.
-  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  // these post-inline new-array-bound loops, and on a fixed loop whose effect an inlined helper made.
+  if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
   // A whole dynamic-array copy with a differing element type (`bytes10[] = bytes8[]`) desugars to a delete +
   // per-element casting push loop; must precede CacheDynamicArrayInLoop so the emitted push-in-loop is cached.

@@ -99,6 +99,13 @@ function createSpend(
   extraInputs: VmInput[] = [],
   extraSourceOutputs: SourceOutputs = [],
 ) {
+  // The deployer program keeps a block reader's `__oraclePool` in create's argument band; the master lock pins it
+  // even though genesis block reads come from the locktime.
+  const createInputs = deployer.abi.find((entry) => entry.name === 'create')?.inputs ?? [];
+  if (createInputs.some((input) => input.name === '__oraclePool')
+    && !contractArgs.some((argument) => argument.name === '__oraclePool')) {
+    contractArgs = [...contractArgs, { name: '__oraclePool', value: new Uint8Array(32).fill(0x11) }];
+  }
   const sourceOutputs: SourceOutputs = [
     { lockingBytecode: originLock ?? TOKENLESS, valueSatoshis: 10_000n },
     { lockingBytecode: TOKENLESS, valueSatoshis: 10_000n },

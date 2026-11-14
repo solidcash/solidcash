@@ -21,11 +21,11 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-14: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the two unticked ones name the shape the
-shipped SDK path still cannot complete (per-slot budget padding for a constructor loop, measured neutral, and the
-success half of a creator's `tx.time` beside a child's `block.timestamp`; its height-versus-time conflict half is
-tested). The live block reader, the constructor's token-container balance read, the ERC20/USDT and registry
-callees, the sender-reading callee probe and registries of the user's shape are implemented and tested. Every
+in Part C the ticked cases name the committed test that covers them and the one unticked one names the shape the
+shipped SDK path still cannot complete (per-slot budget padding for a constructor loop, measured neutral). The
+live block reader, the creator's `tx.time` beside a child's `block.timestamp` (and its height-versus-time
+conflict), the constructor's token-container balance read, the ERC20/USDT and registry callees, the
+sender-reading callee probe and registries of the user's shape are implemented and tested. Every
 Part D line is filled, including D13 from the shipped constructor-call creations (one and two slots).
 `childContainers` opens a created child's single satoshi and token containers from the paying wallet's coin, and
 a later call spends them. Constructor events, the identity output and a stated BCMR
@@ -4827,7 +4827,7 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       and that case passes alone in 30.5 s. After the live-block-reader, callee and registry work (2026-11-14) the
       full suites remain solidc 7,840/7,840 across 514 files and solidcash 6,303 passed, 0 failed across 1,076
       files (5 expected fail, 191 skipped, 5 todo). The deployer e2e set (creation, creating call, registry,
-      refusals, payments) is 59/59, and two fresh `DeployerCreation.e2e` captures are 33/33 each. The root build
+      refusals, payments) is 60/60, and two fresh `DeployerCreation.e2e` captures are 33/33 each. The root build
       regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for
       carry `deployer`.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee

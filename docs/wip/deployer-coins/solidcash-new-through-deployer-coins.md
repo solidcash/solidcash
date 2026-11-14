@@ -22,10 +22,11 @@ the text: the user accepted this scope and cleared the text for implementation (
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
 in Part C the ticked cases name the committed test that covers them and the 12 unticked ones name the shape the
-shipped SDK path refuses (block-field readers and their locktimes, `childContainers`/single token rows and a
-creating call's payments, constructor ecrecover, per-slot budget padding for a constructor loop, and the
-multi-site/multi-level creating cases); every Part D line is filled, including D13 from the shipped
-constructor-call creations (one and two slots). Constructor events, the identity output and a stated BCMR
+shipped SDK path refuses (block-field readers and their locktimes, a constructor's token-container balance read,
+constructor ecrecover, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
+vmap witnesses, the sender-reading callee probe, and the registry-of-the-user's-shape case); every Part D line
+is filled, including D13 from the shipped constructor-call creations (one and two slots). `childContainers` now
+opens a created child's single token container from the paying wallet's coin, and a later call spends it. Constructor events, the identity output and a stated BCMR
 publication, the public options/result lists, the self-category deployment, constructor mapping rows (written
 entries, unwritten HEADs and repeated writes), a first call that inserts or reads a mapping entry, and
 constructor calls against record-sound callees through `constructorCallees` (one or more slots, a multi-method

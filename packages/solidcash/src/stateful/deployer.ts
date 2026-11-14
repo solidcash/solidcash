@@ -19,7 +19,7 @@ import {
   encodeFunctionArgument, type FunctionArgument,
 } from '../Argument.js';
 import { isP2pkhLock } from '../bcmr/identity.js';
-import type { TransactionDetails, Unlocker, Utxo } from '../interfaces.js';
+import type { Output, TransactionDetails, Unlocker, Utxo } from '../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { createUnlockingBytecode } from '../utils.js';
@@ -410,7 +410,11 @@ const DUST = 600n;
 
 /** The fee a creation carries when its caller states none: Deploy<C>'s unlocking dominates the transaction size. */
 export function defaultDeployerFee(deployer: DeployerAbi): bigint {
-  return BigInt(Math.max(1000, 1500 + hexToBin(deployer.bytecode).length + 200 * deployer.genesisOutputs));
+  // Each constructor side-car rides its own input whose unlocking is one or two 9,950-byte pads; the creation's
+  // fee must cover those bytes at 1 sat/B.
+  const sidecarBytes = deployer.sidecars.keccak * 4_000 + deployer.sidecars.ecrecover * 20_000;
+  return BigInt(Math.max(1000, 1500 + hexToBin(deployer.bytecode).length
+    + 200 * deployer.genesisOutputs + sidecarBytes));
 }
 
 /** What output 1 of a prep needs: RESERVE per genesis output, the identity output, and a create fee allowance. */
@@ -785,6 +789,103 @@ export function assertDeployerCallee(calleeName: string, callee: Artifact, funct
 export interface DeployerInputRun {
   inputIndex: number;
   operationCost: bigint;
+}
+
+
+/** A14 item 6: the shared ecrecover side-car group for each constructor call, at salt 0, in slot order A/M/B. */
+export async function deployerEcrecoverGroups(options: {
+  createFn: { ecrecoverArgParams?: readonly (readonly (string | null)[])[] };
+  args: Record<string, FunctionArgument>;
+  provider: NetworkProvider;
+  count: number;
+}): Promise<Array<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>>> {
+  const { createFn, args, provider, count } = options;
+  const calls = createFn.ecrecoverArgParams ?? [];
+  if (calls.length < count) {
+    throw new DeployerPrepError(
+      `The deployer needs ${count} ecrecover side-car group(s), but its create names ${calls.length}`,
+    );
+  }
+  const salt = new Uint8Array(32);
+  const {
+    ecrecoverComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  } = await import('@solidcash/utils');
+  const { computeEcrecoverWitness } = await import('../ecrecover/ecrecoverRecovery.js');
+  const {
+    buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
+    probeEcrecoverSplit, probeEcrecoverSplit3,
+  } = await import('../ecrecover/ecrecoverComputeSidecar.js');
+  const locks = {
+    A: ecrecoverComputeLockingBytecode(salt, 'A'),
+    B: ecrecoverComputeLockingBytecode(salt, 'B2'),
+    M: ecrecoverComputeLockingBytecode(salt, 'M'),
+    B3: ecrecoverComputeLockingBytecode(salt, 'B3'),
+  };
+  const fetchPool = async (lock: Uint8Array): Promise<Utxo[]> => {
+    const coins = (await provider.getUtxosForLockingBytecode(lock))
+      .filter((utxo) => utxo.token?.nft?.capability === 'mutable');
+    if (coins.length < count) throw new DeployerSidecarError('ecrecover');
+    return coins;
+  };
+  const [coinsA, coinsB, coinsM, coinsB3] = await Promise.all([
+    fetchPool(locks.A), fetchPool(locks.B), fetchPool(locks.M), fetchPool(locks.B3),
+  ]);
+  const funderLock = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+  const groups: Array<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>> = [];
+  for (let index = 0; index < count; index += 1) {
+    const [hashName, vName, rName, sName] = calls[index] ?? [];
+    const hash = hashName === null || hashName === undefined ? undefined : args[hashName];
+    const v = vName === null || vName === undefined ? undefined : args[vName];
+    const r = rName === null || rName === undefined ? undefined : args[rName];
+    const s = sName === null || sName === undefined ? undefined : args[sName];
+    if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)
+      || v === undefined) {
+      throw new DeployerPrepError(
+        'A constructor ecrecover needs its hash, v, r and s as byte/int arguments the SDK can resolve',
+      );
+    }
+    const witness = computeEcrecoverWitness(hash, Number(v), r, s);
+    let chunkA: number;
+    try {
+      chunkA = probeEcrecoverSplit(witness, salt, coinsA[index]!, coinsB[index]!);
+    } catch {
+      const split = probeEcrecoverSplit3(witness, salt, coinsA[index]!, coinsM[index]!, coinsB3[index]!);
+      const built = buildEcrecoverComputeSidecars3(
+        witness, split.chunkA, split.chunkM, salt, coinsA[index]!, coinsM[index]!, coinsB3[index]!,
+      );
+      groups.push([
+        { utxo: coinsA[index]!, unlocker: built.unlockerA, recreate: built.recreateA },
+        { utxo: coinsM[index]!, unlocker: built.unlockerM, recreate: built.recreateM },
+        { utxo: coinsB3[index]!, unlocker: built.unlockerB, recreate: built.recreateB },
+      ]);
+      continue;
+    }
+    const built = buildEcrecoverComputeSidecars(
+      witness, chunkA, salt, coinsA[index]!, coinsB[index]!, undefined, 'B2',
+    );
+    const funder: Utxo = {
+      txid: (0xe000 + index).toString(16).padStart(64, '0'), vout: 0, satoshis: 10_000n,
+    };
+    const writable = provider as unknown as {
+      addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
+      seedUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
+    };
+    if (typeof writable.addUtxo === 'function') await writable.addUtxo(binToHex(funderLock), funder);
+    else if (typeof writable.seedUtxo === 'function') await writable.seedUtxo(binToHex(funderLock), funder);
+    groups.push([
+      { utxo: coinsA[index]!, unlocker: built.unlockerA, recreate: built.recreateA },
+      {
+        utxo: funder,
+        unlocker: {
+          generateLockingBytecode: (): Uint8Array => funderLock,
+          generateUnlockingBytecode: (): Uint8Array => Uint8Array.of(0x01, 0x51),
+        },
+        recreate: { to: funderLock, amount: 10_000n },
+      },
+      { utxo: coinsB[index]!, unlocker: built.unlockerB, recreate: built.recreateB },
+    ]);
+  }
+  return groups;
 }
 
 /**
@@ -1664,7 +1765,34 @@ export async function deployThroughDeployer<T extends Artifact>(
   // Each is spent and recreated at the same index after the genesis range (A4.4), so the deployer's create can read
   // it. A missing shared coin is refused rather than minted: the pool is one for every deployment.
   if (deployer.sidecars.ecrecover > 0) {
-    throw new DeployerSidecarError('ecrecover');
+    const createFnForSidecars = deployer.abi.find((entry) => entry.name === 'create');
+    if (createFnForSidecars === undefined) {
+      throw new DeployerPrepError(`Deployer '${deployer.lockingBytecode}' has no create arm`);
+    }
+    const groups = await deployerEcrecoverGroups({
+      createFn: createFnForSidecars as never, args, provider: options.provider,
+      count: deployer.sidecars.ecrecover,
+    });
+    // A4.4: the side-car group starts at the side-car base; its inputs and recreated outputs share the indices.
+    const sidecarBase = outbase + deployer.genesisOutputs;
+    while (builder.inputs.length < sidecarBase) {
+      if (prep.changeCoin === undefined || builder.inputs.some(
+        (input) => input.txid === prep.changeCoin!.txid && input.vout === prep.changeCoin!.vout,
+      )) {
+        throw new DeployerPrepError(
+          `'${artifact.contractName}' needs a filler input at index ${builder.inputs.length} for its constructor `
+          + 'side-cars, but the prep left no unused change coin',
+        );
+      }
+      fillers.push(prep.changeCoin);
+      builder.addInput(prep.changeCoin, options.funder);
+    }
+    for (const group of groups) {
+      for (const step of group) builder.addInput(step.utxo, step.unlocker);
+    }
+    for (const group of groups) {
+      for (const step of group) builder.addOutput(step.recreate);
+    }
   }
   if (deployer.sidecars.keccak > 0) {
     const { keccakComputeLockingBytecode } = await import('@solidcash/utils');

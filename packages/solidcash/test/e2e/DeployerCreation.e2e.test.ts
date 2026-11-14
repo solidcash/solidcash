@@ -715,4 +715,75 @@ describe('a top-level deployment through Deploy<C>', () => {
     const mtp = await provider.getMedianTimePast();
     expect(((await result.contract.getState()) as { t?: bigint }).t).toBe(BigInt(mtp - 1));
   });
+
+
+  it('co-spends the shared ecrecover side-cars for a constructor recovery (A14 item 6, B9.8)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const { ethers } = await import('ethers');
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const wallet = new ethers.Wallet(`0x${'22'.repeat(32)}`);
+    const message = 'deployer-constructor-ecrecover';
+    const signature = await wallet.signMessage(message);
+    const parsed = ethers.Signature.from(signature);
+    const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+    const h = little(ethers.hashMessage(message));
+    const r = little(parsed.r);
+    const s = little(parsed.s);
+    const expected = hexToBin(wallet.signingKey.compressedPublicKey.replace(/^0x/, ''));
+    // A14 item 6: the shared pool at salt 0; the constructor's recovery co-spends A, a funder (M) and B.
+    const salt = new Uint8Array(32);
+    for (const [index, role] of (['A', 'B2', 'M', 'B3'] as const).entries()) {
+      await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
+        txid: `${(0x90 + index).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+        token: {
+          category: 'ed'.repeat(31) + '12', amount: 0n,
+          nft: { capability: 'mutable', commitment: '' },
+        },
+      });
+    }
+    const artifact = compileString(
+      `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) {
+        int n; constructor() { require(ecrecoverPubKey(h, v, r, s) == expected); n = 1; } }`,
+      { deployer: true, messageBus: false },
+    );
+    expect(artifact.deployer?.sidecars.ecrecover).toBe(1);
+    const fundingUtxo: Utxo = { txid: '6b'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [h, BigInt(parsed.v), r, s, expected], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    expect(((await result.contract.getState()) as { n?: bigint }).n).toBe(1n);
+  });
+
+
+  it('refuses a constructor recovery with no shared ecrecover coin (B9.8)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const { ethers } = await import('ethers');
+    const wallet = new ethers.Wallet(`0x${'33'.repeat(32)}`);
+    const message = 'deployer-constructor-ecrecover-missing';
+    const signature = await wallet.signMessage(message);
+    const parsed = ethers.Signature.from(signature);
+    const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+    const artifact = compileString(
+      `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) {
+        int n; constructor() { require(ecrecoverPubKey(h, v, r, s) == expected); n = 1; } }`,
+      { deployer: true, messageBus: false },
+    );
+    const fundingUtxo: Utxo = { txid: '6c'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    await expect(StatefulContract.deploy(artifact, [
+      little(ethers.hashMessage(message)), BigInt(parsed.v), little(parsed.r), little(parsed.s),
+      hexToBin(wallet.signingKey.compressedPublicKey.replace(/^0x/, '')),
+    ], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    })).rejects.toThrow(DeployerSidecarError);
+  });
 });

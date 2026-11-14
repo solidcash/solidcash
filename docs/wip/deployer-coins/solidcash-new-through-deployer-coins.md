@@ -21,9 +21,9 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 11 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 10 unticked ones name the shape the
 shipped SDK path refuses (a live block reader and a creator's locktime negotiation, a constructor's
-token-container balance read, constructor ecrecover, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
+token-container balance read, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
 vmap witnesses, the sender-reading callee probe, and the registry-of-the-user's-shape case); every Part D line
 is filled, including D13 from the shipped constructor-call creations (one and two slots). `childContainers` now
 opens a created child's single token container from the paying wallet's coin, and a later call spends it. Constructor events, the identity output and a stated BCMR
@@ -4609,7 +4609,7 @@ their contract with `deployer: true`:
 - [x] an event in the constructor, decoded by the SDK; *(covered by `DeployerCreation.e2e`: the create mints the event NFT and the receipt decodes `Ping(5)`. The genesis category base now reads the deployer input's outpoint hash, since the deployer coin carries no token)*
 - [ ] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays *(compiler VM cases exist in `DeployerCreation.test`; the SDK creation is not covered)*
       `msg.sender`, which passes at top level and fails through a creator;
-- [ ] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(keccak is covered by `DeployerCreation.e2e`; ecrecover is not: a constructor recovery is refused with `DeployerSidecarError`, B9.8)*
+- [x] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(covered by `DeployerCreation.e2e`: the keccak success and no-pool cases, and `co-spends the shared ecrecover side-cars for a constructor recovery` with `refuses a constructor recovery with no shared ecrecover coin`)*
       network, `DeployerSidecarError`;
 - [ ] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(not covered; `budgetPad` is passed empty on this path)*
       `__internal__budgetPad` and the creation passes;

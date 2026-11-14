@@ -463,6 +463,29 @@ export async function deriveDeployCommitments<T extends Artifact>(
       (nft, i) => probeBuilder.addInput(nft, dataNftUnlockers[i]),
     );
 
+    const probeEcrecoverCount = artifact.deployer?.sidecars.ecrecover ?? 0;
+    const probeEcrecoverGroups: Array<Array<{ utxo: Utxo; unlocker: import('../interfaces.js').Unlocker; recreate: import('../interfaces.js').Output }>> = [];
+    if (probeEcrecoverCount > 0) {
+      const createAbi = artifact.deployer?.abi.find((entry) => entry.name === 'create');
+      const sidecarArgs: Record<string, FunctionArgument> = {};
+      const publicNames = (createAbi?.inputs ?? []).filter((input) => !input.name.startsWith('__internal__'))
+        .map((input) => input.name);
+      publicNames.forEach((name, index) => {
+        const contractIndex = artifact.constructorInputs.findIndex((input) => input.name === name);
+        const value = contractIndex >= 0
+          ? contract.constructorArgs[contractIndex]
+          : options.initArgs?.[index - artifact.constructorInputs.length];
+        if (value !== undefined) sidecarArgs[name] = value as FunctionArgument;
+      });
+      const { deployerEcrecoverGroups } = await import('./deployer.js');
+      probeEcrecoverGroups.push(...await deployerEcrecoverGroups({
+        createFn: createAbi as never, args: sidecarArgs, provider: options.provider, count: probeEcrecoverCount,
+      }));
+    }
+    for (const group of probeEcrecoverGroups) {
+      for (const step of group) probeBuilder.addInput(step.utxo, step.unlocker);
+    }
+
     if (blockField !== undefined) {
       const pool = (contract as unknown as { oraclePool?: string }).oraclePool;
       if (pool === undefined) {
@@ -608,6 +631,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
     });
 
     for (const sidecar of constructorKeccakSidecars) probeBuilder.addOutput(sidecar.recreate);
+    for (const group of probeEcrecoverGroups) {
+      for (const step of group) probeBuilder.addOutput(step.recreate);
+    }
 
     // Entry NFT outputs. Previously learned commitments are fed into the next probe iteration so a constructor
     // whose mapping write precedes scalar writes can progress past the entry equality checks.

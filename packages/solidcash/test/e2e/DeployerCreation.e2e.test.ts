@@ -999,4 +999,48 @@ describe('a top-level deployment through Deploy<C>', () => {
 
 
 
+
+  it('binds an ERC20-shaped transfer that debits the child and credits its owner (A7, B6)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const source = `${P}
+      interface I { function transfer(address to, int amount) external returns (bool); }
+      contract T { int childBalance; int ownerBalance;
+        function transfer(address to, int amount) external returns (bool) {
+          require(msg.sender != address(0));
+          childBalance = childBalance - amount;
+          ownerBalance = ownerBalance + amount;
+          return true;
+        } }
+      contract C { bool ok; constructor(I t) { ok = t.transfer(msg.sender, 5); } function read() { require(ok); } }`;
+    let serial = 0;
+    const deploy = async (artifact: any, extra: any = {}) => {
+      serial += 1;
+      const fundingUtxo: Utxo = {
+        txid: `${(0xa0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
+      };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock, ...extra,
+      });
+    };
+    const t = await deploy(compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    const cArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+    } as never);
+    const c = await deploy(cArtifact, {
+      initArgs: [addressToLockScript(t.contract.address)],
+      constructorCallees: [{ contract: t.contract, args: [alicePkh, 5n] }],
+    });
+    const token = (await t.contract.getState()) as { childBalance?: bigint; ownerBalance?: bigint };
+    expect(token.childBalance).toBe(-5n);
+    expect(token.ownerBalance).toBe(5n);
+    expect(c.categoryId).not.toBe(t.contract.categoryId);
+  });
+
 });

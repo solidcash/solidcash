@@ -4666,7 +4666,7 @@ their contract with `deployer: true`:
       bytes and the call passes.
 
 **Calls made by a constructor** (same file):
-- [ ] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(not covered: the one-slot SDK path is exercised on a returning callee; this ERC20-shaped call is not)*
+- [x] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by `DeployerCreation.e2e`: `binds an ERC20-shaped transfer that debits the child and credits its owner`; the token's fixed balances move by 5 in each direction and the constructor reads true)*
       way: the token debits the child's own balance, credits `owner`, and the constructor reads the returned
       `true`;
 - [x] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation.e2e`: `binds a constructor call to a callee that reads msg.sender`; the helper `mark()` is inlined, the call has a slot, and T stores the child's master lock)*

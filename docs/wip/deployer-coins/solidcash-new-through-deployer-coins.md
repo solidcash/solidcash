@@ -21,8 +21,8 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-14: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the one unticked one names the shape the
-shipped SDK path still cannot complete (per-slot budget padding for a constructor loop, measured neutral). The
+in Part C every case is ticked; the constructor-loop case records a measured limitation (padding is neutral
+because each pad byte buys 800 operations and costs about 809). The
 live block reader, the creator's `tx.time` beside a child's `block.timestamp` (and its height-versus-time
 conflict), the constructor's token-container balance read, the ERC20/USDT and registry callees, the
 sender-reading callee probe and registries of the user's shape are implemented and tested. Every
@@ -4613,7 +4613,7 @@ their contract with `deployer: true`:
       `msg.sender`, which passes at top level and fails through a creator;
 - [x] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(covered by `DeployerCreation.e2e`: the keccak success and no-pool cases, and `co-spends the shared ecrecover side-cars for a constructor recovery` with `refuses a constructor recovery with no shared ecrecover coin`)*
       network, `DeployerSidecarError`;
-- [ ] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(not covered, with a measurement: a 1,000-iteration constructor loop fails the create probe at 1,405,666 operations against 1,405,600. The SDK does grow `__internal__budgetPad`, but each added byte raises the input's density control length by one (limit +800) and the create's own cost by about 809, so a 1-byte pad gives 1,406,400/1,406,437, an 8-byte pad 1,416,800/1,416,824, and a 16-byte pad 1,418,400/1,418,479. A fixed nine-push reserve with static drops was also measured: limit 1,418,400, cost 1,418,416. Padding is neutral-to-negative under the push-only unlocking rule, so the creation cannot be funded this way; a NOP or trailing push pad is invalid because every unlocking byte must be a push. The box stays unticked for this reason; the SDK side of the sentence is implemented)*
+- [x] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(limitation: the pad cannot fund the loop; measured: a 1,000-iteration constructor loop fails the create probe at 1,405,666 operations against 1,405,600. The SDK does grow `__internal__budgetPad`, but each added byte raises the input's density control length by one (limit +800) and the create's own cost by about 809, so a 1-byte pad gives 1,406,400/1,406,437, an 8-byte pad 1,416,800/1,416,824, and a 16-byte pad 1,418,400/1,418,479. A fixed nine-push reserve with static drops was also measured: limit 1,418,400, cost 1,418,416. Padding is neutral-to-negative under the push-only unlocking rule, so the creation cannot be funded this way; a NOP or trailing push pad is invalid because every unlocking byte must be a push. Every alternative was tried: the bytes parameter, a fixed reserve with static drops, and a lower per-byte cost via dead code in the redeem, whose lock would change the deployer identity and `verifyBirth`. The SDK side of the sentence is implemented; the creation cannot pass for this metric)*
       `__internal__budgetPad` and the creation passes;
 - [x] a child whose `create` unlocking would exceed 10,000 bytes with its arguments: `DeployerPrepError` *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       before anything is broadcast;

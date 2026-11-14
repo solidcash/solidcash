@@ -5774,6 +5774,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     trailingEntryOutputOffset?: number,
     probeState?: Record<string, StateValue>,
     eventOutputCount: number = 0,
+    probeLocktime?: number,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
       entryCommitments: string[];
@@ -5791,6 +5792,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolveBlockhashCoSpends: (...a: any[]) => (this as any)._resolveBlockhashCoSpends(...a),
         resolveKeccakComputeCoSpends: (...a: any[]) => (this as any)._resolveKeccakComputeCoSpends(...a),
         resolveEcrecoverComputeCoSpends: (...a: any[]) => (this as any)._resolveEcrecoverComputeCoSpends(...a),
+        ...(probeLocktime === undefined ? {} : { probeLocktime }),
       },
       functionName, args, requiredNftIndices, extraOutputs, extraInputs,
       entryOutputCount, childDataNftCount, deriveChildCommitments, returnEventOutputCount,

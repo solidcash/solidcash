@@ -34,6 +34,8 @@ export interface DeriveCommitmentsHost {
   resolveBlockhashCoSpends(...args: any[]): any;
   resolveKeccakComputeCoSpends(...args: any[]): any;
   resolveEcrecoverComputeCoSpends(...args: any[]): any;
+  /** A creating call's locktime: the factory's own `tx.time` check and the child's block field share it. */
+  probeLocktime?: number;
 }
 
 /** Neutral filler for output-only/fixed covenant slots the probe never reads (mirrors the dummy funder lock). */
@@ -168,9 +170,8 @@ export async function deriveCommitments(
       // Probe with optional data NFT output commitment overrides (default: current).
       const runProbe = (dataNftOutputCommitments?: string[]): AuthenticationProgramStateCommon[] => {
         const probeBuilder = new CovenantTransactionBuilder({ provider: host.inner.provider });
-        if (bhProbeCoSpends.length > 0) {
-          probeBuilder.locktime = Math.max(...bhProbeCoSpends.map((c) => c.locktime)); // require(tx.time >= n)
-        }
+        probeBuilder.locktime = Math.max(host.probeLocktime ?? 0,
+          ...bhProbeCoSpends.map((c) => c.locktime)); // require(tx.time >= n)
 
         // Input 0: master UTXO
         probeBuilder.addInput(masterUtxo, stateInputUnlocker);

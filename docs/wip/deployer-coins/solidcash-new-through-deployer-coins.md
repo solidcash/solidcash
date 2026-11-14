@@ -4619,7 +4619,7 @@ their contract with `deployer: true`:
       before anything is broadcast;
 - [x] `block.number` in a constructor equals the transaction's locktime; `block.timestamp`, with the locktime *(covered by `DeployerCreation.e2e`: `reads block.number in the constructor from the creation locktime` asserts the stored height and the transaction locktime, and `reads block.timestamp...` asserts the median time past minus 1)*
       at the median time past minus 1;
-- [ ] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(not covered; the SDK block-field refusal above applies)*
+- [x] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(covered by `DeployerCreatingCall.e2e`: `meets a creator's tx.time check and a child's block.timestamp with one locktime` asserts the creation's locktime and the child's stored `born`; `refuses a height tx.time beside a timestamp child` asserts `DeployerLocktimeConflictError`)*
       and the two locktime needs are met by one value; a height against a time fails with
       `DeployerLocktimeConflictError`;
 - [x] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(covered by `DeployerCreation.e2e`: `mints the oracle of a live block reader and reads block data later` deploys a `block.number` reader with `oraclePool: 'new'` through Deploy<C> and its first call reads block data; the deployer ABI reports `readsBlockData` and the create pins the pool binding)*

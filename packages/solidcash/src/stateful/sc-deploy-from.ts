@@ -1802,6 +1802,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       + (hasDeployDataNftSlots ? childExtraOutputs.length : (childExtraOutputs.length > 0 ? 1 : 0)),
     deployProbeState,
     eventPlaceholderOutputs.length,
+    childCreationLocktime,
   );
   const keccakCoSpends = derivedKeccakCoSpends ?? [];
   // A direct unbounded keccak256 chained read on the deploy function routes its preimage through the trailing

@@ -406,4 +406,35 @@ describe('B9.5: a creating call through Deploy<C>', () => {
 
 
 
+
+  it('meets a creator\'s tx.time check and a child\'s block.timestamp with one locktime (A5)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child { int born; constructor() { born = int(block.timestamp); } }
+      contract Factory { int childCount;
+        function make(int notBefore) { require(tx.time >= notBefore); new Child(); childCount = childCount + 1; } }`,
+      { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const deploymentFunding: Utxo = { txid: 'ad'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const f = await StatefulContract.deploy(artifacts.Factory, [], {
+      provider, fundingUtxo: deploymentFunding, funder, initialState: { childCount: 0n },
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prep: Utxo = { txid: 'ae'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prep);
+    const mtp = await provider.getMedianTimePast();
+    const result = await StatefulContract.deployFrom({
+      provider, factory: f.contract, deployFunctionName: 'make', deployFunctionArgs: [500_000_001n],
+      childArtifact: artifacts.Child, childConstructorArgs: [], childInitialState: { born: 0n },
+      childOraclePool: 'bb'.repeat(32), fundingUtxo: prep, funder, changeAddress: change.address,
+    });
+    const locktime = (result as unknown as { tx?: { locktime?: number } }).tx?.locktime;
+    expect(locktime).toBe(Math.max(500_000_001, mtp - 1));
+    expect((await result.child.getState() as { born?: bigint }).born).toBe(BigInt(locktime!));
+  });
+
 });

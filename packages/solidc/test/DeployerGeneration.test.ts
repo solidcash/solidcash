@@ -45,11 +45,12 @@ describe('B7.0: when a deployer is built', () => {
     expect(artifact.deployerUnsupported).toBe('blockhash-ring');
   });
 
-  it('a live block reader records code-not-constant', () => {
+  it('a live block reader gets a deployer that mints its oracle', () => {
     const source = `${P} contract C { int n; constructor() { n = 1; } function f() { n = block.number; } }`;
     const { artifact, warnings } = compile(source, { deployer: true });
-    expect(artifact.deployerUnsupported).toBe('code-not-constant');
-    expect(warnings.some((warning) => warning.includes('code-not-constant'))).toBe(true);
+    expect(artifact.deployerUnsupported).toBeUndefined();
+    expect(artifact.deployer?.readsBlockData).toBe(true);
+    expect(warnings.some((warning) => warning.includes('code-not-constant'))).toBe(false);
   });
 
   it('a message-bus compile records lock-composition', () => {

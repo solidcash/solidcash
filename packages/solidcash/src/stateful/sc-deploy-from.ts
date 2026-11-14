@@ -150,14 +150,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
       + 'with factory.registerChild(artifact).',
     );
   }
-  if (options.childContainers !== undefined && options.childContainers.length > 0) {
-    // A14 item 11's `childContainers` is not implemented: a child's rows are funded by the factory or the
-    // paying wallet on the paths that exist, and a silent no-op would misstate where its satoshis went.
+  const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
+  if (options.childContainers !== undefined && options.childContainers.length > 0
+    && childDeployer === undefined) {
     throw new DeployerPrepError(
-      'childContainers is not implemented on the deployer creating path; fund the child through the factory',
+      `childContainers funds a child deployed through Deploy<C>, but '${deployTarget.contractName}' has no `
+      + 'deployer entry on its creator',
     );
   }
-  const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
   // `constructorInputs` are a stateful contract's immutable contract parameters; the runtime
   // constructor's arguments are the `__construct` entry's inputs. Only the latter are `new C(...)`'s
   // parentheses and the child's constructor rows.
@@ -629,15 +629,18 @@ export async function deployFromStatefulContract<T extends Artifact>(
     // same records the SDK-direct `create` derives. The probe builds its own synthetic transaction, so it reads
     // provider, funder, fundingUtxo, initialState and initArgs only; changeAddress is required by the type.
     const firstCategory = fundingUtxos[0].txid;
+    // `__construct` takes the runtime constructor's arguments; the contract parameters are already baked into
+    // `childContracts[0]`. A child whose constructor has no runtime arguments (only contract parameters) gets
+    // an empty init list: passing the contract parameters again is an argument-count error.
+    const childRuntimeArgCount = (childArtifact.abi.find((entry) => entry.name === '__construct')?.inputs ?? [])
+      .filter((input) => !input.name.startsWith('__internal__')).length;
     const probeOptions: DeployOptions = {
       ...options,
       provider,
       funder,
       fundingUtxo: { ...(prepFunding[0] ?? options.fundingUtxo), vout: 0 },
       initialState: options.childInitialState,
-      // `__construct` takes the runtime constructor's arguments; the contract parameters are already
-      // baked into `childContracts[0]`.
-      initArgs: childConstructorArgs,
+      initArgs: childRuntimeArgCount === 0 ? [] : childConstructorArgs,
       changeAddress: changeAddress ?? '',
     };
     const derived = await deriveDeployCommitments(
@@ -1326,14 +1329,76 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // pins `row value <= journal balance`, where the balance is the deploy value its Q carries: the row holds
   // exactly that value, since a larger row would mint satoshis the child was not given. A payable child with no
   // value therefore needs a zero-sat row, below the relay dust limit - refuse and name the option instead.
+  // A14 item 11: a child that keeps a token container single opens it with a coin of that category from the
+  // paying wallet. `childContainers` names the amount; the wallet's coin is co-spent and its remainder returns
+  // to the funder. The child's `create` pins the row at the child's layout offset.
+  interface ChildTokenRowPlan {
+    output: { to: string | Uint8Array; amount: bigint; token: { category: string; amount: bigint } };
+    change?: { to: Uint8Array; amount: bigint; token?: { category: string; amount: bigint } };
+    input: { utxo: Utxo; unlocker: Unlocker };
+  }
+  const childTokenPlans: ChildTokenRowPlan[][] = [];
+  const childTokenInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+  const childTokenChangeOutputs: Array<{ to: Uint8Array; amount: bigint; token?: { category: string; amount: bigint } }> = [];
   if (childDeployer !== undefined && childDeployer.tokenRows.length > 0) {
-    // A14 item 11: a token row needs at least one unit of its category from the paying wallet. A creating call
-    // cannot open it yet: the factory's census refuses the foreign token input the seed would need, so refuse
-    // before building rather than return a transaction its creator input rejects.
-    throw new DeployerPrepError(
-      `'${childArtifact.contractName}' keeps its token container inside a single coin; a creating call cannot `
-      + 'open it yet (the paying wallet has no coin of that category to pass)',
-    );
+    const walletCoins = await provider.getUtxosForLockingBytecode(funder.generateLockingBytecode());
+    for (let k = 0; k < childCount; k++) {
+      const plans: ChildTokenRowPlan[] = [];
+      const supplied = options.childContainers?.find((entry) => entry.deployment === k);
+      for (const tokenRow of childDeployer.tokenRows) {
+        const raw = childConstructorArgs?.[tokenRow];
+        const wanted = raw instanceof Uint8Array ? binToHex(raw) : String(raw ?? '');
+        if (wanted.length === 0) {
+          throw new DeployerPrepError(
+            `The child's token-container parameter ${tokenRow} has no value; pass it in childConstructorArgs`,
+          );
+        }
+        const token = supplied?.tokens?.find((entry) => entry.categoryId.toLowerCase() === wanted.toLowerCase());
+        if (token === undefined) {
+          throw new DeployerPrepError(
+            `'${childArtifact.contractName}' keeps its token container ${wanted} single; pass its coin's amount `
+            + `in childContainers for deployment ${k}`,
+          );
+        }
+        const coin = walletCoins.find((utxo) => utxo.token !== undefined
+          && utxo.token.nft === undefined
+          && utxo.token.category.toLowerCase() === wanted.toLowerCase()
+          && (utxo.token.amount ?? 0n) >= token.amount);
+        if (coin === undefined) {
+          throw new DeployerPrepError(
+            `The paying wallet has no coin of ${wanted} with at least ${token.amount} units for the child's `
+            + 'token container',
+          );
+        }
+        const plan: ChildTokenRowPlan = {
+          output: {
+            to: getTokenContainerAddress(childContracts[k], fundingUtxos[k].txid, wanted),
+            amount: 1200n,
+            token: { category: wanted, amount: token.amount },
+          },
+          input: { utxo: coin, unlocker: funder },
+        };
+        const remainder = (coin.token!.amount ?? 0n) - token.amount;
+        const changeSats = coin.satoshis - 1200n;
+        if (changeSats > 0n) {
+          plan.change = {
+            to: funderLock,
+            amount: changeSats,
+            ...(remainder > 0n ? { token: { category: wanted, amount: remainder } } : {}),
+          };
+        } else if (remainder > 0n) {
+          throw new DeployerPrepError(
+            `The token coin of ${wanted} has no satoshis for its change output`,
+          );
+        }
+        plans.push(plan);
+      }
+      childTokenPlans.push(plans);
+      for (const plan of plans) {
+        childTokenInputs.push(plan.input);
+        if (plan.change !== undefined) childTokenChangeOutputs.push(plan.change);
+      }
+    }
   }
   const childSatoshiRow = (cc: (typeof childContracts)[number], cat: string): { to: string | Uint8Array; amount: bigint } => {
     const abi = factory.inner.artifact.childDeployers?.[childArtifact.contractName];
@@ -1389,6 +1454,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
       childExtraOutputs.push(childSatoshiRow(cc, cat));
     }
+    for (const plan of childTokenPlans[k] ?? []) childExtraOutputs.push(plan.output);
     if (isLoopValueDeploy) {
       childExtraOutputs.push({ to: cc.address, amount: options.childValue ?? 0n });
     }
@@ -1844,6 +1910,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
     builder.addInputs(deployKeccakChain.sideCars);
   }
 
+  // The child token rows' seed coins are foreign to the factory. They sit after every factory-slot input, so no
+  // compiled input index shifts.
+  for (const input of childTokenInputs) builder.addInput(input.utxo, input.unlocker);
+
   // === Factory outputs (first) ===
 
   // Output 0: factory master UTXO (preserved)
@@ -1998,6 +2068,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     if (childDeployerAbi !== undefined && childDeployerAbi.satoshiContainer !== 'none') {
       builder.addOutput(childSatoshiRow(cc, cat));
     }
+    for (const plan of childTokenPlans[k] ?? []) builder.addOutput(plan.output);
     // Loop {value:}: the value transfer to this child, interleaved as the last output of its group.
     if (isLoopValueDeploy) {
       builder.addOutput({ to: cc.address, amount: options.childValue ?? 0n });
@@ -2044,6 +2115,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const trailingPadSats = deployTrailingInputs[0]?.utxo.satoshis ?? 0n;
   // tokenTransferCost = dust for each tcTransfer output (the token container's own satoshis fund only its
   // recreated remainder; each transfer output's dust comes from the funding inputs).
+  for (const output of childTokenChangeOutputs) builder.addOutput(output);
   const changeAmount = totalFundingSats + trailingPadSats + chainPadSats - totalChildCost - totalEntryCost
     - totalDynamicChunkCost - eventCost - returnEventCost
     - tokenTransferCost - fee - chainFee;

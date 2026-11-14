@@ -13,9 +13,9 @@ import { StatefulContract } from '../../src/stateful/index.js';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
-import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
-import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { getSatoshiContainerAddress, getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { Contract } from '../../src/index.js';
 
@@ -189,5 +189,93 @@ contract Parent() {
 `;
     expect(() => compileString(source, { allowUnsafeOperations: true }))
       .toThrow(/master lock/);
+  });
+
+
+  it('a creating call seeds the child\'s single token container and the child spends it', async () => {
+    const mock = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const asset = 'a1b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef0011223344556677';
+    const artifacts = compileStringMulti(`
+pragma tokencontainer single;
+contract Child(bytes32 asset) {
+    int x;
+    constructor() { x = 1; }
+    function spend(address to, int amount) { this.tokens[asset].transfer(to, amount); x = 2; }
+}
+contract Factory {
+    int d;
+    function make(bytes32 asset) { Child c = new Child(asset); d = 1; }
+}`, { allowUnsafeOperations: true } as never);
+    const deploymentFunding: Utxo = { txid: 'd1'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(artifacts.Factory, [], {
+      provider: mock, fundingUtxo: deploymentFunding, funder,
+      initialState: { d: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'd2'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    const tokenCoin: Utxo = {
+      txid: 'd3'.repeat(32), vout: 0, satoshis: 2000n, token: { category: asset, amount: 5n },
+    };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), tokenCoin);
+    const result = await StatefulContract.deployFrom({
+      provider: mock, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [hexToBin(asset)], childArtifact: artifacts.Child,
+      childConstructorArgs: [hexToBin(asset)],
+      childContainers: [{ deployment: 0, tokens: [{ categoryId: asset, amount: 3n }] }],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address,
+    });
+    const containerAddress = getTokenContainerAddress(
+      (result.child as any).inner ?? (result.child as any), result.childCategoryId, asset,
+    );
+    const coins = (await mock.getUtxos(containerAddress)).filter((u) => u.token?.category === asset);
+    expect(coins).toHaveLength(1);
+    expect(coins[0].token?.amount).toBe(3n);
+    const signer = await mock.getSigner(0);
+    await mock.seedUtxo(signer.getAddress(), { txid: 'd4'.repeat(32), vout: 0, satoshis: 100000n });
+    await mock.seedUtxo(signer.getAddress(), {
+      txid: 'd5'.repeat(32), vout: 0, satoshis: 2000n, token: { category: asset, amount: 1n },
+    });
+    const sent = await (result.child.connect(signer) as any).spend(alicePkh, 2).send();
+    const recipientLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const categoryOf = (output: any): string => typeof output.token?.category === 'string'
+      ? output.token.category : Buffer.from(output.token?.category ?? []).toString('hex');
+    expect(sent.outputs.some((output: any) => categoryOf(output) === asset
+      && output.token?.amount === 2n
+      && Buffer.from(output.lockingBytecode).equals(Buffer.from(recipientLock)))).toBe(true);
+  });
+
+
+  it('refuses a single token-container child without childContainers, naming the category', async () => {
+    const mock = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const asset = 'b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef00112233445566778';
+    const artifacts = compileStringMulti(`
+pragma tokencontainer single;
+contract Child(bytes32 asset) { int x; constructor() { x = 1; }
+  function spend(address to, int amount) { this.tokens[asset].transfer(to, amount); x = 2; } }
+contract Factory { int d; function make(bytes32 asset) { Child c = new Child(asset); d = 1; } }`,
+      { allowUnsafeOperations: true } as never);
+    const deploymentFunding: Utxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(artifacts.Factory, [], {
+      provider: mock, fundingUtxo: deploymentFunding, funder,
+      initialState: { d: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'e2'.repeat(32), vout: 0, satoshis: 200000n };
+    await mock.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    await expect(StatefulContract.deployFrom({
+      provider: mock, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [hexToBin(asset)], childArtifact: artifacts.Child,
+      childConstructorArgs: [hexToBin(asset)], fundingUtxo: prepFunding,
+      funder, changeAddress: change.address,
+    })).rejects.toThrow(new RegExp(`childContainers|${asset}|token container`));
   });
 });

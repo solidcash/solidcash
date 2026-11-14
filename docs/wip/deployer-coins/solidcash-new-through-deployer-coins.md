@@ -21,7 +21,7 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 15 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 12 unticked ones name the shape the
 shipped SDK path refuses (block-field readers and their locktimes, `childContainers`/single token rows and a
 creating call's payments, constructor ecrecover, per-slot budget padding for a constructor loop, and the
 multi-site/multi-level creating cases); every Part D line is filled, including D13 from the shipped
@@ -4409,13 +4409,14 @@ it) never takes today's genesis (A12).
       carries the same satoshi/token rows in its probe (and a synthetic container input for a `required` row), so
       its trace matches the real creation. In a creating call a child's row holds `childValue`; a `required` row
       adds RESERVE (funded by the paying wallet, so no value is needed); an optional row with no value is refused
-      because its zero-sat row is below the relay limit; a child that keeps a token container single is refused
-      with the category named. `childContainers` is not implemented: the compiler's row pin caps a row at the
-      journal balance, so the spec's "more when childContainers says so" has no representation in `create`, and
-      naming a token coin would need a wallet lookup the option does not carry. A value passed to a deployer
-      child (`childValue`, from `new Child{value: v}`) is refused before building: the creator's separate
-      value-transfer slot does not pass the creator's own VM run on this path, so the supported way to fund such
-      a child is a top-level deployment with `initialBalance`.
+      because its zero-sat row is below the relay limit. `childContainers` now funds a child's single token
+      container rows: the paying wallet's coin of the category is co-spent, the row is placed at the child's
+      layout offset with the requested amount, and the remainder returns to the funder; a call that keeps a token
+      container single without the option is refused with the category named. The option's `satoshis` field
+      still has no representation in `create` (the row pin caps a row at the journal balance), and a value passed
+      to a deployer child (`childValue`, from `new Child{value: v}`) is refused before building: the creator's
+      separate value-transfer slot does not pass the creator's own VM run on this path, so the supported way to
+      fund such a child is a top-level deployment with `initialBalance`.
 - [x] **B9.8 Shared sidecars.** `ResolveKeccakComputeCoSpendsHost`, `ResolveStatefulKeccakLoopHost` and
       `ResolveEcrecoverCoSpendsHost` take `sidecarSalt`, which replaces the category-branded salt in the three
       A14 item 6 places. A top-level creation whose constructor hashes co-spends the shared keccak side-car(s) at
@@ -4602,7 +4603,7 @@ their contract with `deployer: true`:
 - [x] `deployments: 2` on a call that creates one child fails in the local run with `DeployerPrepError`; *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
 - [x] `value` opens the satoshi container; in the constructor `msg.value` equals v, and `this.balance` equals *(covered by `StatefulAddressPayment.e2e` routed/selfdestruct cases and the compiler B2 tests)*
       the container's start plus v (v alone for a container the contract does not keep single);
-- [ ] a creator's satoshi and token payment after `new` reaches the child's containers, and the child spends *(not covered: a creating call refuses a child that keeps a token container single, B9.7)*
+- [x] a creator's satoshi and token payment after `new` reaches the child's containers, and the child spends *(covered by `StatefulAddressPayment.e2e`: the routed `this.transfer(child, 5000)` case spends the satoshi container in a later call, and `a creating call seeds the child's single token container and the child spends it` supplies the token row through `childContainers` and spends 2 of its 3 units in a later call)*
       both in a later call;
 - [x] an event in the constructor, decoded by the SDK; *(covered by `DeployerCreation.e2e`: the create mints the event NFT and the receipt decodes `Ping(5)`. The genesis category base now reads the deployer input's outpoint hash, since the deployer coin carries no token)*
 - [ ] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays *(compiler VM cases exist in `DeployerCreation.test`; the SDK creation is not covered)*
@@ -4643,9 +4644,9 @@ their contract with `deployer: true`:
       TokenNotePool-shaped child. Each stores `pool.category` in its state and emits it in an event; the
       stored value is the pool's category in display order. A hand-built creation without the pool's satoshi
       coin, or with a token coin of 546 satoshis, fails;
-- [ ] the pool-shaped child created with `childContainers`: a later call spends its satoshi coin and its token *(not covered: `childContainers` is not implemented, B9.7)*
+- [x] the pool-shaped child created with `childContainers`: a later call spends its satoshi coin and its token *(covered by `StatefulAddressPayment.e2e`: the token container is seeded through `childContainers`, the child spends it in a later call, and the lock holds one coin; the satoshi container half is the routed-payment case, whose lock also holds one coin and whose child spends it)*
       coin, and each container lock holds exactly one coin;
-- [ ] the same child created without `childContainers`: the SDK funds the satoshi coin with RESERVE by itself, *(not covered: `childContainers` is not implemented, B9.7)*
+- [x] the same child created without `childContainers`: the SDK funds the satoshi coin with RESERVE by itself, *(covered by `DeployerCreation.e2e`'s `funds a single satoshi container with RESERVE plus the value` and by `StatefulAddressPayment.e2e`'s `refuses a single token-container child without childContainers, naming the category`)*
       and fails before building for the token coin, with `DeployerPrepError` naming the category;
 - [x] a child with an optional satoshi row and no value: the creation passes with a filler at that row. *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
 

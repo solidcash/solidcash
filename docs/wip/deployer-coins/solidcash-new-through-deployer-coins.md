@@ -4827,7 +4827,7 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       and that case passes alone in 30.5 s. After the live-block-reader, callee and registry work (2026-11-14) the
       full suites remain solidc 7,840/7,840 across 514 files and solidcash 6,303 passed, 0 failed across 1,076
       files (5 expected fail, 191 skipped, 5 todo). The deployer e2e set (creation, creating call, registry,
-      refusals, payments) is 60/60, and two fresh `DeployerCreation.e2e` captures are 33/33 each. The root build
+      refusals, payments) is 61/61, and two fresh `DeployerCreation.e2e` captures are 34/34 each. The root build
       regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for
       carry `deployer`.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
@@ -4836,8 +4836,11 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       (a record-sound callee that returns a value): the creation is 5,401 B; the deployer input costs
       168,524 operations of a 2,926,400 budget (5.8%, from its 2,823-byte unlocking and 835-byte redeem),
       the callee's master input 177,981 of a 2,182,400 budget (8.2%), and its data input 18,672; the callee
-      unlocking is 1,385 B. The callee's sender step hashes the 2,823-byte `S`: 45 64-byte digest blocks; a
-      6,000-byte `S` is 94 by the same block count (not separately measured). A two-slot creation of the same
+      unlocking is 1,385 B. For a near-6 kB child, the same creation with a 6,656-byte `C` is 10,267 B; the
+      deployer input costs 244,277 operations of a 6,183,200 budget with 231 hash iterations, the callee's master
+      177,981 of a 1,140,800 budget with 39 hash iterations, and its data input 18,672 of 226,400 with 5; the
+      deployer unlocking is 7,688 B and the redeem 939 B. The small case's callee sender step hashes the
+      2,823-byte `S` as 45 64-byte digest blocks. A two-slot creation of the same
       shape is 7,845 B: its deployer input costs 238,422 operations, its two callee masters 254,346 and
       254,352 (each with an 18,672-operation data input), its deployer unlocking is 3,320 B and its redeem
       1,099 B; both callee unlockings are 1,385 B. A callee unlocking shorter than 300 bytes was probed with a

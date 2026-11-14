@@ -788,6 +788,8 @@ export function assertDeployerCallee(calleeName: string, callee: Artifact, funct
 export interface DeployerInputRun {
   inputIndex: number;
   operationCost: bigint;
+  hashDigestIterations?: bigint;
+  operationBudget?: bigint;
 }
 
 
@@ -1053,7 +1055,16 @@ export function runDeployerInputsLocal(
         `Input ${inputIndex} failed the local run at instruction ${state.ip}/${state.instructions.length}: ${error}`,
       );
     }
-    runs.push({ inputIndex, operationCost: BigInt(state.metrics?.operationCost ?? 0) });
+    runs.push({
+      inputIndex,
+      operationCost: BigInt(state.metrics?.operationCost ?? 0),
+      ...(state.metrics?.hashDigestIterations === undefined ? {} : {
+        hashDigestIterations: BigInt(state.metrics.hashDigestIterations),
+      }),
+      ...(state.metrics?.maximumOperationCost === undefined ? {} : {
+        operationBudget: BigInt(state.metrics.maximumOperationCost),
+      }),
+    });
   }
   return runs;
 }
@@ -1382,7 +1393,10 @@ async function deployThroughCallSlot<T extends Artifact>(options: {
         if ((globalThis as any).process?.env?.DEBUG_D13) {
           console.log('D13', JSON.stringify({
             transactionBytes: creationHex.length / 2,
-            operationCosts: localRuns.map((entry) => ({ input: entry.inputIndex, cost: entry.operationCost.toString() })),
+            operationCosts: localRuns.map((entry) => ({
+              input: entry.inputIndex, cost: entry.operationCost.toString(),
+              budget: entry.operationBudget?.toString(), hashes: entry.hashDigestIterations?.toString(),
+            })),
             calleeUnlockingBytes: runs.map((run) => run.unlocking.length),
             deployerUnlockingBytes: program.transaction.inputs[0].unlockingBytecode.length,
             deployerRedeemBytes: hexToBin(deployer.bytecode).length,

@@ -1044,4 +1044,43 @@ describe('a top-level deployment through Deploy<C>', () => {
   });
 
 
+
+  it('runs a constructor call with near-6 kB child code (D13)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    let extra = '';
+    for (let i = 0; i < 40; i += 1) extra += `function f${i}() { n = n + ${i}; } `;
+    const source = `${P} interface I { function f(int x) external returns (bool); }
+      contract T { bool ok; function f(int x) external returns (bool) { ok = true; return true; } }
+      contract C { bool ok; int n; constructor(I i) { ok = i.f(5); } ${extra}
+        function read() { require(ok); } }`;
+    let serial = 0;
+    const deploy = async (artifact: any, extraOpts: any = {}) => {
+      serial += 1;
+      const fundingUtxo: Utxo = {
+        txid: `${(0xe8 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
+      };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock, ...extraOpts,
+      });
+    };
+    const t = await deploy(compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    const cArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+    } as never);
+    expect((cArtifact.deployer?.code.length ?? 0) / 2).toBeGreaterThan(6_000);
+    const c = await deploy(cArtifact, {
+      initArgs: [addressToLockScript(t.contract.address)],
+      constructorCallees: [{ contract: t.contract, args: [5n] }],
+      fee: 1_000_000n,
+    });
+    expect(c.categoryId).not.toBe(t.contract.categoryId);
+  });
+
 });

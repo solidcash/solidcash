@@ -2355,8 +2355,12 @@ export interface DeployerAbi {
   satoshiContainer: 'none' | 'optional' | 'required';
   /** Indexes of the contract parameters that name a single token container. */
   tokenRows: number[];
-  /** Per collection the constructor writes, in the HEADs' order: its entry rows. */
-  collectionRows: { collection: string; appendSites: number }[];
+  /**
+   * Per collection the constructor writes, in the HEADs' order: its entry rows, one per append site of its journal
+   * (A4.4), and where `create`'s run holds the journal, as a depth from the bottom of its stack at step 12, so the SDK
+   * can lay out the entries the run produced (A14 item 4 step 5).
+   */
+  collectionRows: { collection: string; appendSites: number; journalDepth?: number }[];
   /** Deploy<C> mints C's oracle: C reads block data. */
   readsBlockData: boolean;
   /** C stores `msg.sender` in its constructor: its creator is a marked creator. */
@@ -2415,7 +2419,10 @@ export interface Artifact {
   callRecords?: 'returning' | 'all';
   /** The `genesisCalls` option the contract was compiled with. */
   genesisCalls?: boolean;
-  /** True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that prevents it. */
+  /**
+   * True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that
+   * prevents it.
+   */
   recordSound?: boolean;
   /** True for a marked creator: a contract that creates a sender-reading child. */
   createsSenderReadingChildren?: boolean;

@@ -707,6 +707,8 @@ const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 const VALUE_CHUNK_LOCK_LIST = '__internal__valueChunkOutputBase';
 /** The `ordinal 0 || selector` the selector dispatcher leaves a dispatched entry, its call record's prefix. */
 const CALL_RECORD_PREFIX = '__internal__callRecordPrefix';
+/** X ‖ slot ‖ g_in: the part of a genesis call's tag its record digest covers (A7). */
+const GENESIS_CALL_TAG_BYTES = 36;
 /** The input index of the block-info coin a direct reader's caller forwards. */
 const BLOCK_ORACLE_INPUT_INDEX = '__internal__blockOracleInputIndex';
 /** The input index of the first ring slot a direct blockhash reader's caller forwards. */
@@ -53037,6 +53039,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, loc);                                  // the empty-form header
       this.emit(new Uint8Array([0xff, 0xff]), loc);
       this.emitPickAt(this.getStackIndex('__internal__genesisCall'), loc);
+      if (node.usesMsgSender === true) {
+        // The digest covers the tag (X ‖ slot ‖ g_in); the fields a sender-reading entry appends after it are
+        // witness data the genesis step checks, not part of the call's identity.
+        this.emit(encodeInt(BigInt(GENESIS_CALL_TAG_BYTES)), loc);
+        this.emit(Op.OP_SPLIT, loc);
+        this.emit(Op.OP_DROP, loc);
+      }
       this.emit(Op.OP_CAT, loc);
       this.emit(this.callRecordSelector(node), loc);
       this.emit(Op.OP_CAT, loc);
@@ -60217,6 +60226,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         { function: node.name },
       );
     }
+    // A non-empty genesis call already binds the sender: its tag names the creating child, and the genesis step
+    // resolves it without reading the sender category. There is no caller-category edge to require (A7 B6.6).
+    const genesisIdx = this.getStackIndex('__internal__genesisCall', true);
+    if (genesisIdx >= 0) {
+      this.emitPickTrackedFromBottom('__internal__genesisCall', loc);   // [tag]
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_IF, loc);                                         // ordinary call: require the edge
+      this.emit(Op.OP_DROP, loc);                                       // drop the tag copy
+    }
     this.emitPickTrackedFromBottom('__internal__msgSenderCategory', loc);  // [C_A?]
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_0, loc);
@@ -60264,6 +60284,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NIP, loc);                       // drop C_A -> [found']
     this.emit(Op.OP_VERIFY, loc);
     this.emit(Op.OP_ENDIF, loc);
+    if (genesisIdx >= 0) {
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);                                     // drop the tag copy
+      this.emit(Op.OP_ENDIF, loc);
+    }
   }
 
   // ===== Address Balance Loop Support =====

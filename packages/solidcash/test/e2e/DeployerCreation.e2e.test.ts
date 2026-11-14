@@ -884,5 +884,42 @@ describe('a top-level deployment through Deploy<C>', () => {
     expect((await result.contract.getState() as { n?: bigint }).n).toBe(2n);
   });
 
+  it('binds a constructor call to a callee that reads msg.sender (A7, B7.16)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const source = `${P}
+      interface I { function f(int x) external returns (bool); }
+      contract T { address who; bool ok;
+        function mark() internal { who = msg.sender; }
+        function f(int x) external returns (bool) { mark(); ok = true; return true; }
+        function check() { require(ok); } }
+      contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
+    let serial = 0;
+    const deploy = async (artifact: any, extra: any = {}) => {
+      serial += 1;
+      const fundingUtxo: Utxo = {
+        txid: `${(0xd0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
+      };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock, ...extra,
+      });
+    };
+    const t = await deploy(compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    const cArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+    } as never);
+    const c = await deploy(cArtifact, {
+      initArgs: [addressToLockScript(t.contract.address)],
+      constructorCallees: [{ contract: t.contract, args: [5n] }],
+    });
+    const stored = (await t.contract.getState()) as { who?: Uint8Array };
+    expect(binToHex(stored.who ?? new Uint8Array())).toBe(binToHex(addressToLockScript(c.contract.address)));
+  });
 
 });

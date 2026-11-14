@@ -24358,6 +24358,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `[]` -> `[]`: every register in `names` still holds its empty dummy. An effect in a loop fills one register set,
    * which the epilogue pins to one output, so its second run would drop the first: the call fails instead.
    */
+  /**
+   * A framed body that sends from a loop lists each send where it makes it (`emitFramedValueCallAtSource`), so a
+   * later turn refilling the registers drops nothing and needs no guard.
+   */
+  private framedSendListedAtSource(): boolean {
+    return this.framedMaster && !this.isDefineSubTraversal && this.framedCallsMadeActive && this.framedSendsAtSource;
+  }
+
   private emitRegistersStillEmpty(names: readonly string[], loc: SingleLocationData): void {
     names.forEach((name, index) => {
       this.emit(encodeInt(BigInt(this.getStackIndex(name) + index)), loc);
@@ -24974,7 +24982,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Pre-allocated path: use emitReplace to update the dummy slots
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
       const amtName = `__internal__transfer_amt_${node.transferIndex}`;
-      if (this.loopTransferIndices.has(node.transferIndex)) {
+      if (this.loopTransferIndices.has(node.transferIndex) && !this.framedSendListedAtSource()) {
         this.emitRegistersStillEmpty([lbName, amtName], { location: node.location, positionHint: PositionHint.START });
       }
 
@@ -25019,7 +25027,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Pre-allocated path: use emitReplace to update the dummy slots
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
       const amtName = `__internal__transfer_amt_${node.transferIndex}`;
-      if (this.loopTransferIndices.has(node.transferIndex)) {
+      if (this.loopTransferIndices.has(node.transferIndex) && !this.framedSendListedAtSource()) {
         this.emitRegistersStillEmpty([lbName, amtName], { location: node.location, positionHint: PositionHint.START });
       }
 
@@ -25064,7 +25072,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
       const amtName = `__internal__transfer_amt_${node.transferIndex}`;
-      if (this.loopTransferIndices.has(node.transferIndex)) {
+      if (this.loopTransferIndices.has(node.transferIndex) && !this.framedSendListedAtSource()) {
         this.emitRegistersStillEmpty([lbName, amtName], locationData);
       }
 

@@ -407,6 +407,8 @@ export async function deployFromStatefulContract<T extends Artifact>(
           synthetic: {
             __internal__genesisOutputBase: outbase,
             __internal__genesisSidecarBase: outbase + BigInt(childDeployer.genesisOutputs),
+            // A5: a constructor's block field is its creation's locktime, so the create names no oracle input.
+            __internal__blockOracleInputIndex: -1n,
           },
           forBroadcast: true,
         });
@@ -1389,6 +1391,12 @@ export async function deployFromStatefulContract<T extends Artifact>(
           throw new DeployerPrepError(
             `The paying wallet has no coin of ${wanted} with at least ${token.amount} units for the child's `
             + 'token container',
+          );
+        }
+        if (coin.satoshis < 1200n) {
+          throw new DeployerPrepError(
+            `The child's token container ${wanted} needs a coin of at least 1200 satoshis; the paying wallet's `
+            + `coin holds ${coin.satoshis}`,
           );
         }
         const plan: ChildTokenRowPlan = {

@@ -4640,7 +4640,7 @@ their contract with `deployer: true`:
 - [x] a creator F whose child C creates a child G in one of its functions: F creates C, then C creates G. *(covered by `DeployerCreatingCall.e2e`: `creates a child that creates a child (F then C then G)` performs both creating calls and checks each category)*
 
 **Containers** (same file):
-- [ ] registries of the user's shape, one per pool kind, as the user decided (A18): *(not covered: the pool-shaped child needs `childContainers`, which is not implemented (B9.7))* a BCH registry whose
+- [x] registries of the user's shape, one per pool kind, as the user decided (A18): *(covered by `DeployerRegistry.e2e`: `stores and emits the created pool's category` and `stores and emits a token pool's category and keeps its token coin` drive the shipped creator with a single satoshi container and a single token container; `refuses a token coin of 546 satoshis for a single token container` asserts `DeployerPrepError`)* a BCH registry whose
       `create` runs `new` of a NotePool-shaped child, and a token registry whose `create` runs `new` of a
       TokenNotePool-shaped child. Each stores `pool.category` in its state and emits it in an event; the
       stored value is the pool's category in display order. A hand-built creation without the pool's satoshi

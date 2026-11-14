@@ -362,7 +362,9 @@ Shipped (generic dynamic dispatch, EVM-parity surface, VM-verified - e2e `CallRe
 (`OP_UTXOBYTECODE == addr`) co-spend whose `data` is read as a single opaque `bytes` blob from the
 integrity-bound return event (`success` is always true - integrity failures fail the spend). The statement
 form `addr.call(payload);` stays fire-and-forget (the existing low-level call). The callee, function and args
-are supplied at build time via `.withExternalCall(callee, fn, args)`. Verified e2e: real-return read,
+are supplied at build time via `.withExternalCall(callee, fn, args)`; for a payload the compiler decodes,
+`.withExternalCall(callee)` takes the function and arguments from the payload, and the caller binds the callee's
+selector and arguments to it (push for push natively, EVM words under `evmCompat`). Verified e2e: real-return read,
 genericity (the same caller dispatches to two unrelated callee types), the opaque result used in a covenant
 decision (`require`), target-substitution rejection, and the inline `abi.encodeWithSignature` surface
 compiling. MVP limitations:

@@ -39,7 +39,7 @@ selector, a void callee, a sender-reading callee, and the non-record-sound refus
 and loop `new` placements are implemented and tested. The Part D measurements
 come from SDK-built transactions.
 
-Status on branch `deployer-spec`, 2026-11-14 (uncommitted): a review of the shipped code against this text found
+Status on branch `deployer-spec`, 2026-11-14: a review of the shipped code against this text found
 soundness defects, all fixed with tests that fail without the fix.
 - `create` did not pin a constructor call's record carrier (A4.3 step 14): any NFT with a forged commitment at the
   return index answered the call. It now requires the callee's category with no capability, no units, the lock
@@ -64,13 +64,19 @@ bounds (D22); B8.8's `value` through creating calls; A14 item 4, a creating call
 (Q ‖ A read from the trace, run order, conditional and loop `new`, runtime-loop payments in satoshis, tokens and
 NFTs, the trailing outputs after a loop of `new` per B8.9, and each child's budget pad); one top-level creation
 path in which constructor calls combine with collection writes, events, sends and side-cars, with ERC20-,
-USDT- and registry-shaped callees; and a live block reader created through Deploy<C>. This backend has no
+USDT- and registry-shaped callees, and callees that iterate a collection, make a low-level call, hash in a loop
+(side-cars from the shared salt-0 pool) or key a sorted mapping by `msg.sender` from a run-sized block (a callee
+that recovers keys in a loop stays refused: its compiled loop reads side-cars where the block's records follow
+the master); and a live block reader created through Deploy<C>. This backend has no
 per-instance oracle row: a block read names an oracle pool by the contract argument `__oraclePool`, which A
 carries, so C's code is constant and the pool is minted first in transactions of its own; a child that reads
 block data is still refused (A15). The pre-B10 SDK tests were updated by the rules of Part C's "Regression".
 Every direct contract's code changes (O8 and `genesisCalls`), so dependants such as `bch-next` rebuild their
-artifacts. Found while testing and outside this plan: fixed and runtime-loop BCH transfers in one function fail
-the conservation check, and an `emit` inside a plain runtime loop yields one event output.
+artifacts. Found while testing and outside this plan, and fixed on the same branch: fixed and runtime-loop BCH
+transfers in one function failed the conservation check; an `emit` in a plain runtime loop, and every payment or
+event of a constant-bound loop, kept one output for all its turns (constant-bound loops are now unrolled, and a
+loop that stays rolled fails its second turn instead); a framed contract's address took payments it can never
+spend (the SDK now refuses them).
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -4760,14 +4766,14 @@ are allowed here because these are attacks. Each must fail, in the VM unless the
       state but not its genesis input, with an added `token.approve` input that names the child and a
       builder-written list at byte 5 of the genesis input's unlocking. The token must refuse it, for a child
       code without a trailer and for one whose trailer names Deploy<C>;
-- [x] a call bound to other arguments: the constructor calls `registry.register(5)` and the registry runs *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [x] a call bound to other arguments: the constructor calls `registry.register(5)` and the registry runs *(covered by the compiler VM files, which run `create` on hand-built transactions; on the SDK path `DeployerConstructorCalls.e2e` refuses a changed record result, another slot's tag, a moved carrier and a changed callee list)*
       `register(6)`, or publishes no record, or publishes a record without the tag;
-- [x] one run of a callee for two creations: two children whose constructors make the same call, created in *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [x] one run of a callee for two creations: two children whose constructors make the same call, created in *(covered by the compiler VM files, which run `create` on hand-built transactions; on the SDK path `DeployerConstructorCalls.e2e` refuses a changed record result, another slot's tag, a moved carrier and a changed callee list)*
       one transaction with one run of the callee;
-- [x] a call record replayed from an earlier creation of the same child type; *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
-- [x] a call record prepared beforehand: running the callee's function with this creation's tag in an earlier *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [x] a call record replayed from an earlier creation of the same child type; *(covered by the compiler VM files, which run `create` on hand-built transactions; on the SDK path `DeployerConstructorCalls.e2e` refuses a changed record result, another slot's tag, a moved carrier and a changed callee list)*
+- [x] a call record prepared beforehand: running the callee's function with this creation's tag in an earlier *(covered by the compiler VM files, which run `create` on hand-built transactions; on the SDK path `DeployerConstructorCalls.e2e` refuses a changed record result, another slot's tag, a moved carrier and a changed callee list)*
       transaction fails there, because that transaction does not spend (X, 0);
-- [x] a record-sound callee co-spent through another of its functions, with a carrier of its category *(not covered on the SDK path: `deployThroughDeployer` refuses a constructor call slot; the compiler VM files cover `create`)*
+- [x] a record-sound callee co-spent through another of its functions, with a carrier of its category *(covered by the compiler VM files, which run `create` on hand-built transactions; on the SDK path `DeployerConstructorCalls.e2e` refuses a changed record result, another slot's tag, a moved carrier and a changed callee list)*
       beside it that the builder re-created from an old coin;
 - [x] a contract named as the creator that ran no `new`: a top-level deployment of a sender-reading child that *(covered by the focused deployer suites: 235 solidc + 24 SDK e2e at final acceptance)*
       co-spends a marked creator V through an arm that creates nothing, and passes V's category;

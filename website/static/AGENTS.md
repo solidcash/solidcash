@@ -962,8 +962,10 @@ target.staticcall(payload);                           // low-level read-only; de
 - A stateful callee returns values in a return-event NFT output, the record of the call it answers (a digest of the
   selector and arguments, then the result, or its hash past 96 bytes); the caller reads only its own call's record.
   Read off chain with `sc.call.f(args).staticCall()`.
-- Low-level calls bind the target and an opaque return, not the payload against the callee's invocation; prefer a
-  typed interface when dispatch identity matters. Void typed calls over an address array work in loops.
+- A low-level call binds its target and reads an opaque return. When its payload is an `abi.encodeWithSelector`,
+  `abi.encodeWithSignature` or `abi.encodeCall` expression (directly or through a once-written local), the caller
+  also binds the callee's selector and arguments to it; an opaque `bytes` payload binds neither. Prefer a typed
+  interface when dispatch identity matters. Void typed calls over an address array work in loops.
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 

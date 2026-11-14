@@ -21,7 +21,7 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 10 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 9 unticked ones name the shape the
 shipped SDK path refuses (a live block reader and a creator's locktime negotiation, a constructor's
 token-container balance read, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
 vmap witnesses, the sender-reading callee probe, and the registry-of-the-user's-shape case); every Part D line
@@ -4607,7 +4607,7 @@ their contract with `deployer: true`:
 - [x] a creator's satoshi and token payment after `new` reaches the child's containers, and the child spends *(covered by `StatefulAddressPayment.e2e`: the routed `this.transfer(child, 5000)` case spends the satoshi container in a later call, and `a creating call seeds the child's single token container and the child spends it` supplies the token row through `childContainers` and spends 2 of its 3 units in a later call)*
       both in a later call;
 - [x] an event in the constructor, decoded by the SDK; *(covered by `DeployerCreation.e2e`: the create mints the event NFT and the receipt decodes `Ping(5)`. The genesis category base now reads the deployer input's outpoint hash, since the deployer coin carries no token)*
-- [ ] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays *(compiler VM cases exist in `DeployerCreation.test`; the SDK creation is not covered)*
+- [x] a satoshi payment in the constructor to a wallet address; and a payable constructor that pays *(covered by `DeployerCreation.e2e`: `pays a wallet from a payable constructor at top level` sends 600 satoshis to `msg.sender` through the creation; `DeployerCreatingCall.e2e` refuses a value through a creator)*
       `msg.sender`, which passes at top level and fails through a creator;
 - [x] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(covered by `DeployerCreation.e2e`: the keccak success and no-pool cases, and `co-spends the shared ecrecover side-cars for a constructor recovery` with `refuses a constructor recovery with no shared ecrecover coin`)*
       network, `DeployerSidecarError`;

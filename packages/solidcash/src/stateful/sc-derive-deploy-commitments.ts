@@ -519,17 +519,29 @@ export async function deriveDeployCommitments<T extends Artifact>(
       };
     }
 
-    // A single satoshi container is an input slot too: the constructor's balance read and the genesis covenant's
-    // preservation check spend it. Present the probe's container at its block position, after the data NFTs.
+    // A single satoshi container is an input slot too: the constructor's balance read, its sends and the genesis
+    // covenant's preservation check spend it. Present the probe's container at its block position, after the data
+    // NFTs; its output is the start balance less the constructor's sends.
     const probeDeployer = artifact.deployer;
-    if (probeDeployer !== undefined && probeDeployer.satoshiContainer === 'required') {
-      const containerLock = addressToLockScript(getSatoshiContainerAddress(contract, categoryId));
-      probeBuilder.addInput({
-        txid: `${'00'.repeat(31)}ea`, vout: 0, satoshis: 1200n, lockingBytecode: containerLock,
-      }, {
-        generateLockingBytecode: (): Uint8Array => containerLock,
-        generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
-      });
+    const constructorTransfers = constructorAbi?.transfers ?? [];
+    const transferredOut = constructorTransfers.reduce((sum, transfer) => {
+      const raw = (transfer.amountRecipe as { value?: string } | undefined)?.value
+        ?? (transfer.amount as { value?: string } | undefined)?.value;
+      return sum + (raw === undefined ? 0n : BigInt(raw));
+    }, 0n);
+    let probeSatoshiStart = 0n;
+    if (probeDeployer !== undefined && probeDeployer.satoshiContainer !== 'none') {
+      probeSatoshiStart = probeDeployer.satoshiContainer === 'required'
+        ? 1200n : (options.initialBalance ?? 0n);
+      if (probeSatoshiStart > 0n) {
+        const containerLock = addressToLockScript(getSatoshiContainerAddress(contract, categoryId));
+        probeBuilder.addInput({
+          txid: `${'00'.repeat(31)}ea`, vout: 0, satoshis: probeSatoshiStart, lockingBytecode: containerLock,
+        }, {
+          generateLockingBytecode: (): Uint8Array => containerLock,
+          generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+        });
+      }
     }
 
     const constructorKeccakSidecars = syntheticKeccakUtxos.map((utxo, batch) => buildKeccakComputeSidecar(
@@ -667,11 +679,11 @@ export async function deriveDeployCommitments<T extends Artifact>(
     // amount; the probe must carry the same rows the real creation mints or those pins fail.
     const deployerAbi = artifact.deployer;
     if (deployerAbi !== undefined) {
-      if (deployerAbi.satoshiContainer !== 'none') {
-        const value = options.initialBalance ?? 0n;
+      if (deployerAbi.satoshiContainer !== 'none' && probeSatoshiStart > 0n) {
+        const remaining = probeSatoshiStart > transferredOut ? probeSatoshiStart - transferredOut : 0n;
         probeBuilder.addOutput({
           to: getSatoshiContainerAddress(contract, categoryId),
-          amount: deployerAbi.satoshiContainer === 'required' ? 1200n : value,
+          amount: remaining,
         });
       }
       for (const tokenRow of deployerAbi.tokenRows) {
@@ -688,12 +700,21 @@ export async function deriveDeployCommitments<T extends Artifact>(
       }
     }
 
-    // Transfer placeholder outputs
+    // Transfer outputs: a constructor's send to `msg.sender` reaches the deploying wallet (tx.origin); a literal
+    // or forwarded address is resolved from the constructor arguments.
     for (let i = 0; i < transferCount; i++) {
-      probeBuilder.addOutput({
-        to: encodeLockingBytecodeP2pkh(new Uint8Array(20)),
-        amount: dataNftAmount,
-      });
+      const recipe = constructorTransfers[i];
+      const rawAmount = (recipe?.amountRecipe as { value?: string } | undefined)?.value
+        ?? (recipe?.amount as { value?: string } | undefined)?.value;
+      const amount = rawAmount === undefined ? dataNftAmount : BigInt(rawAmount);
+      let to: Uint8Array = options.funder.generateLockingBytecode();
+      const forwarded = recipe?.recipient?.kind === 'forward' ? recipe.recipient.paramIndex : undefined;
+      if (forwarded !== undefined) {
+        const input = visibleInputs[forwarded];
+        const value = input === undefined ? undefined : options.initArgs?.[forwarded];
+        if (value instanceof Uint8Array) to = value;
+      }
+      probeBuilder.addOutput({ to, amount });
     }
 
     // Event NFT placeholder outputs

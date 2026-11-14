@@ -786,4 +786,23 @@ describe('a top-level deployment through Deploy<C>', () => {
       changeAddress: change.address, senderLockingBytecode: authorLock,
     })).rejects.toThrow(DeployerSidecarError);
   });
+
+
+  it('pays a wallet from a payable constructor at top level (A5, A14 item 11)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const artifact = compileString(
+      `${P} contract C { int n; constructor() payable { n = 1; payable(msg.sender).send(600); } }`,
+      { deployer: true, messageBus: false },
+    );
+    const fundingUtxo: Utxo = { txid: '68'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock, initialBalance: 2000n,
+    });
+    expect(result.categoryId).not.toBe(fundingUtxo.txid);
+  });
 });

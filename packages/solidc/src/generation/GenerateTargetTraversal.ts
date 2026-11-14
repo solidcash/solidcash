@@ -12065,7 +12065,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_OUTPUTVALUE, loc);
     this.popFromStack();
     this.pushToStack('(outvalue)');
-    this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    // `balance <= output`: the row holds at least the journal's final balance (A5).
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_VERIFY, loc);
     this.popFromStack(2);
   }

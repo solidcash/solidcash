@@ -42,9 +42,11 @@ describe('atomic verifier bytecode specialization', () => {
       // B+F1 void-record/edge overhead on the direct verifier, then 70 B on both for the record lock a master rebuilds,
       // which carries the data-record covenant's authority bind and category, each now defined once (590aca164).
       // +26 B direct / +3 B composed for O8's exact-stack check, which every stateful arm now carries.
-      direct: 868,
-      composed: 1963,
-      frameworkTax: 1095,
+      // +48 B direct for the genesis header now that genesisCalls is on by default (its 23 B marker was counted
+      // already), and +3 B composed for O8's check placed first in the route's pushed arm, which had none (e7fe44e3a).
+      direct: 916,
+      composed: 1966,
+      frameworkTax: 1050,
     });
     expect(composed).toBeLessThanOrEqual(1985);
     expect(composed - direct).toBeLessThanOrEqual(1360);

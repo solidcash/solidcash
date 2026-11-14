@@ -816,8 +816,9 @@ function compileDeployerProgram(
   options: InternalCompilerOptions,
   constants: import('./generation/deployerConstants.js').DeployerConstants,
   oraclePoolBinding = false,
+  liveReadsBlockData = false,
 ): { artifact: Artifact; box: DeployerProgramBox } | { reason: string } {
-  const box: DeployerProgramBox = { oraclePoolBinding };
+  const box: DeployerProgramBox = { oraclePoolBinding, readsBlockData: liveReadsBlockData };
   if (baseConstructorArgumentReadsState(sourceAst.contract)) return { reason: 'ctor-base-argument' };
   if (options.__deployerTestBox?.forceReason !== undefined) {
     box.forceReason = options.__deployerTestBox.forceReason;
@@ -18097,7 +18098,6 @@ function compileResolvedAst(
     const inlineLibrary = artifact.externalLibraries?.some((library) => library.resultNft !== true) === true;
     const reason = !artifact.stateLayout || mergedCompilerOptions.composition === 'framed' ? 'not-stateful-direct'
       : ast.contract.usesBlockhash === true ? 'blockhash-ring'
-        : liveFunctionReadsBlockData(ast.contract) ? 'code-not-constant'
         : artifact.composition !== undefined || split || mergedCompilerOptions.messageBus === true
           ? 'lock-composition'
           : unsupportedParameter ? 'param-type'
@@ -18121,7 +18121,8 @@ function compileResolvedAst(
         deployerSourceAst.contract.oraclePoolBindingForGenesis = true;
       }
       const built = compileDeployerProgram(deployerSourceAst, code, mergedCompilerOptions as InternalCompilerOptions,
-        constants, artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER));
+        constants, artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER),
+        liveFunctionReadsBlockData(ast.contract));
       if ('reason' in built) {
         artifact.deployerUnsupported = built.reason;
         emitCompilerWarning(new DeployerUnsupportedWarning(

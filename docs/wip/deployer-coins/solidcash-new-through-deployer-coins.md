@@ -3840,10 +3840,10 @@ with a deployer whose constructor writes a collection, and only where today's st
         `deployer: true` set `artifact.deployerUnsupported` and emit `DeployerUnsupportedWarning`; in a
         creator's compile return the reason to it.
 
-      Note (implementation, 2026-11-13): the birth trailer, TEMPLATE, V_DEPLOY, the smallest-unlocking check
-      and w_out (from the B7.9 layout) are done. The block-oracle constant-lock form is not available in this
-      backend, so a live block reader is refused with `code-not-constant`; a constructor-only read uses the
-      locktime and needs no oracle.
+      Note (implementation, 2026-11-14): the birth trailer, TEMPLATE, V_DEPLOY, the smallest-unlocking check
+      and w_out (from the B7.9 layout) are done. A live block reader now gets a deployer: its code carries the
+      pool sentinel and `create` pins the `__oraclePool` contract parameter, so the deployed instance's code is
+      constant and the oracle is minted at genesis. A constructor-only read still uses the locktime.
 - [x] **B7.15 Measure first.** As soon as B7.14 produces a deployer: build the sweep of a sample deployer
       coin by hand and measure its size, fix the constant of V_DEPLOY, and fill D2, D3, D9, the second part
       of D16 and the deployer's part of D18. Then compile the user's two pools with `deployer: true` (read-only:
@@ -4620,7 +4620,7 @@ their contract with `deployer: true`:
 - [ ] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(not covered; the SDK block-field refusal above applies)*
       and the two locktime needs are met by one value; a height against a time fails with
       `DeployerLocktimeConflictError`;
-- [ ] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(not covered: `deployThroughDeployer` refuses `readsBlockData`)*
+- [x] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(covered by `DeployerCreation.e2e`: `mints the oracle of a live block reader and reads block data later` deploys a `block.number` reader with `oraclePool: 'new'` through Deploy<C> and its first call reads block data; the deployer ABI reports `readsBlockData` and the create pins the pool binding)*
       call reads block data;
 - [x] `this.activeBytecode` equals R, and `address(this)` equals M; *(covered by the `DeployerCreation` VM cases)*
 - [x] a contract with a mapping, born through its deployer, inserts an entry in its first call (B7.13); *(covered by `DeployerCreation.e2e`: the creation mints the HEAD through the layout, and the first call's `put(1, 2)` then `read(1)` passes)*

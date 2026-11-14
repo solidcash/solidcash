@@ -10,6 +10,7 @@ import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitau
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { DeployerLocktimeConflictError } from '../../src/stateful/deployer.js';
 import { compileStringMulti } from '../direct-compile.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Utxo } from '../../src/interfaces.js';
@@ -362,4 +363,41 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     });
     expect(result.children).toHaveLength(2);
   });
+
+  it('refuses a height tx.time beside a timestamp child (A5)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract Child { int born; constructor() { born = int(block.timestamp); } }
+      contract Factory { int childCount;
+        function make(int notBefore) {
+          require(tx.time >= notBefore);
+          new Child();
+          childCount = childCount + 1;
+        }
+      }`, { allowUnsafeOperations: true, __deployerNew: true } as never);
+    const deploymentFunding: Utxo = { txid: 'af'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const f = await StatefulContract.deploy(artifacts.Factory, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prep: Utxo = { txid: 'b0'.repeat(32), vout: 0, satoshis: 200000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prep);
+    let caught: unknown;
+    try {
+      await StatefulContract.deployFrom({
+        provider, factory: f.contract, deployFunctionName: 'make',
+        deployFunctionArgs: [800_000n], childArtifact: artifacts.Child,
+        childConstructorArgs: [], childInitialState: { born: 0n },
+        childOraclePool: 'bb'.repeat(32),
+        fundingUtxo: prep, funder, changeAddress: change.address,
+      });
+    } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(DeployerLocktimeConflictError);
+  });
+
 });

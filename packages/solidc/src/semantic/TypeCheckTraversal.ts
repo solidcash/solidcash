@@ -2324,8 +2324,11 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (codeAt < 0 || valueAt <= codeAt) {
       throw new DeployerInternalError(node, `'${contractName}''s create ABI has no parameter bands`);
     }
-    const abiContract = create.inputs.slice(codeAt + 1, codeAt + 1 + contractParams.length);
-    const abiCtor = create.inputs.slice(codeAt + 1 + contractParams.length, valueAt);
+    // `__oraclePool` is a binding the creator supplies, not a source constructor argument.
+    const abiBand = create.inputs.slice(codeAt + 1, valueAt)
+      .filter((input) => input.name !== ORACLE_POOL_PARAMETER);
+    const abiContract = abiBand.slice(0, contractParams.length);
+    const abiCtor = abiBand.slice(contractParams.length);
     const disagreement = (source: ParameterNode[], abi: { type: string }[]): boolean =>
       source.length !== abi.length || source.some((parameter, index) => abiTypeString(parameter.type) !== abi[index].type);
     if (disagreement(contractParams, abiContract) || disagreement(ctorParams, abiCtor)) {

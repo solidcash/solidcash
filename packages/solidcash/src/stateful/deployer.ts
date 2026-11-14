@@ -64,7 +64,6 @@ export function deployerFallbackCase(
   if (options.initialState !== undefined && Object.keys(options.initialState).length > 0) return 'initial-state';
   if ((options.identityAnchors?.length ?? 0) > 0) return 'identity-anchors';
   if (options.nativeToken !== undefined) return 'native-token';
-  if (deployer.readsBlockData) return 'block-oracle';
   if (options.salt !== undefined) return 'salt';
   if (options.addressType !== undefined && options.addressType !== 'p2sh32') return 'address-type';
   if (options.threadCount !== undefined && options.threadCount > 1) return 'thread-count';
@@ -1706,12 +1705,6 @@ export async function deployThroughDeployer<T extends Artifact>(
     throw new DeployerPathError(
       `Contract '${artifact.contractName}' has ${deployer.callSlots} constructor call slots together with `
       + 'collection rows, events or transfers, which the SDK creation probe does not derive yet',
-    );
-  }
-  if (deployer.readsBlockData) {
-    throw new DeployerPathError(
-      `Contract '${artifact.contractName}' reads block data beyond a constructor's locktime field, which needs `
-      + 'an oracle pool minted at genesis that the deployer path does not build yet',
     );
   }
 

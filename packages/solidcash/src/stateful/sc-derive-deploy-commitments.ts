@@ -487,10 +487,9 @@ export async function deriveDeployCommitments<T extends Artifact>(
     }
 
     if (blockField !== undefined) {
-      const pool = (contract as unknown as { oraclePool?: string }).oraclePool;
-      if (pool === undefined) {
-        throw new Error(`'${artifact.contractName}' reads block data but names no oracle pool`);
-      }
+      // A constructor's block field is its creation's locktime (A5); the probe's oracle coin carries that value.
+      // Without a bound pool the coin's category is arbitrary to the constructor's read.
+      const pool = (contract as unknown as { oraclePool?: string }).oraclePool ?? '00'.repeat(32);
       const value = BigInt(options.__deployerLocktime ?? 0);
       const commitment = encodePoolInfoCommitment({
         flags: 0,

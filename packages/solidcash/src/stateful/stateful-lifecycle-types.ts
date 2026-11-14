@@ -276,6 +276,8 @@ export interface DeployFromOptions<T extends Artifact = Artifact> {
   }>;
   /** The children's own artifacts by contract name, when the caller wants `Contract` objects back. */
   childArtifacts?: Record<string, Artifact>;
+  /** The oracle pool category (display order) a child binds when the factory has no pool of its own. */
+  childOraclePool?: string;
 }
 
 // Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function

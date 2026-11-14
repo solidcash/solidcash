@@ -853,4 +853,35 @@ describe('a top-level deployment through Deploy<C>', () => {
     expect((await result.contract.getState() as { n?: bigint }).n).toBe(2n);
     expect((await provider.getUtxos(containerAddress)).filter((coin) => coin.token?.amount === 1n)).toHaveLength(1);
   });
+
+  it('mints the oracle of a live block reader and reads block data later (A5, A14 item 7)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const artifact = compileString(
+      `${P} contract C { int n; constructor() { n = 1; }
+        function read() { require(int(block.number) >= 0); n = 2; } }`,
+      { deployer: true, messageBus: false },
+    );
+    expect(artifact.deployer).toBeDefined();
+    expect(artifact.deployer?.readsBlockData).toBe(true);
+    const fundingUtxo: Utxo = { txid: 'ba'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+      oraclePool: 'new',
+    });
+    expect(result.categoryId).not.toBe(fundingUtxo.txid);
+    const signer = new Signer(alicePriv, provider);
+    for (let index = 0; index < 4; index += 1) {
+      await provider.seedUtxo(signer.getAddress(), {
+        txid: `${(0xe0 + index).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+      });
+    }
+    await (result.contract.connect(signer) as any).call.read().send();
+    expect((await result.contract.getState() as { n?: bigint }).n).toBe(2n);
+  });
+
 });

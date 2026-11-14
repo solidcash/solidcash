@@ -85,7 +85,10 @@ function readersReached(
 export function markBlockOracleCallers(
   contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[],
 ): void {
-  const reached = readersReached(contractBodies(contract, freeFunctions), readsBlockOracle);
+  // The constructor's block reads are its creation's locktime (A5); they bind no live oracle.
+  const reached = readersReached(
+    contractBodies(contract, freeFunctions).filter((fn) => fn.name !== '__construct'), readsBlockOracle,
+  );
   if (reached.size === 0) return;
   for (const fn of reached.keys()) fn.usesBlockOracle = true;
   contract.usesBlockOracle = true;

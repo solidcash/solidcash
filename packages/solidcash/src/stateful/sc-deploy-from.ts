@@ -54,7 +54,8 @@ import {
   getTokenContainerAddress,
 } from './covenant-helpers.js';
 import {
-  buildDeployerPreps, broadcastDeployerPreps, buildDeployerUnlocking, DeployerPrepError,
+  buildDeployerPreps, broadcastDeployerPreps, buildDeployerUnlocking, DeployerLocktimeConflictError,
+  DeployerPrepError,
   type DeployerPrep,
 } from './deployer.js';
 import { evalComputedKey, keyArguments } from './route-expression-key.js';
@@ -151,6 +152,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
     );
   }
   const childDeployer = factory.inner.artifact.childDeployers?.[deployTarget.contractName];
+  const childBlockField = childDeployer?.constructorBlockField
+    ?? (childArtifact as { deployer?: { constructorBlockField?: 'number' | 'timestamp' } }).deployer
+      ?.constructorBlockField;
+  // A5: a child whose constructor reads block.timestamp takes the creation's locktime. Its own create probe must
+  // read the same value, so compute it once here and reuse it for the transaction.
+  const childCreationLocktime = childBlockField === 'timestamp'
+    ? Math.max(500_000_001, (await provider.getMedianTimePast?.() ?? 500_000_002) - 1)
+    : undefined;
   if (options.childContainers !== undefined && options.childContainers.length > 0
     && childDeployer === undefined) {
     throw new DeployerPrepError(
@@ -166,7 +175,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
   const bakedConstructorArgumentCount = childArtifact.constructorInputs.length;
   // A bound child takes its creator's own pool binding last, as the creator's covenant builds the child's lock.
   const creatorBinding = (): Uint8Array => {
-    const pool = factory.inner.oraclePool;
+    const pool = factory.inner.oraclePool ?? options.childOraclePool;
     if (pool === undefined) {
       throw new Error(`'${childArtifact.contractName}' takes the oracle pool binding, which '${factory.name}' lacks`);
     }
@@ -492,6 +501,13 @@ export async function deployFromStatefulContract<T extends Artifact>(
     category: hexToBin(fu.txid),
     ...(childSalt && { salt: childSalt }),
   }));
+  // A child that binds the creator's oracle pool takes its category from the creator's own binding.
+  const childOraclePool = factory.inner.oraclePool ?? options.childOraclePool;
+  if (childOraclePool !== undefined
+    && (takesOraclePool(childArtifact as never)
+      || childArtifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER))) {
+    for (const child of childContracts) (child as unknown as { oraclePool?: string }).oraclePool = childOraclePool;
+  }
   // Publish created children so an off-chain CREATE2 prediction can resolve the exact address this transaction
   // will produce (the address commits to the funding coin's category, so it is not a pure function of salt).
   for (const [index, child] of childContracts.entries()) {
@@ -642,9 +658,14 @@ export async function deployFromStatefulContract<T extends Artifact>(
       initialState: options.childInitialState,
       initArgs: childRuntimeArgCount === 0 ? [] : childConstructorArgs,
       changeAddress: changeAddress ?? '',
-    };
+      ...(childCreationLocktime === undefined ? {} : { __deployerLocktime: childCreationLocktime }),
+    } as DeployOptions;
+    // A child compiled by the creator's source carries its Deploy<C> ABI only in the creator's child map.
+    const derivationArtifact = (childArtifact as { deployer?: unknown }).deployer === undefined
+      && childDeployer !== undefined
+      ? { ...childArtifact, deployer: childDeployer } as T : childArtifact;
     const derived = await deriveDeployCommitments(
-      childContracts[0], childArtifact, childLayout, firstCategory,
+      childContracts[0], derivationArtifact, childLayout, firstCategory,
       getDataNftAddress(childContracts[0], firstCategory), masterAmount, dataNftAmount,
       probeOptions,
     );
@@ -2129,7 +2150,21 @@ export async function deployFromStatefulContract<T extends Artifact>(
     builder.addOutput({ to: changeAddress, amount: changeAmount });
   }
 
-  const tx = await builder.send();
+  // A5: a child whose constructor reads block.timestamp takes the creation's locktime. A creator whose function
+  // also checks tx.time uses the same value; a height requirement below the unix threshold cannot be met by the
+  // timestamp the child needs, so the local run's failure is reported as the conflict it is.
+  const creationLocktime = childCreationLocktime;
+  if (creationLocktime !== undefined) builder.setLocktime(creationLocktime);
+  let tx;
+  try {
+    tx = await builder.send();
+  } catch (error) {
+    if (creationLocktime !== undefined
+      && /locktime|CHECKLOCKTIME|sequence|non-final/i.test(String((error as Error).message))) {
+      throw new DeployerLocktimeConflictError(creationLocktime, 1);
+    }
+    throw error;
+  }
 
   // Connect the child with its categoryId. The compiler's `new C(...)` codegen now self-pins the child by
   // category (matching the SDK), so each child's self-pinned address equals the deployed genesis address.

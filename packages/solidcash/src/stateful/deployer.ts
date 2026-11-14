@@ -371,6 +371,23 @@ function sharedPoolProvider(provider: NetworkProvider, spent: ReadonlySet<string
   } as unknown as NetworkProvider;
 }
 
+/**
+ * `provider` as an ordinary build lists a shared side-car pool through it for a creation (A14 item 6): coins in `spent`
+ * are left out and none is minted on demand. Every other read is the provider's own.
+ */
+function sharedPoolView(provider: NetworkProvider, spent: ReadonlySet<string>): NetworkProvider {
+  return new Proxy(provider, {
+    get(target, property, receiver): unknown {
+      if (property === 'addUtxo') return undefined;
+      if (property === 'getUtxosForLockingBytecode') {
+        return async (lock: Uint8Array): Promise<Utxo[]> => (await target.getUtxosForLockingBytecode(lock))
+          .filter((utxo) => !spent.has(coinKey(utxo)));
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
 /** One step of an ecrecover side-car group: a shared coin, or `undefined` for a 2-way recovery's middle slot. */
 type SidecarStep = { utxo: Utxo; unlocker: Unlocker; recreate: Output } | undefined;
 
@@ -470,6 +487,43 @@ function movedUnlocker(unlocker: Unlocker, masterIndex: number): Unlocker {
   });
 }
 
+type CalleeEntryAccess = NonNullable<import('@solidcash/utils').AbiFunction['entryAccesses']>[number];
+type CalleeCollection = NonNullable<NonNullable<Artifact['stateLayout']>['collections']>[number];
+
+/**
+ * The slot of the entry a callee's access names: each part of its key is an argument of the call, an expression of
+ * them, or `sender` where the part reads `msg.sender`.
+ */
+async function calleeEntrySlot(
+  access: CalleeEntryAccess, collection: CalleeCollection, fn: import('@solidcash/utils').AbiFunction,
+  args: readonly FunctionArgument[], sender: Uint8Array, refuse: (what: string) => never,
+): Promise<Uint8Array> {
+  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
+  const { evalComputedKey } = await import('./route-expression-key.js');
+  const { keyToSlotMulti } = await import('./SortedList.js');
+  const visible = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  const keys = access.keyParams.map((param, keyIndex) => {
+    const source = access.keySources?.[keyIndex];
+    if (isMsgSenderKeySource(source)) return sender;
+    if (source?.kind === 'expression') {
+      const value = evalComputedKey(source.expressionLabel, [...args], fn.inputs);
+      if (value !== undefined) return value;
+    }
+    const index = visible.findIndex((input) => input.name === param);
+    const value = index >= 0 ? args[index] : undefined;
+    if (value instanceof Uint8Array) return value;
+    const lock = tryCashAddressToLockScript(value);
+    if (lock !== undefined) return lock;
+    if (typeof value === 'bigint' || typeof value === 'number') return bigIntToVmNumber(BigInt(value));
+    if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
+    if (typeof value === 'string' && (collection.keyTypes?.[keyIndex] ?? collection.keyType) === 'string') {
+      return new TextEncoder().encode(value);
+    }
+    return refuse(`the key '${param}' of its ${access.collection} access is not a value the SDK can resolve`);
+  });
+  return keyToSlotMulti(keys, collection);
+}
+
 /** How many callee blocks the ordinary build has laid out: each takes pads at a lock of its own. */
 let calleeBuilds = 0;
 
@@ -485,13 +539,14 @@ let calleeBuilds = 0;
  * output-only index, or the build's fee input) takes a wallet coin of the creation. The callee's run in the creation
  * pins its NFT outputs again, its call record among them, whose digest covers the genesis call's tag.
  *
- * The build resolves `msg.sender` as an ordinary call does: a contract sender by its minting NFT and its call edge among
- * the transaction's coins. The child has neither while it is created (the genesis step resolves it, A7), so the build
- * runs with its pad lock as the sender, and a function that keys a collection by `msg.sender` is refused: the build
- * would lay out another key's entries than the child's.
+ * The build's sender is its pad lock, a direct caller, where the creation's is the child's master lock `sender`, which
+ * the genesis step resolves (A7). Only an entry that `msg.sender` keys depends on which: the build co-spends the entry
+ * its key names, or the node before it. So the pad lock is drawn until the key it gives each such access falls between
+ * the same two nodes as the child's key: the build then co-spends the node the child's insert spends, and only the slot
+ * of the key differs, which the frame names as the child's. The run in the creation pins what `msg.sender` writes.
  */
 async function planCalleeBlockByCall(
-  call: ConstructorCall, context: { spent: Set<string> }, refuse: (what: string) => never,
+  call: ConstructorCall, sender: Uint8Array, context: { spent: Set<string> }, refuse: (what: string) => never,
 ): Promise<ConstructorCalleeBlock> {
   const { callee, functionName } = call;
   const stateful = callee.contract as unknown as {
@@ -509,39 +564,107 @@ async function planCalleeBlockByCall(
   const masterLock = addressToLockScript(callee.contract.address);
   const { default: Signer } = await import('../Signer.js');
   const { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } = await import('@solidcash/utils');
+  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
+  const { getEntryNftAddress } = await import('./covenant-helpers.js');
+  const { SortedList } = await import('./SortedList.js');
+  if ((fn.sortedUpsertLoopInfo ?? []).some((info) => (info.fixedKeySources ?? []).some(isMsgSenderKeySource))) {
+    refuse('it writes a collection in a loop under keys msg.sender names, which a build whose sender is not the child '
+      + 'lays out for another key (the genesis step resolves the child as the sender, A7)');
+  }
+  // Each entry access msg.sender keys: the child's slot and the node before it, which its insert spends.
+  const senderKeyed = await Promise.all((fn.entryAccesses ?? [])
+    .filter((access) => (access.keySources ?? []).some(isMsgSenderKeySource))
+    .map(async (access) => {
+      const collection = artifact.stateLayout?.collections?.find(
+        (candidate) => candidate.name === access.collection || candidate.signature === access.collection,
+      ) ?? refuse(`its ${access.collection} access names no collection the SDK can read`);
+      if (collection.sorted !== true) {
+        refuse(`it keys '${access.collection}' by msg.sender, which is not a sorted mapping, so no entry proves the `
+          + 'child\'s key absent');
+      }
+      const entryAddress = getEntryNftAddress(contract, categoryId, access.collection);
+      const list = SortedList.fromUtxos((await provider.getUtxos(entryAddress))
+        .filter((utxo) => utxo.token?.category === categoryId));
+      const childSlot = await calleeEntrySlot(access, collection, fn, call.args, sender, refuse);
+      if (list.find(childSlot) !== undefined) {
+        refuse(`it keys '${access.collection}' by msg.sender, and the child's key is in it already, whose entry the `
+          + 'build, whose sender is not the child, does not co-spend');
+      }
+      let before: ReturnType<InstanceType<typeof SortedList>['predecessorOf']>;
+      try {
+        before = list.predecessorOf(childSlot);
+      } catch (error) {
+        return refuse(`its ${access.collection} has no entry before the child's key (${(error as Error).message})`);
+      }
+      return { access, collection, list, childSlot, before: coinKey(before.utxo) };
+    }));
+  const padSlots = async (lock: Uint8Array): Promise<Uint8Array[]> => Promise.all(senderKeyed.map(
+    ({ access, collection }) => calleeEntrySlot(access, collection, fn, call.args, lock, refuse)));
+  const fits = async (lock: Uint8Array): Promise<boolean> => (await padSlots(lock)).every((slot, index) => {
+    const { list, before } = senderKeyed[index]!;
+    return list.find(slot) === undefined && coinKey(list.predecessorOf(slot).utxo) === before;
+  });
   // The build's pads and its fee input stand at a lock of their own, each build another, from a list of stand-in coins:
   // the build neither lists nor splits a real wallet's coins, signs nothing, and the creation replaces every input at
   // that lock with one of its wallet coins.
   calleeBuilds += 1;
-  const padHash = Uint8Array.from({ length: 20 }, (_, index) => (index < 4 ? (calleeBuilds >>> (8 * index)) & 0xff : 0xcd));
-  const padLock = Uint8Array.of(0x76, 0xa9, 0x14, ...padHash, 0x88, 0xac);
+  const padHashOf = (draw: number): Uint8Array => Uint8Array.from({ length: 20 }, (_, index) => (
+    index < 4 ? (calleeBuilds >>> (8 * index)) & 0xff : index < 8 ? (draw >>> (8 * (index - 4))) & 0xff : 0xcd));
+  const p2pkh = (hash: Uint8Array): Uint8Array => Uint8Array.of(0x76, 0xa9, 0x14, ...hash, 0x88, 0xac);
+  let draw = 0;
+  while (senderKeyed.length > 0 && !(await fits(p2pkh(padHashOf(draw))))) {
+    draw += 1;
+    if (draw >= 1 << 16) {
+      refuse('it keys a collection by msg.sender, and no stand-in sender of its build has a key beside the child\'s');
+    }
+  }
+  const padHash = padHashOf(draw);
+  const padLock = p2pkh(padHash);
   const padCoins: Utxo[] = Array.from({ length: 64 }, (_, index) => ({
     txid: `${binToHex(padHash)}${index.toString(16).padStart(24, '0')}`, vout: 1, satoshis: 1_000_000n,
   }));
   const padder = Signer.external({ wallet: { signTransaction: async () => undefined }, pkh: padHash }, provider);
   Object.defineProperty(padder, 'getUtxos', { value: async (): Promise<Utxo[]> => padCoins.map((coin) => ({ ...coin })) });
   const connected = stateful.connect(padder);
-  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
-  const senderKeyed = (fn.entryAccesses ?? []).some((access) => (access.keySources ?? []).some(isMsgSenderKeySource))
-    || (fn.sortedUpsertLoopInfo ?? []).some((info) => (info.fixedKeySources ?? []).some(isMsgSenderKeySource));
-  if (senderKeyed) {
-    refuse('it keys a collection by msg.sender, and its block is laid out by the ordinary build of its call, which '
-      + 'resolves a contract sender by its minting NFT and call edge; the child holds neither until it is created '
-      + '(the genesis step resolves it, A7), so the build would lay out entries of another key');
+  // Its keccak256 and ecrecover side-cars, in a loop or not, come from the shared pool (salt 0): a side-car under the
+  // callee's brand is spendable only beside input 0 of its category, which a callee's master never is in a creation
+  // (A14 item 6). The callee's run binds each side-car by its covenant and its arguments, not by its salt.
+  const sidecars = fn.keccakCompute === true || fn.keccakLoopReads === true || fn.keccakChainReads === true
+    || fn.ecrecoverCompute === true;
+  const sidecarPool = sidecars ? sharedPoolView(provider, context.spent) : undefined;
+  if (fn.keccakLoopReads === true && (callee.externalContracts ?? []).length > 0) {
+    refuse('it hashes in a loop and calls another contract, which its ordinary call does not lay out: that call fails '
+      + 'at the other contract\'s input');
   }
   const route = { abiFunction: fn, emitReturn: true };
   const { StatefulFunctionCall } = await import('./StatefulContract.js');
   const participant = new StatefulFunctionCall(
-    () => connected._createBuilder(functionName, [...call.args], { ...route, signerUtxos: padCoins }) as never,
+    () => connected._createBuilder(functionName, [...call.args], {
+      ...route, signerUtxos: padCoins, ...(sidecarPool === undefined ? {} : { sharedSidecarPool: sidecarPool }),
+    }) as never,
     connected as never, functionName, [...call.args], route,
   );
-  for (const external of callee.externalContracts ?? []) participant.withExternalCall(external as never);
+  // A call of another contract builds the call again, which keeps the pool.
+  if (sidecarPool !== undefined) participant._withSharedSidecarPool(sidecarPool);
+  try {
+    for (const external of callee.externalContracts ?? []) participant.withExternalCall(external as never);
+  } catch (error) {
+    refuse(`its call of another contract cannot be laid out: ${(error as Error).message}`);
+  }
   let built: { inputs: UnlockableUtxo[]; outputs: Output[] };
   try {
     built = await participant.build() as unknown as { inputs: UnlockableUtxo[]; outputs: Output[] };
   } catch (error) {
     if (error instanceof DeployerCalleeError) throw error;
-    return refuse(`the ordinary build of its call, which lays out its block, fails: ${(error as Error).message}`);
+    // A shared pool with too few coins: as for a side-car of a fixed layout, nothing is built.
+    const message = (error as Error).message;
+    if (sidecarPool !== undefined && /keccak256 .*needs .*side-car UTXO|side-car UTXO not found/.test(message)) {
+      throw new DeployerSidecarError('keccak', `the callee '${artifact.contractName}.${functionName}'`);
+    }
+    if (sidecarPool !== undefined && /ecrecoverPubKey needs .* recovery side-car UTXO/.test(message)) {
+      throw new DeployerSidecarError('ecrecover', `the callee '${artifact.contractName}.${functionName}'`);
+    }
+    return refuse(`the ordinary build of its call, which lays out its block, fails: ${message}`);
   }
   const lockHex = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
   const master = built.inputs[0];
@@ -576,6 +699,18 @@ async function planCalleeBlockByCall(
     || carrier.token.nft?.capability !== 'none') {
     return refuse('the ordinary build of its call publishes no call record in its block');
   }
+  // The child's slot of each entry msg.sender keys replaces the pad lock's, in the frame and in the nodes the build laid
+  // out (the new node, and the relinked one before it whose next it names): both keys follow the same node.
+  const renamed = (await padSlots(padLock)).map((slot, index) => [
+    binToHex(slot), binToHex(senderKeyed[index]!.childSlot),
+  ] as const);
+  const rename = (hex: string): string => renamed.reduce((text, [standIn, child]) => text.split(standIn).join(child), hex);
+  for (const [name, value] of Object.entries(witnesses)) {
+    if (value instanceof Uint8Array) witnesses[name] = hexToBin(rename(binToHex(value)));
+  }
+  if (Object.values(witnesses).some((value) => value instanceof Uint8Array && binToHex(value).includes(binToHex(padLock)))) {
+    refuse('the ordinary build of its call names its stand-in sender in its frame, which the child\'s call would not');
+  }
   const pads = new Set([binToHex(padLock), BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX.toLowerCase()]);
   const inputs: CalleeBlockInput[] = [{ utxo: { ...listedCoin(master!), lockingBytecode: masterLock } }];
   for (const input of built.inputs.slice(1)) {
@@ -603,6 +738,10 @@ async function planCalleeBlockByCall(
       },
     }),
   }));
+  for (const output of outputs) {
+    const nft = output.token?.category === categoryId ? output.token.nft : undefined;
+    if (nft !== undefined) nft.commitment = rename(nft.commitment);
+  }
   // Every index of the block holds an input and an output: an output-only index takes a wallet coin, and an input
   // whose coin the call consumes without an output of its own takes the filler output.
   while (inputs.length < outputs.length) inputs.push(undefined);
@@ -637,9 +776,9 @@ async function planCalleeBlockByCall(
  * 0 of a creation, so a callee co-spends the shared pool's side-cars (salt 0), as Deploy<C> does (A14 item 6). `spent`
  * holds the shared coins the creation already spends; the ones this block takes are added to it.
  *
- * A function whose block a run sizes (loops, dynamic state, iterations, its own calls and reads, block reads) or that
- * deletes an entry takes the block of its ordinary call's build instead (`planCalleeBlockByCall`). A function whose own
- * spend needs what a constructor's call cannot carry is refused with `DeployerCalleeError`.
+ * A function whose block a run sizes (loops, keccak256 loops, dynamic state, iterations, its own calls and reads, block
+ * reads) or that deletes an entry takes the block of its ordinary call's build instead (`planCalleeBlockByCall`). A
+ * function whose own spend needs what a constructor's call cannot carry is refused with `DeployerCalleeError`.
  */
 export async function planConstructorCalleeBlock(
   call: ConstructorCall, sender: Uint8Array, options: { spent?: Set<string> } = {},
@@ -656,8 +795,7 @@ export async function planConstructorCalleeBlock(
     getAnonymousEventNftAddress, getDataNftAddress, getEntryNftAddress, getEventNftAddress,
   } = await import('./covenant-helpers.js');
   const { eventContinuationLockingBytecode } = await import('./event-chunks.js');
-  const { SortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } = await import('./SortedList.js');
-  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
+  const { SortedList, bytesToSlotValue, decodeEntryCommitment } = await import('./SortedList.js');
   const { evalComputedKey } = await import('./route-expression-key.js');
   const spent = options.spent ?? new Set<string>();
   const provider = contract.provider;
@@ -684,13 +822,13 @@ export async function planConstructorCalleeBlock(
     refuse('it creates a contract, and a creating entry refuses a genesis call (A7): one run could both create a '
       + 'child and answer its constructor');
   }
-  if (fn.keccakLoopReads === true || fn.ecrecoverLoopReads === true) {
-    refuse('it hashes or recovers keys in a loop, whose side-cars its ordinary call takes from the pool branded with '
-      + 'its own category, which admits a side-car only beside input 0 of that category; a callee\'s master is never '
-      + 'input 0 of a creation, and a loop of shared-pool side-cars (salt 0) is not laid out');
+  if (fn.ecrecoverLoopReads === true) {
+    refuse('it recovers keys in a loop, which no ordinary call of a stateful contract lays out: the compiled loop reads '
+      + 'recovery k\'s side-cars at the master\'s index plus 1 + 3k to 3 + 3k, over the records and fixed slots that '
+      + 'follow the master, so its ordinary call fails at the master');
   }
-  // Regions a run sizes (loops, dynamic state, iterations, the callee's own calls and reads, block reads) and deletes
-  // are laid out by the ordinary build of the call; the fixed layout below covers the rest.
+  // Regions a run sizes (loops, keccak256 loops, dynamic state, iterations, the callee's own calls and reads, block
+  // reads) and deletes are laid out by the ordinary build of the call; the fixed layout below covers the rest.
   const sized: ReadonlyArray<keyof import('@solidcash/utils').AbiFunction> = [
     'sortedUpsertLoopInfo', 'sortedInsertLoopInfo', 'sortedInsertLoops', 'entryLoopWrites', 'runtimeLoopTransfers',
     'runtimeLoopEvents', 'dynamicWrites', 'dynamicReads', 'collectionIterations', 'externalCalls', 'externalReads',
@@ -701,9 +839,10 @@ export async function planConstructorCalleeBlock(
     'tokenContainer', 'transfer', 'tcTransfer', 'keccakSideCar', 'ecrecoverSideCar',
   ]);
   if (sized.some((field) => Array.isArray(fn[field]) && (fn[field] as unknown[]).length > 0)
+    || fn.keccakLoopReads === true
     || layout.slots.some((slot) => !fixedKinds.has(slot.kind) || slot.softDelete === true)
     || (fn.entryAccesses ?? []).some((access) => access.operations.includes('delete'))) {
-    return planCalleeBlockByCall(call, { spent }, refuse);
+    return planCalleeBlockByCall(call, sender, { spent }, refuse);
   }
 
   // The values of the function's inputs by position, for helpers that read a key or a category from an input.
@@ -867,26 +1006,7 @@ export async function planConstructorCalleeBlock(
         const entryLock = addressToLockScript(entryAddress);
         const list = SortedList.fromUtxos((await provider.getUtxos(entryAddress))
           .filter((utxo) => utxo.token?.category === categoryId));
-        const keys = access.keyParams.map((param, keyIndex) => {
-          const source = access.keySources?.[keyIndex];
-          if (isMsgSenderKeySource(source)) return sender;
-          if (source?.kind === 'expression') {
-            const value = evalComputedKey(source.expressionLabel, [...args], fn.inputs);
-            if (value !== undefined) return value;
-          }
-          const index = visible.findIndex((input) => input.name === param);
-          const value = index >= 0 ? args[index] : undefined;
-          if (value instanceof Uint8Array) return value;
-          const lock = tryCashAddressToLockScript(value);
-          if (lock !== undefined) return lock;
-          if (typeof value === 'bigint' || typeof value === 'number') return bigIntToVmNumber(BigInt(value));
-          if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
-          if (typeof value === 'string' && (collection.keyTypes?.[keyIndex] ?? collection.keyType) === 'string') {
-            return new TextEncoder().encode(value);
-          }
-          return refuse(`the key '${param}' of its ${access.collection} access is not a value the SDK can resolve`);
-        });
-        const key = keyToSlotMulti(keys, collection);
+        const key = await calleeEntrySlot(access, collection, fn, args, sender, refuse);
         const exact = list.find(key);
         const entryUnlocker = (masterIndex: number): Unlocker => createEntryNftUnlocker(
           contract, masterIndex, categoryId, access.collection,

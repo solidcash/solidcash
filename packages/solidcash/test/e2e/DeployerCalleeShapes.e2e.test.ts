@@ -530,11 +530,12 @@ describe('a callee that checks tx.time (A5, A14 item 7)', () => {
 });
 
 describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)', () => {
-  it('refuses a callee that hashes in a loop, before building, with the reason', async () => {
-    const source = `${P} interface I { function f(bytes b, int k) external returns (bool); }
-      contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
-        bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
-      contract C { bool ok; constructor(I t, bytes b, int k) { ok = t.f(b, k); } function read() { require(ok); } }`;
+  it('refuses a callee that recovers keys in a loop, before building, with the reason', async () => {
+    const source = `${P} interface I { function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool); }
+      contract T { int n; function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool) {
+        for (int i = 0; i < k; i++) { require(ecrecoverPubKey(h, v, r, s) != 0x); } n = n + 1; return true; } }
+      contract C { bool ok; constructor(I t, bytes32 h, int v, bytes32 r, bytes32 s) { ok = t.f(h, v, r, s, 2); }
+        function read() { require(ok); } }`;
     const s = setup();
     const t = await s.deploy(compileString(source, compileOptions('T')));
     const sent: string[] = [];
@@ -545,11 +546,11 @@ describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)'
     };
     const { DeployerCalleeError } = await import('../../src/stateful/index.js');
     const refusal = await s.deploy(compileString(source, compileOptions('C')), {
-      initArgs: [addressToLockScript(t.contract.address), Uint8Array.of(1, 2), 2n],
+      initArgs: [addressToLockScript(t.contract.address), new Uint8Array(32), 27n, new Uint8Array(32), new Uint8Array(32)],
       constructorCallees: [{ contract: t.contract }],
     }).then(() => undefined, (error: unknown) => error);
     expect(refusal).toBeInstanceOf(DeployerCalleeError);
-    expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it hashes or recovers keys in a loop/);
+    expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it recovers keys in a loop, which no ordinary call/);
     // The refusal comes before the prep, so nothing was sent.
     expect(sent).toHaveLength(0);
   });

@@ -1,9 +1,10 @@
 /**
  * A7, A14 item 5: a constructor's callee whose block a run sizes, or whose call reaches other contracts, takes the block
  * of its ordinary call's build: the entries, inserts, payments and events of a loop, a dynamic array's chunks, an entry a
- * branch deletes (DS-6), the blocks of the contracts it calls or reads, and the oracle pool coins its block reads
- * co-spend. Each creation is checked by the VM; each tamper case changes one output of a finished creation and expects
- * the input that pins it to refuse. The shapes the build cannot give a creation are refused before anything is sent.
+ * branch deletes (DS-6), a collection's walk, the blocks of the contracts it calls or reads (a low-level call's among
+ * them), the oracle pool coins its block reads co-spend, and a keccak256 loop's side-cars from the shared pool (A14
+ * item 6). An entry msg.sender keys is the child's, as the genesis step resolves it. Each creation is checked by the VM;
+ * each tamper case changes one part of a finished creation and expects the input that binds it to refuse.
  *
  * The ordinary build of a loop's payments fails on the production profile (the same call fails as an ordinary call
  * there), so those cases run on the relaxed mock, whose minted coins only pad the build: the creation spends none.
@@ -16,7 +17,7 @@ import {
 import { compileString, compileStringMulti } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { broadcastDeployerPreps, buildDeployerPrep, DeployerCalleeError } from '../../src/stateful/deployer.js';
+import { broadcastDeployerPreps, buildDeployerPrep } from '../../src/stateful/deployer.js';
 import { getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { addressToLockScript, solidCashOutputToLibauthOutput } from '../../src/utils.js';
@@ -536,57 +537,221 @@ describe('a creating call whose child\'s callee reads the block (A7, A14 item 4)
   });
 });
 
-describe('callee shapes a constructor\'s call refuses (A7, A14 item 5)', () => {
-  const refusal = async (source: string, args: (t: DeployResult<Artifact>) => unknown[]): Promise<{
-    error: unknown; sentBefore: number; sentAfter: number;
-  }> => {
+describe('a callee that hashes in a loop through the shared side-car pool (A7, A14 items 5 and 6)', () => {
+  const SOURCE = `${P} interface I { function f(bytes b, int k) external returns (bool); }
+    contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
+      bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
+    contract C { bool ok; constructor(I t, bytes b, int k) { ok = t.f(b, k); } function read() { require(ok); } }`;
+
+  it('co-spends a shared side-car per iteration after the callee\'s block, and refuses another digest', async () => {
+    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+    const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+    const { DeployerSidecarError } = await import('../../src/stateful/deployer.js');
     const s = setup();
-    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(SOURCE, compileOptions('C'));
+    const b = Uint8Array.of(1, 2, 3);
+    const extra = { initArgs: [tLock, b, 2n], constructorCallees: [{ contract: t.contract }] };
+    // No coin of the shared pool: refused before anything is sent, as a fixed side-car is.
     const sentBefore = s.sent.length;
-    const error = await s.deploy(compileString(source, compileOptions('C')), {
-      initArgs: args(t), constructorCallees: [{ contract: t.contract }],
-    }).then(() => undefined, (caught: unknown) => caught);
-    return { error, sentBefore, sentAfter: s.sent.length };
-  };
-
-  it('refuses a keccak256 loop, whose side-cars carry the callee\'s brand', async () => {
-    const { error, sentBefore, sentAfter } = await refusal(`${P} interface I { function f(bytes b, int k) external returns (bool); }
-      contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
-        bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
-      contract C { bool ok; constructor(I t, bytes b, int k) { ok = t.f(b, k); } function read() { require(ok); } }`,
-    (t) => [addressToLockScript(t.contract.address), Uint8Array.of(1, 2), 2n]);
-    expect(error).toBeInstanceOf(DeployerCalleeError);
-    expect((error as Error).message)
-      .toMatch(/hashes or recovers keys in a loop, whose side-cars its ordinary call takes from the pool branded/);
-    expect(sentAfter).toBe(sentBefore);
-  });
-
-  it('refuses a sized block keyed by msg.sender, which only the genesis step resolves', async () => {
-    const { error, sentBefore, sentAfter } = await refusal(`${P} interface I { function f(int x) external returns (bool); }
-      contract T { int[] a; mapping(address => int) owner;
-        function f(int x) external returns (bool) { a.push(x); owner[msg.sender] = x; return true; } }
-      contract C { bool ok; constructor(I t, int x) { ok = t.f(x); } function read() { require(ok); } }`,
-    (t) => [addressToLockScript(t.contract.address), 9n]);
-    expect(error).toBeInstanceOf(DeployerCalleeError);
-    expect((error as Error).message)
-      .toMatch(/it keys a collection by msg\.sender, and its block is laid out by the ordinary build/);
-    expect(sentAfter).toBe(sentBefore);
-  });
-
-  it('refuses a collection iteration, whose ordinary build with a call record fails', async () => {
-    const s = setup();
-    const source = `${P} interface I { function f() external returns (int); }
-      contract T { int total; enumerable mapping(bytes20 => int) bal; function put(bytes20 k, int v) public { bal[k] = v; }
-        function f() external returns (int) { int sum = 0; for (int value of this.bal) { sum = sum + value; } total = sum; return sum; } }
-      contract C { int got; constructor(I t) { got = t.f(); } function read() { require(got > 0); } }`;
-    const t = await s.deploy(compileString(source, compileOptions('T')));
-    await (t.contract.connect(await s.wallet()) as any).call.put(new Uint8Array(20).fill(1), 5n).send();
-    const sentBefore = s.sent.length;
-    const error = await s.deploy(compileString(source, compileOptions('C')), {
-      initArgs: [addressToLockScript(t.contract.address)], constructorCallees: [{ contract: t.contract }],
-    }).then(() => undefined, (caught: unknown) => caught);
-    expect(error).toBeInstanceOf(DeployerCalleeError);
-    expect((error as Error).message).toMatch(/the ordinary build of its call, which lays out its block, fails/);
+    const refusal = await s.deploy(c, extra).then(() => undefined, (error: unknown) => error);
+    expect(refusal).toBeInstanceOf(DeployerSidecarError);
+    expect((refusal as Error).message).toMatch(/No shared keccak sidecar coin was found for the callee 'T\.f'/);
     expect(s.sent.length).toBe(sentBefore);
+
+    const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+    for (const index of [0, 1, 2, 3]) {
+      await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-loop-callee', sharedLock, index));
+    }
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const master = masterInput(captured, tLock);
+    // One side-car per iteration, read at the callee's master + blockSize + k and recreated at its own index.
+    const sidecars = outputsAt(captured, sharedLock);
+    expect(sidecars).toEqual([master + 3, master + 4]);
+    expect(sidecars.every((index) => same(captured.sourceOutputs[index].lockingBytecode, sharedLock))).toBe(true);
+    // Each side-car commits the digest of its preimage, and the run reads the last iteration's digest into `h`.
+    for (const index of sidecars) {
+      expect(inputPasses(s.provider, withOutput(captured, index, bumpCommitment), index)).toBe(false);
+    }
+    expect(inputPasses(s.provider, withOutput(captured, sidecars[1]!, bumpCommitment), master)).toBe(false);
+
+    await s.deploy(c, extra);
+    expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+  });
+
+  it('refuses a callee that hashes in a loop and calls another contract, before anything is sent', async () => {
+    const source = `${P} interface IU { function g(int x) external returns (int); }
+      interface I { function f(IU u, bytes b, int k) external returns (bool); }
+      contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+      contract T { bytes32 h; int n; function f(IU u, bytes b, int k) external returns (bool) {
+        bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; n = u.g(k); return true; } }
+      contract C { bool ok; constructor(I t, IU u, bytes b, int k) { ok = t.f(u, b, k); } function read() { require(ok); } }`;
+    const { DeployerCalleeError } = await import('../../src/stateful/deployer.js');
+    const s = setup();
+    const u = await s.deploy(compileString(source, compileOptions('U')));
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const sentBefore = s.sent.length;
+    const refusal = await s.deploy(compileString(source, compileOptions('C')), {
+      initArgs: [addressToLockScript(t.contract.address), addressToLockScript(u.contract.address), Uint8Array.of(3), 2n],
+      constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
+    }).then(() => undefined, (error: unknown) => error);
+    expect(refusal).toBeInstanceOf(DeployerCalleeError);
+    expect((refusal as Error).message).toMatch(/it hashes in a loop and calls another contract, which its ordinary call/);
+    expect(s.sent.length).toBe(sentBefore);
+  });
+
+  it('takes the fixed side-car of a callee whose block a run sizes from the shared pool too', async () => {
+    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+    const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+    const source = `${P} interface I { function f(bytes32 b, int x) external returns (bool); }
+      contract T { bytes32 h; int[] a; function f(bytes32 b, int x) external returns (bool) {
+        a.push(x); h = keccak256(b); return true; } }
+      contract C { bool ok; constructor(I t, bytes32 b, int x) { ok = t.f(b, x); } function read() { require(ok); } }`;
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+    for (const index of [0, 1]) {
+      await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-sized-callee', sharedLock, index));
+    }
+    const tLock = addressToLockScript(t.contract.address);
+    const b = new Uint8Array(32).fill(7);
+    const extra = { initArgs: [tLock, b, 5n], constructorCallees: [{ contract: t.contract }] };
+    const captured = await s.capture(compileString(source, compileOptions('C')), extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    const master = masterInput(captured, tLock);
+    const [sidecar] = outputsAt(captured, sharedLock);
+    expect(sidecar).toBeGreaterThan(master);
+    expect(inputPasses(s.provider, withOutput(captured, sidecar!, bumpCommitment), master)).toBe(false);
+    await s.deploy(compileString(source, compileOptions('C')), extra);
+    expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+  });
+});
+
+describe('a callee whose sized block is keyed by msg.sender (A7, A14 item 5)', () => {
+  const SOURCE = `${P} interface I { function f(int x) external returns (bool); }
+    contract T { int[] a; mapping(address => int) owner;
+      function put(int x) public { owner[msg.sender] = x; }
+      function f(int x) external returns (bool) { a.push(x); owner[msg.sender] = x; return true; } }
+    contract C { bool ok; constructor(I t, int x) { ok = t.f(x); } function read() { require(ok); } }`;
+
+  it('keys the entry by the child the genesis step names, and refuses a creation that keys another', async () => {
+    const s = setup();
+    const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+    // Another key in the mapping, so the child's entry is inserted after a node of the chain.
+    await (t.contract.connect(await s.wallet()) as any).call.put(4n).send();
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(SOURCE, compileOptions('C'));
+    const extra = { initArgs: [tLock, 9n], constructorCallees: [{ contract: t.contract }] };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    // Neither stand-in of the sender reaches the creation: no edge record, no coin at the child's master lock.
+    expect(captured.transaction.outputs.some((output) => binToHex(output.lockingBytecode) === '5161')).toBe(false);
+    const master = masterInput(captured, tLock);
+    const { getEntryNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const ownerLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'owner'));
+    const entries = outputsAt(captured, ownerLock);
+    // The child's node and its relinked predecessor.
+    expect(entries).toHaveLength(2);
+    for (const index of entries) {
+      expect(inputPasses(s.provider, withOutput(captured, index, bumpCommitment), master)).toBe(false);
+    }
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+    expect(await (t.contract as any).owner(addressToLockScript(created.contract.address))).toBe(9n);
+    expect(await (t.contract as any).owner(encodeLockingBytecodeP2pkh(alicePkh))).toBe(4n);
+  });
+});
+
+describe('a callee that iterates a collection (A7, A14 item 5)', () => {
+  const SOURCE = `${P} interface I { function f() external returns (int); }
+    contract T { int total; enumerable mapping(bytes20 => int) bal; function put(bytes20 k, int v) public { bal[k] = v; }
+      function f() external returns (int) { int sum = 0; for (int value of this.bal) { sum = sum + value; } total = sum; return sum; } }
+    contract C { int got; constructor(I t) { got = t.f(); } function read() { require(got > 0); } }`;
+
+  it('co-spends the walk after the callee\'s block, and refuses a creation that records another sum', async () => {
+    const s = setup();
+    const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+    const wallet = await s.wallet();
+    await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(1), 5n).send();
+    await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(2), 7n).send();
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(SOURCE, compileOptions('C'));
+    const extra = { initArgs: [tLock], constructorCallees: [{ contract: t.contract }] };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const master = masterInput(captured, tLock);
+    const { getDataNftAddress, getEntryNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    // The walk reads the HEAD and both entries, each recreated as it was at its own index, after the callee's block
+    // of master, record and the record slot.
+    const entryLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'bal'));
+    const walked = captured.sourceOutputs.map((output, index) => (same(output.lockingBytecode, entryLock) ? index : -1))
+      .filter((index) => index >= 0);
+    expect(walked).toEqual([master + 3, master + 4, master + 5]);
+    expect(outputsAt(captured, entryLock)).toEqual(walked);
+    const [record] = outputsAt(captured, addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId)));
+    expect(inputPasses(s.provider, withOutput(captured, record!, bumpCommitment), master)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { got?: bigint }).got).toBe(12n);
+    expect(((await t.contract.getState()) as { total?: bigint }).total).toBe(12n);
+  });
+});
+
+describe('a callee that makes a low-level call and reads its result (A7, A14 item 5)', () => {
+  const SOURCE = `${P} interface IU { function g(int x) external returns (int); }
+    interface I { function f(address u, int x) external returns (bool); }
+    contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+    contract T { int n; function f(address u, int x) external returns (bool) {
+      (bool ok, bytes memory data) = u.call(abi.encodeWithSelector(IU.g.selector, x));
+      require(ok && data.length > 0); n = n + 1; return ok; } }
+    contract C { bool ok; constructor(I t, address u, int x) { ok = t.f(u, x); } function read() { require(ok); } }`;
+
+  it('lays out the block of the function the payload names, and refuses another record or argument', async () => {
+    const s = setup();
+    const u = await s.deploy(compileString(SOURCE, compileOptions('U')));
+    const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+    const tLock = addressToLockScript(t.contract.address);
+    const uLock = addressToLockScript(u.contract.address);
+    const c = compileString(SOURCE, compileOptions('C'));
+    const extra = {
+      initArgs: [tLock, uLock, 21n], constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
+    };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const master = masterInput(captured, tLock);
+    const uMaster = masterInput(captured, uLock);
+    // U's call record: a carrier of U's category at lock 51, which T reads as the call's result and U pins.
+    const carrier = captured.transaction.outputs.findIndex((output) => output.token !== undefined
+      && binToHex(output.token.category) === u.categoryId && binToHex(output.lockingBytecode) === '51');
+    expect(carrier).toBeGreaterThan(0);
+    expect(inputPasses(s.provider, withOutput(captured, carrier, bumpCommitment), uMaster)).toBe(false);
+    // U run with another argument than the payload's: T binds U's unlocking pushes to the payload's arguments.
+    const unlocking = Uint8Array.from(captured.transaction.inputs[uMaster]!.unlockingBytecode);
+    const argument = unlocking.findIndex((byte, index) => byte === 0x01 && unlocking[index + 1] === 21);
+    expect(argument).toBeGreaterThanOrEqual(0);
+    unlocking[argument + 1] = 22;
+    const reargued: Captured = {
+      sourceOutputs: captured.sourceOutputs,
+      transaction: {
+        ...captured.transaction,
+        inputs: captured.transaction.inputs.map((input, index) => (
+          index === uMaster ? { ...input, unlockingBytecode: unlocking } : input)),
+      },
+    };
+    expect(inputPasses(s.provider, reargued, master)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
   });
 });

@@ -12,6 +12,7 @@ import {
 } from '@bitauth/libauth';
 import { asmToScript, scriptToBytecode, sha256 } from '@solidcash/utils';
 import { compileString } from '../src/compiler.js';
+import { compileFile } from '../src/compileFile.js';
 import { CODE_MARKER_MAGIC, CODE_MARKER_RECORD_SOUND } from '../src/generation/CodeTail.js';
 import { Contract, SignatureTemplate } from '../../solidcash/src/index.js';
 import type { FunctionArgument } from '../../solidcash/src/Argument.js';
@@ -70,6 +71,19 @@ describe('genesisCalls is on by default', () => {
     expect(frames.map((fn) => fn.name)).toEqual(['add', 'get']);
     expect(frames.every(takesGenesisCall)).toBe(true);
   });
+
+  it('keeps the multi-call entry of the BCMR token fixtures, record-sound, within the room it leaves its spends', () => {
+    // The entry stays while the contract leaves a tenth of the 10,000-byte input limit: 9,000 bytes.
+    for (const file of ['bcmr_metadata_token.scash', 'bcmr_padded_token.scash']) {
+      const artifact = compileFile(new URL(`../../solidcash/test/fixture/${file}`, import.meta.url), {
+        messageBus: false, callBatch: true,
+      });
+      expect(artifact.callBatch, file).toEqual({ selector: '53434442' });
+      expect(artifact.recordSound, file).toBe(true);
+      expect(artifact.abi.filter((fn) => fn.callBatchRow === true).every(takesGenesisCall), file).toBe(true);
+      expect(codeOf(artifact).length, file).toBeLessThanOrEqual(9_000);
+    }
+  }, 300_000);
 
   it('gives no genesis call to a contract that is not record-sound, nor to a stateless one', () => {
     const delegate = compileString(`${P} contract C { int s; function a() { s = s + 1; }

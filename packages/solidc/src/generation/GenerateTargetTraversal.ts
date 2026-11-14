@@ -3829,6 +3829,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     t.currentContractHoldsTokens = this.currentContractHoldsTokens;
     t.currentContractHasThreads = this.currentContractHasThreads;
     t.currentContractSettlesCallRecords = this.currentContractSettlesCallRecords;
+    // A body that pins a record invokes the pin's shared function where the contract has one (emitCallRecordPin).
+    t.currentContractCarriesCallBatch = this.currentContractCarriesCallBatch;
     t.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     t.sharedCheckBody = { masterOrdinal, uses };
   }
@@ -8331,24 +8333,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitGenesisHeaderBody(ordinal: number, size: number, frame: boolean, loc: SingleLocationData): void {
     const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
-    if (frame) {
-      emit(Op.OP_0);
-      emit(Op.OP_LESSTHAN);                                       // [prefix, standalone]
-    }
     emit(Op.OP_DEPTH);
     emit(encodeInt(BigInt(ordinal)));
     emit(Op.OP_SUB);
     emit(Op.OP_PICK);                                             // [.., g]
     emit(Op.OP_SIZE);                                             // [.., g, size]
-    if (frame) {
-      // A frame answers no constructor: at call context 0 or more the genesis call is empty.
-      emit(Op.OP_ROT);
-      emit(Op.OP_OVER);
-      emit(Op.OP_NOT);
-      emit(Op.OP_BOOLOR);
-      emit(Op.OP_VERIFY);                                         // [prefix, g, size]
-    }
     emit(Op.OP_IF);
+    if (frame) {
+      // A frame answers no constructor: a genesis call that is not empty needs a standalone run's context, below 0.
+      emit(Op.OP_SWAP);
+      emit(Op.OP_0);
+      emit(Op.OP_LESSTHAN);
+      emit(Op.OP_VERIFY);                                         // [prefix, g]
+    }
     // The size is 0 (an ordinary call) or this entry's tag size.
     emit(Op.OP_SIZE);
     emit(encodeInt(BigInt(size)));
@@ -8390,7 +8387,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     emit(Op.OP_NIP);
     emit(Op.OP_CAT);                                              // [header]
     emit(Op.OP_ELSE);
-    emit(Op.OP_DROP);                                             // [prefix]
+    emit(frame ? Op.OP_2DROP : Op.OP_DROP);                       // [prefix]
     emit(Op.OP_ENDIF);
   }
 
@@ -54730,6 +54727,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** `[.., digest or its preimage, blob]` -> `[..]`, both tracked: pins the record and counts the run's carriers. */
   private emitCallRecordSettlementTail(loc: SingleLocationData): void {
     this.registerCallRecordCount();
+    this.registerCallRecordPin();
     const pinsEdges = this.getStackIndex(EDGES_PINNED, true) >= 0;
     const settle = pinsEdges ? undefined
       : this.sharedEntryCheckId('callRecordSettle', (t, l) => t.emitCallRecordSettleBody(l));
@@ -55382,6 +55380,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitCallBatchHandBack(loc: SingleLocationData): void {
     this.emitPickAt(this.getStackIndex(CALL_BATCH_CONTEXT) + 1, loc);
+    // A frame without record views hands back the same bytes as every other such frame: one shared function.
+    if (!this.callBatchRecordViews) {
+      const id = this.sharedEntryCheckId('callBatchHandBack', (t, l) => t.emitCallBatchHandBackBody(l));
+      if (id !== undefined && this.subroutineDefined.get(id)) {
+        // The shared hand-back ends a standalone run with the carrier count (O5).
+        if (this.obligationHook !== 'skip-carrier-count') this.armObligations.carrierCount = true;
+        this.invokeSubroutineIfDefined(id, loc);
+        return;
+      }
+    }
+    this.emitCallBatchHandBackBody(loc);
+  }
+
+  /** `[.., expected, call context]` -> `[..]`: emitCallBatchHandBack once the call context is on top. */
+  private emitCallBatchHandBackBody(loc: SingleLocationData): void {
     this.emit(Op.OP_0, loc);
     this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_IF, loc);
@@ -55474,8 +55487,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * `[record, idx]` -> `[expected]`: idx >= 0 pins the output at idx as this run's record, in carrier form, and
    * expects that one record; a standalone run (idx < 0) expects none. The carrier's satoshi bound is the expected
    * count: an output over it expects none, and the count, which takes in the pinned carrier, then refuses it.
+   *
+   * A contract with the multi-call entry pins a record in every frame and in its shared settlement, so they share one
+   * function for it there.
    */
   private emitCallRecordPin(loc: SingleLocationData): void {
+    const id = this.currentContractCarriesCallBatch
+      ? this.nestedSharedEntryCheckId('callRecordPin')
+        ?? this.sharedEntryCheckId('callRecordPin', (t, l) => t.emitCallRecordPinBody(l))
+      : undefined;
+    if (id !== undefined && this.invokeSubroutineIfDefined(id, loc)) return;
+    this.emitCallRecordPinBody(loc);
+  }
+
+  /** The record pin's shared function (emitCallRecordPin), registered before the checks whose bodies pin a record. */
+  private registerCallRecordPin(): void {
+    if (!this.currentContractCarriesCallBatch) return;
+    this.sharedEntryCheck('callRecordPin', (t, l) => t.emitCallRecordPinBody(l));
+  }
+
+  /** emitCallRecordPin's bytes. */
+  private emitCallRecordPinBody(loc: SingleLocationData): void {
     this.emit(Op.OP_DUP, loc);
     this.emit(encodeInt(0n), loc);
     this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -62024,21 +62056,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (genesisIdx >= 0 && this.currentFunction?.usesMsgSender === true) {
       const ordinal = this.stack.length - genesisIdx;
       this.armObligations.genesisCall.add('sender');
-      // The shared function leaves the genesis sender and a true flag for a tagged call, else the empty genesis call,
-      // which is false: today's resolution runs only then.
-      const genesisBody = (t: GenerateTargetTraversalWithLocation, l: SingleLocationData): void => {
-        t.emitGenesisSenderStep(ordinal, l);
-      };
-      if (this.invokeSharedEntryCheck(`genesisSender:${ordinal}`, genesisBody, locationData)) {
-        this.emit(Op.OP_NOTIF, locationData);
-      } else {
-        this.emitPickTrackedFromBottom('__internal__genesisCall', locationData);
-        this.emit(Op.OP_SIZE, locationData);
-        this.emit(Op.OP_IF, locationData);
-        this.emitGenesisSenderResolution(locationData);
-        this.emit(Op.OP_ELSE, locationData);
-        this.emit(Op.OP_DROP, locationData);                          // the empty genesis call
+      // The step leaves the genesis call's size and (X, 0) checks to the record header, which every entry that takes
+      // the call runs first (O6).
+      if (this.genesisChecksPending) {
+        throw new DeployerInternalError(this.currentFunction,
+          `O6: '${this.currentFunction?.name}' reads msg.sender before its genesis call's size and (X, 0) checks`);
       }
+      // A7's three steps are one shared function over the sender category. The evmCompat anchor check reads a
+      // witness of the entry's own frame, so an entry that takes one resolves inline.
+      const shared = this.stack.includes('__internal__msgSenderCategory')
+        && !this.stack.includes('__internal__msgSenderAnchorIdx');
+      if (shared) {
+        const id = this.sharedEntryCheckId(`genesisSender:${ordinal}`, (t, l) => t.emitGenesisSenderBody(ordinal, l));
+        if (id !== undefined && this.subroutineDefined.get(id)) {
+          this.emitPickAt(this.getStackIndex('__internal__msgSenderCategory'), locationData);
+          this.invokeSubroutineIfDefined(id, locationData);
+          return;
+        }
+      }
+      this.emitPickTrackedFromBottom('__internal__genesisCall', locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emitGenesisSenderResolution(locationData);
+      this.emit(Op.OP_ELSE, locationData);
+      this.emit(Op.OP_DROP, locationData);                            // the empty genesis call
       this.genesisSenderGuard = true;
       this.emitMsgSenderResolutionToday(locationData);
       this.genesisSenderGuard = false;
@@ -62048,17 +62089,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMsgSenderResolutionToday(locationData);
   }
 
-  /** `[..]` -> `[.., msg.sender, 1]` for a constructor's call, `[.., g]` with g the empty genesis call otherwise. */
-  private emitGenesisSenderStep(ordinal: number, loc: SingleLocationData): void {
+  /**
+   * `[cat]` -> `[msg.sender]`, cat the entry's `__internal__msgSenderCategory`: the genesis step for a constructor's
+   * call, else today's resolution from cat. Reads the genesis call at its bottom ordinal, so the entries whose call sits
+   * there share one function.
+   */
+  private emitGenesisSenderBody(ordinal: number, loc: SingleLocationData): void {
+    this.pushToStack('__internal__msgSenderCategory');
     this.emit(Op.OP_DEPTH, loc);
     this.emit(encodeInt(BigInt(ordinal)), loc);
     this.emit(Op.OP_SUB, loc);
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_SIZE, loc);
     this.emit(Op.OP_IF, loc);
-    this.emitGenesisSenderResolution(loc);
-    this.emit(Op.OP_1, loc);
+    this.emitGenesisSenderResolution(loc);                            // [cat, L]
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);                                       // the empty genesis call
+    this.genesisSenderGuard = true;
+    this.emitMsgSenderResolutionToday(loc);                           // [cat, sender]
+    this.genesisSenderGuard = false;
     this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.popFromStack();
   }
 
   /** Today's `msg.sender`: the witness's sender category, or the minting input's lock. */
@@ -62094,9 +62146,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * B6.6/B6.7: A7's genesis step, which resolves the sender of a constructor's call to the child it created. The
-   * caller leaves the genesis call, verified as 46 bytes whose input g_in spends (X, 0) (emitGenesisHeader), on top;
-   * the body reads it as X ‖ slot ‖ g_in ‖ g_out ‖ a_off ‖ a_len ‖ code_off ‖ code_len, each number 2 unsigned bytes,
-   * and leaves the child's master lock L, msg.sender, in its place. It reads nothing else of the caller's frame.
+   * caller leaves the genesis call on top, which the entry's record header has already verified as 46 bytes whose
+   * input g_in spends (X, 0) (emitGenesisHeader; emitMsgSender refuses a read before it), so the step does not check
+   * its size again. The body reads it as X ‖ slot ‖ g_in ‖ g_out ‖ a_off ‖ a_len ‖ code_off ‖ code_len, each number 2
+   * unsigned bytes, and leaves the child's master lock L, msg.sender, in its place. It reads nothing else of the
+   * caller's frame.
    */
   private emitGenesisSenderResolution(loc: SingleLocationData): void {
     const emit = (op: Op | Uint8Array): void => this.emit(op, loc);
@@ -62118,9 +62172,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       emit(Op.OP_SPLIT);
       emit(Op.OP_DROP);
     };
-    emit(Op.OP_SIZE);
-    num(46);
-    emit(Op.OP_NUMEQUALVERIFY);
     num(32);
     emit(Op.OP_SPLIT);                                            // [X, fields]
     // Each 2-byte field as an unsigned number, the first deepest.

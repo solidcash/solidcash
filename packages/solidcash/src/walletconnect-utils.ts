@@ -38,10 +38,18 @@ export function getWcContractInfo(input: UnlockableUtxo): WcContractInfo | {} {
   if (!abiFunction) {
     throw new Error(`ABI function ${abiFunctionName} not found in contract artifact`);
   }
+  // For a multi-function contract, each function is OP_INVOKE'd and a signature checked inside it covers the
+  // function body, not the full redeem script (see Contract.createUnlocker). WalletConnect wallets use
+  // `redeemScript` as the covered bytecode, so give them the function body when there is one; otherwise every
+  // external signature fails NULLFAIL.
+  const selector = (abiFunction as { selector?: string }).selector;
+  const functionBody = selector
+    ? (contract.artifact as { functionBodies?: Record<string, string> }).functionBodies?.[selector]
+    : undefined;
   const wcContractObj: WcContractInfo = {
     contract: {
       abiFunction: abiFunction,
-      redeemScript: hexToBin(contract.bytecode),
+      redeemScript: hexToBin(functionBody ?? contract.bytecode),
       artifact: contract.artifact,
     },
   };

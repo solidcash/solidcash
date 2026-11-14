@@ -10833,6 +10833,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.keccakSlotAltAnchored = true;
     }
     if (node.genesisMode === true) {
+      // A4.3 step 1: the exact-stack check has run; drop `__internal__budgetPad` first, so the pad's bytes raise
+      // the operation budget without remaining on the stack the constructor's body reads.
+      const padIndex = this.getStackIndex('__internal__budgetPad', true);
+      if (padIndex >= 0) {
+        const padLoc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.START };
+        this.emitRollAt(padIndex, padLoc);
+        this.emit(Op.OP_DROP, padLoc);
+        const [pad] = this.stack.splice(padIndex, 1);
+        this.stack.unshift(pad!);
+        this.stack.shift();
+      }
       this.emitGenesisCodeCheck(node);
       this.emitGenesisPrologue(node);
     }

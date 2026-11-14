@@ -1469,18 +1469,6 @@ export async function deployThroughDeployer<T extends Artifact>(
     && (constructorAbi?.transferCount ?? 0) === 0;
   // A constructor's block.number/timestamp read is its creation's locktime (A5); compute it once so the derive
   // probe, the create's own unlocking and the final transaction all carry the same value.
-  const creationLocktime = await deployerLocktime(deployer, options.provider);
-  const derived = callSlotPath
-    ? {
-      stateCommitments: [], entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
-      dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
-    }
-    : await deriveDeployCommitments(
-      contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n,
-      { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
-    );
-  const commitments = derived.stateCommitments;
-
   // A14 item 3: output 0 is the category's authhead identity, and `create` pins it when
   // `__internal__identity` is set (B7.12's `emitGenesisIdentityPin`). The genesis range starts after it.
   const identity = planGenesisIdentity({
@@ -1508,6 +1496,32 @@ export async function deployThroughDeployer<T extends Artifact>(
   const outbase = leading.length;
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
+  // The create's public parameters: C's contract parameters, then its constructor parameters. The Contract may have
+  // appended the `__oraclePool` binding to its own constructor args; use those for the contract band.
+  const publicNames = (createInputNames(deployer) ?? []).filter((name) => !name.startsWith('__internal__'));
+  const args: Record<string, FunctionArgument> = {};
+  const contractParameters = artifact.constructorInputs.length;
+  const boundConstructorArgs = ((contract as unknown as { constructorArgs?: readonly FunctionArgument[] })
+    .constructorArgs ?? constructorArgs) as readonly FunctionArgument[];
+  publicNames.forEach((name, index) => {
+    const value = index < contractParameters
+      ? boundConstructorArgs[index] ?? constructorArgs[index]
+      : options.initArgs?.[index - contractParameters];
+    if (value === undefined) throw new DeployerPrepError(`The deployer create input '${name}' has no value`);
+    args[name] = value as FunctionArgument;
+  });
+
+  const creationLocktime = await deployerLocktime(deployer, options.provider);
+  const derived = callSlotPath
+    ? {
+      stateCommitments: [], entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
+      dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
+    }
+    : await deriveDeployCommitments(
+      contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n,
+      { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
+    );
+  const commitments = derived.stateCommitments;
 
   // A14 item 5/7: the callee list and the sender parameters. The compiler cannot yet run a constructor with a call
   // slot in the VM (B7.11), and a container row or a collection write is not in its genesis layout yet (B7.9).
@@ -1662,20 +1676,6 @@ export async function deployThroughDeployer<T extends Artifact>(
     );
   }
 
-  // The create's public parameters: C's contract parameters, then its constructor parameters. The Contract may have
-  // appended the `__oraclePool` binding to its own constructor args; use those for the contract band.
-  const publicNames = (createInputNames(deployer) ?? []).filter((name) => !name.startsWith('__internal__'));
-  const args: Record<string, FunctionArgument> = {};
-  const contractParameters = artifact.constructorInputs.length;
-  const boundConstructorArgs = ((contract as unknown as { constructorArgs?: readonly FunctionArgument[] })
-    .constructorArgs ?? constructorArgs) as readonly FunctionArgument[];
-  publicNames.forEach((name, index) => {
-    const value = index < contractParameters
-      ? boundConstructorArgs[index] ?? constructorArgs[index]
-      : options.initArgs?.[index - contractParameters];
-    if (value === undefined) throw new DeployerPrepError(`The deployer create input '${name}' has no value`);
-    args[name] = value as FunctionArgument;
-  });
 
   if (callSlotPath) {
     return deployThroughCallSlot({
@@ -1837,7 +1837,7 @@ export async function deployThroughDeployer<T extends Artifact>(
       break;
     } catch (error) {
       const message = (error as Error).message;
-      if (!/maximum operation cost|operation cost/i.test(message) || attempt >= 6) throw error;
+      if (!/maximum operation cost|operation cost/i.test(message) || attempt >= 16) throw error;
       budgetPad = new Uint8Array(budgetPad.length === 0 ? 1 : Math.min(4096, budgetPad.length * 2));
       program = builder.buildLibauthProgram(true);
     }

@@ -693,7 +693,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
           && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
         if (supplied === undefined) continue;
         probeBuilder.addOutput({
-          to: getTokenContainerAddress(contract, categoryId, supplied.utxo.token!.category),
+          to: getTokenContainerAddress(contract, categoryId, rowCategory),
           amount: supplied.utxo.satoshis,
           token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
         });

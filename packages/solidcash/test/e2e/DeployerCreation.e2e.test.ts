@@ -7,7 +7,7 @@ import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
 import { buildDeployerPrep, verifyBirth } from '../../src/stateful/deployer.js';
-import { getEntryNftAddress, getSatoshiContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { resolveIdentity } from '../../src/bcmr/identity.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -804,5 +804,53 @@ describe('a top-level deployment through Deploy<C>', () => {
       changeAddress: change.address, senderLockingBytecode: authorLock, initialBalance: 2000n,
     });
     expect(result.categoryId).not.toBe(fundingUtxo.txid);
+  });
+
+
+  it("reads a single token container's birth balance as 1 (B7.18, A14 item 11)", async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const asset = 'a1b2c3d4e5f60718293a4b5c6d7e8f900123456789abcdef0011223344556677';
+    const artifact = compileString(
+      `${P} pragma tokencontainer single;
+       contract C(bytes32 asset) { int n; constructor() { n = int(this.tokens[asset].tokenAmount); }
+         function spend(address to, int amount) { this.tokens[asset].transfer(to, amount); n = 2; } }`,
+      { deployer: true, messageBus: false },
+    );
+    const fundingUtxo: Utxo = { txid: '69'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const tokenUtxo: Utxo = {
+      txid: '6a'.repeat(32), vout: 0, satoshis: 1200n, token: { category: asset, amount: 2n },
+    };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), tokenUtxo);
+    const signer = new SignatureTemplate(alicePriv).unlockP2PKH();
+    // A8: the container key parameter is the token category in display order.
+    const containerKey = hexToBin(asset);
+    const result = await StatefulContract.deploy(artifact, [containerKey], {
+      provider, fundingUtxo, funder: signer,
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+      tokenContainers: [{ utxo: tokenUtxo, unlocker: signer }],
+    });
+    expect((await result.contract.getState() as { n?: bigint }).n).toBe(1n);
+
+    const containerAddress = getTokenContainerAddress(
+      (result.contract as any).inner ?? result.contract as any, result.categoryId, binToHex(containerKey),
+    );
+    expect((await provider.getUtxos(containerAddress)).filter((coin) => coin.token?.amount === 2n)).toHaveLength(1);
+    const callSigner = await provider.getSigner(0);
+    await provider.seedUtxo(callSigner.getAddress(), { txid: '6b'.repeat(32), vout: 0, satoshis: 100_000n });
+    const recipientLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const sent = await (result.contract.connect(callSigner) as any).call.spend(alicePkh, 1)
+      .tokenContainerTransfer(asset, recipientLock, 1n).send();
+    expect(sent.outputs.some((output: any) => {
+      const category = typeof output.token?.category === 'string'
+        ? output.token.category : Buffer.from(output.token?.category ?? []).toString('hex');
+      return category === asset && output.token?.amount === 1n
+        && Buffer.from(output.lockingBytecode).equals(Buffer.from(recipientLock));
+    })).toBe(true);
+    expect((await result.contract.getState() as { n?: bigint }).n).toBe(2n);
+    expect((await provider.getUtxos(containerAddress)).filter((coin) => coin.token?.amount === 1n)).toHaveLength(1);
   });
 });

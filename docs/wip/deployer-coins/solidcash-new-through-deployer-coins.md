@@ -21,7 +21,7 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 9 unticked ones name the shape the
+in Part C the ticked cases name the committed test that covers them and the 8 unticked ones name the shape the
 shipped SDK path refuses (a live block reader and a creator's locktime negotiation, a constructor's
 token-container balance read, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
 vmap witnesses, the sender-reading callee probe, and the registry-of-the-user's-shape case); every Part D line
@@ -4627,7 +4627,7 @@ their contract with `deployer: true`:
 - [x] a contract whose constructor writes a mapping entry, born through its deployer, reads that entry back *(covered by `DeployerCreation.e2e`: the create pins the entry row from `deriveDeployCommitments`, and the first call's `read(1)` requires 2)*
       in its first call through a function that requires it; the entry's key and value match the constructor
       arguments, and a call that would read a neighbour sees the list consistent (B7.18);
-- [ ] a contract whose constructor reads the balance of a single token container reads 1, the unit the *(not covered: a creating call refuses a single token container, B9.7)*
+- [x] a contract whose constructor reads the balance of a single token container reads 1, the unit the *(covered by `DeployerCreation.e2e`: `reads a single token container's birth balance as 1` deploys through Deploy<C> with a `tokenContainers` coin, reads the fixed start 1, and its first call transfers 1 unit out of the container; `DeployerCreation.test.ts` refuses a constructor send from a container)*
       creation seeds it with; its first call spends the container; and a constructor that sends tokens does
       not compile (B7.18);
 - [x] a contract whose constructor writes three keys of one mapping at three sites, two of them the same key, *(covered by `DeployerCreation.e2e`: the creation pins two rows, the first calls read 11, 20, then insert 30 and read 0 for an unwritten key)*

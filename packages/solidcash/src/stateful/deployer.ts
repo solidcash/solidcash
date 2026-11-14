@@ -888,6 +888,145 @@ export async function deployerEcrecoverGroups(options: {
   return groups;
 }
 
+
+/** A14 item 4's trace path for a scalar constructor that reads a single token container. */
+async function learnScalarCreateCommitments(options: {
+  provider: NetworkProvider;
+  deployer: DeployerAbi;
+  prep: DeployerPrep;
+  funder: Unlocker;
+  changeAddress: string;
+  categoryId: string;
+  contract: import('../Contract.js').Contract<Artifact>;
+  artifact: Artifact;
+  masterLock: Uint8Array;
+  dataNftAddress: string;
+  leading: import('../interfaces.js').Output[];
+  outbase: number;
+  masterAmount: bigint;
+  dataNftAmount: bigint;
+  createLayout: { slots: readonly { kind: string; offset: number; nftIndex?: number; slotIndex?: number }[] };
+  args: Record<string, FunctionArgument>;
+  deployValue: bigint;
+  tokenContainers: import('./stateful-lifecycle-types.js').DeployOptions['tokenContainers'];
+}): Promise<string[]> {
+  const {
+    provider, deployer, prep, funder, changeAddress, categoryId, contract, artifact, masterLock, dataNftAddress,
+    leading, outbase, masterAmount, dataNftAmount, createLayout, args, deployValue, tokenContainers,
+  } = options;
+  const dataSlots = createLayout.slots.filter((slot) => slot.kind === 'dataNft');
+  const tokenSlots = createLayout.slots.filter((slot) => slot.kind === 'tokenContainer');
+  const { TransactionBuilder } = await import('../TransactionBuilder.js');
+  const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
+  const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
+  const { getTokenContainerAddress } = await import('./covenant-helpers.js');
+  const tokenPlans = tokenSlots.map((slot) => {
+    const rowIndex = slot.slotIndex ?? 0;
+    const name = artifact.constructorInputs[rowIndex]?.name;
+    const raw = name === undefined ? undefined : args[name];
+    const rowCategory = raw instanceof Uint8Array ? binToHex(raw) : String(raw ?? '');
+    const supplied = tokenContainers?.find(({ utxo }) => utxo.token !== undefined
+      && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
+    if (supplied === undefined) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' keeps a token container ${rowCategory} single; pass a coin of its category in `
+        + 'tokenContainers',
+      );
+    }
+    return {
+      input: supplied,
+      output: {
+        to: getTokenContainerAddress(contract as never, categoryId, rowCategory),
+        amount: supplied.utxo.satoshis,
+        token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
+      },
+    };
+  });
+  let learned = dataSlots.map(() => '');
+  let pad = new Uint8Array();
+  let failure = '';
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const unlocker: Unlocker = {
+      generateLockingBytecode: () => hexToBin(deployer.lockingBytecode),
+      generateUnlockingBytecode: () => buildDeployerUnlocking({
+        deployer,
+        callees: [],
+        args,
+        value: deployValue,
+        senderCategory: new Uint8Array(32),
+        authorIndex: 1,
+        identity: true,
+        budgetPad: pad,
+        synthetic: {
+          __internal__genesisOutputBase: BigInt(outbase),
+          __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
+          __internal__blockOracleInputIndex: -1n,
+        },
+        forBroadcast: true,
+      }),
+    };
+    const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
+    builder.addInput(prep.deployerCoin, unlocker);
+    builder.addInput(prep.authorCoin, funder);
+    for (const plan of tokenPlans) builder.addInput(plan.input.utxo, plan.input.unlocker);
+    for (const output of leading) builder.addOutput(output);
+    let dataIndex = 0;
+    for (const slot of createLayout.slots) {
+      if (slot.kind === 'master') {
+        builder.addOutput({
+          to: masterLock, amount: masterAmount,
+          token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+        });
+      } else if (slot.kind === 'dataNft') {
+        const index = slot.nftIndex ?? dataIndex;
+        dataIndex += 1;
+        builder.addOutput({
+          to: dataNftAddress, amount: dataNftAmount,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: learned[index] ?? '' } },
+        });
+      } else if (slot.kind === 'tokenContainer') {
+        const plan = tokenPlans[tokenSlots.indexOf(slot)];
+        if (plan !== undefined) builder.addOutput(plan.output);
+      } else {
+        throw new DeployerPathError(
+          `The create trace path does not model a '${slot.kind}' row of '${artifact.contractName}'`,
+        );
+      }
+    }
+    const spent = leading.reduce((sum, output) => sum + output.amount, 0n)
+      + masterAmount + dataNftAmount * BigInt(dataSlots.length)
+      + tokenPlans.reduce((sum, plan) => sum + plan.output.amount, 0n);
+    const funding = prep.authorCoin.satoshis
+      + tokenPlans.reduce((sum, plan) => sum + plan.input.utxo.satoshis, 0n);
+    if (funding >= spent) builder.addOutput({ to: changeAddress, amount: funding - spent });
+    const program = builder.buildLibauthProgram(true);
+    const trace = evaluateProbeTrace(provider, {
+      inputIndex: 0, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    });
+    const last = trace[trace.length - 1] as { error?: string } | undefined;
+    const offsets = dataSlots.map((slot) => outbase + slot.offset);
+    const next = offsets.length === 0 ? [] : extractCommitmentsFromTrace(
+      trace, dataSlots.length, { min: Math.min(...offsets), max: Math.max(...offsets) + 1 },
+    ) ?? [];
+    if (next.length === dataSlots.length && next.some((value, index) => value !== learned[index])) {
+      learned = next;
+      continue;
+    }
+    if (last?.error === undefined) return learned;
+    if (/operation cost|budget/i.test(last.error)) {
+      pad = new Uint8Array(pad.length === 0 ? 1 : Math.min(4096, pad.length * 2));
+      continue;
+    }
+    failure = last.error;
+    break;
+  }
+  throw new DeployerPrepError(
+    `The creation of '${artifact.contractName}' could not be probed through its create: `
+    + `${failure || 'the constructor did not settle'}`,
+  );
+}
+
 /**
  * Run every input of a candidate transaction through the provider's VM (B9.3). Throws with the input index and the
  * VM error on the first failure; otherwise returns each input's operation cost, from which the caller sizes
@@ -1511,16 +1650,54 @@ export async function deployThroughDeployer<T extends Artifact>(
     args[name] = value as FunctionArgument;
   });
 
+  const createLayout = deployer.abi.find((entry) => entry.name === 'create')?.blockLayout;
+  if (createLayout === undefined) {
+    throw new DeployerPathError(`Deployer of '${artifact.contractName}' has no create block layout`);
+  }
+  const payable = constructorAbi?.modifiers?.includes('payable') === true;
+  let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
+  if (deployValue > 0n && deployValue < RESERVE) {
+    // A14 item 11: an optional row funded with 1..RESERVE-1 is raised to RESERVE, and the value it holds is the
+    // row's amount, so the journal's balance (which the row may not exceed) is raised with it.
+    deployValue = RESERVE;
+  }
+
   const creationLocktime = await deployerLocktime(deployer, options.provider);
-  const derived = callSlotPath
-    ? {
+  let derived;
+  if (callSlotPath) {
+    derived = {
       stateCommitments: [], entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
       dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
+    };
+  } else {
+    try {
+      derived = await deriveDeployCommitments(
+        contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n,
+        { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
+      );
+    } catch (error) {
+      const scalarWithToken = (constructorAbi?.entryAccesses?.length ?? 0) === 0
+        && (constructorAbi?.emits?.length ?? 0) === 0
+        && (constructorAbi?.transferCount ?? 0) === 0
+        && deployer.callSlots === 0
+        && deployer.satoshiContainer === 'none'
+        && deployer.sidecars.keccak === 0 && deployer.sidecars.ecrecover === 0
+        && deployer.tokenRows.length > 0;
+      if (!scalarWithToken || !/Failed to derive|oscillation|operation cost|budget/i.test(
+        String((error as Error).message),
+      )) throw error;
+      const learned = await learnScalarCreateCommitments({
+        provider: options.provider, deployer, prep, funder: options.funder,
+        changeAddress: options.changeAddress, categoryId, contract: contract as never, artifact,
+        masterLock, dataNftAddress, leading, outbase, masterAmount, dataNftAmount, createLayout, args,
+        deployValue, tokenContainers: options.tokenContainers,
+      });
+      derived = {
+        stateCommitments: learned, entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
+        dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
+      };
     }
-    : await deriveDeployCommitments(
-      contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n,
-      { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
-    );
+  }
   const commitments = derived.stateCommitments;
 
   // A14 item 5/7: the callee list and the sender parameters. The compiler cannot yet run a constructor with a call
@@ -1538,18 +1715,19 @@ export async function deployThroughDeployer<T extends Artifact>(
     );
   }
 
+  const tokenContainerInputs = createLayout.slots
+    .filter((slot) => slot.kind === 'tokenContainer')
+    .flatMap((slot) => {
+      const rowIndex = slot.slotIndex ?? 0;
+      const name = artifact.constructorInputs[rowIndex]?.name;
+      const raw = name === undefined ? undefined : args[name];
+      const rowCategory = raw instanceof Uint8Array ? binToHex(raw) : String(raw ?? '');
+      const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
+        && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
+      return supplied === undefined ? [] : [supplied];
+    });
+  const tokenContainerSats = tokenContainerInputs.reduce((sum, input) => sum + input.utxo.satoshis, 0n);
   const outputs: import('../interfaces.js').Output[] = [...leading];
-  const createLayout = deployer.abi.find((entry) => entry.name === 'create')?.blockLayout;
-  if (createLayout === undefined) {
-    throw new DeployerPathError(`Deployer of '${artifact.contractName}' has no create block layout`);
-  }
-  const payable = constructorAbi?.modifiers?.includes('payable') === true;
-  let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
-  if (deployValue > 0n && deployValue < RESERVE) {
-    // A14 item 11: an optional row funded with 1..RESERVE-1 is raised to RESERVE, and the value it holds is the
-    // row's amount, so the journal's balance (which the row may not exceed) is raised with it.
-    deployValue = RESERVE;
-  }
   const constructorEvents = constructorAbi?.emits ?? [];
   const entryCommitments = [...(derived.entryCommitments ?? []), ...(derived.trailingEntryCommitments ?? [])];
   const headCommitment = new Uint8Array(128);
@@ -1614,7 +1792,8 @@ export async function deployThroughDeployer<T extends Artifact>(
         const tokenRow = slot.slotIndex;
         if (tokenRow === undefined) throw new DeployerPathError('A token container slot names no parameter');
         const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
-        const rowValue = constructorArgs[tokenRow];
+        // A8: the container key parameter is the token category in display order; the row's coin wears it.
+        const rowValue = args[name];
         const rowCategory = rowValue instanceof Uint8Array ? binToHex(rowValue) : String(rowValue ?? '');
         const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
           && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
@@ -1625,7 +1804,7 @@ export async function deployThroughDeployer<T extends Artifact>(
           );
         }
         outputs.push({
-          to: getTokenContainerAddress(contract as never, categoryId, supplied.utxo.token!.category),
+          to: getTokenContainerAddress(contract as never, categoryId, rowCategory),
           amount: supplied.utxo.satoshis,
           token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
         });
@@ -1720,6 +1899,7 @@ export async function deployThroughDeployer<T extends Artifact>(
   });
   builder.addInput(prep.deployerCoin, deployerUnlocker);
   builder.addInput(prep.authorCoin, options.funder);
+  for (const input of tokenContainerInputs) builder.addInput(input.utxo, input.unlocker);
   for (const run of calleeRuns) {
     if (builder.inputs.length !== run.inputIndex) {
       throw new DeployerPrepError(
@@ -1826,7 +2006,7 @@ export async function deployThroughDeployer<T extends Artifact>(
   }
 
   const fillerTotal = fillers.reduce((sum, filler) => sum + filler.satoshis, 0n);
-  const change = prep.authorCoin.satoshis + fillerTotal - outputTotal - provisionalFee;
+  const change = prep.authorCoin.satoshis + fillerTotal + tokenContainerSats - outputTotal - provisionalFee;
   if (change >= DUST) builder.addOutput({ to: options.changeAddress, amount: change });
   if (creationLocktime !== undefined) builder.setLocktime(creationLocktime);
 

@@ -149,7 +149,7 @@ function createSpend(
               lockingBytecode: TOKENLESS,
               valueSatoshis: 1200n,
               token: {
-                category: Uint8Array.from(argument.value).reverse(),
+                category: argument.value,
                 amount: 1n,
               },
             });
@@ -235,7 +235,8 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
 
   it('reads one unit for a container the contract keeps single', () => {
     const artifact = compileString(tokenStart('pragma tokencontainer single;'), { deployer: true, messageBus: false });
-    const category = Uint8Array.from(asset).reverse();
+    // A8: the container key is the token category in display order; the coin wears it.
+    const category = asset;
     const tokenSource: SourceOutputs[number] = {
       lockingBytecode: TOKENLESS, valueSatoshis: 1200n, token: { category, amount: 1n },
     };
@@ -245,6 +246,14 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
     ), [{ name: 'asset', value: asset }], (output) => output, undefined, {}, undefined, 0, 0xffffffff,
     [], [tokenInput], [tokenSource]);
     expect(vm.verify(spend as never)).toBe(true);
+  });
+
+  it('refuses a send from a token container in a constructor', () => {
+    expect(() => compileString(
+      `${P} pragma tokencontainer single; contract C(bytes32 asset) { int n;
+        constructor() { this.tokens[asset].transfer(payable(msg.sender), 1); n = 1; } }`,
+      { deployer: true, messageBus: false },
+    )).toThrow(/token container|CtorTokenContainer/);
   });
 
   it('reads zero for any other container', () => {

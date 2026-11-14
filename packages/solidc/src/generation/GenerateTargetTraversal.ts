@@ -12083,10 +12083,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitGenesisTokenRowPin(offset: number, parameter: string, loc: SingleLocationData): void {
-    // Category: the parameter, in the VM's byte order (reverse the display-order value), no capability.
-    // OP_OUTPUTTOKENCATEGORY returns the category in the display order the VM number conversions use, which is
-    // the raw parameter bytes for a container key; do not reverse it here.
+    // Category: the parameter is the token category in display order (A8); OP_OUTPUTTOKENCATEGORY returns it in
+    // the VM's byte order, so reverse the parameter before the equality.
     this.emitPickTrackedFromBottom(parameter, loc);
+    this.emit(Op.OP_REVERSEBYTES, loc);
     this.pushToStack('(expectcat)');
     this.emitGenesisRowIndex(offset, loc);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);

@@ -60,6 +60,7 @@ import {
   FunctionDefinitionNode,
   CollectionNode,
   MappingAccessNode,
+  JournalAppendNode,
   MappingAssignNode,
   MappingFieldAssignNode,
   DeleteLocalNode,
@@ -939,6 +940,44 @@ export default class TypeCheckTraversal extends AstTraversal {
           throw new MappingAssignTypeError(node, node.expression.type, innerType);
         }
       }
+    }
+    return node;
+  }
+
+  /**
+   * A4.4: a constructor's collection write, rewritten as a journal append before type checking. A whole write is
+   * typed and coerced as `visitMappingAssign` types the write it replaces (so `0` into `bytes20` journals 20 zero
+   * bytes, as the runtime write stores them), and a field write as `visitMappingFieldAssign` types its field.
+   */
+  visitJournalAppend(node: JournalAppendNode): Node {
+    node.keys = this.visitList(node.keys);
+    node.value = this.visit(node.value);
+    const collection = node.collection;
+    if (collection === undefined) return node;
+    const allKeyTypes = collection.allKeyTypes;
+    node.keys = this.coerceHexArgs(node.keys, allKeyTypes) as typeof node.keys;
+    for (let i = 0; i < node.keys.length; i++) {
+      if (node.keys[i].type && !implicitlyCastable(node.keys[i].type, allKeyTypes[i])) {
+        throw new TypeError(node, node.keys[i].type, allKeyTypes[i]);
+      }
+    }
+    const valueType = collection.innermostValueType;
+    if (node.field !== undefined) {
+      let leaf: Type = valueType;
+      for (const name of node.field) {
+        const field = leaf instanceof StructType ? leaf.fields.find((candidate) => candidate.name === name) : undefined;
+        if (field === undefined) throw new TypeError(node, node.value.type, leaf);
+        leaf = field.type;
+      }
+      if (node.value.type && !implicitlyCastable(node.value.type, leaf)) throw new TypeError(node, node.value.type, leaf);
+      return node;
+    }
+    node.value = this.maybeCoerceHexToInt(node.value, valueType);
+    node.value = this.maybeCoerceZeroToBytes(node.value, valueType);
+    node.value = this.maybeCoerceStringToBytesN(node.value, valueType);
+    node.value = this.maybeCoerceBytesWiden(node.value, valueType);
+    if (node.value.type && !implicitlyCastable(node.value.type, valueType)) {
+      throw new MappingAssignTypeError(node as unknown as MappingAssignNode, node.value.type, valueType);
     }
     return node;
   }
@@ -2324,11 +2363,13 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (codeAt < 0 || valueAt <= codeAt) {
       throw new DeployerInternalError(node, `'${contractName}''s create ABI has no parameter bands`);
     }
-    // `__oraclePool` is a binding the creator supplies, not a source constructor argument.
-    const abiBand = create.inputs.slice(codeAt + 1, valueAt)
-      .filter((input) => input.name !== ORACLE_POOL_PARAMETER);
-    const abiContract = abiBand.slice(0, contractParams.length);
-    const abiCtor = abiBand.slice(contractParams.length);
+    // A bound child takes the creator's pool binding after its own contract parameters; the creator passes it.
+    const pool = create.inputs[codeAt + 1 + contractParams.length]?.name === ORACLE_POOL_PARAMETER ? 1 : 0;
+    if (pool !== Number(create.inputs.some((input) => input.name === ORACLE_POOL_PARAMETER))) {
+      throw new DeployerInternalError(node, `'${contractName}''s create takes its pool binding out of place`);
+    }
+    const abiContract = create.inputs.slice(codeAt + 1, codeAt + 1 + contractParams.length);
+    const abiCtor = create.inputs.slice(codeAt + 1 + contractParams.length + pool, valueAt);
     const disagreement = (source: ParameterNode[], abi: { type: string }[]): boolean =>
       source.length !== abi.length || source.some((parameter, index) => abiTypeString(parameter.type) !== abi[index].type);
     if (disagreement(contractParams, abiContract) || disagreement(ctorParams, abiCtor)) {
@@ -2800,10 +2841,18 @@ export default class TypeCheckTraversal extends AstTraversal {
     // An internal call runs no frame of the multi-call entry: its entry shift is 0.
     const literalWitness = (name: string): bigint | undefined => (name === '__internal__returnOutputIdx' ? -1n
       : name === CALL_BATCH_ROW_SHIFT ? 0n : undefined);
-    if (!pending.every((p) => literalWitness(p.name) !== undefined || canForwardByName(p))) return;
+    // Nor does it answer a constructor: its genesis call is empty, and like the record witness never pushed.
+    const genesisCall = (name: string): boolean => name === '__internal__genesisCall';
+    if (!pending.every((p) => genesisCall(p.name) || literalWitness(p.name) !== undefined
+      || canForwardByName(p))) return;
     for (const p of pending) {
       const literal = literalWitness(p.name);
-      if (literal !== undefined) {
+      if (genesisCall(p.name)) {
+        const value = new HexLiteralNode(new Uint8Array());
+        value.location = node.location;
+        value.type = new BytesType();
+        node.parameters.push(value);
+      } else if (literal !== undefined) {
         const value = new IntLiteralNode(literal);
         value.location = node.location;
         value.type = PrimitiveType.INT;

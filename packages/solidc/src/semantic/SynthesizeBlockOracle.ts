@@ -109,12 +109,23 @@ export function setOraclePoolBinding(contract: ContractNode, bound: boolean): vo
   contract.parameters.push(parameter);
 }
 
+/**
+ * Whether a deployer `new` binds the child's `__oraclePool`: its `create` takes the binding as the last contract
+ * parameter, since the child's own code reads the pool (a constructor that reads a block field does, in its
+ * constructor arm) even where its genesis reads the locktime. The creator passes its own binding there.
+ */
+export function deployerNewBindsPool(node: InstantiationNode): boolean {
+  return node.isDeployerNew === true && node.deployerAbi?.abi.find((entry) => entry.name === 'create')?.inputs
+    .some((input) => input.name === ORACLE_POOL_PARAMETER) === true;
+}
+
 /** Whether a body creates, or names the lock of, a contract bound to a pool. */
 function createsBoundContract(fn: FunctionDefinitionNode): boolean {
   let found = false;
   walkInvocationAst(fn.body, (node) => {
     if ((node instanceof InstantiationNode || node instanceof ContractReferenceNode)
       && takesOraclePool(node.referencedContract)) found = true;
+    if (node instanceof InstantiationNode && deployerNewBindsPool(node)) found = true;
   });
   return found;
 }

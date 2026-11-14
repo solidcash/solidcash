@@ -68,6 +68,8 @@ describe('B6.6/B6.7: the genesis sender', () => {
     tagSize?: number;
     /** A surplus push placed before the redeem, testing the exact-stack check. */
     extraPush?: boolean;
+    /** The lock output g_out carries, given the child's L. */
+    gOutLock?: (L: Uint8Array) => Uint8Array;
   } = {}) {
     const provider = createTestProvider();
     const signer = HDSigner.fromPhrase(
@@ -134,14 +136,14 @@ describe('B6.6/B6.7: the genesis sender', () => {
         const expectedAt = unlocking.findIndex((instruction) => instruction.data !== undefined
           && instruction.data.length === honestLock.length && binToHex(instruction.data) === binToHex(honestLock));
         if (genesisAt < 0 || expectedAt < 0) throw new Error('fixture: witness not found');
-        const aOff = 6 + 2 + 0;                 // 6 + 2s + |Q|, Q empty in this fixture
+        const listBytes = Uint8Array.from(options.listBytes ?? [0x00, 0x00]);
+        const aOff = 6 + listBytes.length + 0;  // 6 + 2s + |Q|, Q empty in this fixture
         const codeOff = aOff + 1;               // + |A| + h, A empty, h = 1
         const tag = concat(options.tagX ?? Xvm, u16(options.slot ?? 0), u16(options.gIn ?? gIn),
           u16(options.gOut ?? gOut), u16(aOff), u16(0), u16(codeOff), u16(S.length));
         const carriedTag = options.tagSize === undefined ? tag
           : options.tagSize <= tag.length ? tag.slice(0, options.tagSize)
             : concat(tag, new Uint8Array(options.tagSize - tag.length));
-        const listBytes = Uint8Array.from(options.listBytes ?? [0x00, 0x00]);
         unlocking[genesisAt] = { opcode: carriedTag.length, data: carriedTag };
         unlocking[expectedAt] = { opcode: L.length, data: L };
         if (options.extraPush === true) {
@@ -150,7 +152,7 @@ describe('B6.6/B6.7: the genesis sender', () => {
         tx.inputs[calleeIndex]!.unlockingBytecode = encodeAuthenticationInstructions(unlocking);
 
         tx.outputs.push({
-          lockingBytecode: L,
+          lockingBytecode: options.gOutLock?.(L) ?? L,
           valueSatoshis: 1_000n,
           token: { category: X, amount: 0n, nft: { capability: 'minting', commitment: new Uint8Array() } },
         });
@@ -202,8 +204,8 @@ describe('B6.6/B6.7: the genesis sender', () => {
     clearCompileCache();
     const artifact = compileString(SOURCE, { messageBus: false, genesisCalls: true });
     const asm = disassembleBytecodeBCH(hexToBin(artifact.bytecode)).split(' ');
-    const signature = ['OP_OUTPUTTOKENCATEGORY', 'OP_DUP', 'OP_SIZE', 'OP_NIP', 'OP_PUSHBYTES_1', '0x21',
-      'OP_NUMEQUALVERIFY'];
+    // Check 3 of the genesis step: hash256(21 ‖ X ‖ 02 c0 ce 88 ‖ S).
+    const signature = ['OP_PUSHBYTES_4', '0x02c0ce88', 'OP_CAT', 'OP_SWAP', 'OP_CAT', 'OP_HASH256'];
     let occurrences = 0;
     for (let i = 0; i + signature.length <= asm.length; i++) {
       if (signature.every((word, j) => asm[i + j] === word)) occurrences += 1;
@@ -231,6 +233,23 @@ describe('B6.6/B6.7: the genesis sender', () => {
     expect(await f.attempt()).toContain('REFUSED');
   }, 120_000);
 
+  // Check 5 reads the entry at 6 + 2 × slot, so slot 1 answers to the list's second entry, not its first.
+  it('resolves slot 1 from the second list entry', async () => {
+    const f = await fixture({ slot: 1, listBytes: [0x05, 0x00, 0x00, 0x00] });
+    expect(await f.attempt()).toContain('ACCEPTED');
+  }, 120_000);
+
+  it('refuses slot 1 when only the first list entry names the callee', async () => {
+    const f = await fixture({ slot: 1, listBytes: [0x00, 0x00, 0x05, 0x00] });
+    expect(await f.attempt()).toContain('REFUSED');
+  }, 120_000);
+
+  // Check 3: the sender is the lock of output g_out, which must be the child's L.
+  it('refuses a g_out whose lock is not the child the ranges hash to', async () => {
+    const f = await fixture({ gOutLock: (L) => Uint8Array.from(L.map((byte, i) => (i === 10 ? byte ^ 1 : byte))) });
+    expect(await f.attempt()).toContain('REFUSED');
+  }, 120_000);
+
   it('refuses a list entry that is not the callee input index', async () => {
     const f = await fixture({ listBytes: [0x01, 0x80] });
     expect(await f.attempt()).toContain('REFUSED');
@@ -255,9 +274,10 @@ describe('B6.6/B6.7: the genesis sender', () => {
     }
   }, 120_000);
 
-  it('accepts a child whose code has no birth trailer, and skips the trailer check', async () => {
+  // A7 check 4: a child whose code has no birth trailer is never a genesis sender, however it was born.
+  it('refuses a child whose code has no birth trailer', async () => {
     const f = await fixture({ childTail: () => Uint8Array.of(0x51) });
-    expect(await f.attempt()).toContain('ACCEPTED');
+    expect(await f.attempt()).toContain('REFUSED');
   }, 120_000);
 
   it('refuses one surplus push at the entry', async () => {

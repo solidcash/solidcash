@@ -78,6 +78,8 @@ export type SolidcDiagnosticCode =
   | 'SPLIT_SIZE_REFUSES_FRAMED'
   // An event payload wider than one NFT commitment, emitted where its continuation chunks have no layout.
   | 'EVENT_PAYLOAD_EXCEEDS_COMMITMENT'
+  // Runtime-loop BCH payments that settle where the sum over every coin at the satoshi container lock cannot count them.
+  | 'RUNTIME_LOOP_PAYMENTS_UNCOUNTED'
   // A returning entry whose body consumed the value its result is bound with: no record or carrier would bind it.
   | 'RETURN_RESULT_UNBOUND'
   // A source function whose selector is the multi-call entry's reserved selector.

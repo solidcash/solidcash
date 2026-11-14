@@ -1,4 +1,6 @@
-import { BoolLiteralNode, IdentifierNode, IntLiteralNode, Node } from './AST.js';
+import {
+  BoolLiteralNode, IdentifierNode, IntLiteralNode, Node, storageAliasKeys, storageParameterCopies,
+} from './AST.js';
 import { YulNode } from './YulAST.js';
 
 /**
@@ -49,6 +51,7 @@ function cloneNodeWithMemo<T extends Node>(
     clone.storagePointerOnly = node.storagePointerOnly;
     clone.fromModifier = node.fromModifier;
     if (node.lvalueKey) clone.lvalueKey = node.lvalueKey;
+    if (storageAliasKeys.has(node)) storageAliasKeys.add(clone);
     if (!preserveGraphAliases) memo.delete(node);
     return clone as unknown as T;
   }
@@ -72,6 +75,8 @@ function cloneNodeWithMemo<T extends Node>(
   }
   const clone = Object.create(Object.getPrototypeOf(node));
   memo.set(node, clone);
+  if (storageAliasKeys.has(node)) storageAliasKeys.add(clone);
+  if (storageParameterCopies.has(node)) storageParameterCopies.add(clone);
   for (const [key, value] of Object.entries(node)) {
     if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition' || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable' || key === 'collection' || key === 'type' || key === 'location') { clone[key] = value; continue; }
     clone[key] = cloneValue(value, memo, preserveGraphAliases, replacer);

@@ -72,8 +72,9 @@ export function isCallBatchFrameCandidate(fn: FunctionDefinitionNode, writesBeyo
     || (fn.dynamicReads?.length ?? 0) > 0 || (fn.dynamicWrites?.length ?? 0) > 0) return false;
   if (!(fn.entryAccesses ?? []).every((access) => !access.inLoop
     && access.operations.every((operation) => operation === 'read'))) return false;
+  // A frame pins its record at the record witness and requires the genesis call empty.
   if (fn.parameters.some((parameter) => parameter.name.startsWith('__internal__')
-    && parameter.name !== '__internal__returnOutputIdx')) return false;
+    && parameter.name !== '__internal__returnOutputIdx' && parameter.name !== '__internal__genesisCall')) return false;
   return fn.blockLayout !== undefined
     && fn.blockLayout.slots.every((slot) => FRAME_SLOT_KINDS.has(slot.kind))
     && !readsOwnOutputState(fn.body) && !writesBeyondFixedState();

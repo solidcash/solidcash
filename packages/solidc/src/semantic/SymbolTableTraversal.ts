@@ -38,6 +38,8 @@ import {
   type TransferInfo,
   TransferStatementNode,
   MinerFeeStatementNode,
+  JournalAppendNode,
+  JournalLookNode,
   TokenContainerMethodStatementNode,
   BranchNode,
   DoWhileNode,
@@ -142,6 +144,7 @@ import {
   computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
 } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
+import { hasRecordSoundArms, isRecordMaster, publishesCallRecord } from './RecordSound.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
@@ -174,7 +177,6 @@ import {
   InvalidErrorUsageError,
   UndefinedErrorError,
   TokenContainerKeyMustBeParameterError,
-  TokenContainerTransferInConstructorError,
   CtorTokenContainerError,
   TokenContainerAccessInConstructorError,
   InvalidModifierCombinationError,
@@ -5310,7 +5312,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         returnOutputIdxSymbol.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
       }
       this.pushToStack(returnOutputIdxParam);
-      this.injectGenesisCallParameter(node);
     }
 
     // B-side (approach B, single-interface method binding): an ordinary void entry of a direct stateful contract
@@ -5346,7 +5347,6 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.symbolTables[0].get('__internal__returnOutputIdx')
         ?.references.push({ name: '__internal__returnOutputIdx' } as IdentifierNode);
       this.pushToStack(voidRecordIdxParam);
-      this.injectGenesisCallParameter(node);
     }
 
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
@@ -5844,6 +5844,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.pushToStack(shift);
       }
     }
+    // Once the modifiers are final (an inferred `deploy` among them): a record-publishing entry takes the genesis call.
+    if (publishesCallRecord(node)) this.injectGenesisCallParameter(node);
 
     // Prevent OP_ROLL optimization for split/merge count parameters:
     // The code generator needs these params on the stack during covenant verification.
@@ -6085,6 +6087,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.collectTransferStatements(node.tuple, transferInfos);
       }
     }
+    // B8.8: a deployer `new`'s value leaves the satoshi container with no transfer output; Deploy<C> pins the
+    // child's container. It takes no transfer slot.
+    if (node instanceof InstantiationNode && node.isDeployerNew === true) return;
     // Contract deployment with {value}: new Contract{value: x}(args)
     if (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value)
         && this.contractMap.has(node.identifier.name)) {
@@ -16324,25 +16329,15 @@ export default class SymbolTableTraversal extends AstTraversal {
    * region the creator binds is exactly the values `create` reads.
    */
   private injectGenesisCallParameter(node: FunctionDefinitionNode): void {
-    // Opt-in until B9/B10: the SDK's external-call and route compositions do not yet carry the parameter
-    // everywhere, and the spec's switch (B10) turns the default on together with that SDK work.
-    if (this.compilerOptions.genesisCalls !== true) return;
-    if (this.compilerOptions.composition === 'framed' || this.compilerOptions.messageBus === true) return;
+    // On by default (A7); `genesisCalls: false` is the switch.
+    if (this.compilerOptions.genesisCalls === false || this.compilerOptions.composition === 'framed') return;
     // Nothing of B6.4 to B6.7 is emitted in a master that is not record-sound: such an entry cannot answer a
-    // constructor, so it takes no genesis parameter.
+    // constructor, so it takes no genesis parameter. Code generation decides the same from the same facts.
     const contract = this.currentContract;
+    if (contract === undefined || !isRecordMaster(contract, this.compilerOptions.forceStateful ?? false)) return;
     const delegatecall = (fn: FunctionDefinitionNode): boolean => describeFunctionLowLevelCallsites(fn)
       .some((site) => site.callMode === 'delegatecall');
-    const ordinary = (fn: FunctionDefinitionNode): boolean => fn.isEntryPoint === true
-      && !fn.graphEmissionHandler && fn.messageBusRoute !== true && !delegatecall(fn)
-      && !fn.modifiers.some((modifier) => modifier === FunctionModifier.UNSAFE
-        || modifier === FunctionModifier.SPLIT || modifier === FunctionModifier.MERGE
-        || modifier === FunctionModifier.DELEGATE);
-    const armsSound = contract === undefined || (contract.fallbackDef === undefined
-      && contract.functions.every((fn) => (fn.isEntryPoint !== true && !delegatecall(fn)) || ordinary(fn)
-        || fn.nativeSelfBatchDispatcher === true)
-      && (contract.receiveDef === undefined || !delegatecall(contract.receiveDef)));
-    if (!armsSound) return;
+    if (!hasRecordSoundArms(contract, delegatecall)) return;
     if (node.parameters.some((parameter) => parameter.name === '__internal__genesisCall')) return;
     const parameter = new ParameterNode(new BytesType(), '__internal__genesisCall');
     parameter.location = node.location;
@@ -16517,6 +16512,26 @@ export default class SymbolTableTraversal extends AstTraversal {
    * value leaves a framed contract only as a send (spec 4b). The statement is a top-level one, and one per entry, so
    * every run of the entry authorizes exactly the amount its source names, and its layout can read it from the body.
    */
+  /** A4.4: the deployer program's rewrite of a constructor's collection write. */
+  visitJournalAppend(node: JournalAppendNode): Node {
+    const collection = this.collectionMap.get(node.collectionName);
+    if (!collection) throw new Error(`A4.4: the journal of '${node.collectionName}' names no collection`);
+    node.collection = collection;
+    node.keys = this.visitList(node.keys);
+    node.value = this.visit(node.value);
+    return node;
+  }
+
+  /** A4.4: the deployer program's rewrite of a constructor's collection read: the leaf value type. */
+  visitJournalLook(node: JournalLookNode): Node {
+    const collection = this.collectionMap.get(node.collectionName);
+    if (!collection) throw new Error(`A4.4: the journal of '${node.collectionName}' names no collection`);
+    node.collection = collection;
+    node.keys = this.visitList(node.keys);
+    node.type = collection.innermostValueType;
+    return node;
+  }
+
   visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
     const fn = this.currentFunction;
     if (this.compilerOptions.composition === 'framed') {
@@ -20587,7 +20602,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const singleSatoshiContainer = this.currentContract?.singleSatoshiContainer === true;
     if ((node.transferInfos && node.transferInfos.length > 0)
       || this.hasRuntimeLoopTransfer(node) || graphTransfers > 0 || minerFeeStatement
-      || (singleSatoshiContainer && node.modifiers.includes(FunctionModifier.PAYABLE))) {
+      || (singleSatoshiContainer && node.modifiers.includes(FunctionModifier.PAYABLE))
+      || this.sendsDeployerValue(node.body)) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -20921,6 +20937,16 @@ export default class SymbolTableTraversal extends AstTraversal {
   // True if the body contains a `new C{value:}()` deploy whose transfer count a fixed block-layout region cannot
   // express, so no `transfer` slot is reserved for it: a loop deploy mints a runtime-variable number of value
   // transfers, which codegen interleaves into each child's deploy group (a stateful child's genesis) instead.
+  /** B8.8: the body has a deployer `new` with a value, which its satoshi container funds. */
+  private sendsDeployerValue(body: Node | undefined): boolean {
+    let found = false;
+    walkInvocationAst(body, (visited) => {
+      if (visited instanceof InstantiationNode && visited.isDeployerNew === true
+        && hasEffectiveCallValue(visited.callOptions?.value)) found = true;
+    }, new Set<object>(), { pruneLiteralDeadControlFlow: false });
+    return found;
+  }
+
   private hasLoopValueDeploySite(body: Node | undefined): boolean {
     if (!body) return false;
     let found = false;
@@ -20931,7 +20957,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!(n instanceof Node) || seen.has(n)) return;
       seen.add(n);
       if (loops.length > 0 && n instanceof InstantiationNode && n.referencedContract && n.callOptions?.value
-        && (n.isStatefulDeploy || !deployRunsAtMostOnceInLoop(n, loops))) {
+        && n.isDeployerNew !== true && (n.isStatefulDeploy || !deployRunsAtMostOnceInLoop(n, loops))) {
         found = true; return;
       }
       const childLoops = n instanceof WhileNode || n instanceof DoWhileNode

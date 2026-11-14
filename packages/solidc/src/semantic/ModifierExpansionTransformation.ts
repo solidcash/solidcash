@@ -29,6 +29,7 @@ import {
   DoWhileNode,
   UncheckedNode,
   WhileNode,
+  storageParameterCopies,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import {
@@ -583,6 +584,7 @@ function expandFunctionModifiers(
         cloneNode(arg) as ExpressionNode,
       );
       binding.location = arg.location;
+      if (param.modifier.includes('storage')) storageParameterCopies.add(binding);
       paramBindings.push(binding);
     });
 

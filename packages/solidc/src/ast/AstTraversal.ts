@@ -75,6 +75,8 @@ import {
   EmitStatementNode,
   TransferStatementNode,
   MinerFeeStatementNode,
+  JournalAppendNode,
+  JournalLookNode,
   SelfdestructStatementNode,
   TokenContainerMethodStatementNode,
   ReturnNode,
@@ -557,6 +559,17 @@ export default class AstTraversal extends AstVisitor<Node> {
 
   visitMinerFeeStatement(node: MinerFeeStatementNode): Node {
     node.amount = this.visit(node.amount);
+    return node;
+  }
+
+  visitJournalAppend(node: JournalAppendNode): Node {
+    node.keys = node.keys.map((key) => this.visit(key));
+    node.value = this.visit(node.value);
+    return node;
+  }
+
+  visitJournalLook(node: JournalLookNode): Node {
+    node.keys = node.keys.map((key) => this.visit(key));
     return node;
   }
 

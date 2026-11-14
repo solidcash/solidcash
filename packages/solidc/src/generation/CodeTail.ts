@@ -115,3 +115,38 @@ export function applyCodeTail(script: readonly number[], options: CodeTailOption
   }
   return out;
 }
+
+/**
+ * O4 on finished code, read as A4.3 step 8.3 reads a code: the marker form stands only where the compiler placed
+ * the marker (the last 23 bytes, or, before a birth trailer, the 23 bytes before the last 34), with the flags it
+ * meant; the code ends in the trailer form exactly when it carries the trailer that names `trailer`; and the body is
+ * at least 57 bytes long. It does not trust `applyCodeTail`, so it also holds every step after it to the rule: the
+ * compiler's own passes over the finished script and the trailer of B7.14.
+ */
+export function verifyCodeTail(
+  code: ArrayLike<number>, expected: { readonly flags: number; readonly trailer?: ArrayLike<number> },
+): void {
+  const bytes = Array.from(code);
+  const flags = expected.flags & (CODE_MARKER_RECORD_SOUND | CODE_MARKER_MARKED_CREATOR);
+  const trailer = expected.trailer === undefined ? undefined : Array.from(expected.trailer);
+  if (trailer !== undefined && trailer.length !== 32) throw new CodeTailError('a birth trailer names 32 bytes');
+  const bodyLength = bytes.length - (trailer === undefined ? 0 : TRAILER_LENGTH);
+  if (bodyLength < GUARD_DISTANCE) {
+    throw new CodeTailError(`the code body is ${bodyLength} bytes, shorter than the guard distance`);
+  }
+  if (hasTrailerAtEnd(bytes) !== (trailer !== undefined)) {
+    throw new CodeTailError(trailer === undefined
+      ? 'the code ends in the form of a birth trailer the compiler did not append'
+      : 'the born code does not end in its birth trailer');
+  }
+  if (trailer !== undefined && trailer.some((byte, index) => bytes[bodyLength + 1 + index] !== byte)) {
+    throw new CodeTailError('the birth trailer does not name the deployer');
+  }
+  const markerAt = trailer === undefined ? bytes.length - MARKER_LENGTH : bodyLength - MARKER_LENGTH;
+  const otherAt = trailer === undefined ? bytes.length - TRAILER_LENGTH - MARKER_LENGTH : bytes.length - MARKER_LENGTH;
+  if (isMarkerAt(bytes, otherAt)) throw new CodeTailError(`the marker form stands at offset ${otherAt}, where no marker goes`);
+  const read = isMarkerAt(bytes, markerAt) ? bytes[markerAt + 21]! : undefined;
+  if ((read === undefined) !== (flags === 0) || (read !== undefined && read !== flags)) {
+    throw new CodeTailError(`a reader takes the flags ${read ?? 'of no marker'} from the code, and the compiler meant ${flags}`);
+  }
+}

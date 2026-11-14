@@ -4,7 +4,9 @@
  * They are pure data: C's code, the data-record count, the collection hashes and empty HEAD commitments, and the
  * container shape. The deployer computes category-dependent locks at run time from these bytes and from X and M.
  */
-import { asmToScript, computeCollectionHash, scriptToBytecode } from '@solidcash/utils';
+import {
+  asmToScript, computeCollectionHash, containerKeepsTokenless, containerMasterRetires, scriptToBytecode,
+} from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
 import type { ContractNode } from '../ast/AST.js';
 
@@ -22,6 +24,14 @@ export interface DeployerCollectionConstant {
   readonly headCommitment?: Uint8Array;
 }
 
+/** The options a direct container covenant takes (`buildSatoshiContainerCovenantScript`, `W/utils/src/state.ts`). */
+export interface DeployerContainerOptions {
+  readonly masterRetires: boolean;
+  readonly keepsTokenless: boolean;
+}
+
+export type DeployerContainerKind = 'satoshiContainer' | 'tokenContainer';
+
 export interface DeployerConstants {
   /** C's master code, the bytes after pin(X) and the contract arguments. */
   readonly code: Uint8Array;
@@ -33,6 +43,41 @@ export interface DeployerConstants {
   readonly tokenContainerCount: number;
   /** Contract parameters that name a token container the contract keeps single (A8). */
   readonly singleTokenContainerKeys: readonly string[];
+  /**
+   * A4.4, "Container locks use C's own options": the options of C's container locks, read off the entries C's
+   * artifact publishes, as the SDK derives the same locks (`directContainerOptions`). The deployer program keeps
+   * none of C's entries, so it must not derive them from its own.
+   */
+  readonly containerOptions: Readonly<Record<DeployerContainerKind, DeployerContainerOptions>>;
+  /**
+   * O2's second derivation of the same options, from C's source as C's own code derives the locks it checks
+   * (`boundContainerOptions`, GTT). The generator refuses to pin a container lock when the two differ.
+   */
+  readonly sourceContainerOptions: Readonly<Record<DeployerContainerKind, DeployerContainerOptions>>;
+}
+
+/** C's container options as C's own code computes them (`boundContainerOptions`): from its entries and pragmas. */
+function containerOptionsFromSource(contract: ContractNode, kind: DeployerContainerKind): DeployerContainerOptions {
+  const entries = [
+    ...contract.functions.filter((fn) => fn.visibility !== 'internal' && fn.visibility !== 'private'),
+    ...(contract.constructorDef ? [contract.constructorDef] : []),
+    ...(contract.fallbackDef ? [contract.fallbackDef] : []),
+  ].map((fn) => ({ modifiers: fn.modifiers.map(String), lowLevelCalls: fn.lowLevelCalls }));
+  if (contract.receiveDef) entries.push({ modifiers: ['payable'], lowLevelCalls: contract.receiveDef.lowLevelCalls });
+  return {
+    masterRetires: containerMasterRetires(entries),
+    keepsTokenless: containerKeepsTokenless([{
+      blockLayout: {
+        singleSatoshiContainer: contract.singleSatoshiContainer, singleTokenContainer: contract.singleTokenContainer,
+      },
+    }], kind),
+  };
+}
+
+/** C's container options as the SDK reads them from C's artifact (`directContainerOptions`). */
+function containerOptionsFromAbi(artifact: Artifact, kind: DeployerContainerKind): DeployerContainerOptions {
+  const abi = artifact.abi ?? [];
+  return { masterRetires: containerMasterRetires(abi), keepsTokenless: containerKeepsTokenless(abi, kind) };
 }
 
 /** The empty sorted-list HEAD: slot 0, next key 0, and the 64-byte empty-value pad. */
@@ -58,14 +103,27 @@ export function deployerConstantsOf(artifact: Artifact, contract: ContractNode):
       .filter((access) => access.keySource === 'param' && parameterNames.has(access.keyParam))
       .map((access) => access.keyParam))]
     : [];
+  // A8: C keeps its satoshi container single when the pragma is set and a function of C has a satoshi container
+  // slot in its block layout. A contract that carries the pragma but never uses the container keeps nothing, so its
+  // deployer neither requires nor seeds one.
+  const usesSatoshiContainer = (artifact.abi ?? []).some((fn) => (fn.blockLayout?.slots ?? [])
+    .some((slot) => slot.kind === 'satoshiContainer'));
   return {
     code,
     dataNftCount: layout?.dataNftCount ?? 0,
     collections,
     keepsSatoshiContainer: contract.keepsSatoshiContainer,
-    singleSatoshiContainer: contract.singleSatoshiContainer,
+    singleSatoshiContainer: contract.singleSatoshiContainer === true && usesSatoshiContainer,
     singleTokenContainer: contract.singleTokenContainer,
     tokenContainerCount: contract.tokenContainerCount,
     singleTokenContainerKeys,
+    containerOptions: {
+      satoshiContainer: containerOptionsFromAbi(artifact, 'satoshiContainer'),
+      tokenContainer: containerOptionsFromAbi(artifact, 'tokenContainer'),
+    },
+    sourceContainerOptions: {
+      satoshiContainer: containerOptionsFromSource(contract, 'satoshiContainer'),
+      tokenContainer: containerOptionsFromSource(contract, 'tokenContainer'),
+    },
   };
 }

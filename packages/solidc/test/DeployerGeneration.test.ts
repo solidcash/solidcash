@@ -45,12 +45,14 @@ describe('B7.0: when a deployer is built', () => {
     expect(artifact.deployerUnsupported).toBe('blockhash-ring');
   });
 
-  it('a live block reader gets a deployer that mints its oracle', () => {
+  // A2: a live block read names its oracle pool by the contract argument `__oraclePool`, which A carries, so the code
+  // is the same for every category: the deployer is built, and its ABI says that C reads block data.
+  it('builds a deployer for a live block reader, which binds its oracle pool in A', () => {
     const source = `${P} contract C { int n; constructor() { n = 1; } function f() { n = block.number; } }`;
-    const { artifact, warnings } = compile(source, { deployer: true });
+    const { artifact } = compile(source, { deployer: true });
     expect(artifact.deployerUnsupported).toBeUndefined();
     expect(artifact.deployer?.readsBlockData).toBe(true);
-    expect(warnings.some((warning) => warning.includes('code-not-constant'))).toBe(false);
+    expect(artifact.constructorInputs.map((input) => input.name)).toContain('__oraclePool');
   });
 
   it('a message-bus compile records lock-composition', () => {
@@ -58,6 +60,51 @@ describe('B7.0: when a deployer is built', () => {
     const { artifact, warnings } = compile(source, { deployer: true, messageBus: true });
     expect(artifact.deployerUnsupported).toBe('lock-composition');
     expect(warnings.some((warning) => warning.includes('lock-composition'))).toBe(true);
+  });
+
+  describe('single-container-key (A4.1): a single token container named by anything but a contract parameter', () => {
+    const single = (params: string, body: string): string => `${P} pragma tokencontainer single;
+      contract C(bytes32 asset) { int n; bytes32 immutable key; constructor() { n = 1; key = asset; }
+        function f(${params}address r) public { ${body} n = n + 1; } }`;
+
+    it('keeps the deployer and its row for a container a contract parameter names, by a transfer or a read', () => {
+      for (const body of ['this.tokens[asset].transfer(r, 1);', 'require(this.tokens[asset].tokenAmount > 0);']) {
+        const { artifact } = compile(single('', body), { deployer: true });
+        expect(artifact.deployerUnsupported).toBeUndefined();
+        expect(artifact.deployer?.tokenRows).toEqual([0]);
+      }
+    });
+
+    for (const [name, params, body] of [
+      ['a parameter of the function', 'bytes32 cat, ', 'this.tokens[cat].transfer(r, 1);'],
+      ['a parameter of the function, read', 'bytes32 cat, ', 'require(this.tokens[cat].tokenAmount > 0);'],
+      ['C\'s own category', '', 'bytes32 c = this.category; this.tokens[c].transfer(r, 1);'],
+      ['an immutable state value', '', 'bytes32 c = key; this.tokens[c].transfer(r, 1);'],
+    ] as const) {
+      it(`refuses a container named by ${name}`, () => {
+        const { artifact, warnings } = compile(single(params, body), { deployer: true });
+        expect(artifact.deployer).toBeUndefined();
+        expect(artifact.deployerUnsupported).toBe('single-container-key');
+        expect(warnings.some((warning) => warning.includes('single-container-key'))).toBe(true);
+      });
+    }
+
+    it('refuses when one function names a contract parameter\'s container and another names its own', () => {
+      const source = `${P} pragma tokencontainer single;
+        contract C(bytes32 asset) { int n; constructor() { n = 1; }
+          function f(address r) public { this.tokens[asset].transfer(r, 1); n = n + 1; }
+          function g(bytes32 cat, address r) public { this.tokens[cat].transfer(r, 1); n = n + 1; } }`;
+      const { artifact } = compile(source, { deployer: true });
+      expect(artifact.deployerUnsupported).toBe('single-container-key');
+    });
+
+    it('does not apply without the single pragma', () => {
+      const source = `${P} contract C(bytes32 asset) { int n; constructor() { n = 1; }
+        function g(bytes32 cat, address r) public { this.tokens[cat].transfer(r, 1); n = n + 1; } }`;
+      const { artifact } = compile(source, { deployer: true });
+      expect(artifact.deployerUnsupported).toBeUndefined();
+      expect(artifact.deployer?.tokenRows).toEqual([]);
+    });
   });
 
   it('a struct constructor parameter records param-type', () => {
@@ -135,6 +182,18 @@ describe('B7.0: when a deployer is built', () => {
   it('the arms check throws for a program a test hook gave a third entry', () => {
     expect(() => compile(STATEFUL, { deployer: true, __deployerTestBox: { thirdArm: true } } as never))
       .toThrow(/internal deployer check failed/);
+  });
+
+  it('fails closed when create would pin no rows: no genesis layout, or a kept trailing region over container rows', () => {
+    // Every create has a layout, even for a C without a constructor; a test hook removes it.
+    expect(compile(STATEFUL, { deployer: true }).artifact.deployer).toBeDefined();
+    expect(() => compile(STATEFUL, { deployer: true, __deployerTestBox: { genesisLayout: 'drop' } } as never))
+      .toThrow(/internal deployer check failed: create has no genesis layout/);
+    const single = `${P} pragma satoshicontainer single; contract C { int n; constructor() { n = 1; }
+      function f() public payable { n = n + 1; } }`;
+    expect(compile(single, { deployer: true }).artifact.deployer!.satoshiContainer).toBe('required');
+    expect(() => compile(single, { deployer: true, __deployerTestBox: { genesisLayout: 'trailing' } } as never))
+      .toThrow(/internal deployer check failed: the constructor's layout keeps a trailing region/);
   });
 
   const createInputs = (source: string): string[] => {
@@ -248,6 +307,38 @@ describe('B7.5: what the constructor does', () => {
     ]);
   });
 
+  // A7: the generator must find a checked record for every call it visits in genesis mode. A low-level call's
+  // result names no method, so there is no digest create could compare.
+  it('refuses ctor-call-unbound for a constructor call with no record to check', () => {
+    const source = `${P} contract C { bool ok; constructor(address a) {
+      (bool s, bytes memory d) = a.call(abi.encodeWithSignature("f(int256)", 5)); ok = s && d.length == 0; } }`;
+    const { artifact } = compile(source, { deployer: true });
+    expect(artifact.deployer).toBeUndefined();
+    expect((artifact as { deployerUnsupported?: string }).deployerUnsupported).toBe('ctor-call-unbound');
+  });
+
+  // A void call is bound too: create requires the record `digest ‖ 01`, which a callee compiled with
+  // `callRecords: 'all'` publishes and any other cannot (the SDK names it before building, A14 item 5).
+  it('binds a void constructor call to its record', () => {
+    const source = `${P} interface I { function g(int x) external; }
+      contract C { bool ok; constructor(I i) { i.g(5); ok = true; } }`;
+    expect(compile(source, { deployer: true }).artifact.deployer?.callSlots).toBe(1);
+  });
+
+  it('refuses ctor-call-shape for a constructor call that passes a sig', () => {
+    const source = `${P} interface I { function f(sig s) external returns (bool); }
+      contract C { bool ok; constructor(I i, sig s) { ok = i.f(s); } }`;
+    const { artifact } = compile(source, { deployer: true });
+    expect((artifact as { deployerUnsupported?: string }).deployerUnsupported).toBe('ctor-call-shape');
+  });
+
+  it('builds a deployer for a constructor whose call returns a record', () => {
+    const source = `${P} interface I { function f(int x) external returns (bool); }
+      contract C { bool ok; constructor(I i) { ok = i.f(5); } }`;
+    const { artifact } = compile(source, { deployer: true });
+    expect(artifact.deployer?.callSlots).toBe(1);
+  });
+
   it('sweep carries this.age >= 1440 and no own-category read', () => {
     const { artifact } = compile(STATEFULWithCtor, { deployer: true });
     const hex = artifact.deployer!.bytecode;
@@ -255,8 +346,9 @@ describe('B7.5: what the constructor does', () => {
   });
 
   it('names a single satoshi container and a single token container keyed by a contract parameter', () => {
+    // A8: the pragma and a function that uses the container; the pragma alone keeps nothing.
     const satoshi = compile(`pragma solidcash ^0.50.0; pragma satoshicontainer single;
-      contract C() { int n; constructor() { n = 1; } function bump() { n = n + 1; } }`,
+      contract C() { int n; constructor() { n = 1; } function pay(address r) { payable(r).transfer(1200); n = n + 1; } }`,
       { deployer: true });
     expect(satoshi.artifact.deployer!.satoshiContainer).toBe('required');
 
@@ -293,12 +385,109 @@ describe('B7.5: what the constructor does', () => {
   });
 });
 
+describe('ctor-construction-order (A4.1): construction the front end may order differently from solc', () => {
+  const reasonOf = (source: string): string | undefined => compile(source, { deployer: true }).artifact.deployerUnsupported;
+  const TAIL = 'int n; constructor() { n = 3; } function f() { n = n + 1; } }';
+
+  it('allows sibling bases whose constructions touch different state', () => {
+    expect(reasonOf(`${P} contract A { int a; constructor() { a = 1; } }
+      contract B { int b; constructor() { b = 2; } }
+      contract C is A, B { ${TAIL}`)).toBeUndefined();
+  });
+
+  it('refuses sibling bases that write one field of a shared base', () => {
+    expect(reasonOf(`${P} contract S { int s; }
+      contract A is S { constructor() { s = 1; } }
+      contract B is S { constructor() { s = 2; } }
+      contract C is A, B { ${TAIL}`)).toBe('ctor-construction-order');
+  });
+
+  it('refuses sibling bases that touch one field through a call', () => {
+    expect(reasonOf(`${P} contract S { int s; function bumpS() internal { s = s + 1; } }
+      contract A is S { constructor() { bumpS(); } }
+      contract B is S { constructor() { s = 2; } }
+      contract C is A, B { ${TAIL}`)).toBe('ctor-construction-order');
+  });
+
+  it('refuses a base reached by two paths when it has construction', () => {
+    expect(reasonOf(`${P} contract S { int s; constructor() { s = 1; } }
+      contract A is S { int a; constructor() { a = 1; } }
+      contract B is S { int b; constructor() { b = 2; } }
+      contract C is A, B { ${TAIL}`)).toBe('ctor-construction-order');
+  });
+
+  it('allows a base reached by two paths when it has no construction', () => {
+    expect(reasonOf(`${P} contract S { int s; }
+      contract A is S { int a; constructor() { a = 1; } }
+      contract B is S { int b; constructor() { b = 2; } }
+      contract C is A, B { ${TAIL}`)).toBeUndefined();
+  });
+
+  it('refuses a state initialiser that reads what a base constructor writes', () => {
+    expect(reasonOf(`${P} contract B { int x; constructor() { x = 5; } }
+      contract C is B { int y = x + 1; ${TAIL}`)).toBe('ctor-construction-order');
+  });
+
+  it('allows a state initialiser that touches nothing of its bases', () => {
+    expect(reasonOf(`${P} contract B { int x; constructor() { x = 5; } }
+      contract C is B { int y = 7; ${TAIL}`)).toBeUndefined();
+  });
+
+  it('allows a derived constructor body that writes what its base constructor wrote', () => {
+    // Bases are built before the derived body in the front end and in both of solc's generators.
+    expect(reasonOf(`${P} contract B { int x; constructor() { x = 5; } }
+      contract C is B { int n; constructor() { x = 6; n = 1; } function f() { n = n + 1; } }`)).toBeUndefined();
+  });
+
+  it('refuses a constructor modifier that touches what a state initialiser of its contract writes', () => {
+    expect(reasonOf(`${P} contract C { int y = 1; int n;
+      modifier bump() { y = y + 1; _; }
+      constructor() bump() { n = 3; } function f() { n = n + 1; } }`)).toBe('ctor-construction-order');
+  });
+
+  it('refuses the same modifier written without parentheses', () => {
+    expect(reasonOf(`${P} contract C { int y = 1; int n;
+      modifier bump { y = y + 1; _; }
+      constructor() bump { n = 3; } function f() { n = n + 1; } }`)).toBe('ctor-construction-order');
+  });
+
+  it('allows a constructor modifier whose argument reads state no initialiser touches', () => {
+    // A modifier's argument is the modifier's own, not a base argument.
+    expect(reasonOf(`${P} contract C { int n;
+      modifier atLeast(int v) { require(v >= 0); _; }
+      constructor() atLeast(n) { n = 3; } function f() { n = n + 1; } }`)).toBeUndefined();
+  });
+
+  it('names the contracts in its warning', () => {
+    const { warnings } = compile(`${P} contract S { int s; }
+      contract A is S { constructor() { s = 1; } }
+      contract B is S { constructor() { s = 2; } }
+      contract C is A, B { ${TAIL}`, { deployer: true });
+    expect(warnings.some((warning) => warning.includes('ctor-construction-order')
+      && warning.includes("'A'") && warning.includes("'B'"))).toBe(true);
+  });
+});
+
 describe('B7.5: the collection shape of a constructor', () => {
   const reasonOf = (source: string): string | undefined => compile(source, { deployer: true }).artifact.deployerUnsupported;
 
   it('refuses a base constructor argument that reads state', () => {
     const source = `${P} contract B(int x) { int pb; }
       contract D is B(b) { int b; constructor() {} }`;
+    expect(reasonOf(source)).toBe('ctor-base-argument');
+  });
+
+  it('refuses a header base argument that reads an inherited field', () => {
+    const source = `${P} contract S { int s; }
+      contract B { int pb; constructor(int x) { pb = x; } }
+      contract D is S, B { int n; constructor() B(s) { n = 1; } function f() { n = n + 1; } }`;
+    expect(reasonOf(source)).toBe('ctor-base-argument');
+  });
+
+  it('refuses a base argument that reads state in an intermediate base', () => {
+    const source = `${P} contract B(int x) { int pb; }
+      contract M is B(m) { int m; }
+      contract D is M { int n; constructor() { n = 1; } function f() { n = n + 1; } }`;
     expect(reasonOf(source)).toBe('ctor-base-argument');
   });
 
@@ -357,11 +546,16 @@ describe('B7.5: ctor-call-count', () => {
 });
 
 describe('B7.9: the genesis range order', () => {
-  const layoutOf = (source: string): { kinds: string[]; outputs: number; slots: { kind: string; offset: number }[] } => {
+  const layoutOf = (source: string): {
+    kinds: string[]; outputs: number; slots: { kind: string; offset: number; slotIndex?: number }[]; tokenRows: number[];
+  } => {
     const { artifact } = compile(source, { deployer: true });
     const create = artifact.deployer!.abi.find((fn) => fn.name === 'create')!;
-    const slots = create.blockLayout!.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset }));
-    return { kinds: slots.map((slot) => slot.kind), outputs: artifact.deployer!.genesisOutputs, slots };
+    const slots = create.blockLayout!.slots.map((slot) => ({ kind: slot.kind, offset: slot.offset, slotIndex: slot.slotIndex }));
+    return {
+      kinds: slots.map((slot) => slot.kind), outputs: artifact.deployer!.genesisOutputs, slots,
+      tokenRows: [...artifact.deployer!.tokenRows],
+    };
   };
 
   it('orders master, records, containers, transfers and events', () => {
@@ -387,13 +581,29 @@ describe('B7.9: the genesis range order', () => {
     expect(multi.outputs).toBe(2);
   });
 
+  it('makes a token row for a single container the constructor does not touch, keyed by its parameter', () => {
+    // A4.4: one row per contract parameter a function of C uses as a container's category, from birth. TokenPool's
+    // shape: the container's parameter is not the first, and only a later function names the container. Its payable
+    // `deposit` uses the satoshi container, so C keeps that container single under A8's stricter reading too.
+    const layout = layoutOf(`${P} pragma satoshicontainer single; pragma tokencontainer single;
+      contract C(uint8 exponent, bytes32 asset) { int n; constructor() { n = int(exponent); }
+        function deposit() public payable { n = n + 1; }
+        function withdraw(address recipient) public { this.tokens[asset].transfer(recipient, 1); } }`);
+    expect(layout.kinds).toEqual(['master', 'dataNft', 'satoshiContainer', 'tokenContainer']);
+    expect(layout.slots[3].slotIndex).toBe(1);
+    expect(layout.tokenRows).toEqual([1]);
+    expect(layout.outputs).toBe(4);
+  });
+
   it('mints a HEAD for a sorted collection the constructor does not write', () => {
     const layout = layoutOf(`${P} contract C { mapping(int => int) m; constructor() {} }`);
     expect(layout.kinds).toEqual(['master', 'head']);
     expect(layout.outputs).toBe(2);
   });
 
-  it('keeps the entries of a collection the constructor writes, with no separate HEAD', () => {
+  // A4.4: a constructor that writes a collection gets no deployer (`ctor-collection-shape`) until the collection
+  // journal and step 12's check of its rows are built. Restore these with that work.
+  it.skip('keeps the entries of a collection the constructor writes, with no separate HEAD', () => {
     const layout = layoutOf(`${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } }`);
     expect(layout.kinds).toEqual(['master', 'entry']);
     expect(layout.outputs).toBe(2);

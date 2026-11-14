@@ -175,6 +175,8 @@ export class ContractNode extends Node implements Named {
   recordSound?: boolean;
   /** Set by code generation: the flag byte of the code marker, 0 when the contract carries none. */
   codeMarkerFlags?: number;
+  /** O4: the generator gave this direct master its code tail (`applyCodeTail`), which the compiler verifies at the end. */
+  codeTailApplied?: boolean;
   /** Set by code generation: this contract creates a sender-reading child, so it is a marked creator (A6). */
   createsSenderReadingChildren?: boolean;
   isAbstract: boolean = false;
@@ -1248,6 +1250,11 @@ export class StateVariableNode extends Node implements Named, Typed {
 export abstract class StatementNode extends Node {
   /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
   messageBusFixedChunkableWriteGuard?: string;
+  /**
+   * Set by the parser on the statements it lowers a state initialiser into (the variable or collection named):
+   * A4.1's `ctor-construction-order` tells a contract's initialisers from its constructor body by it.
+   */
+  stateInitializerOf?: string;
   /** Base contract that wrote this statement when its constructor is inlined into a derived one (`super` scope). */
   baseConstructorOf?: string;
   /** A top-level statement of the read-modify-write whose keys carry this `LvalueKeyTag.unit` (BindLvalueKeyEffects). */
@@ -1788,6 +1795,18 @@ export abstract class ExpressionNode extends Node {
   // One of several builds of a read-modify-write's key that might have a side effect (BindLvalueKeyEffects).
   lvalueKey?: LvalueKeyTag;
 }
+
+/**
+ * A4.1: the keys, other than literals, of `T storage x = c[k]` bindings. The parser drops a binding and clones its keys
+ * into each use of x, where Solidity evaluates them once at the binding; `cloneNode` adds each clone of a key here.
+ */
+export const storageAliasKeys = new WeakSet<Node>();
+
+/**
+ * A4.1: the locals modifier expansion declares for a `storage` parameter whose argument is not a bare identifier. Such
+ * a local holds a copy, so the modifier's writes through the parameter are lost; `cloneNode` adds each clone here.
+ */
+export const storageParameterCopies = new WeakSet<Node>();
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
 // (Solidity's assignment-as-expression, e.g. `while ((n >>= 1) > 0)`). Wraps the desugared AssignNode.
@@ -3616,6 +3635,51 @@ export class MinerFeeStatementNode extends StatementNode {
 
   accept<T>(visitor: AstVisitor<T>): T {
     return visitor.visitMinerFeeStatement(this);
+  }
+}
+
+/**
+ * A4.4: an append to a constructor's collection journal. The deployer program's rewrite turns a constructor's write
+ * `m[k] = v` into one. It appends the record slot ‖ size ‖ value: the key's slot as the ordinary write path computes it,
+ * the value's size in two bytes, and the value as that path stores it (an int minimal, a struct its encoded fields).
+ * A field write `m[k].f = v` (`m[k].a.b = v`) sets `field` to the member path: the append takes the key's last value
+ * in the journal, or the default, replaces that field with `value`, and appends the whole struct.
+ */
+export class JournalAppendNode extends StatementNode {
+  collection?: CollectionNode;
+
+  constructor(
+    public journal: string,
+    public collectionName: string,
+    public keys: ExpressionNode[],
+    public value: ExpressionNode,
+    public field?: string[],
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitJournalAppend(this);
+  }
+}
+
+/**
+ * A4.4: a look into a constructor's collection journal, the rewrite of a read `m[k]`: the value of the last record
+ * whose slot is the key's, decoded, or the value type's default when there is none.
+ */
+export class JournalLookNode extends ExpressionNode {
+  collection?: CollectionNode;
+
+  constructor(
+    public journal: string,
+    public collectionName: string,
+    public keys: ExpressionNode[],
+  ) {
+    super();
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitJournalLook(this);
   }
 }
 

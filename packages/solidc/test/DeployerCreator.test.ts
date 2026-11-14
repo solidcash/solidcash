@@ -41,6 +41,50 @@ describe('B8.0: a deployer child is compiled standalone and published', () => {
     expect(creator.childDeployers).toBeUndefined();
   });
 
+  it('keeps today\'s embedding for a child with no state that only emits: its own compile is stateless', () => {
+    const source = `${P} contract EvChild { event Hi(int x); function f() { emit Hi(2); } }
+      contract Parent { int m; function make() { EvChild e = new EvChild(); m = 1; } }`;
+    expect(compileString(source, { primaryContractName: 'EvChild', deployer: true } as never).deployerUnsupported)
+      .toBe('not-stateful-direct');
+    expect(compile(source).childDeployers).toBeUndefined();
+  });
+
+  it('binds the deployer of a child that is stateful only because it creates a stateful child (B10)', () => {
+    const source = `${P} ${statefulChild('G')}
+      contract Mid { function mk() { G g = new G(); } }
+      contract Parent { int m; function make() { Mid c = new Mid(); m = 1; } }`;
+    const creator = compileString(source, { ...OPTIONS, primaryContractName: 'Parent' } as never);
+    expect(Object.keys(creator.childDeployers ?? {})).toEqual(['Mid']);
+    const mid = compileString(source, { primaryContractName: 'Mid', deployer: true } as never);
+    expect(mid.stateLayout?.dataNftCount).toBe(0);
+    expect(creator.childDeployers!.Mid.lockingBytecode).toBe(mid.deployer!.lockingBytecode);
+  });
+
+  describe('deployer `new`s in loops and branches (B8.6, B8.8, A8)', () => {
+    const CHILD = 'contract Child { int n; constructor() payable { n = 1; } function take() public payable { n = n + 1; } }';
+    const creator = (body: string): Artifact => compile(`${P} ${CHILD} contract F { int c; ${body} }`,
+      { primaryContractName: 'F', allowUnsafeOperations: true });
+
+    it('compiles a value on a deployer `new` in a branch and in a runtime loop', () => {
+      // Its local ends with its block; the function sums the scoped values for the container conservation.
+      for (const body of [
+        'function make(bool b) public payable { if (b) { new Child{value: 5000}(); } c = c + 1; }',
+        'function make(int k) public payable { for (int i = 0; i < k; i = i + 1) { new Child{value: 5000}(); } c = c + 1; }',
+      ]) expect(Object.keys(creator(body).childDeployers ?? {})).toEqual(['Child']);
+    });
+
+    it('compiles a payment to a `new` result in a runtime loop', () => {
+      expect(Object.keys(creator('function make(int k) public payable { for (int i = 0; i < k; i = i + 1) '
+        + '{ Child kid = new Child(); this.transfer(kid, 3000); } c = c + 1; }').childDeployers ?? {})).toEqual(['Child']);
+    });
+
+    it('refuses a deployer `new` in a runtime loop beside another `new` of its function', () => {
+      // One counter of fired deploys indexes a loop's deployer inputs; a second site would share it.
+      expect(() => creator('function make(int k) { for (int i = 0; i < k; i = i + 1) { new Child(); } '
+        + 'new Child(); c = c + 1; }')).toThrow(/only `new` of its function/);
+    });
+  });
+
   it('binds each level of a nested creator to its own child deployer', () => {
     const source = `${P} ${statefulChild('G')}
       contract C { int y; function mk() { G g = new G(); y = 1; } }
@@ -83,14 +127,15 @@ describe('B8.6: the site binds the deployer instead of embedding the child', () 
     expect(asm).toContain('OP_INPUTBYTECODE OP_6 OP_SPLIT');
   });
 
-  it('binds two call slots with a two-byte long callee list at byte 6', () => {
+  it('binds a child with two call slots: the prefix names the list, and Q ‖ A starts after it (A6 step 4)', () => {
     const source = `${P} interface IA { function f(int x) external returns (bool); }
       interface IB { function g(int x) external returns (bool); }
       contract Child { int n; constructor(address a, address b) { IA(a).f(1); IB(b).g(2); n = 1; } }
       contract Parent { int m; function make(address a, address b) { Child c = new Child(a, b); m = 1; } }`;
     const creator = compile(source);
     expect(creator.childDeployers!.Child.callSlots).toBe(2);
-    expect(binding(source)).toContain('04af34141304');
+    // The list's four bytes are stepped over, not bound: the creator does not know the callees' inputs.
+    expect(binding(source)).toContain('04af34141304 OP_EQUALVERIFY OP_4 OP_SPLIT OP_NIP OP_TOALTSTACK');
   });
 
   it('gets the arguments from args and the parentheses from the constructor', () => {

@@ -3,7 +3,8 @@
  *
  * The deployer coin sits at input 3 and the genesis range starts at output 5, so no index of the range can be
  * mistaken for the running input. The constructor writes one scalar, which is minted as the data record at
- * OUTBASE + 1.
+ * OUTBASE + 1. The author coin (X, 1) is input 1 (A4.3 step 4), and the container rows sit at C's container locks
+ * for (M, X), built with the options the SDK reads from C's artifact (A4.4).
  */
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin, sha256 } from '@bitauth/libauth';
@@ -11,7 +12,8 @@ import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth/build/lib/v
 import { sha256 } from '@bitauth/libauth/build/lib/crypto/default-crypto-instances.js';
 import {
   asmToScript, AUTHHEAD_BODY, buildDataNftCovenantScript, buildEntryNftCovenantScript,
-  buildPushdataCommitment, computeCollectionHash, encodePushdataValue, scriptToBytecode,
+  buildPushdataCommitment, buildSatoshiContainerCovenantScript, buildTokenContainerCovenantScript,
+  computeCollectionHash, containerKeepsTokenless, containerMasterRetires, encodePushdataValue, scriptToBytecode,
   type Artifact, type DeployerAbi,
 } from '@solidcash/utils';
 import { compileString } from '../src/index.js';
@@ -86,6 +88,29 @@ function genesisMasters(deployer: DeployerAbi, contractArgs: { name: string; val
   return { x, redeem, master: encodeLockingBytecodeP2sh32(hash256(redeem)) };
 }
 
+/** C's satoshi container lock for (M, X), as the SDK derives it (`getSatoshiContainerAddress`). */
+function satoshiRowLock(artifact: Artifact, master: Uint8Array): Uint8Array {
+  const abi = artifact.abi ?? [];
+  return encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(
+    dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
+    { masterRetires: containerMasterRetires(abi), keepsTokenless: containerKeepsTokenless(abi, 'satoshiContainer') },
+  ))));
+}
+
+/** C's token container lock for (M, X, t), t in display order as the container key holds it (`getTokenContainerAddress`). */
+function tokenRowLock(artifact: Artifact, master: Uint8Array, token: Uint8Array): Uint8Array {
+  const abi = artifact.abi ?? [];
+  return encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildTokenContainerCovenantScript(
+    dummyInput(DEPLOYER_INPUT).outpointTransactionHash, token, master,
+    { masterRetires: containerMasterRetires(abi), keepsTokenless: containerKeepsTokenless(abi, 'tokenContainer') },
+  ))));
+}
+
+/** The author coin (X, 1) of the deployer coin at input DEPLOYER_INPUT (A4.3 step 4). */
+function authorInput(index: number): VmInput {
+  return { ...dummyInput(index), outpointTransactionHash: dummyInput(DEPLOYER_INPUT).outpointTransactionHash, outpointIndex: 1 };
+}
+
 function createSpend(
   artifact: Artifact, deployer: DeployerAbi, record?: VmOutput,
   contractArgs: { name: string; value: Uint8Array }[] = [],
@@ -139,14 +164,15 @@ function createSpend(
       for (const slot of layout.slots) {
         if (slot.kind === 'satoshiContainer') {
           outputs.push({
-            lockingBytecode: TOKENLESS,
+            lockingBytecode: satoshiRowLock(artifact, master),
             valueSatoshis: (layout.singleSatoshiContainer === true ? 1200n : 0n) + deployValue,
           });
         } else if (slot.kind === 'tokenContainer' && slot.slotIndex !== undefined) {
+          // A token row's slot index names its contract parameter, which holds the category in display order.
           const argument = contractArgs[slot.slotIndex];
           if (argument !== undefined) {
             outputs.push({
-              lockingBytecode: TOKENLESS,
+              lockingBytecode: tokenRowLock(artifact, master, argument.value),
               valueSatoshis: 1200n,
               token: {
                 category: argument.value,
@@ -172,7 +198,7 @@ function createSpend(
   };
   for (const argument of contractArgs) values[argument.name] = argument.value;
   Object.assign(values, valueOverrides);
-  const inputs = [dummyInput(0), dummyInput(1), dummyInput(2), {
+  const inputs = [dummyInput(0), authorInput(1), dummyInput(2), {
     ...dummyInput(DEPLOYER_INPUT), sequenceNumber: deployerSequence,
     unlockingBytecode: createUnlock(deployer, values),
   }, ...extraInputs];
@@ -196,6 +222,34 @@ describe('B7.16: create at an output base different from its input', () => {
     const deployer = artifact.deployer!;
     const wrong = recordOutput(artifact, { n: 2n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash);
     expect(vm.verify(createSpend(artifact, deployer, wrong) as never)).not.toBe(true);
+  });
+});
+
+describe('A4.4: the data record is pinned at its row', () => {
+  const x = () => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
+
+  it('refuses the record at another lock or of another value', () => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const honest = recordOutput(artifact, { n: 1n }, x());
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, honest) as never)).toBe(true);
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, { ...honest, lockingBytecode: TOKENLESS }) as never))
+      .not.toBe(true);
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, { ...honest, valueSatoshis: 1201n }) as never))
+      .not.toBe(true);
+  });
+
+  it('refuses a decoy of another category at the record\'s row while X\'s record carries other state', () => {
+    // Input 0 spends (Y, 0), so the builder may mint category Y; the census counts only X's outputs.
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const honest = recordOutput(artifact, { n: 1n }, x());
+    const y = dummyInput(0).outpointTransactionHash;
+    const decoy: VmOutput = { ...honest, token: { category: y, amount: 0n, nft: { capability: 'mutable', commitment: honest.token!.nft!.commitment } } };
+    const forged = recordOutput(artifact, { n: 2n }, x());
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, decoy, [], (output) => output, undefined, {},
+      undefined, 0, 0xffffffff, [forged]) as never)).not.toBe(true);
+    // Control: the same Y NFT as an extra output beside the honest record passes.
+    expect(vm.verify(createSpend(artifact, artifact.deployer!, honest, [], (output) => output, undefined, {},
+      undefined, 0, 0xffffffff, [decoy]) as never)).toBe(true);
   });
 });
 
@@ -241,8 +295,10 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
       lockingBytecode: TOKENLESS, valueSatoshis: 1200n, token: { category, amount: 1n },
     };
     const tokenInput: VmInput = { ...dummyInput(4), outpointTransactionHash: category, outpointIndex: 0 };
+    // The record is at the data lock of the master that commits to `asset` (A4.4).
+    const { master } = genesisMasters(artifact.deployer!, [{ name: 'asset', value: asset }]);
     const spend = createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+      artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
     ), [{ name: 'asset', value: asset }], (output) => output, undefined, {}, undefined, 0, 0xffffffff,
     [], [tokenInput], [tokenSource]);
     expect(vm.verify(spend as never)).toBe(true);
@@ -258,42 +314,38 @@ describe('A3 rule 4: the start of a token container in a constructor', () => {
 
   it('reads zero for any other container', () => {
     const artifact = compileString(tokenStart(''), { deployer: true, messageBus: false });
+    const { master } = genesisMasters(artifact.deployer!, [{ name: 'asset', value: asset }]);
     expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 0n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+      artifact, { n: 0n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
     ), [{ name: 'asset', value: asset }]) as never)).toBe(true);
   });
 });
 
 describe('B7.10: the balance journal', () => {
-  it('reads this.balance as __internal__deployValue less the sends', () => {
+  it('refuses a constructor that sends and then reads this.balance (A4.1\'s balance rule)', () => {
+    // A read and a send in one constructor would let the front end's order of evaluation show: in a function
+    // `this.balance` is the same before and after a send, while at birth the journal falls at each send.
     const artifact = compileString(`${P} contract C(address payable to) { int n;
       constructor() payable { payable(to).send(1000); n = this.balance; } }`,
     { deployer: true, messageBus: false });
-    const to = Uint8Array.from([0x76, 0xa9, 0x14, ...Array.from({ length: 20 }, (_, i) => i + 1), 0x88, 0xac]);
-    const { master } = genesisMasters(artifact.deployer!, [{ name: 'to', value: to }]);
-    const transfer: VmOutput = { lockingBytecode: to, valueSatoshis: 1000n };
-    const satoshiRow: VmOutput = { lockingBytecode: TOKENLESS, valueSatoshis: 4000n };
-    const spend = createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 4000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
-    ), [{ name: 'to', value: to }], (output) => output, undefined,
-    { __internal__deployValue: bigIntToVmNumber(5000n) }, undefined, 0, 0xffffffff, [satoshiRow, transfer]);
-    expect(vm.verify(spend as never)).toBe(true);
+    expect(artifact.deployer).toBeUndefined();
+    expect((artifact as { deployerUnsupported?: string }).deployerUnsupported).toBe('ctor-collection-shape');
   });
 
   it('reads a payable constructor\'s balance as the deploy value', () => {
     const artifact = compileString(`${P} contract C { int n; constructor() payable { n = this.balance; } }`,
       { deployer: true, messageBus: false });
     expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 1000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
-    ), [], (output) => output, undefined, { __internal__deployValue: Uint8Array.of(0xe8, 0x03) }) as never)).toBe(true);
+      artifact, { n: 2000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(2000n) }) as never)).toBe(true);
   });
 
   it('reads the container start plus the value when it keeps the satoshi container single', () => {
     const artifact = compileString(`${P} pragma satoshicontainer single; contract C { int n;
       constructor() payable { n = this.balance; } }`, { deployer: true, messageBus: false });
     expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 1700n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
-    ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(500n) }) as never)).toBe(true);
+      artifact, { n: 2700n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(1500n) }) as never)).toBe(true);
   });
 });
 
@@ -362,11 +414,16 @@ describe('B7.12: the identity output when the flag is 1', () => {
 });
 
 describe('B7.10: block fields at genesis come from the locktime', () => {
+  // A block reader's master lock commits to its `__oraclePool` binding (createSpend passes 0x11 bytes), and create
+  // pins the record row at the data lock of that master (A4.4).
+  const pooled = (artifact: Artifact): Uint8Array => genesisMasters(artifact.deployer!, [
+    { name: '__oraclePool', value: new Uint8Array(32).fill(0x11) },
+  ]).master;
   it('reads block.number', () => {
     const artifact = compileString(`${P} contract C { int n; constructor() { n = block.number; } }`,
       { deployer: true, messageBus: false });
     const spend = createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 900n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+      artifact, { n: 900n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, pooled(artifact),
     ), [], (output) => output, undefined, {}, undefined, 900, 0xfffffffe);
     expect(vm.verify(spend as never)).toBe(true);
   });
@@ -375,7 +432,7 @@ describe('B7.10: block fields at genesis come from the locktime', () => {
     const artifact = compileString(`${P} contract C { int n; constructor() { n = block.timestamp; } }`,
       { deployer: true, messageBus: false });
     expect(vm.verify(createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 1_700_000_000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+      artifact, { n: 1_700_000_000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, pooled(artifact),
     ), [], (output) => output, undefined, {}, undefined, 1_700_000_000, 0xfffffffe) as never)).toBe(true);
   });
 
@@ -383,7 +440,7 @@ describe('B7.10: block fields at genesis come from the locktime', () => {
     const artifact = compileString(`${P} contract C { int n; constructor() { n = block.number; } }`,
       { deployer: true, messageBus: false });
     const spend = createSpend(artifact, artifact.deployer!, recordOutput(
-      artifact, { n: 1_700_000_000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+      artifact, { n: 1_700_000_000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, pooled(artifact),
     ), [], (output) => output, undefined, {}, undefined, 1_700_000_000, 0xfffffffe);
     expect(vm.verify(spend as never)).not.toBe(true);
   });
@@ -442,6 +499,70 @@ describe('B7.16: the deployer coin and the output base', () => {
   });
 });
 
+describe('A4.3 steps 3 and 4: the deployer coin is (X, 0) and the author coin (X, 1) is spent', () => {
+  const x = () => dummyInput(DEPLOYER_INPUT).outpointTransactionHash;
+
+  it('refuses another coin in the author coin\'s place, and the author coin at an index the parameter does not name', () => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    const replaced = createSpend(artifact, artifact.deployer!);
+    replaced.transaction.inputs[1] = dummyInput(1);
+    expect(vm.verify(replaced as never)).not.toBe(true);
+    const change = createSpend(artifact, artifact.deployer!);
+    change.transaction.inputs[1] = { ...change.transaction.inputs[1], outpointIndex: 2 };
+    expect(vm.verify(change as never)).not.toBe(true);
+    // The author coin at input 2: refused while __internal__authorIndex names input 1, accepted once it names 2.
+    for (const [authorIndex, accepted] of [[1, false], [2, true]] as const) {
+      const moved = createSpend(artifact, artifact.deployer!, undefined, [], (output) => output, undefined,
+        { __internal__authorIndex: Uint8Array.of(authorIndex) });
+      [moved.transaction.inputs[1], moved.transaction.inputs[2]] = [dummyInput(1), authorInput(2)];
+      expect(vm.verify(moved as never) === true, `author index ${authorIndex}`).toBe(accepted);
+    }
+  });
+
+  it('refuses a deployer coin at (X, 2) beside a coin at (X, 0), and accepts the two the other way round', () => {
+    const artifact = compileString(C, { deployer: true, messageBus: false });
+    for (const [deployerVout, otherVout, accepted] of [[2, 0, false], [0, 2, true]] as const) {
+      const spend = createSpend(artifact, artifact.deployer!);
+      spend.transaction.inputs[0] = { ...spend.transaction.inputs[0], outpointTransactionHash: x(), outpointIndex: otherVout };
+      spend.transaction.inputs[DEPLOYER_INPUT].outpointIndex = deployerVout;
+      expect(vm.verify(spend as never) === true, `deployer at vout ${deployerVout}`).toBe(accepted);
+    }
+  });
+});
+
+describe('A4.4: an optional satoshi row', () => {
+  const SENDS = `${P} contract C(address payable to) { int n; constructor() payable { payable(to).send(1200); n = 1; } }`;
+  const to = Uint8Array.from([0x76, 0xa9, 0x14, ...Array.from({ length: 20 }, (_, i) => i + 1), 0x88, 0xac]);
+  const spendWith = (deployValue: bigint, row: (master: Uint8Array, artifact: Artifact) => VmOutput) => {
+    const artifact = compileString(SENDS, { deployer: true, messageBus: false });
+    const { master } = genesisMasters(artifact.deployer!, [{ name: 'to', value: to }]);
+    const transfer: VmOutput = { lockingBytecode: to, valueSatoshis: 1200n };
+    return createSpend(artifact, artifact.deployer!, recordOutput(
+      artifact, { n: 1n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash, master,
+    ), [{ name: 'to', value: to }], (output) => output, undefined,
+    { __internal__deployValue: bigIntToVmNumber(deployValue) }, undefined, 0, 0xffffffff, [row(master, artifact), transfer]);
+  };
+
+  it('with a balance left, holds it at the container lock', () => {
+    expect(vm.verify(spendWith(5000n, (master, artifact) => ({
+      lockingBytecode: satoshiRowLock(artifact, master), valueSatoshis: 3800n,
+    })) as never)).toBe(true);
+    expect(vm.verify(spendWith(5000n, () => ({ lockingBytecode: TOKENLESS, valueSatoshis: 3800n })) as never))
+      .not.toBe(true);
+    expect(vm.verify(spendWith(5000n, (master, artifact) => ({
+      lockingBytecode: satoshiRowLock(artifact, master), valueSatoshis: 3799n,
+    })) as never)).not.toBe(true);
+  });
+
+  it('with nothing left, takes any output without a token', () => {
+    expect(vm.verify(spendWith(1200n, () => ({ lockingBytecode: TOKENLESS, valueSatoshis: 1000n })) as never)).toBe(true);
+    expect(vm.verify(spendWith(1200n, () => ({
+      lockingBytecode: TOKENLESS, valueSatoshis: 1000n,
+      token: { category: dummyInput(0).outpointTransactionHash, amount: 1n },
+    })) as never)).not.toBe(true);
+  });
+});
+
 describe('B7.10: the constructor reads msg.sender as tx.origin at birth', () => {
   const C_SENDER = `${P} contract C { int n; constructor() { n = int(msg.sender.length); } }`;
   const signer = new SignatureTemplate(alicePriv);
@@ -486,8 +607,8 @@ describe('B7.10: msg.value is the deploy value', () => {
       { deployer: true, messageBus: false });
     const deployer = artifact.deployer!;
     const spend = createSpend(artifact, deployer, recordOutput(
-      artifact, { n: 1000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
-    ), [], (output) => output, undefined, { __internal__deployValue: Uint8Array.of(0xe8, 0x03) });
+      artifact, { n: 2000n }, dummyInput(DEPLOYER_INPUT).outpointTransactionHash,
+    ), [], (output) => output, undefined, { __internal__deployValue: bigIntToVmNumber(2000n) });
     const verdict = vm.verify(spend as never);
     if (verdict !== true) {
       const st = vm.evaluate({ ...(spend as never), inputIndex: 3 } as never) as unknown as { error?: string; ip?: number; instructions?: { opcode: number }[] };
@@ -578,7 +699,9 @@ describe('B7.12: the callee list', () => {
 });
 
 describe('B7.18: a constructor mapping write', () => {
-  it('mints the entry row its write describes', () => {
+  // A4.4: a constructor that writes a collection gets no deployer (`ctor-collection-shape`) until the collection
+  // journal and step 12's check of its rows are built. Restore these with that work.
+  it.skip('mints the entry row its write describes', () => {
     const artifact = compileString(`${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } }`,
       { deployer: true, messageBus: false });
     const { x, master } = genesisMasters(artifact.deployer!);
@@ -625,7 +748,9 @@ describe('B7.18: a constructor mapping write', () => {
     };
   };
 
-  it('reads the value it wrote in the constructor', () => {
+  // A4.4: a constructor that writes a collection gets no deployer (`ctor-collection-shape`) until the collection
+  // journal and step 12's check of its rows are built. Restore these with that work.
+  it.skip('reads the value it wrote in the constructor', () => {
     const artifact = compileString(`${P} contract C { mapping(int => int) m;
       constructor() { m[1] = 2; require(m[1] == 2); } }`, { deployer: true, messageBus: false });
     const { entry } = entryFor(artifact, 2n);
@@ -639,7 +764,9 @@ describe('B7.18: a constructor mapping write', () => {
     expect(vm.verify(spend as never)).toBe(true);
   });
 
-  it('reads an unwritten key as the type default', () => {
+  // A4.4: a constructor that writes a collection gets no deployer (`ctor-collection-shape`) until the collection
+  // journal and step 12's check of its rows are built. Restore these with that work.
+  it.skip('reads an unwritten key as the type default', () => {
     const artifact = compileString(`${P} contract C { int n; mapping(int => int) m;
       constructor() { m[1] = 2; n = m[5]; } }`, { deployer: true, messageBus: false });
     const { master, entry } = entryFor(artifact, 2n);
@@ -657,7 +784,9 @@ describe('B7.18: a constructor mapping write', () => {
 });
 
 describe('B7.18: a held read feeds the next entry', () => {
-  it('writes the held value into the second key', () => {
+  // A4.4: a constructor that writes a collection gets no deployer (`ctor-collection-shape`) until the collection
+  // journal and step 12's check of its rows are built. Restore these with that work.
+  it.skip('writes the held value into the second key', () => {
     const artifact = compileString(`${P} contract C { mapping(int => int) m;
       constructor() { m[1] = 5; m[2] = m[1] + 1; } }`, { deployer: true, messageBus: false });
     const { x, master } = genesisMasters(artifact.deployer!);
@@ -687,7 +816,9 @@ describe('B7.18: a held read feeds the next entry', () => {
 });
 
 describe('B7.18: a held read stored in scalar state', () => {
-  it('encodes the held value in the data record', () => {
+  // A4.4: a constructor that writes a collection gets no deployer (`ctor-collection-shape`) until the collection
+  // journal and step 12's check of its rows are built. Restore these with that work.
+  it.skip('encodes the held value in the data record', () => {
     const artifact = compileString(`${P} contract C { int n; mapping(int => int) m;
       constructor() { m[1] = 2; n = m[1]; } }`, { deployer: true, messageBus: false });
     const { x, master } = genesisMasters(artifact.deployer!);

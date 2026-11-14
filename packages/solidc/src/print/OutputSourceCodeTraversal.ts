@@ -60,6 +60,8 @@ import {
   EmitStatementNode,
   TransferStatementNode,
   MinerFeeStatementNode,
+  JournalAppendNode,
+  JournalLookNode,
   TokenContainerMethodStatementNode,
   ReturnNode,
   FunctionCallStatementNode,
@@ -381,6 +383,28 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
     this.addOutput('this.payMinerFee(', true);
     node.amount = this.visit(node.amount);
     this.addOutput(');\n');
+    return node;
+  }
+
+  visitJournalAppend(node: JournalAppendNode): Node {
+    this.addOutput(`${node.journal}.append(`, true);
+    node.keys = node.keys.map((key, index) => {
+      if (index > 0) this.addOutput(', ');
+      return this.visit(key);
+    });
+    this.addOutput(node.field === undefined ? ' => ' : ` => .${node.field.join('.')} = `);
+    node.value = this.visit(node.value);
+    this.addOutput(');\n');
+    return node;
+  }
+
+  visitJournalLook(node: JournalLookNode): Node {
+    this.addOutput(`${node.journal}.look(`);
+    node.keys = node.keys.map((key, index) => {
+      if (index > 0) this.addOutput(', ');
+      return this.visit(key);
+    });
+    this.addOutput(')');
     return node;
   }
 

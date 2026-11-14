@@ -624,6 +624,8 @@ type InternalAttemptFailureState = { firstError?: unknown };
 /** Facts the B7.3 deployer program publishes for the artifact B7.14 writes. */
 interface DeployerProgramBox {
   callSlots?: number;
+  /** The child's master lock commits to `__oraclePool`; create must pin it even though genesis reads the locktime. */
+  oraclePoolBinding?: boolean;
   constructorReadsSender?: boolean;
   readsBlockData?: boolean;
   constructorBlockField?: 'number' | 'timestamp';
@@ -813,8 +815,9 @@ function compileDeployerProgram(
   code: string,
   options: InternalCompilerOptions,
   constants: import('./generation/deployerConstants.js').DeployerConstants,
+  oraclePoolBinding = false,
 ): { artifact: Artifact; box: DeployerProgramBox } | { reason: string } {
-  const box: DeployerProgramBox = {};
+  const box: DeployerProgramBox = { oraclePoolBinding };
   if (baseConstructorArgumentReadsState(sourceAst.contract)) return { reason: 'ctor-base-argument' };
   if (options.__deployerTestBox?.forceReason !== undefined) {
     box.forceReason = options.__deployerTestBox.forceReason;
@@ -843,9 +846,13 @@ function compileDeployerProgram(
   delete (inner as { delegateVariant?: unknown }).delegateVariant;
   let artifact: Artifact;
   try {
+    const programAst = cloneAst(sourceAst, 'deployer-program');
+    if (sourceAst.contract.oraclePoolBindingForGenesis === true) {
+      programAst.contract.oraclePoolBindingForGenesis = true;
+    }
     // The program is compiler-generated: its `unsafe` sweep and its missing user entries are not source facts.
     artifact = withCompilerWarnings(true, () => compileResolvedAst(
-      cloneAst(sourceAst, 'deployer-program'), code, inner,
+      programAst, code, inner,
     ));
   } catch (error) {
     // A `ctor-…` reason is a signal that ends this build only; B7.14 turns it into the warning and artifact field.
@@ -866,7 +873,12 @@ function arrangeDeployerParameters(ast: Ast, box: DeployerProgramBox | undefined
     node.location = location;
     return node;
   };
-  const contractParameters = contract.parameters;
+  const contractParameters = [...contract.parameters];
+  if (box?.oraclePoolBinding === true
+    && !contractParameters.some((entry) => entry.name === ORACLE_POOL_PARAMETER)) {
+    const pool = parameter(new BytesType(32), ORACLE_POOL_PARAMETER);
+    contractParameters.push(pool);
+  }
   create.deployerContractParameters = contractParameters;
   if (box !== undefined) box.contractParameterNames = contractParameters.map((parameter) => parameter.name);
   for (const parameter of contractParameters) parameter.deployerContractParameter = true;
@@ -18102,8 +18114,14 @@ function compileResolvedAst(
             : 'an inline external library puts an OP_DROP between the pin and the arguments';
       emitCompilerWarning(new DeployerUnsupportedWarning(artifact.contractName, reason, detail).message);
     } else if (deployerSourceAst !== undefined && !isDeployerProgram) {
+      // A block reader's master lock commits to the `__oraclePool` binding; the deployer's create must pin it even
+      // though its own genesis block reads come from the locktime.
+      if (artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER)
+        || takesOraclePool(ast.contract)) {
+        deployerSourceAst.contract.oraclePoolBindingForGenesis = true;
+      }
       const built = compileDeployerProgram(deployerSourceAst, code, mergedCompilerOptions as InternalCompilerOptions,
-        constants);
+        constants, artifact.constructorInputs.some((input) => input.name === ORACLE_POOL_PARAMETER));
       if ('reason' in built) {
         artifact.deployerUnsupported = built.reason;
         emitCompilerWarning(new DeployerUnsupportedWarning(

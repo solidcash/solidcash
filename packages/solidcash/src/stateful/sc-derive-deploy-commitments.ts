@@ -26,6 +26,7 @@ import {
   splitValueIntoChunks,
   splitValueIntoValueChunks,
   VALUE_INLINE_LIMIT,
+  encodePoolInfoCommitment,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { Contract } from '../Contract.js';
@@ -267,9 +268,21 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const valueChunkTargets = [...constructorTargetSlots].map(([index, slot]) => ({
     collection: entryAccesses[index].collection, slot,
   }));
+  // A constructor's block.number/timestamp read is compiled in genesis mode from the creation's locktime, but the
+  // contract's own `__construct` arm (which this probe runs) reads a block-info oracle coin. Present one whose
+  // field equals the locktime, at the block layout's oracle slot.
+  const blockField = artifact.deployer?.constructorBlockField;
+  const blockOracleIndex = blockField === undefined ? -1 : 1 + stateLayout.dataNftCount;
+  let blockOracleRecreate: {
+    to: Uint8Array; amount: bigint;
+    token: { category: string; amount: bigint; nft: { capability: 'mutable'; commitment: string } };
+  } | undefined;
   const internalInitArgs: FunctionArgument[] = [];
   for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
     if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
+    else if (input.name === '__internal__blockOracleInputIndex') {
+      internalInitArgs.push(blockOracleIndex < 0 ? -1n : BigInt(blockOracleIndex));
+    }
     else if (input.name === '__internal__msgSenderAnchorIdx') internalInitArgs.push(-1n);
     else if (input.name === '__internal__valueChunkOutputBase') internalInitArgs.push(-1n);
     else if (input.name.startsWith('__internal__valueWitness_')
@@ -449,6 +462,39 @@ export async function deriveDeployCommitments<T extends Artifact>(
     iterDataNfts.forEach(
       (nft, i) => probeBuilder.addInput(nft, dataNftUnlockers[i]),
     );
+
+    if (blockField !== undefined) {
+      const pool = (contract as unknown as { oraclePool?: string }).oraclePool;
+      if (pool === undefined) {
+        throw new Error(`'${artifact.contractName}' reads block data but names no oracle pool`);
+      }
+      const value = BigInt(options.__deployerLocktime ?? 0);
+      const commitment = encodePoolInfoCommitment({
+        flags: 0,
+        owner: new Uint8Array(20),
+        number: blockField === 'number' ? value : 0n,
+        timestamp: blockField === 'timestamp' ? value : 0n,
+        difficulty: 0n, size: 0n, totalFees: 0n, coinbase: new Uint8Array(),
+      });
+      const infoLock = Uint8Array.of(0x51);
+      probeBuilder.addInput({
+        txid: `${'00'.repeat(31)}f0`, vout: 0, satoshis: 1200n, lockingBytecode: infoLock,
+        token: {
+          category: pool, amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: binToHex(commitment) },
+        },
+      }, {
+        generateLockingBytecode: (): Uint8Array => infoLock,
+        generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+      });
+      blockOracleRecreate = {
+        to: infoLock, amount: 1200n,
+        token: {
+          category: pool, amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(commitment) },
+        },
+      };
+    }
 
     // A single satoshi container is an input slot too: the constructor's balance read and the genesis covenant's
     // preservation check spend it. Present the probe's container at its block position, after the data NFTs.
@@ -727,6 +773,10 @@ export async function deriveDeployCommitments<T extends Artifact>(
         });
       }
     }
+
+    // The probe spends a mutable pool coin; recreate it so token conservation holds. It trails every fixed output,
+    // so the constructor's positional reads are unchanged.
+    if (blockOracleRecreate !== undefined) probeBuilder.addOutput(blockOracleRecreate);
 
     // Run VM debug and extract commitments
     const transaction = probeBuilder.buildLibauthTransaction();

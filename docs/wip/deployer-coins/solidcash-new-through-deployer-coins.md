@@ -21,9 +21,9 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-13: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C the ticked cases name the committed test that covers them and the 12 unticked ones name the shape the
-shipped SDK path refuses (block-field readers and their locktimes, a constructor's token-container balance read,
-constructor ecrecover, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
+in Part C the ticked cases name the committed test that covers them and the 11 unticked ones name the shape the
+shipped SDK path refuses (a live block reader and a creator's locktime negotiation, a constructor's
+token-container balance read, constructor ecrecover, per-slot budget padding for a constructor loop, ERC20/USDT callees whose mappings need
 vmap witnesses, the sender-reading callee probe, and the registry-of-the-user's-shape case); every Part D line
 is filled, including D13 from the shipped constructor-call creations (one and two slots). `childContainers` now
 opens a created child's single token container from the paying wallet's coin, and a later call spends it. Constructor events, the identity output and a stated BCMR
@@ -4615,7 +4615,7 @@ their contract with `deployer: true`:
       `__internal__budgetPad` and the creation passes;
 - [x] a child whose `create` unlocking would exceed 10,000 bytes with its arguments: `DeployerPrepError` *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       before anything is broadcast;
-- [ ] `block.number` in a constructor equals the transaction's locktime; `block.timestamp`, with the locktime *(compiler VM cases cover the create; the SDK path refuses a block-field constructor because its commitment probe cannot read the field, B9.9's SDK half)*
+- [x] `block.number` in a constructor equals the transaction's locktime; `block.timestamp`, with the locktime *(covered by `DeployerCreation.e2e`: `reads block.number in the constructor from the creation locktime` asserts the stored height and the transaction locktime, and `reads block.timestamp...` asserts the median time past minus 1)*
       at the median time past minus 1;
 - [ ] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(not covered; the SDK block-field refusal above applies)*
       and the two locktime needs are met by one value; a height against a time fails with

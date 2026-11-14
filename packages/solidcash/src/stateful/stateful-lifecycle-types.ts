@@ -131,6 +131,8 @@ export interface DeployOptions {
    * record-sound; `args` are its function's visible arguments, and `functionName` defaults to the call's name.
    */
   constructorCallees?: readonly import('./deployer.js').ConstructorCallee[];
+  /** Internal: the locktime the deployer's create needs, so its probe reads the same block field. */
+  __deployerLocktime?: number;
 }
 
 /** A split root's facets, as its deployment's metadata checks read them (docs/bcmr/DESIGN.md, 6.4). */

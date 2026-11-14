@@ -203,6 +203,9 @@ export class ContractNode extends Node implements Named {
   usesBlockOracle: boolean = false;
   // Set on a contract another one embeds: the pool coin kinds it and the bound contracts it creates read.
   poolTreeReads?: { readonly blockInfo?: true; readonly blockhash?: true };
+  // The deployer program's create keeps C's `__oraclePool` binding in its argument band even though its genesis
+  // block reads use the locktime: the binding is part of C's master lock, so the pin must commit to it.
+  oraclePoolBindingForGenesis?: boolean;
   // Set by SynthesizeBlockOracle when anything reads blockhash(n). The mark stays once set: a re-run on a split root
   // sees forwarders, not the reads.
   blockhashReadMarked: boolean = false;

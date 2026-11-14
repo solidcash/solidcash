@@ -157,6 +157,9 @@ export function createdPoolReads(
 export function bindOraclePool(
   contract: ContractNode, freeFunctions: readonly FunctionDefinitionNode[], framed: boolean,
 ): void {
+  // The deployer program's create band already carries the child's `__oraclePool` (arrangeDeployerParameters
+  // moves it there); its genesis reads use the locktime, so the contract's own parameter list stays empty.
+  if (contract.oraclePoolBindingForGenesis === true) return;
   const bodies = [
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions, ...freeFunctions,
   ].filter((fn): fn is FunctionDefinitionNode => fn !== undefined);

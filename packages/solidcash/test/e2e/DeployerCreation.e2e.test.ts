@@ -674,4 +674,45 @@ describe('a top-level deployment through Deploy<C>', () => {
       constructorCallees: [{ contract: r.contract, args: [5n] }],
     })).rejects.toThrow(/record-sound|unsafe|genesisCalls/);
   });
+
+
+  it('reads block.number in the constructor from the creation locktime (A5, A14 item 7)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const artifact = compileString(
+      `${P} contract C { int n; constructor() { n = int(block.number); } }`,
+      { deployer: true, messageBus: false },
+    );
+    const fundingUtxo: Utxo = { txid: '66'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+      oraclePool: 'bb'.repeat(32),
+    });
+    const height = await provider.getBlockHeight();
+    expect(((await result.contract.getState()) as { n?: bigint }).n).toBe(BigInt(height));
+  });
+
+  it('reads block.timestamp in the constructor from the median time past (A5, A14 item 7)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const artifact = compileString(
+      `${P} contract C { int t; constructor() { t = int(block.timestamp); } }`,
+      { deployer: true, messageBus: false },
+    );
+    const fundingUtxo: Utxo = { txid: '67'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+      oraclePool: 'bc'.repeat(32),
+    });
+    const mtp = await provider.getMedianTimePast();
+    expect(((await result.contract.getState()) as { t?: bigint }).t).toBe(BigInt(mtp - 1));
+  });
 });

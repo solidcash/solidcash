@@ -64,7 +64,7 @@ export function deployerFallbackCase(
   if (options.initialState !== undefined && Object.keys(options.initialState).length > 0) return 'initial-state';
   if ((options.identityAnchors?.length ?? 0) > 0) return 'identity-anchors';
   if (options.nativeToken !== undefined) return 'native-token';
-  if (options.oraclePool !== undefined || deployer.readsBlockData) return 'block-oracle';
+  if (deployer.readsBlockData) return 'block-oracle';
   if (options.salt !== undefined) return 'salt';
   if (options.addressType !== undefined && options.addressType !== 'p2sh32') return 'address-type';
   if (options.threadCount !== undefined && options.threadCount > 1) return 'thread-count';
@@ -939,6 +939,7 @@ async function deployThroughCallSlot<T extends Artifact>(options: {
     void reverseCategory;
     const synthetic: Record<string, Uint8Array | bigint> = {
       __internal__externalCallInputBase: BigInt(groupStart),
+      __internal__blockOracleInputIndex: -1n,
     };
     callSites.forEach((_, slot) => {
       synthetic[`__internal__extcallMasterIdx${slot}`] = BigInt(inputBases[slot]);
@@ -1365,13 +1366,17 @@ export async function deployThroughDeployer<T extends Artifact>(
     && (constructorAbi?.entryAccesses?.length ?? 0) === 0
     && (constructorAbi?.emits?.length ?? 0) === 0
     && (constructorAbi?.transferCount ?? 0) === 0;
+  // A constructor's block.number/timestamp read is its creation's locktime (A5); compute it once so the derive
+  // probe, the create's own unlocking and the final transaction all carry the same value.
+  const creationLocktime = await deployerLocktime(deployer, options.provider);
   const derived = callSlotPath
     ? {
       stateCommitments: [], entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
       dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
     }
     : await deriveDeployCommitments(
-      contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n, options,
+      contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n,
+      { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
     );
   const commitments = derived.stateCommitments;
 
@@ -1411,10 +1416,10 @@ export async function deployThroughDeployer<T extends Artifact>(
       + 'collection rows, events or transfers, which the SDK creation probe does not derive yet',
     );
   }
-  if (deployer.readsBlockData || deployer.constructorBlockField !== undefined) {
+  if (deployer.readsBlockData) {
     throw new DeployerPathError(
-      `Contract '${artifact.contractName}' needs a constructor block-field probe the compiler's deployer `
-      + 'does not build yet',
+      `Contract '${artifact.contractName}' reads block data beyond a constructor's locktime field, which needs `
+      + 'an oracle pool minted at genesis that the deployer path does not build yet',
     );
   }
 
@@ -1556,12 +1561,17 @@ export async function deployThroughDeployer<T extends Artifact>(
     );
   }
 
-  // The create's public parameters: C's contract parameters, then its constructor parameters.
+  // The create's public parameters: C's contract parameters, then its constructor parameters. The Contract may have
+  // appended the `__oraclePool` binding to its own constructor args; use those for the contract band.
   const publicNames = (createInputNames(deployer) ?? []).filter((name) => !name.startsWith('__internal__'));
   const args: Record<string, FunctionArgument> = {};
   const contractParameters = artifact.constructorInputs.length;
+  const boundConstructorArgs = ((contract as unknown as { constructorArgs?: readonly FunctionArgument[] })
+    .constructorArgs ?? constructorArgs) as readonly FunctionArgument[];
   publicNames.forEach((name, index) => {
-    const value = index < contractParameters ? constructorArgs[index] : options.initArgs?.[index - contractParameters];
+    const value = index < contractParameters
+      ? boundConstructorArgs[index] ?? constructorArgs[index]
+      : options.initArgs?.[index - contractParameters];
     if (value === undefined) throw new DeployerPrepError(`The deployer create input '${name}' has no value`);
     args[name] = value as FunctionArgument;
   });
@@ -1594,6 +1604,8 @@ export async function deployThroughDeployer<T extends Artifact>(
       synthetic: {
         __internal__genesisOutputBase: BigInt(outbase),
         __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
+        // Genesis block reads use the locktime; the parameter stays present for the arm's shape.
+        __internal__blockOracleInputIndex: -1n,
         ...callSynthetics,
       },
       forBroadcast: true,
@@ -1688,8 +1700,7 @@ export async function deployThroughDeployer<T extends Artifact>(
   const fillerTotal = fillers.reduce((sum, filler) => sum + filler.satoshis, 0n);
   const change = prep.authorCoin.satoshis + fillerTotal - outputTotal - provisionalFee;
   if (change >= DUST) builder.addOutput({ to: options.changeAddress, amount: change });
-  const locktime = await deployerLocktime(deployer, options.provider);
-  if (locktime !== undefined) builder.setLocktime(locktime);
+  if (creationLocktime !== undefined) builder.setLocktime(creationLocktime);
 
   let program = builder.buildLibauthProgram(true);
   for (let attempt = 0; ; attempt += 1) {

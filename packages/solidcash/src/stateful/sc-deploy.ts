@@ -65,8 +65,19 @@ export async function deployStatefulContract<T extends Artifact>(
     console.warn(deployerPath.warning);
   }
   if (deployerPath.path === 'deployer') {
+    // A block reader's pool is minted first, in transactions of its own, as for today's genesis; Deploy<C> binds its
+    // category in C's contract arguments (A), so C's code stays the same for every instance.
+    if (mintsOraclePool(options.oraclePool)) {
+      const oraclePool = await resolveDeploymentOraclePool(options.provider, artifact, options.oraclePool, 1);
+      return deployStatefulContract(artifact, callerConstructorArgs, { ...options, oraclePool });
+    }
     return deployThroughDeployer(
-      artifact, callerConstructorArgs, options, options.deployerPrep,
+      artifact,
+      withOraclePoolArgument(
+        artifact, callerConstructorArgs,
+        () => oraclePoolCategoryOption(options.oraclePool) ?? options.provider.oraclePoolCategory,
+      ) as ConstructorArgument[],
+      options, options.deployerPrep,
     );
   }
   if (mintsOraclePool(options.oraclePool)) {

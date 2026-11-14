@@ -154,12 +154,12 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     expect(defaultProxyArtifact.fingerprint).toBe(fresh.fingerprint);
     expect(JSON.parse(JSON.stringify(defaultProxyArtifact))).toEqual(JSON.parse(JSON.stringify(fresh)));
 
-    // The two fields the hand edit desynchronised agree. The forwarder is 384 bytes: 350 before the
+    // The two fields the hand edit desynchronised agree. The forwarder is 387 bytes: 350 before the
     // delegate-position pin, 362 with it, plus the 20-byte selection of the route distance by the forwarded
-    // selector and the payload pin's two-byte check of the delegate's leading push. bytecode, debug.bytecode, and
-    // fingerprint still come from one compile.
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(384);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(384);
+    // selector, the payload pin's two-byte check of the delegate's leading push, and the three-byte exact-stack
+    // check its arm opens with (O8). bytecode, debug.bytecode, and fingerprint still come from one compile.
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(387);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(387);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 

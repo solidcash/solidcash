@@ -559,6 +559,7 @@ import {
   type RunBuildMidLateThroughTailHost,
 } from './stb-run-build-mid-late-through-tail.js';
 import { appendCallerEdges } from './stb-materialize-caller-edge-outputs.js';
+import { refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 import { appendUnslottedPoolCoSpends } from './block-oracle-reader-selection.js';
 import {
   getChunkableValueWriteBand as getChunkableValueWriteBandImpl,
@@ -7464,6 +7465,9 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, finalBuilder);
+
+    // A8: a payment to a stateful contract's master lock could never be spent.
+    await refusePaymentsToStatefulMasters(provider, finalBuilder.inputs, finalBuilder.outputs);
 
     // -- Phase 4–5: converge/serialize/fee-bytes then submit --
     return runSendPhase4ThroughSubmitImpl(

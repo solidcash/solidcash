@@ -533,6 +533,7 @@ import {
 } from './sc-hydrate-external-predicate-state.js';
 import { upgradeStatefulContract as upgradeStatefulContractImpl } from './sc-upgrade.js';
 import type {
+  DeployFromCallOptions, DeployFromOptions, DeployFromResult,
   DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
 } from './stateful-lifecycle-types.js';
 import {
@@ -995,55 +996,8 @@ export type {
   DestroyOptions, DestroyResult, LeftBehindCoin, UpgradeOptions, UpgradeResult,
 };
 
-export interface DeployFromOptions<T extends Artifact = Artifact> {
-  provider: NetworkProvider;
-  factory: ConnectedStatefulContract;        // the factory contract
-  deployFunctionName: string;                // must have 'deploy' modifier
-  deployFunctionArgs: FunctionArgument[];    // user args to the factory's deploy function
-  childArtifact?: T;                         // child artifact; else resolved via factory.registerChild()
-  childConstructorArgs?: ConstructorArgument[]; // else derived from the deploy args (new C(param) mapping)
-  childSalt?: Uint8Array;                    // create2 salt; else derived from the recorded new C{salt}() mapping
-  /** Optional initial values for fields the constructor descriptor does not authenticate. Attempts to override
-   * authenticated constructor fields are rejected; non-default values for other fields must still satisfy the
-   * factory's on-chain genesis covenant. */
-  childInitialState?: Record<string, StateValueType>;
-  // `new Child{value: x}()` transfers x sats from the factory's OWN satoshi container (the value source, like any
-  // scash value transfer - EVM-faithful "from the deployer's balance") to the child's address. deployFrom then
-  // co-spends the factory container (input) + recreates it (output, minus x) + adds the x-sat transfer output.
-  // The factory must have been deployed with an initialBalance >= x. Supply the transferred amount here.
-  childValue?: bigint;
-  // A deploy function that transfers CashTokens from the factory's token container - e.g. to the freshly-created
-  // child (`Child ch = new Child(...); this.tokens[cat].transfer(<addr>, amt)`). Supply each FT transfer the deploy
-  // performs; deployFrom co-spends the factory's token container, recreates it (amount minus the transfers), and
-  // adds each tcTransfer output. `to` is the recipient locking bytecode/address (pass the child's address to fund
-  // the new contract). Multiple categories are co-spent + recreated in one deploy. NFT (transferNft) transfers on
-  // deploy are not yet supported. See docs/contract-creation.md.
-  childTokenTransfers?: Array<{ categoryId: string; to: string | Uint8Array; amount: bigint }>;
-  fundingUtxo: Utxo;                         // must be at vout 0 for token genesis (becomes child category)
-  // A LOOP deploy (`for (i<n) new C()`) mints N children - a balanced contract block needs N funding inputs
-  // (any value, each vout 0), one per child; child i's category = fundingUtxos[i].txid. When set, this supersedes
-  // the single fundingUtxo (which stays fundingUtxos[0] for a 1-child deploy). See docs/contract-creation.md.
-  fundingUtxos?: Utxo[];
-  funder?: Unlocker;                         // unlocker for funding UTXO(s); else factory.setDeployDefaults()
-  addressType?: AddressType;
-  fee?: bigint;                              // default: 1000n
-  maxFee?: bigint;                           // maximum allowed fee (throws if exceeded)
-  changeAddress?: string;
-  masterAmount?: bigint;                     // default: 1200n
-  dataNftAmount?: bigint;                    // default: 1200n per data NFT
-}
-
-// Options for the `factory.deployFn(...args).deploy({...})` sugar: the provider, factory, deploy-function
-// name and args are taken from the call itself, leaving only the child + funding details.
-export type DeployFromCallOptions<T extends Artifact = Artifact> =
-  Omit<DeployFromOptions<T>, 'provider' | 'factory' | 'deployFunctionName' | 'deployFunctionArgs'>;
-
-export interface DeployFromResult<T extends Artifact = Artifact> {
-  factory: ConnectedStatefulContract;        // factory with updated state
-  child: ConnectedStatefulContract<T>;       // newly deployed child contract
-  tx: TransactionDetails;
-  childCategoryId: string;
-}
+// The creating call's options and results are the ones sc-deploy-from.ts implements.
+export type { DeployFromCallOptions, DeployFromOptions, DeployFromResult };
 
 export interface SplitOptions {
   provider: NetworkProvider;
@@ -5774,7 +5728,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     trailingEntryOutputOffset?: number,
     probeState?: Record<string, StateValue>,
     eventOutputCount: number = 0,
-    probeLocktime?: number,
+    locktime?: number,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
       entryCommitments: string[];
@@ -5792,12 +5746,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolveBlockhashCoSpends: (...a: any[]) => (this as any)._resolveBlockhashCoSpends(...a),
         resolveKeccakComputeCoSpends: (...a: any[]) => (this as any)._resolveKeccakComputeCoSpends(...a),
         resolveEcrecoverComputeCoSpends: (...a: any[]) => (this as any)._resolveEcrecoverComputeCoSpends(...a),
-        ...(probeLocktime === undefined ? {} : { probeLocktime }),
       },
       functionName, args, requiredNftIndices, extraOutputs, extraInputs,
       entryOutputCount, childDataNftCount, deriveChildCommitments, returnEventOutputCount,
       containerOutputCount, trailingEntryOutputCount, trailingEntryOutputOffset, probeState,
-      eventOutputCount,
+      eventOutputCount, locktime,
     );
   }
 

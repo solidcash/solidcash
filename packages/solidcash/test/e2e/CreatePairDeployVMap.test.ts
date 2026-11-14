@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, it, expect } from 'vitest';
-import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import {
+  binToHex, decodeTransactionUnsafe, encodeTransaction, hash256, hexToBin,
+} from '@bitauth/libauth';
 import { compileStringMulti } from '../direct-compile.js';
 import {
   Contract,
@@ -37,6 +39,8 @@ contract UniswapV2Factory() {
 // The deploy entry is permissionless on purpose: this suite pins the covenant's output topology, not its
 // authorization. The emitted covenant is unchanged, so every tampered transaction below still fails verify.
 const PERMISSIONLESS = { allowUnsafeOperations: true } as const;
+// The pair is born through its deployer (B10): its category is the txid of the prep the creating call spends.
+const prepTxid = (hex: string): string => binToHex(hash256(hexToBin(hex)).reverse());
 
 describe('UniswapV2Factory.createPair deployDataNft + dual getPair', () => {
   const artifacts = compileStringMulti(SOURCE, PERMISSIONLESS);
@@ -87,7 +91,8 @@ describe('UniswapV2Factory.createPair deployDataNft + dual getPair', () => {
       changeAddress: p2pkh.address,
     });
 
-    expect(result.childCategoryId).toBe(childFunding.txid);
+    expect(result.prepTransactions).toHaveLength(1);
+    expect(result.childCategoryId).toBe(prepTxid(result.prepTransactions![0]!));
     expect(result.tx.txid).toBeDefined();
 
     // Both getPair directions read back the deployed pair's locking bytecode.
@@ -156,8 +161,14 @@ describe('UniswapV2Factory.createPair deployDataNft + dual getPair', () => {
         (provider as any).sendRawTransaction = send;
       }
       expect(captured).not.toBe('');
-      expect(result.childCategoryId).toBe(childFunding.txid);
+      expect(result.prepTransactions).toHaveLength(1);
+      expect(result.childCategoryId).toBe(prepTxid(result.prepTransactions![0]!));
       await beforeDeploy.restore();
+      // The creation spends the prep's outputs: after each rewind the prep goes out again first.
+      const restoreWithPrep = async (): Promise<void> => {
+        await beforeDeploy.restore();
+        for (const hex of result.prepTransactions ?? []) await send(hex);
+      };
 
       // Identify the child data-NFT output and a factory entry output by their (off-chain recomputed) locking
       // bytecodes, not hard-coded indices.
@@ -170,7 +181,7 @@ describe('UniswapV2Factory.createPair deployDataNft + dual getPair', () => {
       const rejectMutation = async (
         mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>, childDataIdx: number, entryIdx: number) => void,
       ): Promise<void> => {
-        await beforeDeploy.restore();
+        await restoreWithPrep();
         const tx = decodeTransactionUnsafe(hexToBin(captured));
         const childDataIdx = tx.outputs.findIndex(
           (output) => binToHex(output.lockingBytecode) === binToHex(childDataLock),
@@ -192,7 +203,7 @@ describe('UniswapV2Factory.createPair deployDataNft + dual getPair', () => {
       })).rejects.toThrow(covenantFailure);
 
       // The untouched transaction is the one the covenant accepts.
-      await beforeDeploy.restore();
+      await restoreWithPrep();
       await expect(send(captured)).resolves.toBeTypeOf('string');
     }, 180_000,
   );

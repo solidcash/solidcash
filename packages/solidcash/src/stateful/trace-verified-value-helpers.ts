@@ -235,6 +235,10 @@ function isTokenCategoryResult(value: Uint8Array): boolean {
  * (stack top at the target opcode step) falls within [min, max). This is critical for
  * OP_OUTPUTBYTECODE extraction where preservation checks (data NFTs, entries, master)
  * use the same opcode pattern as transfer checks but target different output indices.
+ *
+ * With `operandOrderKnown`, every check of the caller leaves the expected operand where `expectedOperandOnTop` says,
+ * and the value seen after an OP_OUTPUTBYTECODE is not used to pick it. A reduced probe trace keeps no state between
+ * the introspection and its OP_EQUALVERIFY, so that value is whatever was pushed last, which may be the expected one.
  */
 export function extractVerifiedValuesFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
@@ -243,6 +247,7 @@ export function extractVerifiedValuesFromTrace(
   firstWriteWins = false,
   expectedOperandOnTop = false,
   scanFullTrace = false,
+  operandOrderKnown = false,
 ): Uint8Array[] {
   const p2shStart = findRedeemScriptStart(fullTrace);
   const lockingScriptTrace = scanFullTrace || p2shStart < 0 ? fullTrace : fullTrace.slice(p2shStart);
@@ -303,7 +308,7 @@ export function extractVerifiedValuesFromTrace(
         const below = Uint8Array.from(stack[stack.length - 2]);
         const top = Uint8Array.from(stack[stack.length - 1]);
         const actualHex = observedActual === undefined ? undefined : binToHex(observedActual);
-        const value = targetOpcode === Op.OP_OUTPUTBYTECODE && actualHex !== undefined
+        const value = targetOpcode === Op.OP_OUTPUTBYTECODE && actualHex !== undefined && !operandOrderKnown
           ? binToHex(below) === actualHex ? top
             : binToHex(top) === actualHex ? below
               : Uint8Array.from(stack[stack.length - (expectedOperandOnTop ? 1 : 2)])

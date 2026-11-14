@@ -1,6 +1,7 @@
 /**
  * A18: a registry whose `create` runs `new` of a pool-shaped child and publishes the child's category.
  */
+import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
@@ -114,7 +115,9 @@ describe('A18: a registry creates a pool through its deployer', () => {
     expect(result.childCategoryId).toBeTruthy();
   });
 
-  it('refuses a token coin of 546 satoshis for a single token container', async () => {
+  // A14 item 11: a 546-satoshi wallet coin opens the row, which the SDK raises to RESERVE (A4.4); a hand-built row of
+  // 546 satoshis is refused by the pool's create (DeployerRegistries.e2e).
+  it('raises a 546-satoshi token coin\'s row to RESERVE for a single token container', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
@@ -153,13 +156,17 @@ describe('A18: a registry creates a pool through its deployer', () => {
       txid: 'c8'.repeat(32), vout: 0, satoshis: 546n, token: { category: asset, amount: 5n },
     };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), tokenCoin);
-    await expect(StatefulContract.deployFrom({
+    const result = await StatefulContract.deployFrom({
       provider, factory: deployed.contract, deployFunctionName: 'create',
       deployFunctionArgs: [hexToBin(asset), 6n], childArtifact: artifacts.TokenNotePool,
       childConstructorArgs: [hexToBin(asset), 6n], childInitialState: { note: 6n },
       childContainers: [{ deployment: 0, satoshis: 1200n, tokens: [{ categoryId: asset, amount: 5n }] }],
       fundingUtxo: prep, funder, changeAddress: change.address,
-    })).rejects.toThrow(DeployerPrepError);
+    });
+    const rows = await provider.getUtxos(getTokenContainerAddress(result.child.inner as never, result.childCategoryId, asset));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.satoshis).toBe(1200n);
+    expect(rows[0]!.token?.amount).toBe(5n);
   });
 
 });

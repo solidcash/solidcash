@@ -1,14 +1,17 @@
 import { describe, it, expect } from 'vitest';
+import type { Artifact } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import {
   Contract,
   SignatureTemplate,
 } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
+import { buildDeployerPrep, type DeployerPrep } from '../../src/stateful/deployer.js';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, genesisFtContainer, getTxOutputs } from '../test-util.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { Utxo } from '../../src/interfaces.js';
+import type NetworkProvider from '../../src/network/NetworkProvider.js';
+import { Unlocker, Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { hexToBin } from '@bitauth/libauth';
 
@@ -16,6 +19,26 @@ import { hexToBin } from '@bitauth/libauth';
 // child - "tokens transferred to a new contract created during deploy". The recipient LBC is passed as an arg (the
 // caller precomputes the child's deterministic self-pinned address). The covenant co-spends + self-preserves the
 // token container and pins the transfer; deployFrom wires the container input, recreated remainder, and tcTransfer.
+//
+// The child is born through its deployer (B10), so its category is the txid of the prep its creation spends: the
+// caller builds that prep first, precomputes the child's address from its category, and hands it to deployFrom.
+async function childPrep(
+  provider: NetworkProvider, creator: Artifact, funding: Utxo, funder: Unlocker,
+): Promise<DeployerPrep> {
+  const lock = funder.generateLockingBytecode();
+  const { prep } = await buildDeployerPrep({
+    provider,
+    // As deployFrom sizes it: the author coin pays the creation's outputs and fee.
+    children: [{ contractName: 'Child', deployer: creator.childDeployers!.Child!, authorValue: funding.satoshis / 2n }],
+    fundingUtxos: [funding],
+    authorSigner: funder,
+    authorLockingBytecode: lock,
+    changeLockingBytecode: lock,
+    allowAnyAuthorLock: true,
+  });
+  return prep;
+}
+
 const CHILD = 'contract Child(bytes20 owner){int counter;function increment(){'
   + 'require(tx.outputs[0].lockingBytecode==new LockingBytecodeP2PKH(owner));this.counter=this.counter+1;}}';
 const FACTORY = `${CHILD}
@@ -55,24 +78,27 @@ describe('token transfer to a new child on deploy (deployFrom)', () => {
     const { factory, ftCategory } = await deployFactory('1101'.repeat(16));
     const g0: Utxo = { txid: '1a02'.repeat(16), vout: 0, satoshis: 300000n };
     await provider.addUtxo(p2pkh.address, g0);
-    // The child self-pins to its genesis category (= g0.txid); precompute its address to target the transfer.
-    const childContract = new Contract(childArtifact, [alicePkh], { provider, category: hexToBin(g0.txid) });
+    const funder = p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
+    // The child self-pins to its genesis category (= its prep's txid); precompute its address to target the transfer.
+    const prep = await childPrep(provider, factoryArtifact, g0, funder);
+    const childContract = new Contract(childArtifact, [alicePkh], { provider, category: hexToBin(prep.category) });
     const childLbc = addressToLockScript(childContract.address);
 
     const result = await StatefulContract.deployFrom({
       provider, factory,
-      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-      fundingUtxo: g0, changeAddress: p2pkh.address,
+      funder,
+      fundingUtxo: g0, deployerPreps: [prep], changeAddress: p2pkh.address,
       deployFunctionName: 'make',
       deployFunctionArgs: [ftCategory, alicePkh, childLbc, 300n],
       childArtifact, childConstructorArgs: [alicePkh], childInitialState: { counter: 0n },
       tokenContainerCategoryIds: [ftCategory],
       childTokenTransfers: [{ categoryId: ftCategory, to: childLbc, amount: 300n }],
     });
+    expect(result.childCategoryId).toBe(prep.category);
 
     const outs = getTxOutputs(result.tx);
-    // The child genesis (minting NFT of the g0 category).
-    const childMaster = outs.find((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting');
+    // The child genesis (minting NFT of the prep's category).
+    const childMaster = outs.find((o) => o.token?.category === prep.category && o.token?.nft?.capability === 'minting');
     expect(childMaster).toBeDefined();
     // The token container recreated with the remainder (1000 - 300 = 700 FT of the container's category).
     expect(outs.some((o) => o.token?.category === ftCategory && o.token?.amount === 700n && !o.token?.nft)).toBe(true);
@@ -137,13 +163,15 @@ describe('multi-category token transfer on deploy (deployFrom)', () => {
 
     const g0: Utxo = { txid: 'da02'.repeat(16), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, g0);
-    const child = new Contract(multiChildArtifact, [alicePkh], { provider, category: hexToBin(g0.txid) });
+    const funder = p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv));
+    const prep = await childPrep(provider, multiArtifact, g0, funder);
+    const child = new Contract(multiChildArtifact, [alicePkh], { provider, category: hexToBin(prep.category) });
     const childLbc = addressToLockScript(child.address);
 
     const result = await StatefulContract.deployFrom({
       provider, factory: deployed.contract,
-      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
-      fundingUtxo: g0, changeAddress: p2pkh.address,
+      funder,
+      fundingUtxo: g0, deployerPreps: [prep], changeAddress: p2pkh.address,
       deployFunctionName: 'make',
       deployFunctionArgs: [ftA.category, ftB.category, alicePkh, childLbc, 300n, 500n],
       childArtifact: multiChildArtifact, childConstructorArgs: [alicePkh], childInitialState: { c: 0n },
@@ -154,8 +182,9 @@ describe('multi-category token transfer on deploy (deployFrom)', () => {
       ],
     });
 
+    expect(result.childCategoryId).toBe(prep.category);
     const outs = getTxOutputs(result.tx);
-    const childMaster = outs.find((o) => o.token?.category === g0.txid && o.token?.nft?.capability === 'minting');
+    const childMaster = outs.find((o) => o.token?.category === prep.category && o.token?.nft?.capability === 'minting');
     expect(childMaster).toBeDefined();
     // Both containers recreated at their remainders.
     expect(outs.some((o) => o.token?.category === ftA.category && o.token?.amount === 700n && !o.token?.nft)).toBe(true);

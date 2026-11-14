@@ -250,7 +250,12 @@ describe('oracle pool blockhash reads by direct contracts', () => {
     const old = (await newestSlot(provider, foreign)) - 1_000n;
     expect((await selectPoolSlot(provider, foreign, old))?.exact).toBe(false);
     const pool = await mintTestOraclePool(provider, fieldsAt(old), { slots: true });
-    const { Hasher, HasherMaker } = compileStringMulti(CREATOR, { allowUnsafeOperations: true });
+    // A blockhash reader has no deployer (A4.1 `blockhash-ring`, A15). The binding-forwarding shape is the pre-B10
+    // fold's, kept through the internal escape.
+    expect(() => compileStringMulti(CREATOR, { allowUnsafeOperations: true })).toThrow(/blockhash-ring/);
+    const { Hasher, HasherMaker } = compileStringMulti(CREATOR, {
+      allowUnsafeOperations: true, __legacyDeployFold: true,
+    } as never);
     expect(HasherMaker.constructorInputs.map((input) => input.name)).toEqual([ORACLE_POOL_PARAMETER]);
     const make = HasherMaker.abi.find((fn) => fn.name === 'make')!;
     expect(make.deployTargets?.[0]?.constructorArgs).toEqual([ORACLE_POOL_PARAMETER]);

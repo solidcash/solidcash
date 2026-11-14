@@ -14,8 +14,9 @@ import { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import {
   assertDeployerCallee, broadcastDeployerPreps, buildDeployerPrep, buildDeployerPreps, buildDeployerSweep,
   buildDeployerUnlocking,
-  decodeDeployerPrep, decideDeployerPath, deployerFallbackCase, deployerLocktime, encodeDeployerCallees,
-  extractDeployBindingFromTrace, runDeployerInputsLocal, verifyBirth,
+  decodeDeployBinding, decodeDeployerPrep, decideDeployerPath, deployerFallbackCase, deployerLocktime,
+  encodeDeployBinding, encodeDeployerCallees, extractDeployBindingFromTrace, readDeployerSiteVisits,
+  runDeployerInputsLocal, verifyBirth,
 } from '../../src/stateful/deployer.js';
 import {
   clearGenesisReservations, coinsAvailableForCallerFee, isReservedGenesisOutpoint,
@@ -242,18 +243,55 @@ describe('B9.2: the create unlocking layout', () => {
 });
 
 describe('B9.5: the trace binding', () => {
-  it('reads Q and A under d_in at OP_INPUTBYTECODE', () => {
-    const q = Uint8Array.of(1, 2);
-    const a = Uint8Array.of(3, 4, 5);
-    const trace = [{
-      ip: 0,
-      instructions: [{ opcode: 202 /* OP_INPUTBYTECODE */ }],
-      stack: [q, a, Uint8Array.of(7)],
-    }] as never;
-    expect(extractDeployBindingFromTrace(trace, 7)).toEqual({
-      q, a, bound: Uint8Array.from([1, 2, 3, 4, 5]),
-    });
+  const lock = Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(0x11), 0x87]);
+  /**
+   * A creator's site as the compiler emits it (A6 steps 3 and 4): `<Q ‖ A> <d_in> OP_INPUTBYTECODE`, the selector and
+   * callee-list check, the Q ‖ A check, `<d_in> OP_UTXOBYTECODE <DEPLOY(C)> OP_EQUALVERIFY` (here the lock is an
+   * invoked definition, as the optimiser leaves a constant used twice), and the X ‖ 02 check.
+   */
+  const site = [
+    { opcode: 0xca }, { opcode: 0x56 }, { opcode: 0x7f }, { opcode: 0x7c },
+    { opcode: 0x06, data: Uint8Array.of(0x04, 0xaf, 0x34, 0x14, 0x13, 0x00) }, { opcode: 0x88 },
+    { opcode: 0x6b }, { opcode: 0x82 }, { opcode: 0x6c }, { opcode: 0x7c }, { opcode: 0x7f }, { opcode: 0x75 },
+    { opcode: 0x88 }, { opcode: 0x57 }, { opcode: 0xc7 }, { opcode: 0x53 }, { opcode: 0x8a }, { opcode: 0x88 },
+    { opcode: 0x57 }, { opcode: 0xc8 }, { opcode: 0x76 }, { opcode: 0x52 }, { opcode: 0x7e }, { opcode: 0x58 },
+    { opcode: 0xd1 }, { opcode: 0x88 },
+  ];
+  const state = (stack: Uint8Array[], controlStack: unknown[] = []) => ({
+    ip: 0, instructions: site, stack, controlStack, functionTable: { '03': Uint8Array.from([35, ...lock]) },
+  });
+
+  it('reads Q ‖ A, one item under d_in, and the deployer lock the site checks', () => {
+    const bound = Uint8Array.of(1, 2, 3, 4, 5);
+    const trace = [state([Uint8Array.of(9), bound, Uint8Array.of(7)])] as never;
+    const visit = extractDeployBindingFromTrace(trace, 7);
+    expect(visit?.bound).toEqual(bound);
+    expect(visit?.deployerLock).toBe(Buffer.from(lock).toString('hex'));
+    expect(visit?.lastIp).toBe(site.length - 1);
     expect(extractDeployBindingFromTrace(trace, 8)).toBeUndefined();
+  });
+
+  it('skips a site in a branch that does not run, and an OP_INPUTBYTECODE that is no site', () => {
+    const skipped = [state([Uint8Array.of(1), Uint8Array.of(7)], [false])] as never;
+    expect(readDeployerSiteVisits(skipped)).toEqual([]);
+    const plain = [{ ...state([Uint8Array.of(1), Uint8Array.of(7)]), instructions: [{ opcode: 0xca }, { opcode: 0x82 }] }];
+    expect(readDeployerSiteVisits(plain as never)).toEqual([]);
+  });
+
+  it('decodes Q ‖ A into the sender, the value and both argument lists, and encodes it back', () => {
+    const deployer = fakeDeployer({
+      inputs: [{ name: 'owner', type: 'bytes20' }, { name: 'x', type: 'int' }, { name: 'y', type: 'int' }] as never,
+    });
+    const binding = {
+      senderCategory: new Uint8Array(32).fill(0xc1), value: 5000n,
+      constructorArgs: [-3n], contractArgs: [alicePkh, 300n],
+    };
+    const bound = encodeDeployBinding(binding, deployer, 1);
+    // Q = push(category) ‖ push(v) ‖ push(y); A = push(x) ‖ push(owner).
+    expect(Buffer.from(bound).toString('hex'))
+      .toBe(`20${'c1'.repeat(32)}028813` + `0183` + `022c01` + `14${Buffer.from(alicePkh).toString('hex')}`);
+    expect(decodeDeployBinding(bound, deployer, 1)).toEqual(binding);
+    expect(() => decodeDeployBinding(Uint8Array.from([...bound, 0x51]), deployer, 1)).toThrow(/more than create's/);
   });
 });
 

@@ -205,7 +205,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     expect(hexToBin(result.categoryId)).toHaveLength(32);
   });
 
-  it('refuses a payable deployer deployment without initialBalance (B9.7)', async () => {
+  it('deploys a payable constructor without initialBalance, with a filler at its empty row (A14 item 11)', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const artifact = compileString(`${P} contract Pay { int n; constructor() payable { n = 1; } }`,
       { deployer: true, messageBus: false });
@@ -214,10 +214,11 @@ describe('a top-level deployment through Deploy<C>', () => {
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
     if (typeof change === 'string') throw new Error(change);
-    await expect(StatefulContract.deploy(artifact, [], {
+    const result = await StatefulContract.deploy(artifact, [], {
       provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
       changeAddress: change.address, senderLockingBytecode: authorLock,
-    })).rejects.toThrow(/pass initialBalance/);
+    });
+    expect(((await result.contract.getState()) as { n?: bigint }).n).toBe(1n);
   });
 
   it('co-spends a shared keccak side-car at salt 0 for a constructor that hashes (B9.8)', async () => {

@@ -151,12 +151,13 @@ describe('dynamic write after a conditional returning call', () => {
       && binToHex(output.lockingBytecode) === '51');
     expect([firstMaster, firstReturn]).toEqual([3, 5]);
     // The second call is stated as not made, and the chunk run follows the first call's return event.
-    const witnesses: Record<string, bigint> = {
+    const witnesses: Record<string, bigint | Uint8Array> = {
       __internal__externalCallInputBase: BigInt(firstMaster),
       __internal__extcallMasterIdx0: BigInt(firstMaster),
       __internal__extcallMasterIdx1: -1n,
       __internal__extcallAnchorIdx0: -1n,
       __internal__extcallAnchorIdx1: -1n,
+      __internal__genesisCall: new Uint8Array(),
       __internal__returnOutputIdx: -1n,
       __internal__externalReturnOutputIdx0: BigInt(firstReturn),
       __internal__externalReturnOutputIdx1: -1n,

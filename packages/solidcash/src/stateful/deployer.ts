@@ -14,19 +14,25 @@ import type { Transaction } from '@bitauth/libauth/build/lib/vm/instruction-sets
 import { encodeDataPush } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/push.js';
 import { bigIntToVmNumber } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/instruction-sets-utils.js';
 import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/lib/vm/vm-types.js';
-import { Op, type Artifact, type DeployerAbi } from '@solidcash/utils';
+import {
+  decodePushdataValue, encodePushdataValue, Op, type Artifact, type DeployerAbi, type StateValue,
+} from '@solidcash/utils';
 import {
   encodeFunctionArgument, type FunctionArgument,
 } from '../Argument.js';
 import { isP2pkhLock } from '../bcmr/identity.js';
-import type { Output, TransactionDetails, Unlocker, Utxo } from '../interfaces.js';
+import type { Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { createUnlockingBytecode } from '../utils.js';
+import { addressToLockScript, createUnlockingBytecode, tryCashAddressToLockScript } from '../utils.js';
 import {
   genesisOutpointKey, isReservedGenesisOutpoint, releaseGenesisOutpoint, reserveGenesisOutpoint,
 } from './genesis-reservations.js';
-import { decodeScriptNumber } from './trace-commitment-helpers.js';
+import { decodeScriptNumber, extractCommitmentMapFromTrace } from './trace-commitment-helpers.js';
+import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
+import { fillerOutput } from './filler.js';
+import { getDustThreshold } from '../network/dust-threshold.js';
+import { evaluateFaithfulOrDebugTrace } from './faithful-probe-trace.js';
 
 /** A12: a deployment that asks for more than the deployer produces takes today's genesis instead. */
 export type DeployerFallbackCase =
@@ -137,6 +143,14 @@ export function decideDeployerPath(
     return { path: 'genesis' };
   }
   if (fallback !== undefined) {
+    // A12: a C whose constructor writes a collection never falls back, whatever the case that would.
+    if (artifact.constructorWritesCollections === true) {
+      return {
+        path: 'error',
+        message: `Contract '${artifact.contractName}' writes a collection in its constructor (constructorWritesCollections), `
+          + `and today's genesis cannot produce it; the deployer path cannot produce this deployment (${fallback})`,
+      };
+    }
     if (options.viaDeployer === true) {
       return {
         path: 'error',
@@ -176,198 +190,1652 @@ export class DeployerCalleeError extends Error {
 /** A constructor's call target (A7): the deployed contract, its function and that function's visible arguments. */
 export interface ConstructorCallee {
   contract: {
-    readonly inner: { readonly artifact: Artifact; readonly unlock: Record<string, ((...values: any[]) => Unlocker) | undefined> };
+    readonly inner: {
+      readonly artifact: Artifact;
+      readonly unlock: Record<string, ((...values: any[]) => Unlocker) | undefined>;
+    };
     readonly categoryId: string;
     readonly address: string;
     getFullState(): Promise<{ masterUtxo?: Utxo; dataNftUtxos: Utxo[] }>;
   };
   functionName?: string;
   args?: readonly FunctionArgument[];
+  /**
+   * The contracts the callee's function itself calls or reads, as its ordinary call takes them (`withExternalCall`):
+   * their blocks join the callee's own.
+   */
+  externalContracts?: readonly unknown[];
 }
 
-/** A7's tag: `X ‖ slot ‖ g_in`, plus `g_out` and the create unlocking's ranges for a sender reader. */
-function constructorCallTag(categoryId: string, slot: number, gIn: number, senderReader: boolean,
-  gOut: number, aOffset: number, aLength: number, codeOffset: number, codeLength: number): Uint8Array {
-  const tag = new Uint8Array([
-    ...hexToBin(categoryId).slice().reverse(), slot & 0xff, (slot >> 8) & 0xff, gIn & 0xff, (gIn >> 8) & 0xff,
-  ]);
-  if (!senderReader) return tag;
-  const extra = new Uint8Array(10);
-  const write = (at: number, value: number): void => {
-    extra[at] = value & 0xff;
-    extra[at + 1] = (value >> 8) & 0xff;
-  };
-  write(0, gOut); write(2, aOffset); write(4, aLength); write(6, codeOffset); write(8, codeLength);
-  return new Uint8Array([...tag, ...extra]);
-}
-
-/** Encode a callee's full ABI frame with the genesis call's synthetic values. */
-function calleeFrame(callee: ConstructorCallee, functionName: string, args: readonly FunctionArgument[],
-  tag: Uint8Array, returnIndex: number, senderCategory?: Uint8Array): FunctionArgument[] {
-  const fn = callee.contract.inner.artifact.abi.find((entry) => entry.name === functionName);
-  if (fn === undefined) throw new DeployerCalleeError(callee.contract.inner.artifact.contractName, functionName,
-    'the callee has no such function');
-  const visible = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
-  if (args.length !== visible.length) throw new DeployerCalleeError(
-    callee.contract.inner.artifact.contractName, functionName,
-    `it takes ${visible.length} visible argument${visible.length === 1 ? '' : 's'}, but ${args.length} were given`,
-  );
-  const values = new Map<string, FunctionArgument>();
-  visible.forEach((input, index) => values.set(input.name, args[index]));
-  for (const input of fn.inputs) {
-    if (!input.name.startsWith('__internal__')) continue;
-    if (input.name === '__internal__genesisCall') values.set(input.name, tag);
-    else if (input.name === '__internal__returnOutputIdx') values.set(input.name, BigInt(returnIndex));
-    else if (input.name === '__internal__msgSenderCategory') values.set(input.name, senderCategory ?? new Uint8Array(32));
-    else throw new DeployerCalleeError(callee.contract.inner.artifact.contractName, functionName,
-      `the entry needs the internal witness '${input.name}', which a constructor's call cannot fill`);
-  }
-  return fn.inputs.map((input) => values.get(input.name)!);
-}
-
-/** The callee's data record and return record as the create must carry them. */
-export interface ConstructorCalleeRun {
-  master: Utxo;
-  dataNfts: Utxo[];
-  dataCommitments: string[];
-  returnCommitment: string;
-  category: string;
-  unlocking: Uint8Array;
-  dataUnlocking: Uint8Array;
-  returnIndex: number;
-}
-
-/** Run one callee in an isolated probe and learn its post-call data and return record (A14 item 5). */
-export async function deriveConstructorCalleeRun(options: {
+/** One call slot's call: the callee, the function the constructor names and the visible arguments it passes. */
+export interface ConstructorCall {
+  slot: number;
   callee: ConstructorCallee;
   functionName: string;
   args: readonly FunctionArgument[];
-  slot: number;
-  categoryId: string;
-  provider: NetworkProvider;
-  returnIndex: number;
-  masterInputIndex: number;
-  tag: Uint8Array;
-  createUnlocking?: Uint8Array;
-  childMasterLock?: Uint8Array;
-  deployerLockingBytecode?: Uint8Array;
-}): Promise<ConstructorCalleeRun> {
-  const { callee, functionName, args, slot, categoryId, provider, returnIndex, masterInputIndex, tag } = options;
-  const artifact = callee.contract.inner.artifact;
-  assertDeployerCallee(artifact.contractName, artifact, functionName);
-  const state = await callee.contract.getFullState();
-  if (state.masterUtxo === undefined) throw new DeployerCalleeError(artifact.contractName, functionName,
-    'the callee has no master coin on the network yet');
-  const { addressToLockScript } = await import('../utils.js');
-  const { getDataNftAddress } = await import('./covenant-helpers.js');
-  const masterLock = addressToLockScript(callee.contract.address);
-  const dataLock = addressToLockScript(getDataNftAddress(
-    callee.contract.inner as never, callee.contract.categoryId,
-  ));
-  const master: Utxo = { ...state.masterUtxo, lockingBytecode: masterLock };
-  const dataNfts: Utxo[] = state.dataNftUtxos.map((utxo) => ({ ...utxo, lockingBytecode: dataLock }));
-  const senderReader = (artifact.abi.find((entry) => entry.name === functionName)?.inputs ?? [])
-    .some((input) => input.name === '__internal__msgSenderCategory');
-  const abiValues = calleeFrame(callee, functionName, args, tag, returnIndex,
-    senderReader ? hexToBin(categoryId) : undefined);
-  const unlocker = callee.contract.inner.unlock[functionName]?.(...abiValues);
-  if (unlocker === undefined) throw new DeployerCalleeError(artifact.contractName, functionName,
-    'the SDK cannot build its unlocking');
-  const calleeUnlocking = unlocker.generateUnlockingBytecode({
-    transaction: { version: 2, locktime: 0, inputs: [], outputs: [] }, sourceOutputs: [], inputIndex: 1,
-  } as never);
-  const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-  const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
-  const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
-  const genesisLock = options.childMasterLock ?? Uint8Array.of(0x51);
-  const deployerLock = options.deployerLockingBytecode ?? genesisLock;
-  const calleeInput = senderReader ? 2 : 1;
-  const dataCount = dataNfts.length;
-  const runProbe = (dataCommits: readonly string[], returnCommit: string): any => {
-    const builder = new CovenantTransactionBuilder({ provider });
-    builder.addInput({ txid: categoryId, vout: 0, satoshis: 1200n, lockingBytecode: deployerLock }, {
-      generateLockingBytecode: () => deployerLock,
-      generateUnlockingBytecode: () => options.createUnlocking ?? Uint8Array.of(0x51),
+}
+
+/**
+ * A14 item 5: the call each slot of C's constructor makes. A literal or forwarded constructor argument is read from the
+ * call site; any other argument comes from `callees`. `args` are `create`'s public arguments by name.
+ */
+export function resolveConstructorCalls(options: {
+  artifact: Artifact;
+  deployer: DeployerAbi;
+  callees: readonly ConstructorCallee[] | undefined;
+  args: Readonly<Record<string, FunctionArgument>>;
+}): ConstructorCall[] {
+  const { artifact, deployer, args } = options;
+  const constructorAbi = artifact.abi.find((entry) => entry.name === '__construct');
+  const sites = constructorAbi?.externalCalls ?? [];
+  const configured = options.callees ?? [];
+  if (sites.length !== deployer.callSlots || configured.length !== sites.length) {
+    throw new DeployerCalleeError(artifact.contractName, sites[0]?.functionName ?? '<unknown>',
+      `pass ${deployer.callSlots} constructorCallees entries, one per call slot`);
+  }
+  const visible = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+  const slotOf = new Map<string, number>();
+  return sites.map((site, slot) => {
+    const callee = configured[slot];
+    const calleeArtifact = callee.contract.inner.artifact;
+    const functionName = callee.functionName ?? site.functionName;
+    assertDeployerCallee(calleeArtifact.contractName, calleeArtifact, functionName);
+    // `create` requires input m_j to sit at the target the constructor computes (A4.3 step 10); say so before building.
+    const target = site.addressParam === undefined ? undefined : args[site.addressParam];
+    const targetLock = target instanceof Uint8Array ? target
+      : typeof target === 'string' && target.includes(':') ? addressToLockScript(target) : undefined;
+    const calleeLock = addressToLockScript(callee.contract.address);
+    if (targetLock !== undefined && binToHex(targetLock) !== binToHex(calleeLock)) {
+      throw new DeployerCalleeError(calleeArtifact.contractName, functionName,
+        `call slot ${slot} calls ${binToHex(targetLock)}, not this callee at ${binToHex(calleeLock)}`);
+    }
+    // One master runs one arm, so two slots that name one contract cannot both be answered (A7).
+    const earlier = slotOf.get(binToHex(calleeLock));
+    if (earlier !== undefined) {
+      throw new DeployerCalleeError(calleeArtifact.contractName, functionName,
+        `call slots ${earlier} and ${slot} both call it, and one master answers one call`);
+    }
+    slotOf.set(binToHex(calleeLock), slot);
+    const callArgs = callee.args ?? (site.argSources ?? []).map((source) => {
+      if (source.kind === 'literal') return source.value as FunctionArgument;
+      if (source.kind === 'forward' && source.paramIndex !== undefined) {
+        const input = visible[source.paramIndex];
+        const value = input === undefined ? undefined : args[input.name];
+        if (value !== undefined) return value;
+      }
+      throw new DeployerCalleeError(calleeArtifact.contractName, functionName,
+        'its call arguments are not literals or forwarded constructor parameters; pass them in constructorCallees');
     });
-    // A sender-reading callee checks output `g_out` (the child's master) and the callee's own master sits at
-    // its input index. A filler at input 1 keeps the two apart; the child's master is output 1.
-    if (senderReader) {
-      builder.addInput({ txid: `${'00'.repeat(31)}e1`, vout: 0, satoshis: 1200n, lockingBytecode: genesisLock }, {
-        generateLockingBytecode: () => genesisLock,
-        generateUnlockingBytecode: () => Uint8Array.of(0x51),
+    return { slot, callee, functionName, args: callArgs };
+  });
+}
+
+/** A paired input of a callee block: a coin the callee's run spends, or `undefined` for a slot a wallet coin fills. */
+type CalleeBlockInput = { utxo: Utxo; unlocker?: (masterIndex: number) => Unlocker } | undefined;
+
+/**
+ * How the callee's own run completes one output of its block (A14 item 5). The run stops at its first unmet check, and
+ * the check names what its output must hold, so each round of the settling run learns at least one output.
+ */
+export type CalleeOutputRule =
+  /** A token output whose lock and token are fixed: the run pins its NFT commitment. */
+  | { kind: 'commitment' }
+  /** An NFT the run pins only where its emit runs (an event under a condition, a wide event's chunk): a filler, which
+   * holds no token, until a pin names its commitment. */
+  | { kind: 'optional'; make: (commitment: string) => Output }
+  /** A satoshi transfer: a filler until the run checks its lock and value. */
+  | { kind: 'transfer'; active: boolean }
+  /** A transfer of a token container's units: a filler until the run checks its lock, units and category. */
+  | { kind: 'tokenTransfer'; active: boolean; category?: string }
+  /** The satoshi container, recreated with its coin's value less the active transfers and the miner fee. */
+  | { kind: 'satoshiContainer'; satoshis: bigint; lock: Uint8Array; minerFee: bigint }
+  /** A token container, recreated with its coin's units less the active transfers of its category. */
+  | { kind: 'tokenContainer'; utxo: Utxo; lock: Uint8Array; category: string };
+
+/**
+ * A7, A14 item 5: one call slot's callee block. Its inputs and outputs pair index for index from the callee's master
+ * on, as the callee's own layout places them, and then its trailing region. The record carrier, unless the record slot
+ * is inside the block, and each relinked predecessor of an insert (P') sit after the paired region, at the indexes their
+ * witnesses name.
+ */
+export interface ConstructorCalleeBlock extends ConstructorCall {
+  contract: import('../Contract.js').Contract<Artifact>;
+  fn: import('@solidcash/utils').AbiFunction;
+  categoryId: string;
+  masterLock: Uint8Array;
+  senderReader: boolean;
+  inputs: CalleeBlockInput[];
+  outputs: Output[];
+  /** How the callee's run completes each output of its block, by offset. */
+  rules: Map<number, CalleeOutputRule>;
+  carrier: Output;
+  /** The carrier's offset in the block, when the record slot is not the block's last. */
+  carrierOffset?: number;
+  lanes: Array<{ witness: string; output: Output }>;
+  /** The sorted-batch witnesses of the callee's mapping writes; `PredOut` of a lane is set where it is placed. */
+  witnesses: Record<string, FunctionArgument>;
+  /**
+   * The inserts a condition guards, each its batch's only target, by block offset: where the run keeps the node the
+   * slot spends, the write did not run, and the insert's lane is dropped (PredOut -2).
+   */
+  guardedInserts: Map<number, { slotIndex: number; witness: string }>;
+  /**
+   * Witnesses that name an input or output of the transaction, as offsets from the master: each one that names an index
+   * (0 or more) is moved to the master's index where the block is placed.
+   */
+  relocated?: Record<string, bigint>;
+  /** The redeem bytes of the contracts the block runs beyond its master (the callee's own callees), for a fee. */
+  extraBytes?: number;
+}
+
+const vmapWitness = (field: string, slotIndex: number): string => `__internal__vmapBatch${field}_${slotIndex}`;
+
+/**
+ * Internal witnesses of an entry's frame that name an input or an output of the transaction, not an offset in its block
+ * (the covenant reads them with `OP_PICK` and introspects at that index directly). A frame built with the master at
+ * input 0 holds each as an offset from the master.
+ */
+const TRANSACTION_INDEX_WITNESS = new RegExp('^__internal__(?:returnOutputIdx|externalReturnOutputIdx\\d*'
+  + '|externalCallInputBase|extcallMasterIdx\\d+|extcallAnchorIdx\\d+|callEdgeOutputIdx\\d+|blockOracleInputIndex'
+  + '|blockhashInputIndex|dynamicChunkInputBase|dynamicChunkOutputBase|valueChunkOutputBase|vmapBatchPredOut_\\d+'
+  + '|externalOutStateInputBase)$');
+
+/** The covenant parameters of a coin's unlocker that name the input of the master it serves, or an output. */
+const COVENANT_INDEX_PARAMETER = new Set(['masterInputIndex', 'outputIndex']);
+
+/** The internal witnesses `calleeFrame` sets for a genesis call itself. */
+const GENESIS_FRAME_WITNESS = new Set([
+  '__internal__genesisCall', '__internal__returnOutputIdx', '__internal__msgSenderCategory', '__internal__rowEntryShift',
+]);
+
+/** The `txid:vout` of a coin, as the shared side-car pools are told apart by. */
+const coinKey = (utxo: Pick<Utxo, 'txid' | 'vout'>): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+
+/** A token-less output that holds an index; an unused event slot, chunk or transfer requires no more. */
+const plainFiller = (): Output => ({ to: Uint8Array.of(0x51), amount: 1000n });
+
+/** The coin a listing names, without the unlocker a loader attached to it. */
+const listedCoin = (utxo: Utxo): Utxo => ({
+  txid: utxo.txid, vout: utxo.vout, satoshis: utxo.satoshis, ...(utxo.token === undefined ? {} : { token: utxo.token }),
+});
+
+/**
+ * A provider view of a shared side-car pool (A14 item 6): coins a creation already spends are not offered again, and no
+ * coin is minted on demand, so a missing pool is `DeployerSidecarError`.
+ */
+function sharedPoolProvider(provider: NetworkProvider, spent: ReadonlySet<string>): NetworkProvider {
+  return {
+    network: provider.network,
+    getUtxosForLockingBytecode: async (lock: Uint8Array): Promise<Utxo[]> => (
+      await provider.getUtxosForLockingBytecode(lock)).filter((utxo) => !spent.has(coinKey(utxo))),
+  } as unknown as NetworkProvider;
+}
+
+/** One step of an ecrecover side-car group: a shared coin, or `undefined` for a 2-way recovery's middle slot. */
+type SidecarStep = { utxo: Utxo; unlocker: Unlocker; recreate: Output } | undefined;
+
+/**
+ * The shared ecrecover side-car groups of a function's recoveries (A14 item 6), A, M and B for each, from the salt-0
+ * pool. A 2-way recovery's middle slot reads nothing: a wallet coin fills it. Coins in `spent` are skipped; the coins
+ * taken are added to it.
+ */
+async function sharedEcrecoverSteps(options: {
+  calls: ReadonlyArray<readonly [unknown, unknown, unknown, unknown]>;
+  provider: NetworkProvider;
+  spent: Set<string>;
+  refuse: (what: string) => never;
+  /** The input the side-cars serve, for a refusal. */
+  who: string;
+}): Promise<SidecarStep[]> {
+  const { calls, provider, spent, refuse, who } = options;
+  if (calls.length === 0) return [];
+  const salt = new Uint8Array(32);
+  const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+  const { computeEcrecoverWitness } = await import('../ecrecover/ecrecoverRecovery.js');
+  const {
+    buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, probeEcrecoverSplit, probeEcrecoverSplit3,
+  } = await import('../ecrecover/ecrecoverComputeSidecar.js');
+  const pool = async (role: 'A' | 'B2' | 'M' | 'B3'): Promise<Utxo[]> => (
+    await provider.getUtxosForLockingBytecode(ecrecoverComputeLockingBytecode(salt, role)))
+    .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && !spent.has(coinKey(utxo)));
+  const [coinsA, coinsB, coinsM, coinsB3] = await Promise.all([pool('A'), pool('B2'), pool('M'), pool('B3')]);
+  const take = (coins: Utxo[]): Utxo => {
+    const coin = coins.shift();
+    if (coin === undefined) throw new DeployerSidecarError('ecrecover', who);
+    spent.add(coinKey(coin));
+    return coin;
+  };
+  const steps: SidecarStep[] = [];
+  for (const [hash, v, r, s] of calls) {
+    if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)
+      || (typeof v !== 'bigint' && typeof v !== 'number')) {
+      refuse('it recovers a key from values that are not its own arguments; the SDK lays out a recovery from its '
+        + 'hash, v, r and s arguments');
+    }
+    const witness = computeEcrecoverWitness(hash as Uint8Array, Number(v), r as Uint8Array, s as Uint8Array);
+    const coinA = take(coinsA);
+    let chunkA: number | undefined;
+    try {
+      chunkA = probeEcrecoverSplit(witness, salt, coinA, coinsB[0] ?? coinA);
+    } catch {
+      chunkA = undefined;
+    }
+    if (chunkA === undefined) {
+      const coinM = take(coinsM);
+      const coinB = take(coinsB3);
+      const split = probeEcrecoverSplit3(witness, salt, coinA, coinM, coinB);
+      const built = buildEcrecoverComputeSidecars3(witness, split.chunkA, split.chunkM, salt, coinA, coinM, coinB);
+      steps.push(
+        { utxo: coinA, unlocker: built.unlockerA, recreate: built.recreateA },
+        { utxo: coinM, unlocker: built.unlockerM, recreate: built.recreateM },
+        { utxo: coinB, unlocker: built.unlockerB, recreate: built.recreateB },
+      );
+      continue;
+    }
+    const coinB = take(coinsB);
+    const built = buildEcrecoverComputeSidecars(witness, chunkA, salt, coinA, coinB, undefined, 'B2');
+    steps.push(
+      { utxo: coinA, unlocker: built.unlockerA, recreate: built.recreateA },
+      undefined,
+      { utxo: coinB, unlocker: built.unlockerB, recreate: built.recreateB },
+    );
+  }
+  return steps;
+}
+
+/**
+ * `unlocker` made again for a block built with its callee's master at input 0 and placed with that master at input
+ * `masterIndex`: a covenant coin's master index (or output index), and a contract frame's transaction indexes, move by
+ * `masterIndex`. An unlocker that names no index (a wallet coin, an oracle pool coin, a shared side-car) is kept.
+ */
+function movedUnlocker(unlocker: Unlocker, masterIndex: number): Unlocker {
+  type Moved = Partial<import('../interfaces.js').ContractUnlocker>;
+  const { contract, abiFunction, params, covenantUnlocker, allowsAlignedOutputReplacement } = unlocker as Moved;
+  if (contract === undefined || abiFunction === undefined || params === undefined || masterIndex === 0) return unlocker;
+  const shift = BigInt(masterIndex);
+  const moved = abiFunction.inputs.map((input, index) => {
+    const value = params[index];
+    const names = covenantUnlocker === true
+      ? COVENANT_INDEX_PARAMETER.has(input.name) : TRANSACTION_INDEX_WITNESS.test(input.name);
+    return names && typeof value === 'bigint' && value >= 0n ? value + shift : value;
+  });
+  const unlock = (contract.unlock as Record<string, ((...values: FunctionArgument[]) => Unlocker) | undefined>)[
+    abiFunction.name];
+  if (unlock === undefined) {
+    throw new DeployerPrepError(`The unlocker of a coin of '${contract.artifact.contractName}' cannot be made again`);
+  }
+  return Object.assign(unlock(...moved), {
+    ...(covenantUnlocker === undefined ? {} : { covenantUnlocker }),
+    ...(allowsAlignedOutputReplacement === undefined ? {} : { allowsAlignedOutputReplacement }),
+  });
+}
+
+/** How many callee blocks the ordinary build has laid out: each takes pads at a lock of its own. */
+let calleeBuilds = 0;
+
+/**
+ * A callee block laid out by the ordinary call path itself (A14 item 5): the callee's own call of its function with its
+ * record emitted (`StatefulFunctionCall.build`), not sent. That build sizes what a fixed layout cannot: a loop's entries,
+ * inserts and payments, dynamic state's chunks, the blocks of the calls and reads the callee makes, and the oracle coins
+ * its reads co-spend.
+ *
+ * The build has the master at input 0. Its block moves to where the creation places it: each coin's unlocker that names
+ * the master's input (or an output) by index is made again (`movedUnlocker`), each witness of the frame that names a
+ * transaction index moves with the master (`relocated`), and each input at the build's pad lock (a pad of an
+ * output-only index, or the build's fee input) takes a wallet coin of the creation. The callee's run in the creation
+ * pins its NFT outputs again, its call record among them, whose digest covers the genesis call's tag.
+ *
+ * The build resolves `msg.sender` as an ordinary call does: a contract sender by its minting NFT and its call edge among
+ * the transaction's coins. The child has neither while it is created (the genesis step resolves it, A7), so the build
+ * runs with its pad lock as the sender, and a function that keys a collection by `msg.sender` is refused: the build
+ * would lay out another key's entries than the child's.
+ */
+async function planCalleeBlockByCall(
+  call: ConstructorCall, context: { spent: Set<string> }, refuse: (what: string) => never,
+): Promise<ConstructorCalleeBlock> {
+  const { callee, functionName } = call;
+  const stateful = callee.contract as unknown as {
+    inner: import('../Contract.js').Contract<Artifact>;
+    connect?: (signer: unknown) => { _createBuilder: (...values: unknown[]) => Promise<unknown> };
+  };
+  const contract = stateful.inner;
+  const artifact = contract.artifact;
+  const fn = artifact.abi.find((entry) => entry.name === functionName) ?? refuse('the callee has no such function');
+  if (typeof stateful.connect !== 'function') {
+    refuse('its block is laid out by the ordinary build of its call, which needs the callee as a stateful contract');
+  }
+  const provider = contract.provider;
+  const categoryId = callee.contract.categoryId;
+  const masterLock = addressToLockScript(callee.contract.address);
+  const { default: Signer } = await import('../Signer.js');
+  const { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } = await import('@solidcash/utils');
+  // The build's pads and its fee input stand at a lock of their own, each build another, from a list of stand-in coins:
+  // the build neither lists nor splits a real wallet's coins, signs nothing, and the creation replaces every input at
+  // that lock with one of its wallet coins.
+  calleeBuilds += 1;
+  const padHash = Uint8Array.from({ length: 20 }, (_, index) => (index < 4 ? (calleeBuilds >>> (8 * index)) & 0xff : 0xcd));
+  const padLock = Uint8Array.of(0x76, 0xa9, 0x14, ...padHash, 0x88, 0xac);
+  const padCoins: Utxo[] = Array.from({ length: 64 }, (_, index) => ({
+    txid: `${binToHex(padHash)}${index.toString(16).padStart(24, '0')}`, vout: 1, satoshis: 1_000_000n,
+  }));
+  const padder = Signer.external({ wallet: { signTransaction: async () => undefined }, pkh: padHash }, provider);
+  Object.defineProperty(padder, 'getUtxos', { value: async (): Promise<Utxo[]> => padCoins.map((coin) => ({ ...coin })) });
+  const connected = stateful.connect(padder);
+  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
+  const senderKeyed = (fn.entryAccesses ?? []).some((access) => (access.keySources ?? []).some(isMsgSenderKeySource))
+    || (fn.sortedUpsertLoopInfo ?? []).some((info) => (info.fixedKeySources ?? []).some(isMsgSenderKeySource));
+  if (senderKeyed) {
+    refuse('it keys a collection by msg.sender, and its block is laid out by the ordinary build of its call, which '
+      + 'resolves a contract sender by its minting NFT and call edge; the child holds neither until it is created '
+      + '(the genesis step resolves it, A7), so the build would lay out entries of another key');
+  }
+  const route = { abiFunction: fn, emitReturn: true };
+  const { StatefulFunctionCall } = await import('./StatefulContract.js');
+  const participant = new StatefulFunctionCall(
+    () => connected._createBuilder(functionName, [...call.args], { ...route, signerUtxos: padCoins }) as never,
+    connected as never, functionName, [...call.args], route,
+  );
+  for (const external of callee.externalContracts ?? []) participant.withExternalCall(external as never);
+  let built: { inputs: UnlockableUtxo[]; outputs: Output[] };
+  try {
+    built = await participant.build() as unknown as { inputs: UnlockableUtxo[]; outputs: Output[] };
+  } catch (error) {
+    if (error instanceof DeployerCalleeError) throw error;
+    return refuse(`the ordinary build of its call, which lays out its block, fails: ${(error as Error).message}`);
+  }
+  const lockHex = (to: string | Uint8Array): string => binToHex(typeof to === 'string' ? addressToLockScript(to) : to);
+  const master = built.inputs[0];
+  if (master === undefined || lockHex(master.unlocker.generateLockingBytecode()) !== binToHex(masterLock)) {
+    refuse('the ordinary build of its call does not put its master at input 0');
+  }
+  const frame = master!.unlocker as Partial<import('../interfaces.js').ContractUnlocker>;
+  if (frame.abiFunction?.name !== fn.name || frame.params === undefined) {
+    refuse('the ordinary build of its call does not run its function at its master');
+  }
+  // The frame as the build encoded it: the visible arguments, and the internal witnesses that are not the genesis call's.
+  const args: FunctionArgument[] = [];
+  const witnesses: Record<string, FunctionArgument> = {};
+  const relocated: Record<string, bigint> = {};
+  let carrierOffset: number | undefined;
+  frame.abiFunction!.inputs.forEach((input, index) => {
+    const value = frame.params![index] as FunctionArgument;
+    if (!input.name.startsWith('__internal__')) {
+      args.push(value);
+      return;
+    }
+    if (input.name === '__internal__returnOutputIdx') {
+      if (typeof value === 'bigint' && value > 0n) carrierOffset = Number(value);
+      return;
+    }
+    if (GENESIS_FRAME_WITNESS.has(input.name)) return;
+    if (TRANSACTION_INDEX_WITNESS.test(input.name) && typeof value === 'bigint') relocated[input.name] = value;
+    else witnesses[input.name] = value;
+  });
+  const carrier = carrierOffset === undefined ? undefined : built.outputs[carrierOffset];
+  if (carrier === undefined || lockHex(carrier.to) !== '51' || carrier.token?.category !== categoryId
+    || carrier.token.nft?.capability !== 'none') {
+    return refuse('the ordinary build of its call publishes no call record in its block');
+  }
+  const pads = new Set([binToHex(padLock), BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX.toLowerCase()]);
+  const inputs: CalleeBlockInput[] = [{ utxo: { ...listedCoin(master!), lockingBytecode: masterLock } }];
+  for (const input of built.inputs.slice(1)) {
+    const lock = input.unlocker.generateLockingBytecode();
+    if (pads.has(binToHex(lock))) {
+      inputs.push(undefined);
+      continue;
+    }
+    const { unlocker } = input;
+    inputs.push({ utxo: { ...listedCoin(input), lockingBytecode: lock }, unlocker: (at) => movedUnlocker(unlocker, at) });
+    context.spent.add(coinKey(input));
+  }
+  // Change the build pays back to its pad lock, after the block, is not the callee's: the creation's change takes it.
+  let end = built.outputs.length;
+  while (end > 0 && lockHex(built.outputs[end - 1]!.to) === binToHex(padLock)) end -= 1;
+  if (built.outputs.slice(0, end).some((output) => lockHex(output.to) === binToHex(padLock))) {
+    refuse('the ordinary build of its call pays its pad lock inside its block');
+  }
+  const outputs: Output[] = built.outputs.slice(0, end).map((output) => ({
+    to: output.to, amount: output.amount,
+    ...(output.token === undefined ? {} : {
+      token: {
+        category: output.token.category, amount: output.token.amount,
+        ...(output.token.nft === undefined ? {} : { nft: { ...output.token.nft } }),
+      },
+    }),
+  }));
+  // Every index of the block holds an input and an output: an output-only index takes a wallet coin, and an input
+  // whose coin the call consumes without an output of its own takes the filler output.
+  while (inputs.length < outputs.length) inputs.push(undefined);
+  while (outputs.length < inputs.length) outputs.push(plainFiller());
+  // The callee's run in the creation pins each NFT of its own category again: its call record's digest covers the tag.
+  const rules = new Map<number, CalleeOutputRule>();
+  outputs.forEach((output, offset) => {
+    const nft = output.token?.nft;
+    if (offset === 0 || offset === carrierOffset || output.token?.category !== categoryId || nft === undefined) return;
+    if (nft.capability === 'mutable' || nft.capability === 'none') rules.set(offset, { kind: 'commitment' });
+  });
+  const extraBytes = built.inputs.slice(1).reduce((sum, input) => {
+    const nested = input.unlocker as Partial<import('../interfaces.js').ContractUnlocker>;
+    return sum + (nested.contract !== undefined && nested.covenantUnlocker !== true ? nested.contract.bytesize : 0);
+  }, 0);
+  return {
+    ...call, args, contract, fn, categoryId, masterLock,
+    senderReader: fn.inputs.some((input) => input.name === '__internal__msgSenderCategory'),
+    inputs, outputs, rules, carrier: outputs[carrierOffset!]!, carrierOffset, lanes: [], witnesses,
+    guardedInserts: new Map(), relocated, extraBytes,
+  };
+}
+
+/**
+ * Lay out one callee's block from its function's block layout and its coins on the network (A7, A14 item 5). The callee
+ * runs as an ordinary spend inside the creation, so its block holds what its own call would: its master, the records it
+ * reads, each entry it reads or writes (an update of the entry its key names, or an insert after the entry before it),
+ * its satoshi and token containers, its transfers and events, and its side-cars and their chain. Keys that read
+ * `msg.sender` take `sender`, the child's master lock (A7).
+ *
+ * A side-car under a brand is spendable only beside input 0 of the brand's category, and a callee's master is never input
+ * 0 of a creation, so a callee co-spends the shared pool's side-cars (salt 0), as Deploy<C> does (A14 item 6). `spent`
+ * holds the shared coins the creation already spends; the ones this block takes are added to it.
+ *
+ * A function whose block a run sizes (loops, dynamic state, iterations, its own calls and reads, block reads) or that
+ * deletes an entry takes the block of its ordinary call's build instead (`planCalleeBlockByCall`). A function whose own
+ * spend needs what a constructor's call cannot carry is refused with `DeployerCalleeError`.
+ */
+export async function planConstructorCalleeBlock(
+  call: ConstructorCall, sender: Uint8Array, options: { spent?: Set<string> } = {},
+): Promise<ConstructorCalleeBlock> {
+  const { callee, functionName, args } = call;
+  const contract = callee.contract.inner as unknown as import('../Contract.js').Contract<Artifact>;
+  const artifact = callee.contract.inner.artifact;
+  const refuse = (what: string): never => {
+    throw new DeployerCalleeError(artifact.contractName, functionName, what);
+  };
+  const fn = artifact.abi.find((entry) => entry.name === functionName) ?? refuse('the callee has no such function');
+  const {
+    createDataNftUnlocker, createEntryNftUnlocker, createSatoshiContainerUnlocker, createTokenContainerUnlocker,
+    getAnonymousEventNftAddress, getDataNftAddress, getEntryNftAddress, getEventNftAddress,
+  } = await import('./covenant-helpers.js');
+  const { eventContinuationLockingBytecode } = await import('./event-chunks.js');
+  const { SortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } = await import('./SortedList.js');
+  const { isMsgSenderKeySource } = await import('./soft-state-overlays.js');
+  const { evalComputedKey } = await import('./route-expression-key.js');
+  const spent = options.spent ?? new Set<string>();
+  const provider = contract.provider;
+  const categoryId = callee.contract.categoryId;
+  const state = await callee.contract.getFullState() as {
+    masterUtxo?: Utxo; dataNftUtxos: Utxo[]; state?: Record<string, unknown>;
+  };
+  const masterUtxo = state.masterUtxo ?? refuse('the callee has no master coin on the network yet');
+  const masterLock = addressToLockScript(callee.contract.address);
+  const dataLock = addressToLockScript(getDataNftAddress(contract, categoryId));
+  const dataCount = artifact.stateLayout?.dataNftCount ?? 0;
+  const required = fn.requiredNftIndices ?? Array.from({ length: dataCount }, (_, index) => index);
+  const layout: import('@solidcash/utils').FunctionBlockLayout = fn.blockLayout ?? {
+    blockSize: 1 + required.length,
+    slots: [
+      { kind: 'master', offset: 0 },
+      ...required.map((nftIndex, index) => ({ kind: 'dataNft' as const, offset: 1 + index, nftIndex })),
+    ],
+  };
+  const visible = fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  // A run that loops over collection entries, chunks or payments reads a trailing region the SDK sizes from the run;
+  // an entry that creates a contract refuses a genesis call (A7). Name what keeps the call from being laid out.
+  if ((fn.deployTargets?.length ?? 0) > 0 || layout.slots.some((slot) => slot.kind === 'deploy')) {
+    refuse('it creates a contract, and a creating entry refuses a genesis call (A7): one run could both create a '
+      + 'child and answer its constructor');
+  }
+  if (fn.keccakLoopReads === true || fn.ecrecoverLoopReads === true) {
+    refuse('it hashes or recovers keys in a loop, whose side-cars its ordinary call takes from the pool branded with '
+      + 'its own category, which admits a side-car only beside input 0 of that category; a callee\'s master is never '
+      + 'input 0 of a creation, and a loop of shared-pool side-cars (salt 0) is not laid out');
+  }
+  // Regions a run sizes (loops, dynamic state, iterations, the callee's own calls and reads, block reads) and deletes
+  // are laid out by the ordinary build of the call; the fixed layout below covers the rest.
+  const sized: ReadonlyArray<keyof import('@solidcash/utils').AbiFunction> = [
+    'sortedUpsertLoopInfo', 'sortedInsertLoopInfo', 'sortedInsertLoops', 'entryLoopWrites', 'runtimeLoopTransfers',
+    'runtimeLoopEvents', 'dynamicWrites', 'dynamicReads', 'collectionIterations', 'externalCalls', 'externalReads',
+    'lowLevelCalls', 'blockhashReads',
+  ];
+  const fixedKinds = new Set<string>([
+    'master', 'dataNft', 'readOnlyDataNft', 'entry', 'event', 'eventChunk', 'returnEvent', 'satoshiContainer',
+    'tokenContainer', 'transfer', 'tcTransfer', 'keccakSideCar', 'ecrecoverSideCar',
+  ]);
+  if (sized.some((field) => Array.isArray(fn[field]) && (fn[field] as unknown[]).length > 0)
+    || layout.slots.some((slot) => !fixedKinds.has(slot.kind) || slot.softDelete === true)
+    || (fn.entryAccesses ?? []).some((access) => access.operations.includes('delete'))) {
+    return planCalleeBlockByCall(call, { spent }, refuse);
+  }
+
+  // The values of the function's inputs by position, for helpers that read a key or a category from an input.
+  const byPosition = fn.inputs.map((input) => {
+    const index = visible.findIndex((candidate) => candidate.name === input.name);
+    return index < 0 ? undefined : args[index];
+  }) as FunctionArgument[];
+
+  // Containers, as the ordinary call path finds them: the coin each container's address holds.
+  let satoshiContainer: { utxo: Utxo; lock: Uint8Array } | undefined;
+  if (layout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
+    const { loadCreateBuilderSatoshiContainer } = await import('./sc-load-create-builder-satoshi-container.js');
+    try {
+      const loaded = await loadCreateBuilderSatoshiContainer(
+        { categoryId, inner: contract as never }, { abiFunction: fn, overrides: undefined },
+      );
+      if (loaded.satoshiContainerUtxo !== undefined && loaded.satoshiContainerLockingBytecode !== undefined) {
+        satoshiContainer = {
+          utxo: listedCoin(loaded.satoshiContainerUtxo), lock: loaded.satoshiContainerLockingBytecode,
+        };
+      }
+    } catch (error) {
+      refuse(`its satoshi container holds no coin to pay from (${(error as Error).message})`);
+    }
+    if (satoshiContainer === undefined) refuse('its satoshi container holds no coin to pay from');
+  }
+  let tokenContainers: import('./external-call-utxo-group.js').TokenContainerInfo[] = [];
+  let tokenContainerLocks = new Map<string, Uint8Array>();
+  if (layout.slots.some((slot) => slot.kind === 'tokenContainer' || slot.kind === 'tcTransfer')) {
+    const { loadCreateBuilderTokenContainers } = await import('./sc-load-create-builder-token-containers.js');
+    try {
+      ({ tokenContainers, tokenContainerLockingBytecodes: tokenContainerLocks } = await loadCreateBuilderTokenContainers(
+        { categoryId, inner: contract as never },
+        { abiFunction: fn, args: byPosition, overrides: undefined, stateValues: state.state },
+      ));
+    } catch (error) {
+      refuse(`its token container cannot be found: ${(error as Error).message}`);
+    }
+  }
+
+  // Side-cars from the shared pool, and the keccak chain that rides the trailing region.
+  const shared = sharedPoolProvider(provider, spent);
+  let keccak: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
+  let chain: { sideCars: Array<Utxo & { unlocker: Unlocker }>; recreates: Output[] } | undefined;
+  if (layout.slots.some((slot) => slot.kind === 'keccakSideCar') || fn.keccakChainReads === true) {
+    const { resolveKeccakComputeCoSpends } = await import('./sc-resolve-keccak-compute-co-spends.js');
+    let resolved: Awaited<ReturnType<typeof resolveKeccakComputeCoSpends>>;
+    try {
+      resolved = await resolveKeccakComputeCoSpends({
+        categoryId,
+        sidecarSalt: new Uint8Array(32),
+        inner: { bytecode: contract.bytecode, artifact, provider: shared as never },
+        extractStatefulKeccakPreimages: async () => refuse(
+          'it hashes a keccak256 preimage that is not one of its arguments; the SDK lays out a side-car from the '
+          + 'argument it hashes',
+        ),
+        evalComputedKey: (...values: unknown[]) => (evalComputedKey as (...a: unknown[]) => Uint8Array | undefined)(
+          ...values),
+      }, fn, [...args]);
+    } catch (error) {
+      if (error instanceof DeployerCalleeError) throw error;
+      if (/side-car UTXO/.test((error as Error).message)) {
+        throw new DeployerSidecarError('keccak', `the callee '${artifact.contractName}.${functionName}'`);
+      }
+      throw error;
+    }
+    keccak = resolved.coSpends;
+    chain = resolved.chain as typeof chain;
+    for (const coin of [...keccak.map((entry) => entry.utxo), ...(chain?.sideCars ?? [])]) spent.add(coinKey(coin));
+  }
+  const ecrecover = await sharedEcrecoverSteps({
+    calls: (fn.ecrecoverArgParams ?? []).map((names) => names.map((name) => {
+      const index = name === null ? -1 : visible.findIndex((input) => input.name === name);
+      return index < 0 ? undefined : args[index];
+    }) as unknown as readonly [unknown, unknown, unknown, unknown]),
+    provider: shared,
+    spent,
+    refuse,
+    who: `the callee '${artifact.contractName}.${functionName}'`,
+  });
+  if (ecrecover.length !== layout.slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length) {
+    refuse(`its ${layout.slots.filter((slot) => slot.kind === 'ecrecoverSideCar').length} ecrecover side-car slots `
+      + `do not match its ${fn.ecrecoverArgParams?.length ?? 0} recoveries`);
+  }
+
+  const inputs: CalleeBlockInput[] = [];
+  const outputs: Output[] = [];
+  const rules = new Map<number, CalleeOutputRule>();
+  const witnesses: Record<string, FunctionArgument> = {};
+  const carrier: Output = {
+    to: Uint8Array.of(0x51), amount: 1000n,
+    token: { category: categoryId, amount: 0n, nft: { capability: 'none', commitment: '' } },
+  };
+  let carrierOffset: number | undefined;
+  const inserts: Array<{ slotIndex: number; key: Uint8Array; predecessor: Utxo; lock: Uint8Array;
+    predecessorCommitment: Uint8Array; lane: boolean }> = [];
+  const guardedInserts = new Map<number, { slotIndex: number; witness: string }>();
+  const eventLock = (signature: string): Uint8Array => addressToLockScript(
+    artifact.events?.find((event) => event.signature === signature)?.anonymous === true
+      ? getAnonymousEventNftAddress(contract, categoryId)
+      : getEventNftAddress(contract, categoryId, signature),
+  );
+  const eventNft = (lock: Uint8Array, commitment: string): Output => ({
+    to: lock, amount: RESERVE,
+    token: { category: categoryId, amount: 0n, nft: { capability: 'none', commitment } },
+  });
+  /** A coin of the callee's own; its unlocker names the callee's master wherever the block is placed. */
+  const own = (utxo: Utxo, unlocker: (masterIndex: number) => Unlocker): CalleeBlockInput => ({ utxo, unlocker });
+  const shared1 = (step: { utxo: Utxo; unlocker: Unlocker }): CalleeBlockInput => ({
+    utxo: step.utxo, unlocker: () => step.unlocker,
+  });
+  let eventIndex = 0;
+  for (const slot of [...layout.slots].sort((left, right) => left.offset - right.offset)) {
+    if (slot.offset !== inputs.length) refuse(`its block layout leaves offset ${inputs.length} empty`);
+    switch (slot.kind) {
+      case 'master':
+        // The master's unlocker is its frame, which `placeConstructorCalls` builds.
+        inputs.push({ utxo: { ...masterUtxo, lockingBytecode: masterLock } });
+        outputs.push({
+          to: masterLock, amount: masterUtxo.satoshis,
+          ...(masterUtxo.token === undefined ? {} : { token: masterUtxo.token }),
+        });
+        break;
+      case 'dataNft':
+      case 'readOnlyDataNft': {
+        const utxo = state.dataNftUtxos[slot.nftIndex ?? 0] ?? refuse(`its record ${slot.nftIndex ?? 0} is not on the network`);
+        inputs.push(own({ ...utxo, lockingBytecode: dataLock },
+          (masterIndex) => createDataNftUnlocker(contract, masterIndex, categoryId)));
+        outputs.push({
+          to: dataLock, amount: utxo.satoshis,
+          token: { category: categoryId, amount: 0n,
+            nft: { capability: 'mutable', commitment: utxo.token?.nft?.commitment ?? '' } },
+        });
+        rules.set(slot.offset, { kind: 'commitment' });
+        break;
+      }
+      case 'entry': {
+        const slotIndex = slot.slotIndex ?? 0;
+        const access = fn.entryAccesses?.find((candidate) => candidate.slotIndex === slotIndex)
+          ?? fn.entryAccesses?.[slotIndex];
+        const collection = artifact.stateLayout?.collections?.find(
+          (candidate) => candidate.name === access?.collection || candidate.signature === access?.collection,
+        );
+        if (access === undefined || collection === undefined) {
+          return refuse(`its entry slot ${slotIndex} names no collection the SDK can read`);
+        }
+        if (collection.sorted !== true) {
+          // This compiler keeps every collection sorted; an unsorted one is an older compiler's, whose absent keys no
+          // entry proves.
+          refuse(`its entry slot ${slotIndex} is an entry of '${access.collection}', which is not a sorted mapping, `
+            + 'so no entry proves a key absent');
+        }
+        const writes = access.operations.includes('write') || access.operations.includes('delete');
+        if (writes && !fn.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(slotIndex))) {
+          refuse(`its entry slot ${slotIndex} writes '${access.collection}' outside a sorted batch`);
+        }
+        if (access.operations.includes('delete')) {
+          refuse(`it deletes an entry of '${access.collection}', which a constructor's call does not lay out`);
+        }
+        const entryAddress = getEntryNftAddress(contract, categoryId, access.collection);
+        const entryLock = addressToLockScript(entryAddress);
+        const list = SortedList.fromUtxos((await provider.getUtxos(entryAddress))
+          .filter((utxo) => utxo.token?.category === categoryId));
+        const keys = access.keyParams.map((param, keyIndex) => {
+          const source = access.keySources?.[keyIndex];
+          if (isMsgSenderKeySource(source)) return sender;
+          if (source?.kind === 'expression') {
+            const value = evalComputedKey(source.expressionLabel, [...args], fn.inputs);
+            if (value !== undefined) return value;
+          }
+          const index = visible.findIndex((input) => input.name === param);
+          const value = index >= 0 ? args[index] : undefined;
+          if (value instanceof Uint8Array) return value;
+          const lock = tryCashAddressToLockScript(value);
+          if (lock !== undefined) return lock;
+          if (typeof value === 'bigint' || typeof value === 'number') return bigIntToVmNumber(BigInt(value));
+          if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
+          if (typeof value === 'string' && (collection.keyTypes?.[keyIndex] ?? collection.keyType) === 'string') {
+            return new TextEncoder().encode(value);
+          }
+          return refuse(`the key '${param}' of its ${access.collection} access is not a value the SDK can resolve`);
+        });
+        const key = keyToSlotMulti(keys, collection);
+        const exact = list.find(key);
+        const entryUnlocker = (masterIndex: number): Unlocker => createEntryNftUnlocker(
+          contract, masterIndex, categoryId, access.collection,
+        );
+        const node = (utxo: Utxo, commitment: string): Output => ({
+          to: entryLock, amount: utxo.satoshis,
+          token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
+        });
+        if (!writes) {
+          // A read: the entry its key names, or the one before the key, which proves it absent. Either is recreated as
+          // it is (the read-only preservation of an ordinary call).
+          let proof = exact;
+          if (proof === undefined) {
+            try {
+              proof = list.predecessorOf(key);
+            } catch (error) {
+              return refuse(`its ${access.collection} has no entry to prove the key absent (${(error as Error).message})`);
+            }
+          }
+          inputs.push(own({ ...proof.utxo, lockingBytecode: entryLock }, entryUnlocker));
+          outputs.push(node(proof.utxo, proof.utxo.token?.nft?.commitment ?? ''));
+          break;
+        }
+        witnesses[vmapWitness('Slot', slotIndex)] = key;
+        witnesses[vmapWitness('Proof', slotIndex)] = BigInt(slot.offset);
+        if (exact !== undefined) {
+          // An update: the entry itself is spent and recreated at this offset.
+          witnesses[vmapWitness('Next', slotIndex)] = exact.nextKey;
+          witnesses[vmapWitness('PredOut', slotIndex)] = -1n;
+          inputs.push(own({ ...exact.utxo, lockingBytecode: entryLock }, entryUnlocker));
+          outputs.push(node(exact.utxo, exact.utxo.token?.nft?.commitment ?? ''));
+        } else {
+          // An insert: the entry before the key is spent here, the new node takes this offset, and the relinked
+          // predecessor (P') is a lane after the paired region.
+          let plan: ReturnType<InstanceType<typeof SortedList>['planInsert']>;
+          try {
+            plan = list.planInsert(key);
+          } catch (error) {
+            return refuse(`its ${access.collection} has no entry to insert after (${(error as Error).message})`);
+          }
+          witnesses[vmapWitness('Next', slotIndex)] = decodeEntryCommitment(plan.newNodeCommitment).nextKey;
+          witnesses[vmapWitness('PredOut', slotIndex)] = -3n;
+          if (slot.conditional === true && fn.sortedBatchInfo?.some((batch) => batch.slotIndices.length === 1
+            && batch.slotIndices[0] === slotIndex)) {
+            guardedInserts.set(slot.offset, { slotIndex, witness: vmapWitness('PredOut', slotIndex) });
+          }
+          inserts.push({
+            slotIndex, key, predecessor: plan.predecessor.utxo, lock: entryLock,
+            predecessorCommitment: plan.predNewCommitment, lane: true,
+          });
+          inputs.push(own({ ...plan.predecessor.utxo, lockingBytecode: entryLock }, entryUnlocker));
+          outputs.push(node(plan.predecessor.utxo, binToHex(plan.newNodeCommitment)));
+        }
+        rules.set(slot.offset, { kind: 'commitment' });
+        break;
+      }
+      case 'event':
+      case 'eventChunk': {
+        const emit = fn.emits?.find((candidate) => candidate.emitIndex === slot.slotIndex)
+          ?? (slot.kind === 'event' ? fn.emits?.[slot.slotIndex ?? eventIndex] : undefined)
+          ?? refuse(`its ${slot.kind} slot ${slot.offset} names no event`);
+        if (slot.kind === 'event') eventIndex += 1;
+        inputs.push(undefined);
+        const lock = slot.kind === 'event' ? eventLock(emit.eventSignature)
+          : eventContinuationLockingBytecode(categoryId, emit.eventSignature,
+            artifact.events?.find((event) => event.signature === emit.eventSignature)?.anonymous === true);
+        if (slot.kind === 'event' && slot.conditional !== true) {
+          outputs.push(eventNft(lock, ''));
+          rules.set(slot.offset, { kind: 'commitment' });
+          break;
+        }
+        // An emit under a condition, or a chunk its payload may not reach: no token until the run pins one here.
+        outputs.push(plainFiller());
+        rules.set(slot.offset, { kind: 'optional', make: (commitment) => eventNft(lock, commitment) });
+        break;
+      }
+      case 'returnEvent':
+        carrierOffset = slot.offset;
+        inputs.push(undefined);
+        outputs.push(carrier);
+        break;
+      case 'satoshiContainer': {
+        const { utxo, lock } = satoshiContainer!;
+        inputs.push(own({ ...utxo, lockingBytecode: lock },
+          (masterIndex) => createSatoshiContainerUnlocker(contract, masterIndex, categoryId)));
+        outputs.push({ to: lock, amount: utxo.satoshis });
+        rules.set(slot.offset, {
+          kind: 'satoshiContainer', satoshis: utxo.satoshis, lock, minerFee: BigInt(layout.minerFee ?? 0),
+        });
+        break;
+      }
+      case 'tokenContainer': {
+        const container = tokenContainers.find((candidate) => candidate.tokenContainerSlotIndex === (slot.slotIndex ?? 0));
+        const category = container?.tokenContainerCategoryId;
+        if (container?.utxo === undefined || category === undefined) {
+          return refuse(`its token container${category === undefined ? '' : ` for ${category}`} holds no coin to pay from`);
+        }
+        const utxo = listedCoin(container.utxo);
+        const lock = tokenContainerLocks.get(category) ?? container.utxo.unlocker.generateLockingBytecode();
+        inputs.push(own({ ...utxo, lockingBytecode: lock },
+          (masterIndex) => createTokenContainerUnlocker(contract, masterIndex, categoryId, category)));
+        outputs.push({ to: lock, amount: utxo.satoshis, ...(utxo.token === undefined ? {} : { token: { ...utxo.token } }) });
+        rules.set(slot.offset, { kind: 'tokenContainer', utxo, lock, category });
+        break;
+      }
+      case 'transfer':
+        inputs.push(undefined);
+        outputs.push(plainFiller());
+        rules.set(slot.offset, { kind: 'transfer', active: false });
+        break;
+      case 'tcTransfer': {
+        const site = fn.tokenContainerTransferSites?.find((candidate) => candidate.transferIndex === slot.slotIndex);
+        const container = site === undefined ? (tokenContainers.length === 1 ? tokenContainers[0] : undefined)
+          : tokenContainers.find((candidate) => candidate.tokenContainerSlotIndex === site.tokenContainerSlot);
+        inputs.push(undefined);
+        outputs.push(plainFiller());
+        rules.set(slot.offset, {
+          kind: 'tokenTransfer', active: false,
+          ...(container === undefined ? {} : { category: container.tokenContainerCategoryId }),
+        });
+        break;
+      }
+      case 'keccakSideCar': {
+        const sidecar = keccak[slot.slotIndex ?? 0] ?? refuse(`its keccak256 side-car slot ${slot.offset} has no side-car`);
+        inputs.push(shared1(sidecar));
+        outputs.push(sidecar.recreate);
+        break;
+      }
+      case 'ecrecoverSideCar': {
+        const step = ecrecover[slot.slotIndex ?? 0];
+        if (step === undefined) {
+          inputs.push(undefined);
+          outputs.push(plainFiller());
+          break;
+        }
+        inputs.push(shared1(step));
+        outputs.push(step.recreate);
+        break;
+      }
+      default:
+        refuse(`its ${slot.kind} slot is one a constructor's call does not lay out`);
+    }
+  }
+  if (inputs.length !== layout.blockSize) refuse(`its block layout fills ${inputs.length} of ${layout.blockSize} offsets`);
+  // A keccak chain rides the trailing region: its side-cars start at the trailing base, where the run reads them.
+  if (chain !== undefined) {
+    const base = layout.trailingBase ?? layout.blockSize;
+    while (inputs.length < base) {
+      inputs.push(undefined);
+      outputs.push(plainFiller());
+    }
+    chain.sideCars.forEach((sidecar, step) => {
+      const { unlocker, ...utxo } = sidecar;
+      inputs.push(shared1({ utxo, unlocker }));
+      outputs.push(chain!.recreates[step]!);
+    });
+  }
+  // The record slot that ends the block needs no coin: its carrier goes after the paired region instead.
+  if (carrierOffset !== undefined && carrierOffset === inputs.length - 1) {
+    inputs.pop();
+    outputs.pop();
+    carrierOffset = undefined;
+  }
+  // Two lanes can name one node, an update and the insert it precedes: the later lane proves it at the first lane's
+  // input, and its own offset takes a wallet coin.
+  const firstAt = new Map<string, number>();
+  inputs.forEach((input, offset) => {
+    if (input === undefined) return;
+    const outpoint = coinKey(input.utxo);
+    const first = firstAt.get(outpoint);
+    if (first === undefined) {
+      firstAt.set(outpoint, offset);
+      return;
+    }
+    for (const [name, value] of Object.entries(witnesses)) {
+      if (/^__internal__vmapBatchProof_\d+$/.test(name) && value === BigInt(offset)) witnesses[name] = BigInt(first);
+    }
+    inputs[offset] = undefined;
+  });
+  // Inserts that share one proof in a linear batch form one ascending chain: each links to the next key, and only the
+  // lowest relinks the predecessor.
+  for (const batch of fn.sortedBatchInfo ?? []) {
+    if (batch.linear !== true || batch.slotIndices.length < 2) continue;
+    const byProof = new Map<bigint, Array<{ slotIndex: number; key: Uint8Array; insert?: (typeof inserts)[number] }>>();
+    for (const slotIndex of batch.slotIndices) {
+      const proof = witnesses[vmapWitness('Proof', slotIndex)];
+      const key = witnesses[vmapWitness('Slot', slotIndex)];
+      if (typeof proof !== 'bigint' || !(key instanceof Uint8Array)) continue;
+      const rows = byProof.get(proof) ?? [];
+      rows.push({ slotIndex, key, insert: inserts.find((insert) => insert.slotIndex === slotIndex) });
+      byProof.set(proof, rows);
+    }
+    for (const rows of byProof.values()) {
+      if (rows.length < 2 || !rows.some((row) => row.insert !== undefined)) continue;
+      rows.sort((left, right) => (bytesToSlotValue(left.key) < bytesToSlotValue(right.key) ? -1 : 1));
+      const repeated = rows.some((row, index) => index > 0
+        && bytesToSlotValue(row.key) === bytesToSlotValue(rows[index - 1].key));
+      if (repeated) continue;
+      if (rows.some((row, index) => row.insert === undefined && index !== 0)) continue;
+      rows.forEach((row, index) => {
+        const successor = rows[index + 1];
+        if (successor !== undefined) witnesses[vmapWitness('Next', row.slotIndex)] = successor.key;
+        if (row.insert === undefined || (index === 0 && rows[0].insert !== undefined)) return;
+        witnesses[vmapWitness('PredOut', row.slotIndex)] = -1n;
+        row.insert.lane = false;
       });
     }
-    builder.addInput(master, {
-      generateLockingBytecode: () => masterLock,
-      generateUnlockingBytecode: () => calleeUnlocking,
-    });
-    dataNfts.forEach((utxo) => builder.addInput(utxo, {
-      generateLockingBytecode: () => dataLock,
-      generateUnlockingBytecode: () => Uint8Array.of(0x51),
+  }
+  const lanes = inserts.filter((insert) => insert.lane).map((insert) => ({
+    witness: vmapWitness('PredOut', insert.slotIndex),
+    output: {
+      to: insert.lock, amount: insert.predecessor.satoshis,
+      token: { category: categoryId, amount: 0n,
+        nft: { capability: 'mutable' as const, commitment: binToHex(insert.predecessorCommitment) } },
+    },
+  }));
+  // A linear batch publishes its rows in key order, each with its rank.
+  for (const batch of fn.sortedBatchInfo ?? []) {
+    if (batch.linear !== true) continue;
+    const rows = batch.slotIndices.map((slotIndex) => ({
+      slotIndex, key: witnesses[vmapWitness('Slot', slotIndex)], next: witnesses[vmapWitness('Next', slotIndex)],
     }));
-    if (senderReader) builder.addOutput({ to: Uint8Array.of(0x51), amount: 1200n });
-    // A7 check 2: output g_out carries X‖02, which the probe has to mint in its own output list.
-    builder.addOutput({
-      to: genesisLock, amount: 1200n,
-      ...(senderReader ? { token: { category: categoryId, amount: 0n,
-        nft: { capability: 'minting' as const, commitment: '' } } } : {}),
-    });
-    builder.addOutput({ to: masterLock, amount: master.satoshis, ...(master.token === undefined ? {} : { token: master.token }) });
-    dataNfts.forEach((utxo, index) => builder.addOutput({
-      to: dataLock, amount: utxo.satoshis,
-      token: { category: callee.contract.categoryId, amount: 0n,
-        nft: { capability: 'mutable', commitment: dataCommits[index] ?? '' } },
-    }));
-    for (let index = calleeInput + 1 + dataCount; index < returnIndex; index += 1) {
-      builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
-    }
-    builder.addOutput({
-      to: Uint8Array.of(0x51), amount: 1000n,
-      token: { category: callee.contract.categoryId, amount: 0n,
-        nft: { capability: 'none', commitment: returnCommit } },
-    });
-    const { transaction, sourceOutputs } = builder.buildLibauthProgram();
-    return evaluateProbeTrace(provider, { inputIndex: calleeInput, sourceOutputs, transaction });
+    if (rows.some((row) => !(row.key instanceof Uint8Array) || !(row.next instanceof Uint8Array))) continue;
+    rows.sort((left, right) => (
+      bytesToSlotValue(left.key as Uint8Array) < bytesToSlotValue(right.key as Uint8Array) ? -1 : 1));
+    rows.forEach((row, rank) => { witnesses[vmapWitness('Rank', row.slotIndex)] = BigInt(rank); });
+    witnesses[`__internal__vmapBatchRows_${batch.collection}`] = Uint8Array.from(
+      rows.flatMap((row) => [...(row.key as Uint8Array), ...(row.next as Uint8Array)]),
+    );
+  }
+  witnesses.__internal__vmapBatchTrailingCount = BigInt(lanes.length);
+  const block: ConstructorCalleeBlock = {
+    ...call, contract, fn, categoryId, masterLock,
+    senderReader: fn.inputs.some((input) => input.name === '__internal__msgSenderCategory'),
+    inputs, outputs, rules, carrier, ...(carrierOffset === undefined ? {} : { carrierOffset }), lanes, witnesses,
+    guardedInserts,
   };
-  let dataCommitments = dataNfts.map(() => '');
-  let returnCommitment = '';
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const trace = runProbe(dataCommitments, returnCommitment);
-    const nextData = extractCommitmentsFromTrace(trace, dataCount, { min: calleeInput + 1, max: calleeInput + 1 + dataCount }) ?? [];
-    const nextReturn = extractCommitmentsFromTrace(trace, 1, { min: returnIndex, max: returnIndex + 1 })?.[0];
-    let changed = false;
-    if (nextData.length >= dataCount && nextData.some((value, index) => value !== dataCommitments[index])) {
-      dataCommitments = nextData.slice(0, dataCount); changed = true;
+  recreateCalleeContainers(block, outputs, 0);
+  return block;
+}
+
+/**
+ * Recreate each container of a callee block from the transfers its run made so far: the satoshi container keeps its
+ * coin's value less the active transfers and the miner fee, a token container its units less the active transfers of
+ * its category. A container left below the dust limit, or with no units and no NFT, leaves the filler its covenant
+ * admits. `outputs` holds the block from `base`. Returns whether an output changed.
+ */
+function recreateCalleeContainers(block: ConstructorCalleeBlock, outputs: Output[], base: number): boolean {
+  const transfers = [...block.rules.entries()];
+  const lockHex = (to: string | Uint8Array): string => (typeof to === 'string' ? to : binToHex(to));
+  let changed = false;
+  const set = (index: number, output: Output): void => {
+    const have = outputs[index];
+    const same = have !== undefined && lockHex(have.to) === lockHex(output.to) && have.amount === output.amount
+      && have.token?.category === output.token?.category && have.token?.amount === output.token?.amount
+      && have.token?.nft?.commitment === output.token?.nft?.commitment;
+    if (same) return;
+    outputs[index] = output;
+    changed = true;
+  };
+  for (const [offset, rule] of block.rules) {
+    if (rule.kind === 'satoshiContainer') {
+      const paid = transfers.reduce((sum, [at, other]) => sum
+        + (other.kind === 'transfer' && other.active ? outputs[base + at]!.amount : 0n), 0n);
+      const kept = rule.satoshis - paid - rule.minerFee;
+      // Under its lock's dust limit the container is drained, and its index keeps the filler.
+      set(base + offset, kept >= getDustThreshold({ lockingBytecode: rule.lock })
+        ? { to: rule.lock, amount: kept } : fillerOutput());
+    } else if (rule.kind === 'tokenContainer') {
+      const token = rule.utxo.token;
+      const paid = transfers.reduce((sum, [at, other]) => sum
+        + (other.kind === 'tokenTransfer' && other.active && outputs[base + at]!.token?.category === rule.category
+          ? outputs[base + at]!.token!.amount : 0n), 0n);
+      const units = (token?.amount ?? 0n) - paid;
+      const sentNft = transfers.some(([at, other]) => other.kind === 'tokenTransfer' && other.active
+        && outputs[base + at]!.token?.category === rule.category && outputs[base + at]!.token?.nft !== undefined);
+      const nft = token?.nft !== undefined && (!sentNft || token.nft.capability === 'minting') ? token.nft : undefined;
+      set(base + offset, units <= 0n && nft === undefined ? fillerOutput() : {
+        to: rule.lock, amount: rule.utxo.satoshis,
+        token: { category: rule.category, amount: units < 0n ? 0n : units, ...(nft === undefined ? {} : { nft }) },
+      });
     }
-    if (nextReturn !== undefined && nextReturn !== returnCommitment) { returnCommitment = nextReturn; changed = true; }
-    if (!changed) break;
   }
-  if (dataCommitments.some((value) => value === '') || returnCommitment === '') {
-    throw new DeployerCalleeError(artifact.contractName, functionName,
-      'the probe could not read the callee\'s records');
+  return changed;
+}
+
+/**
+ * The byte ranges a sender-reading callee hashes in a `create` unlocking (A4.2, A7): A, the contract parameters, and
+ * C's code. The unlocking is read push by push from byte 5: the callee list, Q (the sender category, the value and the
+ * constructor parameters), A, then the code.
+ */
+export function deployerUnlockingRanges(
+  deployer: DeployerAbi, contractParameters: number, unlocking: Uint8Array,
+): { aOffset: number; aLength: number; codeOffset: number; codeLength: number } {
+  const create = deployer.abi.find((entry) => entry.name === 'create');
+  const publicCount = create?.inputs.filter((input) => !input.name.startsWith('__internal__')).length ?? 0;
+  let at = 5;
+  const next = (): { start: number; length: number } => {
+    const opcode = unlocking[at];
+    if (opcode === undefined) throw new DeployerPrepError('The create unlocking ends before its code push');
+    // OP_0, OP_1NEGATE and OP_1 to OP_16 push no data bytes; PUSHDATA1/2/4 state the size little-endian.
+    const header = opcode === 0x4c ? 2 : opcode === 0x4d ? 3 : opcode === 0x4e ? 5 : 1;
+    const length = opcode >= 0x01 && opcode <= 0x4b ? opcode
+      : unlocking.slice(at + 1, at + header).reduceRight((value, byte) => value * 256 + byte, 0);
+    const start = at + header;
+    at = start + length;
+    return { start, length };
+  };
+  next();
+  for (let push = 0; push < publicCount - contractParameters + 2; push += 1) next();
+  const aOffset = at;
+  for (let push = 0; push < contractParameters; push += 1) next();
+  const aLength = at - aOffset;
+  const code = next();
+  return { aOffset, aLength, codeOffset: code.start, codeLength: code.length };
+}
+
+/** A7's genesis call: `X ‖ slot ‖ g_in`, then `g_out` and the create unlocking's ranges for a sender reader. */
+function genesisCallTag(categoryId: string, slot: number, gIn: number, sender?: {
+  gOut: number; aOffset: number; aLength: number; codeOffset: number; codeLength: number;
+}): Uint8Array {
+  const two = (value: number): number[] => [value & 0xff, (value >> 8) & 0xff];
+  return new Uint8Array([
+    ...hexToBin(categoryId).slice().reverse(), ...two(slot), ...two(gIn),
+    ...(sender === undefined ? [] : [
+      ...two(sender.gOut), ...two(sender.aOffset), ...two(sender.aLength),
+      ...two(sender.codeOffset), ...two(sender.codeLength),
+    ]),
+  ]);
+}
+
+/** The callee's full ABI frame for its genesis call: visible arguments, the tag, the record index and the witnesses. */
+function calleeFrame(block: ConstructorCalleeBlock, tag: Uint8Array, returnIndex: number): FunctionArgument[] {
+  const visible = block.fn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  if (block.args.length !== visible.length) {
+    throw new DeployerCalleeError(block.contract.artifact.contractName, block.functionName,
+      `it takes ${visible.length} visible argument${visible.length === 1 ? '' : 's'}, but ${block.args.length} were given`);
   }
-  const { createDataNftUnlocker } = await import('./covenant-helpers.js');
-  const dataUnlocking = createDataNftUnlocker(
-    callee.contract.inner as never, masterInputIndex, callee.contract.categoryId,
-  ).generateUnlockingBytecode({
-    transaction: { version: 2, locktime: 0, inputs: [], outputs: [] }, sourceOutputs: [], inputIndex: 1,
-  } as never);
-  return { master, dataNfts, dataCommitments, returnCommitment,
-    category: callee.contract.categoryId, unlocking: calleeUnlocking, dataUnlocking, returnIndex };
+  const values = new Map<string, FunctionArgument>();
+  visible.forEach((input, index) => values.set(input.name, block.args[index]));
+  for (const input of block.fn.inputs) {
+    if (!input.name.startsWith('__internal__')) continue;
+    if (input.name === '__internal__genesisCall') values.set(input.name, tag);
+    else if (input.name === '__internal__returnOutputIdx') values.set(input.name, BigInt(returnIndex));
+    // The genesis step alone resolves a genesis call's sender (A7); the zero category asks for no caller edge.
+    else if (input.name === '__internal__msgSenderCategory') values.set(input.name, new Uint8Array(32));
+    // A standalone run of a body the multi-call entry can also run takes no row shift.
+    else if (input.name === '__internal__rowEntryShift') values.set(input.name, 0n);
+    else if (block.witnesses[input.name] !== undefined) values.set(input.name, block.witnesses[input.name]);
+    else {
+      throw new DeployerCalleeError(block.contract.artifact.contractName, block.functionName,
+        `the entry needs the internal witness '${input.name}', which a constructor's call cannot fill`);
+    }
+  }
+  return block.fn.inputs.map((input) => values.get(input.name)!);
+}
+
+/**
+ * `create`'s call witnesses before the callee blocks are placed: -1 for an index, empty for a selector. An unlocking with
+ * them serves a probe of the creator, which reads `create`'s unlocking only from byte 6 + 2s (A6).
+ */
+export function unboundCallWitnesses(deployer: DeployerAbi): Record<string, bigint | Uint8Array> {
+  const witnesses: Record<string, bigint | Uint8Array> = {};
+  for (const input of deployer.abi.find((entry) => entry.name === 'create')?.inputs ?? []) {
+    if (!/^__internal__(externalCallInputBase|extcall|callEdgeOutputIdx|externalReturnOutputIdx|externalCallSelector)/
+      .test(input.name)) continue;
+    witnesses[input.name] = input.type.startsWith('bytes') ? new Uint8Array() : -1n;
+  }
+  return witnesses;
+}
+
+/** What a callee's settling run reports to the creation it runs in. */
+export interface CalleeSettleHooks {
+  /** A round moved an output's satoshis: the caller rebalances its change. */
+  amountsChanged?: () => void;
+  /**
+   * The `tx.time` checks the callee's run reached (A5). Returns true when the caller moved the creation's locktime,
+   * so the run is tried again; a conflict throws `DeployerLocktimeConflictError`.
+   */
+  locktime?: (needs: readonly LocktimeNeed[]) => boolean;
+}
+
+/** A14 item 5: the call slots of one creation, placed in its transaction. */
+export interface PlacedConstructorCalls {
+  /** m_j: each callee's master input index. */
+  masters: number[];
+  /** o_j: each callee's record carrier. */
+  returns: number[];
+  /** `create`'s witnesses for its call slots. */
+  synthetic(deployer: DeployerAbi): Record<string, bigint | Uint8Array>;
+  /** Fill each callee's genesis call from the creation it answers: input g_in creates X, output g_out is C's master. */
+  bind(options: {
+    categoryId: string; gIn: number; gOut: number; deployer: DeployerAbi; contractParameters: number;
+    unlocking: Uint8Array;
+  }): void;
+  /**
+   * Complete each callee's run in the finished transaction: its records, entries, events, transfers, containers and
+   * its call record. `amountsChanged` runs after a round that moved an output's satoshis, so the caller can rebalance.
+   */
+  settle(
+    provider: NetworkProvider, build: () => { transaction: Transaction; sourceOutputs: Transaction['outputs'] },
+    hooks?: CalleeSettleHooks,
+  ): void;
+  /** Each callee's master input, its function, and its subject in words, for a check that runs every callee. */
+  callees(): Array<{ inputIndex: number; who: string }>;
+}
+
+/**
+ * Place the callee blocks at the builder's current end, which must be a paired index (as many inputs as outputs), each
+ * input beside its output; then the record carriers and the relinked predecessors. A block's unfunded slot takes a
+ * coin from `filler`.
+ */
+export async function placeConstructorCalls(options: {
+  builder: import('../TransactionBuilder.js').TransactionBuilder;
+  blocks: readonly ConstructorCalleeBlock[];
+  filler: () => Promise<{ utxo: Utxo; unlocker: Unlocker }>;
+}): Promise<PlacedConstructorCalls> {
+  const { builder, blocks, filler } = options;
+  if (builder.inputs.length !== builder.outputs.length) {
+    throw new DeployerPrepError(
+      `The callee blocks need a paired index, but the creation has ${builder.inputs.length} inputs and `
+      + `${builder.outputs.length} outputs there`,
+    );
+  }
+  const frames: Array<FunctionArgument[] | undefined> = blocks.map(() => undefined);
+  const tags: Array<Uint8Array | undefined> = blocks.map(() => undefined);
+  const masters: number[] = [];
+  for (const [position, block] of blocks.entries()) {
+    const master = builder.inputs.length;
+    masters.push(master);
+    const unlock = block.contract.unlock[block.functionName];
+    if (unlock === undefined) {
+      throw new DeployerCalleeError(block.contract.artifact.contractName, block.functionName,
+        'the SDK cannot build its unlocking');
+    }
+    let cached: { frame: FunctionArgument[]; unlocker: Unlocker } | undefined;
+    const masterUnlocker: Unlocker = {
+      generateLockingBytecode: () => block.masterLock,
+      generateUnlockingBytecode: (context) => {
+        const frame = frames[position];
+        // Until `bind`, a placeholder: the creation's own run checks every callee before anything is broadcast.
+        if (frame === undefined) return Uint8Array.of(0x51);
+        if (cached?.frame !== frame) cached = { frame, unlocker: unlock(...frame) };
+        return cached.unlocker.generateUnlockingBytecode(context);
+      },
+    };
+    // A coin an earlier input of the creation already spends, which the block names by a witness (an oracle pool's info
+    // coin two callees read), is spent once: its index here takes a wallet coin and the filler output, and the witness
+    // names the earlier input. Any other coin spent twice cannot be laid out.
+    const redirected = new Map<number, number>();
+    const named = new Set(Object.values(block.relocated ?? {}).map(Number));
+    for (const [offset, input] of block.inputs.entries()) {
+      const earlier = offset === 0 || input === undefined ? -1 : builder.inputs.findIndex((placed) => (
+        placed.vout === input.utxo.vout && placed.txid.toLowerCase() === input.utxo.txid.toLowerCase()));
+      if (offset === 0) builder.addInput(input!.utxo, masterUnlocker);
+      else if (input === undefined || earlier >= 0) {
+        if (earlier >= 0) {
+          if (!named.has(offset)) {
+            throw new DeployerCalleeError(block.contract.artifact.contractName, block.functionName,
+              `its block spends ${input!.utxo.txid}:${input!.utxo.vout}, which input ${earlier} of the creation already `
+              + 'spends; one coin is one input');
+          }
+          redirected.set(offset, earlier);
+          block.outputs[offset] = plainFiller();
+        }
+        const coin = await filler();
+        builder.addInput(coin.utxo, coin.unlocker);
+      } else builder.addInput(input.utxo, input.unlocker!(master));
+      builder.addOutput(block.outputs[offset]);
+    }
+    for (const [name, offset] of Object.entries(block.relocated ?? {})) {
+      block.witnesses[name] = offset < 0n ? offset : BigInt(redirected.get(Number(offset)) ?? master + Number(offset));
+    }
+  }
+  const returns = blocks.map((block, position) => {
+    if (block.carrierOffset !== undefined) return masters[position] + block.carrierOffset;
+    builder.addOutput(block.carrier);
+    return builder.outputs.length - 1;
+  });
+  const laneIndexes = blocks.map((block) => block.lanes.map((lane) => {
+    block.witnesses[lane.witness] = BigInt(builder.outputs.length);
+    builder.addOutput(lane.output);
+    return builder.outputs.length - 1;
+  }));
+  return {
+    masters,
+    returns,
+    synthetic(deployer) {
+      const create = deployer.abi.find((entry) => entry.name === 'create');
+      const has = (name: string): boolean => create?.inputs.some((input) => input.name === name) === true;
+      const synthetic: Record<string, bigint | Uint8Array> = {
+        __internal__externalCallInputBase: BigInt(masters[0] ?? 0),
+      };
+      blocks.forEach((block, position) => {
+        const slot = block.slot;
+        if (has(`__internal__extcallMasterIdx${slot}`)) synthetic[`__internal__extcallMasterIdx${slot}`] = BigInt(masters[position]);
+        synthetic[`__internal__extcallAnchorIdx${slot}`] = -1n;
+        synthetic[`__internal__callEdgeOutputIdx${slot}`] = -1n;
+        synthetic[has(`__internal__externalReturnOutputIdx${slot}`)
+          ? `__internal__externalReturnOutputIdx${slot}` : '__internal__externalReturnOutputIdx'] = BigInt(returns[position]);
+        const selector = has(`__internal__externalCallSelector${slot}`)
+          ? `__internal__externalCallSelector${slot}` : '__internal__externalCallSelector';
+        if (has(selector) && block.fn.selector !== undefined) synthetic[selector] = hexToBin(block.fn.selector);
+      });
+      return synthetic;
+    },
+    bind({ categoryId, gIn, gOut, deployer, contractParameters, unlocking }) {
+      const ranges = deployerUnlockingRanges(deployer, contractParameters, unlocking);
+      blocks.forEach((block, position) => {
+        tags[position] = genesisCallTag(categoryId, block.slot, gIn, block.senderReader ? { gOut, ...ranges } : undefined);
+        frames[position] = calleeFrame(block, tags[position]!, returns[position]);
+      });
+    },
+    settle(provider, build, hooks = {}) {
+      blocks.forEach((block, position) => {
+        const lanes = new Map(block.lanes.map((lane, at) => [lane.witness, laneIndexes[position]![at]!]));
+        settleCalleeRun({
+          provider, build, master: masters[position], block, outputs: builder.outputs as Output[],
+          pinned: [returns[position], ...laneIndexes[position]],
+          lanes,
+          reframe: () => {
+            const tag = tags[position];
+            if (tag !== undefined) frames[position] = calleeFrame(block, tag, returns[position]);
+          },
+          subject: `The call to '${block.contract.artifact.contractName}.${block.functionName}' at slot ${block.slot}`,
+          who: `the callee '${block.contract.artifact.contractName}.${block.functionName}' of call slot ${block.slot}`,
+          hooks,
+        });
+      });
+    },
+    callees() {
+      return blocks.map((block, position) => ({
+        inputIndex: masters[position]!,
+        who: `the callee '${block.contract.artifact.contractName}.${block.functionName}' of call slot ${block.slot}`,
+      }));
+    },
+  };
+}
+
+/** One child of a creating call whose `create` co-spends side-cars or calls contracts (A14 item 4 step 6). */
+export interface ChildCreationGroup {
+  /** Its place in the creator's run order. */
+  deployment: number;
+  contractName: string;
+  artifact: Artifact;
+  deployer: DeployerAbi;
+  /** Its master lock: the `msg.sender` its callees take (A7). */
+  childLockingBytecode: Uint8Array;
+  /** `create`'s public arguments by name: C's contract parameters, then its constructor's. */
+  args: Readonly<Record<string, FunctionArgument>>;
+  callees: readonly ConstructorCallee[] | undefined;
+}
+
+/** Where each child's side-cars and callee blocks landed, and what the added coins leave for the change. */
+export interface ChildCreationPlacement {
+  groups: Array<{ deployment: number; sidecarBase?: number; placed?: PlacedConstructorCalls }>;
+  surplus: bigint;
+}
+
+/**
+ * The shared side-cars (salt 0, A14 item 6) of one `create`, in the order its side-car group reads them: by the offset
+ * of its side-car slots. A keccak side-car hashes up to three of `create`'s preimage arguments; an ecrecover group is
+ * A, M and B, whose M a wallet coin fills for a 2-way recovery (`undefined`). Coins in `spent` are skipped, and the ones
+ * taken are added to it.
+ */
+async function sharedCreateSidecars(options: {
+  deployer: DeployerAbi;
+  args: Readonly<Record<string, FunctionArgument>>;
+  provider: NetworkProvider;
+  spent: Set<string>;
+  who: string;
+}): Promise<SidecarStep[]> {
+  const { deployer, args, provider, spent, who } = options;
+  const create = deployer.abi.find((entry) => entry.name === 'create');
+  const slots = [...(create?.blockLayout?.slots ?? [])]
+    .filter((slot) => slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar')
+    .sort((left, right) => left.offset - right.offset);
+  if (slots.length === 0) return [];
+  const refuse = (what: string): never => {
+    throw new DeployerPrepError(`${who} cannot co-spend its side-cars: ${what}`);
+  };
+  const keccakCount = slots.filter((slot) => slot.kind === 'keccakSideCar').length;
+  const keccak: SidecarStep[] = [];
+  if (keccakCount > 0) {
+    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const { buildKeccakComputeSidecar } = await import('../keccak/keccakComputeSidecar.js');
+    const salt = new Uint8Array(32);
+    const lock = keccakComputeLockingBytecode(salt, true);
+    const pool = (await provider.getUtxosForLockingBytecode(lock))
+      .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && !spent.has(coinKey(utxo)));
+    const preimages = (create?.keccakPreimageParams ?? []).map((name) => {
+      const value = name === null ? undefined : args[name];
+      return value instanceof Uint8Array ? value : refuse('it hashes a value that is not one of its byte arguments');
+    });
+    for (let batch = 0; batch < keccakCount; batch += 1) {
+      const coin = pool.shift();
+      if (coin === undefined) throw new DeployerSidecarError('keccak', who);
+      spent.add(coinKey(coin));
+      const sidecar = buildKeccakComputeSidecar(preimages.slice(batch * 3, batch * 3 + 3), salt, coin, true);
+      keccak.push({ utxo: coin, unlocker: sidecar.unlocker, recreate: sidecar.recreate });
+    }
+  }
+  const ecrecover = await sharedEcrecoverSteps({
+    calls: (create?.ecrecoverArgParams ?? []).map((names) => names.map((name) => (name === null ? undefined : args[name])) as
+      unknown as readonly [unknown, unknown, unknown, unknown]),
+    provider, spent, refuse, who,
+  });
+  return slots.map((slot) => (slot.kind === 'keccakSideCar' ? keccak : ecrecover)[slot.slotIndex ?? 0]);
+}
+
+/**
+ * A14 item 4 step 6: the side-car pairs and callee blocks of the children a creating call creates, after every index the
+ * creator's layout uses, in run order: each child's side-cars from the shared pool, at the base its `create` names,
+ * then its callee blocks with their carriers and lanes. Each group starts at a paired index, which wallet coins from
+ * `filler` or `OP_1` filler outputs make.
+ *
+ * One master runs one arm, so two call slots that name one contract, of one child or of two, cannot both be answered,
+ * nor can a callee whose master the creation already spends (the creator's own, or another input it lays out); either
+ * is refused with `DeployerCalleeError` before anything is placed. `surplus` is what the added inputs hold beyond the
+ * added outputs, less the fee their bytes need at 1 sat/B.
+ */
+export async function placeChildCreationGroups(options: {
+  builder: import('../TransactionBuilder.js').TransactionBuilder;
+  provider: NetworkProvider;
+  children: readonly ChildCreationGroup[];
+  filler: () => Promise<{ utxo: Utxo; unlocker: Unlocker }>;
+}): Promise<ChildCreationPlacement> {
+  const { builder, provider, filler } = options;
+  const lockOf = (input: { unlocker: Unlocker }): string => binToHex(input.unlocker.generateLockingBytecode());
+  const taken = new Map<string, string>(builder.inputs.map((input) => [lockOf(input as never), 'the creation\'s own layout']));
+  const resolved = options.children.map((child) => {
+    const calls = child.deployer.callSlots === 0 ? [] : resolveConstructorCalls({
+      artifact: child.artifact, deployer: child.deployer, callees: child.callees, args: child.args,
+    });
+    for (const call of calls) {
+      const lock = binToHex(addressToLockScript(call.callee.contract.address));
+      const here = `call slot ${call.slot} of deployment ${child.deployment} ('${child.contractName}')`;
+      const earlier = taken.get(lock);
+      if (earlier !== undefined) {
+        throw new DeployerCalleeError(call.callee.contract.inner.artifact.contractName, call.functionName,
+          `${here} calls it, and its master is already an input of ${earlier}; one master runs one arm, so one `
+          + 'creation answers one call of a contract: create these children in separate calls');
+      }
+      taken.set(lock, here);
+    }
+    return { child, calls };
+  });
+  const spent = new Set<string>();
+  const planned = [];
+  for (const { child, calls } of resolved) {
+    const who = `deployment ${child.deployment} ('${child.contractName}')`;
+    const sidecars = await sharedCreateSidecars({ deployer: child.deployer, args: child.args, provider, spent, who });
+    const blocks: ConstructorCalleeBlock[] = [];
+    for (const call of calls) blocks.push(await planConstructorCalleeBlock(call, child.childLockingBytecode, { spent }));
+    planned.push({ child, sidecars, blocks });
+  }
+  const firstInput = builder.inputs.length;
+  const firstOutput = builder.outputs.length;
+  const pair = async (): Promise<void> => {
+    while (builder.inputs.length < builder.outputs.length) {
+      const coin = await filler();
+      builder.addInput(coin.utxo, coin.unlocker);
+    }
+    while (builder.outputs.length < builder.inputs.length) builder.addOutput(plainFiller());
+  };
+  const groups: Array<{ deployment: number; sidecarBase?: number; placed?: PlacedConstructorCalls }> = [];
+  for (const { child, sidecars, blocks } of planned) {
+    const group: { deployment: number; sidecarBase?: number; placed?: PlacedConstructorCalls } = {
+      deployment: child.deployment,
+    };
+    if (sidecars.length > 0) {
+      await pair();
+      group.sidecarBase = builder.inputs.length;
+      for (const step of sidecars) {
+        if (step === undefined) {
+          const coin = await filler();
+          builder.addInput(coin.utxo, coin.unlocker);
+          builder.addOutput(plainFiller());
+        } else {
+          builder.addInput(step.utxo, step.unlocker);
+          builder.addOutput(step.recreate);
+        }
+      }
+    }
+    if (blocks.length > 0) {
+      await pair();
+      group.placed = await placeConstructorCalls({ builder, blocks, filler });
+    }
+    groups.push(group);
+  }
+  const added = builder.inputs.slice(firstInput).reduce((sum, input) => sum + input.satoshis, 0n);
+  const made = builder.outputs.slice(firstOutput).reduce((sum, output) => sum + output.amount, 0n);
+  // Each callee master carries its redeem script, and each side-car its covenant of up to about 7.4 KB with its
+  // preimages; every other added input carries a covenant of a few hundred bytes.
+  const sidecarBytes = planned.reduce((sum, { sidecars }) => sum
+    + 8_000 * sidecars.filter((step) => step !== undefined).length, 0);
+  const bytes = planned.reduce((sum, { blocks }) => sum + blocks.reduce((total, block) => total
+    + block.contract.bytesize + 600 + (block.extraBytes ?? 0), 0), 0) + sidecarBytes
+    + 400 * (builder.inputs.length - firstInput) + 200 * (builder.outputs.length - firstOutput);
+  return { groups, surplus: added - made - BigInt(bytes) };
+}
+
+/**
+ * What a run's output checks expect, by output index: `<expected> <index> opcode [OP_REVERSEBYTES] OP_(NUM)EQUALVERIFY`,
+ * the expected operand as the run pushed it. Of two checks of one index the first counts; a step on a branch the run
+ * did not take does not.
+ */
+function outputChecks(trace: readonly AuthenticationProgramStateCommon[], opcode: number): Map<number, Uint8Array> {
+  const found = new Map<number, Uint8Array>();
+  for (const state of trace) {
+    const instructions = state.instructions as readonly { opcode: number }[];
+    if (instructions[state.ip]?.opcode !== opcode || state.controlStack.some((flag) => flag === false)) continue;
+    let next = state.ip + 1;
+    if (instructions[next]?.opcode === Op.OP_REVERSEBYTES) next += 1;
+    const verify = instructions[next]?.opcode;
+    if ((verify !== Op.OP_EQUALVERIFY && verify !== Op.OP_NUMEQUALVERIFY) || state.stack.length < 2) continue;
+    let index: number;
+    try {
+      index = Number(decodeScriptNumber(state.stack[state.stack.length - 1]!));
+    } catch {
+      continue;
+    }
+    if (!found.has(index)) found.set(index, Uint8Array.from(state.stack[state.stack.length - 2]!));
+  }
+  return found;
+}
+
+/**
+ * Complete one callee's run in the finished creation (A14 item 5). The run stops at its first unmet check, and the
+ * check names what its output holds: an NFT commitment, a transfer's lock and value, a token transfer's lock, units
+ * and category. Each round patches what it learns, recreates the callee's containers from the transfers its run made,
+ * and runs again until the input passes. `pinned` are the absolute indexes outside the block whose commitment the run
+ * pins: the record carrier and the relinked predecessors. A round that learns nothing fails with the run's VM error.
+ */
+function settleCalleeRun(options: {
+  provider: NetworkProvider;
+  build: () => { transaction: Transaction; sourceOutputs: Transaction['outputs'] };
+  master: number;
+  block: ConstructorCalleeBlock;
+  outputs: Output[];
+  pinned: readonly number[];
+  /** Each lane's absolute output index, by its `PredOut` witness. */
+  lanes: ReadonlyMap<string, number>;
+  /** Rebuild the callee's frame after its witnesses changed. */
+  reframe: () => void;
+  subject: string;
+  /** The callee in words, for a locktime need. */
+  who: string;
+  hooks: CalleeSettleHooks;
+}): void {
+  const { master, block, outputs } = options;
+  const vm = createVirtualMachineBch2026ForProvider(options.provider);
+  const lockHex = (to: string | Uint8Array): string => (typeof to === 'string' ? to : binToHex(to));
+  for (let round = 0; round < 64; round += 1) {
+    const { transaction, sourceOutputs } = options.build();
+    const trace = evaluateFaithfulOrDebugTrace(
+      options.provider, { transaction, sourceOutputs, inputIndex: master } as never,
+    );
+    const final = trace[trace.length - 1];
+    // A5: the callee's `tx.time` checks join the creation's one locktime, which the caller may move.
+    const moved = options.hooks.locktime?.(locktimeChecks(trace, master, options.who)) === true;
+    if (!moved && final !== undefined && vm.stateSuccess(final as never) === true) return;
+    const commitments = extractCommitmentMapFromTrace(trace, { min: 0, max: transaction.outputs.length }, true);
+    const locks = outputChecks(trace, Op.OP_OUTPUTBYTECODE);
+    const values = outputChecks(trace, Op.OP_OUTPUTVALUE);
+    const units = outputChecks(trace, Op.OP_OUTPUTTOKENAMOUNT);
+    const categories = outputChecks(trace, Op.OP_OUTPUTTOKENCATEGORY);
+    let learned = moved;
+    let amounts = false;
+    const pin = (index: number): void => {
+      const expected = commitments.get(index);
+      const nft = outputs[index]?.token?.nft;
+      if (expected === undefined || nft === undefined || nft.commitment === expected) return;
+      nft.commitment = expected;
+      learned = true;
+    };
+    for (const [offset, rule] of block.rules) {
+      const index = master + offset;
+      const have = outputs[index]!;
+      if (rule.kind === 'commitment') {
+        pin(index);
+      } else if (rule.kind === 'optional') {
+        const expected = commitments.get(index);
+        if (expected === undefined) continue;
+        if (have.token?.nft === undefined) {
+          // The emit ran: its NFT replaces the filler.
+          outputs[index] = rule.make(expected);
+          learned = true;
+          amounts = true;
+        } else pin(index);
+      } else if (rule.kind === 'transfer') {
+        const lock = locks.get(index);
+        const value = values.get(index);
+        if (lock === undefined && value === undefined) continue;
+        const next: Output = {
+          to: lock ?? have.to, amount: value === undefined ? have.amount : decodeScriptNumber(value),
+        };
+        if (rule.active && lockHex(next.to) === lockHex(have.to) && next.amount === have.amount) continue;
+        rule.active = true;
+        outputs[index] = next;
+        learned = true;
+        amounts = true;
+      } else if (rule.kind === 'tokenTransfer') {
+        const lock = locks.get(index);
+        const amount = units.get(index);
+        const category = categories.get(index);
+        if (lock === undefined && amount === undefined && category === undefined) continue;
+        // The check compares the category as the call's argument holds it, in display order.
+        const tokenCategory = category === undefined ? have.token?.category ?? rule.category : binToHex(category);
+        const next: Output = {
+          to: lock ?? have.to, amount: RESERVE,
+          ...(tokenCategory === undefined ? {} : {
+            token: {
+              category: tokenCategory,
+              amount: amount === undefined ? have.token?.amount ?? 0n : decodeScriptNumber(amount),
+            },
+          }),
+        };
+        if (rule.active && lockHex(next.to) === lockHex(have.to) && next.token?.category === have.token?.category
+          && next.token?.amount === have.token?.amount) continue;
+        rule.active = true;
+        outputs[index] = next;
+        learned = true;
+        amounts = true;
+      }
+    }
+    // A guarded insert whose run keeps the node its slot spends did not run: it takes PredOut -2 and its lane, which
+    // relinked that node, holds no token (the ordinary call's `dropSkippedConditionalInserts`).
+    for (const [offset, guarded] of block.guardedInserts) {
+      const kept = sourceOutputs[master + offset]?.token?.nft?.commitment;
+      const expected = commitments.get(master + offset);
+      const lane = options.lanes.get(guarded.witness);
+      if (kept === undefined || expected !== binToHex(kept) || block.witnesses[guarded.witness] === -2n) continue;
+      block.witnesses[guarded.witness] = -2n;
+      block.witnesses.__internal__vmapBatchTrailingCount = BigInt(new Set(Object.entries(block.witnesses)
+        .filter(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name) && typeof value === 'bigint'
+          && value >= 0n).map(([, value]) => value)).size);
+      if (lane !== undefined) outputs[lane] = plainFiller();
+      options.reframe();
+      learned = true;
+      amounts = true;
+    }
+    for (const index of options.pinned) pin(index);
+    if (recreateCalleeContainers(block, outputs, master)) {
+      learned = true;
+      amounts = true;
+    }
+    if (amounts) options.hooks.amountsChanged?.();
+    if (!learned) {
+      throw new DeployerPrepError(
+        `${options.subject} fails its own run at instruction ${final?.ip}/${final?.instructions.length}: `
+        + `${final?.error ?? 'the run did not end true'}`,
+      );
+    }
+  }
+  throw new DeployerPrepError(`${options.subject} did not complete after 64 runs`);
 }
 
 export class DeployerSidecarError extends Error {
-  constructor(kind: 'keccak' | 'ecrecover') {
-    super(`No shared ${kind} sidecar coin was found for the deployer; the deployer's shared pool must already exist`);
+  /** `who` names the input the side-car serves: the deployer, or a callee of its constructor. */
+  constructor(kind: 'keccak' | 'ecrecover', who = 'the deployer') {
+    super(`No shared ${kind} sidecar coin was found for ${who}; the shared pool (salt 0) must already exist`);
     this.name = 'DeployerSidecarError';
   }
 }
 
+/** What one input of a transaction requires of its locktime: a height or a time, at least `value` (A5). */
+export interface LocktimeNeed {
+  inputIndex: number;
+  /** The input, in words: the contract and the source read or check that constrains the locktime. */
+  who: string;
+  kind: 'height' | 'time';
+  value: number;
+}
+
+/** A5, A14 item 7: two inputs constrain the one locktime to different kinds, a height and a time. */
 export class DeployerLocktimeConflictError extends Error {
-  constructor(first: number, second: number) {
-    super(`The transaction needs two different locktimes (${first} and ${second}) and no value satisfies both`);
+  constructor(readonly first: LocktimeNeed, readonly second: LocktimeNeed) {
+    super(`Input ${first.inputIndex} (${first.who}) needs a ${first.kind} locktime of at least ${first.value}, and input `
+      + `${second.inputIndex} (${second.who}) needs a ${second.kind} locktime of at least ${second.value}; a transaction `
+      + 'has one locktime, and no value is both a height and a time');
     this.name = 'DeployerLocktimeConflictError';
   }
+}
+
+/** A locktime of 500,000,000 or more is a time; below it, a height. */
+const TIME_LOCKTIME = 500_000_000;
+
+/**
+ * The `tx.time` checks a run reaches, as needs of input `inputIndex` (A5): each `OP_CHECKLOCKTIMEVERIFY` on a branch the
+ * run took needs at least its operand, of its operand's kind. `who` names the input.
+ */
+export function locktimeChecks(
+  trace: readonly AuthenticationProgramStateCommon[], inputIndex: number, who: string,
+): LocktimeNeed[] {
+  const needs = new Map<number, LocktimeNeed>();
+  for (const state of trace) {
+    if (state.instructions[state.ip]?.opcode !== Op.OP_CHECKLOCKTIMEVERIFY) continue;
+    if (state.controlStack.some((flag) => flag === false)) continue;
+    const operand = state.stack[state.stack.length - 1];
+    if (operand === undefined) continue;
+    let value: number;
+    try {
+      value = Number(decodeScriptNumber(operand));
+    } catch {
+      continue;
+    }
+    if (!Number.isSafeInteger(value) || value < 0 || needs.has(value)) continue;
+    needs.set(value, {
+      inputIndex, who: `${who}, which checks tx.time >= ${value}`,
+      kind: value < TIME_LOCKTIME ? 'height' : 'time', value,
+    });
+  }
+  return [...needs.values()];
+}
+
+/**
+ * A creation's locktime, kept as its needs arrive (A5, A14 item 7): `preferred` while only `fixed` needs constrain it,
+ * else the lowest value that satisfies every need. `add` takes the needs a run shows and returns the locktime they
+ * settle, throwing `DeployerLocktimeConflictError` when one input needs a height and another a time.
+ */
+export function locktimeLedger(fixed: readonly LocktimeNeed[], preferred: number | undefined): {
+  needs: LocktimeNeed[];
+  locktime: number | undefined;
+  add(found: readonly LocktimeNeed[]): number | undefined;
+} {
+  lowestCommonLocktime(fixed);
+  const ledger = {
+    needs: [...fixed],
+    locktime: preferred,
+    add(found: readonly LocktimeNeed[]): number | undefined {
+      const fresh = found.filter((need) => !ledger.needs.some((known) => known.inputIndex === need.inputIndex
+        && known.kind === need.kind && known.value === need.value));
+      if (fresh.length === 0) return ledger.locktime;
+      ledger.needs.push(...fresh);
+      ledger.locktime = lowestCommonLocktime(ledger.needs);
+      return ledger.locktime;
+    },
+  };
+  return ledger;
+}
+
+/** The lowest locktime that meets every need: the largest lower bound, when all are of one kind (A5). */
+export function lowestCommonLocktime(needs: readonly LocktimeNeed[]): number | undefined {
+  const first = needs[0];
+  if (first === undefined) return undefined;
+  const other = needs.find((need) => need.kind !== first.kind);
+  if (other !== undefined) throw new DeployerLocktimeConflictError(first, other);
+  return Math.max(...needs.map((need) => need.value));
 }
 
 /** One deployment a prep chain creates. */
@@ -419,7 +1887,20 @@ export function defaultDeployerFee(deployer: DeployerAbi): bigint {
 /** What output 1 of a prep needs: RESERVE per genesis output, the identity output, and a create fee allowance. */
 export function defaultAuthorValue(deployer: DeployerAbi): bigint {
   const nfts = BigInt(Math.max(1, deployer.genesisOutputs)) + 1n;
-  return RESERVE * (nfts + 1n) + defaultDeployerFee(deployer) + 2000n;
+  return RESERVE * (nfts + 1n) + estimateCreationBytes(deployer);
+}
+
+/**
+ * An upper estimate of a creation's size in bytes at top level: the deployer input carries Deploy<C>'s redeem and
+ * C's code, the author input is P2PKH, and each output is at most a P2SH32 lock with an NFT of 128 bytes. The fee
+ * at 1 sat/B is at most this many satoshis, so an author coin sized with it pays a creation of any code size.
+ */
+export function estimateCreationBytes(deployer: DeployerAbi): bigint {
+  const redeem = deployer.bytecode.length / 2;
+  const code = deployer.code.length / 2;
+  const unlocking = redeem + code + 600;
+  const outputs = Math.max(1, deployer.genesisOutputs) + 3;
+  return BigInt(10 + 41 + 5 + unlocking + 148 + outputs * (9 + 36 + 34 + 130));
 }
 
 function assertSpendableFunding(utxos: readonly Utxo[], signer: Unlocker, allowAnyAuthorLock = false): void {
@@ -504,7 +1985,8 @@ export async function buildDeployerPreps(
     const authorCoin: Utxo = { txid, vout: 1, satoshis: authorValue, lockingBytecode: authorLockingBytecode };
     const change = changeIndex < 0 ? undefined : builder.outputs[changeIndex];
     const changeCoin: Utxo | undefined = change === undefined ? undefined : {
-      txid, vout: changeIndex, satoshis: change.amount, lockingBytecode: last ? changeLockingBytecode : authorLockingBytecode,
+      txid, vout: changeIndex, satoshis: change.amount,
+      lockingBytecode: last ? changeLockingBytecode : authorLockingBytecode,
     };
     const prep: DeployerPrep = {
       contractName: child.contractName,
@@ -557,6 +2039,23 @@ export async function broadcastDeployerPreps(
     prep.broadcast = true;
   }
   return preps;
+}
+
+/**
+ * Release every reservation a prep chain made: its funding inputs, its author coins and its change coins. A
+ * creation that fails before anything is broadcast leaves the wallet's coins as they were.
+ */
+export function releaseDeployerPrepReservations(preps: readonly DeployerPrep[]): void {
+  for (const prep of preps) {
+    const transaction = decodeTransactionUnsafe(hexToBin(prep.transactionHex));
+    for (const input of transaction.inputs) {
+      releaseGenesisOutpoint(genesisOutpointKey(binToHex(input.outpointTransactionHash), input.outpointIndex));
+    }
+    releaseGenesisOutpoint(genesisOutpointKey(prep.authorCoin.txid, prep.authorCoin.vout));
+    if (prep.changeCoin !== undefined) {
+      releaseGenesisOutpoint(genesisOutpointKey(prep.changeCoin.txid, prep.changeCoin.vout));
+    }
+  }
 }
 
 /** Release the author reservations a broadcast creation consumed. */
@@ -761,7 +2260,7 @@ export function assertDeployerCallee(calleeName: string, callee: Artifact, funct
   if (callee.recordSound !== true) {
     throw new DeployerCalleeError(
       calleeName, functionName,
-      "the callee is not record-sound; compile it with genesisCalls and fix any arm that prevents it, "
+      'the callee is not record-sound; compile it with genesisCalls and fix any arm that prevents it, '
         + "or with callRecords: 'all' for a function that returns nothing",
     );
   }
@@ -799,6 +2298,8 @@ export async function deployerEcrecoverGroups(options: {
   args: Record<string, FunctionArgument>;
   provider: NetworkProvider;
   count: number;
+  /** Shared coins the creation already spends, which the groups do not take. */
+  spent?: ReadonlySet<string>;
 }): Promise<Array<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>>> {
   const { createFn, args, provider, count } = options;
   const calls = createFn.ecrecoverArgParams ?? [];
@@ -824,7 +2325,7 @@ export async function deployerEcrecoverGroups(options: {
   };
   const fetchPool = async (lock: Uint8Array): Promise<Utxo[]> => {
     const coins = (await provider.getUtxosForLockingBytecode(lock))
-      .filter((utxo) => utxo.token?.nft?.capability === 'mutable');
+      .filter((utxo) => utxo.token?.nft?.capability === 'mutable' && options.spent?.has(coinKey(utxo)) !== true);
     if (coins.length < count) throw new DeployerSidecarError('ecrecover');
     return coins;
   };
@@ -889,143 +2390,16 @@ export async function deployerEcrecoverGroups(options: {
   return groups;
 }
 
-
-/** A14 item 4's trace path for a scalar constructor that reads a single token container. */
-async function learnScalarCreateCommitments(options: {
-  provider: NetworkProvider;
-  deployer: DeployerAbi;
-  prep: DeployerPrep;
-  funder: Unlocker;
-  changeAddress: string;
-  categoryId: string;
-  contract: import('../Contract.js').Contract<Artifact>;
-  artifact: Artifact;
-  masterLock: Uint8Array;
-  dataNftAddress: string;
-  leading: import('../interfaces.js').Output[];
-  outbase: number;
-  masterAmount: bigint;
-  dataNftAmount: bigint;
-  createLayout: { slots: readonly { kind: string; offset: number; nftIndex?: number; slotIndex?: number }[] };
-  args: Record<string, FunctionArgument>;
-  deployValue: bigint;
-  tokenContainers: import('./stateful-lifecycle-types.js').DeployOptions['tokenContainers'];
-}): Promise<string[]> {
-  const {
-    provider, deployer, prep, funder, changeAddress, categoryId, contract, artifact, masterLock, dataNftAddress,
-    leading, outbase, masterAmount, dataNftAmount, createLayout, args, deployValue, tokenContainers,
-  } = options;
-  const dataSlots = createLayout.slots.filter((slot) => slot.kind === 'dataNft');
-  const tokenSlots = createLayout.slots.filter((slot) => slot.kind === 'tokenContainer');
-  const { TransactionBuilder } = await import('../TransactionBuilder.js');
-  const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
-  const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
-  const { getTokenContainerAddress } = await import('./covenant-helpers.js');
-  const tokenPlans = tokenSlots.map((slot) => {
-    const rowIndex = slot.slotIndex ?? 0;
-    const name = artifact.constructorInputs[rowIndex]?.name;
-    const raw = name === undefined ? undefined : args[name];
-    const rowCategory = raw instanceof Uint8Array ? binToHex(raw) : String(raw ?? '');
-    const supplied = tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-      && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
-    if (supplied === undefined) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' keeps a token container ${rowCategory} single; pass a coin of its category in `
-        + 'tokenContainers',
-      );
-    }
-    return {
-      input: supplied,
-      output: {
-        to: getTokenContainerAddress(contract as never, categoryId, rowCategory),
-        amount: supplied.utxo.satoshis,
-        token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
-      },
-    };
-  });
-  let learned = dataSlots.map(() => '');
-  let pad = new Uint8Array();
-  let failure = '';
-  for (let attempt = 0; attempt < 16; attempt += 1) {
-    const unlocker: Unlocker = {
-      generateLockingBytecode: () => hexToBin(deployer.lockingBytecode),
-      generateUnlockingBytecode: () => buildDeployerUnlocking({
-        deployer,
-        callees: [],
-        args,
-        value: deployValue,
-        senderCategory: new Uint8Array(32),
-        authorIndex: 1,
-        identity: true,
-        budgetPad: pad,
-        synthetic: {
-          __internal__genesisOutputBase: BigInt(outbase),
-          __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
-          __internal__blockOracleInputIndex: -1n,
-        },
-        forBroadcast: true,
-      }),
-    };
-    const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
-    builder.addInput(prep.deployerCoin, unlocker);
-    builder.addInput(prep.authorCoin, funder);
-    for (const plan of tokenPlans) builder.addInput(plan.input.utxo, plan.input.unlocker);
-    for (const output of leading) builder.addOutput(output);
-    let dataIndex = 0;
-    for (const slot of createLayout.slots) {
-      if (slot.kind === 'master') {
-        builder.addOutput({
-          to: masterLock, amount: masterAmount,
-          token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-        });
-      } else if (slot.kind === 'dataNft') {
-        const index = slot.nftIndex ?? dataIndex;
-        dataIndex += 1;
-        builder.addOutput({
-          to: dataNftAddress, amount: dataNftAmount,
-          token: { category: categoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: learned[index] ?? '' } },
-        });
-      } else if (slot.kind === 'tokenContainer') {
-        const plan = tokenPlans[tokenSlots.indexOf(slot)];
-        if (plan !== undefined) builder.addOutput(plan.output);
-      } else {
-        throw new DeployerPathError(
-          `The create trace path does not model a '${slot.kind}' row of '${artifact.contractName}'`,
-        );
-      }
-    }
-    const spent = leading.reduce((sum, output) => sum + output.amount, 0n)
-      + masterAmount + dataNftAmount * BigInt(dataSlots.length)
-      + tokenPlans.reduce((sum, plan) => sum + plan.output.amount, 0n);
-    const funding = prep.authorCoin.satoshis
-      + tokenPlans.reduce((sum, plan) => sum + plan.input.utxo.satoshis, 0n);
-    if (funding >= spent) builder.addOutput({ to: changeAddress, amount: funding - spent });
-    const program = builder.buildLibauthProgram(true);
-    const trace = evaluateProbeTrace(provider, {
-      inputIndex: 0, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
-    });
-    const last = trace[trace.length - 1] as { error?: string } | undefined;
-    const offsets = dataSlots.map((slot) => outbase + slot.offset);
-    const next = offsets.length === 0 ? [] : extractCommitmentsFromTrace(
-      trace, dataSlots.length, { min: Math.min(...offsets), max: Math.max(...offsets) + 1 },
-    ) ?? [];
-    if (next.length === dataSlots.length && next.some((value, index) => value !== learned[index])) {
-      learned = next;
-      continue;
-    }
-    if (last?.error === undefined) return learned;
-    if (/operation cost|budget/i.test(last.error)) {
-      pad = new Uint8Array(pad.length === 0 ? 1 : Math.min(4096, pad.length * 2));
-      continue;
-    }
-    failure = last.error;
-    break;
-  }
-  throw new DeployerPrepError(
-    `The creation of '${artifact.contractName}' could not be probed through its create: `
-    + `${failure || 'the constructor did not settle'}`,
-  );
+/**
+ * A4.8: the `__internal__budgetPad` to try after a run that ran out of operation budget: twice as long, or as long as
+ * the create unlocking, now `unlockingLength` bytes, can grow within its 10,000 bytes; undefined when it cannot grow.
+ */
+export function nextBudgetPad(pad: Uint8Array, unlockingLength: number): Uint8Array<ArrayBuffer> | undefined {
+  const pushLength = (length: number): number => length + (length <= 75 ? 1 : length <= 255 ? 2 : 3);
+  const room = 10_000 - (unlockingLength - pushLength(pad.length));
+  let next = pad.length === 0 ? 1 : pad.length * 2;
+  while (next > pad.length && pushLength(next) > room) next = Math.min(next - 1, room - 1);
+  return next > pad.length ? new Uint8Array(next) : undefined;
 }
 
 /**
@@ -1068,369 +2442,177 @@ export function runDeployerInputsLocal(
   }
   return runs;
 }
+/** The outputs a `create` run fills in: commitments of records and events, locks and amounts of transfers. */
+export interface CreateRunSlots {
+  /** Absolute output indexes whose NFT commitment `create` computes. */
+  commitments: readonly number[];
+  /** Absolute output indexes of the constructor's satoshi transfers. */
+  transfers: readonly number[];
+  /** A4.4: each written collection's HEAD and entry rows, laid out from the journal the run holds. */
+  journals?: readonly CreateRunJournal[];
+}
+
+/** A written collection's rows in a creation, and where `create`'s run holds its journal (A14 item 4 step 5). */
+export interface CreateRunJournal {
+  collection: string;
+  /** The journal's depth from the bottom of `create`'s stack (`DeployerAbi.collectionRows[].journalDepth`). */
+  depth: number;
+  /** Absolute output index of the collection's HEAD. */
+  head: number;
+  /** Absolute output indexes of its entry rows, in order. */
+  rows: readonly number[];
+  /** The collection's entry lock for (M, X). */
+  entryLock: string | Uint8Array;
+  /** X, display order. */
+  category: string;
+}
+
 /**
- * A14 item 5's fixed point on the shipped creation: a constructor with call slots and no collection rows,
- * events or transfers. Each callee's record is learned in an isolated probe; the create's own trace then supplies
- * the child's data-record commitment, and the tag candidate whose `X` the compiler checks is kept.
+ * A journal's final contents: for each slot, the value of its last record, in increasing slot order (A4.4). A record
+ * is a 32-byte slot, the value's size in two bytes, then the value. Undefined when the bytes are not a journal.
  */
-async function deployThroughCallSlot<T extends Artifact>(options: {
-  artifact: T;
-  constructorArgs: readonly FunctionArgument[];
-  options: import('./stateful-lifecycle-types.js').DeployOptions;
-  prep: DeployerPrep;
-  contract: import('../Contract.js').Contract<T>;
-  deployer: DeployerAbi;
-  categoryId: string;
-  masterLock: Uint8Array;
-  dataNftAddress: string;
-  leading: import('../interfaces.js').Output[];
-  outbase: number;
-  args: Record<string, FunctionArgument>;
-  deployValue: bigint;
-  masterAmount: bigint;
-  dataNftAmount: bigint;
-  stateLayout: NonNullable<Artifact['stateLayout']>;
-  constructorAbi: NonNullable<Artifact['abi'][number]> | undefined;
-  createLayout: import('@solidcash/utils').FunctionBlockLayout | undefined;
-}): Promise<import('./stateful-lifecycle-types.js').DeployResult<T>> {
-  const {
-    artifact, constructorArgs, prep, contract, deployer, categoryId, masterLock, dataNftAddress, leading, outbase,
-    args, deployValue, masterAmount, dataNftAmount, stateLayout, constructorAbi, createLayout,
-  } = options;
-  const callSites = constructorAbi?.externalCalls ?? [];
-  const configuredAll = options.options.constructorCallees ?? [];
-  if (callSites.length === 0) {
-    throw new DeployerCalleeError(artifact.contractName, '<unknown>', 'the constructor has no call slot');
+export function journalFinalContents(
+  bytes: Uint8Array | undefined,
+): Array<{ slot: Uint8Array; value: Uint8Array }> | undefined {
+  if (bytes === undefined) return undefined;
+  const last = new Map<string, { slot: Uint8Array; value: Uint8Array }>();
+  let at = 0;
+  while (at < bytes.length) {
+    if (at + 34 > bytes.length) return undefined;
+    const slot = bytes.slice(at, at + 32);
+    const size = bytes[at + 32]! | ((bytes[at + 33]! & 0x7f) << 8);
+    if (size > 64 || at + 34 + size > bytes.length) return undefined;
+    last.set(binToHex(slot), { slot, value: bytes.slice(at + 34, at + 34 + size) });
+    at += 34 + size;
   }
-  if (configuredAll.length !== callSites.length) {
-    throw new DeployerCalleeError(artifact.contractName, callSites[0]?.functionName ?? '<unknown>',
-      `pass ${callSites.length} constructorCallees entries, one per call slot`);
-  }
-  const createFn = deployer.abi.find((entry) => entry.name === 'create');
-  if (createFn === undefined) throw new DeployerPrepError(`Deployer of '${artifact.contractName}' has no create arm`);
-  const hasInput = (name: string): boolean => createFn.inputs.some((input) => input.name === name);
-  const dataCount = stateLayout.dataNftCount;
-  const visible = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
-  const functionNames = callSites.map((callSite, slot) => configuredAll[slot].functionName ?? callSite.functionName);
-  const calleeArgs = callSites.map((callSite, slot) => configuredAll[slot].args ?? (callSite.argSources ?? []).map(
-    (source) => {
-      if (source.kind === 'literal') return source.value as FunctionArgument;
-      if (source.kind === 'forward' && source.paramIndex !== undefined) {
-        const input = visible[source.paramIndex];
-        const value = input === undefined ? undefined : args[input.name];
-        if (value !== undefined) return value;
-      }
-      throw new DeployerCalleeError(configuredAll[slot].contract.inner.artifact.contractName, functionNames[slot],
-        'its call arguments are not literals or forwarded constructor parameters; pass them in constructorCallees');
-    },
-  ));
-  const calleeDataCounts = configuredAll.map(
-    (callee) => callee.contract.inner.artifact.stateLayout?.dataNftCount ?? 0,
-  );
-  const senderReaders = callSites.map((callSite, slot) => (
-    configuredAll[slot].contract.inner.artifact.abi.find((entry) => entry.name === functionNames[slot])?.inputs ?? []
-  ).some((input) => input.name === '__internal__msgSenderCategory'));
-
-  // A4.4: the callee groups start after C's genesis range. Each group's master input index equals the index of
-  // the master output it creates (`deriveConstructorCalleeRun`'s probe proves the callee covenant wants that), and
-  // the group's inputs are one master plus its data records. The record carriers sit after every group, so the
-  // next group's base is not shifted by the previous carrier.
-  const groupStart = outbase + deployer.genesisOutputs;
-  const inputBases: number[] = [];
-  let cursor = groupStart;
-  for (const count of calleeDataCounts) {
-    inputBases.push(cursor);
-    cursor += 1 + count;
-  }
-  const returnIndices = callSites.map((_, slot) => cursor + slot);
-
-  const pushLength = (value: FunctionArgument | undefined, type: string): number => {
-    if (value === undefined) return 0;
-    const raw = encodeFunctionArgument(value, type, artifact.structs);
-    return raw instanceof Uint8Array ? encodeDataPush(raw).length : 0;
-  };
-  // A4.2: A is C's contract-parameter band; Q is the sender category, the value and the constructor
-  // parameters. The create ABI lists the public inputs in that order, so `constructorInputs.length` is the
-  // boundary.
-  let qLength = encodeDataPush(new Uint8Array(32)).length + encodeDataPush(bigIntToVmNumber(0n)).length;
-  let aLength = 0;
-  createFn.inputs.filter((input) => !input.name.startsWith('__internal__')).forEach((input, index) => {
-    const length = pushLength(args[input.name], input.type);
-    if (index < artifact.constructorInputs.length) aLength += length;
-    else qLength += length;
+  const asNumber = (slot: Uint8Array): bigint => slot.reduceRight((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
+  return [...last.values()].sort((left, right) => {
+    const a = asNumber(left.slot);
+    const b = asNumber(right.slot);
+    return a < b ? -1 : a > b ? 1 : 0;
   });
-  const codeLength = hexToBin(deployer.code).length;
-  const codeHeader = codeLength < 0x4c ? 1 : codeLength <= 0xff ? 2 : codeLength <= 0xffff ? 3 : 5;
-  const aOffset = 6 + 2 * deployer.callSlots + qLength;
-  const codeOffset = aOffset + aLength + codeHeader;
+}
 
-  const tagFor = (slot: number, reverseCategory: boolean): Uint8Array => {
-    const x = hexToBin(categoryId);
-    // The tag's X is the VM order of the category (the reverse of the display order the prep's txid wears), the
-    // value OP_OUTPOINTTXHASH returns for the prep input.
-    const category = x.slice().reverse();
-    const tag = new Uint8Array([
-      ...category, slot & 0xff, (slot >> 8) & 0xff, 0, 0,
-    ]);
-    if (!senderReaders[slot]) return tag;
-    const extra = new Uint8Array(10);
-    const write = (at: number, value: number): void => {
-      extra[at] = value & 0xff; extra[at + 1] = (value >> 8) & 0xff;
-    };
-    write(0, outbase); write(2, aOffset); write(4, aLength); write(6, codeOffset); write(8, codeLength);
-    return new Uint8Array([...tag, ...extra]);
-  };
-
-  const selectorFor = (slot: number): Uint8Array => {
-    const fn = configuredAll[slot].contract.inner.artifact.abi.find((entry) => entry.name === functionNames[slot]);
-    return fn?.selector === undefined ? new Uint8Array() : hexToBin(fn.selector);
-  };
-  const syntheticFor = (reverseCategory: boolean): Record<string, Uint8Array | bigint> => {
-    void reverseCategory;
-    const synthetic: Record<string, Uint8Array | bigint> = {
-      __internal__externalCallInputBase: BigInt(groupStart),
-      __internal__blockOracleInputIndex: -1n,
-    };
-    callSites.forEach((_, slot) => {
-      synthetic[`__internal__extcallMasterIdx${slot}`] = BigInt(inputBases[slot]);
-      synthetic[`__internal__extcallAnchorIdx${slot}`] = -1n;
-      synthetic[`__internal__callEdgeOutputIdx${slot}`] = -1n;
-      synthetic[hasInput(`__internal__externalReturnOutputIdx${slot}`)
-        ? `__internal__externalReturnOutputIdx${slot}` : '__internal__externalReturnOutputIdx']
-        = BigInt(returnIndices[slot]);
-      const selectorName = hasInput(`__internal__externalCallSelector${slot}`)
-        ? `__internal__externalCallSelector${slot}` : '__internal__externalCallSelector';
-      if (hasInput(selectorName)) synthetic[selectorName] = selectorFor(slot);
-    });
-    return synthetic;
-  };
-  const unlockingFor = (reverseCategory: boolean, callees: readonly number[] = inputBases): Uint8Array =>
-    buildDeployerUnlocking({
-    deployer,
-    callees,
-    args,
-    value: deployValue,
-    senderCategory: new Uint8Array(32),
-    authorIndex: 1,
-    identity: true,
-    budgetPad: new Uint8Array(),
-    synthetic: {
-      __internal__genesisOutputBase: BigInt(outbase),
-      __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
-      ...syntheticFor(reverseCategory),
-    },
-  });
-
-  const { TransactionBuilder } = await import('../TransactionBuilder.js');
-  const { evaluateProbeTrace } = await import('./faithful-probe-trace.js');
-  const { extractCommitmentsFromTrace } = await import('./trace-commitment-helpers.js');
-  const fee = options.options.fee ?? defaultDeployerFee(deployer);
-  let failure = '';
-  for (const reverseCategory of [true, false]) {
-    const unlocking = unlockingFor(reverseCategory);
-    // A7 check 5 reads the list entry at this slot and compares it with the callee's own input index. A probe is
-    // isolated, so its list names the probe's callee position (2 for a sender reader, 1 otherwise); the real
-    // unlocking built for the transaction carries `inputBases`.
-    const probeUnlocking = unlockingFor(reverseCategory, callSites.map((_, other) => senderReaders[other] ? 2 : 1));
-    const runs = await Promise.all(callSites.map((_, slot) => deriveConstructorCalleeRun({
-      callee: configuredAll[slot], functionName: functionNames[slot], args: calleeArgs[slot], slot,
-      categoryId, provider: options.options.provider, returnIndex: returnIndices[slot],
-      tag: tagFor(slot, reverseCategory), masterInputIndex: inputBases[slot],
-      createUnlocking: probeUnlocking, childMasterLock: masterLock,
-      deployerLockingBytecode: hexToBin(deployer.lockingBytecode),
-    })));
-    let dataCommitments = Array.from({ length: dataCount }, () => '');
-    for (let iteration = 0; iteration < 4; iteration += 1) {
-      const outputs: import('../interfaces.js').Output[] = [...leading];
-      const headCommitment = new Uint8Array(128);
-      for (const slot of createLayout?.slots ?? []) {
-        switch (slot.kind) {
-          case 'master':
-            outputs.push({
-              to: masterLock, amount: masterAmount,
-              token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-            });
-            break;
-          case 'dataNft': {
-            const index = slot.nftIndex ?? slot.offset - 1;
-            outputs.push({
-              to: dataNftAddress, amount: dataNftAmount,
-              token: { category: categoryId, amount: 0n,
-                nft: { capability: 'mutable', commitment: dataCommitments[index] ?? '' } },
-            });
-            break;
-          }
-          case 'head': {
-            const collection = slot.collection;
-            if (collection === undefined) {
-              throw new DeployerPathError(`A head slot of '${artifact.contractName}' names no collection`);
-            }
-            const { getEntryNftAddress } = await import('./covenant-helpers.js');
-            outputs.push({
-              to: getEntryNftAddress(contract as never, categoryId, collection), amount: dataNftAmount,
-              token: { category: categoryId, amount: 0n,
-                nft: { capability: 'mutable', commitment: binToHex(headCommitment) } },
-            });
-            break;
-          }
-          case 'satoshiContainer':
-            outputs.push({
-              to: (await import('./covenant-helpers.js')).getSatoshiContainerAddress(contract as never, categoryId),
-              amount: deployer.satoshiContainer === 'required' ? 1200n + deployValue : deployValue,
-            });
-            break;
-          case 'tokenContainer': {
-            const tokenRow = slot.slotIndex;
-            if (tokenRow === undefined) throw new DeployerPathError('A token container slot names no parameter');
-            const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
-            const supplied = options.options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-              && utxo.token.category.toLowerCase() === String(constructorArgs[tokenRow] ?? '').toLowerCase());
-            if (supplied === undefined) {
-              throw new DeployerPrepError(
-                `'${artifact.contractName}' keeps its token container '${name}' single; pass a coin of its `
-                + 'category in tokenContainers',
-              );
-            }
-            const { getTokenContainerAddress } = await import('./covenant-helpers.js');
-            outputs.push({
-              to: getTokenContainerAddress(contract as never, categoryId, supplied.utxo.token!.category),
-              amount: supplied.utxo.satoshis,
-              token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
-            });
-            break;
-          }
-          case 'keccakSideCar':
-          case 'ecrecoverSideCar':
-            break;
-          default:
-            throw new DeployerPathError(
-              `The create layout of '${artifact.contractName}' has a slot kind (${slot.kind}) this deployment `
-              + 'does not build',
-            );
-        }
+/**
+ * A14 items 3 and 4: complete Deploy<C>'s own run as a fixed point. `create` stops at its first unmet pin, and the
+ * trace of that run names the value the pin expects: a record's or an event's commitment, a transfer's lock and
+ * amount. Each round patches what it learns, at the given indexes of the genesis range only, and runs again, until
+ * the deployer input passes. A round that learns nothing fails with the run's VM error. `outputs` are the builder's
+ * outputs, patched in place; `amountsChanged` lets the caller rebalance its change when a transfer's amount moves.
+ */
+export function completeCreateRun(options: {
+  provider: NetworkProvider;
+  build: () => { transaction: Transaction; sourceOutputs: Transaction['outputs'] };
+  deployerInputIndex: number;
+  outputs: import('../interfaces.js').Output[];
+  range: { min: number; max: number };
+  slots: CreateRunSlots;
+  amountsChanged?: () => void;
+}): void {
+  const vm = createVirtualMachineBch2026ForProvider(options.provider);
+  const lockHex = (to: string | Uint8Array): string => (typeof to === 'string' ? to : binToHex(to));
+  for (let round = 0; round < 64; round += 1) {
+    const { transaction, sourceOutputs } = options.build();
+    const program = { transaction, sourceOutputs, inputIndex: options.deployerInputIndex };
+    const trace = evaluateFaithfulOrDebugTrace(options.provider, program as never);
+    const final = trace[trace.length - 1];
+    if (final !== undefined && vm.stateSuccess(final as never) === true) return;
+    if ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.DEBUG_CREATE_RUN) {
+      const at = final?.ip ?? 0;
+      const ops = (final?.instructions ?? []).slice(Math.max(0, at - 14), at + 2)
+        .map((instruction, offset) => `${Math.max(0, at - 14) + offset}:${instruction.opcode.toString(16)}`).join(' ');
+      // eslint-disable-next-line no-console
+      console.error('CREATE-RUN', round, final?.error, 'ip', at, ops, 'stack', (final?.stack ?? []).length,
+        (final?.stack ?? []).slice(-6).map((item) => `${item.length}:${binToHex(item).slice(0, 80)}`).join(' | '),
+        'journals', (options.slots.journals ?? []).map((journal) => `${journal.depth}=${binToHex(final?.stack[journal.depth] ?? new Uint8Array()).slice(0, 120)}`));
+    }
+    let learned = false;
+    let amounts = false;
+    const commitments = extractCommitmentMapFromTrace(trace, options.range, true);
+    for (const index of options.slots.commitments) {
+      const expected = commitments.get(index);
+      const nft = options.outputs[index]?.token?.nft;
+      if (expected === undefined || nft === undefined || nft.commitment === expected) continue;
+      nft.commitment = expected;
+      learned = true;
+    }
+    for (const index of options.slots.transfers) {
+      const output = options.outputs[index];
+      if (output === undefined) continue;
+      const lock = extractVerifiedValuesFromTrace(trace, Op.OP_OUTPUTBYTECODE, { min: index, max: index + 1 },
+        false, false, true)[0];
+      if (lock !== undefined && lockHex(output.to) !== binToHex(lock)) {
+        output.to = lock;
+        learned = true;
       }
-      for (const [slot, run] of runs.entries()) {
-        outputs.push({
-          to: run.master.lockingBytecode ?? new Uint8Array(), amount: run.master.satoshis,
-          ...(run.master.token === undefined ? {} : { token: run.master.token }),
-        });
-        run.dataNfts.forEach((utxo, index) => outputs.push({
-          to: utxo.lockingBytecode ?? new Uint8Array(), amount: utxo.satoshis,
-          token: { category: run.category, amount: 0n,
-            nft: { capability: 'mutable', commitment: run.dataCommitments[index] ?? '' } },
-        }));
-        void slot;
+      const amount = extractVerifiedValuesFromTrace(trace, Op.OP_OUTPUTVALUE, { min: index, max: index + 1 },
+        false, false, true)[0];
+      if (amount !== undefined && decodeScriptNumber(amount) !== output.amount) {
+        output.amount = decodeScriptNumber(amount);
+        learned = true;
+        amounts = true;
       }
-      for (const run of runs) {
-        outputs.push({
-          to: Uint8Array.of(0x51), amount: 1000n,
-          token: { category: run.category, amount: 0n,
-            nft: { capability: 'none', commitment: run.returnCommitment } },
-        });
-      }
-      const deployerUnlocker: Unlocker = {
-        generateLockingBytecode: () => hexToBin(deployer.lockingBytecode),
-        generateUnlockingBytecode: () => unlockingFor(reverseCategory),
-      };
-      const builder = new TransactionBuilder({
-        provider: options.options.provider,
-        ...(options.options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.options.maxFee }),
-        skipAutomaticCoSpends: true,
-      });
-      builder.addInput(prep.deployerCoin, deployerUnlocker);
-      builder.addInput(prep.authorCoin, options.options.funder);
-      let fillerTotal = 0n;
-      while (builder.inputs.length < groupStart) {
-        if (prep.changeCoin === undefined || builder.inputs.some(
-          (input) => input.txid === prep.changeCoin!.txid && input.vout === prep.changeCoin!.vout,
-        )) {
-          throw new DeployerPrepError(
-            `'${artifact.contractName}' needs a filler input at index ${builder.inputs.length} for its constructor `
-            + 'call slots, but the prep left no unused change coin',
-          );
-        }
-        builder.addInput(prep.changeCoin, options.options.funder);
-        fillerTotal += prep.changeCoin.satoshis;
-      }
-      for (const run of runs) {
-        builder.addInput(run.master, {
-          generateLockingBytecode: () => run.master.lockingBytecode ?? new Uint8Array(),
-          generateUnlockingBytecode: () => run.unlocking,
-        });
-        run.dataNfts.forEach((utxo) => builder.addInput(utxo, {
-          generateLockingBytecode: () => utxo.lockingBytecode ?? new Uint8Array(),
-          generateUnlockingBytecode: () => run.dataUnlocking,
-        }));
-      }
-      const outputTotal = outputs.reduce((sum, output) => sum + output.amount, 0n);
-      if (prep.authorCoin.satoshis + fillerTotal < outputTotal + fee) {
+    }
+    // A4.4: the journals the run holds at its last state, which the constructor has finished writing once the run
+    // reaches the epilogue. Each lays out its HEAD's link and its entry rows; the rows it does not fill hold no token.
+    for (const journal of options.slots.journals ?? []) {
+      const entries = journalFinalContents(final?.stack[journal.depth]);
+      if (entries === undefined) continue;
+      if (entries.length > journal.rows.length) {
         throw new DeployerPrepError(
-          `The author coin of '${artifact.contractName}' holds ${prep.authorCoin.satoshis} satoshis, but its `
-          + `creation needs ${outputTotal + fee}`,
+          `The constructor writes ${entries.length} entries of '${journal.collection}', but its deployer has `
+          + `${journal.rows.length} rows for them`,
         );
       }
-      outputs.forEach((output) => builder.addOutput(output));
-      const change = prep.authorCoin.satoshis + fillerTotal - outputTotal - fee;
-      if (change >= DUST) builder.addOutput({ to: options.options.changeAddress, amount: change });
-      const program = builder.buildLibauthProgram(true);
-      const trace = evaluateProbeTrace(options.options.provider, {
-        inputIndex: 0, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
-      });
-      const last = trace[trace.length - 1] as { error?: string } | undefined;
-      const dataOffsets = (createLayout?.slots ?? [])
-        .filter((slot) => slot.kind === 'dataNft')
-        .map((slot) => outbase + slot.offset);
-      const next = dataOffsets.length === 0 ? [] : extractCommitmentsFromTrace(
-        trace, dataCount, { min: Math.min(...dataOffsets), max: Math.max(...dataOffsets) + 1 },
-      ) ?? [];
-      const changed = next.length === dataCount
-        && next.some((commitment, index) => commitment !== dataCommitments[index]);
-      if (changed) { dataCommitments = next; continue; }
-      if (last?.error === undefined) {
-        // The deployer input passes; every callee input must too, then the creation is sent.
-        const localRuns = runDeployerInputsLocal(options.options.provider, program.transaction, program.sourceOutputs);
-        const creationHex = binToHex(encodeTransaction(program.transaction));
-        if ((globalThis as any).process?.env?.DEBUG_D13) {
-          console.log('D13', JSON.stringify({
-            transactionBytes: creationHex.length / 2,
-            operationCosts: localRuns.map((entry) => ({
-              input: entry.inputIndex, cost: entry.operationCost.toString(),
-              budget: entry.operationBudget?.toString(), hashes: entry.hashDigestIterations?.toString(),
-            })),
-            calleeUnlockingBytes: runs.map((run) => run.unlocking.length),
-            deployerUnlockingBytes: program.transaction.inputs[0].unlockingBytecode.length,
-            deployerRedeemBytes: hexToBin(deployer.bytecode).length,
-          }));
-        }
-        await broadcastDeployerPreps([prep], options.options.provider);
-        const creationTxid = await options.options.provider.sendRawTransaction(creationHex);
-        releaseDeployerAuthorReservations([prep]);
-        return {
-          contract: (await import('./StatefulContract.js')).StatefulContract.withCategory(
-            contract, categoryId,
-          ) as never,
-          tx: (await import('../wait.js')).attachWait({
-            ...program.transaction, txid: creationTxid, hex: creationHex,
-          } as never, options.options.provider),
-          categoryId,
-          identity: (await import('../bcmr/identity.js')).identityRecord(
-            (await import('../bcmr/identity.js')).planGenesisIdentity({
-              category: categoryId,
-              deployerLock: options.options.senderLockingBytecode
-                ?? options.options.funder.generateLockingBytecode(),
-            }), creationTxid,
-          ),
-          prepTransactions: [prep.transactionHex],
-        };
+      const zeros = (length: number): Uint8Array => new Uint8Array(length);
+      const head = options.outputs[journal.head]?.token?.nft;
+      const headCommitment = binToHex(new Uint8Array([...zeros(32), ...(entries[0]?.slot ?? zeros(32)), ...zeros(64)]));
+      if (head !== undefined && head.commitment !== headCommitment) {
+        head.commitment = headCommitment;
+        learned = true;
       }
-      failure = last.error;
-      break;
+      let rowsLearned = false;
+      let rowsAmounts = false;
+      journal.rows.forEach((index, row) => {
+        const entry = entries[row];
+        const want: import('../interfaces.js').Output = entry === undefined
+          ? { to: Uint8Array.of(0x51), amount: 1000n }
+          : {
+            to: journal.entryLock,
+            amount: RESERVE,
+            token: {
+              category: journal.category, amount: 0n,
+              nft: {
+                capability: 'mutable',
+                commitment: binToHex(new Uint8Array([
+                  ...entry.slot, ...(entries[row + 1]?.slot ?? zeros(32)), ...entry.value,
+                ])),
+              },
+            },
+          };
+        const have = options.outputs[index];
+        const same = have !== undefined && lockHex(have.to) === lockHex(want.to) && have.amount === want.amount
+          && (have.token?.nft?.commitment ?? '') === (want.token?.nft?.commitment ?? '')
+          && (have.token === undefined) === (want.token === undefined);
+        if (same) return;
+        if (have === undefined || have.amount !== want.amount) rowsAmounts = true;
+        options.outputs[index] = want;
+        rowsLearned = true;
+      });
+      if (rowsAmounts) amounts = true;
+      if (rowsLearned) learned = true;
+    }
+    if (amounts) options.amountsChanged?.();
+    if (!learned) {
+      throw new DeployerPrepError(
+        `The creation's run of create, which runs the constructor, stops at instruction ${final?.ip}/`
+        + `${final?.instructions.length} and names no output it expects: ${final?.error ?? 'the run did not end true'}`,
+      );
     }
   }
-  throw new DeployerPrepError(
-    `The creation of '${artifact.contractName}' did not pass its own run: ${failure || 'no tag candidate matched'}`,
-  );
+  throw new DeployerPrepError('create did not complete after 64 runs');
 }
+
 /** True when output 0 of the category's prep transaction is locked to one of the given deployers (A14 item 8). */
 export async function verifyBirth(
   provider: NetworkProvider, categoryId: string, deployers: Iterable<DeployerAbi>,
@@ -1510,30 +2692,232 @@ export function buildDeployerSweep(options: {
   };
 }
 
-/**
- * Read the Q ‖ A a creator bound at one deployment (A14 item 4 step 2). The creator's fixed site emits
- * `<Q> <A> <d_in> OP_INPUTBYTECODE`; at that step the two items below the index are exactly Q and A.
- */
-export function extractDeployBindingFromTrace(
-  trace: readonly AuthenticationProgramStateCommon[], dIn: number,
-): { q: Uint8Array; a: Uint8Array; bound: Uint8Array } | undefined {
-  for (const state of trace) {
-    if (state.instructions[state.ip]?.opcode !== Op.OP_INPUTBYTECODE) continue;
-    const stack = state.stack;
-    if (stack.length < 3) continue;
-    const index = stack[stack.length - 1];
-    if (Number(decodeScriptNumber(index)) !== dIn) continue;
-    const a = stack[stack.length - 2];
-    const q = stack[stack.length - 3];
-    return { q, a, bound: new Uint8Array([...q, ...a]) };
-  }
-  return undefined;
+/** The bytes `encodeDataPush` spends on a push of `length` bytes. */
+function padPushLength(length: number): number {
+  return length + (length === 0 ? 1 : length <= 75 ? 1 : length <= 0xff ? 2 : 3);
 }
 
 /**
- * The top-level deployment of A14 item 3, for the artifact shapes the compiler's deployer produces today: the
- * constructor's scalar state, its transfers and its events. The creation's outputs are derived by the same constructor
- * probe today's genesis uses, then `create` itself runs in the local VM before anything is broadcast.
+ * A4.2, A14 item 4 step 5: the longest `__internal__budgetPad` that keeps a `create` unlocking within 10,000 bytes,
+ * given that unlocking's length with an empty pad.
+ */
+export function largestCreatePad(emptyPadUnlockingLength: number): number {
+  const room = 10_000 - (emptyPadUnlockingLength - padPushLength(0));
+  let length = Math.max(0, room - 3);
+  while (length > 0 && padPushLength(length) > room) length -= 1;
+  return length;
+}
+
+/**
+ * A14 item 4 step 5: the pad a deployer input needs, from its run with `pad`: every unlocking byte grants operation
+ * budget, so the pad keeps what the run spent beyond what the rest of the unlocking funds. Throws when the run with
+ * `pad` fails, on its budget or otherwise.
+ */
+export function fitCreatePad(
+  provider: NetworkProvider, program: { transaction: Transaction; sourceOutputs: Transaction['outputs'] },
+  inputIndex: number, pad: Uint8Array,
+): Uint8Array {
+  const vm = createVirtualMachineBch2026ForProvider(provider);
+  const state = vm.evaluate({ ...program, inputIndex } as never) as AuthenticationProgramStateCommon & {
+    metrics?: { operationCost?: number; maximumOperationCost?: number; densityControlLength?: number };
+  };
+  if (vm.stateSuccess(state as never) !== true) {
+    throw new DeployerPrepError(
+      `The create of input ${inputIndex} needs more operations than a 10,000-byte unlocking funds: ${String(state.error)}`,
+    );
+  }
+  const { operationCost, maximumOperationCost, densityControlLength } = state.metrics ?? {};
+  if (operationCost === undefined || maximumOperationCost === undefined || densityControlLength === undefined) return pad;
+  const perByte = maximumOperationCost / densityControlLength;
+  const surplus = densityControlLength - Math.ceil(operationCost / perByte);
+  // A shorter push may drop its length bytes too: keep three of the surplus.
+  return new Uint8Array(Math.max(0, pad.length - surplus + 3));
+}
+
+/** One run of a deployer `new` site (A6 step 3) in a creator's trace. */
+export interface DeployerSiteVisit {
+  /** The index, in the trace, of the state before the site's OP_INPUTBYTECODE. */
+  step: number;
+  /** d_in: the input whose unlocking the site binds. */
+  inputIndex: number;
+  /** Q ‖ A as the creator built it: the one stack item under d_in. */
+  bound: Uint8Array;
+  /** DEPLOY(C), hex, which the site requires at d_in: its constant pushed inline or by an invoked definition. */
+  deployerLock?: string;
+  /** The instructions the site runs in, and the positions of its OP_INPUTBYTECODE and of its last check (X ‖ 02). */
+  instructions: readonly { opcode: number; data?: Uint8Array }[];
+  firstIp: number;
+  /** -1 when the X ‖ 02 comparison is not found in the site's instructions. */
+  lastIp: number;
+}
+
+/** `04 ‖ SELECTOR_CREATE`, the first five bytes of every `create` unlocking (A4.2). */
+const CREATE_PREFIX = [0x04, 0xaf, 0x34, 0x14, 0x13];
+
+/**
+ * Every run of a deployer `new` site in a creator's trace, in run order (A14 item 4 step 2). A site emits
+ * `<Q ‖ A> <d_in> OP_INPUTBYTECODE` and then `<6> OP_SPLIT OP_SWAP <04 ‖ SELECTOR_CREATE ‖ 2s> OP_EQUALVERIFY` (A6 steps
+ * 3 and 4), so Q ‖ A is the one item under d_in at that step. The site then compares `OP_UTXOBYTECODE` of d_in with
+ * DEPLOY(C), a constant the optimiser may move into a definition, and its checks end at the X ‖ 02 comparison. A site
+ * in a branch that does not run is not a visit.
+ */
+export function readDeployerSiteVisits(trace: readonly AuthenticationProgramStateCommon[]): DeployerSiteVisit[] {
+  const visits: DeployerSiteVisit[] = [];
+  trace.forEach((state, step) => {
+    const instructions = state.instructions as readonly { opcode: number; data?: Uint8Array }[];
+    const ip = state.ip;
+    if (instructions[ip]?.opcode !== Op.OP_INPUTBYTECODE || state.error !== undefined) return;
+    if (state.controlStack.some((frame) => frame === false) || state.stack.length < 2) return;
+    const prefix = instructions[ip + 4]?.data;
+    if (instructions[ip + 1]?.opcode !== Op.OP_6 || instructions[ip + 2]?.opcode !== Op.OP_SPLIT
+      || instructions[ip + 3]?.opcode !== Op.OP_SWAP || instructions[ip + 5]?.opcode !== Op.OP_EQUALVERIFY
+      || prefix?.length !== 6 || CREATE_PREFIX.some((byte, index) => prefix[index] !== byte)) return;
+    const definitions = (state as { functionTable?: Record<string, Uint8Array> }).functionTable ?? {};
+    /** The constant compared by the OP_EQUALVERIFY after instruction `at`: an inline push, or an invoked one. */
+    const constantAt = (at: number): Uint8Array | undefined => {
+      const instruction = instructions[at];
+      if (instruction === undefined) return undefined;
+      if (instruction.data !== undefined && instructions[at + 1]?.opcode === Op.OP_EQUALVERIFY) return instruction.data;
+      if (instructions[at + 1]?.opcode !== Op.OP_INVOKE || instructions[at + 2]?.opcode !== Op.OP_EQUALVERIFY) {
+        return undefined;
+      }
+      const identifier = instruction.data ?? (instruction.opcode >= Op.OP_1 && instruction.opcode <= Op.OP_16
+        ? Uint8Array.of(instruction.opcode - Op.OP_1 + 1) : undefined);
+      const body = identifier === undefined ? undefined : definitions[binToHex(identifier)];
+      return body !== undefined && body.length === 36 && body[0] === 35 ? body.slice(1) : undefined;
+    };
+    let deployerLock: string | undefined;
+    let lastIp = -1;
+    for (let at = ip + 6; at < instructions.length && at < ip + 128 && lastIp < 0; at += 1) {
+      const { opcode } = instructions[at]!;
+      if (opcode === Op.OP_UTXOBYTECODE && deployerLock === undefined) {
+        const lock = constantAt(at + 1);
+        if (lock?.length === 35 && lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87) deployerLock = binToHex(lock);
+        continue;
+      }
+      if (opcode !== Op.OP_OUTPUTTOKENCATEGORY) continue;
+      for (let next = at + 1; next < at + 4 && next < instructions.length; next += 1) {
+        if (instructions[next]!.opcode === Op.OP_EQUALVERIFY) { lastIp = next; break; }
+      }
+      break;
+    }
+    const { stack } = state;
+    visits.push({
+      step,
+      inputIndex: Number(decodeScriptNumber(stack[stack.length - 1]!)),
+      bound: stack[stack.length - 2]!,
+      ...(deployerLock === undefined ? {} : { deployerLock }),
+      instructions,
+      firstIp: ip,
+      lastIp,
+    });
+  });
+  return visits;
+}
+
+/** The first run of a deployer `new` site that binds input `dIn` (A14 item 4 step 2). */
+export function extractDeployBindingFromTrace(
+  trace: readonly AuthenticationProgramStateCommon[], dIn: number,
+): DeployerSiteVisit | undefined {
+  return readDeployerSiteVisits(trace).find((visit) => visit.inputIndex === dIn);
+}
+
+/** Q ‖ A decoded: what one `new` hands Deploy<C>'s `create` (A6 step 2). */
+export interface DeployBinding {
+  /** The creator's category in VM order: `__internal__msgSenderCategory`. */
+  senderCategory: Uint8Array;
+  /** v: `__internal__deployValue`. */
+  value: bigint;
+  /** c_1 … c_k, in declaration order. */
+  constructorArgs: StateValue[];
+  /** p_1 … p_n, in declaration order. */
+  contractArgs: StateValue[];
+}
+
+/** The types of Q ‖ A in byte order: the sender category, v, c_k … c_1, then p_n … p_1. */
+function deployBindingTypes(deployer: DeployerAbi, constructorCount: number): {
+  constructorTypes: string[]; contractTypes: string[];
+} {
+  const create = deployer.abi.find((entry) => entry.name === 'create');
+  if (create === undefined) throw new DeployerPrepError(`Deployer '${deployer.lockingBytecode}' has no create arm`);
+  const visible = create.inputs.filter((input) => !input.name.startsWith('__internal__'));
+  const contractCount = visible.length - constructorCount;
+  if (contractCount < 0) {
+    throw new DeployerPrepError(`The deployer's create takes ${visible.length} arguments, fewer than ${constructorCount}`);
+  }
+  return {
+    contractTypes: visible.slice(0, contractCount).map((input) => input.type),
+    constructorTypes: visible.slice(contractCount).map((input) => input.type),
+  };
+}
+
+/**
+ * Decode Q ‖ A (A6 step 2): push(category) ‖ push(v) ‖ encode(c_k) … encode(c_1) ‖ encode(p_n) … encode(p_1), in the
+ * encodings the creator's site uses. Each value must encode back to the bytes it came from, and nothing may follow.
+ */
+export function decodeDeployBinding(
+  bound: Uint8Array, deployer: DeployerAbi, constructorCount: number, structs?: Artifact['structs'],
+): DeployBinding {
+  const { constructorTypes, contractTypes } = deployBindingTypes(deployer, constructorCount);
+  const types = ['bytes32', 'bigint', ...[...constructorTypes].reverse(), ...[...contractTypes].reverse()];
+  const values: StateValue[] = [];
+  let offset = 0;
+  for (const type of types) {
+    if (offset >= bound.length) {
+      throw new DeployerPrepError(`The creator binds ${bound.length} bytes, which end before its ${type} argument`);
+    }
+    const { value, bytesConsumed } = decodePushdataValue(bound, offset, type, structs);
+    const slice = bound.slice(offset, offset + bytesConsumed);
+    if (binToHex(encodePushdataValue(value, type, structs)) !== binToHex(slice)) {
+      throw new DeployerPrepError(`The creator binds its ${type} argument as ${binToHex(slice)}, which is not canonical`);
+    }
+    values.push(value);
+    offset += bytesConsumed;
+  }
+  if (offset !== bound.length) {
+    throw new DeployerPrepError(`The creator binds ${bound.length - offset} bytes more than create's arguments`);
+  }
+  const [senderCategory, value, ...rest] = values;
+  return {
+    senderCategory: senderCategory as Uint8Array,
+    value: value as bigint,
+    constructorArgs: rest.slice(0, constructorTypes.length).reverse(),
+    contractArgs: rest.slice(constructorTypes.length).reverse(),
+  };
+}
+
+/** Encode a binding as a creator's site does: the inverse of `decodeDeployBinding`. */
+export function encodeDeployBinding(
+  binding: DeployBinding, deployer: DeployerAbi, constructorCount: number, structs?: Artifact['structs'],
+): Uint8Array {
+  const { constructorTypes, contractTypes } = deployBindingTypes(deployer, constructorCount);
+  if (binding.constructorArgs.length !== constructorTypes.length || binding.contractArgs.length !== contractTypes.length) {
+    throw new DeployerPrepError(
+      `create takes ${contractTypes.length} contract and ${constructorTypes.length} constructor arguments, not `
+      + `${binding.contractArgs.length} and ${binding.constructorArgs.length}`,
+    );
+  }
+  const parts = [
+    encodePushdataValue(binding.senderCategory, 'bytes32'),
+    encodePushdataValue(binding.value, 'bigint'),
+    ...constructorTypes.map((type, index) => encodePushdataValue(binding.constructorArgs[index]!, type, structs)).reverse(),
+    ...contractTypes.map((type, index) => encodePushdataValue(binding.contractArgs[index]!, type, structs)).reverse(),
+  ];
+  return Uint8Array.from(parts.flatMap((part) => [...part]));
+}
+
+/**
+ * The top-level deployment of A14 item 3. `create` runs C's constructor in genesis mode, and the creation's outputs come
+ * from its own run (`completeCreateRun`); a constructor's calls are answered by their callees' blocks (A7, A14 item 5).
+ * Every input runs in the local VM before anything is broadcast.
+ *
+ * Layout. Input 0 is the deployer coin and input 1 the author coin; output 0 is the identity and output 1 the
+ * publication, or the change when there is none. When the constructor co-spends side-cars or makes calls, the paired
+ * groups follow from index 2, each input beside the output at its index: the side-cars at the side-car base, in the
+ * order of `create`'s side-car slots (a wallet coin in a 2-way recovery's middle slot), then each call slot's callee
+ * block. Then come the record carriers and the relinked predecessors of the callees' inserts, then the genesis range at
+ * OUTBASE, then the inputs nothing pairs with (the prep's change coin, the token-row coins) and the change when output 1
+ * does not hold it. Without paired groups the genesis range follows the leading outputs.
  */
 export async function deployThroughDeployer<T extends Artifact>(
   artifact: T,
@@ -1547,17 +2931,60 @@ export async function deployThroughDeployer<T extends Artifact>(
   if (artifact.delegateOnly === true) throw new DeployerPathError('A delegate-only facet has no deployer genesis');
   const { Contract } = await import('../Contract.js');
   const { planGenesisIdentity, identityRecord } = await import('../bcmr/identity.js');
-  const { deriveDeployCommitments } = await import('./sc-derive-deploy-commitments.js');
-  const { getDataNftAddress, getSatoshiContainerAddress, getTokenContainerAddress } = await import('./covenant-helpers.js');
-  const { addressToLockScript } = await import('../utils.js');
+  const {
+    getDataNftAddress, getEntryNftAddress, getEventNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
+  } = await import('./covenant-helpers.js');
   const { StatefulContract } = await import('./StatefulContract.js');
   const { attachWait } = await import('../wait.js');
   const { TransactionBuilder } = await import('../TransactionBuilder.js');
+
+  const constructorAbi = artifact.abi.find((entry) => entry.name === '__construct');
+  // A14 item 5: a callee that cannot answer is refused before anything is built.
+  if (deployer.callSlots > 0) {
+    const configured = options.constructorCallees ?? [];
+    const sites = constructorAbi?.externalCalls ?? [];
+    if (configured.length !== deployer.callSlots) {
+      throw new DeployerCalleeError(artifact.contractName, sites[0]?.functionName ?? '<unknown>',
+        `pass ${deployer.callSlots} constructorCallees entries, one per call slot`);
+    }
+    configured.forEach((callee, slot) => assertDeployerCallee(
+      callee.contract.inner.artifact.contractName, callee.contract.inner.artifact,
+      callee.functionName ?? sites[slot]?.functionName ?? '<unknown>',
+    ));
+  }
+  // A14 item 11: a container row holds the deploy value (the constructor must be payable to state one), and an
+  // unfunded row would be zero satoshis. Refuse before anything is built, so the caller gets the option to pass.
+  const payable = constructorAbi?.modifiers?.includes('payable') === true;
+  if (deployer.satoshiContainer === 'optional') {
+    if (!payable) {
+      throw new DeployerPrepError(
+        `'${artifact.contractName}' keeps a satoshi container, but its constructor is not payable: the row's `
+        + 'satoshis are the deploy value, which only a payable constructor states (pass a payable constructor '
+        + 'and initialBalance)',
+      );
+    }
+  } else if (deployer.satoshiContainer === 'required' && !payable && (options.initialBalance ?? 0n) > 0n) {
+    // A4.4: a single container's row opens with RESERVE plus the deploy value, which only a payable constructor
+    // states. Without one the row holds RESERVE, so a balance asked for here would be dropped.
+    throw new DeployerPrepError(
+      `'${artifact.contractName}' keeps its satoshi container single and its constructor is not payable: the row `
+      + `opens with ${String(RESERVE)} satoshis and takes no deploy value; omit initialBalance`,
+    );
+  }
+  // A2: a C that reads block data in its live functions reads its oracle pool, whose category is the contract
+  // argument `__oraclePool` in A, so the master lock commits to it. The pool exists before the creation.
+  if (deployer.readsBlockData && !artifact.constructorInputs.some((input) => input.name === '__oraclePool')) {
+    throw new DeployerPathError(
+      `Contract '${artifact.contractName}' reads block data but takes no oracle pool binding`,
+    );
+  }
 
   const changeLockingBytecode = addressToLockScript(options.changeAddress);
   const funderLock = options.funder.generateLockingBytecode();
   const authorLockingBytecode = options.senderLockingBytecode
     ?? (isP2pkhLock(funderLock) ? funderLock : changeLockingBytecode);
+  const sidecarCount = deployer.sidecars.keccak + deployer.sidecars.ecrecover;
+  const paired = sidecarCount > 0 || deployer.callSlots > 0;
 
   let prep = prepOption;
   if (prep === undefined) {
@@ -1566,9 +2993,9 @@ export async function deployThroughDeployer<T extends Artifact>(
         deployer,
         contractName: artifact.contractName,
         // The author coin pays the creation's fee (the caller's, or the default) and, when the constructor
-        // co-spends shared side-cars, the change that covers their recreations' fees.
-        authorValue: defaultAuthorValue(deployer) + (options.fee ?? 0n)
-          + (deployer.sidecars.keccak + deployer.sidecars.ecrecover > 0 ? 20_000n : 0n),
+        // co-spends shared side-cars or calls contracts, the larger creation those inputs make.
+        authorValue: defaultAuthorValue(deployer) + (options.fee ?? 0n) + (options.initialBalance ?? 0n)
+          + (paired ? 20_000n : 0n),
       }],
       fundingUtxos: [options.fundingUtxo],
       authorSigner: options.funder,
@@ -1583,305 +3010,259 @@ export async function deployThroughDeployer<T extends Artifact>(
       `The deployer prep is for '${prep.contractName}', not '${artifact.contractName}'`,
     );
   }
-  const categoryId = prep.category;
-  const contract = new Contract(artifact, constructorArgs as never, {
-    provider: options.provider,
-    category: hexToBin(categoryId),
-  });
-  if (contract.lockingBytecode === undefined || !/^[0-9a-fA-F]+$/.test(contract.lockingBytecode)) {
-    throw new DeployerPathError(`Contract '${artifact.contractName}' has no master locking bytecode`);
+  const preps = [prep];
+  /** The built creation, and what the result reads from it. */
+  interface BuiltCreation {
+    contract: import('../Contract.js').Contract<T>;
+    categoryId: string;
+    identity: import('../bcmr/identity.js').GenesisIdentity;
+    prepared: { registry?: import('../bcmr/deployment.js').PublishedRegistry };
+    stateLayout: NonNullable<Artifact['stateLayout']>;
+    constructorEvents: NonNullable<import('@solidcash/utils').AbiFunction['emits']>;
+    transaction: Transaction;
+    sourceOutputs: Transaction['outputs'];
+    creationHex: string;
   }
-  const masterLock = hexToBin(contract.lockingBytecode);
-  const dataNftAddress = getDataNftAddress(contract as never, categoryId);
+  let built: BuiltCreation;
+  try {
+    built = await buildDeployerCreation();
+  } catch (error) {
+    if (prepOption === undefined) releaseDeployerPrepReservations(preps);
+    throw error;
+  }
 
-  const stateLayout = artifact.stateLayout;
-  const constructorAbi = artifact.abi.find((entry) => entry.name === '__construct');
-  // A14 item 11 runs after the derive below, but its funding facts are needed by the probe: a container row holds
-  // the deploy value (the constructor must be payable to state one), and an unfunded row would be zero satoshis.
-  // Refuse here so the caller gets the option to pass, not a probe failure.
-  if (deployer.satoshiContainer !== 'none') {
-    const constructorPayable = constructorAbi?.modifiers?.includes('payable') === true;
-    if (!constructorPayable) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' keeps a satoshi container, but its constructor is not payable: the row's `
-        + 'satoshis are the deploy value, which only a payable constructor states (pass a payable constructor '
-        + 'and initialBalance)',
-      );
+  async function buildDeployerCreation(): Promise<BuiltCreation> {
+    const creationPrep = prep!;
+    const categoryId = creationPrep.category;
+    const contract = new Contract(artifact, constructorArgs as never, {
+      provider: options.provider,
+      category: hexToBin(categoryId),
+    });
+    if (contract.lockingBytecode === undefined || !/^[0-9a-fA-F]+$/.test(contract.lockingBytecode)) {
+      throw new DeployerPathError(`Contract '${artifact.contractName}' has no master locking bytecode`);
     }
-    if ((options.initialBalance ?? 0n) === 0n) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' has a payable constructor, so its satoshi-container row holds the deploy `
-        + 'value; pass initialBalance of at least ' + String(RESERVE),
-      );
-    }
-  }
-  const callSlotPath = deployer.callSlots > 0
-    && (constructorAbi?.entryAccesses?.length ?? 0) === 0
-    && (constructorAbi?.emits?.length ?? 0) === 0
-    && (constructorAbi?.transferCount ?? 0) === 0;
-  // A constructor's block.number/timestamp read is its creation's locktime (A5); compute it once so the derive
-  // probe, the create's own unlocking and the final transaction all carry the same value.
-  // A14 item 3: output 0 is the category's authhead identity, and `create` pins it when
-  // `__internal__identity` is set (B7.12's `emitGenesisIdentityPin`). The genesis range starts after it.
-  const identity = planGenesisIdentity({
-    category: categoryId,
-    ...(options.identity === undefined ? {} : { identity: options.identity }),
-    deployerLock: options.senderLockingBytecode
-      ?? (isP2pkhLock(funderLock) ? funderLock : addressToLockScript(options.changeAddress)),
-  });
-  // A publication is a tokenless data carrier after the identity (A10). A metadata probe is not needed for a
-  // contract that does not answer IERC20Metadata; one that does must state its fields in the publication.
-  const prepared = options.bcmr === undefined
-    ? {}
-    : await (await import('../bcmr/deployment.js')).prepareMetadata({
-      artifact,
+    const masterLock = hexToBin(contract.lockingBytecode);
+    const dataNftAddress = getDataNftAddress(contract as never, categoryId);
+    const stateLayout = artifact.stateLayout!;
+    const { buildInitialStateCommitments } = await import('@solidcash/utils');
+    const commitments = buildInitialStateCommitments(
+      stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+    );
+
+    // A14 item 3: output 0 is the category's authhead identity, and `create` pins it when `__internal__identity` is
+    // set (B7.12's `emitGenesisIdentityPin`).
+    const identity = planGenesisIdentity({
       category: categoryId,
-      deploy: options,
-      probe: async () => {
-        throw new DeployerPathError('this deployment cannot run a metadata probe');
-      },
-      tokenSatoshis: options.dataNftAmount ?? 1200n,
+      ...(options.identity === undefined ? {} : { identity: options.identity }),
+      deployerLock: options.senderLockingBytecode
+        ?? (isP2pkhLock(funderLock) ? funderLock : addressToLockScript(options.changeAddress)),
     });
-  const leading: import('../interfaces.js').Output[] = options.bcmr === undefined
-    ? [identity.output]
-    : (await import('../bcmr/deployment.js')).leadingOutputs(identity, prepared);
-  const outbase = leading.length;
-  const masterAmount = options.masterAmount ?? 1200n;
-  const dataNftAmount = options.dataNftAmount ?? 1200n;
-  // The create's public parameters: C's contract parameters, then its constructor parameters. The Contract may have
-  // appended the `__oraclePool` binding to its own constructor args; use those for the contract band.
-  const publicNames = (createInputNames(deployer) ?? []).filter((name) => !name.startsWith('__internal__'));
-  const args: Record<string, FunctionArgument> = {};
-  const contractParameters = artifact.constructorInputs.length;
-  const boundConstructorArgs = ((contract as unknown as { constructorArgs?: readonly FunctionArgument[] })
-    .constructorArgs ?? constructorArgs) as readonly FunctionArgument[];
-  publicNames.forEach((name, index) => {
-    const value = index < contractParameters
-      ? boundConstructorArgs[index] ?? constructorArgs[index]
-      : options.initArgs?.[index - contractParameters];
-    if (value === undefined) throw new DeployerPrepError(`The deployer create input '${name}' has no value`);
-    args[name] = value as FunctionArgument;
-  });
-
-  const createLayout = deployer.abi.find((entry) => entry.name === 'create')?.blockLayout;
-  if (createLayout === undefined) {
-    throw new DeployerPathError(`Deployer of '${artifact.contractName}' has no create block layout`);
-  }
-  const payable = constructorAbi?.modifiers?.includes('payable') === true;
-  let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
-  if (deployValue > 0n && deployValue < RESERVE) {
-    // A14 item 11: an optional row funded with 1..RESERVE-1 is raised to RESERVE, and the value it holds is the
-    // row's amount, so the journal's balance (which the row may not exceed) is raised with it.
-    deployValue = RESERVE;
-  }
-
-  const creationLocktime = await deployerLocktime(deployer, options.provider);
-  let derived;
-  if (callSlotPath) {
-    derived = {
-      stateCommitments: [], entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
-      dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
-    };
-  } else {
-    try {
-      derived = await deriveDeployCommitments(
-        contract as never, artifact, stateLayout, categoryId, dataNftAddress, 1200n, 1200n,
-        { ...options, ...(creationLocktime === undefined ? {} : { __deployerLocktime: creationLocktime }) },
-      );
-    } catch (error) {
-      const scalarLayout = (constructorAbi?.entryAccesses?.length ?? 0) === 0
-        && (constructorAbi?.emits?.length ?? 0) === 0
-        && (constructorAbi?.transferCount ?? 0) === 0
-        && deployer.callSlots === 0
-        && deployer.satoshiContainer === 'none'
-        && deployer.sidecars.keccak === 0 && deployer.sidecars.ecrecover === 0
-        && createLayout.slots.every((slot) => ['master', 'dataNft', 'tokenContainer'].includes(slot.kind));
-      if (!scalarLayout || !/Failed to derive|oscillation|operation cost|budget/i.test(
-        String((error as Error).message),
-      )) throw error;
-      const learned = await learnScalarCreateCommitments({
-        provider: options.provider, deployer, prep, funder: options.funder,
-        changeAddress: options.changeAddress, categoryId, contract: contract as never, artifact,
-        masterLock, dataNftAddress, leading, outbase, masterAmount, dataNftAmount, createLayout, args,
-        deployValue, tokenContainers: options.tokenContainers,
+    // A publication is a tokenless data carrier after the identity (A10). A metadata probe is not needed for a
+    // contract that does not answer IERC20Metadata; one that does must state its fields in the publication.
+    const prepared = options.bcmr === undefined
+      ? {}
+      : await (await import('../bcmr/deployment.js')).prepareMetadata({
+        artifact,
+        category: categoryId,
+        deploy: options,
+        probe: async () => {
+          throw new DeployerPathError('this deployment cannot run a metadata probe');
+        },
+        tokenSatoshis: options.dataNftAmount ?? 1200n,
       });
-      derived = {
-        stateCommitments: learned, entryCommitments: [], trailingEntryCommitments: [], eventCommitments: [],
-        dynamicChunkCommitments: {}, valueChunkOutputs: [], transferOutputs: [],
-      };
-    }
-  }
-  const commitments = derived.stateCommitments;
-
-  // A14 item 5/7: the callee list and the sender parameters. The compiler cannot yet run a constructor with a call
-  // slot in the VM (B7.11), and a container row or a collection write is not in its genesis layout yet (B7.9).
-  if (deployer.callSlots > 0 && !callSlotPath) {
-    throw new DeployerPathError(
-      `Contract '${artifact.contractName}' has ${deployer.callSlots} constructor call slots together with `
-      + 'collection rows, events or transfers, which the SDK creation probe does not derive yet',
-    );
-  }
-
-  const tokenContainerInputs = createLayout.slots
-    .filter((slot) => slot.kind === 'tokenContainer')
-    .flatMap((slot) => {
-      const rowIndex = slot.slotIndex ?? 0;
-      const name = artifact.constructorInputs[rowIndex]?.name;
-      const raw = name === undefined ? undefined : args[name];
-      const rowCategory = raw instanceof Uint8Array ? binToHex(raw) : String(raw ?? '');
-      const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-        && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
-      return supplied === undefined ? [] : [supplied];
+    const leading: Output[] = options.bcmr === undefined
+      ? [identity.output]
+      : (await import('../bcmr/deployment.js')).leadingOutputs(identity, prepared);
+    const masterAmount = options.masterAmount ?? 1200n;
+    const dataNftAmount = options.dataNftAmount ?? 1200n;
+    // The create's public parameters: C's contract parameters, then its constructor parameters. The Contract may have
+    // appended the `__oraclePool` binding to its own constructor args; use those for the contract band.
+    const publicNames = (createInputNames(deployer!) ?? []).filter((name) => !name.startsWith('__internal__'));
+    const args: Record<string, FunctionArgument> = {};
+    const contractParameters = artifact.constructorInputs.length;
+    const boundConstructorArgs = ((contract as unknown as { constructorArgs?: readonly FunctionArgument[] })
+      .constructorArgs ?? constructorArgs) as readonly FunctionArgument[];
+    publicNames.forEach((name, index) => {
+      const value = index < contractParameters
+        ? boundConstructorArgs[index] ?? constructorArgs[index]
+        : options.initArgs?.[index - contractParameters];
+      if (value === undefined) throw new DeployerPrepError(`The deployer create input '${name}' has no value`);
+      args[name] = value as FunctionArgument;
     });
-  const tokenContainerSats = tokenContainerInputs.reduce((sum, input) => sum + input.utxo.satoshis, 0n);
-  const outputs: import('../interfaces.js').Output[] = [...leading];
-  const constructorEvents = constructorAbi?.emits ?? [];
-  const entryCommitments = [...(derived.entryCommitments ?? []), ...(derived.trailingEntryCommitments ?? [])];
-  const headCommitment = new Uint8Array(128);
-  let entryIndex = 0;
-  let dataIndex = 0;
-  let eventIndex = 0;
-  let transferIndex = 0;
-  for (const slot of createLayout.slots) {
-    switch (slot.kind) {
-      case 'master':
-        outputs.push({
-          to: masterLock,
-          amount: masterAmount,
-          token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
-        });
-        break;
-      case 'dataNft': {
-        const nftIndex = slot.nftIndex ?? dataIndex;
-        outputs.push({
-          to: dataNftAddress,
-          amount: dataNftAmount,
-          token: { category: categoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: commitments[nftIndex] ?? '' } },
-        });
-        dataIndex += 1;
-        break;
-      }
-      case 'entry':
-      case 'head': {
-        const collection = slot.collection
-          ?? constructorAbi?.entryAccesses?.[slot.slotIndex ?? -1]?.collection;
-        if (collection === undefined) {
-          throw new DeployerPathError(`A ${slot.kind} slot of '${artifact.contractName}' names no collection`);
-        }
-        const { getEntryNftAddress } = await import('./covenant-helpers.js');
-        const commitment = slot.kind === 'head'
-          ? headCommitment
-          : entryCommitments[entryIndex];
-        if (slot.kind === 'entry') entryIndex += 1;
-        if (commitment === undefined) {
-          throw new DeployerPrepError(
-            `The constructor's write to '${collection}' has no derived entry commitment`,
-          );
-        }
-        outputs.push({
-          to: getEntryNftAddress(contract as never, categoryId, collection),
-          amount: dataNftAmount,
-          token: { category: categoryId, amount: 0n,
-            nft: { capability: 'mutable',
-              commitment: typeof commitment === 'string' ? commitment : binToHex(commitment) } },
-        });
-        break;
-      }
-      case 'satoshiContainer':
-        // A required row also holds RESERVE: it is the container's own opening balance (A5).
-        outputs.push({
-          to: getSatoshiContainerAddress(contract as never, categoryId),
-          amount: deployer.satoshiContainer === 'required' ? RESERVE + deployValue : deployValue,
-        });
-        break;
-      case 'tokenContainer': {
-        const tokenRow = slot.slotIndex;
-        if (tokenRow === undefined) throw new DeployerPathError('A token container slot names no parameter');
-        const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
-        // A8: the container key parameter is the token category in display order; the row's coin wears it.
-        const rowValue = args[name];
-        const rowCategory = rowValue instanceof Uint8Array ? binToHex(rowValue) : String(rowValue ?? '');
-        const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
-          && utxo.token.category.toLowerCase() === rowCategory.toLowerCase());
-        if (supplied === undefined) {
-          throw new DeployerPrepError(
-            `'${artifact.contractName}' keeps its token container '${name}' single; pass a coin of its category `
-            + 'in tokenContainers',
-          );
-        }
-        outputs.push({
-          to: getTokenContainerAddress(contract as never, categoryId, rowCategory),
-          amount: supplied.utxo.satoshis,
-          token: { category: supplied.utxo.token!.category, amount: supplied.utxo.token!.amount },
-        });
-        break;
-      }
-      case 'event':
-      case 'eventChunk': {
-        const emitInfo = constructorEvents[eventIndex];
-        if (emitInfo === undefined) {
-          throw new DeployerPathError(`'${artifact.contractName}' has an event slot the constructor does not emit`);
-        }
-        const { getEventNftAddress } = await import('./covenant-helpers.js');
-        outputs.push({
-          to: getEventNftAddress(contract as never, categoryId, emitInfo.eventSignature),
-          amount: dataNftAmount,
-          token: { category: categoryId, amount: 0n,
-            nft: { capability: 'none', commitment: derived.eventCommitments?.[eventIndex] ?? '' } },
-        });
-        if (slot.kind === 'event') eventIndex += 1;
-        break;
-      }
-      case 'keccakSideCar':
-      case 'ecrecoverSideCar':
-        // A4.4 places the side-car group at the side-car base, after the genesis range; the side-car block below
-        // appends both its inputs and its recreated outputs.
-        break;
-      case 'transfer':
-      case 'tcTransfer': {
-        const transfer = derived.transferOutputs?.[transferIndex];
-        if (transfer === undefined) {
-          throw new DeployerPathError(`'${artifact.contractName}' has a transfer slot the constructor does not send`);
-        }
-        outputs.push({ to: transfer.lockingBytecode, amount: transfer.amount });
-        transferIndex += 1;
-        break;
-      }
-      default:
-        throw new DeployerPathError(
-          `The create layout of '${artifact.contractName}' has a slot kind (${slot.kind}) this deployment does `
-          + 'not build',
-        );
+    const createLayout = deployer!.abi.find((entry) => entry.name === 'create')?.blockLayout;
+    if (createLayout === undefined) {
+      throw new DeployerPathError(`Deployer of '${artifact.contractName}' has no create block layout`);
     }
-  }
-  if (outputs.length !== leading.length + deployer.genesisOutputs) {
-    throw new DeployerPrepError(
-      `The creation of '${artifact.contractName}' laid out ${outputs.length - leading.length} genesis outputs, but `
-      + `its deployer pins ${deployer.genesisOutputs}`,
-    );
-  }
+    let deployValue = payable ? (options.initialBalance ?? 0n) : 0n;
+    if (deployValue > 0n && deployValue < RESERVE) {
+      // A14 item 11: an optional row funded with 1..RESERVE-1 is raised to RESERVE, and the value it holds is the
+      // row's amount, so the journal's balance (which the row may not exceed) is raised with it.
+      deployValue = RESERVE;
+    }
+    const creationLocktime = await deployerLocktime(deployer!, options.provider);
+    // A7, A14 item 5: each call slot's callee block, from its function's layout and its coins on the network. Keys that
+    // read `msg.sender` inside a callee take C's master lock.
+    const calls = deployer!.callSlots > 0
+      ? resolveConstructorCalls({ artifact, deployer: deployer!, callees: options.constructorCallees, args })
+      : [];
+    // The shared side-car coins this creation spends: a callee's, then Deploy<C>'s own (A14 item 6).
+    const spentShared = new Set<string>();
+    const blocks: ConstructorCalleeBlock[] = [];
+    for (const call of calls) blocks.push(await planConstructorCalleeBlock(call, masterLock, { spent: spentShared }));
 
+    // A4.4: the genesis range, offsets relative to OUTBASE. Placeholders (the default state, empty events, OP_1
+    // transfers and journal rows) that `completeCreateRun` completes from `create`'s own run.
+    const genesis: Output[] = [];
+    const constructorEvents = constructorAbi?.emits ?? [];
+    const tokenRowCoins: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+    const commitmentOffsets: number[] = [];
+    const transferOffsets: number[] = [];
+    const journalOffsets = new Map<string, { head: number; rows: number[] }>();
+    let dataIndex = 0;
+    let eventIndex = 0;
+    for (const slot of createLayout.slots) {
+      switch (slot.kind) {
+        case 'master':
+          genesis.push({
+            to: masterLock,
+            amount: masterAmount,
+            token: { category: categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+          });
+          break;
+        case 'dataNft': {
+          const nftIndex = slot.nftIndex ?? dataIndex;
+          commitmentOffsets.push(genesis.length);
+          genesis.push({
+            to: dataNftAddress,
+            amount: dataNftAmount,
+            token: { category: categoryId, amount: 0n,
+              nft: { capability: 'mutable', commitment: commitments[nftIndex] ?? '' } },
+          });
+          dataIndex += 1;
+          break;
+        }
+        case 'entry':
+        case 'head': {
+          const collection = slot.collection
+            ?? constructorAbi?.entryAccesses?.[slot.slotIndex ?? -1]?.collection;
+          if (collection === undefined) {
+            throw new DeployerPathError(`A ${slot.kind} slot of '${artifact.contractName}' names no collection`);
+          }
+          const rows = journalOffsets.get(collection) ?? { head: -1, rows: [] as number[] };
+          journalOffsets.set(collection, rows);
+          if (slot.kind === 'entry') {
+            // A4.4: a journal row, which `create`'s run fills with an entry or leaves without a token.
+            rows.rows.push(genesis.length);
+            genesis.push({ to: Uint8Array.of(0x51), amount: 1000n });
+            break;
+          }
+          rows.head = genesis.length;
+          genesis.push({
+            to: getEntryNftAddress(contract as never, categoryId, collection),
+            amount: dataNftAmount,
+            token: { category: categoryId, amount: 0n,
+              nft: { capability: 'mutable', commitment: binToHex(new Uint8Array(128)) } },
+          });
+          break;
+        }
+        case 'satoshiContainer':
+          if (deployer!.satoshiContainer === 'optional' && deployValue === 0n) {
+            // A4.4, A14 item 11: an optional row with nothing required holds no container; the index takes the plain
+            // filler output every unused index of the range takes, which `create` requires to carry no token.
+            genesis.push({ to: Uint8Array.of(0x51), amount: 1000n });
+            break;
+          }
+          // A required row also holds RESERVE: it is the container's own opening balance (A5).
+          genesis.push({
+            to: getSatoshiContainerAddress(contract as never, categoryId),
+            amount: deployer!.satoshiContainer === 'required' ? RESERVE + deployValue : deployValue,
+          });
+          break;
+        case 'tokenContainer': {
+          // A4.4's token rows: each opens C's single token container from a coin of the paying wallet, which this
+          // creation spends. The parameter holds the category in display order, as the coin's category reads.
+          const tokenRow = slot.slotIndex;
+          if (tokenRow === undefined) throw new DeployerPathError('A token container slot names no parameter');
+          const name = artifact.constructorInputs[tokenRow]?.name ?? `parameter ${tokenRow}`;
+          const raw = constructorArgs[tokenRow];
+          const asset = (typeof raw === 'string' ? raw.replace(/^0x/i, '') : raw instanceof Uint8Array ? binToHex(raw) : '')
+            .toLowerCase();
+          const supplied = options.tokenContainers?.find(({ utxo }) => utxo.token !== undefined
+            && utxo.token.category.toLowerCase() === asset);
+          if (supplied === undefined) {
+            throw new DeployerPrepError(
+              `'${artifact.contractName}' keeps its token container '${name}' single; pass a coin of its category `
+              + 'in tokenContainers',
+            );
+          }
+          const token = supplied.utxo.token!;
+          // `create` requires at least one unit and no mutable or minting NFT; an NFT on the coin would be burned.
+          if (token.amount < 1n || token.nft !== undefined) {
+            throw new DeployerPrepError(
+              `The coin for '${artifact.contractName}''s token container '${name}' must hold fungible units of its `
+              + 'category and no NFT',
+            );
+          }
+          if (tokenRowCoins.some(({ utxo }) => utxo.token!.category.toLowerCase() === asset)) {
+            throw new DeployerPrepError(
+              `'${artifact.contractName}' names one category for two single token containers, which create refuses`,
+            );
+          }
+          tokenRowCoins.push(supplied);
+          genesis.push({
+            to: getTokenContainerAddress(contract as never, categoryId, token.category),
+            // A container row holds at least RESERVE (A4.4); the author coin tops a smaller coin up.
+            amount: supplied.utxo.satoshis >= RESERVE ? supplied.utxo.satoshis : RESERVE,
+            token: { category: token.category, amount: token.amount },
+          });
+          break;
+        }
+        case 'event':
+        case 'eventChunk': {
+          const emitInfo = constructorEvents[eventIndex];
+          if (emitInfo === undefined) {
+            throw new DeployerPathError(`'${artifact.contractName}' has an event slot the constructor does not emit`);
+          }
+          commitmentOffsets.push(genesis.length);
+          genesis.push({
+            to: getEventNftAddress(contract as never, categoryId, emitInfo.eventSignature),
+            amount: dataNftAmount,
+            token: { category: categoryId, amount: 0n, nft: { capability: 'none', commitment: '' } },
+          });
+          if (slot.kind === 'event') eventIndex += 1;
+          break;
+        }
+        case 'keccakSideCar':
+        case 'ecrecoverSideCar':
+          // The side-car group sits at the side-car base, outside the genesis range (A4.4).
+          break;
+        case 'transfer':
+          // A placeholder that `create`'s run replaces with the send's lock and amount.
+          transferOffsets.push(genesis.length);
+          genesis.push({ to: Uint8Array.of(0x51), amount: 1000n });
+          break;
+        default:
+          throw new DeployerPathError(
+            `The create layout of '${artifact.contractName}' has a slot kind (${slot.kind}) this deployment does `
+            + 'not build',
+          );
+      }
+    }
+    if (genesis.length !== deployer!.genesisOutputs) {
+      throw new DeployerPrepError(
+        `The creation of '${artifact.contractName}' laid out ${genesis.length} genesis outputs, but its deployer pins `
+        + `${deployer!.genesisOutputs}`,
+      );
+    }
 
-  if (callSlotPath) {
-    return deployThroughCallSlot({
-      artifact, constructorArgs, options, prep, contract, deployer, categoryId, masterLock, dataNftAddress,
-      leading, outbase, args, deployValue, masterAmount, dataNftAmount, stateLayout, constructorAbi, createLayout,
-    });
-  }
-
-  const calleeRuns: Array<ConstructorCalleeRun & { inputIndex: number }> = [];
-  // A constructor whose loop costs more than the creation's own bytes fund needs a padding parameter: every
-  // unlocking byte grants budget. The pad starts empty and grows on a budget failure of the local run.
-  let budgetPad = new Uint8Array();
-  let callSynthetics: Record<string, bigint> = {};
-  let calleeList: Array<number | undefined> = Array.from({ length: deployer.callSlots }, () => undefined);
-
-  const deployerUnlocker: Unlocker = {
-    generateLockingBytecode: () => hexToBin(deployer.lockingBytecode),
-    generateUnlockingBytecode: () => buildDeployerUnlocking({
-      deployer,
-      callees: calleeList,
+    // The deployer's unlocking reads the layout's indexes when it is generated.
+    let outbase = leading.length;
+    let sidecarBase = outbase + deployer!.genesisOutputs;
+    let budgetPad = new Uint8Array();
+    let placed: PlacedConstructorCalls | undefined;
+    const createUnlocking = (): Uint8Array => buildDeployerUnlocking({
+      deployer: deployer!,
+      callees: placed?.masters ?? [],
       args,
       value: deployValue,
       senderCategory: new Uint8Array(32),
@@ -1890,156 +3271,273 @@ export async function deployThroughDeployer<T extends Artifact>(
       budgetPad,
       synthetic: {
         __internal__genesisOutputBase: BigInt(outbase),
-        __internal__genesisSidecarBase: BigInt(outbase + deployer.genesisOutputs),
+        __internal__genesisSidecarBase: BigInt(sidecarBase),
         // Genesis block reads use the locktime; the parameter stays present for the arm's shape.
         __internal__blockOracleInputIndex: -1n,
-        ...callSynthetics,
+        ...(placed?.synthetic(deployer!) ?? {}),
       },
       forBroadcast: true,
-    }),
-  };
-
-  const builder = new TransactionBuilder({
-    provider: options.provider,
-    ...(options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.maxFee }),
-    skipAutomaticCoSpends: true,
-  });
-  builder.addInput(prep.deployerCoin, deployerUnlocker);
-  builder.addInput(prep.authorCoin, options.funder);
-  for (const input of tokenContainerInputs) builder.addInput(input.utxo, input.unlocker);
-  for (const run of calleeRuns) {
-    if (builder.inputs.length !== run.inputIndex) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' cannot place its callee at input ${run.inputIndex}`,
-      );
-    }
-    builder.addInput(run.master, {
-      generateLockingBytecode: () => run.master.lockingBytecode ?? new Uint8Array(),
-      generateUnlockingBytecode: () => run.unlocking,
     });
-    run.dataNfts.forEach((utxo) => builder.addInput(utxo, {
-      generateLockingBytecode: () => utxo.lockingBytecode ?? new Uint8Array(),
-      generateUnlockingBytecode: () => Uint8Array.of(0x51),
-    }));
-  }
-  // A4.4 aligns the sidecar group at the same input and output index. The identity output shifts the outputs but
-  // has no input, so a sidecar-bearing creation spends the prep's own change coin as the neutral filler. It is a
-  // real wallet coin at the change lock, and its value returns in the change output.
-  const fillers: Utxo[] = [];
-  if (deployer.sidecars.keccak + deployer.sidecars.ecrecover > 0 && outbase > 0) {
-    if (prep.changeCoin === undefined) {
-      throw new DeployerPrepError(
-        `'${artifact.contractName}' has constructor side-cars and a leading identity output, which needs a filler `
-        + 'input; the prep left no change coin to use as one',
-      );
-    }
-    fillers.push(prep.changeCoin);
-    builder.addInput(prep.changeCoin, options.funder);
-  }
-  const outputTotal = outputs.reduce((sum, output) => sum + output.amount, 0n);
-  // The creation carries Deploy<C>'s whole unlocking, so its fee must cover that size at 1 sat/B even when the
-  // caller states no fee. A caller's own fee still wins.
-  const provisionalFee = options.fee ?? defaultDeployerFee(deployer);
-  if (prep.authorCoin.satoshis < outputTotal + provisionalFee) {
-    throw new DeployerPrepError(
-      `The author coin of '${artifact.contractName}' holds ${prep.authorCoin.satoshis} satoshis, but its creation `
-        + `needs ${outputTotal + provisionalFee}`,
-    );
-  }
-  for (const output of outputs) builder.addOutput(output);
+    const deployerUnlocker: Unlocker = {
+      generateLockingBytecode: () => hexToBin(deployer!.lockingBytecode),
+      generateUnlockingBytecode: () => createUnlocking(),
+    };
 
-  // A14 item 6: the deployer's constructor side-cars come from the shared pool, at salt 0, already on the network.
-  // Each is spent and recreated at the same index after the genesis range (A4.4), so the deployer's create can read
-  // it. A missing shared coin is refused rather than minted: the pool is one for every deployment.
-  if (deployer.sidecars.ecrecover > 0) {
-    const createFnForSidecars = deployer.abi.find((entry) => entry.name === 'create');
-    if (createFnForSidecars === undefined) {
-      throw new DeployerPrepError(`Deployer '${deployer.lockingBytecode}' has no create arm`);
-    }
-    const groups = await deployerEcrecoverGroups({
-      createFn: createFnForSidecars as never, args, provider: options.provider,
-      count: deployer.sidecars.ecrecover,
+    const builder = new TransactionBuilder({
+      provider: options.provider,
+      ...(options.maxFee === undefined ? {} : { maximumFeeSatoshis: options.maxFee }),
+      skipAutomaticCoSpends: true,
     });
-    // A4.4: the side-car group starts at the side-car base; its inputs and recreated outputs share the indices.
-    const sidecarBase = outbase + deployer.genesisOutputs;
-    while (builder.inputs.length < sidecarBase) {
-      if (prep.changeCoin === undefined || builder.inputs.some(
-        (input) => input.txid === prep.changeCoin!.txid && input.vout === prep.changeCoin!.vout,
-      )) {
+    builder.addInput(creationPrep.deployerCoin, deployerUnlocker);
+    builder.addInput(creationPrep.authorCoin, options.funder);
+    for (const output of leading) builder.addOutput(output);
+    // Plain wallet coins a slot without an input of its own takes: the prep's change, then the funder's other coins.
+    const walletCoins: Utxo[] = [];
+    let spareCoins: Utxo[] | undefined;
+    const filler = async (): Promise<{ utxo: Utxo; unlocker: Unlocker }> => {
+      const changeCoin = creationPrep.changeCoin;
+      if (changeCoin !== undefined && !walletCoins.includes(changeCoin)) {
+        walletCoins.push(changeCoin);
+        return { utxo: changeCoin, unlocker: options.funder };
+      }
+      const own = new Set([creationPrep.deployerCoin, creationPrep.authorCoin, changeCoin]
+        .filter((coin): coin is Utxo => coin !== undefined).map((coin) => genesisOutpointKey(coin.txid, coin.vout)));
+      spareCoins ??= (await options.provider.getUtxosForLockingBytecode(funderLock)).filter((coin) => (
+        coin.token === undefined && coin.satoshis >= 1000n && !own.has(genesisOutpointKey(coin.txid, coin.vout))
+        && !isReservedGenesisOutpoint(genesisOutpointKey(coin.txid, coin.vout))
+        && !tokenRowCoins.some(({ utxo }) => utxo.txid === coin.txid && utxo.vout === coin.vout)));
+      const coin = spareCoins.shift();
+      if (coin === undefined) {
         throw new DeployerPrepError(
-          `'${artifact.contractName}' needs a filler input at index ${builder.inputs.length} for its constructor `
-          + 'side-cars, but the prep left no unused change coin',
+          `The creation of '${artifact.contractName}' needs another plain coin at the funder's lock for a slot of its `
+          + 'constructor callees that takes a wallet coin',
         );
       }
-      fillers.push(prep.changeCoin);
-      builder.addInput(prep.changeCoin, options.funder);
+      walletCoins.push(coin);
+      return { utxo: { ...coin, lockingBytecode: funderLock }, unlocker: options.funder };
+    };
+
+    let changeIndex = -1;
+    if (paired) {
+      // A4.4: the paired groups start at the first index past the deployer and author inputs and the leading outputs.
+      // The change output takes an index the leading outputs leave free.
+      while (builder.inputs.length < builder.outputs.length) {
+        const coin = await filler();
+        builder.addInput(coin.utxo, coin.unlocker);
+      }
+      if (builder.outputs.length < builder.inputs.length) {
+        changeIndex = builder.outputs.length;
+        builder.addOutput({ to: options.changeAddress, amount: 1000n });
+      }
+      sidecarBase = builder.inputs.length;
+      // A14 item 6: the deployer's constructor side-cars come from the shared pool, at salt 0, already on the network,
+      // in the order `create` reads them (its side-car slots by offset, A4.4). Each is spent and recreated at one
+      // index. A 2-way recovery's middle slot reads nothing: a wallet coin fills it, beside the OP_1 filler. A missing
+      // shared coin is refused rather than minted: the pool is one for every deployment.
+      const sidecars = await sharedCreateSidecars({
+        deployer: deployer!, args, provider: options.provider, spent: spentShared, who: 'the deployer',
+      });
+      for (const step of sidecars) {
+        if (step === undefined) {
+          const coin = await filler();
+          builder.addInput(coin.utxo, coin.unlocker);
+          builder.addOutput(plainFiller());
+        } else {
+          builder.addInput(step.utxo, step.unlocker);
+          builder.addOutput(step.recreate);
+        }
+      }
+      // A7: each call slot's callee block, then the record carriers and the relinked predecessors.
+      if (blocks.length > 0) placed = await placeConstructorCalls({ builder, blocks, filler });
+      outbase = builder.outputs.length;
     }
-    for (const group of groups) {
-      for (const step of group) builder.addInput(step.utxo, step.unlocker);
+    for (const output of genesis) builder.addOutput(output);
+    // The inputs nothing pairs with come after every paired index.
+    if (paired && creationPrep.changeCoin !== undefined && !walletCoins.includes(creationPrep.changeCoin)) {
+      walletCoins.push(creationPrep.changeCoin);
+      builder.addInput(creationPrep.changeCoin, options.funder);
     }
-    for (const group of groups) {
-      for (const step of group) builder.addOutput(step.recreate);
-    }
-  }
-  if (deployer.sidecars.keccak > 0) {
-    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
-    const { buildKeccakComputeSidecar } = await import('../keccak/keccakComputeSidecar.js');
-    const zeroSalt = new Uint8Array(32);
-    const sharedLock = keccakComputeLockingBytecode(zeroSalt, true);
-    const pool = (await options.provider.getUtxosForLockingBytecode(sharedLock))
-      .filter((utxo) => utxo.token?.nft?.capability === 'mutable');
-    const params = constructorAbi?.keccakPreimageParams ?? [];
-    const visible = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
-    const visibleArgs = [...constructorArgs, ...(options.initArgs ?? [])];
-    const preimages = params.map((name) => {
-      const index = name === undefined ? -1 : visible.findIndex((input) => input.name === name);
-      const value = index >= 0 ? visibleArgs[index] : undefined;
-      return value instanceof Uint8Array ? value : null;
-    });
-    if (preimages.some((preimage) => preimage === null)) {
+    for (const { utxo, unlocker } of tokenRowCoins) builder.addInput(utxo, unlocker);
+
+    // The change takes what the outputs leave of every input but the deployer coin, less the fee.
+    const valueOut = (): bigint => builder.outputs.reduce(
+      (sum, output, index) => sum + (index === changeIndex ? 0n : output.amount), 0n,
+    );
+    const valueIn = builder.inputs.reduce((sum, input) => sum + input.satoshis, 0n) - creationPrep.deployerCoin.satoshis;
+    const provisionalFee = options.fee ?? estimateCreationBytes(deployer!);
+    if (valueIn < valueOut() + (options.fee ?? 0n)) {
       throw new DeployerPrepError(
-        `'${artifact.contractName}' hashes a constructor value the SDK cannot replay; pass it as a byte argument`,
+        `The author coin of '${artifact.contractName}' holds ${creationPrep.authorCoin.satoshis} satoshis, but its `
+        + `creation needs ${valueOut() + provisionalFee}`,
       );
     }
-    const batches = Math.ceil(preimages.length / 3);
-    if (pool.length < batches) throw new DeployerSidecarError('keccak');
-    for (let batch = 0; batch < batches; batch += 1) {
-      const sidecar = buildKeccakComputeSidecar(
-        preimages.slice(batch * 3, batch * 3 + 3) as Uint8Array[], zeroSalt, pool[batch], true,
+    let change = valueIn - valueOut() - provisionalFee;
+    if (changeIndex >= 0) {
+      if (change < DUST) {
+        throw new DeployerPrepError(
+          `The author coin of '${artifact.contractName}' leaves ${change} satoshis of change at output ${changeIndex}, `
+          + 'below the dust limit; build the prep with a larger authorValue',
+        );
+      }
+      (builder.outputs[changeIndex] as { amount: bigint }).amount = change;
+    } else if (change >= DUST) {
+      changeIndex = builder.outputs.length;
+      builder.addOutput({ to: options.changeAddress, amount: change });
+    }
+    if (creationLocktime !== undefined) builder.setLocktime(creationLocktime);
+
+    // A7, A14 item 5: each callee answers this creation (input 0 creates X; output OUTBASE is C's master), then its own
+    // run completes its outputs and its call record. A5: a callee's `tx.time` checks join the one locktime, beside the
+    // constructor's block field; the change takes what the callees' transfers and containers leave.
+    if (placed !== undefined) {
+      placed.bind({
+        categoryId, gIn: 0, gOut: outbase, deployer: deployer!, contractParameters, unlocking: createUnlocking(),
+      });
+      const field = deployer!.constructorBlockField;
+      const ledger = locktimeLedger(field === undefined ? [] : [{
+        inputIndex: 0, who: `the creation of '${artifact.contractName}', whose constructor reads block.${field}`,
+        kind: field === 'number' ? 'height' : 'time', value: field === 'number' ? 0 : TIME_LOCKTIME,
+      }], creationLocktime);
+      placed.settle(options.provider, () => builder.buildLibauthProgram(true), {
+        amountsChanged: () => {
+          change = valueIn - valueOut() - provisionalFee;
+          if (changeIndex < 0) return;
+          if (change < DUST) {
+            throw new DeployerPrepError(
+              `The callees of '${artifact.contractName}' leave ${change} satoshis of change; build the prep with a `
+              + 'larger authorValue',
+            );
+          }
+          (builder.outputs[changeIndex] as { amount: bigint }).amount = change;
+        },
+        locktime: (found) => {
+          const next = ledger.add(found);
+          if (next === undefined || next === builder.locktime) return false;
+          builder.setLocktime(next);
+          return true;
+        },
+      });
+    }
+
+    // A14 item 3: complete `create`'s own run. A transfer's amount moves the change, which takes what the outputs
+    // leave.
+    const genesisTotal = (): bigint => builder.outputs.slice(outbase, outbase + deployer!.genesisOutputs)
+      .reduce((sum, output) => sum + output.amount, 0n);
+    const fixedGenesisTotal = genesisTotal();
+    const journals = deployer!.collectionRows.map((row) => {
+      const placedRows = journalOffsets.get(row.collection);
+      if (placedRows === undefined || placedRows.head < 0 || row.journalDepth === undefined) {
+        throw new DeployerPathError(`The journal rows of '${row.collection}' are not laid out`);
+      }
+      return {
+        collection: row.collection,
+        depth: row.journalDepth,
+        head: outbase + placedRows.head,
+        rows: placedRows.rows.map((offset) => outbase + offset),
+        entryLock: getEntryNftAddress(contract as never, categoryId, row.collection),
+        category: categoryId,
+      };
+    });
+    // The change the callees' runs left, which a constructor's transfers draw on.
+    const calleesChange = change;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        completeCreateRun({
+          provider: options.provider,
+          build: () => builder.buildLibauthProgram(true),
+          deployerInputIndex: 0,
+          outputs: builder.outputs as Output[],
+          range: { min: outbase, max: outbase + deployer!.genesisOutputs },
+          slots: {
+            commitments: commitmentOffsets.map((offset) => outbase + offset),
+            transfers: transferOffsets.map((offset) => outbase + offset),
+            journals,
+          },
+          amountsChanged: () => {
+            const moved = genesisTotal() - fixedGenesisTotal;
+            if (changeIndex < 0 || calleesChange - moved < DUST) {
+              throw new DeployerPrepError(
+                `The constructor of '${artifact.contractName}' sends ${moved} satoshis more than the author coin's `
+                + 'change can cover; build the prep with a larger authorValue',
+              );
+            }
+            (builder.outputs[changeIndex] as { amount: bigint }).amount = calleesChange - moved;
+          },
+        });
+        break;
+      } catch (error) {
+        // A constructor whose loop costs more than the creation's own bytes fund needs the padding parameter: every
+        // unlocking byte grants budget, and step 1 drops the pad before the body. Grow it on a budget failure, up to
+        // the 10,000 bytes of the unlocking.
+        if (!/operation cost/i.test((error as Error).message) || attempt >= 16) throw error;
+        const grown = nextBudgetPad(budgetPad,
+          builder.buildLibauthProgram(true).transaction.inputs[0]!.unlockingBytecode.length);
+        if (grown === undefined) throw error;
+        budgetPad = grown;
+      }
+    }
+
+    let { transaction, sourceOutputs } = builder.buildLibauthProgram(true);
+    const programValueIn = (): bigint => sourceOutputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+    const programValueOut = (): bigint => transaction.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+    if (options.fee === undefined && changeIndex >= 0) {
+      // Pay 1 sat/B of the creation's real size (and two bytes of margin) rather than the upper estimate. The change
+      // takes every input the outputs do not, the deployer coin's own value included.
+      const size = BigInt(encodeTransaction(transaction).length) + 2n;
+      const currentChange = transaction.outputs[changeIndex].valueSatoshis;
+      const exactChange = programValueIn() - (programValueOut() - currentChange) - size;
+      if (exactChange >= DUST) {
+        (builder.outputs[changeIndex] as { amount: bigint }).amount = exactChange;
+        ({ transaction, sourceOutputs } = builder.buildLibauthProgram(true));
+      }
+    }
+    // The fee is every input less every output; it must pay 1 sat/B of the creation.
+    const paid = programValueIn() - programValueOut();
+    const size = BigInt(encodeTransaction(transaction).length);
+    if (paid < size) {
+      throw new DeployerPrepError(
+        `The author coin of '${artifact.contractName}' holds ${creationPrep.authorCoin.satoshis} satoshis, which leaves `
+          + `a fee of ${paid} for a creation of ${size} bytes; build the prep with a larger authorValue`,
       );
-      builder.addInput(pool[batch], sidecar.unlocker);
-      builder.addOutput(sidecar.recreate);
     }
+    const localRuns = runDeployerInputsLocal(options.provider, transaction, sourceOutputs);
+    // The whole creation, as a node would judge it apart from its fee policy: every input, the token and value rules
+    // and dust. A refusal here broadcasts nothing.
+    const verdict = createVirtualMachineBch2026ForProvider(options.provider)
+      .verify({ transaction, sourceOutputs } as never);
+    if (verdict !== true) {
+      throw new DeployerPrepError(`The creation does not pass the VM, so nothing was broadcast: ${String(verdict)}`);
+    }
+    if ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.DEBUG_D13) {
+      // eslint-disable-next-line no-console
+      console.log('D13', JSON.stringify({
+        transactionBytes: Number(size),
+        operationCosts: localRuns.map((entry) => ({ input: entry.inputIndex, cost: entry.operationCost.toString() })),
+        calleeUnlockingBytes: (placed?.masters ?? []).map((master) => transaction.inputs[master].unlockingBytecode.length),
+        deployerUnlockingBytes: transaction.inputs[0].unlockingBytecode.length,
+        deployerRedeemBytes: hexToBin(deployer!.bytecode).length,
+      }));
+    }
+    return {
+      contract, categoryId, identity, prepared, stateLayout, constructorEvents, transaction, sourceOutputs,
+      creationHex: binToHex(encodeTransaction(transaction)),
+    };
   }
 
-  const fillerTotal = fillers.reduce((sum, filler) => sum + filler.satoshis, 0n);
-  const change = prep.authorCoin.satoshis + fillerTotal + tokenContainerSats - outputTotal - provisionalFee;
-  if (change >= DUST) builder.addOutput({ to: options.changeAddress, amount: change });
-  if (creationLocktime !== undefined) builder.setLocktime(creationLocktime);
-
-  let program = builder.buildLibauthProgram(true);
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      runDeployerInputsLocal(options.provider, program.transaction, program.sourceOutputs);
-      break;
-    } catch (error) {
-      const message = (error as Error).message;
-      if (!/maximum operation cost|operation cost/i.test(message) || attempt >= 16) throw error;
-      budgetPad = new Uint8Array(budgetPad.length === 0 ? 1 : Math.min(4096, budgetPad.length * 2));
-      program = builder.buildLibauthProgram(true);
-    }
-  }
-  const { transaction, sourceOutputs } = program;
-  const creationHex = binToHex(encodeTransaction(transaction));
-
-  const preps = [prep];
+  const sendsPreps = preps.some((entry) => !entry.broadcast);
   await broadcastDeployerPreps(preps, options.provider);
+  // A coin the creation spends may move while its preps are sent: an oracle pool's keeper moves each info coin a
+  // callee reads with each block. The creation is then built again from the coins the network now lists.
+  if (sendsPreps && (await staleCreationInputs(options.provider, built.transaction, built.sourceOutputs,
+    preps.map((entry) => entry.category))).length > 0) {
+    built = await buildDeployerCreation();
+  }
+  const { contract, categoryId, identity, prepared, stateLayout, constructorEvents, transaction, creationHex } = built;
   const creationTxid = await options.provider.sendRawTransaction(creationHex);
-  releaseDeployerAuthorReservations(preps);
+  releaseDeployerPrepReservations(preps);
   // Decode the constructor's events from the creation's outputs, so a caller sees them like a call receipt.
   const receiptEvents: import('../interfaces.js').ReceiptEvent[] = [];
   if (constructorEvents.length > 0) {
-    const { getEventNftAddress } = await import('./covenant-helpers.js');
     const { parseEventCommitment } = await import('./StateReader.js');
     const eventDefinitions = artifact.events ?? [];
     const byLock = new Map<string, (typeof eventDefinitions)[number]>();
@@ -2078,6 +3576,30 @@ export async function deployThroughDeployer<T extends Artifact>(
     ...(prepared.registry === undefined ? {} : { registry: prepared.registry }),
     prepTransactions: preps.map((entry) => entry.transactionHex),
   };
+}
+
+/**
+ * The inputs of a built transaction whose coins the provider no longer lists as unspent: a keeper, or another
+ * transaction, spent them after the transaction was built. Coins of the transactions in `sent` (the preps just
+ * broadcast) are live by construction and not asked about.
+ */
+export async function staleCreationInputs(
+  provider: NetworkProvider, transaction: Transaction, sourceOutputs: Transaction['outputs'],
+  sent: readonly string[] = [],
+): Promise<number[]> {
+  const known = new Set(sent.map((txid) => txid.toLowerCase()));
+  const listed = new Map<string, Promise<Utxo[]>>();
+  const stale: number[] = [];
+  for (const [index, input] of transaction.inputs.entries()) {
+    const lock = sourceOutputs[index]?.lockingBytecode;
+    if (lock === undefined || known.has(binToHex(input.outpointTransactionHash))) continue;
+    const key = binToHex(lock);
+    if (!listed.has(key)) listed.set(key, provider.getUtxosForLockingBytecode(lock));
+    const txid = binToHex(input.outpointTransactionHash);
+    if (!(await listed.get(key)!).some((utxo) => utxo.vout === input.outpointIndex
+      && utxo.txid.toLowerCase() === txid)) stale.push(index);
+  }
+  return stale;
 }
 
 function createInputNames(deployer: DeployerAbi): string[] | undefined {

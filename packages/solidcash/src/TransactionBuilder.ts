@@ -1569,6 +1569,10 @@ export class TransactionBuilder {
       finalizedByteGateReceiptOf(this) ?? { consensusLimits: this.provider.consensusLimits },
     );
 
+    // A8: a payment to a stateful contract's master lock could never be spent.
+    const { refusePaymentsToStatefulMasters } = await import('./stateful/master-lock-payment.js');
+    await refusePaymentsToStatefulMasters(this.provider, this.inputs, this.outputs);
+
     let txid: string;
     try {
       txid = this.provider.sendPreparedTransaction

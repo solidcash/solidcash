@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
+import { DeploySaltError } from '@solidcash/solidc';
 import { compileStringMulti } from '../direct-compile.js';
 import { HashType, SignatureTemplate, Signer } from '../../src/index.js';
 import { ContractFactory } from '../../src/stateful/index.js';
@@ -18,14 +19,21 @@ const RELAXED = {
   maximumInputBytes: 100_000,
   allowUnsafeOperations: true,
 } as const;
+// createPair binds a create2 salt and calls `initialize` on the pair it creates: the pre-B10 fold's shape, kept
+// through the internal escape. A deployer `new` has no place for a salt (A3 rule 5).
+const LEGACY_FOLD = { ...RELAXED, __legacyDeployFold: true } as const;
 const tokenA = addressToLockScript(aliceAddress);
 const tokenB = addressToLockScript(bobAddress);
 
 describe('UniswapV2Factory.createPair (vendored source, fresh compile)', () => {
-  const artifacts = compileStringMulti(SOURCE, RELAXED);
+  const artifacts = compileStringMulti(SOURCE, LEGACY_FOLD);
   const factoryArtifact = artifacts.UniswapV2Factory;
   const childArtifact = artifacts.UniswapV2Pair;
   const createPairAbi = factoryArtifact.abi.find((f) => f.name === 'createPair')!;
+
+  it('the deployer path refuses the salted create2 (split: off is the plain pair lock)', () => {
+    expect(() => compileStringMulti(SOURCE, RELAXED)).toThrow(DeploySaltError);
+  });
 
   it('layout: createPair deploys a typed pair and writes both getPair directions', () => {
     const createPair = factoryArtifact.abi.find((f) => f.name === 'createPair')!;

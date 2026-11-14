@@ -6,7 +6,9 @@
  * it, so the child is born inside the factory's call.
  */
 import { describe, expect, it } from 'vitest';
-import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import {
+  binToHex, decodeTransaction, encodeLockingBytecodeP2pkh, hash256, hexToBin, lockingBytecodeToCashAddress,
+} from '@bitauth/libauth';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -124,6 +126,40 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     expect((state as { childCount?: bigint }).childCount).toBe(2n);
   });
 
+  it('creates a child that is stateful only because it creates a stateful child (B10)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const funder = new SignatureTemplate(alicePriv).unlockP2PKH();
+    const artifacts = compileStringMulti(`
+      contract G { int n; function bump() { n = n + 1; } }
+      contract Mid { function mk() { G g = new G(); } }
+      contract MidFactory { int childCount;
+        function make() { Mid m = new Mid(); childCount = childCount + 1; }
+      }`, { allowUnsafeOperations: true } as never);
+    expect(artifacts.MidFactory.childDeployers?.Mid).toBeDefined();
+    expect(artifacts.Mid.stateLayout?.dataNftCount).toBe(0);
+
+    const deploymentFunding: Utxo = { txid: 'b1'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), deploymentFunding);
+    const deployed = await StatefulContract.deploy(artifacts.MidFactory, [], {
+      provider, fundingUtxo: deploymentFunding, funder,
+      initialState: { childCount: 0n }, changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    const prepFunding: Utxo = { txid: 'b2'.repeat(32), vout: 0, satoshis: 100000n };
+    await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
+    const result = await StatefulContract.deployFrom({
+      provider, factory: deployed.contract, deployFunctionName: 'make',
+      deployFunctionArgs: [], childArtifact: artifacts.Mid, childConstructorArgs: [],
+      fundingUtxo: prepFunding, funder, changeAddress: change.address,
+    });
+    // Mid's master exists on chain under its own category: something was created.
+    const minted = await provider.getUtxosByTokenCategory(result.childCategoryId);
+    expect(minted.some((utxo) => utxo.token?.nft?.capability === 'minting')).toBe(true);
+    expect(((await result.factory.getState()) as { childCount?: bigint }).childCount).toBe(1n);
+  });
+
   it('pins a child whose constructor writes state', async () => {
     // The child's `create` pins the record its own constructor writes (n = 7). A commitment derived from the
     // factory's probe alone would leave n at its zero default, and the child's genesis covenant refuses.
@@ -190,9 +226,9 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     })).rejects.toThrow(/creates 1 child, but deployments is 2/);
   });
 
-  it('refuses a value passed to a deployer child', async () => {
-    // The creator's `new C{value: v}` leaves a transfer slot its own run rejects on this path; the SDK refuses
-    // before building rather than returning a transaction the factory input fails.
+  it('refuses a value for a deployer child the source creates with none', async () => {
+    // The creator's `new Child()` binds a value of 0 in Q; a value the source does not send would only fail the
+    // creator's own run, so the SDK refuses it before building (B8.8).
     const provider = new MockNetworkProvider({ profile: 'production' });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
@@ -215,13 +251,12 @@ describe('B9.5: a creating call through Deploy<C>', () => {
       provider, factory: deployed.contract, deployFunctionName: 'make',
       deployFunctionArgs: [], childArtifact: artifacts.Child, childConstructorArgs: [],
       fundingUtxo: prepFunding, funder, changeAddress: change.address, childValue: 1200n,
-    })).rejects.toThrow(/cannot pass a value to a deployer child/);
+    })).rejects.toThrow(/'make' creates 'Child' with no value, but childValue is 1200/);
   });
 
-  it('refuses a payable child whose satoshi container has no value', async () => {
-    // A payable child's genesis row holds exactly the deploy value its create pins (the journal balance), and a
-    // zero-sat row is below the relay dust limit: the call must fund the child instead of pinning a row create
-    // would reject.
+  it('creates a payable child with no value, with a filler at its empty satoshi row (A14 item 11)', async () => {
+    // A payable child's optional satoshi row holds at least the journal's final balance. With no value that is 0,
+    // so no container is required there and the SDK puts the plain filler output at the row's index.
     const provider = new MockNetworkProvider({ profile: 'production' });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
@@ -244,11 +279,36 @@ describe('B9.5: a creating call through Deploy<C>', () => {
     const prepFunding: Utxo = { txid: 'f4'.repeat(32), vout: 0, satoshis: 100000n };
     await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), prepFunding);
 
-    await expect(StatefulContract.deployFrom({
+    // An exact fee: the filler's satoshis come from the funding inputs, not from the fee.
+    const before = await provider.takeSnapshot();
+    const result = await StatefulContract.deployFrom({
       provider, factory: deployed.contract, deployFunctionName: 'make',
       deployFunctionArgs: [], childArtifact, childConstructorArgs: [],
-      fundingUtxo: prepFunding, funder, changeAddress: change.address,
-    })).rejects.toThrow(/payable constructor/);
+      fundingUtxo: prepFunding, funder, changeAddress: change.address, fee: 20_000n,
+    });
+    expect(((await result.child.getState()) as { n?: bigint }).n).toBe(7n);
+    expect(result.tx.outputs.some((output) => binToHex(output.lockingBytecode) === '51'
+      && output.valueSatoshis === 1000n && output.token === undefined)).toBe(true);
+
+    // The inputs' values: a prep output from its transaction, any other coin from the ledger before the call.
+    const prepOutputs = new Map<string, bigint>();
+    for (const hex of result.prepTransactions ?? []) {
+      const prep = decodeTransaction(hexToBin(hex));
+      if (typeof prep === 'string') throw new Error(prep);
+      const txid = binToHex(hash256(hexToBin(hex)).slice().reverse());
+      prep.outputs.forEach((output, vout) => prepOutputs.set(`${txid}:${vout}`, output.valueSatoshis));
+    }
+    await before.restore();
+    let inputTotal = 0n;
+    for (const input of result.tx.inputs) {
+      const txid = binToHex(input.outpointTransactionHash);
+      const key = `${txid}:${input.outpointIndex}`;
+      const value = prepOutputs.get(key) ?? (await provider.getLedgerOutput(txid, input.outpointIndex))?.satoshis;
+      if (value === undefined) throw new Error(`no source output for ${key}`);
+      inputTotal += value;
+    }
+    const outputTotal = result.tx.outputs.reduce((sum, output) => sum + output.valueSatoshis, 0n);
+    expect(inputTotal - outputTotal).toBe(20_000n);
   });
 
 
@@ -433,7 +493,9 @@ describe('B9.5: a creating call through Deploy<C>', () => {
       childOraclePool: 'bb'.repeat(32), fundingUtxo: prep, funder, changeAddress: change.address,
     });
     const locktime = (result as unknown as { tx?: { locktime?: number } }).tx?.locktime;
-    expect(locktime).toBe(Math.max(500_000_001, mtp - 1));
+    // A5, A14 item 7: the lowest value that satisfies every input, here the creator's bound (a time).
+    expect(locktime).toBe(500_000_001);
+    expect(mtp - 1).toBeGreaterThan(500_000_001);
     expect((await result.child.getState() as { born?: bigint }).born).toBe(BigInt(locktime!));
   });
 

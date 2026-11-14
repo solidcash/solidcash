@@ -418,14 +418,16 @@ export async function applyOverrides(
   }
 
   // Re-derive if: (a) initial derivation returned no state, OR (b) the VM errored
-  // during initial derivation (state may be incorrect/partial). In both cases,
-  // re-derive only when new context (transfers) has been added and no manual
-  // .setState() was called.
+  // during initial derivation (state may be incorrect/partial), OR (c) the call attaches a value or a token
+  // deposit: the initial derivation probed a transaction without it, so whatever reads `msg.value` or the
+  // container's units (a state write, an event) was derived from 0 and would not match the sent call. In each
+  // case, re-derive only when new context has been added and no manual .setState() was called.
   const vmErrored = !!(builder as any).__vmErrored;
   const transparentAtomicPromotion = ((builder as StatefulTransactionBuilder & {
     __preparedAtomicCalls?: readonly PreparedAtomicMessageBusCall[];
   }).__preparedAtomicCalls?.length ?? 0) > 0;
-  const shouldReDerive = (!derived || vmErrored) && host.stateOverrides.length === 0;
+  const depositUnseen = host.containerDepositAmount > 0n || host.tokenContainerDeposits.length > 0;
+  const shouldReDerive = (!derived || vmErrored || depositUnseen) && host.stateOverrides.length === 0;
   if (shouldReDerive) {
     const reDerive = (builder as any).__reDerive;
     const hasNewContext = host.transfers.length > 0

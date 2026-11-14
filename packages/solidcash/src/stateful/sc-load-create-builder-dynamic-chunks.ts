@@ -85,6 +85,190 @@ export function orderedActiveTrailingEntryCollections(
   );
 }
 
+/** A placeholder recipient for a runtime loop's transfer until the trace names the real one. */
+const RUNTIME_TRANSFER_PLACEHOLDER = encodeLockingBytecodeP2pkh(new Uint8Array(20));
+
+/** Where a runtime loop's transfer sits among a source row's effects, for ordering it beside the row's events. */
+export type RuntimeLoopEffectOccurrence = {
+  rowIndex: number; kind: 'events' | 'transfers'; outputIndex: number;
+  sequence: number; iteration: number; order: number;
+};
+
+/**
+ * Plan the transfers a function's runtime loops make: their number, kind and order, from the loop's permutation and
+ * its predicates. Each output starts as a placeholder; its recipient and amount are the covenant's, read later from
+ * the faithful VM trace (`deriveRuntimeLoopTransfers`). Appends to `outputs` and `effectOccurrences`.
+ */
+export async function planRuntimeLoopTransfers(
+  host: Pick<LoadCreateBuilderDynamicChunksHost,
+  'evaluateExternalExpression' | 'hydrateExternalPredicateState' | 'vmapCounterDomain'>,
+  params: {
+    source: AbiFunction;
+    functionArgs: FunctionArgument[];
+    sourceArtifact: Artifact;
+    argumentFor: (name: string) => FunctionArgument | undefined;
+    rowIndex: number;
+    state: OnChainState['state'];
+    executionSelfAddress: Uint8Array;
+    tokenContainers: readonly any[];
+    outputs: RuntimeLoopTransferOutput[];
+    effectOccurrences: RuntimeLoopEffectOccurrence[];
+  },
+): Promise<void> {
+  const {
+    source, functionArgs, sourceArtifact, argumentFor, rowIndex, state, executionSelfAddress, tokenContainers,
+    outputs, effectOccurrences,
+  } = params;
+  const runtimePredicateState = await host.hydrateExternalPredicateState(
+    [
+      ...(source.runtimeLoopTransfers ?? []).flatMap((loop) => loop.conditions ?? [])
+        .filter((condition): condition is ExternalCallExpression => condition !== null),
+      ...(source.sortedUpsertLoopInfo ?? []).flatMap((info) => [
+        info.condition, info.iterationBreakCondition,
+      ]).filter((condition): condition is ExternalCallExpression => condition !== undefined),
+    ],
+    functionArgs,
+    sourceArtifact,
+    state,
+    visibleHandlerInputs(source.inputs),
+    executionSelfAddress,
+  );
+  for (const loop of source.runtimeLoopTransfers ?? []) {
+    const permutation = argumentFor(loop.permutationParam);
+    let repeatCount = Array.isArray(permutation) ? permutation.length : undefined;
+    const loopInfo = source.sortedUpsertLoopInfo?.find(
+      (info) => info.varyingArrayParam === loop.permutationParam,
+    );
+    if (loopInfo && (loopInfo.iterationCondition || loopInfo.iterationBreakCondition)) {
+      const spec = vmapCounterPermutationSpec(loopInfo.varyingArrayParam);
+      const bound = spec && argumentFor(spec.countName);
+      if (!spec || (bound === undefined && !loopInfo.iterationBound)) throw new Error(
+        `Runtime-loop transfer metadata for '${source.name}' has no source-domain bound`,
+      );
+      const active = loopInfo.condition ? host.evaluateExternalExpression(
+        loopInfo.condition,
+        functionArgs,
+        sourceArtifact,
+        runtimePredicateState,
+        visibleHandlerInputs(source.inputs),
+        undefined,
+        0,
+        false,
+        executionSelfAddress,
+      ) : true;
+      if (typeof active !== 'boolean') throw new Error(
+        `Could not resolve runtime loop predicate while planning transfers for '${source.name}'.`,
+      );
+      const sourceDomain = active ? host.vmapCounterDomain(
+        loopInfo,
+        spec,
+        bound,
+        functionArgs,
+        sourceArtifact,
+        visibleHandlerInputs(source.inputs),
+        runtimePredicateState,
+        executionSelfAddress,
+      ) : [];
+      if (!sourceDomain) throw new Error(
+        `Could not resolve runtime loop bound while planning transfers for '${source.name}'.`,
+      );
+      repeatCount = sourceDomain.length;
+      if (loopInfo.iterationBreakCondition) {
+        for (let iteration = 0; iteration < sourceDomain.length; iteration += 1) {
+          const breaking = host.evaluateExternalExpression(
+            loopInfo.iterationBreakCondition,
+            functionArgs,
+            sourceArtifact,
+            runtimePredicateState,
+            visibleHandlerInputs(source.inputs),
+            undefined,
+            iteration,
+            false,
+            executionSelfAddress,
+          );
+          if (typeof breaking !== 'boolean') throw new Error(
+            `Could not resolve runtime loop break predicate while planning transfers for '${source.name}'.`,
+          );
+          if (breaking) { repeatCount = iteration + 1; break; }
+        }
+      }
+    }
+    if (!Number.isInteger(repeatCount) || repeatCount === undefined || repeatCount < 0) throw new Error(
+      `Runtime-loop transfer metadata for '${source.name}' has no valid repeat source`,
+    );
+    for (let iteration = 0; iteration < repeatCount; iteration += 1) {
+      for (let siteIndex = 0; siteIndex < loop.siteCount; siteIndex += 1) {
+        const condition = loop.conditions?.[siteIndex];
+        if (condition) {
+          const active = host.evaluateExternalExpression(
+            condition,
+            functionArgs,
+            sourceArtifact,
+            runtimePredicateState,
+            visibleHandlerInputs(source.inputs),
+            undefined,
+            iteration,
+            false,
+            executionSelfAddress,
+          );
+          if (typeof active !== 'boolean') throw new Error(
+            `Could not resolve runtime transfer predicate in '${source.name}'.`,
+          );
+          if (!active) continue;
+        }
+        const outputIndex = outputs.length;
+        const kind = loop.siteKinds?.[siteIndex] ?? 'bch';
+        if (kind === 'token' || kind === 'nft') {
+          const slot = loop.tokenContainerSlots?.[siteIndex];
+          const container = slot === null || slot === undefined ? undefined
+            : tokenContainers.find((candidate: any) => candidate.tokenContainerSlotIndex === slot);
+          const category = container?.tokenContainerCategoryId;
+          if (!category) throw new Error(
+            `Runtime-loop token transfer metadata for '${source.name}' has no resolved container`,
+          );
+          if (kind === 'nft') {
+            const nft = container?.utxo?.token?.nft;
+            if (!nft) throw new Error(
+              `Runtime-loop NFT transfer in '${source.name}' requires an NFT-bearing token container`,
+            );
+            if (nft.capability !== 'minting' && outputs.some((output) =>
+              output.kind === 'nft' && output.tokenContainerCategoryId === category)) {
+              throw new Error(
+                `Runtime-loop NFT transfer in '${source.name}' reaches the non-minting container `
+                + `${category} more than once`,
+              );
+            }
+            outputs.push({
+              kind, tokenContainerCategoryId: category,
+              lockingBytecode: Uint8Array.from(RUNTIME_TRANSFER_PLACEHOLDER), amount: 0n,
+              commitment: hexToBin(nft.commitment),
+              // A minting-capability placeholder would be removed by the builder's 1:1 minting guard before
+              // the trace can derive this runtime output. An immutable placeholder is valid under the same
+              // minting input and remains materialized until the source-selected capability replaces it.
+              capability: nft.capability === 'minting' ? 'none' : nft.capability,
+            });
+          } else {
+            outputs.push({
+              kind, tokenContainerCategoryId: category,
+              lockingBytecode: Uint8Array.from(RUNTIME_TRANSFER_PLACEHOLDER), amount: 1n,
+            });
+          }
+        } else {
+          outputs.push({
+            kind, lockingBytecode: Uint8Array.from(RUNTIME_TRANSFER_PLACEHOLDER), amount: 1000n,
+          });
+        }
+        if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
+          effectOccurrences.push({
+            rowIndex, kind: 'transfers', outputIndex,
+            sequence: loop.effectSequence, iteration, order: loop.effectOrder[siteIndex],
+          });
+        }
+      }
+    }
+  }
+}
+
 /**
  * After event locks are collected: fetch old dynamic/value chunks to consume,
  * plan loop-entry NFT pads, and materialize runtime-loop event/transfer trailing
@@ -312,10 +496,7 @@ export async function loadCreateBuilderDynamicChunks(
     chunked?: true;
   }> = [];
   const runtimeLoopEventSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
-  const runtimeLoopEffectOccurrences: Array<{
-    rowIndex: number; kind: 'events' | 'transfers'; outputIndex: number;
-    sequence: number; iteration: number; order: number;
-  }> = [];
+  const runtimeLoopEffectOccurrences: RuntimeLoopEffectOccurrence[] = [];
   const appendRuntimeEvents = async (
     source: AbiFunction,
     functionArgs: FunctionArgument[],
@@ -580,165 +761,19 @@ export async function loadCreateBuilderDynamicChunks(
   // starts as a harmless probe placeholder which the faithful VM trace replaces before handoff.
   const selectedRuntimeTransferRows = (entryRouteRows?.some((row) =>
     (row.handler.runtimeLoopTransfers?.length ?? 0) > 0) ? entryRouteRows : delegateRouteRows) ?? [];
-  const runtimeTransferPlaceholder = encodeLockingBytecodeP2pkh(new Uint8Array(20));
   const runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[] = [];
   const runtimeLoopTransferSegments: Array<{ rowIndex: number; offset: number; count: number }> = [];
-  const appendRuntimeTransfers = async (
+  const appendRuntimeTransfers = (
     source: AbiFunction,
     functionArgs: FunctionArgument[],
     sourceArtifact: Artifact,
     argumentFor: (name: string) => FunctionArgument | undefined,
     rowIndex: number,
-  ): Promise<void> => {
-    const runtimePredicateState = await host.hydrateExternalPredicateState(
-      [
-        ...(source.runtimeLoopTransfers ?? []).flatMap((loop) => loop.conditions ?? [])
-          .filter((condition): condition is ExternalCallExpression => condition !== null),
-        ...(source.sortedUpsertLoopInfo ?? []).flatMap((info) => [
-          info.condition, info.iterationBreakCondition,
-        ]).filter((condition): condition is ExternalCallExpression => condition !== undefined),
-      ],
-      functionArgs,
-      sourceArtifact,
-      onChainState.state,
-      visibleHandlerInputs(source.inputs),
-      executionSelfAddress,
-    );
-    for (const loop of source.runtimeLoopTransfers ?? []) {
-      const permutation = argumentFor(loop.permutationParam);
-      let repeatCount = Array.isArray(permutation) ? permutation.length : undefined;
-      const loopInfo = source.sortedUpsertLoopInfo?.find(
-        (info) => info.varyingArrayParam === loop.permutationParam,
-      );
-      if (loopInfo && (loopInfo.iterationCondition || loopInfo.iterationBreakCondition)) {
-        const spec = vmapCounterPermutationSpec(loopInfo.varyingArrayParam);
-        const bound = spec && argumentFor(spec.countName);
-        if (!spec || (bound === undefined && !loopInfo.iterationBound)) throw new Error(
-          `Runtime-loop transfer metadata for '${source.name}' has no source-domain bound`,
-        );
-        const active = loopInfo.condition ? host.evaluateExternalExpression(
-          loopInfo.condition,
-          functionArgs,
-          sourceArtifact,
-          runtimePredicateState,
-          visibleHandlerInputs(source.inputs),
-          undefined,
-          0,
-          false,
-          executionSelfAddress,
-        ) : true;
-        if (typeof active !== 'boolean') throw new Error(
-          `Could not resolve runtime loop predicate while planning transfers for '${source.name}'.`,
-        );
-        const sourceDomain = active ? host.vmapCounterDomain(
-          loopInfo,
-          spec,
-          bound,
-          functionArgs,
-          sourceArtifact,
-          visibleHandlerInputs(source.inputs),
-          runtimePredicateState,
-          executionSelfAddress,
-        ) : [];
-        if (!sourceDomain) throw new Error(
-          `Could not resolve runtime loop bound while planning transfers for '${source.name}'.`,
-        );
-        repeatCount = sourceDomain.length;
-        if (loopInfo.iterationBreakCondition) {
-          for (let iteration = 0; iteration < sourceDomain.length; iteration += 1) {
-            const breaking = host.evaluateExternalExpression(
-              loopInfo.iterationBreakCondition,
-              functionArgs,
-              sourceArtifact,
-              runtimePredicateState,
-              visibleHandlerInputs(source.inputs),
-              undefined,
-              iteration,
-              false,
-              executionSelfAddress,
-            );
-            if (typeof breaking !== 'boolean') throw new Error(
-              `Could not resolve runtime loop break predicate while planning transfers for '${source.name}'.`,
-            );
-            if (breaking) { repeatCount = iteration + 1; break; }
-          }
-        }
-      }
-      if (!Number.isInteger(repeatCount) || repeatCount === undefined || repeatCount < 0) throw new Error(
-        `Runtime-loop transfer metadata for '${source.name}' has no valid repeat source`,
-      );
-      for (let iteration = 0; iteration < repeatCount; iteration += 1) {
-        for (let siteIndex = 0; siteIndex < loop.siteCount; siteIndex += 1) {
-          const condition = loop.conditions?.[siteIndex];
-          if (condition) {
-            const active = host.evaluateExternalExpression(
-              condition,
-              functionArgs,
-              sourceArtifact,
-              runtimePredicateState,
-              visibleHandlerInputs(source.inputs),
-              undefined,
-              iteration,
-              false,
-              executionSelfAddress,
-            );
-            if (typeof active !== 'boolean') throw new Error(
-              `Could not resolve runtime transfer predicate in '${source.name}'.`,
-            );
-            if (!active) continue;
-          }
-          const outputIndex = runtimeLoopTransferOutputs.length;
-          const kind = loop.siteKinds?.[siteIndex] ?? 'bch';
-          if (kind === 'token' || kind === 'nft') {
-            const slot = loop.tokenContainerSlots?.[siteIndex];
-            const container = slot === null || slot === undefined ? undefined
-              : tokenContainers.find((candidate: any) => candidate.tokenContainerSlotIndex === slot);
-            const category = container?.tokenContainerCategoryId;
-            if (!category) throw new Error(
-              `Runtime-loop token transfer metadata for '${source.name}' has no resolved container`,
-            );
-            if (kind === 'nft') {
-              const nft = container?.utxo?.token?.nft;
-              if (!nft) throw new Error(
-                `Runtime-loop NFT transfer in '${source.name}' requires an NFT-bearing token container`,
-              );
-              if (nft.capability !== 'minting' && runtimeLoopTransferOutputs.some((output) =>
-                output.kind === 'nft' && output.tokenContainerCategoryId === category)) {
-                throw new Error(
-                  `Runtime-loop NFT transfer in '${source.name}' reaches the non-minting container `
-                  + `${category} more than once`,
-                );
-              }
-              runtimeLoopTransferOutputs.push({
-                kind, tokenContainerCategoryId: category,
-                lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 0n,
-                commitment: hexToBin(nft.commitment),
-                // A minting-capability placeholder would be removed by the builder's 1:1 minting guard before
-                // the trace can derive this runtime output. An immutable placeholder is valid under the same
-                // minting input and remains materialized until the source-selected capability replaces it.
-                capability: nft.capability === 'minting' ? 'none' : nft.capability,
-              });
-            } else {
-              runtimeLoopTransferOutputs.push({
-                kind, tokenContainerCategoryId: category,
-                lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1n,
-              });
-            }
-          } else {
-            runtimeLoopTransferOutputs.push({
-              kind, lockingBytecode: Uint8Array.from(runtimeTransferPlaceholder), amount: 1000n,
-            });
-          }
-          if (loop.effectSequence !== undefined && loop.effectOrder?.[siteIndex] !== undefined) {
-            runtimeLoopEffectOccurrences.push({
-              rowIndex, kind: 'transfers', outputIndex,
-              sequence: loop.effectSequence, iteration, order: loop.effectOrder[siteIndex],
-            });
-          }
-        }
-      }
-    }
-  };
+  ): Promise<void> => planRuntimeLoopTransfers(host, {
+    source, functionArgs, sourceArtifact, argumentFor, rowIndex,
+    state: onChainState.state, executionSelfAddress, tokenContainers,
+    outputs: runtimeLoopTransferOutputs, effectOccurrences: runtimeLoopEffectOccurrences,
+  });
   if (selectedRuntimeTransferRows.length > 0) {
     for (const row of selectedRuntimeTransferRows) {
       const offset = runtimeLoopTransferOutputs.length;

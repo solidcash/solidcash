@@ -85,9 +85,17 @@ describe('A12: paths and refusals', () => {
     const source = `${P} contract C { mapping(int => int) m; constructor() { m[1] = 2; } function bump() { m[1] = 3; } }`;
     const artifact = compileString(source, { deployer: true, messageBus: false });
     expect(artifact.constructorWritesCollections).toBe(true);
+    // A4.4: the deployer keeps a journal of the constructor's writes and verifies its rows, so the deployer path
+    // creates C. A12 forbids today's genesis for C: it would mint rows nothing checks.
+    expect(artifact.deployer?.collectionRows).toEqual([{ collection: 'm', appendSites: 1, journalDepth: expect.any(Number) }]);
+    const born = await funded();
+    const result = await deploy(born.provider, artifact, born.fundingUtxo, { viaDeployer: true });
+    expect(await verifyBirth(born.provider, result.categoryId, [artifact.deployer!])).toBe(true);
     const { provider, fundingUtxo } = await funded();
-    const result = await deploy(provider, artifact, fundingUtxo, { viaDeployer: true });
-    expect(await verifyBirth(provider, result.categoryId, [artifact.deployer!])).toBe(true);
+    for (const options of [{ viaDeployer: false }, { salt: Uint8Array.of(1) }]) {
+      await expect(deploy(provider, artifact, fundingUtxo, options as never))
+        .rejects.toThrow(/constructorWritesCollections/);
+    }
   });
 
   it('builds the BCMR registry publication after the identity', async () => {

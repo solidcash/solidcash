@@ -139,8 +139,13 @@ describe('oracle pool minted with its deployment', () => {
   }, 300_000);
 
   it('a factory deployed with \'new\' mints for its child\'s reads and passes the same pool to the child', async () => {
+    // A deployer `new` of a block reader is not in v1 (A15): its oracle needs an owner the creator binds. The
+    // binding-forwarding shape is the pre-B10 fold's, kept through the internal escape.
+    expect(() => compileStringMulti(CREATOR, { allowUnsafeOperations: true })).toThrow(/child-reads-block-data/);
     const { provider, signer } = await chain();
-    const { Clock, ClockMaker } = compileStringMulti(CREATOR, { allowUnsafeOperations: true });
+    const { Clock, ClockMaker } = compileStringMulti(CREATOR, {
+      allowUnsafeOperations: true, __legacyDeployFold: true,
+    } as never);
     expect(ClockMaker.createdPoolReads).toEqual({ blockInfo: true });
     const make = ClockMaker.abi.find((fn) => fn.name === 'make')!;
 

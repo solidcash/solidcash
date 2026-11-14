@@ -3455,6 +3455,9 @@ export async function sendPreflightedMessageBusTransaction(
   // The byte gate reads the DECODED broadcast bytes, not a re-derived shape, so it judges exactly what
   // `sendRawTransaction` is about to receive. This is the last thing between the composer and the network.
   assertFinalizedTransactionBytes(transaction, options);
+  // A8: a payment to a stateful contract's master lock could never be spent.
+  const { refusePaymentsToStatefulMasters } = await import('../stateful/master-lock-payment.js');
+  await refusePaymentsToStatefulMasters(builder.provider, builder.inputs, builder.outputs);
   const txid = await builder.provider.sendRawTransaction(raw);
   const expected = binToHex(hash256(hexToBin(raw)).reverse());
   if (txid !== expected) {

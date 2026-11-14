@@ -1,5 +1,6 @@
 import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
+import { DeploySaltError, DeployedChildCallError } from '@solidcash/solidc';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
   Contract,
@@ -25,6 +26,12 @@ import foldFactoryArtifact from '../fixture/fold_factory.artifact.js';
 // FoldChild / FoldFactory are compiled to typed `.ts` artifacts (test/fixture/fold_{child,factory}.artifact.ts,
 // `as const`) so that `factory.deployConfigured(...)` is typed - a deploy-modifier function maps to a thenable
 // DeployFunctionCall - with no cast. The contract sources are embedded in the artifacts' `source` field.
+//
+// Since B10 a direct `new` goes through the child's deployer, which refuses a call on the child it returns
+// (DeployedChildCallError) and a salt (DeploySaltError). The fold and salt shapes below compile with the internal
+// `__legacyDeployFold` escape; the plain multi-NFT deploy goes through the deployer.
+const LEGACY_FOLD = { __legacyDeployFold: true } as const;
+
 describe('deploy-then-call fold (deployFrom e2e)', () => {
   const childArtifact = foldChildArtifact;
   const factoryArtifact = foldFactoryArtifact;
@@ -136,7 +143,7 @@ const computedFactorySource = `
 
 describe('deploy-then-call fold with a computed callee (deployFrom e2e)', () => {
   const childArtifact = compileString(computedChildSource);
-  const factoryArtifact = compileString(computedFactorySource, {
+  const computedOptions = {
     importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
       const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
       let resolved = dir + importPath.replace('./', '');
@@ -144,6 +151,11 @@ describe('deploy-then-call fold with a computed callee (deployFrom e2e)', () => 
       return resolved === '/computed_child.scash' ? { source: computedChildSource, id: resolved } : undefined;
     },
     rootFileId: '/main.scash',
+  };
+  const factoryArtifact = compileString(computedFactorySource, { ...computedOptions, ...LEGACY_FOLD });
+
+  it('a deployer new refuses the same-transaction call on its child', () => {
+    expect(() => compileString(computedFactorySource, computedOptions)).toThrow(DeployedChildCallError);
   });
 
   const provider = createTestProvider();
@@ -236,6 +248,7 @@ describe('deploy-then-call fold with locals + state reads (deployFrom e2e)', () 
       return resolved === '/seq_child.scash' ? { source: seqChildSource, id: resolved } : undefined;
     },
     rootFileId: '/main.scash',
+    ...LEGACY_FOLD,
   });
 
   const provider = createTestProvider();
@@ -342,7 +355,7 @@ describe('multi-data-NFT child deploy (nftIndex tag parity)', () => {
     importResolver: multiResolver, rootFileId: '/main.scash',
   });
   const multiFactoryArtifact = compileString(foldMultiFactorySource, {
-    importResolver: multiResolver, rootFileId: '/main.scash',
+    importResolver: multiResolver, rootFileId: '/main.scash', ...LEGACY_FOLD,
   });
 
   it('the child spans two data NFTs', () => {
@@ -465,7 +478,7 @@ const saltFactorySource = `
 
 describe('create2: stateful deploy with a salt (composed with the self-pin)', () => {
   const childArtifact = compileString(saltChildSource);
-  const factoryArtifact = compileString(saltFactorySource, {
+  const saltOptions = {
     importResolver: (importPath: string, currentFile: string): ResolvedImport | undefined => {
       const dir = currentFile.substring(0, currentFile.lastIndexOf('/') + 1);
       let resolved = dir + importPath.replace('./', '');
@@ -473,6 +486,11 @@ describe('create2: stateful deploy with a salt (composed with the self-pin)', ()
       return resolved === '/salt_child.scash' ? { source: saltChildSource, id: resolved } : undefined;
     },
     rootFileId: '/main.scash',
+  };
+  const factoryArtifact = compileString(saltFactorySource, { ...saltOptions, ...LEGACY_FOLD });
+
+  it('a deployer new refuses the salt', () => {
+    expect(() => compileString(saltFactorySource, saltOptions)).toThrow(DeploySaltError);
   });
 
   const provider = createTestProvider();

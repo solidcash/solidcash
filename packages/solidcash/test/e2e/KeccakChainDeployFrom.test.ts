@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex, hash256, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { Contract, SignatureTemplate } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
@@ -80,7 +81,9 @@ describe('chained keccak256 side-cars in a factory deploy', () => {
       changeAddress: p2pkh.address,
     });
 
-    expect(result.childCategoryId).toBe(childFunding.txid);
+    // The child is born through its deployer: its category is the prep transaction's txid.
+    expect(result.prepTransactions).toHaveLength(1);
+    expect(result.childCategoryId).toBe(binToHex(hash256(hexToBin(result.prepTransactions![0]!)).reverse()));
 
     // The factory's post-call digest must equal the off-chain keccak_256 of the preimage.
     await expect(

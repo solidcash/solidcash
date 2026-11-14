@@ -21,8 +21,11 @@ deployer would change their effect and listed in A16.5. The user's decisions of 
 the text: the user accepted this scope and cleared the text for implementation (B0.10).
 
 Status on this branch, 2026-11-14: implemented, with the limitations recorded below. Every Part B box is ticked;
-in Part C every case is ticked; the constructor-loop case records a measured limitation (padding is neutral
-because each pad byte buys 800 operations and costs about 809). The
+in Part C every case is ticked. The constructor-loop case: on branch `deployer-spec` the SDK sizes the pad up to
+what a 10,000-byte create unlocking allows, and a sized pad passes where one 300 bytes shorter fails on operation
+cost (`DeployerCreatingCallPad.e2e`); a loop beyond that budget, such as a 1,000-iteration one, is refused before
+broadcast. (This branch's own measurement, that a pad byte buys 800 operations and costs about 809, was taken
+on its code before those changes.) The
 live block reader, the creator's `tx.time` beside a child's `block.timestamp` (and its height-versus-time
 conflict), the constructor's token-container balance read, the ERC20/USDT and registry callees, the
 sender-reading callee probe and registries of the user's shape are implemented and tested. Every
@@ -35,6 +38,39 @@ constructor calls against record-sound callees through `constructorCallees` (one
 selector, a void callee, a sender-reading callee, and the non-record-sound refusal) and a creating call's branch
 and loop `new` placements are implemented and tested. The Part D measurements
 come from SDK-built transactions.
+
+Status on branch `deployer-spec`, 2026-11-14 (uncommitted): a review of the shipped code against this text found
+soundness defects, all fixed with tests that fail without the fix.
+- `create` did not pin a constructor call's record carrier (A4.3 step 14): any NFT with a forged commitment at the
+  return index answered the call. It now requires the callee's category with no capability, no units, the lock
+  `51` and at most 1,200 satoshis, and emits none of the inactive-call branches.
+- Step 10 did not read the callee's record-sound marker or check that the target is a P2SH32 lock, and the
+  executed-calls mask was set by the epilogue itself; each call site now checks both and sets its own bit.
+- A tagged callee entry that does not read `msg.sender` never required input g_in to spend (X, 0), and an entry
+  that creates a child accepted a tag. The genesis step read slot 0's list entry whatever slot the tag named,
+  skipped check 4 for an S under 34 bytes, and never compared the lock it derives with output g_out's. Both
+  digests covered the whole genesis call, so a sender-reading callee could never answer; they now cover
+  `ff ff ‖ X ‖ j` as A7 states.
+- A native constructor modifier written with parentheses was dropped, so Deploy<C> created C with it unapplied;
+  a literal `0` was journaled into `bytesN` as an empty value; journal field writes were not type-checked;
+  `split: 'off'` in a multi-contract compile refused every deployer `new`; the creator compared Q ‖ A at byte 6
+  instead of 6 + 2s (A6 step 4b).
+
+Built on the same branch: the generator checks O2 to O10 (O8 literally first in every arm, checked by a walk over
+the finished code; O7 with A5's closed list of reasons; O4 on the final artifact); `genesisCalls` on by default
+(record-sound contracts grow by 72 to 1,150 bytes, median 83; under `callBatch` five token-shaped corpus
+contracts no longer fit the multi-call entry); the A4.4 journal with struct values and field writes, and its
+bounds (D22); B8.8's `value` through creating calls; A14 item 4, a creating call derived from the creator's own run
+(Q ‖ A read from the trace, run order, conditional and loop `new`, runtime-loop payments in satoshis, tokens and
+NFTs, the trailing outputs after a loop of `new` per B8.9, and each child's budget pad); one top-level creation
+path in which constructor calls combine with collection writes, events, sends and side-cars, with ERC20-,
+USDT- and registry-shaped callees; and a live block reader created through Deploy<C>. This backend has no
+per-instance oracle row: a block read names an oracle pool by the contract argument `__oraclePool`, which A
+carries, so C's code is constant and the pool is minted first in transactions of its own; a child that reads
+block data is still refused (A15). The pre-B10 SDK tests were updated by the rules of Part C's "Regression".
+Every direct contract's code changes (O8 and `genesisCalls`), so dependants such as `bch-next` rebuild their
+artifacts. Found while testing and outside this plan: fixed and runtime-loop BCH transfers in one function fail
+the conservation check, and an `emit` inside a plain runtime loop yields one event output.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -3842,10 +3878,14 @@ with a deployer whose constructor writes a collection, and only where today's st
         `deployer: true` set `artifact.deployerUnsupported` and emit `DeployerUnsupportedWarning`; in a
         creator's compile return the reason to it.
 
-      Note (implementation, 2026-11-14): the birth trailer, TEMPLATE, V_DEPLOY, the smallest-unlocking check
-      and w_out (from the B7.9 layout) are done. A live block reader now gets a deployer: its code carries the
-      pool sentinel and `create` pins the `__oraclePool` contract parameter, so the deployed instance's code is
-      constant and the oracle is minted at genesis. A constructor-only read still uses the locktime.
+      Note (implementation, 2026-11-13): the birth trailer, TEMPLATE, V_DEPLOY, the smallest-unlocking check
+      and w_out (from the B7.9 layout) are done. The block-oracle constant-lock form is not available in this
+      backend, so a live block reader is refused with `code-not-constant`; a constructor-only read uses the
+      locktime and needs no oracle.
+      Note (2026-11-14): this backend's block reads name an oracle pool by the contract argument
+      `__oraclePool`, which A carries, so the code is constant: a live block reader now gets its deployer
+      (`readsBlockData: true`), the SDK mints or binds the pool before the creation, and `code-not-constant`
+      remains only for a block read without that binding. A child that reads block data is still refused (A15).
 - [x] **B7.15 Measure first.** As soon as B7.14 produces a deployer: build the sweep of a sample deployer
       coin by hand and measure its size, fix the constant of V_DEPLOY, and fill D2, D3, D9, the second part
       of D16 and the deployer's part of D18. Then compile the user's two pools with `deployer: true` (read-only:
@@ -4613,16 +4653,16 @@ their contract with `deployer: true`:
       `msg.sender`, which passes at top level and fails through a creator;
 - [x] keccak256 and ecrecover in a constructor, each through a shared sidecar; with no shared coin on the *(covered by `DeployerCreation.e2e`: the keccak success and no-pool cases, and `co-spends the shared ecrecover side-cars for a constructor recovery` with `refuses a constructor recovery with no shared ecrecover coin`)*
       network, `DeployerSidecarError`;
-- [x] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(limitation: the pad cannot fund the loop; measured: a 1,000-iteration constructor loop fails the create probe at 1,405,666 operations against 1,405,600. The SDK does grow `__internal__budgetPad`, but each added byte raises the input's density control length by one (limit +800) and the create's own cost by about 809, so a 1-byte pad gives 1,406,400/1,406,437, an 8-byte pad 1,416,800/1,416,824, and a 16-byte pad 1,418,400/1,418,479. A fixed nine-push reserve with static drops was also measured: limit 1,418,400, cost 1,418,416. Padding is neutral-to-negative under the push-only unlocking rule, so the creation cannot be funded this way; a NOP or trailing push pad is invalid because every unlocking byte must be a push. Every alternative was tried: the bytes parameter, a fixed reserve with static drops, and a lower per-byte cost via dead code in the redeem, whose lock would change the deployer identity and `verifyBirth`. The SDK side of the sentence is implemented; the creation cannot pass for this metric)*
+- [x] a constructor whose loop needs more operations than the unlocking gives: the SDK sizes *(covered by `DeployerCreatingCallPad.e2e`: a child's pad is sized from its run, a pad 300 bytes shorter fails on operation cost, and a constructor over the budget a 10,000-byte unlocking allows is refused before broadcast; the top-level path grows the pad with `nextBudgetPad` to the same limit; the earlier failure was the SDK's 4,096-byte cap; a loop beyond that budget is refused before broadcast, as measured: the pad cannot fund the loop; measured: a 1,000-iteration constructor loop fails the create probe at 1,405,666 operations against 1,405,600. The SDK does grow `__internal__budgetPad`, but each added byte raises the input's density control length by one (limit +800) and the create's own cost by about 809, so a 1-byte pad gives 1,406,400/1,406,437, an 8-byte pad 1,416,800/1,416,824, and a 16-byte pad 1,418,400/1,418,479. A fixed nine-push reserve with static drops was also measured: limit 1,418,400, cost 1,418,416. Padding is neutral-to-negative under the push-only unlocking rule, so the creation cannot be funded this way; a NOP or trailing push pad is invalid because every unlocking byte must be a push. Every alternative was tried: the bytes parameter, a fixed reserve with static drops, and a lower per-byte cost via dead code in the redeem, whose lock would change the deployer identity and `verifyBirth`. The SDK side of the sentence is implemented; the creation cannot pass for this metric)*
       `__internal__budgetPad` and the creation passes;
 - [x] a child whose `create` unlocking would exceed 10,000 bytes with its arguments: `DeployerPrepError` *(covered by `DeployerCreation.e2e`/`DeployerCreatingCall.e2e` for the shipped shapes)*
       before anything is broadcast;
 - [x] `block.number` in a constructor equals the transaction's locktime; `block.timestamp`, with the locktime *(covered by `DeployerCreation.e2e`: `reads block.number in the constructor from the creation locktime` asserts the stored height and the transaction locktime, and `reads block.timestamp...` asserts the median time past minus 1)*
       at the median time past minus 1;
-- [x] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(covered by `DeployerCreatingCall.e2e`: `meets a creator's tx.time check and a child's block.timestamp with one locktime` asserts the creation's locktime and the child's stored `born`; `refuses a height tx.time beside a timestamp child` asserts `DeployerLocktimeConflictError`)*
+- [x] a creator whose function checks `tx.time` creates a child whose constructor reads `block.timestamp`, *(covered by `DeployerCreatingCallLocktime.e2e`: with the creator checking `tx.time >= t`, the creation's locktime is t, the lowest value every input accepts, and the child stores t; re-signed with locktime t − 1 it fails at the creator's input and at the child's deployer input; a height check beside `block.number` is met the same way; with no check the locktime is the median time past minus 1; a height check beside `block.timestamp`, and a time check beside `block.number`, fail before broadcast with `DeployerLocktimeConflictError` naming both inputs.; also covered by `DeployerCreatingCall.e2e`: `meets a creator's tx.time check and a child's block.timestamp with one locktime` asserts the creation's locktime and the child's stored `born`; `refuses a height tx.time beside a timestamp child` asserts `DeployerLocktimeConflictError`. A constructor's own block reads use the locktime and bind no oracle pool)*
       and the two locktime needs are met by one value; a height against a time fails with
       `DeployerLocktimeConflictError`;
-- [x] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(covered by `DeployerCreation.e2e`: `mints the oracle of a live block reader and reads block data later` deploys a `block.number` reader with `oraclePool: 'new'` through Deploy<C> and its first call reads block data; the deployer ABI reports `readsBlockData` and the create pins the pool binding)*
+- [x] a block reader compiled with `deployer: true`: its oracle is minted with the owner given, and a later *(covered by `DeployerBlockReader.e2e`: the pool is minted first with the provider's owner key and bound in A as `__oraclePool`, the creation is a birth through Deploy<C>, and a later call reads the pool's block fields; this backend has no per-instance oracle row)*
       call reads block data;
 - [x] `this.activeBytecode` equals R, and `address(this)` equals M; *(covered by the `DeployerCreation` VM cases)*
 - [x] a contract with a mapping, born through its deployer, inserts an entry in its first call (B7.13); *(covered by `DeployerCreation.e2e`: the creation mints the HEAD through the layout, and the first call's `put(1, 2)` then `read(1)` passes)*
@@ -4642,7 +4682,7 @@ their contract with `deployer: true`:
 - [x] a creator F whose child C creates a child G in one of its functions: F creates C, then C creates G. *(covered by `DeployerCreatingCall.e2e`: `creates a child that creates a child (F then C then G)` performs both creating calls and checks each category)*
 
 **Containers** (same file):
-- [x] registries of the user's shape, one per pool kind, as the user decided (A18): *(covered by `DeployerRegistry.e2e`: `stores and emits the created pool's category` and `stores and emits a token pool's category and keeps its token coin` drive the shipped creator with a single satoshi container and a single token container; `refuses a token coin of 546 satoshis for a single token container` asserts `DeployerPrepError`)* a BCH registry whose
+- [x] registries of the user's shape, one per pool kind, as the user decided (A18): *(covered by `DeployerRegistries.e2e`: `BchRegistry` runs `new NotePool{args: …}()` and `TokenRegistry` runs `new TokenNotePool{args: …}()`, pools reduced from `bch-next`'s BchPool and TokenPool with their parameters and pragmas; each registry stores `pool.category` in `lastPool`, in display order, and emits `PoolCreated` encoding it; the token coin comes from `childContainers`; both creations pass the VM, and the same creation with the pool's satoshi coin paid to the wallet, or with a 546-satoshi token coin, fails at the pool's deployer input; also covered by `DeployerRegistry.e2e`: `stores and emits the created pool's category` and `stores and emits a token pool's category and keeps its token coin` drive the shipped creator with a single satoshi container and a single token container; `refuses a token coin of 546 satoshis for a single token container` asserts `DeployerPrepError`)* a BCH registry whose
       `create` runs `new` of a NotePool-shaped child, and a token registry whose `create` runs `new` of a
       TokenNotePool-shaped child. Each stores `pool.category` in its state and emits it in an event; the
       stored value is the pool's category in display order. A hand-built creation without the pool's satoshi
@@ -4668,18 +4708,18 @@ their contract with `deployer: true`:
       bytes and the call passes.
 
 **Calls made by a constructor** (same file):
-- [x] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by `DeployerCreation.e2e`: `binds an ERC20-shaped transfer that debits the child and credits its owner`; the token's fixed balances move by 5 in each direction and the constructor reads true)*
+- [x] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(covered by `DeployerConstructorCalls.e2e`: a new owner above and below the child's key and an owner that already holds units, each checking balances, the event, the result and the layout, plus a forged result and a tag naming another slot refused; also covered by `DeployerCreation.e2e`: `binds an ERC20-shaped transfer that debits the child and credits its owner`; the token's fixed balances move by 5 in each direction and the constructor reads true)*
       way: the token debits the child's own balance, credits `owner`, and the constructor reads the returned
       `true`;
-- [x] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation.e2e`: `binds a constructor call to a callee that reads msg.sender`; the helper `mark()` is inlined, the call has a slot, and T stores the child's master lock)*
+- [x] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerConstructorSender.e2e` (a direct call and one through an inlined helper store C's address) and `DeployerConstructorCalls.e2e`; the compiler VM cases in `MsgSenderGenesis.test` cover the genesis step's checks)*
       call has a call slot, and the callee stores M;
 - [x] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(covered by `DeployerConstructorCall.test.ts`: `binds both slots of a two-call constructor` drives the real create with two callees, and `DeployerCreation.e2e`'s two-slot case deploys both and calls the child)*
-- [x] a constructor that calls a void `registry.register(x)` on a registry compiled with *(covered by `DeployerCreation.e2e`: `binds a void registry call that stores the child as msg.sender` asserts R's stored x is 7 and its who is the child's master lock)*
+- [x] a constructor that calls a void `registry.register(x)` on a registry compiled with *(covered by `DeployerConstructorCalls.e2e`: a void `register` writes `registered[msg.sender]` with the child as the sender)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
 - [x] the same against a registry compiled without the option, and against a callee compiled with *(covered by `DeployerCreation.e2e`: `refuses a void callee that does not publish records`, `refuses a callee whose called arm is unsafe`, and `refuses a callee that is not record-sound before building` each expect `DeployerCalleeError` before building)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
-- [x] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by `DeployerCreation.e2e`: `binds a void USDT-shaped transfer compiled with callRecords all`; the token's sent total becomes 5 and the child is created)*
+- [x] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by `DeployerConstructorCalls.e2e`, with the refusal of the same callee compiled without `callRecords: 'all'`; also covered by `DeployerCreation.e2e`: `binds a void USDT-shaped transfer compiled with callRecords all`; the token's sent total becomes 5 and the child is created)*
 - [x] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(covered by `DeployerConstructorCall.test.ts`: a one-byte `OP_1` callee unlocking fails the create at the call-site code-marker check with a failed `OP_VERIFY`; D13 records it)*
 
 **Any number of deployments** (same file):
@@ -4785,30 +4825,53 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       not its satoshi/token container; the coin is unspendable by the contract. `{value: v}` on a call lands on the
       callee's master lock the same way.
 - [x] **D2.** (B7.15) Deploy<C>'s redeem size, for a minimal C and for a C with one event, one payment and one
-      call: 1,064 B, 2,037 B.
-- [x] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,400 and 3,400 satoshis;
-      the sweep is 1,159 B and 2,132 B at 1 sat/B (rounded up to the next 100 in V_DEPLOY).
+      call: 830 B, 1,864 B. Measured 2026-11-14 by compiling with `deployer: true`: the minimal C is
+      `contract C { int n; constructor() { n = 1; } function read() { require(n == 1); } }`, the other's
+      constructor `constructor(I i, address payee) payable { ok = i.f(5); emit Made(7); payable(payee).transfer(1500); }`
+      (was 1,064 B and 2,037 B, measured 2026-11-12).
+- [x] **D3.** (B7.15) V_DEPLOY(C) for both, and the measured sweep size and fee: 2,200 and 3,200 satoshis;
+      the sweep is 925 B and 1,959 B at 1 sat/B (rounded up to the next 100 in V_DEPLOY). Measured 2026-11-14 on
+      the sweep the SDK builds (`buildDeployerSweep`: one deployer coin of V_DEPLOY, one P2PKH output) for D2's two
+      Cs (was 2,400 and 3,400 satoshis; 1,159 B and 2,132 B).
 - [x] **D4.** (B0.6, B9.12) Creation size through a creator, compared with today's `new` for the same child:
-      2,989 B against 2,595 B (a factory call creating one `Child`, production VM; the deployer path adds one
-      prep input pair and the child's create unlocking).
+      4,673 B against 2,595 B (a factory call creating one `Child`, production VM; the deployer path adds one
+      prep input pair and the child's create unlocking). Measured 2026-11-14 with the SDK's transaction survey
+      (`SOLIDCASH_TX_SURVEY`) on `DeployerCreatingCall.e2e`'s one-child call: unlockings of 1,504 B (the factory
+      master), 242 B (its data record), 2,299 B (the deployer input, which carries C's code) and 100 B (the author
+      coin). Was 2,989 B; today's 2,595 B is B0.6's figure, not re-measured.
 - [x] **D5.** (B0.6, B9.12) A top-level deployment, prep plus creation, compared with today's direct genesis:
-      2,568 B (prep 263 + creation 2,305) against 447 B, for a constructor that writes one record.
-- [x] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: 90,597 ops of a
-      1,645,600 budget (800 per byte of the input's 2,057-byte unlocking and redeem), 5.5% used; the author
-      coin's P2PKH input costs 28,217. Measured on a production-profile creation (2,408-byte transaction).
+      3,142 B (prep 263 + creation 2,879) against 447 B, for a constructor that writes one record. Measured
+      2026-11-14 with the transaction survey on `DeployerCreation.e2e`'s first case, D2's minimal C (was 2,568 B,
+      prep 263 + creation 2,305); 447 B is B0.6's figure.
+- [x] **D6.** (B9.12) The operation-cost headroom of the deployer input, for both Cs: for D2's minimal C,
+      115,282 ops of a 1,944,000 budget ((41 + its 2,389-byte unlocking) × 800), 5.9% used, on a 2,879-byte
+      creation; for D2's C with an event, a payment and a call, 279,450 of 3,474,400 (4,302-byte unlocking), 8.0%,
+      on a 7,039-byte creation, where the callee's master input costs 197,701 and its data record 18,672; the
+      author coin's P2PKH input costs 28,217. Measured 2026-11-14 with the transaction survey on production-profile
+      creations (was 90,597 of 1,645,600, 5.5%, on a 2,408-byte creation).
 - [x] **D7.** (B6.10) The genesis step's size in a contract that has it (estimated about 140 B), reported
-      against the 100 B the user named: 300 B (shared resolution, entry size and (X, 0) checks, and the
-      `OP_INVOKE` site; the shared body itself is about 270 B).
+      against the 100 B the user named: 151 B, one shared function (a 147-byte body and its `OP_DEFINE`). Measured
+      2026-11-14 by compiling a contract with two record-publishing entries that read `msg.sender`: `genesisCalls`
+      adds 276 B to it, against 84 B to the same contract without the reads, so the step, the branch at each read
+      and the one at the caller-edge check cost 192 B together. Was 300 B, the shared body about 270 B; the step
+      now reads the 46-byte genesis call once into its fields, and leaves the check of (X, 0) to the entry's own.
 - [x] **D8.** (B0.6, B6.10) The size of a contract that reads `msg.sender` three times and returns a value:
-      1,944 B before, 2,278 B after (+334 B; the shared helper is emitted once and invoked at each read).
+      2,093 B with `genesisCalls: false`, 2,338 B with the default (+245 B; the genesis step is one shared
+      function, invoked at each read). Measured 2026-11-14 by compiling a contract whose
+      `function f(address x) public returns (int)` reads `msg.sender` three times (was 1,944 B before the plan's
+      changes and 2,278 B after, +334 B).
 - [x] **D9.** (B7.15) For a block reader compiled with `deployer: true`: C's size with the constant-lock
-      oracle form, compared with the sentinel form of its plain compile: 467 B against 467 B (the contract's
-      own code is unchanged); Deploy<C> is 523 B.
+      oracle form, compared with the sentinel form of its plain compile: 1,460 B against 1,460 B (the contract's
+      own code is unchanged: both forms now bind the oracle pool through the `__oraclePool` contract argument);
+      Deploy<C> is 848 B. Measured 2026-11-14 by compiling
+      `contract C { int n; constructor() { n = 1; } function f() { n = block.number; } }` (was 467 B against
+      467 B; 523 B).
 - [x] **D10.** (B9.12) The operation cost of the creator's binding check, which reads and splits the
       deployer's unlocking of up to 10 kB, against the creator input's budget: the whole creator input costs
-      155,379 ops of a 1,231,200 budget (800/byte x 1,539 bytes), 12.6% used; the deployer input itself costs
-      106,345 and the author coin 28,217. Measured on the production-profile creating call of B9.5; the
-      binding is inside the creator input's 155,379.
+      156,843 ops of a 1,236,000 budget ((41 + its 1,504-byte unlocking) × 800), 12.7% used; the deployer input
+      itself costs 121,414 of 1,872,000 and the author coin 28,217. Measured 2026-11-14 with the transaction survey
+      on `DeployerCreatingCall.e2e`'s one-child call (4,673 B, D4); the binding is inside the creator input's
+      156,843 (was 155,379 of 1,231,200; the deployer input 106,345).
 - [x] **D11.** (B0.6, B8.12) What the second compile costs where it runs: the compile time of a creator with
       one `new` against the same creator with the `new` removed, the compile time of C with and without
       `deployer: true`, and the bytes one `DeployerAbi` adds to an artifact file: 35.4 ms against 13.6 ms,
@@ -4832,65 +4895,105 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       carry `deployer`.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
-      still passes. Measured on the shipped creation of `DeployerCreation.e2e`'s constructor-call case
-      (a record-sound callee that returns a value): the creation is 5,401 B; the deployer input costs
-      168,524 operations of a 2,926,400 budget (5.8%, from its 2,823-byte unlocking and 835-byte redeem),
-      the callee's master input 177,981 of a 2,182,400 budget (8.2%), and its data input 18,672; the callee
-      unlocking is 1,385 B. For a near-6 kB child, the same creation with a 6,656-byte `C` is 10,267 B; the
-      deployer input costs 244,277 operations of a 6,183,200 budget with 231 hash iterations, the callee's master
-      177,981 of a 1,140,800 budget with 39 hash iterations, and its data input 18,672 of 226,400 with 5; the
-      deployer unlocking is 7,688 B and the redeem 939 B. The small case's callee sender step hashes the
-      2,823-byte `S` as 45 64-byte digest blocks. A two-slot creation of the same
-      shape is 7,845 B: its deployer input costs 238,422 operations, its two callee masters 254,346 and
-      254,352 (each with an 18,672-operation data input), its deployer unlocking is 3,320 B and its redeem
-      1,099 B; both callee unlockings are 1,385 B. A callee unlocking shorter than 300 bytes was probed with a
-      one-byte `OP_1` unlocking in `DeployerConstructorCall.test.ts`: the create fails at the call-site
-      code-marker check with a failed `OP_VERIFY`, so the shortest measured unlocking that passes is the
-      shipped 1,385 B.
+      still passes. Measured 2026-11-14 with the transaction survey on production-profile creations whose callee
+      reads `msg.sender` (the shape of `DeployerCreation.e2e`'s sender-reading case), so that the callee runs the
+      step. With C's code at 2,115 B the creation is 6,980 B: the deployer input costs 213,110 operations of a
+      2,920,800 budget (7.3%, 3,610-byte unlocking), the callee's master input 288,731 of 1,744,800 (16.5%) with
+      85 digest iterations against its standard limit of 1,090 (7,633 nonstandard), and its data input 18,672 of
+      226,400. With C's code at 6,204 B the creation is 11,069 B: the deployer input costs 270,398 of 6,192,000
+      with 230 iterations (7,699-byte unlocking), the callee's master 362,354 of 1,744,800 (20.8%) with 149
+      iterations. Of those, the step's hash256 of `21 ‖ X ‖ 02 c0 ce 88 ‖ S` (S the 36-byte argument push and the
+      code) takes 36 and 100. The callee's unlocking is 2,140 B in both; at these costs an unlocking shorter than
+      about 320 B (2 kB C) or 412 B (6 kB C) could not fund the operation cost, and one shorter than 129 B or
+      257 B not the standard digest iterations. A callee that does not read the sender runs no genesis step: the
+      constructor-call creation of `DeployerCreation.e2e` is 5,879 B, its callee master 178,215 of 1,141,600 with
+      39 iterations (1,386-byte unlocking) whatever C's size (its near-6 kB case is 10,279 B, the deployer input
+      268,136 of 6,192,000 with 230 iterations), and its two-slot creation is 8,361 B, each callee master 254,580
+      of 1,141,600. The one-byte `OP_1` callee unlocking of `DeployerConstructorCall.test.ts` still fails at the
+      call site's code-marker check. Was: a 5,401 B creation, the deployer input 168,524 of 2,926,400, the callee
+      master 177,981 with a 1,385 B unlocking; near-6 kB 10,267 B; two slots 7,845 B.
 - [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
       the minimal C; and the largest number of such children that fits one standard transaction:
-      one prep is 263 B; a one-child creating call is 2,989 B. Each further loop child adds its prep input, author
-      coin and stride group; the two-child loop e2e passes. The child-count limit was not probed.
+      one prep is 263 B; a one-child creating call is 4,673 B (D4). Each further loop child adds its prep input,
+      author coin and stride group: `DeployerCreatingCall.e2e`'s two-child loop creation is 4,697 B, each child's
+      deployer input a 952-byte unlocking costing 122,989 operations, each author coin 100 B. The child-count
+      limit was not probed. Measured 2026-11-14 with the transaction survey (was a one-child call of 2,989 B).
 - [x] **D16.** The genesis call, in three parts: (B6.10) bytes added per record-publishing entry and per arm
-      (estimated 25 and 3): 89 B per record-publishing entry, about 0 per arm (measured -23 B, layout noise); (B7.15) bytes the callee list and the mask add to Deploy<C> for s
-      = 0, 1 and 2: 511, 918, 1,591 B; (B8.12) bytes of a creator's binding per `new` site: -85 B (the binding
-      replaces the embedded child code, so the creator shrinks).
+      (estimated 25 and 3): about 3 B per record-publishing entry, its `OP_INVOKE` of the one function that holds
+      the size check, the tagged preimage and the check of (X, 0) (about 50 B, defined once two entries share it),
+      and 1 B for a `receive` arm: `genesisCalls` adds 71, 80, 83 and 91 B to contracts of 1, 2, 4 and 8 returning
+      entries, the 23-byte marker included, and 72 B to one returning entry beside a `receive`; (B7.15) bytes the
+      callee list and the mask add to Deploy<C> for s = 0, 1 and 2: 729, 1,309, 1,610 B; (B8.12) bytes of a
+      creator's binding per `new` site: -1,630 B (the binding replaces the embedded child code, so the creator
+      shrinks: 1,424 B against 3,054 B with the child folded in by the pre-B10 escape `__legacyDeployFold`; a
+      second site adds 219 B bound, 1,640 B folded). Measured 2026-11-14 by compiling (was 89 B per entry and
+      about 0 per arm; 511, 918, 1,591 B; -85 B).
 - [x] **D17.** (B6.10) Void records and record accounting: the bytes `callRecords: 'all'` adds to a contract
       with no returning function and three void functions of 0, 1 and 2 arguments, and to a contract that
       already has a returning function; the bytes B6.4 adds to a contract whose arms did not all count:
       0 B, 0 B; 0 B. Master already settles universal void records, so `'all'` changes the ABI only (the
       plan's recorded deviation). Estimated: 20 bytes plus 8.5 per argument per function, and about 100 once.
+      Measured 2026-11-14 by compiling with the default `genesisCalls`: 1,731 B and 1,876 B under either
+      `callRecords` value; with `genesisCalls: false` they are 1,648 B and 1,791 B, the difference being the
+      marker and the genesis call, since every arm already counts its carriers through the universal void records.
 - [x] **D18.** The created-children list: (B8.12) bytes added to a marked creator per arm, once for the
-      shared check, and per `new` site, and the marker: 47 B for one arm and one site together (parameter,
-      list check and marker); the split is not separable at this emission. (B7.15) bytes step 8 adds to
-      Deploy<C> of a sender-reading child: 194 B (408 B plain against 602 B with the sender and its list);
-      (B9.12) bytes added to a creation: +394 B for one child against today's embedded `new` (2,989 B against
-      2,595 B, D4).
+      shared check, and per `new` site, and the marker: 42 B for one arm and one site together (parameter,
+      list check and marker): 1,452 B against 1,410 B for the same creator of a child that stores `tx.origin`
+      where the other stores `msg.sender`; a second arm adds 6 B more (1,692 B against 1,644 B). (B7.15) bytes
+      step 8 adds to Deploy<C> of a sender-reading child: 163 B (1,058 B against 895 B for the child that stores
+      `tx.origin`). (B9.12) bytes added to a creation: +355 B for one child (5,242 B against 4,887 B, the same
+      factory call of the child that does not read the sender, production profile, transaction survey).
       Estimated 6, 30, 6, 23, 70 and 33. And the same
-      for a child that does not read the sender, which must be 0 throughout.
+      for a child that does not read the sender, which must be 0 throughout: its creator has no list parameter
+      and its marker no bit 0 (flags `02` against `03`), and its Deploy<C> has no step 8. Measured 2026-11-14 (was
+      47 B; 194 B, 408 B against 602 B; +394 B against today's embedded `new`, 2,989 B against 2,595 B).
 - [x] **D19.** (B0.6, B9.12) Required container rows: the bytes they add to Deploy<C> for the pools' shape
-      (measured on minimal C: a token row adds 62 B, 573 B against 511 B; a required satoshi row adds 24 B)
-      (one satoshi row and one token row, each with its count of outputs at the lock). The registry's creation
-      of such a pool is measured on the shipped creator: a BCH pool with one satoshi row is 4,929 B, and a token
-      pool with one satoshi row and one token row is 5,672 B (`DeployerRegistry.e2e` on the production profile).
-      `bch-next` has no SDK PoolGenesis build under the production limits, which B0.6 allows leaving empty with
-      this report.
+      (one satoshi row and one token row, each with its count of outputs at the lock): a token row
+      (`pragma tokencontainer single`) adds 220 B, 1,068 B against 848 B for the same C without the pragma; a
+      satoshi row adds 220 B (a payable constructor, 1,050 B against D2's 830 B), and its being required
+      (`pragma satoshicontainer single`, on a C with a payable function) 22 B more, 1,072 B. The registry's
+      creation of such a pool is measured on the shipped creator: a BCH pool with one satoshi row is 5,272 B, and
+      a token pool with one satoshi row and one token row is 6,234 B (`DeployerRegistry.e2e` on the production
+      profile, transaction survey). Measured 2026-11-14 (was 62 B, 573 B against 511 B; 24 B; 4,929 B and
+      5,672 B). `bch-next` has no SDK PoolGenesis build under the production limits, which B0.6 allows leaving
+      empty with this report.
 - [x] **D20.** (B7.15) The user's pools: the size of Deploy<NotePool> and Deploy<TokenNotePool>, and the
-      smallest `create` unlocking of each against 10,000 bytes: 2,110 B and 2,129 B; 6,981 B and 8,063 B.
+      smallest `create` unlocking of each against 10,000 bytes: 1,990 B and 2,225 B; 6,993 B and 8,299 B.
+      Measured 2026-11-14 by compiling `bch-next/contracts/BchPool.scash` and `TokenPool.scash`, the pools' names
+      now, read-only, with `deployer: true` and the options of `bch-next`'s `scripts/check-contracts.ts`; the
+      smallest unlocking by the compiler's own formula (`smallestCreateUnlockingSize`). Was 2,110 B and 2,129 B;
+      6,981 B and 8,063 B.
 - [x] **D21.** (B6.0) The exact stack in every arm: bytes added per arm kind (entry function with 0, 1 and
       three visible parameters, `receive`, `fallback`, the multi-call entry, `__construct`), and the size of a
       whole contract before and after, for a contract with one arm and for the user's pools: over a 57-byte
-      empty stateful contract, entry-0 adds 1,166 B, entry-1 1,176 B, entry-3 1,233 B, `receive` 1,048 B,
-      `fallback` 1,050 B, `__construct` 1,015 B, and the multi-call entry 1,627 B (whole one-arm contract:
-      1,223 B; the same source compiled at `master` is 1,197 B, the base itself differs by 55 B). The pool
-      whole-contract pair is D20's Deploy<C> sizes; a per-pool plain compile was not re-measured.
+      empty stateful contract, with `genesisCalls` on (off), entry-0 adds 1,337 B (1,266 B), entry-1 1,355 B
+      (1,284 B), entry-3 1,407 B (1,336 B), `receive` 1,155 B, `fallback` 1,158 B, `__construct` 1,015 B, and
+      entry-0 beside the multi-call entry 1,547 B (1,467 B); the check itself is `OP_DEPTH n OP_NUMEQUALVERIFY`,
+      3 B in an arm (4 B once n passes 16), 8 B in a body that can also run as a frame, which tests its call
+      context around it. The pools' own code is 4,948 B (BchPool) and 5,986 B (TokenPool), 4,842 B and
+      5,873 B with `genesisCalls: false`. Measured 2026-11-14 by compiling (was entry-0 1,166 B, entry-1 1,176 B,
+      entry-3 1,233 B, `receive` 1,048 B, `fallback` 1,050 B, `__construct` 1,015 B, the multi-call entry
+      1,627 B). The comparison with `master` (1,197 B against a one-arm contract's 1,223 B) was not re-run.
 - [x] **D22.** (B7.18) Constructor collections and single containers: bytes one append site adds to
-      Deploy<C>: 334 B (845 B with one unconditional mapping write against 511 B for the scalar constructor); the
-      entry row's stride is one output. This is the ordinary vmap write path, not the journal.
-      Container rows: an optional satoshi row adds 20 B to Deploy<C> (531 against 511), a required row 24 B
-      (the extra 4 B is the single-container count check, 535); a `this.balance` journal read adds 1 B more
-      (532), and a constructor that sends satoshis adds 134 B (665). At birth a required row needs 1,200
+      Deploy<C>: 392 B (1,407 B with one unconditional mapping write against 1,015 B for the same C with the
+      mapping unwritten, which itself is 185 B over D2's 830-byte scalar constructor); a second write site adds
+      76 B (1,483 B); the entry row's stride is one output. This is now the A4.4 journal's append, where the
+      2026-11-13 figure was the ordinary vmap write path. Container rows: an optional satoshi row adds 220 B to
+      Deploy<C> (1,050 against 830), a required row 22 B more (the single-container count check, 1,072, on a C
+      with a payable function); a `this.balance` journal read adds 1 B (1,051), and a constructor that sends
+      satoshis adds 67 B (1,117). Measured 2026-11-14 by compiling (was 334 B, 845 against 511; 20 B, 24 B, 1 B
+      and 134 B). At birth a required row needs 1,200
       satoshis (RESERVE) beyond the deploy value; an optional row holds exactly the deploy value, and a value
       from 1 to 1,199 is raised to 1,200.
+      Traced 2026-11-14 on an earlier state of the code and not re-traced on the final code, where D2's minimal C's
+      `create` costs 115,282 (D6) (BCH 2026 VM, 31 traced shapes plus the e2e constructors at 1, 4, 8 and 12
+      appends): a journal scan costs about 1,971 per record inline (up to 2,373 where the loop body is outlined) plus 3.003
+      per byte of the records it passes; step 12's second scan 1,938 per record plus 1,268 per entry row and
+      16·m(m+1) for the m entry slots; the census 8,190 per row; an append with its row about 31,400 (an int) to
+      40,900 (a four-field struct); a look about 6,100 to 18,900; each written collection about 23,000; `create`
+      with no journal 129,000 to 139,000. The generator's bound is that model with a 1.25 margin, at least 1.38
+      times every measured cost. Code size binds first: each write site adds 480 to 510 bytes to the create input
+      (most of it C's own constructor arm), so `unlocking-too-large` comes at 13 or 14 appends, where `create`
+      costs about 1.7 million of the 8,032,800 a full input allows.

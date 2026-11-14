@@ -105,14 +105,26 @@ forward-looking opaque `bytes` are all supported; an opaque read checks no diges
 
 ### Calls made by a constructor (genesis calls)
 
-A constructor's external call is the same co-spend covenant with two additions. Its call record's digest
-covers a tagged preimage, `ff ff ‖ tag ‖ selector ‖ arguments`, where the 46-byte tag names the deployer
-coin `(X, 0)`, the constructor's call slot, the callee's input and the child's master output. A callee that
-both reads `msg.sender` and carries the tag resolves its caller through the **genesis step**: it checks that
-the named input spends `(X, 0)`, that the output at the tag's index carries `X‖02`, that its lock is
-`P2SH32(pin(X) ‖ A ‖ code)` rebuilt from the deployer's unlocking, that a record-sound child's code ends with
-the birth trailer `20 ‖ D ‖ 75` (whose `D` names the deployer coin's lock), and that the callee list at byte 5
-of that unlocking names this input at the tag's slot.
+A constructor's external call is the same co-spend covenant with these additions. The callee's entry takes
+`__internal__genesisCall`: empty for an ordinary call; in a constructor's call, the tag `X ‖ slot` followed by
+g_in, the index of the input that spends the deployer coin `(X, 0)` (36 bytes), and for an entry that reads
+`msg.sender` five more fields: g_out and the byte ranges of the deployer's unlocking that hold the child's
+arguments A and its code (46 bytes). Every tagged entry requires input g_in to spend `(X, 0)`; an entry run as a
+frame of the multi-call entry (call context 0 or more) and an entry that creates a child require the parameter
+empty, so a constructor's call is answered by a standalone run, and a payable tagged entry requires `msg.value`
+to be 0. The record's digest covers `ff ff ‖ X ‖ slot ‖ selector ‖ arguments`.
+
+At each call site j, `create` checks that the callee input's lock is the call's target (a P2SH32 lock), that
+the code which ran there carries the code marker with the record-sound flag, and that slot j runs once (its
+bit in the executed-calls mask). Its epilogue checks the callee list and that the record's carrier, at the
+slot's return index, is the callee's own: its category with no capability, no fungible units, the lock `51`,
+at most 1,200 satoshis.
+
+A callee that both reads `msg.sender` and carries the tag resolves its caller through the **genesis step**:
+input g_in spends `(X, 0)`; output g_out carries `X‖02` and its lock is `P2SH32(pin(X) ‖ A ‖ code)` rebuilt
+from the deployer's unlocking; the code ends with the birth trailer `20 ‖ D ‖ 75`, whose `D` is the lock of
+the coin input g_in spends; and the callee list at byte 5 of that unlocking names this input at the tag's
+slot. `__internal__msgSenderCategory` is not read on that path.
 
 A call whose result the constructor discards is bound like any other when the callee publishes **void
 records**: compile the callee with `callRecords: 'all'` and its void entries settle a record too. The two
@@ -218,8 +230,8 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
 - **Script is sole arbiter:** unchecked == unconstrained.
 - **Genesis sender:** an entry that reads `msg.sender` and carries the genesis call resolves it to the
   child's master lock, never to `tx.origin`, when the tag is non-empty. The checks above make the child's
-  lock a fresh P2SH32 of `pin(X)` and the deployer's own code; without the birth trailer the binding rests on
-  the lock and the callee list, which is why every record-sound child gets the trailer.
+  lock a fresh P2SH32 of `pin(X)` and the deployer's own code. A child whose code has no birth trailer is
+  never a genesis sender, however it was born: its constructor makes no call.
 - **The callee list:** Deploy<C>'s unlocking carries, immediately after the `create` selector, a push of one
   2-byte input index per call slot. `create` checks each slot against the call its constructor wrote, and the
   callee checks its own entry, so a call can only answer a constructor slot it belongs to.

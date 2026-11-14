@@ -510,7 +510,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     };
     const t = await deploy(compileString(source, {
       deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
-    } as never));
+    } as never), { fee: 1_000_000n });
     const cArtifact = compileString(source, {
       deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
     } as never);
@@ -910,7 +910,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     };
     const t = await deploy(compileString(source, {
       deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
-    } as never));
+    } as never), { fee: 1_000_000n });
     const cArtifact = compileString(source, {
       deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
     } as never);
@@ -921,5 +921,81 @@ describe('a top-level deployment through Deploy<C>', () => {
     const stored = (await t.contract.getState()) as { who?: Uint8Array };
     expect(binToHex(stored.who ?? new Uint8Array())).toBe(binToHex(addressToLockScript(c.contract.address)));
   });
+
+
+  it('binds a void registry call that stores the child as msg.sender (A7, B7.16)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const source = `${P}
+      interface I { function register(int x) external; }
+      contract R { int x; address who;
+        function register(int v) external { x = v; who = msg.sender; } }
+      contract C { bool ok; constructor(I i) { i.register(7); ok = true; } function read() { require(ok); } }`;
+    let serial = 0;
+    const deploy = async (artifact: any, extra: any = {}) => {
+      serial += 1;
+      const fundingUtxo: Utxo = {
+        txid: `${(0xc8 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
+      };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock, ...extra,
+      });
+    };
+    const r = await deploy(compileString(source, {
+      deployer: true, genesisCalls: true, callRecords: 'all', messageBus: false, primaryContractName: 'R',
+    } as never));
+    const cArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+    } as never);
+    const c = await deploy(cArtifact, {
+      initArgs: [addressToLockScript(r.contract.address)],
+      constructorCallees: [{ contract: r.contract, args: [7n] }],
+    });
+    const stored = (await r.contract.getState()) as { x?: bigint; who?: Uint8Array };
+    expect(stored.x).toBe(7n);
+    expect(binToHex(stored.who ?? new Uint8Array())).toBe(binToHex(addressToLockScript(c.contract.address)));
+  });
+
+
+  it('binds a void USDT-shaped transfer compiled with callRecords all (A7, B6)', async () => {
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const source = `${P}
+      interface I { function transfer(address to, int amount) external; }
+      contract U { int sent; function transfer(address to, int amount) external { sent = sent + amount; } }
+      contract C { bool ok; constructor(I u) { u.transfer(msg.sender, 5); ok = true; } function read() { require(ok); } }`;
+    let serial = 0;
+    const deploy = async (artifact: any, extra: any = {}) => {
+      serial += 1;
+      const fundingUtxo: Utxo = {
+        txid: `${(0xc0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
+      };
+      await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
+      return StatefulContract.deploy(artifact, [], {
+        provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+        changeAddress: change.address, senderLockingBytecode: authorLock, ...extra,
+      });
+    };
+    const u = await deploy(compileString(source, {
+      deployer: true, genesisCalls: true, callRecords: 'all', messageBus: false, primaryContractName: 'U',
+    } as never));
+    const cArtifact = compileString(source, {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'C',
+    } as never);
+    const c = await deploy(cArtifact, {
+      initArgs: [addressToLockScript(u.contract.address)],
+      constructorCallees: [{ contract: u.contract, args: [alicePkh, 5n] }],
+    });
+    expect((await u.contract.getState() as { sent?: bigint }).sent).toBe(5n);
+    expect(c.categoryId).not.toBe(u.contract.categoryId);
+  });
+
+
 
 });

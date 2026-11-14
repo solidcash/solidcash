@@ -4669,15 +4669,15 @@ their contract with `deployer: true`:
 - [ ] a constructor that calls `token.transfer(owner, supply)` on an ERC20-shaped contract compiled in B6's *(not covered: the one-slot SDK path is exercised on a returning callee; this ERC20-shaped call is not)*
       way: the token debits the child's own balance, credits `owner`, and the constructor reads the returned
       `true`;
-- [ ] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(not covered: the sender-reading callee's tag probe does not settle yet; the compiler VM cases cover it)*
+- [x] a constructor that calls a `msg.sender` reader through a helper function: the helper is inlined, the *(covered by `DeployerCreation.e2e`: `binds a constructor call to a callee that reads msg.sender`; the helper `mark()` is inlined, the call has a slot, and T stores the child's master lock)*
       call has a call slot, and the callee stores M;
 - [x] a constructor with two call slots to two contracts: both callees resolve M, each at its own slot; *(covered by `DeployerConstructorCall.test.ts`: `binds both slots of a two-call constructor` drives the real create with two callees, and `DeployerCreation.e2e`'s two-slot case deploys both and calls the child)*
-- [ ] a constructor that calls a void `registry.register(x)` on a registry compiled with *(not covered: a void callee's record is not exercised on the SDK path; the compiler VM cases cover it)*
+- [x] a constructor that calls a void `registry.register(x)` on a registry compiled with *(covered by `DeployerCreation.e2e`: `binds a void registry call that stores the child as msg.sender` asserts R's stored x is 7 and its who is the child's master lock)*
       `callRecords: 'all'`: the registry stores x with the child as `msg.sender`;
 - [x] the same against a registry compiled without the option, and against a callee compiled with *(covered by `DeployerCreation.e2e`: `refuses a void callee that does not publish records`, `refuses a callee whose called arm is unsafe`, and `refuses a callee that is not record-sound before building` each expect `DeployerCalleeError` before building)*
       `genesisCalls: false`, and against one with an `unsafe` function: the SDK fails before building, with
       `DeployerCalleeError` naming the callee, the function, and the option or the arm in the way;
-- [ ] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(not covered: a void USDT-shaped callee is not exercised)*
+- [x] a constructor that calls the void `transfer` of a USDT-shaped token compiled with the option; *(covered by `DeployerCreation.e2e`: `binds a void USDT-shaped transfer compiled with callRecords all`; the token's sent total becomes 5 and the child is created)*
 - [x] a constructor callee with an unlocking shorter than 300 bytes: record what the local run reports (A7). *(covered by `DeployerConstructorCall.test.ts`: a one-byte `OP_1` callee unlocking fails the create at the call-site code-marker check with a failed `OP_VERIFY`; D13 records it)*
 
 **Any number of deployments** (same file):

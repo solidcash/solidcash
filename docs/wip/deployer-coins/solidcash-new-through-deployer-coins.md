@@ -58,8 +58,8 @@ soundness defects, all fixed with tests that fail without the fix.
 
 Built on the same branch: the generator checks O2 to O10 (O8 literally first in every arm, checked by a walk over
 the finished code; O7 with A5's closed list of reasons; O4 on the final artifact); `genesisCalls` on by default
-(record-sound contracts grow by 72 to 1,150 bytes, median 83; under `callBatch` five token-shaped corpus
-contracts no longer fit the multi-call entry); the A4.4 journal with struct values and field writes, and its
+(record-sound contracts grow by 70 to 291 bytes, median 77.5; under `callBatch` every corpus contract keeps
+the multi-call entry); the A4.4 journal with struct values and field writes, and its
 bounds (D22); B8.8's `value` through creating calls; A14 item 4, a creating call derived from the creator's own run
 (Q ‖ A read from the trace, run order, conditional and loop `new`, runtime-loop payments in satoshis, tokens and
 NFTs, the trailing outputs after a loop of `new` per B8.9, and each child's budget pad); one top-level creation
@@ -4855,11 +4855,14 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       adds 276 B to it, against 84 B to the same contract without the reads, so the step, the branch at each read
       and the one at the caller-edge check cost 192 B together. Was 300 B, the shared body about 270 B; the step
       now reads the 46-byte genesis call once into its fields, and leaves the check of (X, 0) to the entry's own.
+      Updated 2026-11-14, after the sender resolution became one shared function: that function is 281 B (a 276-byte
+      body), and `genesisCalls` adds 257 B to the measured contract (2,136 B against 1,879 B).
 - [x] **D8.** (B0.6, B6.10) The size of a contract that reads `msg.sender` three times and returns a value:
       2,093 B with `genesisCalls: false`, 2,338 B with the default (+245 B; the genesis step is one shared
       function, invoked at each read). Measured 2026-11-14 by compiling a contract whose
       `function f(address x) public returns (int)` reads `msg.sender` three times (was 1,944 B before the plan's
       changes and 2,278 B after, +334 B).
+      Updated 2026-11-14, same change: 2,098 B against 2,093 B with `genesisCalls: false` (+5 B).
 - [x] **D9.** (B7.15) For a block reader compiled with `deployer: true`: C's size with the constant-lock
       oracle form, compared with the sentinel form of its plain compile: 1,460 B against 1,460 B (the contract's
       own code is unchanged: both forms now bind the oracle pool through the `__oraclePool` contract argument);
@@ -4912,7 +4915,18 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       of 1,141,600. The one-byte `OP_1` callee unlocking of `DeployerConstructorCall.test.ts` still fails at the
       call site's code-marker check. Was: a 5,401 B creation, the deployer input 168,524 of 2,926,400, the callee
       master 177,981 with a 1,385 B unlocking; near-6 kB 10,267 B; two slots 7,845 B.
-- [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: none. `npm run contracts:check` reports BN254, MimcHash, NotePool and TokenNotePool all matching the source.
+- [x] **D14.** (B10.4) Which `bch-next` artifacts changed, and by how many bytes: four of its six. BchPool's code
+      grows by 83 B (4,865 to 4,948) and TokenPool's by 90 B (5,896 to 5,986): each record-publishing entry takes
+      `__internal__genesisCall` before `__internal__returnOutputIdx`, the code gains O8's check, the genesis call
+      and the record-sound marker, and the artifact says `genesisCalls: true`. BchPoolDeployer and
+      TokenPoolDeployer keep their code size (1,341 B and 1,369 B) and change one constant, the child's deployer
+      lock, as Deploy<BchPool> grows from 1,451 B to 1,990 B and Deploy<TokenPool> from 1,481 B to 2,225 B (D20);
+      their `childDeployers` and the creation bytecode in `deployTargets` change with it, and TokenPoolDeployer's
+      `create` takes one more block slot, a `deployDataNft`. BN254 and MimcHash match. Measured 2026-11-14 with
+      `bch-next`'s `scripts/check-contracts.ts` (`npm run contracts:check`, this plan's `build-contracts.ts --check`)
+      on a copy of the sandbox, against the artifacts `bch-next` holds, built 2026-11-13; 72ff826cf and the same with
+      the size changes of 2026-11-14 compile all six to the same code. `bch-next` is unchanged. (Was: none, with
+      BN254, MimcHash, NotePool and TokenNotePool, the pools' earlier names, matching the source.)
 - [x] **D15.** (B9.12) Any number of deployments: the size of one prep, and the bytes and the fee that each
       further child adds to a creating transaction (its deployer input, its author coin and its outputs), for
       the minimal C; and the largest number of such children that fits one standard transaction:
@@ -4976,6 +4990,8 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       5,873 B with `genesisCalls: false`. Measured 2026-11-14 by compiling (was entry-0 1,166 B, entry-1 1,176 B,
       entry-3 1,233 B, `receive` 1,048 B, `fallback` 1,050 B, `__construct` 1,015 B, the multi-call entry
       1,627 B). The comparison with `master` (1,197 B against a one-arm contract's 1,223 B) was not re-run.
+      Updated 2026-11-14, same change: entry-0 beside the multi-call entry is 1,544 B (1,467 B with `genesisCalls`
+      off).
 - [x] **D22.** (B7.18) Constructor collections and single containers: bytes one append site adds to
       Deploy<C>: 392 B (1,407 B with one unconditional mapping write against 1,015 B for the same C with the
       mapping unwritten, which itself is 185 B over D2's 830-byte scalar constructor); a second write site adds
@@ -4987,13 +5003,21 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       and 134 B). At birth a required row needs 1,200
       satoshis (RESERVE) beyond the deploy value; an optional row holds exactly the deploy value, and a value
       from 1 to 1,199 is raised to 1,200.
-      Traced 2026-11-14 on an earlier state of the code and not re-traced on the final code, where D2's minimal C's
-      `create` costs 115,282 (D6) (BCH 2026 VM, 31 traced shapes plus the e2e constructors at 1, 4, 8 and 12
-      appends): a journal scan costs about 1,971 per record inline (up to 2,373 where the loop body is outlined) plus 3.003
-      per byte of the records it passes; step 12's second scan 1,938 per record plus 1,268 per entry row and
-      16·m(m+1) for the m entry slots; the census 8,190 per row; an append with its row about 31,400 (an int) to
-      40,900 (a four-field struct); a look about 6,100 to 18,900; each written collection about 23,000; `create`
-      with no journal 129,000 to 139,000. The generator's bound is that model with a 1.25 margin, at least 1.38
-      times every measured cost. Code size binds first: each write site adds 480 to 510 bytes to the create input
-      (most of it C's own constructor arm), so `unlocking-too-large` comes at 13 or 14 appends, where `create`
-      costs about 1.7 million of the 8,032,800 a full input allows.
+      Re-traced 2026-11-14 on the final code (72ff826cf; the size changes of 2026-11-14 leave `create` as it is),
+      where D2's minimal C's `create` costs 115,282 (D6) (BCH 2026 VM, the same 31 traced shapes, an int value and a
+      struct of a uint64 and three bytes15 at 1 to 12 appends with no look or four, plus the e2e constructors at 1,
+      4, 8 and 12 appends): a journal scan costs about 1,971 per record inline (up to 2,373 where the loop body is
+      outlined) plus 3.003 per byte of the records it passes; step 12's second scan 1,938 per record plus 1,268 per
+      entry row and 16·m(m+1) for the m entry slots; the census 8,190 per row, all as before. Outside those loops an
+      append with its row adds about 31,400 (an int) to 41,800 (the struct; 37,900 for a struct of four bytes15), a
+      look 5,500 to 6,200 (an int) or 17,700 to 19,200 (the struct), a second written collection about 20,600 more
+      than a second append to the first and a third about 16,800; `create` with no journal costs 129,104 to
+      138,950. Each traced `create` costs 427 to 624 more than on the earlier code, all of it outside the loops, and
+      its unlocking is 47 or 48 bytes longer. The generator's bound is that model with a 1.25 margin, at least 1.38
+      times every measured cost (the measured cost is at most 0.724 of the bound on a traced shape, 0.712 on an e2e
+      constructor). Code size binds first: a write site adds 480 to 640 bytes to the smallest create unlocking, most
+      of them C's own constructor arm (the third site about 910), so `unlocking-too-large` comes at 14 appends of an
+      int and 13 of the struct, one fewer with four looks; the e2e constructor at 12 appends costs 1,663,782 of the
+      7,753,600 its 9,651-byte unlocking buys, against the 8,032,800 a full input allows. (Was, traced on an earlier
+      state of the code: an append 31,400 to 40,900, a look 6,100 to 18,900, a written collection about 23,000,
+      480 to 510 bytes per write site, `unlocking-too-large` at 13 or 14 appends.)

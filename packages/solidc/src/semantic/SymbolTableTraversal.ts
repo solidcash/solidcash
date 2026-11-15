@@ -1071,8 +1071,8 @@ export default class SymbolTableTraversal extends AstTraversal {
   // shadowed by a same-named contract struct, which is a distinct contract-scoped type in Solidity)
   private loopTargetsCounter = 0; // uniquifies the synthesized `__internal__loopTargets<n>` witness param per
   // per-iteration COMPUTED external-call target (Router02 IFoo(pairFor(.., path[i], ..)).swap())
-  // The `__internal__loopTargets<n>` witnesses standing in for a target the caller chooses: the call reads its callee
-  // from the witness and nothing compares the two. A witness bound to a receiver the contract computes is not one.
+  // The `__internal__loopTargets<n>` witnesses standing in for a keccak256 target the caller chooses: the call reads
+  // its callee from the witness and nothing compares the two. A witness bound to the target it stands for is not one.
   private uncheckedLoopTargets = new Set<string>();
   // The `computed-call-target-unverified` warnings of this unit by call position, emitted once every function is
   // visited: an inlined helper's copies and its retained definition share the call's position, so each call written
@@ -10051,10 +10051,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const legacyInterfaceCast = initExpr instanceof FunctionCallNode && initExpr.parameters.length === 1
           && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
-        // Only a target the caller chooses, held by a receiver defined once, may be replaced by its witness.
+        // Only a target the caller chooses, held by a receiver defined once, may be replaced by its witness, and only
+        // when it is computed with keccak256 (a CREATE2 address no lock equals). Any other target, a plain element
+        // of a parameter array included, keeps its initializer and takes the witness bound to it below, so a check
+        // on the local or on the element binds the callee.
         const canNeutralize = receiverDefinitions === 1 && (initExpr instanceof CastNode || legacyInterfaceCast
           || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0))
-          && resolvedInit !== undefined && this.loopTargetIsCallerChosen(resolvedInit, this.currentFunction);
+          && resolvedInit !== undefined && this.loopTargetIsCallerChosen(resolvedInit, this.currentFunction)
+          && this.targetHashesWithKeccak(resolvedInit, this.currentFunction?.body);
         // A loop may receive its per-iteration callee from another contract, decode it from the current action
         // payload or read it from the contract's own values. The local cannot survive to the epilogue, so give it a
         // per-iteration witness; inline dispatch binds that witness to the live runtime local before verifying the
@@ -10173,15 +10177,21 @@ export default class SymbolTableTraversal extends AstTraversal {
           // derives it from the loop array via the computed expression at build time), so the typed inline-loop
           // dispatch co-spends each. The loop index is the bare-identifier index of an array access in the target
           // (path[i]); a target with none (no per-iteration leaf), or one the caller does not choose, is left
-          // unmatched and fails closed downstream.
+          // unmatched and fails closed downstream. Only a keccak256 target (a CREATE2 address no lock equals) reads
+          // its callee from the witness unchecked; any other target stays the call's address, evaluated where the
+          // call runs, so the callee is checked against it and the witness bound to it (`loopIndexExpression`).
           const loopIdx = this.findLoopIndexInComputedTarget(ae, this.currentFunction?.body);
           if (loopIdx && this.loopTargetIsCallerChosen(ae, this.currentFunction)) {
             this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
-            this.uncheckedLoopTargets.add(witnessName);
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
-            node.addressExpression = witness.access;
+            if (this.targetHashesWithKeccak(ae, this.currentFunction?.body)) {
+              this.uncheckedLoopTargets.add(witnessName);
+              node.addressExpression = witness.access;
+            } else {
+              loopIndexExpression = cloneNode(loopIdx) as ExpressionNode;
+            }
             loopArrayVar = witnessName;
             // arrayId.definition is back-linked once the witness param symbol is created (below).
             loopWitnessArrayIds = [witness.arrayId];

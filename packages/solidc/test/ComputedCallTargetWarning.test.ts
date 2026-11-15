@@ -43,29 +43,27 @@ const KECCAK_LIB = `library PairLib {
   }
 }`;
 
-// A per-turn target the caller chooses: read from `__internal__loopTargets<n>[i]`.
+// A per-turn keccak256 target the caller chooses: read from `__internal__loopTargets<n>[i]`, unchecked.
 const PER_ITERATION = `pragma solidity ^0.8.0;
 interface IFoo {
   function m(uint256 x) external;
 }
-${ARITHMETIC_LIB}
+${KECCAK_LIB}
 contract C {
-  address factory;
   function f(address[] memory path) public {
-    for (uint i; i < path.length; i++) {
-      IFoo(L.at(factory, path[i])).m(5);
+    for (uint i = 0; i + 1 < path.length; i++) {
+      IFoo(PairLib.pairFor(path[i], path[i + 1])).m(5);
     }
   }
 }`;
 
 // The same per-turn target through a returning low-level call, which lowers to an opaque `__raw__` call.
 const LOW_LEVEL = `pragma solidity ^0.8.0;
-${ARITHMETIC_LIB}
+${KECCAK_LIB}
 contract C {
-  address factory;
   function f(address[] memory path, bytes memory data) public {
-    for (uint i; i < path.length; i++) {
-      (bool ok, ) = address(L.at(factory, path[i])).call(data);
+    for (uint i = 0; i + 1 < path.length; i++) {
+      (bool ok, ) = address(PairLib.pairFor(path[i], path[i + 1])).call(data);
       require(ok);
     }
   }
@@ -76,16 +74,44 @@ const INLINED_HELPER = `pragma solidity ^0.8.0;
 interface IFoo {
   function m(uint256 x) external;
 }
-${ARITHMETIC_LIB}
+${KECCAK_LIB}
 contract C {
-  address factory;
   function hopAll(address[] memory path) internal {
-    for (uint i; i < path.length; i++) {
-      IFoo(L.at(factory, path[i])).m(5);
+    for (uint i = 0; i + 1 < path.length; i++) {
+      IFoo(PairLib.pairFor(path[i], path[i + 1])).m(5);
     }
   }
   function f(address[] memory path) public {
     hopAll(path);
+  }
+}`;
+
+// Per-turn targets not computed with keccak256: the call checks its callee against the target and the witness against
+// it too, so neither is the spender's to choose.
+const BOUND_COMPUTATION = `pragma solidity ^0.8.0;
+interface IFoo {
+  function m(uint256 x) external;
+}
+${ARITHMETIC_LIB}
+contract C {
+  address factory;
+  function f(address[] memory path) public {
+    for (uint i; i < path.length; i++) {
+      IFoo(L.at(factory, path[i])).m(5);
+    }
+  }
+}`;
+
+const BOUND_ELEMENT = `pragma solidity ^0.8.0;
+interface IFoo {
+  function m(uint256 x) external;
+}
+contract C {
+  function f(address[] memory targets) public {
+    for (uint i = 0; i < targets.length; i++) {
+      IFoo target = IFoo(targets[i]);
+      target.m(5);
+    }
   }
 }`;
 
@@ -218,23 +244,33 @@ describe(`${CODE} warning`, () => {
     expect(warnings[0]).toContain(`${STORED_ADVICE} a computed one.`);
   });
 
-  it('warns once at a per-iteration computed target, saying view answers in such a loop are the spender\'s', () => {
+  it('warns once at a per-iteration keccak256 target, saying view answers in such a loop are the spender\'s', () => {
     const { artifact, warnings } = compileCollecting(PER_ITERATION);
     expect(inputNames(artifact, 'f').some((name) => name.startsWith('__internal__loopTargets'))).toBe(true);
     expect(warnings).toHaveLength(1);
     expect(warnings[0].startsWith(`Warning: [${CODE}] the call IFoo.m in function 'f' `
-      + `at line ${lineOf(PER_ITERATION, '.m(5)')} has a target the caller's arguments choose on each loop turn`))
+      + `at line ${lineOf(PER_ITERATION, '.m(5)')} has a target computed with keccak256 on each loop turn`))
       .toBe(true);
     expect(warnings[0]).toContain('as are the answers of view calls in such a loop');
-    expect(warnings[0]).toContain(`${STORED_ADVICE} one the caller's arguments choose.`);
+    expect(warnings[0]).toContain(`${STORED_ADVICE} a computed one.`);
   });
 
-  it('warns at a returning low-level call on a per-iteration computed target', () => {
+  it('binds, and does not warn at, a per-turn target not computed with keccak256', () => {
+    // A computation without a hash and a plain parameter element held in a local: each keeps its witness, now checked
+    // against the target where the call runs.
+    for (const source of [BOUND_COMPUTATION, BOUND_ELEMENT]) {
+      const { artifact, warnings } = compileCollecting(source);
+      expect(inputNames(artifact, 'f').some((name) => name.startsWith('__internal__loopTargets'))).toBe(true);
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  it('warns at a returning low-level call on a per-iteration keccak256 target', () => {
     const { artifact, warnings } = compileCollecting(LOW_LEVEL);
     expect(inputNames(artifact, 'f').some((name) => name.startsWith('__internal__loopTargets'))).toBe(true);
     expect(warnings).toHaveLength(1);
     expect(warnings[0].startsWith(`Warning: [${CODE}] the low-level .call() in function 'f' `
-      + `at line ${lineOf(LOW_LEVEL, '.call(data)')} has a target the caller's arguments choose`)).toBe(true);
+      + `at line ${lineOf(LOW_LEVEL, '.call(data)')} has a target computed with keccak256`)).toBe(true);
   });
 
   it('names the entry function for a call written in a helper it inlines, once', () => {
@@ -260,7 +296,7 @@ describe(`${CODE} warning`, () => {
     expect(view).toContain(`${STORED_ADVICE} a computed one.`);
     const swap = warnings.find((message) => message.includes('IPair.swap'));
     expect(swap?.startsWith(`Warning: [${CODE}] the call IPair.swap in function 'swapAlong' `
-      + `at line ${lineOf(VIEW_AND_SWAP, '.swap(reserve)')} has a target the caller's arguments choose`)).toBe(true);
+      + `at line ${lineOf(VIEW_AND_SWAP, '.swap(reserve)')} has a target computed with keccak256`)).toBe(true);
   });
 
   it('warns at every view call of a loop that makes only view calls', () => {

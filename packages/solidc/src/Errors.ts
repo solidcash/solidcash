@@ -1443,17 +1443,18 @@ export class StatefulAddressPaymentWarning {
 
 /**
  * Which witness a `computed-call-target-unverified` warning names: the callee of a straight-line keccak256 target, the
- * callee of a loop's per-turn target the caller's arguments choose, or the answer of a view call through a loop local
- * computed with keccak256, which is not made at all.
+ * callee of a loop's per-turn keccak256 target the caller's arguments choose, or the answer of a view call through a
+ * loop local computed with keccak256, which is not made at all.
  */
 export type ComputedCallTargetKind = 'straight-line' | 'per-turn' | 'view-answer';
 
 /**
- * A call on a computed target takes its callee, or a view call through it its answer, from a witness the spender
- * supplies, and nothing compares the two: a straight-line keccak256 target such as `IPair(pairFor(factory, a, b))` (a
+ * A call on a target computed with keccak256 takes its callee, or a view call through it its answer, from a witness the
+ * spender supplies, and nothing compares the two: a straight-line target such as `IPair(pairFor(factory, a, b))` (a
  * CREATE2 address no BCH lock equals), a loop's per-turn target the caller chooses,
- * `IPair(pairFor(factory, path[i], path[i + 1]))`, and the view calls through such a loop local. The witnesses keep
- * routers working; the warning tells the author that the callee and its answers are the spender's.
+ * `IPair(pairFor(factory, path[i], path[i + 1]))`, and the view calls through such a loop local. Every other target is
+ * checked where the call runs. The witnesses keep routers working; the warning tells the author that the callee and
+ * its answers are the spender's.
  */
 export class ComputedCallTargetWarning {
   static readonly code = 'computed-call-target-unverified';
@@ -1474,10 +1475,10 @@ export class ComputedCallTargetWarning {
         + 'the computed value: the spender may name any contract as the callee, and its answers are the spender\'s. '
         + `${advice} a computed one.`;
     } else if (kind === 'per-turn') {
-      this.message = `${head} has a target the caller's arguments choose on each loop turn, so the contract takes `
-        + 'each turn\'s callee from a witness the spender supplies and never compares it with that target: the '
-        + 'spender may name any contract as the callee, and its answers are the spender\'s, as are the answers of '
-        + `view calls in such a loop. ${advice} one the caller's arguments choose.`;
+      this.message = `${head} has a target computed with keccak256 on each loop turn (such as a CREATE2 address, which `
+        + 'no BCH lock equals), so the contract takes each turn\'s callee from a witness the spender supplies and never '
+        + 'compares it with that target: the spender may name any contract as the callee, and its answers are the '
+        + `spender's, as are the answers of view calls in such a loop. ${advice} a computed one.`;
     } else {
       this.message = `${head} is not made: its loop local's target is computed with keccak256, and one master input `
         + 'runs one call per transaction, so the contract reads the answer from a witness the spender supplies, which '

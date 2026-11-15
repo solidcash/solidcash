@@ -30878,8 +30878,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // this call site, while its synthesized loopTargets witness supplies the epilogue's stable cardinality
         // and co-spend order. Bind the current witness element to that runtime local before using the ordinary
         // typed loop covenant; this preserves the producing call's exact result and prevents target substitution.
-          if (loopSlot.addressParam && loopSlot.loopIndexExpression
-          && loopSlot.loopArrayVar.startsWith('__internal__loopTargets')) {
+        // A per-turn target computed without keccak256 (`IFoo(L.at(f, path[i]))`, a plain `targets[i]` local) is
+        // bound the same way: the call keeps its own address expression, evaluated here.
+          if (loopSlot.loopIndexExpression && loopSlot.loopArrayVar.startsWith('__internal__loopTargets')) {
             const witnessArray = cloneNode(loopSlot.loopWitnessArrayIds?.[0]
             ?? new IdentifierNode(loopSlot.loopArrayVar)) as IdentifierNode;
             witnessArray.type = new ArrayType(new AddressType(false));

@@ -38,6 +38,7 @@ import {
   type FunctionBlockLayout,
   isComputedBlockhashKey,
   encodePushdataValue,
+  encodeEventPushdataValue,
   ORACLE_POOL_PARAMETER,
   getDefaultStateValue,
   keccakComputeLockingBytecode,
@@ -1883,7 +1884,8 @@ export function encodeExternalReturnValues(
   if (values.length !== types.length) {
     throw new Error(`Native result has ${values.length} values for ${types.length} declared types`);
   }
-  const parts = values.map((value, index) => encodePushdataValue(value, types[index], structs));
+  // A native result is pushed as the callee's return pushes it: an address of 20 zero bytes stays 20 bytes.
+  const parts = values.map((value, index) => encodeEventPushdataValue(value, types[index], structs));
   const encoded = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let offset = 0;
   for (const part of parts) { encoded.set(part, offset); offset += part.length; }

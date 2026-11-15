@@ -567,11 +567,12 @@ export function encodePushdataValue(
 }
 
 /**
- * Encode one event argument in the platform pushdata frame, as a covenant's emit pushes it. An address given as bytes
- * is pushed as those bytes, in a struct field or an array element too: 20 zero bytes, which a refused `ecrecoverEvm`
- * answers, stay a 20-byte push. `encodePushdataValue`, which state records use, reads any all-zero address as
- * `address(0)`, the empty push. Any other spelling of an address (a CashAddress, a hex string, ethers' zero address, an
- * integer) is read as `encodePushdataValue` reads it.
+ * Encode one event argument, or one value of a native call result (the record a return event carries), in the
+ * platform pushdata frame, as a covenant pushes it. An address given as bytes is pushed as those bytes, in a struct
+ * field or an array element too: 20 zero bytes, which a refused `ecrecoverEvm` answers, stay a 20-byte push.
+ * `encodePushdataValue`, which state records use, reads any all-zero address as `address(0)`, the empty push. Any other
+ * spelling of an address (a CashAddress, a hex string, ethers' zero address, an integer) is read as
+ * `encodePushdataValue` reads it.
  */
 export function encodeEventPushdataValue(
   value: StateValue,

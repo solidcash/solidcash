@@ -150,7 +150,13 @@ semantics:
 - Every element written into a fixed or varying table must name one method taking the table type's parameters
   and returning its results (`FnPtrArrayLoweringError` otherwise): a call through the table binds those arguments
   for whichever element it reaches. A received pointer's selector is a run-time value, so a received table cannot
-  check that the method it names takes no further parameters.
+  check that the method it names takes no further parameters. Instead the caller pins every push ahead of the
+  declared arguments to constants:
+  - for a void pointer, at most `4f 00`: a record witness that names no record, then an empty genesis call;
+  - for a returning pointer, the record witness, which stays free, then at most one push, which must be `OP_0`.
+
+  A method with extra parameters therefore runs only on those constants, never on values the spender chooses. A
+  call through a pointer never carries a non-empty genesis call, so it cannot answer a constructor's call slot.
 - Mutations stay in lockstep with the selector array: element assign / `pop()` / `delete fns[i]` rewrite to
   two-statement blocks mutating both arrays.
 - An unclassifiable fn-ptr array (never written, or written an unsupported value form) is a specific

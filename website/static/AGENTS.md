@@ -439,10 +439,10 @@ try IRisky(target).compute() returns (int r) { this.last = r; } catch { this.las
 
 - Declared at file, contract, library or interface level; events can be overloaded. Each reached `emit` creates
   an immutable NFT output in the contract's category carrying the encoded arguments, not an EVM log.
-- An `emit` in a counter loop creates one output per run, and so does one in a `for` with a literal bound of at most
-  64 runs, which a direct build (no message bus, not framed) unrolls. A loop the compiler can neither count from the
-  call nor unroll (for example one that also changes its counter in the body) has one output for each `emit` in it,
-  and a call that runs such an `emit` twice fails.
+- An `emit` in a counter loop creates one output per run. So does an `emit` in a `for` with a literal bound of at most
+  64 runs: a direct or message-bus build unrolls that loop, and a framed body binds each `emit` where it makes it.
+  Some loops the compiler can neither count from the call nor unroll, for example one that also changes its counter in
+  the body. In those, each `emit` has a single output, and a call that runs such an `emit` twice fails.
 - Errors are ABI metadata only: a failed spend carries no revert data; the reason shows in preflight and debug.
 - `try` runs its block, but a failed BCH script aborts the whole transaction, so `catch` (also `catch Error(string
   memory r)` and `catch (bytes memory d)`) never runs (warned). evmCompat requires an external call or `new`.
@@ -572,10 +572,10 @@ require(this.outState.balance >= floor);     // satoshi-container outputs of thi
   refuses to send a transaction that pays one, from a contract call, `deployFrom`, a composition or a plain
   `TransactionBuilder`, a lock passed as `bytes` included (`StatefulMasterPaymentError`, which names the satoshi
   container when the chain shows it); pay the container or call one of its payable functions.
-- A `this.transfer` or token transfer in a counter loop makes one output per run, and so does any payment, `send`
-  included, in a `for` with a literal bound of at most 64 runs, which a direct build (no message bus, not framed)
-  unrolls. In another loop (for example one that also changes its counter in the body, or an `addr.send` in a counter
-  loop) each payment has one output, and a call that runs it twice fails.
+- A `this.transfer` or token transfer in a counter loop makes one output per run. So does any payment, `send`
+  included, in a `for` with a literal bound of at most 64 runs, which a direct or message-bus build unrolls. In another
+  loop, each payment has a single output, and a call that runs it twice fails. Examples are a loop that also changes its
+  counter in the body, and an `addr.send` in a counter loop.
 - `this.payMinerFee(FEE);` (a positive compile-time constant, once, at the top level of a public entry) lets the entry
   take `FEE` more out of the satoshi container with no output for it: the contract pays the miner by omission, and
   the caller needs no coin. Refused in framed composition.
@@ -721,15 +721,26 @@ require(ecrecoverEvm(digest, v, r, s) == signer);
 
 - Hash an address through `bytes(...)`: `hash160(bytes(msg.sender))`. NULLFAIL: a non-empty invalid signature
   aborts the script; pass `0x` to make a check return `false`.
-- `keccak256` and `ecrecover*` run in co-spent compute side-cars (recovery takes two inputs per call;
-  `ecrecoverEvm` adds a keccak side-car). The SDK co-spends them; a real network needs them provisioned, one per
-  call site. Prefer `checkDataSig` when the key is known. See https://solidcash.org/docs/language/cryptography
-  and https://solidcash.org/docs/language/computation-sidecars
-- A stateful function's loop that calls `ecrecover*` directly reads three side-car inputs per turn after the
-  function's block. The compiler refuses it (`RecoveryLoopSideCarError`) beside a recovery outside the loop or
-  through a helper, beside a second recovery loop, or beside another user of that region (a keccak256 loop, a
-  collection walk, dynamic state, mapping writes, payments or events in a runtime loop): give the loop a function
-  of its own.
+- `keccak256` and `ecrecover*` run in co-spent compute side-cars. Each recovery takes three inputs, A, a middle slot
+  and B. A width-0 signature reads A, M and B3. Otherwise no covenant reads the middle slot, and a stateful call fills
+  it with a coin of the call's signer, returned at its own index. `ecrecoverEvm` adds a keccak side-car. The SDK
+  co-spends them; a real network needs them provisioned. Prefer `checkDataSig` when the key is known. See
+  https://solidcash.org/docs/language/cryptography and https://solidcash.org/docs/language/computation-sidecars
+- Like the EVM precompile, `ecrecoverEvm` and `ecrecoverP2pkh` (and bare `ecrecover`) return the zero address for
+  any input the precompile refuses. That is 20 zero bytes, or the empty lock for `ecrecoverP2pkh`. The refused inputs
+  are a `v` other than 27 or 28, an `r` or `s` outside [1, n), an `r` with no curve point, and a key at infinity. So
+  `require(ecrecoverEvm(...) == signer)` fails for them unless `signer` is zero. `ecrecoverPubKey` aborts on them
+  instead. High-S signatures are accepted. A key at infinity whose R is ±G or ±φ(G) cannot be recovered, and the SDK
+  refuses it before sending.
+- A stateful function's loop that recovers keys reads three side-car inputs per call after the function's block. If
+  the function hashes an unbounded `bytes` parameter, those inputs come after the hash's keccak256 chain. A helper
+  that recovers in such a loop is inlined there. The compiler refuses the loop (`RecoveryLoopSideCarError`) next to:
+  - a recovery outside the loop, including one helper called both inside and outside it;
+  - a second recovery loop;
+  - another user of that region: a keccak256 loop, a collection walk, dynamic state, mapping writes, or payments or
+    events in a runtime loop.
+
+  Give the loop a function of its own.
 - Bare Solidity `ecrecover(hash, v, r, s)` exists only with compiler option `ecrecover: 'p2pkh'` or `'evm'`.
 
 ### ABI Encoding
@@ -820,28 +831,38 @@ contract Factory(pubkey admin) {
 
 ```solidity
 Child c = new Child(admin);                    // keep a typed handle
-new Child{salt: salt}(admin);                  // deterministic address (CREATE2 analogue)
-new Child{value: amount}(admin);               // fund the child with satoshis
-new Child{code: code}(admin);                  // the child runs `code`; sha256(code) must be Child's body hash
-new Child{code: code, template: t}(admin);     // any code hashing to t; t a constant, constructor arg, state, or a
-                                               // parameter never reassigned and emitted on every path
-c.initialize(amount, owner);                   // straight-line initializer right after `new`: folded into genesis
+new Kid{args: (a1, a2), value: v}(c1, c2);     // contract parameters in `args`, constructor arguments in (...)
+new Child{value: amount}(admin);               // move satoshis into the child's satoshi container
 bytes code = type(Child).creationCode;         // redeem script (runtimeCode alias); EVM CREATE2 math does not apply
 ```
 
 - `deploy`, `upgrade`, `split` and `merge` entries need an unconditional `require(checkSig(s, key))` with a key the
   caller cannot choose (constructor argument, state or constant); a direct compile rejects one without it
   (`UnauthorizedLifecycleError`).
-- `new` of a stateful child works only in a stateful contract's function. The child is an output, so the same
-  transaction cannot call it beyond a folded initializer (`DeployThenCallError`), and a `require` inside that
-  initializer does not run. Deploy sites in branches or loops must create the same child (`ConditionalDeployError`).
-- A direct creator folds a child's constructor, state-variable initializers included, into its own check instead of
-  running it. Arguments, straight-line locals, writes and a `require` over them fold. Anything else is refused by name
-  (`ChildGenesisFoldError`): reads of `tx.*`, `msg.value`, child state, signatures, `block.*` or `blockhash`, a nested
-  `new`, an `emit`, a transfer, or a branch the fold cannot join. Pass the value in as an argument, or set it later.
+- `new` of a stateful child works only in a stateful contract's function. In a direct creator it is a deployer
+  `new`. It spends a one-shot coin of the child's generated `Deploy<C>` program, which runs the child's constructor
+  on chain. The SDK builds each child's prep transaction first, and the child's category is that prep's txid.
+  - The constructor may emit, pay, take `value` (`msg.value`) and call contracts. A callee answers through its call
+    record, so it must be a direct build compiled with `genesisCalls` (the default). Under automatic selection, a
+    callee that makes external calls of its own compiles on the bus; compile it with `messageBus: false`.
+  - In a child's constructor, `msg.sender` is the creator, or the deploying wallet at top level. Block fields come
+    from the transaction's locktime, which is a lower bound.
+  - Contract parameters go in `args`. When the constructor takes none, `new C(a1, ...)` still means
+    `new C{args: (a1, ...)}()`, with a warning.
+  - A deployer `new` refuses `salt`, because the child's address already depends on its deployer coin. A call on the
+    new child in the same function is refused too (call it in a later transaction). So are different child contracts
+    created in the branches of one function.
+  - Branches and loops that create the same child work.
+- A message-bus or framed creator keeps the older genesis:
+  - the creator folds the child's constructor into its own check (`ChildGenesisFoldError` names what cannot fold);
+  - a straight-line call right after `new` (`c.initialize(x)`) folds into the genesis;
+  - `salt` gives a deterministic address, there and on the `new` of a stateless child.
+
+  Under automatic selection, a creator that calls its new child compiles on the bus.
 - SDK: `await factory.call.create(sig)` deploys with the connected signer; `.deploy({ fundingUtxo, funder,
-  changeAddress })` funds it explicitly (the vout-0 funding UTXO becomes the child's category); `.send()` takes the
-  non-deploying path. `StatefulContract.deployFrom({...})` is the static form.
+  changeAddress })` funds it explicitly; `.send()` takes the non-deploying path. `StatefulContract.deployFrom({...})`
+  is the static form. A top-level deployment of an artifact compiled with `deployer: true` also goes through its
+  deployer.
 
 ```solidity
 function destroy(sig s) public { require(checkSig(s, admin)); selfdestruct(beneficiary); }   // pins the payout

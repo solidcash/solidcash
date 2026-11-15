@@ -414,6 +414,14 @@ ethers.js -> solc -> solidc loop as a permanent regression gate. Also assert pro
 `ecrecoverP2pkh(...) == p2pkh(ecrecoverPubKey(...))` and `ecrecoverPubKey(...)` equals the signer's actual
 secp256k1 public key.
 
+**Standing test (2026-11-15):** `packages/solidcash/test/e2e/EcrecoverEvmConformance.e2e.test.ts` runs the gate on
+the production profile through SDK calls, each sent transaction checked by the VM. ethers.js and `@noble/curves` are
+the oracles; no solc run. It covers `ecrecoverEvm` and bare `ecrecover` in `evm` mode. Inputs: four random keys and
+messages, two high-S counterparts, the golden vector (itself high-S) and twelve refused inputs (`v` = 0, 26, 29;
+`r` = 0, n, an x in [n, p), 2^256 - 1; `s` = 0, n, 2^256 - 1; an off-curve `r`; a key at infinity). Each refused
+input answers the zero address and none aborts. A Solidity-port flavor (`pragma solidity`, `uint8 v`, `evmCompat`) runs
+the accepted inputs only (see the last section).
+
 ## Removal of the 3-argument verify-with-pubkey `ecrecover` (it aliased `checkDataSig` - now misleading)
 
 The shipped 3-argument `ecrecover(hash, sig, pubKey)` is **not** recovery. It is `checkDataSig(sig, hash, pubKey)`
@@ -897,3 +905,74 @@ decomposition) that NO 2-covenant split fits both 8 M budgets - the window close
 clear error (re-sign to get a different, shorter decomposition; for a loop, the SDK skips them via the same probe).
 This is a pre-existing property of the 2-covenant design; a 3-covenant split (each ~L/3 steps, huge margin) would
 close the gap but triples the side-car count. It does not affect soundness, only liveness for those rare signatures.
+
+## The precompile's refusals on the direct convention (2026-11-15)
+
+`ecrecoverEvm` and `ecrecoverP2pkh`, and bare `ecrecover` in either projection mode, answer the zero address for every
+input the EVM's precompile refuses. They do not abort. The zero address is 20 zero bytes for `ecrecoverEvm` (and `evm`
+mode) and the empty locking bytecode for `ecrecoverP2pkh` (and `p2pkh` mode). High-S is accepted, as the precompile
+accepts it. This holds stateful and stateless, straight-line, in loops, through helpers and in Deploy<C> constructors.
+Three checks give it.
+
+1. **Range.** Before packing the arguments, the call checks them: `v` must read as 27 or 28 from its own stack item,
+   and `r` and `s`, as unsigned little-endian words, must lie in [1, n). Otherwise it answers zero and reads no
+   side-car, since the side-cars reduce `r` and `s` mod n and would answer a key. This depends on the arguments
+   alone, so no layout can change it. Entry checks already pin every `bytes32` argument at 32 bytes and every `int` at
+   its minimal encoding, so the packed blob has one layout.
+2. **An `r` with no curve point.** The call reads side-car A's pad whole as an unsigned number. An honest pad reads
+   zero. Any other value is a word w that must satisfy w^2 + r^3 + 7 = 0 mod p, and then the call answers zero.
+   Such a w exists only when no point has x = r, because -1 is no square mod p (p = 3 mod 4) and r^3 + 7 is never 0
+   (-7 is no cube mod p, so the curve has no point of order 2). A valid signature cannot take this branch: a pad
+   carrying a word beside one aborts. The proof is a fact about `r` alone, so it does not bind A. The branch drops A's
+   stashed input index, which keeps the alt stack balanced.
+3. **A key at infinity.** The call binds side-car A's argument blob either to its own blob or to the same blob with
+   the digest z replaced by z - 2^128 r mod n, which it computes on chain. Since `r` is in [1, n), the two blobs
+   differ. Over the shifted digest, the pair recovers (s R - (z - 2^128 r) G) / r = Q + 2^128 G. For a shifted bind,
+   the call answers zero only if B commits exactly 2^128 G, which happens exactly when Q is the point at infinity.
+   A valid signature's shifted pair aborts, and an unshifted pair cannot reach infinity, because B cannot commit that
+   point. The shift is 2^128 r rather than r because a shift by r targets G itself. The GLV ladder reaches G through
+   the point at infinity whenever its last step adds G: measured, 15 of 400 drawn inputs failed with r, and 0 of 400
+   with 2^128 r.
+
+`ecrecoverPubKey` has no zero key, so it aborts on every input the precompile refuses: it runs the same range check
+and verifies it. Before this, an `s` or `r` out of range and a two-byte `v` beside a genuine pair answered a key.
+
+**Pool coins.**
+- A refused call in a stateful function leaves its slots to wallet coins, each returned at its own index.
+- A stateless refused call takes the pool's pair over a fixed placeholder recovery, plus a keccak side-car of 64 zero
+  bytes for `ecrecoverEvm`.
+- An off-curve call takes the pool's A over that placeholder, carrying w in its pad.
+- A key at infinity takes a pool pair over the shifted digest.
+- `ecrecoverRefusal` (SDK) names which of these an argument set needs: unread, off-curve with its proof, at infinity
+  with its shifted digest, or refused.
+
+**Cost** per address recovery: +48 B for the range check, +46 to 53 B for the off-curve proof and +96 to 104 B for
+infinity. `ecrecoverPubKey` costs +57 B. Measured: stateless `ecrecoverEvm` 1,865 -> 2,055 B, stateful
+2,044 -> 2,228 B, a stateful loop 1,864 -> 2,062 B. The B3 predecessor fix below saved 2 to 31 B in straight-line
+shapes. Framed recoveries and all 343 corpus contracts are byte-identical.
+
+**Also fixed on the way:**
+- A B3 (width-0) recovery's predecessor checks read B's index one to three items too shallow inside a helper or a
+  constructor.
+- A helper's width-0 recovery is now laid out from the run.
+- Under `evmCompat`, every Solidity port's recovery used to fail at the argument bind: the call reverses h, r and s,
+  but the artifact named the unreversed parameters. `ecrecoverArgParams` now publishes `null` for those three, and
+  the SDK learns the words from the run.
+
+**Not covered:**
+- A key at infinity whose R is ±G or ±φ(G) is refused before sending. The side-cars' table check needs an addition
+  with no inverse at those R, so no pair exists, shifted or not. The same holds for any signature with such an R, for
+  example one with nonce 1.
+- A Solidity port's refused inputs are refused before sending. Its state derivation publishes the result empty while
+  the call computes 20 zero bytes. The accepted inputs match ethers.js.
+- On the framed path a key at infinity is still refused: its V side-car has no shifted-digest proof. That path
+  already answered zero for range and off-curve inputs before this change. Its zero for `ecrecoverEvm` is empty,
+  as its `address(0)` is. Its off-curve branch used to leave V's stashed input index on the alt stack; it now drops
+  it, at a cost of 1 B.
+
+Tests:
+- `EcrecoverEvmConformance.e2e` (the gate above);
+- `StraightLineRecovery.e2e` (each refused set and tamper case);
+- `EcrecoverRecovery` (stateful loops; stateless straight-line, two recoveries and loops);
+- `DeployerCreation.e2e` (constructor recoveries through the deployer and today's genesis);
+- `OrdinaryCallCalleeShapes.e2e`.

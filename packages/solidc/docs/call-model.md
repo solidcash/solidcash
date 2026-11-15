@@ -133,6 +133,19 @@ it is what adds the tag parameter and the genesis step). Under `'returning'`, a 
 settlement but does not advertise a record in the ABI; under `genesisCalls: false` a contract compiles
 exactly as before the deployer work.
 
+Every call that is not a constructor's passes the genesis call empty. That includes a direct call, a nested
+delegate callee's call and a call through a received external function pointer. The pointer's caller pins every push
+ahead of the arguments, so a pointer call never carries a tag (see array-external-calls.md). In the unlocking, the
+genesis call sits between the record witness and the arguments: `<selector> <record witness> <genesis call>
+<arguments> <redeem>`. A spend built by hand pushes `OP_0` there.
+
+The SDK lays out a constructor callee's block with an ordinary build of its call, using the child's lock as a
+stand-in caller (`standInCaller`). Every key, stored copy, chunk and commitment that comes from `msg.sender` is
+therefore the child's 35-byte lock, not a pad's. Two callees are refused before anything is sent
+(`DeployerCalleeError`):
+- one whose build would run on other arguments, such as a loop key array reordered to the sorted list;
+- one that passes `msg.sender` on to a contract it calls.
+
 ### What is compile-time vs runtime
 
 Compile-time today: the callee TYPE (interface or contract - resolved via `getCalleeFunctions`, which reads

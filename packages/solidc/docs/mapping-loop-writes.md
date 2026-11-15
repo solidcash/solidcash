@@ -97,6 +97,43 @@ by `LowerVMapCounterLoops` to full-width slot order.
   collection in a later loop is rejected until predecessor planning can consume the first loop's pending topology.
 - Derivation and covenant verification scale with the number of effective keys and value chunks. Practical
   transaction-size, fee, and VM-operation limits are reached before the commitment format's theoretical bounds.
+- The SDK rewrites a sorted-loop call's public arrays only where the compiler states that each turn's own
+  (key, value) pair fixes the result (2026-11-15). Without that statement, a reordered or shortened call need not
+  mean what the caller asked: `bal[ks[i]] = 100 + i` with `put([1, 2])` used to store 101 at key 1 and 100 at key 2,
+  where the EVM stores 100 and 101.
+  - The rewrites are merging duplicate keys, netting out a credit to the sender, and reordering a gap's new keys.
+    All of them need the flag `pairwise` on the entry's `SortedUpsertLoopAbi`; the net-out also needs `senderDebit`.
+  - `pairwise` holds only when all of these hold:
+    - the loop is `for (c = 0; c < keys.length; c++)`, outside any branch or other loop;
+    - its turn holds only per-turn locals, the write of `keys[c]` and at most a debit of `msg.sender` by the same
+      value;
+    - the value is `values[c]`, `values[c] + literal`, an unassigned parameter, a literal or a delete;
+    - a `+` or `-` reads only its own entry;
+    - `c` and the two arrays appear nowhere else in the function except `require(keys.length == values.length)`.
+  - `senderDebit` additionally needs that debit to come first, nothing else to write its cache, and the mapping to
+    have no other cache.
+  - A call that the covenant folds as given is built as given. Any other call is refused before anything is built,
+    and the refusal names the order the covenant takes. Before rewriting a `+` or `-` loop over a bounded integer,
+    the SDK runs the given order as the EVM would and refuses a call that would revert there.
+  - Compiler-owned witnesses (permutations, traces, old values, journal streams, cardinalities) are rewritten as
+    before.
+  - Tests: `PairwiseUpsertLoop.test` (solidc) and `LoopCallRewrite.e2e` (solidcash, production profile).
+- A sorted-loop write is a `+`/`-` transition of its entry, folded into the co-spent entry's old value, only when its
+  left operand reads that entry: the same mapping, the whole value, at the same key. Each of these establishes the
+  key:
+  - the two keys are the same effect-free expression;
+  - the symbol pass gave both accesses one entry slot;
+  - `LowerVMapCounterLoops` marked the read as the entry's own.
+
+  Any other operand makes the write an absolute `set`, which the covenant computes from that read's own proof.
+  `bal[ks[i]] = bal[7] + 1` used to compile as `bal[ks[i]] += 1`, so `put([3])` with bal[3] = 5 and bal[7] = 50 stored
+  6 where the EVM stores 51 (2026-11-15). The same happened to another mapping (`other[ks[i]] + 1`), the using-for
+  forms (`bal[7].add(1)`), another key of the array, and counter loops (`slots[i] = slots[7] + amount`). Tests:
+  `UpsertLoopOwnEntryRead` in solidc and solidcash.
+- A sorted loop that emits every turn settles. Its events come one output past the entry band and the block's
+  inactive return-event slot, where the covenant reads them, and the SDK pads up to that index
+  (`UpsertLoopEventPerTurn.e2e`). Per-turn BCH transfers beside a sorted-loop write still fail preflight: the builder
+  places the entry one output late.
 - The authoritative fail-closed feature list is `verified-mappings.md` §10.1.
 
 ## Verified

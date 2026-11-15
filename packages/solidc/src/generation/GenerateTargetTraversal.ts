@@ -799,6 +799,44 @@ export function assertRecoveryLoopBand(fn: FunctionDefinitionNode): void {
     `${RECOVERY_LOOP_SIDE_CAR_DETAIL['recovery-loop-shares-trailing-band']} (here: ${other})`);
 }
 
+/**
+ * A keccak256 loop of an entry beside a run that takes the same indexes after the block, refused by name. The loop
+ * reads side-car k from the input master + blockSize + k and the side-car recreates itself at the output of that index;
+ * its counter starts at the block's end. A collection walk reads its entries from the inputs right after the block, and
+ * a write of dynamic state checks its new chunks from the outputs right after the block (past a walk's entries and the
+ * chunks the entry only reads). Neither counts the side-cars and the loop counts neither, so the side-cars and the
+ * walk's entries, or the write's new chunks, need the same indexes. The chunks an entry only reads are found through its
+ * `__internal__dynamicChunkInputBase` witness, so they follow the side-cars and are not refused.
+ */
+export class KeccakLoopSideCarError extends SolidCashError {
+  constructor(node: Node, public readonly reason: string, detail: string) {
+    super(node, `${reason}: ${detail}`);
+  }
+}
+
+/**
+ * Refuse a source entry whose keccak256 loop shares the index after its block with a collection walk or a write of
+ * dynamic state (KeccakLoopSideCarError), naming the entry and both runs. Run on the code generator's final function
+ * facts. A constructor, built by its deploy, and a compiler-named function are not checked.
+ */
+export function assertKeccakLoopBand(fn: FunctionDefinitionNode): void {
+  if (fn.keccakLoopReads !== true || !fn.isEntryPoint || fn.name.startsWith('__')) return;
+  const walked = fn.collectionIterations?.[0]?.collection;
+  const written = fn.dynamicWrites?.[0];
+  const other = walked !== undefined
+    ? `walks the collection '${walked}', whose entries it reads from the inputs right after its block, where the loop `
+      + 'reads its side-cars'
+    : written !== undefined
+      ? `writes the dynamic state '${written}', whose new chunks it checks at the outputs right after its block, where `
+        + 'the loop recreates its side-cars'
+      : undefined;
+  if (other === undefined) return;
+  throw new KeccakLoopSideCarError(fn, 'keccak-loop-shares-trailing-band', `'${fn.name}' hashes in a keccak256 loop, `
+    + 'which reads side-car k from the input master + blockSize + k and recreates it at the output of that index, and '
+    + `${other}. Neither run counts the coins of the other, so no transaction holds both. Move the loop, or the `
+    + `${walked !== undefined ? 'walk' : 'write'}, into a function of its own`);
+}
+
 const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
   'keccak-loop-and-straight-line-mix-not-enabled':
     'this keccak256 call reads a fixed compute side-car slot that its keccak-loop function did not reserve. A '

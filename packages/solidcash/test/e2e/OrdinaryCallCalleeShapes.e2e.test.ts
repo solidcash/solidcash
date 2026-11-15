@@ -892,23 +892,16 @@ describe('an ordinary call of a contract whose function hashes in a loop (D call
     expect(inputPasses(s.provider, swapIndexes(sent, band + 1, band + 2), master)).toBe(false);
   });
 
-  it('refuses by name a callee loop that shares the inputs after its block with another run', async () => {
+  it('cannot meet a callee loop beside a write of dynamic state: the compiler refuses the function by name', () => {
     const source = `${P} interface I { function f(bytes b, int k) external returns (bool); }
       contract T { bytes32 h; int[] a; function f(bytes b, int k) external returns (bool) {
         bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; a.push(k); return true; } }
       contract D { bool ok; function g(I t, bytes b, int k) external returns (bool) { ok = t.f(b, k); return true; } }`;
-    const s = setup();
-    const t = await s.deploy(compileString(source, compileOptions('T')));
-    const d = await s.deploy(compileString(source, compileOptions('D')));
-    const before = s.sent.length;
     // The write's new chunks are checked from the first output after the block, where the loop recreates its first
-    // side-car: no transaction holds both.
-    await expect((d.contract.connect(await s.wallet()) as any).call.g(addressToLockScript(t.contract.address),
-      Uint8Array.of(1), 2n).withExternalCall(t.contract).send())
-      .rejects.toThrow(new RegExp('The call of T\\.f cannot be laid out: its keccak256 loop shares the inputs after its '
-        + 'block with the chunks of dynamic state it writes, which its covenant checks at the outputs after its block, '
-        + 'where the loop recreates its side-cars'));
-    expect(s.sent.length).toBe(before);
+    // side-car: no transaction holds both, so T does not compile and no call of T.f is ever built.
+    expect(() => compileString(source, compileOptions('T'))).toThrow(new RegExp('keccak-loop-shares-trailing-band: '
+      + '\'f\' hashes in a keccak256 loop, .* and writes the dynamic state \'a\', whose new chunks it checks at the '
+      + 'outputs right after its block, where the loop recreates its side-cars'));
   });
 });
 

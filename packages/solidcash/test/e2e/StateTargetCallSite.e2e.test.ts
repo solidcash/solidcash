@@ -44,6 +44,48 @@ const SOURCE = `pragma solidcash ^0.50.0;
     function readArg(address target) external { last = IOracle(target).price(); }
   }`;
 
+// Calls through function pointers: one whose method a state discriminant selects, one whose receiver a ternary of
+// parameters selects. The function changes the discriminant, or the chosen parameter, after the call.
+const POINTERS = `pragma solidcash ^0.50.0;
+  interface IHandler { function inc() external; function dec() external; }
+  contract Handler {
+    int counter;
+    function inc() external { counter = counter + 1; }
+    function dec() external { counter = counter - 1; }
+  }
+  contract Switch {
+    address handler;
+    bool useInc;
+    int runs;
+    function configure(address h, bool u) external { handler = h; useInc = u; }
+    function runThenFlip() external {
+      function() external f = useInc ? IHandler(handler).inc : IHandler(handler).dec;
+      f();
+      useInc = !useInc;
+      runs = runs + 1;
+    }
+    function runEither(bool useA, address a, address b, address other) external {
+      function() external f = useA ? IHandler(a).inc : IHandler(b).inc;
+      f();
+      a = other;
+      runs = runs + 1;
+    }
+  }`;
+
+// A call through an interface field of a stored struct, which the function writes before the call.
+const CHAINS = `pragma solidcash ^0.50.0;
+  interface IOracle { function price() external returns (int); }
+  contract Oracle { int reads; function price() external returns (int) { reads = reads + 1; return 7; } }
+  contract Hostile { int reads; function price() external returns (int) { reads = reads + 1; return 1000000; } }
+  contract Feeder {
+    struct Feed { IOracle source; int weight; }
+    Feed feed;
+    int last;
+    function setFeed(address s) external { feed = Feed(IOracle(s), 1); }
+    function read() external { last = feed.source.price(); }
+    function retargetThenRead(address s) external { feed = Feed(IOracle(s), 2); last = feed.source.price(); }
+  }`;
+
 let serial = 0xc5b1d0;
 const nextTxid = (): string => (serial++).toString(16).padStart(64, '0');
 
@@ -58,7 +100,7 @@ interface Setup {
   sent: Sent[];
 }
 
-function setup(options: object): Setup {
+function setup(options: object, source = SOURCE): Setup {
   const provider = new MockNetworkProvider({ profile: 'production' });
   const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
   const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
@@ -81,7 +123,7 @@ function setup(options: object): Setup {
   const deploy = async (name: string): Promise<any> => {
     const fundingUtxo: Utxo = { txid: nextTxid(), vout: 0, satoshis: 2_000_000n };
     await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
-    const artifact = compileString(SOURCE, { ...options, primaryContractName: name } as never);
+    const artifact = compileString(source, { ...options, primaryContractName: name } as never);
     const { contract } = await StatefulContract.deploy(artifact, [] as never, {
       provider, fundingUtxo, funder, changeAddress: change.address,
     } as never);
@@ -264,3 +306,79 @@ for (const form of [{ name: 'native', options: {} }, { name: 'evmCompat', option
     }, 300_000);
   });
 }
+
+describe('a pointer call whose selector or ternary target its function changes after the call (native)', () => {
+  it('binds the method the selector named when the call ran', async () => {
+    const s = setup({}, POINTERS);
+    const handler = await s.deploy('Handler');
+    const toggle = await s.deploy('Switch');
+    const wallet = await s.wallet();
+    await callOf(toggle, wallet).configure(lockOf(handler), true).send();
+
+    // The discriminant named inc when the call ran; the body then flips it to name dec.
+    expectRefusedByCaller(await refusal(s, () => callOf(toggle, wallet).runThenFlip()
+      .withExternalCall(handler, 'dec', []).send()));
+    expect(await stateOf(handler, 'counter')).toBe(0n);
+
+    await callOf(toggle, wallet).runThenFlip().withExternalCall(handler, 'inc', []).send();
+    expect(lastSentVerifies(s)).toBe(true);
+    expect(await stateOf(handler, 'counter')).toBe(1n);
+    expect(await stateOf(toggle, 'useInc')).toBe(false);
+  }, 300_000);
+
+  it('binds the receiver the ternary named when the call ran', async () => {
+    const s = setup({}, POINTERS);
+    const first = await s.deploy('Handler');
+    const second = await s.deploy('Handler');
+    const toggle = await s.deploy('Switch');
+    const wallet = await s.wallet();
+
+    // useA picks `a`, the first handler, when the call runs; the body then points `a` at the second.
+    expectRefusedByCaller(await refusal(s, () => callOf(toggle, wallet)
+      .runEither(true, lockOf(first), lockOf(second), lockOf(second)).withExternalCall(second, 'inc', []).send()));
+    expect(await stateOf(second, 'counter')).toBe(0n);
+
+    await callOf(toggle, wallet).runEither(true, lockOf(first), lockOf(second), lockOf(second))
+      .withExternalCall(first, 'inc', []).send();
+    expect(lastSentVerifies(s)).toBe(true);
+    expect(await stateOf(first, 'counter')).toBe(1n);
+    expect(await stateOf(second, 'counter')).toBe(0n);
+  }, 300_000);
+});
+
+describe('a call through a stored chain its function writes before the call (native)', () => {
+  it('binds the value the chain holds when the call runs', async () => {
+    const s = setup({}, CHAINS);
+    const oracle = await s.deploy('Oracle');
+    const hostile = await s.deploy('Hostile');
+    const feeder = await s.deploy('Feeder');
+    const wallet = await s.wallet();
+    await callOf(feeder, wallet).setFeed(lockOf(oracle)).send();
+
+    // The body points the feed at the Hostile contract and then calls through it: the Oracle it held is refused.
+    expectRefusedByCaller(await refusal(s, () => callOf(feeder, wallet).retargetThenRead(lockOf(hostile))
+      .withExternalCall(oracle).send()));
+    expect(await stateOf(oracle, 'reads')).toBe(0n);
+
+    await callOf(feeder, wallet).retargetThenRead(lockOf(hostile)).withExternalCall(hostile).send();
+    expect(lastSentVerifies(s)).toBe(true);
+    expect(await stateOf(feeder, 'last')).toBe(1_000_000n);
+    expect(await stateOf(hostile, 'reads')).toBe(1n);
+  }, 300_000);
+
+  it('binds a call through a chain the function does not write to the stored value', async () => {
+    const s = setup({}, CHAINS);
+    const oracle = await s.deploy('Oracle');
+    const hostile = await s.deploy('Hostile');
+    const feeder = await s.deploy('Feeder');
+    const wallet = await s.wallet();
+    await callOf(feeder, wallet).setFeed(lockOf(oracle)).send();
+
+    expectRefusedByCaller(await refusal(s, () => callOf(feeder, wallet).read().withExternalCall(hostile).send()));
+
+    await callOf(feeder, wallet).read().withExternalCall(oracle).send();
+    expect(lastSentVerifies(s)).toBe(true);
+    expect(await stateOf(feeder, 'last')).toBe(7n);
+    expect(await stateOf(oracle, 'reads')).toBe(1n);
+  }, 300_000);
+});

@@ -4262,6 +4262,7 @@ function buildFunctionAbiMetadata(
           ...(ec.callerIdentity !== undefined && { callerIdentity: ec.callerIdentity }),
           ...(ec.addressParam && { addressParam: ec.addressParam }),
           ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
+          ...(ec.targetWrittenBeforeCall && { targetWrittenBeforeCall: true as const }),
           ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
           ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
           ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),

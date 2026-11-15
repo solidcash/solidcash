@@ -86,6 +86,8 @@ export type SolidcDiagnosticCode =
   | 'CALL_BATCH_RESERVED_SELECTOR_COLLISION'
   // A loop calling through a state array its function writes inside that loop, or both before and after it.
   | 'LOOP_ARRAY_WRITTEN_AROUND_CALLS'
+  // A call through a collection entry its function writes before the call where the call cannot read the written entry.
+  | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.

@@ -3218,6 +3218,9 @@ export interface ExternalCallSlot {
   };
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
+  // The function can write the target before the call (code generation, collectCallSiteTargets): the callee the
+  // call runs on is not the one the caller's state and arguments name before the run.
+  targetWrittenBeforeCall?: boolean;
   // Code-baked address literal target `IFoo(0x..).m()` (hex): the covenant pushes this constant as the
   // expected address instead of reading a param/state - caller-independent. A non-locking-bytecode literal
   // (e.g. a 20-byte ETH address) makes the identity check un-satisfiable (fails closed). Never a caller input.

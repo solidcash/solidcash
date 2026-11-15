@@ -964,6 +964,11 @@ interface CallSiteWrites {
   state(stateVariable: StateVariableNode): boolean;
   /** Whether a write of one of `names` (a local, a parameter, a branch capture) can run after a run of the call. */
   after(names: readonly string[], slot: ExternalCallSlot): boolean;
+  /**
+   * Whether a write can land before a run of the call: a reassignment of one of the stack variables `names`, or a
+   * write of one of the state roots `roots`.
+   */
+  before(names: readonly string[], roots: readonly string[], slot: ExternalCallSlot): boolean;
   /** The initializer of local `name` when a write of what it reads can land between it and a run of the call. */
   staleInitializer(name: string, slot: ExternalCallSlot): ExpressionNode | undefined;
 }
@@ -54048,6 +54053,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return written === 'any' || written.has(`${stateVariable.nftIndex}:${stateVariable.fieldIndex}`);
       },
       after: (names, slot) => (positions ??= this.bodyWrites(body)).after(names, slot),
+      before: (names, roots, slot) => (positions ??= this.bodyWrites(body)).before(names, roots, slot),
       staleInitializer: (name, slot) => (positions ??= this.bodyWrites(body)).staleInitializer(name, slot),
     };
     for (const slot of this.externalCallSlots) {
@@ -54057,6 +54063,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) continue;
       const target = this.callSiteTargetCapture(slot, writes);
       const selector = this.callSiteSelectorCapture(slot, writes);
+      // Published for a builder, which resolves a callee from the caller's state and the call's arguments.
+      if (this.callSiteTargetWrittenBefore(slot, writes)) slot.targetWrittenBeforeCall = true;
+      else delete slot.targetWrittenBeforeCall;
       if (target === undefined && selector === undefined) continue;
       // A call the body does not make itself (one an invoked body makes) has no site here to fill a register.
       const runs = this.externalCallRuns(body, slot);
@@ -54108,6 +54117,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Whether the function can write the call's target before the call: the callee the call runs on is then not the one
+   * the caller's state and the call's arguments name before the run, which a builder resolves a callee from. A raw
+   * low-level receiver (`__extaddr_ll_`) is not covered.
+   */
+  private callSiteTargetWrittenBefore(slot: ExternalCallSlot, writes: CallSiteWrites): boolean {
+    if (slot.addressIsMsgSender) return false;
+    const stateVariable = slot.addressStateVar === undefined ? undefined
+      : this.stateVariables.find((variable) => variable.name === slot.addressStateVar);
+    if (stateVariable !== undefined) return writes.before([], [stateVariable.name], slot);
+    const address = slot.sourceCallNode?.addressExpression;
+    if (!slot.addressParam) {
+      return address instanceof TernaryOpNode && address.condition instanceof IdentifierNode
+        && address.ifTrue instanceof IdentifierNode && address.ifFalse instanceof IdentifierNode
+        && writes.before([address.condition.name, address.ifTrue.name, address.ifFalse.name], [], slot);
+    }
+    if (slot.addressParam.startsWith('__extaddr_ll_')) return false;
+    if (slot.addressParam.startsWith('__extaddr_')) return writes.staleInitializer(slot.addressParam, slot) !== undefined;
+    return writes.before([slot.addressParam], [], slot);
+  }
+
+  /**
    * How a call site reads its call's runtime selector when the body can change it after the call: it reads a state
    * variable the body writes, or a stack variable written after the call. Only a regular call that verifies its
    * selector reads it after the body (emitSelectorCompare). undefined otherwise.
@@ -54132,11 +54162,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Where `body` writes, by position (walkInvocationAst's order; a write lands once its own subtree has run, so
-   * `t = t.next()` writes after its call; a write in a loop with a call can run on either side of it). `after`: whether
-   * a write of one of `names` (a local, a parameter, a branch capture) can run after a run of `slot`'s call.
-   * `staleInitializer`: the initializer of local `name`, when it reads only scalar state and stack variables and a write
-   * of one of them can land between the declaration and a run of `slot`'s call. A call writes what its callee writes;
-   * assembly, and a call through a function value, may write anything.
+   * `t = t.next()` writes after its call; a write in a loop with a call can run on either side of it). `after` and
+   * `before`: whether a write can land after, or before, a run of `slot`'s call. `staleInitializer`: the initializer of
+   * local `name` when a write of what it reads can land between the declaration and a run of `slot`'s call; a write of
+   * another field of an entry, or a constructor rebuild carrying the read field over, does not count. A call writes
+   * what its callee writes; assembly may write anything.
+   *
+   * An initializer reading a collection entry is read again at the call only where visitMappingAccess reads the
+   * written value: every write of it before the call is a straight-line whole-value write of the same entry slot.
+   * Any other entry read takes the input entry, the value from before the write, so the call is refused by name.
    */
   private bodyWrites(body: Node): Omit<CallSiteWrites, 'state'> {
     const at = new Map<Node, number>();
@@ -54172,16 +54206,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const landed = writes.map((write) => ({ ...write, end: subtreeEnd(write.node) }));
     const loopBodies = loops.map(subtree);
+    // The statements a body runs straight through: no branch, loop or switch above them, so none pre-allocated.
+    const straightLine = new Set<Node>();
+    const followBlock = (block: Node): void => {
+      if (!(block instanceof BlockNode)) return;
+      for (const statement of block.statements ?? []) {
+        straightLine.add(statement);
+        followBlock(statement);
+      }
+    };
+    followBlock(body);
     const callsOf = (slot: ExternalCallSlot): Node[] => [...at.keys()].filter((candidate) =>
       candidate instanceof ExternalFunctionCallNode && candidate.callInfo !== undefined
       && this.externalCallSlots[candidate.callInfo.externalCallSlotIndex] === slot);
     const sharesLoop = (write: Node, call: Node): boolean =>
       loopBodies.some((inside) => inside.has(write) && inside.has(call));
+    // A write that leaves `field` of the entry it writes as it was: a write of another field, or a rebuild of the entry
+    // by its struct's constructor (not a function returning the struct) carrying the field over from that same entry.
+    const keepsField = (write: Node, field: string | undefined): boolean => {
+      if (field === undefined) return false;
+      if (write instanceof MappingFieldAssignNode) return write.fieldName !== field;
+      if (!(write instanceof MappingAssignNode) || write.entrySlotIndex < 0 || write.arrayIndex !== undefined
+        || write.arrayPush || write.arrayPop || !(write.expression instanceof FunctionCallNode)) return false;
+      const rebuild = write.expression;
+      const struct = rebuild.type;
+      if (!(struct instanceof StructType) || rebuild.identifier.name !== struct.name
+        || rebuild.resolvedFunction !== undefined || rebuild.identifier.type instanceof FunctionType
+        || this.resolvedLibraries[rebuild.identifier.name] || rebuild.parameters.length !== struct.fields.length) {
+        return false;
+      }
+      const argument = rebuild.parameters[struct.fields.findIndex((member) => member.name === field)];
+      return argument instanceof FieldAccessNode && argument.name === field
+        && argument.expression instanceof MappingAccessNode && argument.expression.name === write.name
+        && argument.expression.entrySlotIndex === write.entrySlotIndex && argument.expression.arrayIndex === undefined;
+    };
     return {
       after: (names, slot) => {
         const calls = callsOf(slot);
         return landed.some((write) => (write.names === undefined || write.names.some((name) => names.includes(name)))
           && calls.some((call) => write.end > at.get(call)! || sharesLoop(write.node, call)));
+      },
+      before: (names, roots, slot) => {
+        const calls = callsOf(slot);
+        return landed.some((write) => ((!(write.node instanceof VariableDefinitionNode)
+          && (write.names === undefined || write.names.some((name) => names.includes(name))))
+          || write.roots === 'any' || [...write.roots].some((root) => roots.includes(root)))
+          && calls.some((call) => write.end < at.get(call)! || sharesLoop(write.node, call)));
       },
       staleInitializer: (name, slot) => {
         const declaration = declarations.get(name);
@@ -54189,21 +54259,46 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (declaration === undefined || initializer === undefined) return undefined;
         const stack = new Set<string>();
         const roots = new Set<string>();
-        let collection = false;
+        const entries: MappingAccessNode[] = [];
+        const fields = new Map<MappingAccessNode, string>();
         walkInvocationAst(initializer, (inner) => {
           if (inner instanceof IdentifierNode) stack.add(inner.name);
           if (inner instanceof StateAccessNode) roots.add(inner.name);
-          // A collection entry read where a write of the collection has landed is left to the entry machinery.
-          if (inner instanceof MappingAccessNode) collection = true;
+          if (inner instanceof MappingAccessNode) {
+            roots.add(inner.name);
+            entries.push(inner);
+          }
+          if (inner instanceof FieldAccessNode && inner.expression instanceof MappingAccessNode) {
+            fields.set(inner.expression, inner.name);
+          }
         });
-        if (collection) return undefined;
         const declared = subtreeEnd(declaration);
         const calls = callsOf(slot);
-        const stale = landed.some((write) => (write.names === undefined || write.roots === 'any'
-          || write.names.some((written) => stack.has(written)) || [...write.roots].some((root) => roots.has(root)))
-          && write.node !== declaration
-          && calls.some((call) => (write.end > declared && write.end < at.get(call)!) || sharesLoop(write.node, call)));
-        return stale ? initializer : undefined;
+        // A write of a collection read here that keeps every field read of its entries, whichever entry it writes.
+        const keepsReads = (write: Node): boolean => (write instanceof MappingAssignNode
+          || write instanceof MappingFieldAssignNode) && entries.some((entry) => entry.name === write.name)
+          && entries.every((entry) => entry.name !== write.name || keepsField(write, fields.get(entry)));
+        const changing = landed.filter((write) => write.node !== declaration
+          && (write.names === undefined || write.roots === 'any'
+            || write.names.some((written) => stack.has(written)) || [...write.roots].some((root) => roots.has(root)))
+          && calls.some((call) => (write.end > declared && write.end < at.get(call)!) || sharesLoop(write.node, call))
+          && !keepsReads(write.node));
+        if (changing.length === 0) return undefined;
+        if (entries.length === 0) return initializer;
+        const readsWritten = entries.every((entry) => entry.collection?.sorted !== true && entry.arrayIndex === undefined
+          && entry.isPackedStateArrayAccess !== true)
+          && changing.every(({ node: write }) => (write instanceof MappingAssignNode
+            || write instanceof MappingFieldAssignNode) && straightLine.has(write)
+            && entries.some((entry) => entry.name === write.name && entry.entrySlotIndex === write.entrySlotIndex));
+        if (readsWritten) return initializer;
+        throw new SolidcDiagnosticError(
+          'ENTRY_TARGET_WRITTEN_BEFORE_CALL',
+          `'${this.currentFunction.name}' writes '${entries[0]!.name}' before calling ${slot.interfaceName}.`
+            + `${slot.functionName} through an entry of it, and the call cannot read the written entry: the write is in `
+            + 'a branch or loop, to another key, or of a sorted, packed or array-element value. On the EVM the call '
+            + 'goes to the written value. Make the call before the write, or write the same entry unconditionally.',
+          { functionName: this.currentFunction.name, collection: entries[0]!.name, call: slot.functionName },
+        );
       },
     };
   }

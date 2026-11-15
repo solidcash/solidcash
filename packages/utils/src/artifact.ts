@@ -1723,6 +1723,11 @@ export interface ExternalCallAbi {
   functionName: string;
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state, not caller-provided)
+  /**
+   * The function can write the call's target before the call: the callee the call runs on is not the one the caller's
+   * current state and the call's arguments name, so a builder cannot resolve it from them.
+   */
+  targetWrittenBeforeCall?: true;
   addressLiteral?: string; // code-baked literal address target IFoo(0x..).m(): covenant pushes this constant (un-seedable)
   loopArrayVar?: string; // state array of callee addresses: every element is co-spent + loop-verified (IFoo(arr[i]).m())
   // varying-method dispatch table: parallel `bytes[]` state array of per-element selectors. The covenant reads

@@ -2641,6 +2641,9 @@ export class HexLiteralNode extends LiteralNode<Uint8Array> {
   // runtime length): it type-checks as bytes so a NON-primary contract using it does not fail the file, but
   // codegen throws this message if a compiled contract actually reaches it. See visitHexLiteral.
   codegenError?: string;
+  // Set on the folded `I.f.selector` / `x.f.selector` of a function that declares a result: a raw call whose
+  // payload carries it reads its callee's record.
+  selectorOfReturningFunction?: true;
 
   constructor(
     public value: Uint8Array,
@@ -2713,6 +2716,7 @@ export class AbiEncodeWithSignatureNode extends ExpressionNode {
 export class AbiEncodeCallNode extends ExpressionNode {
   computedSelector?: Uint8Array; // set during semantic analysis
   resolvedParamTypes?: Type[];   // from interface function definition
+  namesReturningFunction?: true; // set during semantic analysis: the named function declares a result
   constructor(
     public interfaceName: string,
     public functionName: string,
@@ -3307,6 +3311,11 @@ export interface ExternalCallSlot {
   rawParameterTypes?: Type[];
   rawSelector?: Uint8Array;
   rawInterfaceName?: string;
+  /**
+   * A raw call whose payload names an interface function that declares a result: the caller reads its co-spent
+   * callee's record, so the call has no record-less answer and a returned `false` cannot be hidden.
+   */
+  rawReadsRecord?: boolean;
   /** The source call carries an effective `{ value: ... }` transfer. Retained independently of cloned AST nodes. */
   callValueEffect?: boolean;
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address

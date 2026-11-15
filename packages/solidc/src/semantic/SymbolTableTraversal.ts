@@ -12023,6 +12023,14 @@ export default class SymbolTableTraversal extends AstTraversal {
       const rawParameters = rawPayload instanceof AbiEncodeCallNode
         || rawPayload instanceof AbiEncodeWithSelectorNode
         ? rawPayload.parameters : undefined;
+      // A payload naming a function that declares a result reads its callee's record: the call has no record-less
+      // answer, so a returned `false` cannot be hidden. A selector literal, a signature string and opaque bytes name
+      // no declaration and keep it.
+      let rawSelectorSource = rawPayload instanceof AbiEncodeWithSelectorNode
+        ? resolveInitializer(rawPayload.selector) : undefined;
+      while (rawSelectorSource instanceof CastNode) rawSelectorSource = resolveInitializer(rawSelectorSource.expression);
+      const rawReadsRecord = (rawPayload instanceof AbiEncodeCallNode && rawPayload.namesReturningFunction === true)
+        || (rawSelectorSource instanceof HexLiteralNode && rawSelectorSource.selectorOfReturningFunction === true);
       const rawArgSources = rawParameters
         ? rawParameters.map((parameter) => {
           const classified = classifyArg(parameter);
@@ -12351,6 +12359,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(addressSource && { addressSource }),
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawSelector && { rawSelector }),
+        ...(rawReadsRecord && { rawReadsRecord: true }),
         // Keep the decoded AST parameters on the compiler-internal slot. Synthetic graph handlers are cloned
         // after helper inlining, when the low-level payload may only remain as an identifier; the clone must still
         // reconstruct the concrete callee's canonical argument vector from the values proven at the source edge.
@@ -17272,6 +17281,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const selfParamTypes = abiParams.map((p) => p.type);
       node.computedSelector = this.computeAbiSelector(this.selectorSignatureFor(node.functionName, selfParamTypes));
       node.resolvedParamTypes = abiParams.map((p) => p.type);
+      if (fn.returnTypes.length > 0) node.namesReturningFunction = true;
       node.parameters = this.visitList(node.parameters);
       return node;
     }
@@ -17309,6 +17319,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     const signature = this.selectorSignatureFor(node.functionName, paramTypes);
     node.computedSelector = this.computeAbiSelector(signature);
     node.resolvedParamTypes = ifaceFunc.parameters.map((p) => p.type);
+    if (ifaceFunc.returnTypes.length > 0) node.namesReturningFunction = true;
 
     node.parameters = this.visitList(node.parameters);
     return node;
@@ -18041,7 +18052,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const fa = node.expression;
       const baseName = (fa.expression as IdentifierNode).name;
       // One method of the name, or the overload a compiler-built member names by its parameter types.
-      const params = (name: string): ParameterNode[] | undefined => {
+      const method = (name: string): InterfaceFunctionNode | FunctionDefinitionNode | undefined => {
         const iface = this.interfaceMap.get(name);
         let named: (InterfaceFunctionNode | FunctionDefinitionNode)[] = (iface ? this.getAllInterfaceFunctions(iface)
           : this.contractMap.get(name)?.functions ?? []).filter((f) => f.name === fa.name);
@@ -18051,7 +18062,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             && f.parameters.every((parameter, at) => parameter.type.toString() === wanted[at]!.toString()));
         }
         if (named.length > 1) throw new AmbiguousSelectorError(node, name, fa.name);
-        return named[0]?.parameters;
+        return named[0];
       };
       // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
       // just 'address'); look it up in the scope chain, then the state vars.
@@ -18061,11 +18072,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       varType = varType ?? this.stateVariableMap.get(baseName)?.type;
       const varContract = varType instanceof AddressType ? varType.interfaceName : undefined;
-      const methodParams = params(baseName) ?? (varContract ? params(varContract) : undefined);
-      if (methodParams) {
-        const sig = this.selectorSignatureFor(fa.name, methodParams.map((p) => p.type));
+      const named = method(baseName) ?? (varContract ? method(varContract) : undefined);
+      if (named) {
+        const sig = this.selectorSignatureFor(fa.name, named.parameters.map((p) => p.type));
         const lit = new HexLiteralNode(this.computeAbiSelector(sig));
         lit.location = node.location;
+        // A raw call whose payload carries this selector reads its callee's record (GenerateTargetTraversal).
+        if (named.returnTypes.length > 0) lit.selectorOfReturningFunction = true;
         return lit;
       }
       // `L.f.selector` for a library function: computed from the parse-time declared signature (recorded in
@@ -19469,8 +19482,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         }).__messageBusMode;
         const graphRawCallsRequested = this.compilerOptions.messageBus === true
           || requestedMessageBusMode === 'enabled' || requestedMessageBusMode === 'required';
+        // A payload naming a function that declares a result takes the raw external call with its `{value:}` too:
+        // only that call reads its callee's record, where the low-level form answers with no result read.
         const graphRawValueCall = node.methodName === 'call'
-          && graphRawCallsRequested
+          && (graphRawCallsRequested || (this.compilerOptions.composition !== 'framed'
+            && this.payloadNamesReturningFunction(data)))
           && node.callOptions?.value !== undefined
           && node.callOptions.salt === undefined;
         if ((node.methodName === 'call' || node.methodName === 'staticcall')
@@ -19850,6 +19866,35 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * Whether a low-level call's payload names a function that declares a result, `abi.encodeCall(I.f, (..))` or
+   * `abi.encodeWithSelector(I.f.selector, ..)`, directly or through the local or constant that holds it. Such a call
+   * reads its callee's record, so a returned `false` cannot be hidden.
+   */
+  private payloadNamesReturningFunction(payload: ExpressionNode | undefined, seen = new Set<Node>()): boolean {
+    let value = payload;
+    while (value instanceof CastNode) value = value.expression;
+    if (value === undefined || seen.has(value)) return false;
+    seen.add(value);
+    if (value instanceof IdentifierNode) {
+      const definition = value.definition?.definition;
+      const initializer = definition instanceof VariableDefinitionNode || definition instanceof ConstantDefinitionNode
+        ? definition.expression : this.findLocalInit(this.currentFunction?.body, value.name);
+      return this.payloadNamesReturningFunction(initializer, seen);
+    }
+    if (value instanceof AbiEncodeCallNode) return value.namesReturningFunction === true;
+    if (!(value instanceof AbiEncodeWithSelectorNode)) return false;
+    let selector: ExpressionNode | undefined = value.selector;
+    while (selector instanceof CastNode) selector = selector.expression;
+    if (selector instanceof IdentifierNode) {
+      const definition = selector.definition?.definition;
+      selector = definition instanceof ConstantDefinitionNode || definition instanceof VariableDefinitionNode
+        ? definition.expression : undefined;
+      while (selector instanceof CastNode) selector = selector.expression;
+    }
+    return selector instanceof HexLiteralNode && selector.selectorOfReturningFunction === true;
+  }
+
+  /**
    * Normalize a returning raw call exposed by helper inlining to the same authenticated graph edge as the
    * equivalent source-level `(bool, bytes) = target.call(payload)` expression.
    *
@@ -19866,8 +19911,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     const messageBusMode = (this.compilerOptions as CompilerOptions & {
       __messageBusMode?: 'auto' | 'enabled' | 'required';
     }).__messageBusMode;
+    // Outside the message bus, a payload naming a function that declares a result is lowered too: only the raw
+    // external call reads its callee's record, where the low-level form would answer with no result read. A framed
+    // body lowers such a call to a typed call of its own.
     if (this.compilerOptions.messageBus !== true
-      && messageBusMode !== 'enabled' && messageBusMode !== 'required') return undefined;
+      && messageBusMode !== 'enabled' && messageBusMode !== 'required'
+      && (this.compilerOptions.composition === 'framed' || !this.payloadNamesReturningFunction(node.data))) {
+      return undefined;
+    }
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
     const valueCall = node.callMode === 'call'
       && node.callOptions?.value !== undefined

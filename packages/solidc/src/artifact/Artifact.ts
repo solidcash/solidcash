@@ -4290,6 +4290,7 @@ function buildFunctionAbiMetadata(
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
           ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
           ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
+          ...(ec.rawReadsRecord && { rawReadsRecord: true }),
           // A low-level call returns its failure to the caller rather than reverting it, a typed call does not.
           ...((rawCall || (ec.callMode !== undefined && ec.callMode !== ExternalCallMode.REGULAR)) && (() => {
             const failedCallMessage = failedCallMessageOf(func.body, ec.sourceCallNode);

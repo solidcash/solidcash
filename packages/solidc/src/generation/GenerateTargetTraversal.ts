@@ -31043,14 +31043,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // A callee that declares no return value pins no record for this call, and the SDK states that as a negative
       // return coordinate. An EVM low-level call to such a function answers with empty returndata, so an opaque read
-      // must not touch the output introspection ops at a negative index: they abort the spend.
-      const opaqueMayHaveNoRecord = node.opaqueReturn && !bindsInline && this.plainLoopDepth === 0;
+      // must not touch the output introspection ops at a negative index: they abort the spend. The coordinate is -1,
+      // and the answer `(true, "")`: a co-spent callee runs, and a plain send that names no callee goes to an account,
+      // where the EVM runs no code and the call succeeds. A payload naming a function that declares a result has no
+      // such answer: it reads its callee's record, so a returned `false` cannot be hidden.
+      const opaqueMayHaveNoRecord = node.opaqueReturn && !bindsInline && this.plainLoopDepth === 0
+        && physicalSlot.rawReadsRecord !== true;
       if (opaqueMayHaveNoRecord) {
         this.emit(Op.OP_DUP, locationData);
         this.emit(encodeInt(0n), locationData);
         this.emit(Op.OP_LESSTHAN, locationData);
         this.emit(Op.OP_IF, locationData);
-        this.emitRawCallRecordlessAnswer(node, physicalSlot, locationData);
+        this.emit(encodeInt(-1n), locationData);
+        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+        this.emit(Op.OP_1, locationData);    // success
+        this.emit(Op.OP_0, locationData);    // empty returndata
         this.emit(Op.OP_ELSE, locationData);
       }
       if (bindsInline) this.emitLoopCallRecordCarrierChecks(locationData);
@@ -32704,41 +32711,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_LESSTHANOREQUAL, loc);
     }
     this.emit(Op.OP_VERIFY, loc);
-  }
-
-  /**
-   * `[.., coordinate]` -> `[.., success, data]` for a raw call whose return coordinate is negative, so it reads no
-   * record and `data` is empty. -1 answers `(true, "")`: a co-spent callee whose function declares no result, or a
-   * plain send that names no callee. Below -1 answers `(false, "")`, a call that ran no callee, so its master index
-   * must name none: a co-spent callee runs. A payload with bytes always names its callee (emitRawCallCalleeGuard), so
-   * it has no `(false, "")` answer.
-   */
-  private emitRawCallRecordlessAnswer(
-    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
-  ): void {
-    if (this.rawCallPayloadEmptiness(node) === 'non-empty') {
-      this.emit(encodeInt(-1n), loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
-      this.emit(Op.OP_1, loc);                               // success
-      this.emit(Op.OP_0, loc);                               // empty returndata
-      return;
-    }
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(-1n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emitSlotMasterIndex(slot, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_VERIFY, loc);
-    this.emit(Op.OP_0, loc);                                 // success = false
-    this.emit(Op.OP_0, loc);                                 // empty returndata
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(Op.OP_1, loc);                                 // success
-    this.emit(Op.OP_0, loc);                                 // empty returndata
-    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

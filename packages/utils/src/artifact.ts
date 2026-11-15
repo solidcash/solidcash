@@ -1757,6 +1757,11 @@ export interface ExternalCallAbi {
   rawSelector?: string; // decoded abi.encodeWithSelector selector when the source function name is unavailable
   rawArgSources?: readonly ArgSource[];
   /**
+   * A low-level call whose payload names a function that declares a result: the caller reads its callee's record, so
+   * the call has no record-less answer (return coordinate -1) and a returned `false` cannot be hidden.
+   */
+  rawReadsRecord?: boolean;
+  /**
    * The message of the caller's own `require` over this low-level call's success: what the EVM reports when the call
    * fails, since a low-level call returns `false` to its caller rather than reverting it. Absent for a typed call,
    * whose failure is the callee's own, and for a low-level call no `require` checks.

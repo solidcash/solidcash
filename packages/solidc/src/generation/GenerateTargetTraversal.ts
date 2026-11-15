@@ -32740,6 +32740,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return;
     }
+    // The value is evaluated here, before the payload and the target the call's check reads (the target only beside a
+    // payload that is not an empty literal), while a variable's final use is marked in source order, the value last:
+    // `t.to.call{value: t.value}(t.data)` with `t` the element `txs[i]` marks `i` final in `t.value`. A final use in
+    // the value that the target or the payload still reads is picked instead, and the variable is left to its scope's
+    // cleanup.
+    this.keepVariablesReadLater([
+      node.callOptions.value,
+      ...(this.isEmptyLiteralPayload(node.data) ? [] : [node.targetExpression]),
+      node.data,
+    ]);
     const addrParam = this.getAddressParamFromTarget(node.targetExpression);
     if (addrParam) {
       node.callOptions.value = this.emitValueTransfer(

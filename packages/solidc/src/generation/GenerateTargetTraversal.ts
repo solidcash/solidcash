@@ -9988,13 +9988,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    // A dispatched direct program still near the per-input limit takes the size-pressure pass. A sole entry runs
-    // inline after this point, so its depth is not yet known, and the multi-call entry is defined after it.
+    // A dispatched direct program within DIRECT_SIZE_PRESSURE_MARGIN of the configured per-input limit, either side,
+    // takes the size-pressure pass (the size measured here is before later passes trim it, so a program the limit
+    // finally admits can still measure over it). One far over the limit is left as it is: no input could spend it
+    // either way, and a test that runs it on a provider admitting larger inputs keeps the operation-cost budget its
+    // size gives. A sole entry runs inline after this point, so its depth is not yet known, and the multi-call entry
+    // is defined after it.
+    const inputLimit = this.compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE;
+    const programBytes = result === undefined ? 0 : scriptToBytecode(this.output).length - result.savedBytes;
     if (result !== undefined && this.directConvention && !this.framedMaster && !this.currentContractHasMessageBus
       && !this.currentContractCarriesCallBatch && !largeBodyOutline
       && this.definedBodyRecords.some((record) => record.selectorHex !== undefined)
-      && scriptToBytecode(this.output).length - result.savedBytes
-        > MAX_INPUT_BYTESIZE - GenerateTargetTraversalWithLocation.DIRECT_SIZE_PRESSURE_MARGIN) {
+      && programBytes > inputLimit - GenerateTargetTraversalWithLocation.DIRECT_SIZE_PRESSURE_MARGIN
+      && programBytes <= inputLimit + GenerateTargetTraversalWithLocation.DIRECT_SIZE_PRESSURE_MARGIN) {
       result = this.outlineUnderSizePressure(result, bodies.map((body) => body.anchors)) ?? result;
     }
     const outcome = result!;

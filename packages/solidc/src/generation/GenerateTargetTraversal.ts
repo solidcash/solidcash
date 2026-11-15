@@ -68,6 +68,7 @@ import {
   optimiseBytecode,
   optimiseBytecodeOld,
   OPTIMISER_COMPAT_CHECK_MAX_OPS,
+  AddressBytesType,
   AddressType,
   ValueType,
   EnumType,
@@ -1092,6 +1093,25 @@ function functionMakesExternalSelfCall(fn: FunctionDefinitionNode): boolean {
     if (call?.fromThisCall === true) found = true;
   });
   return found;
+}
+
+/**
+ * Per compiled contract: whether a function it compiles recovers an EVM address (`ecrecoverEvm`, or bare `ecrecover` in
+ * `evm` mode), which answers 20 zero bytes for a recovery the precompile refuses. Set where the source file is visited,
+ * and read through the primary contract, which every traversal of its bodies carries.
+ */
+const recoversEvmAddress = new WeakMap<ContractNode, boolean>();
+
+/** `==` or `!=` between addresses: one operand is an address, and the other is one or converts to one. */
+function comparesAddresses(left: Type | undefined, right: Type | undefined): boolean {
+  const address = (type: Type | undefined): boolean => type instanceof AddressType || type instanceof AddressBytesType;
+  return (left instanceof AddressType || right instanceof AddressType) && address(left) && address(right);
+}
+
+/** `address(0)` written as a literal, which is the empty zero itself. */
+function isZeroAddressLiteral(expression: ExpressionNode): boolean {
+  return expression instanceof CastNode && !expression.isUnsafe && expression.type instanceof AddressType
+    && expression.expression instanceof IntLiteralNode && expression.expression.value === 0n;
 }
 
 export class ForwardedWitnessError extends SolidCashError {
@@ -3433,6 +3453,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.compilerOptions.composition !== 'framed';
   }
 
+  /**
+   * Whether the address comparisons this program's source writes read 20 zero bytes as `address(0)`. A native program
+   * on the direct convention that recovers an EVM address answers 20 zero bytes, the EVM's zero, for a recovery the
+   * precompile refuses, while its own `address(0)` is empty; it compares the two as one zero. Every other program keeps
+   * exact-byte address equality: a framed body answers the empty zero, and `evmCompat` compares 20-byte identities.
+   */
+  private get evmZeroIsAddressZero(): boolean {
+    const contract = this.sourcePrimaryContract;
+    return this.compilerOptions.evmCompat !== true && this.directConvention
+      && contract !== undefined && recoversEvmAddress.get(contract) === true;
+  }
+
   /** Whether an address value is its exact locking bytecode or its 20-byte Solidity identity. */
   private get addressForm(): AddressForm {
     return resolveAddressForm(this.compilerOptions);
@@ -4938,6 +4970,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         allFunctions.push(candidate.resolvedFunction);
       });
     }
+    // Before any body is compiled: every address comparison of the program reads this (`evmZeroIsAddressZero`).
+    recoversEvmAddress.set(node.contract, allFunctions.some((fn) => {
+      let recovers = false;
+      walkInvocationAst(fn.body, (candidate) => {
+        if (candidate instanceof FunctionCallNode && candidate.identifier.name === GlobalFunction.ECRECOVER_EVM) {
+          recovers = true;
+        }
+      });
+      return recovers;
+    }));
     this.functionValuesNeverInvoked = !allFunctions.some((fn) => fn.body && this.containsIndirectCall(fn.body, true))
       && !node.contract.stateVariables.some((variable) => containsFunctionType(variable.type))
       && !node.contract.collections.some((collection) => containsFunctionType(collection.valueType));
@@ -19445,6 +19487,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * [address] -> the empty zero when the address is the 20 zero bytes a refused `ecrecoverEvm` answers, and the address
+   * unchanged otherwise, so only the two spellings of the zero meet in a comparison (`evmZeroIsAddressZero`).
+   */
+  private emitEvmZeroAsAddressZero(loc: SingleLocationData): void {
+    this.emit(Op.OP_DUP, loc);
+    this.emitDirectZeroAddress(true, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
    * Requires w to prove that no curve point has `r` as its x-coordinate: w^2 + r^3 + 7 = 0 mod p has a root only when
    * r^3 + 7 has none, since -1 is no square mod p, and r^3 + 7 is never 0 mod p, as the curve has no point of order 2.
    * Stack: [argBlob, w] -> [].
@@ -21793,6 +21848,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.right = this.visit(node.right);
       for (const operation of compileAddressToEvmIdentity()) this.emit(operation, identityLocation);
       this.emit(compileBinaryOp(node.operator, false), identityLocation);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      return node;
+    }
+    // A native program that recovers an EVM address holds a refused recovery's zero as 20 zero bytes, while its own
+    // `address(0)` is empty. The address comparisons its source writes (`sourceArithmetic` marks every binary operation
+    // the source writes) read 20 zero bytes as the empty zero, so a refused recovery equals address(0) and an address
+    // never set, and no other address. The compiler's own key and witness equalities, and every other program, keep
+    // exact-byte equality.
+    if ((node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE) && node.sourceArithmetic === true
+      && comparesAddresses(node.left.type, node.right.type) && this.evmZeroIsAddressZero) {
+      const zeroLocation = { location: node.location, positionHint: PositionHint.END };
+      const leftIsZero = isZeroAddressLiteral(node.left);
+      const rightIsZero = isZeroAddressLiteral(node.right);
+      node.left = this.visit(node.left);
+      if (!leftIsZero) this.emitEvmZeroAsAddressZero(zeroLocation);
+      node.right = this.visit(node.right);
+      if (!rightIsZero) this.emitEvmZeroAsAddressZero(zeroLocation);
+      this.emit(compileBinaryOp(node.operator, false), zeroLocation);
       this.popFromStack(2);
       this.pushToStack('(value)');
       return node;

@@ -74,8 +74,6 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     topLevelAnchorFillPositions: CreateBuilderAnchorFillPosition[];
     topLevelReturnWitnessPlan: bigint[];
     topLevelReturnWitnessGroups: number[];
-    /** Published ABI slots whose empty-payload raw call co-spends no callee; the value is whether the call failed. */
-    absentCalleeSlots?: ReadonlyMap<number, boolean>;
   },
 ): Promise<FunctionArgument[]> {
   let finalArgs = params.finalArgs;
@@ -85,7 +83,6 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     callerStateSnapshot, onChainState, publicSelfAddress, identityAnchors,
     identityAnchorBandByAddress, externalCallAnchorIndices, topLevelAnchorFillPositions,
     topLevelReturnWitnessPlan, topLevelReturnWitnessGroups,
-    absentCalleeSlots,
   } = params;
 
   // Conditional callsites retain their ABI slot numbers when inactive, while the physical groups compact.
@@ -177,9 +174,8 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
           : Number((master ?? anchor)![1]);
       const groupIndex = slot === undefined ? undefined : groupBySlot.get(slot);
       const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
-      // A raw call with an empty payload and no callee answers `(success, "")` from its published slot alone; the
-      // SDK states the outcome by the return coordinate. -2 is `success = false`, -1 is `success = true`.
-      const absentFails = slot === undefined ? undefined : absentCalleeSlots?.get(slot);
+      // A slot with no group names no callee: -1 for its master index and for its return coordinate, which a raw
+      // call's plain send reads as its only answer, `(true, "")`.
       let value: FunctionArgument = defaultInternalFunctionArg(input);
       if (groupIndex !== undefined && group) {
         if (selector) {
@@ -204,7 +200,6 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
           if (outputIndex !== undefined) value = BigInt(outputIndex);
         }
       } else if (master || anchor || returned) value = -1n;
-      if (returned && groupIndex === undefined && absentFails === true) value = -2n;
       finalArgs = materializeInternalFunctionArgument(finalArgs, abiFunction.inputs, input.name, value);
       if (returned) {
         topLevelReturnWitnessPlan.push(typeof value === 'bigint' ? value : -1n);

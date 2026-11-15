@@ -14,6 +14,7 @@ import {
   type ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { RawCallCalleeRequiredError } from '../Errors.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
@@ -1133,9 +1134,17 @@ export async function orchestrateCreateBuilderExternalCalls(
         } else if (groupMetas[i].ecSlot.hasReturnValues) {
           // A callee that pins no record carries none, even though a raw call's slot declares
           // `(bool, bytes)`. State the absent coordinate so the caller reads empty returndata; it must not claim
-          // a tail slot another group's carrier occupies.
-          if (calleePinsNoRecord(g)) returnEventIndexMap.set(i, -1);
-          else {
+          // a tail slot another group's carrier occupies. A raw call whose payload names a function that declares a
+          // result reads its callee's record and has no absent coordinate: refuse it before building.
+          if (calleePinsNoRecord(g)) {
+            const ecSlot = groupMetas[i].ecSlot;
+            if (ecSlot.rawReadsRecord === true) {
+              const call = ecSlot.rawFunctionName !== undefined ? `'${ecSlot.rawFunctionName}'`
+                : `with selector 0x${ecSlot.rawSelector ?? ''}`;
+              throw new RawCallCalleeRequiredError('no record to read', call, `'${g.functionName}' returns nothing`);
+            }
+            returnEventIndexMap.set(i, -1);
+          } else {
             returnEventIndexMap.set(i, isInBlockGroup(i) && offset !== undefined
               ? cursor + offset
               : returnEventOutputBase + tailRank++);
@@ -1210,7 +1219,6 @@ export async function orchestrateCreateBuilderExternalCalls(
         topLevelAnchorFillPositions,
         topLevelReturnWitnessPlan,
         topLevelReturnWitnessGroups,
-        absentCalleeSlots,
       },
     );
   }

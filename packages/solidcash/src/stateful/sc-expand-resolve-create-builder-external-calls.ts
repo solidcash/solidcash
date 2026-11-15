@@ -23,12 +23,11 @@ export type CreateBuilderResolvedExternalCall = {
   args: FunctionArgument[];
   stateOverrides?: Record<string, unknown>;
   /**
-   * A raw low-level call with an empty payload and no co-spent callee. EVM answers a plain send to an account (or to
-   * a contract with nothing to run for it) without executing a callee covenant: `fails: false` is `(true, "")`,
-   * `fails: true` is `(false, "")`. The published ABI slot stays in place, but no participant block is co-spent. A
-   * payload with bytes always co-spends its target (RawCallCalleeRequiredError when none can run it).
+   * A raw low-level call with an empty payload and no co-spent callee: a plain send to an account, where EVM runs no
+   * code and answers `(true, "")`, its only answer. The published ABI slot stays in place, but no participant block
+   * is co-spent. A payload with bytes always co-spends its target (RawCallCalleeRequiredError when none can run it).
    */
-  absentCallee?: { fails: boolean };
+  absentCallee?: true;
 };
 
 export type CreateBuilderLoopIdxRange = {
@@ -81,8 +80,8 @@ export interface ExpandResolveCreateBuilderExternalCallsResult {
   loopIdxRanges: CreateBuilderLoopIdxRange[];
   resolvedExternalCalls: CreateBuilderResolvedExternalCall[] | undefined;
   callerStateSnapshot: Record<string, StateValue> | undefined;
-  /** Published ABI slots whose raw call co-spends no callee, and whether the call answered `success = false`. */
-  absentCalleeSlots?: ReadonlyMap<number, boolean>;
+  /** Published ABI slots whose raw call, a plain send, co-spends no callee and answers `(true, "")`. */
+  absentCalleeSlots?: ReadonlySet<number>;
 }
 
 /**
@@ -185,8 +184,9 @@ export function isDirectConventionArtifact(artifact: Pick<Artifact, 'compiler' |
 function rawCallPayloadIsEmpty(ec: ExternalCallAbi): boolean {
   if (ec.rawSelector !== undefined || ec.rawFunctionName !== undefined) return false;
   const rawArgs = ec.rawArgSources ?? ec.argSources ?? [];
-  return rawArgs.length === 0 || (rawArgs.length === 1 && rawArgs[0].kind === 'literal'
-    && rawArgs[0].type === 'bytes0' && rawArgs[0].value === '');
+  // `hex""` and `new bytes(0)` publish as `bytes0`, a `""` string literal as `string`.
+  return rawArgs.length === 0 || (rawArgs.length === 1 && rawArgs[0].kind === 'literal' && rawArgs[0].value === ''
+    && (rawArgs[0].type === 'bytes0' || rawArgs[0].type === 'string'));
 }
 
 /** A raw call as its caller's ABI names it: the payload's function or selector, when the source names one. */
@@ -225,7 +225,7 @@ export async function expandResolveCreateBuilderExternalCalls(
   // artifact's list - not its position after loop expansion.
   const abiSlotByCall = new Map<ExternalCallAbi, number>();
   (abiFunction?.externalCalls ?? []).forEach((call, index) => abiSlotByCall.set(call, index));
-  const absentCalleeSlots = new Map<number, boolean>();
+  const absentCalleeSlots = new Set<number>();
 
   // A zero-trip affine loop reaches none of its nested callees. Check each published pre-test before registry
   // lookup or argument evaluation: two loops in one handler may have different argument-array lengths.
@@ -505,12 +505,12 @@ export async function expandResolveCreateBuilderExternalCalls(
           && ec.loopArrayVar === undefined;
         if (valueOnlyRawCall) {
           const abiSlot = abiSlotByCall.get(ec);
-          if (abiSlot !== undefined) absentCalleeSlots.set(abiSlot, false);
+          if (abiSlot !== undefined) absentCalleeSlots.add(abiSlot);
           autoResolved.push({
             externalContract: undefined,
             functionName: ec.functionName,
             args: [],
-            absentCallee: { fails: false },
+            absentCallee: true,
           });
           continue;
         }
@@ -558,25 +558,12 @@ export async function expandResolveCreateBuilderExternalCalls(
         ));
         if (matches.length !== 1) {
           // A payload with bytes must run on its co-spent target, and this deployment has no function that takes
-          // it: the caller's covenant refuses a call that names no callee unless its payload is empty.
-          if (!rawCallPayloadIsEmpty(ec)) {
-            throw new RawCallCalleeRequiredError('no matching function', rawCallName(ec));
-          }
-          // An empty payload to a contract with nothing to run is answered `(false, "")`, as EVM answers it; the
-          // caller's own `require(success)` then decides the outcome. There is no callee entry to co-spend, so state
-          // the slot's negative sentinels and let the caller's covenant speak.
-          const abiSlot = abiSlotByCall.get(ec);
-          if (abiSlot === undefined || ec.loopArrayVar !== undefined) {
-            throw new Error(`Raw external call selector '${ec.rawSelector ?? '<unknown>'}' has no unique pinned callee`);
-          }
-          absentCalleeSlots.set(abiSlot, true);
-          autoResolved.push({
-            externalContract: registered,
-            functionName: ec.functionName,
-            args: [],
-            absentCallee: { fails: true },
-          });
-          continue;
+          // it: the caller's covenant refuses a call that names no callee unless its payload is empty. An empty
+          // payload names none here either: a call that co-spends no callee answers `(true, "")` only, as an account
+          // with no code does, while the EVM would run this contract's receive or fallback, or revert.
+          throw new RawCallCalleeRequiredError(
+            rawCallPayloadIsEmpty(ec) ? 'plain send to a contract' : 'no matching function', rawCallName(ec),
+          );
         }
         functionName = matches[0].name;
       }

@@ -330,29 +330,50 @@ export class UnspendableContractError extends Error {
 }
 
 /**
- * Why a raw call's target cannot run it: no deployment is at the target (a wallet, or address(0)), none of its functions
- * takes the payload, or the one that does fails.
+ * Why a raw call cannot be built. A payload with bytes: no deployment is at the target (a wallet, or address(0)), none of
+ * its functions takes the payload, the one that does fails, or it names a function that declares a result and the
+ * callee's run pins no record to read. An empty payload: the target is a contract deployment, which a plain send that
+ * co-spends no callee cannot answer for.
  */
-export type RawCallCalleeRequiredReason = 'no contract at the target' | 'no matching function' | 'callee fails';
+export type RawCallCalleeRequiredReason = 'no contract at the target' | 'no matching function' | 'callee fails'
+  | 'no record to read' | 'plain send to a contract';
+
+/** The sentence a refusal of `reason` gives after the call's name. */
+function rawCallRefusal(reason: RawCallCalleeRequiredReason, detail: string | undefined): string {
+  const runs = 'its payload is not empty, so its target must be co-spent and run the call';
+  const plainSend = 'Only an empty-payload call, a plain send, is answered without a callee.';
+  switch (reason) {
+    case 'no contract at the target':
+      return `${runs}, and no contract deployment is at the target. ${plainSend}`;
+    case 'no matching function':
+      return `${runs}, and the target deployment has no function for the payload. ${plainSend}`;
+    case 'callee fails':
+      return `${runs}, and the target fails the call${detail === undefined ? '' : ` (${detail})`}. ${plainSend}`;
+    case 'no record to read':
+      return 'its payload names a function that declares a result, so the caller reads its callee\'s record, and '
+        + `the callee's run pins none${detail === undefined ? '' : ` (${detail})`}.`;
+    case 'plain send to a contract':
+    default:
+      return 'its payload is empty and its target is a contract deployment. A call that co-spends no callee answers '
+        + '`(true, "")` only, as an account with no code does; the EVM would run the contract\'s receive or fallback, '
+        + 'or answer `(false, "")`, and no spend states either.';
+  }
+}
 
 /**
- * A raw low-level call refused before anything is built: its payload is not empty, so the caller's covenant requires
- * the target co-spent, running the call, and the planner has no callee that runs it. Only an empty payload, a plain
- * send, is answered without a callee; EVM's `(false, "")` for a call that ran nothing has no spend that proves it.
+ * A raw low-level call refused before anything is built. A payload with bytes must run on its co-spent target, and a
+ * payload naming a function that declares a result is answered from the callee's record; the planner has no callee
+ * that does so. A call that co-spends no callee is a plain send, answered `(true, "")` only.
  */
 export class RawCallCalleeRequiredError extends Error {
   constructor(
     public readonly reason: RawCallCalleeRequiredReason,
     /** The call as its caller's ABI publishes it: the payload's function or selector, when the source names one. */
     public readonly call: string,
-    /** The callee's own failure, for `callee fails`. */
+    /** The callee's own failure for `callee fails`, the callee's function for `no record to read`. */
     public readonly calleeError?: string,
   ) {
-    const why = reason === 'no contract at the target' ? 'no contract deployment is at the target'
-      : reason === 'no matching function' ? 'the target deployment has no function for the payload'
-        : `the target fails the call${calleeError === undefined ? '' : ` (${calleeError})`}`;
-    super(`Raw call ${call} cannot be built: its payload is not empty, so its target must be co-spent and run the `
-      + `call, and ${why}. Only an empty-payload call, a plain send, is answered without a callee.`);
+    super(`Raw call ${call} cannot be built: ${rawCallRefusal(reason, calleeError)}`);
     this.name = 'RawCallCalleeRequiredError';
   }
 }

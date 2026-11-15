@@ -4287,6 +4287,11 @@ export class StatefulTransactionBuilder {
     return this.externalCallEntryOutputs.get(categoryId)?.get(blockSlot);
   }
 
+  /** A state value of an external call's output, as derivation or an override set it. */
+  getExternalCallState(categoryId: string, name: string): StateValue | undefined {
+    return this.externalCallStateUpdates.get(categoryId)?.get(name);
+  }
+
   /**
    * Rebind write-path entry NFT unlockers of `categoryId` to `masterInputIndex`.
    * Entry inputs may live outside their owner's fixed participant block, so a

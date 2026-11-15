@@ -4,8 +4,8 @@
  * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
  * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
  * always publishes it. Then the same sized shapes in a contract another contract calls (D calls T, T co-spent in D's
- * transaction): T iterates a collection, or hashes in a loop. Each sent transaction is checked by the VM; each tamper
- * case changes one part of it and expects the covenant that binds that part to refuse.
+ * transaction): T pushes onto a dynamic array, iterates a collection, or hashes in a loop. Each sent transaction is
+ * checked by the VM; each tamper case changes one part of it and expects the covenant that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -14,7 +14,7 @@ import {
 import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
 import { StatefulContract } from '../../src/stateful/index.js';
-import { getDataNftAddress, getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
+import { getDataNftAddress, getDynamicChunkAddress, getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { addressToLockScript, solidCashOutputToLibauthOutput } from '../../src/utils.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
@@ -479,9 +479,71 @@ const swapInputs = (sent: Sent, left: number, right: number): Sent => {
   };
 };
 
+/** `sent` with outputs `left` and `right` swapped. */
+const swapOutputs = (sent: Sent, left: number, right: number): Sent => ({
+  sourceOutputs: sent.sourceOutputs,
+  transaction: {
+    ...sent.transaction,
+    outputs: sent.transaction.outputs.map((output, at) => (
+      at === left ? sent.transaction.outputs[right]! : at === right ? sent.transaction.outputs[left]! : output)),
+  },
+});
+
 /** The indexes of the outputs of `sent` at `lock`. */
 const outputsAt = (sent: Sent, lock: Uint8Array): number[] => sent.transaction.outputs
   .map((output, index) => (same(output.lockingBytecode, lock) ? index : -1)).filter((index) => index >= 0);
+
+describe('an ordinary call of a contract whose function pushes onto a dynamic array (D calls T)', () => {
+  const SOURCE = `${P} interface I { function f(int x) external returns (int); }
+    contract T { int[] a; function f(int x) external returns (int) { a.push(x); a.push(x + 1); return a.length; } }
+    contract D { int got; function g(I t, int x) external returns (bool) { got = t.f(x); return true; } }`;
+
+  it('lays out the chunks the callee\'s run pins after its block, and refuses another chunk, result or chunk input',
+    async () => {
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+      const d = await s.deploy(compileString(SOURCE, compileOptions('D')));
+      const wallet = await s.wallet();
+      const tLock = addressToLockScript(t.contract.address);
+      const chunkLock = addressToLockScript(getDynamicChunkAddress(t.contract.inner as never, t.categoryId, 'a', 'int256[]'));
+      const dRecordLock = addressToLockScript(getDataNftAddress(d.contract.inner as never, d.categoryId));
+      // The first call writes one chunk; the second spends it and writes two, for four elements.
+      for (const [x, length, written, spent] of [[5n, 2n, 1, 0], [7n, 4n, 2, 1]] as const) {
+        await (d.contract.connect(wallet) as any).call.g(tLock, x).withExternalCall(t.contract).send();
+        const sent = s.sent[s.sent.length - 1]!;
+        expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+        expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(length);
+        // The callee's block of master, record and record slot after the caller's, then its new chunks; the old
+        // chunk is spent at the same index.
+        const master = inputAt(sent, tLock);
+        expect(master).toBe(2);
+        const chunks = outputsAt(sent, chunkLock);
+        expect(chunks).toEqual(Array.from({ length: written }, (_, index) => master + 3 + index));
+        const old = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, chunkLock) ? index : -1))
+          .filter((index) => index >= 0);
+        expect(old).toEqual(Array.from({ length: spent }, (_, index) => master + 3 + index));
+        // Another chunk: refused by the callee, whose run pins it.
+        for (const index of chunks) {
+          expect(inputPasses(s.provider, withOutput(sent, index, bumpCommitment), master)).toBe(false);
+        }
+        // A chunk moved past the caller's edge record, or two chunks swapped.
+        const edge = sent.transaction.outputs.findIndex((output) => binToHex(output.lockingBytecode) === '5161');
+        expect(edge).toBe(chunks.at(-1)! + 1);
+        expect(inputPasses(s.provider, swapOutputs(sent, chunks.at(-1)!, edge), master)).toBe(false);
+        if (written > 1) expect(inputPasses(s.provider, swapOutputs(sent, chunks[0]!, chunks[1]!), master)).toBe(false);
+        // Another result in the callee's call record: refused by the caller, which reads it, and by the callee.
+        expect(sent.transaction.outputs[master + 2]!.token?.nft?.capability).toBe('none');
+        expect(inputPasses(s.provider, withOutput(sent, master + 2, bumpCommitment), 0)).toBe(false);
+        expect(inputPasses(s.provider, withOutput(sent, master + 2, bumpCommitment), master)).toBe(false);
+        // Another value in the caller's record.
+        const [dRecord] = outputsAt(sent, dRecordLock);
+        expect(inputPasses(s.provider, withOutput(sent, dRecord!, bumpCommitment), 0)).toBe(false);
+        // The old chunk swapped with the record slot's input: the callee reads another coin as the old value.
+        if (spent > 0) expect(inputPasses(s.provider, swapInputs(sent, master + 2, master + 3), master)).toBe(false);
+      }
+      expect(((await t.contract.getState()) as { a?: bigint[] }).a).toEqual([5n, 6n, 7n, 8n]);
+    });
+});
 
 describe('an ordinary call of a contract whose function iterates a collection and returns an int (D calls T)', () => {
   const SOURCE = `${P} interface I { function f() external returns (int); }

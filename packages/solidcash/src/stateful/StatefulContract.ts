@@ -478,6 +478,9 @@ import {
   deriveFullPhase1PostEvaluateDataCommitments as deriveFullPhase1PostEvaluateDataCommitmentsImpl,
 } from './sc-derive-full-phase1-post-evaluate-data-commitments.js';
 import {
+  deriveFullPhase1CalleeDynamicChunks as deriveFullPhase1CalleeDynamicChunksImpl,
+} from './sc-derive-full-phase1-callee-dynamic-chunks.js';
+import {
   deriveFullPhase1ProgressiveEntries as deriveFullPhase1ProgressiveEntriesImpl,
 } from './sc-derive-full-phase1-progressive-entries.js';
 import {
@@ -5951,6 +5954,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           fullTrace = phase1PostEval.fullTrace;
           const bOutputBase = phase1PostEval.bOutputBase;
           if (phase1PostEval.skipGroup) continue;
+          // The chunks of dynamic state the callee writes from a value of its own run, by the lengths its record holds.
+          fullTrace = deriveFullPhase1CalleeDynamicChunksImpl(
+            { inner: this.inner as any }, stb, group, bMasterIdx,
+          ) ?? fullTrace;
 
           deriveFullPhase1ProgressiveEntriesImpl(
             { inner: this.inner as any },

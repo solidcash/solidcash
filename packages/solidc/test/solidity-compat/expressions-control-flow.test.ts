@@ -905,8 +905,11 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
     const fn = art.abi.find((a) => a.name === 'f');
     expect(fn?.inputs.some((inp) => inp.name.startsWith('__internal__loopTargets'))).toBe(true);
   });
-  it('supports several calls through one per-iteration interface local', () => {
-    const art = compileString(`pragma solidity 0.6.12;
+  it('refuses several calls through one per-iteration interface local on a plain parameter element', () => {
+    // A BCH master UTXO cannot service several view methods in one transaction. These compiled only by reading each
+    // answer from a witness the spender supplies, which nothing checked, although `targets[i]` names a callee whose
+    // answers the contract could read: only a keccak256-computed target keeps such witnesses.
+    expect(() => compileString(`pragma solidity 0.6.12;
       interface IFoo { function a() external view returns (uint); function b() external view returns (uint);
         function label() external view returns (string memory); }
       contract C { function f(address[] memory targets) public view returns (uint[] memory out) {
@@ -914,11 +917,9 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
         for (uint i; i < targets.length; i++) { IFoo target = IFoo(targets[i]);
           string memory ignored = target.label(); string memory direct = IFoo(targets[i]).label();
           out[i] = target.a() + target.b() + bytes(ignored).length + bytes(direct).length; }
-      } }`, opts);
-    const fn = art.abi.find((a) => a.name === 'f');
-    // A BCH master UTXO cannot service several view methods in one transaction; the compatibility query receives
-    // one value-witness array per distinct return slot instead of attempting duplicate co-spends.
-    expect(fn?.inputs.filter((inp) => inp.name.startsWith('__internal__viewReturn'))).toHaveLength(3);
+      } }`, opts)).toThrow(
+      /function 'f' makes 3 calls through the loop local 'target', whose target is not computed with keccak256/,
+    );
   });
   it('dispatches an inlined loop-local receiver assigned from an external result', () => {
     expect(() => compileString(`pragma solidity 0.6.12;

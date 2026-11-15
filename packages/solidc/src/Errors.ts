@@ -1442,26 +1442,61 @@ export class StatefulAddressPaymentWarning {
 }
 
 /**
- * A call on a computed target takes its callee from a witness the spender supplies, and nothing compares the two: a
- * straight-line keccak256 target such as `IPair(pairFor(factory, a, b))` (a CREATE2 address no BCH lock equals), or a
- * loop's per-turn target the caller chooses, `IPair(pairFor(factory, path[i], path[i + 1]))`. The witness keeps
- * routers working; the warning tells the author that any contract can stand as the callee.
+ * Which witness a `computed-call-target-unverified` warning names: the callee of a straight-line keccak256 target, the
+ * callee of a loop's per-turn target the caller's arguments choose, or the answer of a view call through a loop local
+ * computed with keccak256, which is not made at all.
+ */
+export type ComputedCallTargetKind = 'straight-line' | 'per-turn' | 'view-answer';
+
+/**
+ * A call on a computed target takes its callee, or a view call through it its answer, from a witness the spender
+ * supplies, and nothing compares the two: a straight-line keccak256 target such as `IPair(pairFor(factory, a, b))` (a
+ * CREATE2 address no BCH lock equals), a loop's per-turn target the caller chooses,
+ * `IPair(pairFor(factory, path[i], path[i + 1]))`, and the view calls through such a loop local. The witnesses keep
+ * routers working; the warning tells the author that the callee and its answers are the spender's.
  */
 export class ComputedCallTargetWarning {
   static readonly code = 'computed-call-target-unverified';
 
   readonly message: string;
 
-  /** `call` names the call (`the call IPair.swap`); `at` is the diagnostic position (` at line 12`). */
-  constructor(call: string, functionName: string, at: string, perIteration: boolean) {
-    const target = perIteration
-      ? 'a target computed on each loop turn, so the contract takes each turn\'s callee'
-      : 'a computed target (a keccak256 hash such as a CREATE2 address, which no BCH lock equals), so the contract '
-        + 'takes the callee';
-    this.message = `Warning: [${ComputedCallTargetWarning.code}] ${call} in function '${functionName}'${at} has `
-      + `${target} from a witness the spender supplies and never compares it with the computed value: the spender `
-      + 'may name any contract as the callee. Before the contract relies on the callee\'s answer to release its own '
-      + 'funds, check the callee against a registry the contract stores or another value it trusts.';
+  /**
+   * `call` names the call (`the call IPair.swap`), `holders` the functions that hold it (`function 'f'`), and `at` is
+   * the diagnostic position (` at line 12`).
+   */
+  constructor(call: string, holders: string, at: string, kind: ComputedCallTargetKind) {
+    const head = `Warning: [${ComputedCallTargetWarning.code}] ${call} in ${holders}${at}`;
+    const advice = 'Before the contract relies on the callee\'s answers to release its own funds, call through an '
+      + 'address the contract stores (a registry lookup) instead of';
+    if (kind === 'straight-line') {
+      this.message = `${head} has a computed target (a keccak256 hash such as a CREATE2 address, which no BCH lock `
+        + 'equals), so the contract takes the callee from a witness the spender supplies and never compares it with '
+        + 'the computed value: the spender may name any contract as the callee, and its answers are the spender\'s. '
+        + `${advice} a computed one.`;
+    } else if (kind === 'per-turn') {
+      this.message = `${head} has a target the caller's arguments choose on each loop turn, so the contract takes `
+        + 'each turn\'s callee from a witness the spender supplies and never compares it with that target: the '
+        + 'spender may name any contract as the callee, and its answers are the spender\'s, as are the answers of '
+        + `view calls in such a loop. ${advice} one the caller's arguments choose.`;
+    } else {
+      this.message = `${head} is not made: its loop local's target is computed with keccak256, and one master input `
+        + 'runs one call per transaction, so the contract reads the answer from a witness the spender supplies, which '
+        + `nothing checks: the answer is the spender's. ${advice} a computed one.`;
+    }
+  }
+}
+
+/**
+ * Several calls through one loop local whose target is not computed with keccak256: a plain element of a parameter
+ * array, or a target computed without a hash. One master input runs one call per transaction, so the shape compiled
+ * only by reading the view calls' answers from witnesses the spender supplies, which nothing checked.
+ */
+export class LoopLocalRepeatedCallsError extends SolidCashError {
+  constructor(node: Node, functionName: string, localName: string, callCount: number) {
+    super(node, `function '${functionName}' makes ${callCount} calls through the loop local '${localName}', whose `
+      + 'target is not computed with keccak256. One master input runs one call per transaction, so these calls could '
+      + 'only read answers the spender supplies, which nothing would check. Call each callee once per loop turn, '
+      + 'through separate locals or targets, or read the callee\'s state instead');
   }
 }
 

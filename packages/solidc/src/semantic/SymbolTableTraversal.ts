@@ -269,7 +269,7 @@ import { emitCompilerWarning } from '../warnings.js';
 import {
   DeployerUnsupportedError, ReservedNameError, StatefulAddressPaymentError, StatefulAddressPaymentWarning,
   DeploySaltError, DeployValueBelowReserveError, DeployValueWithoutContainerError, DeployedChildCallError,
-  ComputedCallTargetWarning,
+  ComputedCallTargetWarning, type ComputedCallTargetKind, LoopLocalRepeatedCallsError,
 } from '../Errors.js';
 import { deployerChildOf, type DeployerChild } from '../generation/deployerChildren.js';
 import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js';
@@ -1074,9 +1074,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   // The `__internal__loopTargets<n>` witnesses standing in for a target the caller chooses: the call reads its callee
   // from the witness and nothing compares the two. A witness bound to a receiver the contract computes is not one.
   private uncheckedLoopTargets = new Set<string>();
-  // Positions of the calls already warned as `computed-call-target-unverified`: one warning per call written, though
-  // an inlined helper's copies and its retained definition each synthesize a witness for it.
-  private warnedComputedCallTargets = new Set<string>();
+  // The `computed-call-target-unverified` warnings of this unit by call position, emitted once every function is
+  // visited: an inlined helper's copies and its retained definition share the call's position, so each call written
+  // warns once and names every function that holds it.
+  private computedCallTargetWarnings = new Map<string, {
+    call: string; location?: LocationI; kind: ComputedCallTargetKind; holders: FunctionDefinitionNode[];
+  }>();
+
   // Per-function count of external calls whose receiver is a given bare local, snapshotted BEFORE any collect-phase
   // rewrite (so the loop-body local-receiver rewrite can restrict to single-use locals immune to rewrite order).
   private extCallReceiverCounts = new Map<string, number>();
@@ -1534,6 +1538,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     node.contract = this.visit(node.contract) as ContractNode;
     this.assignRecoveryEffectOrdinals(node);
+    this.emitComputedCallTargetWarnings();
     return node;
   }
 
@@ -5094,7 +5099,9 @@ export default class SymbolTableTraversal extends AstTraversal {
                 if (strideSymbol) strideSymbol.references.push({ name: strideName } as IdentifierNode);
                 this.pushToStack(strideParam);
               }
-              if (this.uncheckedLoopTargets.has(slot.loopArrayVar)) this.warnUncheckedComputedTarget(node, slot, true);
+              if (this.uncheckedLoopTargets.has(slot.loopArrayVar)) {
+                this.warnUncheckedComputedTarget(node, slot, 'per-turn');
+              }
             }
           }
 
@@ -5124,7 +5131,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
             slot.addressParam = witnessName;
             // A framed body binds its call record to the value the local computes; it strips this witness.
-            if (this.compilerOptions.composition !== 'framed') this.warnUncheckedComputedTarget(node, slot, false);
+            if (this.compilerOptions.composition !== 'framed') {
+              this.warnUncheckedComputedTarget(node, slot, 'straight-line');
+            }
           }
 
           // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
@@ -8842,9 +8851,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   // the pair) plus VIEW calls (`pair.getReserves()`) - cannot co-spend the local once per call (a UTXO is spent
   // once). Replace each VIEW call with a caller-provided per-iteration witness `__internal__viewReturn<n>[loopIdx]`
   // (the SDK/caller supplies the read value); the local is then SINGLE-use (only the mutate) and the existing
-  // pair-local co-spend handles it. SOUND by caller-permissive: a wrong witness feeds wrong values into the mutate,
-  // whose co-spent covenant rejects (Router02 swap's K-invariant) -> fail-closed, the same argument as
-  // extcall-target-pinning. Scoped to exactly-one-mutate + SINGLE-return views (tuple returns are a follow-up).
+  // pair-local co-spend handles it. A wrong witness feeds wrong values into the mutate, whose co-spent covenant
+  // rejects (Router02 swap's K-invariant), but the caller's own use of the answers is unchecked: the rewrite is kept
+  // only for a target computed with keccak256, whose callee is a witness anyway, and each such view call warns
+  // (`computed-call-target-unverified`). Any other target with this shape is refused (LoopLocalRepeatedCallsError).
   private rewriteMultiUseViewCalls(fn: FunctionDefinitionNode): boolean {
     const body = fn.body;
     if (!body) return false;
@@ -8906,6 +8916,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body)
         ?? this.findLoopOrdinalForLocal(body, localName);
       if (!loopIdx) continue;
+      // Spender-supplied answers stand only where the target is computed with keccak256, the class whose callee is a
+      // witness too (a CREATE2 address names no lock). Any other target names a callee whose answers the contract
+      // could have read, so the shape this rewrite alone compiled is refused rather than left to another lowering.
+      if (!this.targetHashesWithKeccak(receiver, body)) {
+        throw new LoopLocalRepeatedCallsError(views[0], fn.name, localName, calls.length);
+      }
       const mkWitness = (retType: Type): ArrayAccessNode => {
         const witnessName = `__internal__viewReturn${this.viewReturnCounter}`;
         this.viewReturnCounter += 1;
@@ -8941,6 +8957,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           ta.tuple = accesses[0];
           removed.add(view);
         }
+        this.recordComputedCallTarget(fn, view.callInfo!, view.location, 'view-answer');
       }
     }
     for (const call of allCalls) if (!removed.has(call)) return true;
@@ -9082,23 +9099,72 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * `computed-call-target-unverified`: `slot` reads its callee from a witness the spender supplies, which nothing
-   * compares with the target the source computes. Warned once per call written; a batched slot stands for several.
+   * compares with the target the source computes. A batched slot stands for several calls.
    */
-  private warnUncheckedComputedTarget(fn: FunctionDefinitionNode, slot: ExternalCallSlot, perIteration: boolean): void {
-    const calls = slot.batchInvocations?.map((row) => row.sourceCallNode) ?? [slot.sourceCallNode];
-    for (const call of calls) {
-      const location = call?.location;
-      if (location !== undefined) {
-        const site = computeExpressionSiteKey(location);
-        if (this.warnedComputedCallTargets.has(site)) continue;
-        this.warnedComputedCallTargets.add(site);
-      }
-      const interfaceName = call?.callInfo?.interfaceName ?? slot.interfaceName;
-      const name = interfaceName === '__raw__'
-        ? `the low-level .${slot.callMode === ExternalCallMode.STATICCALL ? 'staticcall' : 'call'}()`
-        : `the call ${interfaceName}.${call?.callInfo?.functionName ?? slot.functionName}`;
-      emitCompilerWarning(new ComputedCallTargetWarning(name, fn.name, this.diagLine(location), perIteration).message);
+  private warnUncheckedComputedTarget(
+    fn: FunctionDefinitionNode, slot: ExternalCallSlot, kind: ComputedCallTargetKind,
+  ): void {
+    for (const call of slot.batchInvocations?.map((row) => row.sourceCallNode) ?? [slot.sourceCallNode]) {
+      this.recordComputedCallTarget(fn, call?.callInfo ?? slot, call?.location, kind);
     }
+  }
+
+  /** Record one `computed-call-target-unverified` call held by `fn`; the warnings are emitted after every function. */
+  private recordComputedCallTarget(
+    fn: FunctionDefinitionNode, call: { interfaceName: string; functionName: string; callMode?: ExternalCallMode },
+    location: LocationI | undefined, kind: ComputedCallTargetKind,
+  ): void {
+    const site = location !== undefined ? computeExpressionSiteKey(location)
+      : `#${this.computedCallTargetWarnings.size}`;
+    const recorded = this.computedCallTargetWarnings.get(site);
+    if (recorded) {
+      if (!recorded.holders.includes(fn)) recorded.holders.push(fn);
+      return;
+    }
+    const name = call.interfaceName === '__raw__'
+      ? `the low-level .${call.callMode === ExternalCallMode.STATICCALL ? 'staticcall' : 'call'}()`
+      : `the call ${call.interfaceName}.${call.functionName}`;
+    this.computedCallTargetWarnings.set(site, { call: name, location, kind, holders: [fn] });
+  }
+
+  /**
+   * One warning per call written, naming every function that holds it: an entry point and the helper it inlined both
+   * do. Entry points come first; a compiler-generated holder is named only when no source function holds the call.
+   */
+  private emitComputedCallTargetWarnings(): void {
+    for (const { call, location, kind, holders } of this.computedCallTargetWarnings.values()) {
+      const ordered = [...holders.filter((fn) => fn.isEntryPoint), ...holders.filter((fn) => !fn.isEntryPoint)];
+      const names = [...new Set(ordered.map((fn) => fn.name))];
+      const sourceNames = names.filter((name) => !name.startsWith('__'));
+      const quoted = (sourceNames.length > 0 ? sourceNames : names).map((name) => `'${name}'`);
+      const held = quoted.length === 1 ? `function ${quoted[0]}`
+        : `functions ${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+      emitCompilerWarning(new ComputedCallTargetWarning(call, held, this.diagLine(location), kind).message);
+    }
+    this.computedCallTargetWarnings.clear();
+  }
+
+  /**
+   * True when a loop local's target is computed with keccak256 (`IPair(pairFor(factory, path[i], path[i + 1]))`),
+   * through the locals it reads that are defined once: the class whose straight-line form takes a computed-target
+   * witness. A plain element of a parameter array, or a target computed without a hash, is not.
+   */
+  private targetHashesWithKeccak(target: Node, body: Node | undefined): boolean {
+    const followed = new Set<string>();
+    const pending: Node[] = [target];
+    while (pending.length > 0) {
+      const next = pending.pop()!;
+      if (this.containsEvmHash(next)) return true;
+      walkInvocationAst(next, (node) => {
+        if (!(node instanceof IdentifierNode) || followed.has(node.name)) return;
+        followed.add(node.name);
+        if (this.localDefinitionCount(body, node.name) !== 1) return;
+        const init = this.findLocalInit(body, node.name) ?? this.findTupleInit(body, node.name)
+          ?? this.findAssignmentValue(body, node.name);
+        if (init) pending.push(init);
+      });
+    }
+    return false;
   }
 
   /**

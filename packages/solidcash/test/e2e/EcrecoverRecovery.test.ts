@@ -718,6 +718,30 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
     expect(binToHex(state.third)).toBe('00'.repeat(20));
   });
 
+  it('ecrecoverEvm: the zero address for an r no curve point has, which the pad of the A in its triple proves', async () => {
+    const prime = 2n ** 256n - 2n ** 32n - 977n;
+    const leWord = (value: bigint): Uint8Array => Uint8Array.from(
+      { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+    const power = (base: bigint, exponent: bigint): bigint => {
+      let result = 1n;
+      for (let b = base % prime, e = exponent; e > 0n; b = (b * b) % prime, e >>= 1n) {
+        if (e & 1n) result = (result * b) % prime;
+      }
+      return result;
+    };
+    let x = 1n;
+    while (power(x ** 3n + 7n, (prime - 1n) / 2n) === 1n) x += 1n;
+    const g = await goodSigner('stateful-loop-evm-off-curve');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, g.h, g.h], [27n, g.v, 0n], [leWord(x), g.r, g.r], [g.s, g.s, g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe('00'.repeat(20));
+    expect(binToHex(state.second)).toBe(g.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.third)).toBe('00'.repeat(20));
+  });
+
   it('ecrecoverP2pkh: the empty bytecode for recovery ids 0 and 29 around a signer, whose P2PKH lock matches', async () => {
     const g = await goodSigner('stateful-loop-p2pkh');
     const { contract, call } = await deployed(compileString(source('ecrecoverP2pkh'), {

@@ -399,8 +399,10 @@ type SidecarStep = { utxo: Utxo; unlocker: Unlocker; recreate: Output } | undefi
  * pool. A 2-way recovery's middle slot reads nothing: a wallet coin fills it. Arguments that recover no key
  * (`ecrecoverRefusal`) have no side-car, so each of their three slots takes a wallet coin: the recovery answers the
  * zero address without reading them (`ecrecoverEvm` and `ecrecoverP2pkh` for a `v` other than 27 or 28, or an `r` or
- * `s` outside [1, n)), or its branch is not run, or it reads them and the creation fails its VM check. Coins in `spent`
- * are skipped; the coins taken are added to it.
+ * `s` outside [1, n)), or its branch is not run, or it reads them and the creation fails its VM check. For an `r` no
+ * curve point has, the first slot takes an A of the pool over the placeholder recovery, whose pad carries the proof
+ * an address projection reads. Coins in `spent` are skipped; the coins taken are
+ * added to it.
  */
 async function sharedEcrecoverSteps(options: {
   calls: ReadonlyArray<readonly [unknown, unknown, unknown, unknown]>;
@@ -416,7 +418,8 @@ async function sharedEcrecoverSteps(options: {
   const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
   const { computeEcrecoverWitness, ecrecoverRefusal } = await import('../ecrecover/ecrecoverRecovery.js');
   const {
-    buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, probeEcrecoverSplit, probeEcrecoverSplit3,
+    buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, buildEcrecoverPlaceholderSidecars,
+    probeEcrecoverSplit, probeEcrecoverSplit3,
   } = await import('../ecrecover/ecrecoverComputeSidecar.js');
   const pool = async (role: 'A' | 'B2' | 'M' | 'B3'): Promise<Utxo[]> => (
     await provider.getUtxosForLockingBytecode(ecrecoverComputeLockingBytecode(salt, role)))
@@ -435,7 +438,14 @@ async function sharedEcrecoverSteps(options: {
       refuse('it recovers a key from values that are not its own arguments; the SDK lays out a recovery from its '
         + 'hash, v, r and s arguments');
     }
-    if (ecrecoverRefusal(hash as Uint8Array, Number(v), r as Uint8Array, s as Uint8Array) !== undefined) {
+    const refusal = ecrecoverRefusal(hash as Uint8Array, Number(v), r as Uint8Array, s as Uint8Array);
+    if (refusal?.kind === 'offCurve') {
+      const coinA = take(coinsA);
+      const carrier = buildEcrecoverPlaceholderSidecars(salt, coinA, coinA, refusal.proof, 'B2');
+      steps.push({ utxo: coinA, unlocker: carrier.unlockerA, recreate: carrier.recreateA }, undefined, undefined);
+      continue;
+    }
+    if (refusal !== undefined) {
       steps.push(undefined, undefined, undefined);
       continue;
     }

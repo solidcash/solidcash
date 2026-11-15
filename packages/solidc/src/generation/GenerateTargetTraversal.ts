@@ -18753,6 +18753,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_IF, loc);
     }
+    // An `r` in range that no curve point has is refused by the precompile too. The direct convention reads side-car
+    // A's pad whole as an unsigned number: zero in an honest pad, and otherwise w, whose square is -(r^3 + 7) mod p,
+    // which the call checks after the projection before it answers the zero address.
+    const directOffCurveProof = zeroOnInvalidV;
+    const decodePad = (): void => {
+      this.emitGenericPushdataDecode(raw, loc);                            // [argBlob, pad, restA]
+      if (!directOffCurveProof) {
+        this.emit(Op.OP_NIP, loc);                                         // [argBlob, restA] (drop pad)
+        return;
+      }
+      this.emit(Op.OP_SWAP, loc); this.emitUnsignedWord(loc);              // [argBlob, restA, w]
+      this.emit(Op.OP_IFDUP, loc); this.emit(Op.OP_NOTIF, loc);            // an honest pad: [argBlob, restA]
+    };
 
     // 2. side-car A (a framed body's V): bind ITS argBlob == ours, then integrity-check its covenant.
     if (loop) {
@@ -18765,7 +18778,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(ECRECOVER_COMPUTE_A_SHARED_LOCK, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);                             // A integrity (idxA preserved by the DUP)
       this.emit(Op.OP_INPUTBYTECODE, loc);                           // [argBlob, U_A]  (read only to bind argBlob)
-      this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);   // [argBlob, restA] (drop pad)
+      decodePad();                                                   // [argBlob, restA]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_DROP, loc);  // [argBlob, argBlob_A] (drop the rest)
       this.emit(Op.OP_EQUALVERIFY, loc);                             // bind argBlob_A == argBlob
       this.popFromStack(1); // argBlob consumed by the bind -> keep the tracker synced
@@ -18813,7 +18826,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_NOTIF, loc);
         this.emit(Op.OP_NIP, loc);                                       // [argBlob, restA] (drop pad)
       } else {
-        this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // [argBlob, restA] (drop pad)
+        decodePad();                                                     // [argBlob, restA]
       }
       this.emitGenericPushdataDecode(raw, loc);                          // [argBlob, argBlob_A, rest2]
       this.emit(Op.OP_TOALTSTACK, loc);                                  // [argBlob, argBlob_A]
@@ -19002,6 +19015,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
+    if (directOffCurveProof) {
+      // [argBlob, restA, w]: w proves that no curve point has `r` as its x-coordinate, and the call answers the zero
+      // address. Side-car A is not bound here, so any input whose first push opens with w may carry the proof. A
+      // straight-line read stashed A's index for the redeem bind; drop it, so the alt stack stays balanced.
+      this.emit(Op.OP_ELSE, loc);
+      if (!loop) { this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc); }
+      this.emit(Op.OP_NIP, loc);
+      this.emitDirectOffCurveProof(loc);
+      this.emitDirectZeroAddress(isEvm, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
     if (zeroOnRefusal) {
       // [hash, v, r, s] -> the zero address, empty as `address(0)` is.
       this.emit(Op.OP_ELSE, loc);
@@ -19010,9 +19034,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (zeroOnInvalidV) {
       this.emit(Op.OP_ELSE, loc);
-      this.emit(Op.OP_DROP, loc); // invalid-v argBlob
-      if (isEvm) this.emitFixedWidthConstant(new Uint8Array(20), loc);
-      else this.emit(Op.OP_0, loc); // native P2PKH address(0) is empty locking bytecode
+      this.emit(Op.OP_DROP, loc); // the refused arguments' argBlob
+      this.emitDirectZeroAddress(isEvm, loc);
       this.emit(Op.OP_ENDIF, loc);
     }
     if (loop) {
@@ -19064,6 +19087,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1n), loc); this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_WITHIN, loc);
     this.emit(Op.OP_BOOLAND, loc); this.emit(Op.OP_NIP, loc);                                  // [.., accepted]
+  }
+
+  /** The direct convention's zero address: 20 zero bytes for `ecrecoverEvm`, the empty locking bytecode for P2PKH. */
+  private emitDirectZeroAddress(isEvm: boolean, loc: SingleLocationData): void {
+    if (isEvm) this.emitFixedWidthConstant(new Uint8Array(20), loc);
+    else this.emit(Op.OP_0, loc);
+  }
+
+  /**
+   * Requires w to prove that no curve point has `r` as its x-coordinate: w^2 + r^3 + 7 = 0 mod p has a root only when
+   * r^3 + 7 has none, since -1 is no square mod p, and r^3 + 7 is never 0 mod p, as the curve has no point of order 2.
+   * Stack: [argBlob, w] -> [].
+   */
+  private emitDirectOffCurveProof(loc: SingleLocationData): void {
+    this.emit(Op.OP_SWAP, loc);                                                              // [w, argBlob]
+    this.emit(encodeInt(33n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emitTakeFirst32(loc); this.emitUnsignedWord(loc);                                   // [w, r]
+    this.emit(Op.OP_DUP, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_MUL, loc);
+    this.emit(encodeInt(7n), loc); this.emit(Op.OP_ADD, loc);                                // [w, r^3 + 7]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_DUP, loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_ADD, loc);
+    this.emitSecp256k1Prime(loc); this.emit(Op.OP_MOD, loc);                                 // [(w^2 + r^3 + 7) mod p]
+    this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUALVERIFY, loc);
+  }
+
+  /** Pushes the secp256k1 field prime p, built as 2^256 - (2^256 - p), which is 22 bytes shorter than its push. */
+  private emitSecp256k1Prime(loc: SingleLocationData): void {
+    this.emit(encodeInt(1n), loc); this.emit(encodeInt(256n), loc); this.emit(Op.OP_LSHIFTNUM, loc);
+    this.emit(encodeInt((1n << 256n) - SECP256K1_PRIME), loc); this.emit(Op.OP_SUB, loc);
   }
 
   /** [word] -> [the word read as an unsigned little-endian number]. */

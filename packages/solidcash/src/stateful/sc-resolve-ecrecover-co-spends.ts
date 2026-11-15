@@ -11,7 +11,7 @@ import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
-  computeEcrecoverWitness, probeEcrecoverSplit, probeEcrecoverSplit3,
+  buildEcrecoverPlaceholderSidecars, computeEcrecoverWitness, probeEcrecoverSplit, probeEcrecoverSplit3,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
 import { ecrecoverRefusal } from '../ecrecover/ecrecoverRecovery.js';
 import {
@@ -79,10 +79,12 @@ export type ResolveEcrecoverCoSpendsResult = {
  *
  * Each call takes three block slots. A two-covenant recovery reads A and B2 and leaves the middle slot to a coin no
  * covenant reads; a width-0 recovery reads A, M and B3. Arguments that recover no key (`ecrecoverRefusal`) have no
- * side-car, so all three slots take coins the function does not read, and the keccak preimage of an `ecrecoverEvm`
- * call is 64 zero bytes: a recovery that answers the zero address for them (`ecrecoverEvm` and `ecrecoverP2pkh` for a
- * `v` other than 27 or 28, or an `r` or `s` outside [1, n)) or a branch the run skips never reads them, and a
- * recovery that reads them refuses the call, as no side-car can serve it.
+ * side-car of their own, and the keccak preimage of an `ecrecoverEvm` call is 64 zero bytes. For arguments the
+ * precompile's range rules refuse, all three slots take coins the function does not read: an address projection
+ * answers the zero address without reading them. For an `r` no curve point has, the first slot takes a coin of the A
+ * pool over the placeholder recovery, whose pad carries the proof an address projection reads before it answers the
+ * zero address, and the other two take coins the function does not read. A branch the run skips reads none of them,
+ * and a recovery that reads them for a recovery (`ecrecoverPubKey`) refuses the call, as no side-car can serve it.
  */
 export async function resolveEcrecoverComputeCoSpends(
   host: ResolveEcrecoverCoSpendsHost,
@@ -110,7 +112,7 @@ export async function resolveEcrecoverComputeCoSpends(
   const argOf = (p: string | null): unknown => (p ? args[visible.findIndex((x) => x.name === p)] : undefined);
   type CallPlan =
     | { kind: 'deferred' }
-    | { kind: 'refused'; refusal: string; argBlob: Uint8Array }
+    | { kind: 'refused'; refusal: string; argBlob: Uint8Array; proof?: Uint8Array }
     | { kind: 'recover'; wit: ReturnType<typeof computeEcrecoverWitness> };
   const plans = calls.map(([hp, vp, rp, sp]): CallPlan => {
     const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
@@ -121,11 +123,16 @@ export async function resolveEcrecoverComputeCoSpends(
     }
     const v = typeof vRaw === 'bigint' ? Number(vRaw) : Number(vRaw);
     const refusal = ecrecoverRefusal(hash, v, r, s);
-    if (refusal !== undefined) return { kind: 'refused', refusal, argBlob: Uint8Array.from([...hash, v & 0xff, ...r, ...s]) };
+    if (refusal !== undefined) {
+      return {
+        kind: 'refused', refusal: refusal.reason, argBlob: Uint8Array.from([...hash, v & 0xff, ...r, ...s]),
+        ...(refusal.kind === 'offCurve' ? { proof: refusal.proof } : {}),
+      };
+    }
     return { kind: 'recover', wit: computeEcrecoverWitness(hash, v, r, s) };
   });
-  // Only the calls with a side-car take coins of the pool.
-  const poolCalls = plans.filter((plan) => plan.kind !== 'refused').length;
+  // Only the calls with a side-car take coins of the pool: a recovery, and the A that carries an off-curve proof.
+  const poolCalls = plans.filter((plan) => plan.kind !== 'refused' || plan.proof !== undefined).length;
   // A branded sidecar checks the category at absolute input 0, which is only the owning master for a direct call.
   // Atomic participants can begin later in the transaction, so graph-selected calls use the shared lock;
   // the authenticated argument blob, exact kind-6 endpoints, and the A->M->B commitment chain retain soundness.
@@ -185,10 +192,17 @@ export async function resolveEcrecoverComputeCoSpends(
   for (let i = 0; i < calls.length; i++) {
     const plan = plans[i]!;
     if (plan.kind === 'refused') {
-      // No side-car recovers a key from these arguments. The three slots take coins the function does not read: the
+      // No side-car recovers a key from these arguments. The slots take coins the function does not read: the
       // compiled recovery answers the zero address without reading them, or its branch is not run, or it reads them
-      // and the call fails closed.
+      // and the call fails closed. For an `r` no point has, the first slot takes the A that carries the proof.
       for (let slot = 0; slot < 3; slot++) {
+        if (slot === 0 && plan.proof !== undefined) {
+          const carrierA = freeA[p]!;
+          p += 1;
+          const carrier = buildEcrecoverPlaceholderSidecars(salt, carrierA, carrierA, plan.proof, 'B2');
+          resolved.push({ utxo: carrierA, unlocker: carrier.unlockerA, recreate: carrier.recreateA });
+          continue;
+        }
         const coin = await unreadSlot(0x100 + 3 * i + slot, `slot ${slot} of recovery ${i}, whose arguments recover `
           + `no key (${plan.refusal}) and which therefore holds coins its function does not read,`);
         resolved.push({ utxo: coin.utxo, unlocker: coin.utxo.unlocker, recreate: coin.recreate });

@@ -5,10 +5,10 @@
  * A two-covenant recovery reads A and B2 and leaves its middle slot to a coin no covenant reads, which the call's wallet
  * fills and an output at the same index returns. A width-0 recovery reads A, M and B3. `ecrecoverEvm` and
  * `ecrecoverP2pkh` answer the zero address, as the EVM's precompile does, for a `v` other than 27 or 28 or an `r` or
- * `s` outside [1, n), without reading their slots, which take wallet coins. Arguments no side-car recovers a key from
- * (an `r` no curve point has, a key at infinity) take wallet coins too, which the function reads, so the call is
- * refused before it is sent. Each sent transaction is checked by the VM; each tamper case changes one part of it and
- * expects the input that binds that part to refuse.
+ * `s` outside [1, n), without reading their slots, which take wallet coins, and for an `r` in range that no curve
+ * point has, once the pad of the pool's A in the first slot proves it. A key at infinity takes wallet coins, which the
+ * function reads, so the call is refused before it is sent. Each sent transaction is checked by the VM; each tamper
+ * case changes one part of it and expects the input that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -253,6 +253,29 @@ function withMasterV(sent: Sent, master: number, h: Uint8Array, r: Uint8Array, t
 /** The P2PKH locking bytecode of a compressed key: what `ecrecoverP2pkh` answers. */
 const p2pkhOf = (key: Uint8Array): Uint8Array => encodeLockingBytecodeP2pkh(hash160(key));
 
+/** The first push of input `index`'s unlocking bytecode: a recovery side-car's pad. */
+const padOf = (sent: Sent, index: number): Uint8Array => (
+  decodeAuthenticationInstructions(sent.transaction.inputs[index]!.unlockingBytecode)[0] as { data: Uint8Array }).data;
+
+/** `sent` with the pad of input `index` opening with `word` (32 bytes) and zero after it, its length kept. */
+function withPad(sent: Sent, index: number, word: Uint8Array): Sent {
+  const instructions = decodeAuthenticationInstructions(sent.transaction.inputs[index]!.unlockingBytecode);
+  const pad = new Uint8Array((instructions[0] as { data: Uint8Array }).data.length);
+  pad.set(word);
+  const unlockingBytecode = encodeAuthenticationInstructions(
+    [{ ...instructions[0], data: pad }, ...instructions.slice(1)] as never);
+  return {
+    sourceOutputs: sent.sourceOutputs,
+    transaction: {
+      ...sent.transaction,
+      inputs: sent.transaction.inputs.map((input, at) => (at === index ? { ...input, unlockingBytecode } : input)),
+    },
+  };
+}
+
+/** A little-endian word read as an unsigned number. */
+const unsignedOf = (word: Uint8Array): bigint => BigInt(`0x${binToHex(Uint8Array.from(word).reverse()) || '0'}`);
+
 const PROJECTIONS = [
   { name: 'ecrecoverPubKey', owner: 'pubkey', expected: (g: Signed) => g.key, keccak: false },
   { name: 'ecrecoverP2pkh', owner: 'address', expected: (g: Signed) => p2pkhOf(g.key), keccak: false },
@@ -330,6 +353,15 @@ describe('an ordinary call that recovers a key straight-line', () => {
             ? index : -1)).filter((index) => index >= 0 && index !== a + 1);
           expect(signedByWallet.length).toBeGreaterThan(0);
           for (const index of signedByWallet) expect(inputPasses(s.provider, edited, index)).toBe(false);
+        }
+
+        // A's pad opening with a word, as an off-curve proof's does: an address projection reads the word and refuses,
+        // since no word proves that the signer's r, a point's x-coordinate, has no point; ecrecoverPubKey drops the pad
+        // unread. A itself only drops its pad.
+        for (const word of [leWord(1n), leWord(curveY(unsignedOf(g.r))!)]) {
+          const proved = withPad(sent, a, word);
+          expect(inputPasses(s.provider, proved, master)).toBe(projection.name === 'ecrecoverPubKey');
+          expect(inputPasses(s.provider, proved, a)).toBe(true);
         }
       });
   }
@@ -558,13 +590,12 @@ describe('a straight-line recovery whose arguments recover no key', () => {
   const g = signed('straight-line-no-key');
   const GX = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n;
   const refused: Array<(k: Signed) => [Uint8Array, bigint, Uint8Array, Uint8Array]> = [
-    (k) => [k.h, 27n, leWord(firstX(1n, false)), k.s], // no curve point has this x
     // R = G, s = 1 and a digest of 1: the recovered key is (G - G)/r, the point at infinity.
     () => [leWord(1n), 27n, leWord(GX), leWord(1n)],
   ];
   for (const primary of ['E', 'Q'] as const) {
-    it(`refuses ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} before sending for an r with no curve point and `
-      + 'a key at infinity, which its function reads its side-cars for', async () => {
+    it(`refuses ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} before sending for a key at infinity, which its `
+      + 'function reads its side-cars for', async () => {
       const s = setup();
       const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
       await seedPool(s.provider, brand(t.categoryId), 1, 0xd1, primary === 'E');
@@ -635,6 +666,60 @@ describe('a straight-line recovery whose arguments recover no key', () => {
           expect(inputPasses(s.provider, withMasterS(sent, master, k.r, leWord(ORDER), k.s), master)).toBe(false);
         }
       }
+    });
+  }
+
+  for (const [primary, zero] of [['E', '00'.repeat(20)], ['Q', '']] as const) {
+    it(`answers the zero address under ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} for an r in range that `
+      + 'no curve point has, which the pad of the side-car A in its first slot proves', async () => {
+      const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+      const k = await g;
+      const x = firstX(1n, false);
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
+      const salt = brand(t.categoryId);
+      await seedPool(s.provider, salt, 1, 0xd6, primary === 'E');
+      const wallet = await s.wallet();
+      await (t.contract.connect(wallet) as any).call.f(k.h, 27n, leWord(x), k.s).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      const state = (await t.contract.getState()) as { who?: Uint8Array; n?: bigint };
+      expect(binToHex(state.who ?? new Uint8Array())).toBe(zero);
+      expect(state.n).toBe(1n);
+      // The first slot holds a coin of the pool's A, whose pad opens with w, w^2 = -(x^3 + 7) mod p; the other two hold
+      // wallet coins, returned at their own index.
+      const master = inputAt(sent, addressToLockScript(t.contract.address));
+      const a = master + (primary === 'E' ? 3 : 2);
+      expect(same(sent.sourceOutputs[a].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'A'))).toBe(true);
+      const w = unsignedOf(padOf(sent, a));
+      expect(modulo(w * w + x ** 3n + 7n, PRIME)).toBe(0n);
+      const walletLock = addressToLockScript(wallet.getAddress());
+      for (const slot of [a + 1, a + 2]) expect(same(sent.sourceOutputs[slot].lockingBytecode, walletLock)).toBe(true);
+      // Another w, or none (a zero pad, so the master binds A's arguments, which are a placeholder's): refused, though A
+      // itself only drops its pad.
+      for (const word of [leWord(w + 1n), leWord(0n)]) {
+        const edited = withPad(sent, a, word);
+        expect(inputPasses(s.provider, edited, master)).toBe(false);
+        expect(inputPasses(s.provider, edited, a)).toBe(true);
+      }
+      // The same transaction for an x a point has: no w proves it has none.
+      const onCurve = firstX(x, true);
+      const pushes = decodeAuthenticationInstructions(sent.transaction.inputs[master]!.unlockingBytecode);
+      const rAt = pushes.findIndex((instruction) => {
+        const data = (instruction as { data?: Uint8Array }).data;
+        return data !== undefined && same(data, leWord(x));
+      });
+      expect(rAt).toBeGreaterThan(0);
+      const moved = encodeAuthenticationInstructions(pushes.map((instruction, index) => (
+        index === rAt ? { opcode: 0x20, data: leWord(onCurve) } : instruction)) as never);
+      expect(inputPasses(s.provider, {
+        sourceOutputs: sent.sourceOutputs,
+        transaction: {
+          ...sent.transaction,
+          inputs: sent.transaction.inputs.map((input, index) => (
+            index === master ? { ...input, unlockingBytecode: moved } : input)),
+        },
+      }, master)).toBe(false);
     });
   }
 

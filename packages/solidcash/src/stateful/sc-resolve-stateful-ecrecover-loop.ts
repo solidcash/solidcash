@@ -10,8 +10,10 @@
  *
  * An address projection answers address(0) for a recovery id other than 27 or 28, or an `r` or `s` outside [1, n),
  * and reads no triple, but the loop still counts the call: its three slots hold coins no covenant reads, and the next
- * call's triple stays at its own index. A call after the last recovery reads nothing, so it takes no slots. A call
- * that reads its triple with arguments no side-car recovers a key from (`ecrecoverRefusal`) takes such coins too, as a
+ * call's triple stays at its own index. For an `r` in range that no curve point has, it reads only the pad of the A in
+ * its first slot, which carries the proof: that slot takes an A of the pool over the placeholder recovery, and the
+ * other two coins no covenant reads. A call after the last recovery reads nothing, so it takes no slots. A call that
+ * reads its triple with arguments no side-car recovers a key from (`ecrecoverRefusal`) takes such coins too, as a
  * straight-line recovery does: it reads them and the call fails closed.
  *
  * The calls and each argument blob are learned from the master's own run. Each probe lays out the triples learned so
@@ -28,8 +30,8 @@ import {
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
-  buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, extractEcrecoverArgBlobsFromTrace,
-  probeEcrecoverSplit, probeEcrecoverSplit3,
+  buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, buildEcrecoverPlaceholderSidecars,
+  extractEcrecoverArgBlobsFromTrace, probeEcrecoverSplit, probeEcrecoverSplit3,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
 import { computeEcrecoverWitness, ecrecoverRefusal, type EcrecoverWitness } from '../ecrecover/ecrecoverRecovery.js';
 import { buildKeccakComputeSidecar, pushDataBytes } from '../keccak/keccakComputeSidecar.js';
@@ -61,6 +63,9 @@ export interface ResolveStatefulEcrecoverLoopHost {
 export type ResolveStatefulEcrecoverLoopResult = { sideCars: UnlockableUtxo[]; recreates: Output[] };
 
 const SHARED_SALT = new Uint8Array(32);
+
+/** A counted call: the witness its triple recovers from, null for one that reads no slot, or an off-curve proof. */
+type LoopCall = EcrecoverWitness | null | { readonly offCurveProof: Uint8Array };
 
 /** A coin no network holds, for a probe that runs the master alone: only its lock and token are read. */
 const probeCoin = (
@@ -149,11 +154,22 @@ export async function resolveStatefulEcrecoverLoop(
     const coin = probeCoin(role, index, Uint8Array.of(0x51), Uint8Array.of(0x51), false);
     return { input: coin, recreate: { to: Uint8Array.of(0x51), amount: coin.satoshis } };
   }
+  /** A probe triple for an off-curve `r`: an A whose pad carries the proof, which is all the run reads of it. */
+  const proofTriple = (index: number, proof: Uint8Array): RecoveryLoopFrontInput[] => [
+    {
+      input: probeCoin(1, index, lockA, Uint8Array.from([
+        ...pushDataBytes(proof), ...pushDataBytes(new Uint8Array(97)), ...pushDataBytes(empty),
+        ...pushDataBytes(empty), ...pushDataBytes(redeemA),
+      ])),
+      recreate: nftOutput(lockA, new Uint8Array(32)),
+    },
+    unreadProbe(6, 3 * index + 1), unreadProbe(6, 3 * index + 2),
+  ];
 
   const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
   const vm = host.createVirtualMachine(host.vmProvider);
-  // Each counted call: its witness, or null for a call that made no recovery.
-  const calls: Array<EcrecoverWitness | null> = [];
+  // Each counted call: its witness, null for a call that read no slot, or the proof an off-curve r takes.
+  const calls: LoopCall[] = [];
   for (;;) {
     const next = calls.length;
     const probe = new CovenantTransactionBuilder({ provider: host.vmProvider });
@@ -163,9 +179,9 @@ export async function resolveStatefulEcrecoverLoop(
     // One placeholder past the most calls a probe follows: a run that reads it makes more.
     const ahead = MAX_RECOVERY_LOOP_ITERATIONS + 1 - next;
     const triples = [
-      ...calls.flatMap((witness, index) => (witness === null
+      ...calls.flatMap((call, index) => (call === null
         ? [unreadProbe(5, 3 * index), unreadProbe(5, 3 * index + 1), unreadProbe(5, 3 * index + 2)]
-        : probeTriple(index, witness))),
+        : 'offCurveProof' in call ? proofTriple(index, call.offCurveProof) : probeTriple(index, call))),
       ...Array.from({ length: ahead }, (_, offset) => probeTriple(next + offset, undefined)).flat(),
     ];
     for (const { input } of [...front, ...chain, ...triples]) probe.addInputs([input]);
@@ -192,8 +208,11 @@ export async function resolveStatefulEcrecoverLoop(
     while (calls.length < index) calls.push(null);
     const argBlob = reads.get(index)!;
     const [hash, v, r, s] = [argBlob.slice(0, 32), argBlob[32]!, argBlob.slice(33, 65), argBlob.slice(65, 97)];
-    // Arguments no side-car recovers a key from get no triple: the run reads the coins in its slots and stops there.
-    calls.push(ecrecoverRefusal(hash, v, r, s) === undefined ? computeEcrecoverWitness(hash, v, r, s) : null);
+    // Arguments no side-car recovers a key from get no triple: an off-curve r takes the A that carries its proof, and
+    // for any other the run reads the coins in its slots and stops there.
+    const refusal = ecrecoverRefusal(hash, v, r, s);
+    calls.push(refusal === undefined ? computeEcrecoverWitness(hash, v, r, s)
+      : refusal.kind === 'offCurve' ? { offCurveProof: refusal.proof } : null);
   }
   if (calls.length === 0) return { sideCars: [], recreates: [] };
   const recoveries = calls.filter((call) => call !== null).length;
@@ -236,6 +255,19 @@ export async function resolveStatefulEcrecoverLoop(
   const sideCars: UnlockableUtxo[] = [];
   const recreates: Output[] = [];
   for (const [call, witness] of calls.entries()) {
+    if (witness !== null && 'offCurveProof' in witness) {
+      // The first slot takes an A over the placeholder recovery, whose pad carries the proof; the run reads nothing else.
+      const coinA = await take('A', lockA);
+      const carrier = buildEcrecoverPlaceholderSidecars(salt, coinA, coinA, witness.offCurveProof, evm ? 'B' : 'B2');
+      sideCars.push({ ...coinA, unlocker: carrier.unlockerA });
+      recreates.push(carrier.recreateA);
+      for (let slot = 1; slot < 3; slot += 1) {
+        const coin = await unread(`recovery call ${call}, whose r no curve point has, holds two slots and`);
+        sideCars.push(coin.input);
+        recreates.push(coin.recreate);
+      }
+      continue;
+    }
     if (witness === null) {
       // Arguments the range rules refuse: the call reads none of its three slots. Arguments that recover no key: it
       // reads them, and fails closed.

@@ -159,33 +159,70 @@ export function computeEcrecoverWitness(hash: Uint8Array, v: number, r: Uint8Arr
 }
 
 /**
- * Why no recovery side-car serves (hash, v, r, s), or undefined when a pair recovers the key the EVM's precompile
- * does. The precompile refuses a `v` other than 27 or 28 and an `r` or `s` outside [1, n), and a compiled address
- * projection answers the zero address for them without reading its side-cars; side-car A would take an `s`, and an
- * `r` in [n, p), reduced mod n. A pair also needs a curve point with x = r, and B a key that is not the point at
- * infinity. `hash`, `r` and `s` are little-endian, as `computeEcrecoverWitness` takes them.
+ * Arguments the EVM's precompile refuses, so that it answers the zero address, and what a direct-convention call needs
+ * of its slots to answer the same:
+ * - `unread`: its range rules refuse them, a `v` other than 27 or 28 or an `r` or `s` outside [1, n). An address
+ *   projection answers the zero address without reading its slots. (Side-car A would take an `s`, and an `r` in
+ *   [n, p), reduced mod n.)
+ * - `offCurve`: `r` is in range but no curve point's x-coordinate, so no side-car serves the call. An address
+ *   projection answers the zero address once the pad of the input in its first slot proves it: `proof` is w, with
+ *   w^2 = -(r^3 + 7) mod p, as a 32-byte little-endian word.
+ * - `refused`: the recovered key would be the point at infinity, which no side-car serves; the call reads its slots and
+ *   fails closed.
+ * `ecrecoverPubKey` has no zero key and refuses every one of them.
  */
-export function ecrecoverRefusal(hash: Uint8Array, v: number, r: Uint8Array, s: Uint8Array): string | undefined {
+export type EcrecoverRefusal =
+  | { readonly kind: 'unread'; readonly reason: string }
+  | { readonly kind: 'offCurve'; readonly reason: string; readonly proof: Uint8Array }
+  | { readonly kind: 'refused'; readonly reason: string };
+
+/** A value below 2^256 as a 32-byte little-endian word. */
+const leWord = (value: bigint): Uint8Array => {
+  const word = new Uint8Array(32);
+  for (let i = 0, x = value; i < 32; i++, x >>= 8n) word[i] = Number(x & 0xffn);
+  return word;
+};
+
+/** `base` to the power `exponent` mod p. */
+const powP = (base: bigint, exponent: bigint): bigint => {
+  let result = 1n;
+  for (let b = mod(base, P), e = exponent; e > 0n; b = mod(b * b, P), e >>= 1n) {
+    if ((e & 1n) === 1n) result = mod(result * b, P);
+  }
+  return result;
+};
+
+/**
+ * Why (hash, v, r, s) recover no key the EVM's precompile would, and what the call's slots need for it, or undefined
+ * when a side-car pair recovers the key the precompile does. `hash`, `r` and `s` are little-endian, as
+ * `computeEcrecoverWitness` takes them.
+ */
+export function ecrecoverRefusal(hash: Uint8Array, v: number, r: Uint8Array, s: Uint8Array): EcrecoverRefusal | undefined {
   const leBig = (b: Uint8Array): bigint => {
     let x = 0n;
     for (let i = b.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(b[i]);
     return x;
   };
-  if (v !== 27 && v !== 28) return `v is ${v}, not 27 or 28`;
-  if (hash.length !== 32 || r.length !== 32 || s.length !== 32) return 'hash, r and s are not 32 bytes each';
-  const rr = leBig(r), ss = leBig(s);
-  if (rr === 0n || rr >= N) return 'r is outside [1, n)';
-  if (ss === 0n || ss >= N) return 's is outside [1, n)';
-  const alpha = mod(mod(rr * rr, P) * rr + 7n, P);
-  let y = 1n;
-  for (let base = alpha, exponent = (P + 1n) / 4n; exponent > 0n; base = mod(base * base, P), exponent >>= 1n) {
-    if ((exponent & 1n) === 1n) y = mod(y * base, P);
+  if (v !== 27 && v !== 28) return { kind: 'unread', reason: `v is ${v}, not 27 or 28` };
+  if (hash.length !== 32 || r.length !== 32 || s.length !== 32) {
+    return { kind: 'unread', reason: 'hash, r and s are not 32 bytes each' };
   }
-  if (mod(y * y, P) !== alpha) return 'no curve point has r as its x-coordinate';
+  const rr = leBig(r), ss = leBig(s);
+  if (rr === 0n || rr >= N) return { kind: 'unread', reason: 'r is outside [1, n)' };
+  if (ss === 0n || ss >= N) return { kind: 'unread', reason: 's is outside [1, n)' };
+  const alpha = mod(mod(rr * rr, P) * rr + 7n, P);
+  const y = powP(alpha, (P + 1n) / 4n);
+  if (mod(y * y, P) !== alpha) {
+    // -1 is no square mod p, so -alpha is one exactly when alpha is not.
+    return {
+      kind: 'offCurve', reason: 'no curve point has r as its x-coordinate',
+      proof: leWord(powP(P - alpha, (P + 1n) / 4n)),
+    };
+  }
   const Ry = (y & 1n) === BigInt(v - 27) ? y : mod(P - y, P);
   const rinv = inv(rr, N);
   const recovered = Point.BASE.multiplyAndAddUnsafe(
     Point.fromAffine({ x: rr, y: Ry }), mod(-leBig(hash) * rinv, N), mod(ss * rinv, N),
   );
-  return recovered === undefined ? 'the recovered key is the point at infinity' : undefined;
+  return recovered === undefined ? { kind: 'refused', reason: 'the recovered key is the point at infinity' } : undefined;
 }

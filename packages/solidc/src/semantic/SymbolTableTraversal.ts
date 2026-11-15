@@ -269,6 +269,7 @@ import { emitCompilerWarning } from '../warnings.js';
 import {
   DeployerUnsupportedError, ReservedNameError, StatefulAddressPaymentError, StatefulAddressPaymentWarning,
   DeploySaltError, DeployValueBelowReserveError, DeployValueWithoutContainerError, DeployedChildCallError,
+  ComputedCallTargetWarning,
 } from '../Errors.js';
 import { deployerChildOf, type DeployerChild } from '../generation/deployerChildren.js';
 import { CALL_BATCH_ROW_SHIFT, isCallBatchFrameCandidate } from './CallBatch.js';
@@ -1070,6 +1071,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   // shadowed by a same-named contract struct, which is a distinct contract-scoped type in Solidity)
   private loopTargetsCounter = 0; // uniquifies the synthesized `__internal__loopTargets<n>` witness param per
   // per-iteration COMPUTED external-call target (Router02 IFoo(pairFor(.., path[i], ..)).swap())
+  // The `__internal__loopTargets<n>` witnesses standing in for a target the caller chooses: the call reads its callee
+  // from the witness and nothing compares the two. A witness bound to a receiver the contract computes is not one.
+  private uncheckedLoopTargets = new Set<string>();
+  // Positions of the calls already warned as `computed-call-target-unverified`: one warning per call written, though
+  // an inlined helper's copies and its retained definition each synthesize a witness for it.
+  private warnedComputedCallTargets = new Set<string>();
   // Per-function count of external calls whose receiver is a given bare local, snapshotted BEFORE any collect-phase
   // rewrite (so the loop-body local-receiver rewrite can restrict to single-use locals immune to rewrite order).
   private extCallReceiverCounts = new Map<string, number>();
@@ -5087,6 +5094,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 if (strideSymbol) strideSymbol.references.push({ name: strideName } as IdentifierNode);
                 this.pushToStack(strideParam);
               }
+              if (this.uncheckedLoopTargets.has(slot.loopArrayVar)) this.warnUncheckedComputedTarget(node, slot, true);
             }
           }
 
@@ -5115,6 +5123,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               computedAddressWitnesses.set(addressParam, witnessName);
             }
             slot.addressParam = witnessName;
+            // A framed body binds its call record to the value the local computes; it strips this witness.
+            if (this.compilerOptions.composition !== 'framed') this.warnUncheckedComputedTarget(node, slot, false);
           }
 
           // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
@@ -9071,6 +9081,27 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * `computed-call-target-unverified`: `slot` reads its callee from a witness the spender supplies, which nothing
+   * compares with the target the source computes. Warned once per call written; a batched slot stands for several.
+   */
+  private warnUncheckedComputedTarget(fn: FunctionDefinitionNode, slot: ExternalCallSlot, perIteration: boolean): void {
+    const calls = slot.batchInvocations?.map((row) => row.sourceCallNode) ?? [slot.sourceCallNode];
+    for (const call of calls) {
+      const location = call?.location;
+      if (location !== undefined) {
+        const site = computeExpressionSiteKey(location);
+        if (this.warnedComputedCallTargets.has(site)) continue;
+        this.warnedComputedCallTargets.add(site);
+      }
+      const interfaceName = call?.callInfo?.interfaceName ?? slot.interfaceName;
+      const name = interfaceName === '__raw__'
+        ? `the low-level .${slot.callMode === ExternalCallMode.STATICCALL ? 'staticcall' : 'call'}()`
+        : `the call ${interfaceName}.${call?.callInfo?.functionName ?? slot.functionName}`;
+      emitCompilerWarning(new ComputedCallTargetWarning(name, fn.name, this.diagLine(location), perIteration).message);
+    }
+  }
+
+  /**
    * The witness-array position of a computed target's callee, as a source expression.
    *
    * A pair target names two adjacent path elements. The witness holds one entry per pair in PATH order, so the
@@ -9985,6 +10016,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
+            this.uncheckedLoopTargets.add(witnessName);
             const call = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
             node.addressExpression = call.access;
             const init = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
@@ -10081,6 +10113,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             this.assertGraphHandlerLoopWitness(node);
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
+            this.uncheckedLoopTargets.add(witnessName);
             const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
             node.addressExpression = witness.access;
             loopArrayVar = witnessName;

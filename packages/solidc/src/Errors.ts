@@ -1439,6 +1439,30 @@ export class StatefulAddressPaymentWarning {
   }
 }
 
+/**
+ * A call on a computed target takes its callee from a witness the spender supplies, and nothing compares the two: a
+ * straight-line keccak256 target such as `IPair(pairFor(factory, a, b))` (a CREATE2 address no BCH lock equals), or a
+ * loop's per-turn target the caller chooses, `IPair(pairFor(factory, path[i], path[i + 1]))`. The witness keeps
+ * routers working; the warning tells the author that any contract can stand as the callee.
+ */
+export class ComputedCallTargetWarning {
+  static readonly code = 'computed-call-target-unverified';
+
+  readonly message: string;
+
+  /** `call` names the call (`the call IPair.swap`); `at` is the diagnostic position (` at line 12`). */
+  constructor(call: string, functionName: string, at: string, perIteration: boolean) {
+    const target = perIteration
+      ? 'a target computed on each loop turn, so the contract takes each turn\'s callee'
+      : 'a computed target (a keccak256 hash such as a CREATE2 address, which no BCH lock equals), so the contract '
+        + 'takes the callee';
+    this.message = `Warning: [${ComputedCallTargetWarning.code}] ${call} in function '${functionName}'${at} has `
+      + `${target} from a witness the spender supplies and never compares it with the computed value: the spender `
+      + 'may name any contract as the callee. Before the contract relies on the callee\'s answer to release its own '
+      + 'funds, check the callee against a registry the contract stores or another value it trusts.';
+  }
+}
+
 /** A `this.payMinerFee` the compiler cannot honour, named by what is wrong with it. */
 export class MinerFeeStatementError extends SolidCashError {
   constructor(node: Node, reason: string) {

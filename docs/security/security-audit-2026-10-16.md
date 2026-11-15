@@ -11,7 +11,9 @@ that branch recorded about a creation's genesis, on `fix/genesis-replay`; ORACLE
 keeper baton (CRYPTO-4, ORACLE-5), ORACLE-7 gives an expired block the EVM's zero, and ORACLE-8 infers a reader's
 ring depth; see "Block oracle hardening (2026-11-03)" at the end. Oracle pools (2026-11-04, `feat/oracle-pools` and
 `feat/oracle-pools-sushi`) supersede the per-contract mechanisms of ORACLE-2, -4 and -6 to -8, and fix ORACLE-1, -2
-and -5 on master; see "Oracle pools (2026-11-04)" at the end.
+and -5 on master; see "Oracle pools (2026-11-04)" at the end. Call targets (2026-11-15): TARGET-1 and TARGET-2, two
+ways a spender could choose the callee of a call whose answer the caller uses, are fixed; TARGET-3, the computed
+target, is spender-chosen by design and now warned; see "Call targets (2026-11-15)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1739,3 +1741,76 @@ module is master's as of `aed65ad16` (`b6fcf05bc`).
   fixed two bugs: a young chain's ring lacked slots (208c8dd5a), and Electrum's concurrent requests failed
   (d3fbbfea9). `docs/framed/SPEC_FRAMED_TRANSACTION.md` and `docs/framed/CREATE2_IDENTITY.md` still describe the
   validator's oracle admission and the replay's oracle.
+
+## Call targets (2026-11-15)
+
+Branch `deployer-spec`. On the direct convention a high-level call is authenticated after the body: an identity
+check compares the co-spent callee's lock with the call's target (`emitExternalCallVerification`; design in
+`packages/solidc/docs/extcall-target-pinning.md`). The callee's answer comes in its return record, whose digest
+names the method and the arguments but not the callee, so this check is the only thing that binds the callee. A pass
+over every value the check reads found two ways a spender could choose the callee of a call whose answer the caller
+uses, and one place where the choice is the spender's by design. Evidence is the BCH 2026 VM on the production
+profile.
+
+### Fixed
+
+- **TARGET-1** (HIGH, VM-confirmed; `4030a5bc2`, test `8eea6497c`). A call through a target holding `address(0)`
+  accepted any callee. `address(0)` is the empty value, in the native form and under `evmCompat`. A state variable
+  holds it before it is set or after it is zeroed to disable it, and a parameter, a literal `IFoo(address(0))` and a
+  mapping value can hold it too. The check's helper took an empty expected address for the legacy sentinel of a
+  delegate's state target (`110c1fc7d`), dropped it and duplicated the candidate, so the check compared the co-spent
+  lock with itself and the caller used the answer of whatever contract master the spender co-spent. `58ed31461` had
+  removed the read the sentinel served, and nothing else needs it. The helper, now `emitCalleeIdentityOperands`,
+  refuses an empty expected address, and on the 20-byte path an empty candidate lock, at every site it serves: the
+  check after the body, the raw compat call's full-lock branch, both halves of the CREATE identity anchor check and a
+  counted call in a loop. On the EVM such a call reverts. A constructor's call under `Deploy<C>` was not exposed: its
+  call site requires a 35-byte P2SH32 target. Test: `ZeroAddressCallTarget.e2e.test.ts`.
+- **TARGET-2** (HIGH, VM-confirmed; `f2d0b2b3b`, `6669a5a89`, tests `b3dd1cf30`, `89460cf59`). A call was bound to
+  its target's final value, not to its value where the call ran.
+  - For a state variable, the check after the body read the value the body wrote last: `externalCallReceiverStateWrites`
+    (`7b769d1be`) kept the pending write for this read.
+  - For a local, a parameter or a branch capture, a reassignment after the call left the new value under the name
+    the check picks.
+  - A runtime ternary target and a stored function pointer's runtime selector were evaluated after the body.
+
+  So `last = IOracle(oracle).price(); oracle = o;`, or `IOracle feed = IOracle(oracle); last = feed.price();
+  feed = IOracle(other);`, let the spender name through the parameter the contract whose answer the caller had
+  already used. A call whose target or selector can change after the call now reads a register its call site fills.
+  A variable that is never written, or written only before the call, keeps its read after the body, and its bytes.
+  Where one slot's call runs more than once on one callee, a later run must see the value the first saw. Test:
+  `StateTargetCallSite.e2e.test.ts`, native and `evmCompat`: a state target rewritten after and before the call, a
+  reassigned local, branch local and parameter, each with the old and the new value's callee, and controls.
+
+### By design, with a warning
+
+- **TARGET-3** (by design; warned since `6ac17bc80`, test `18d2d615e`). A target computed in the call, such as
+  `IPair(pairFor(factory, a, b)).swap(...)` or the per-turn target of a router's loop, is a keccak256 hash, such as a
+  CREATE2 address, which no BCH lock equals. The contract takes such a callee from a witness the spender supplies
+  (`__internal__computedCallTarget<N>`, `__internal__loopTargets<n>`) and never compares it with the computed value,
+  so routers work, and the spender may name any contract. A contract that releases its own funds on such a callee's
+  answer can be drained. The user chose to keep the witness and warn: every such call compiles with
+  `Warning: [computed-call-target-unverified] ...`, which `suppressWarnings` silences. Check such a callee against a
+  registry the contract stores, or another value it trusts, before relying on its answer. A loop witness checked
+  against a value the contract computes itself, and a computed target with no hash, are not warned: both keep their
+  check. The framed composition checks the call against the computed value and takes no witness.
+
+### Open
+
+- A call made after a write of its target binds the body-top input value when the target is a chain through a
+  collection entry (`IFoo(ss[i].x).m()`), a raw value-only call or an `__extaddr_ll_` target. It calls a contract
+  the EVM would not call, though the spender cannot choose it. A stored chain that reads no collection entry
+  (`s.f.m()`, `feed.source.price()`) is read again at the call since `e675d87e9`. The SDK resolves a stored target
+  from the input state, so a call after such a write needs `withExternalCall`.
+- The genesis body's check after the body still reads the variable, so a constructor that writes its target after
+  the call fails closed.
+- Two calls through one variable reassigned between them share one callee identity and are refused when the two
+  values differ (fail closed).
+- A `{value:}` payment through a call-site register has no test of its own: no e2e sends a typed `{value:}` call
+  to a stateful callee. The selector and runtime ternary registers are tested (`da0fa686b`).
+- A loop whose caller-chosen target only takes view calls is not warned: `rewriteMultiUseViewCalls` replaces those
+  calls with returns the spender supplies (`__internal__viewReturn<n>`).
+- (LOW, needs a miner) Outputs whose locking bytecode is empty, or 20 bytes long, are non-standard but valid in a
+  block. An empty-lock coin matches an empty target in the low-level call pins' exact compare
+  (`emitLowLevelCallVerification`, `emitCompatTargetIdentity`). Under `evmCompat`, `emitCompatAddressMatch` maps an
+  empty lock to the zero identity, and `compileAddressToEvmIdentity` projects a 20-byte lock to itself, so a coin a
+  miner includes could stand for an EVM address.

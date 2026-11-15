@@ -983,6 +983,11 @@ target.staticcall(payload);                           // low-level read-only; de
   co-spent master has exactly that lock, and the callee's covenant bakes in its category, so one address names one
   instance; a 32-byte category id is not a call target. Targets come from a constructor or function parameter,
   state or a literal (`UnpinnedExternalCallTargetError`). Interface-typed handles work (`contract C(IERC20 token)`).
+- A call is bound to the value its target holds where the call runs, also when the function writes or reassigns
+  the target afterwards. A typed call through `address(0)` fails, as it reverts on the EVM. A target computed with
+  keccak256 (a CREATE2 address such as `pairFor(factory, a, b)`) is a witness the spender chooses, since no BCH lock
+  equals it; the compiler warns (`computed-call-target-unverified`). Check such a callee against a registry the
+  contract stores before relying on its answer.
 - SDK: connect instances by category, `StatefulContract.withCategory(inner, categoryId, { externals: { ICounter:
   counterSc } })`, or per call with `.withExternalCall(counterSc)`. The SDK finds inputs; the covenants enforce
   target, selector and arguments.

@@ -201,4 +201,21 @@ describe('block layout: a recovery loop reads its triples after the block', () =
         for (int i = 0; i < k; i++) { require(rec(h[i], v[i], r[i], s[i]) == owner); } n = n + 1; return true; }`))
       .toThrow(/^recovery-loop-and-fixed-recovery-mix-not-enabled: /);
   });
+
+  it('lays a recovery loop\'s triples after the chained side-cars of an unbounded keccak256, in either order', () => {
+    const before = compileT(`function f(bytes payload, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+      bytes32 d = keccak256(payload);
+      for (int i = 0; i < k; i++) { require(ecrecoverPubKey(d, v[i], r[i], s[i]) == owner); } n = n + 1; return true; }`);
+    expect(layoutOf(before)).toEqual({ kinds: ['master', 'dataNft', 'returnEvent'], trailing: true });
+    expect(before.abi.find((entry) => entry.name === 'f')!.keccakChainReads).toBe(true);
+    const after = compileT(`function f(bytes payload, bytes32 d, ${loopArgs}) external returns (bool) {
+      for (int i = 0; i < k; i++) { ${recover()} } require(keccak256(payload) == d); n = n + 1; return true; }`);
+    expect(layoutOf(after)).toEqual({ kinds: ['master', 'dataNft', 'returnEvent'], trailing: true });
+    expect(after.abi.find((entry) => entry.name === 'f')!.keccakChainReads).toBe(true);
+    // A parameter the function writes could have another length where the loop counts its chain.
+    expect(() => compileT(`function f(bytes payload, bytes32 d, ${loopArgs}) external returns (bool) {
+      require(keccak256(payload) == d); payload = 0x01;
+      for (int i = 0; i < k; i++) { ${recover()} } n = n + 1; return true; }`))
+      .toThrow(/^recovery-loop-shares-trailing-band: .*\(here: a chained keccak256 of a value whose length the loop/);
+  });
 });

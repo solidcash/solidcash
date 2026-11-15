@@ -1130,6 +1130,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // order, so its side-cars occupy the front of the shared trailing band
   keccakChainReads?: boolean;   // a direct, unbounded preimage routes through the chained START/CONT/FINAL side-cars
   // in the trailing region; the SDK co-spends one side-car per 136-byte block + the FINAL digest carrier
+  /** The parameter a chained keccak256 hashes: a recovery loop beside it counts the chain's side-cars from its length. */
+  keccakChainParam?: string;
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery TRIPLE per iteration from the
   // forward region [master+1+3k] (a stateful entry's after its block); the SDK co-spends one triple per iteration
   /**

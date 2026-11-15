@@ -1042,3 +1042,88 @@ describe('an ordinary call whose stateful function recovers keys in a loop throu
     expect(inputPasses(s.provider, withOutput(sent, master + 5, otherKey), master)).toBe(false);
   });
 });
+
+describe('an ordinary call whose recovery loop runs beside a keccak256 of an unbounded bytes argument', () => {
+  // A 2-of-2 check of one message: the chained keccak256 of the payload and one recovery per signature, the hash made
+  // before the loop or checked after it.
+  const SOURCES = {
+    before: `${P} contract T(pubkey a, pubkey b) { int n; bytes32 last;
+      function f(bytes payload, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        bytes32 d = keccak256(payload);
+        int good = 0;
+        for (int i = 0; i < k; i++) {
+          pubkey q = ecrecoverPubKey(d, v[i], r[i], s[i]);
+          if (q == a || q == b) { good = good + 1; }
+        }
+        require(good == k); last = d; n = n + 1; return true; } }`,
+    after: `${P} contract T(pubkey a, pubkey b) { int n; bytes32 last;
+      function f(bytes payload, bytes32 d, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        int good = 0;
+        for (int i = 0; i < k; i++) {
+          pubkey q = ecrecoverPubKey(d, v[i], r[i], s[i]);
+          if (q == a || q == b) { good = good + 1; }
+        }
+        require(good == k); require(keccak256(payload) == d); last = d; n = n + 1; return true; } }`,
+  } as const;
+
+  for (const order of ['before', 'after'] as const) it('lays out the chain\'s side-cars after the block and the triples '
+    + `after the chain (the hash ${order === 'before' ? 'made before' : 'checked after'} the loop)`, async () => {
+    const SOURCE = SOURCES[order];
+    const { ethers } = await import('ethers');
+    const { ecrecoverComputeLockingBytecode, keccakChainLockingBytecode } = await import('@solidcash/utils');
+    const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+    const payload = Uint8Array.from({ length: 300 }, (_, index) => (index * 7 + 3) & 0xff);
+    const digest = keccak(payload);
+    // The native recovery reads the digest as a little-endian number: sign the bytes reversed.
+    const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+    const keys = ['44', '55'].map((byte) => new ethers.SigningKey(`0x${byte.repeat(32)}`));
+    const sigs = keys.map((key) => key.sign(Uint8Array.from(digest).reverse()));
+    const s = setup();
+    const artifact = compileString(SOURCE, compileOptions('T'));
+    const fn = artifact.abi.find((entry) => entry.name === 'f')!;
+    expect(fn.ecrecoverTrailingLoop).toBe(true);
+    expect(fn.keccakChainReads).toBe(true);
+    const t = await s.deploy(artifact, keys.map((key) => hexToBin(key.compressedPublicKey.slice(2))));
+    await seedRecoveryPool(s.provider, 2, 0xd1);
+    // The chain rides the caller's own brand, a side-car per step.
+    const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+    const brand = hexToBin(t.categoryId).slice().reverse();
+    for (const [step, kind] of (['start', 'cont', 'final'] as const).entries()) {
+      const lock = keccakChainLockingBytecode(brand, kind, true);
+      await s.provider.seedUtxo(binToHex(lock), computeSideCarStandIn('recovery-loop-chain', lock, step));
+    }
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      payload, ...(order === 'after' ? [digest] : []),
+      sigs.map((sig) => BigInt(sig.v)), sigs.map((sig) => little(sig.r)), sigs.map((sig) => little(sig.s)), 2n,
+    ).emitReturn().withMaxFee(100_000n).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(binToHex(((await t.contract.getState()) as { last?: Uint8Array }).last!)).toBe(binToHex(digest));
+
+    // After master, record and record slot: START, CONT and FINAL for the 300 bytes (136-byte blocks), then a triple
+    // per signature.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    (['start', 'cont', 'final'] as const).forEach((kind, step) => {
+      expect(same(sent.sourceOutputs[master + 3 + step].lockingBytecode, keccakChainLockingBytecode(brand, kind, true)))
+        .toBe(true);
+    });
+    const salt = new Uint8Array(32);
+    for (const k of [0, 1]) {
+      expect(same(sent.sourceOutputs[master + 6 + 3 * k].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'A')))
+        .toBe(true);
+      expect(same(sent.sourceOutputs[master + 8 + 3 * k].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'B2')))
+        .toBe(true);
+    }
+    // Another digest in FINAL's recreation: refused by FINAL's covenant and by the master.
+    const forged = withOutput(sent, master + 5, bumpCommitment);
+    expect(inputPasses(s.provider, forged, master + 5)).toBe(false);
+    expect(inputPasses(s.provider, forged, master)).toBe(false);
+    // The first triple's A moved into the chain, where FINAL is read, and the triples swapped.
+    expect(inputPasses(s.provider, swapIndexes(sent, master + 5, master + 6), master)).toBe(false);
+    const swapped = [0, 1, 2].reduce((tx, offset) => swapIndexes(tx, master + 6 + offset, master + 9 + offset), sent);
+    expect(inputPasses(s.provider, swapped, master)).toBe(false);
+    // Another key in the second B2's recreation, and that B2 moved past the region.
+    expect(inputPasses(s.provider, withOutput(sent, master + 11, otherKey), master)).toBe(false);
+    expect(inputPasses(s.provider, swapIndexes(sent, master + 11, master + 12), master)).toBe(false);
+  });
+});

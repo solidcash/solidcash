@@ -736,9 +736,10 @@ export class KeccakSideCarSlotError extends SolidCashError {
 }
 
 /**
- * A recovery loop of a stateful entry whose side-cars the transaction cannot lay out, refused by name. Iteration k
- * of the loop reads its triple at master + blockSize + 3k (`ecrecoverTrailingLoop`), which only holds when the loop
- * is the entry's one recovery family and the one user of the region after its block.
+ * A recovery loop of a stateful entry whose side-cars the transaction cannot lay out, refused by name. The loop's k-th
+ * recovery call reads its triple at master + blockSize + 3k (`ecrecoverTrailingLoop`), after a chained keccak256's
+ * side-cars when the entry hashes an unbounded parameter, which only holds when the loop is the entry's one recovery
+ * family and the region after its block holds nothing else.
  */
 export class RecoveryLoopSideCarError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
@@ -763,13 +764,15 @@ const RECOVERY_LOOP_SIDE_CAR_DETAIL: Record<string, string> = {
 
 /**
  * Refuse a recovery loop beside another family that lays out inputs or outputs after the block: each family
- * counts its own coordinates from blockSize, and none counts the loop's triples. Run on the code generator's final
- * function facts.
+ * counts its own coordinates from blockSize, and none counts the loop's triples. A chained keccak256 of a parameter is
+ * the exception: its side-cars come first, and the loop counts them from the parameter's length. Run on the code
+ * generator's final function facts.
  */
 export function assertRecoveryLoopBand(fn: FunctionDefinitionNode): void {
   if (fn.ecrecoverTrailingLoop !== true) return;
   const other = fn.keccakLoopReads || fn.keccakInLoop ? 'a keccak256 loop'
-    : fn.keccakChainReads ? 'a chained keccak256 preimage'
+    : fn.keccakChainReads && fn.keccakChainParam === undefined
+      ? 'a chained keccak256 of a value whose length the loop cannot count: a local or a parameter the function writes'
       : (fn.collectionIterations?.length ?? 0) > 0 ? 'a collection walk'
         : (fn.dynamicReads?.length ?? 0) > 0 || (fn.dynamicWrites?.length ?? 0) > 0 ? 'dynamic state chunks'
           : (fn.entryLoopWrites?.length ?? 0) > 0 || (fn.sortedInsertLoops?.length ?? 0) > 0
@@ -3103,6 +3106,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
   private ecrecoverLoopActive: boolean = false;     // a dynamic ecrecover loop counter is live on the stack
   private ecrecoverLoopsEmitted = 0;                // a stateful entry's recovery loops emitted so far (per function)
+  // A recovery loop's triples after a chained keccak256's side-cars: the count of those side-cars, live beside the
+  // loop counter.
+  private ecrecoverLoopBandName: string = '(loop_ecrecover_band)';
+  private ecrecoverLoopBandActive = false;
   private functionMultiSiteDeploy: boolean = false; // 2+ sites w/ a conditional: function counters
   private graphConditionalDeployReachActive: boolean = false;
   private graphRawPayloadEncodeDepth = 0;
@@ -10363,6 +10370,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.callBatchFrame = false;
     this.callBatchRecordViews = false;
     this.ecrecoverLoopsEmitted = 0;
+    this.ecrecoverLoopBandActive = false;
     // A nested loop that does not own a new upsert must keep the enclosing loop's stream. Each function starts
     // from an empty map so a previous function's stream cannot satisfy this one.
     this.sortedUpsertLoopContexts = new Map();
@@ -18589,6 +18597,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, loc);
       this.emit(encodeInt(loopStride), loc); this.emit(Op.OP_MUL, loc); this.emit(Op.OP_ADD, loc); // master + stride*counter
       this.emit(encodeInt(loopSlotBase + slot), loc); this.emit(Op.OP_ADD, loc);                    // + slot
+      if (trailingLoop && this.ecrecoverLoopBandActive) {
+        // + the chained keccak256's side-cars, which come first in the region.
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.ecrecoverLoopBandName) + 1 + extra)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
       if (trailingLoop) this.emitDeployerLoopShift(loc, 1 + extra);
     };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
@@ -46166,6 +46180,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.ecrecoverLoopsEmitted > 0) refuse('recovery-loop-twice-not-enabled');
       if (fn.keccakInLoop || this.keccakLoopActive) refuse('recovery-loop-shares-trailing-band');
       this.ecrecoverLoopsEmitted += 1;
+      // A chained keccak256 of a parameter lays out its side-cars first in the region: one per 136-byte block of the
+      // parameter, and FINAL. Count them once, from the parameter's length, before the counter.
+      if (fn.keccakChainReads && fn.keccakChainParam !== undefined) {
+        const chained = this.getStackIndex(fn.keccakChainParam);
+        if (chained < 0) refuse('recovery-loop-shares-trailing-band');
+        this.emit(encodeInt(BigInt(chained)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_SIZE, loc);
+        this.emit(Op.OP_NIP, loc);
+        this.emit(encodeInt(136n), loc);
+        this.emit(Op.OP_DIV, loc);
+        this.emit(Op.OP_1ADD, loc);
+        this.pushToStack(this.ecrecoverLoopBandName);
+        this.ecrecoverLoopBandActive = true;
+      }
     }
     this.emit(encodeInt(0n), loc);
     this.pushToStack(this.ecrecoverLoopCounterName);
@@ -46183,6 +46212,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
     this.ecrecoverLoopActive = false;
+    if (this.ecrecoverLoopBandActive) {
+      const band = this.getStackIndex(this.ecrecoverLoopBandName);
+      this.emit(encodeInt(BigInt(band)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(band);
+      this.ecrecoverLoopBandActive = false;
+    }
   }
 
   private blockHasEcrecoverCall(node: Node): boolean {

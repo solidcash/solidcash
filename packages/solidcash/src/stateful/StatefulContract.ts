@@ -13137,10 +13137,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // A recovery loop reads iteration k's triple at master + blockSize + 3k: the triples ride the trailing band, as a
+    // A recovery loop reads its k-th call's triple at master + blockSize + 3k: the triples ride the trailing band, as a
     // keccak256 loop's side-cars do, from the shared pool whose locks the loop checks. The probe of the master's run
-    // that learns each iteration's arguments holds the fixed block's coins, the keccak side-cars and entries a run
-    // reads before its loop among them.
+    // that learns each call's arguments holds the fixed block's coins, the keccak side-cars and entries a run reads
+    // before its loop among them. A chained keccak256 of an unbounded argument comes first in the band, its side-cars
+    // resolved above, and the triples follow it.
     if (recoveryLoop && abiFunction !== undefined && this.categoryId) {
       const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
       const frontStart = 1 + filteredDataNftUtxos.length;
@@ -13172,6 +13173,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
+      const chain = abiFunction.keccakChainReads === true
+        ? keccakLoopSideCars.map((input, index) => ({ input, recreate: keccakLoopRecreates[index]! }))
+        : [];
       const loop = await resolveStatefulEcrecoverLoopImpl(
         {
           provider: (ownSidecarPool ?? this.inner.provider) as never,
@@ -13181,10 +13185,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           takeMiddleCoin,
         },
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers, front,
-        maxBhLocktime,
+        maxBhLocktime, chain,
       );
-      keccakLoopSideCars = loop.sideCars;
-      keccakLoopRecreates = loop.recreates;
+      keccakLoopSideCars = [...chain.map(({ input }) => input), ...loop.sideCars];
+      keccakLoopRecreates = [...chain.map(({ recreate }) => recreate), ...loop.recreates];
     }
 
     const unlockableMaster = {

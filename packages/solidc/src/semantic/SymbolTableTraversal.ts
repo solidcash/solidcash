@@ -898,6 +898,8 @@ interface FunctionBodySurvey {
   keccakInLoop: boolean;
   /** A direct keccak256(unbounded bytes/string param) call outside every loop: chained side-car routing. */
   directUnboundedKeccak: boolean;
+  /** The parameter such a call hashes, when it is one. */
+  directUnboundedKeccakParam?: string;
   /** Emission index (codegen pre-order) of each keccak256 call outside every loop. */
   keccakFixedSlotIndices: number[];
   hasValueTransfer: boolean;
@@ -973,6 +975,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const type = param?.type ?? arg.type;
           if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) {
             survey.result.directUnboundedKeccak = true;
+            if (param !== undefined) survey.result.directUnboundedKeccakParam = param.name;
           }
         }
       }
@@ -4012,6 +4015,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && this.isStatefulContract && node.isEntryPoint && node.name !== '__construct'
       && this.compilerOptions.composition !== 'framed') {
       node.keccakChainReads = true;
+      if (bodySurvey.directUnboundedKeccakParam !== undefined) node.keccakChainParam = bodySurvey.directUnboundedKeccakParam;
     }
     // Some expression visitors replace a source node with a resolved ExternalFunctionCallNode at their parent
     // boundary. In particular, a returning interface call used directly as a local ArrayAssign RHS can be
@@ -20372,6 +20376,30 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  /** Whether `body` writes the local or parameter `name`: assigns it or an element of it, pushes, pops or deletes. */
+  private writesLocalName(body: Node | undefined, name: string): boolean {
+    let found = false;
+    const seen = new Set<Node>();
+    const walk = (current: Node): void => {
+      if (found || seen.has(current)) return;
+      seen.add(current);
+      if (((current instanceof AssignNode || current instanceof DeleteLocalNode) && current.identifier.name === name)
+        || ((current instanceof ArrayAssignNode || current instanceof ArrayPushNode || current instanceof ArrayPopNode
+          || current instanceof ArrayDeleteNode) && current.name === name)
+        || (current instanceof TupleAssignmentNode && current.elements.some((element) => element.name === name))) {
+        found = true;
+        return;
+      }
+      for (const [key, value] of Object.entries(current)) {
+        if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    if (body) walk(body);
+    return found;
+  }
+
   /**
    * Whether every recovery of a direct stateful entry is a call written inside one of its own `while`/`do` loops
    * (the loops code generation runs as recovery loops). Such an entry's loop reads iteration k's triple at
@@ -20590,6 +20618,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if (this.recoversOnlyInTrailingLoops(node)) node.ecrecoverTrailingLoop = true;
     else delete node.ecrecoverTrailingLoop;
+    // The loop's triples follow a chained keccak256's side-cars, whose count the loop takes from the hashed
+    // parameter's length, so that parameter stays on the stack past its last use. A parameter the function writes
+    // could have another length where the loop counts it, so that chain is refused beside the loop.
+    if (node.ecrecoverTrailingLoop && node.keccakChainReads && node.keccakChainParam !== undefined) {
+      if (this.writesLocalName(node.body, node.keccakChainParam)) delete node.keccakChainParam;
+      else node.opRolls.delete(node.keccakChainParam);
+    }
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
     // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.

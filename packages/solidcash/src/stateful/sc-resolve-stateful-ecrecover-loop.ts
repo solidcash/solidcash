@@ -2,8 +2,9 @@
  * The recovery triples of a stateful function whose recoveries all run in a loop (`ecrecoverTrailingLoop`).
  *
  * The compiled loop counts the recovery calls it runs: call k reads its triple at master + blockSize + 3k, after the
- * block. It checks each input's lock against the shared (salt 0) covenant locks: A, then M or B2 or B3 for a native
- * projection, or A, B and the stateful keccak side-car for `ecrecoverEvm`.
+ * block, or after a chained keccak256's side-cars when the function also hashes an unbounded argument (they come
+ * first, one per 136-byte block and the FINAL one). It checks each input's lock against the shared (salt 0) covenant
+ * locks: A, then M or B2 or B3 for a native projection, or A, B and the stateful keccak side-car for `ecrecoverEvm`.
  * It binds A's argument blob to its own (hash, v, r, s) and reads the recovered key from B's recreation, and the
  * keccak digest from the keccak side-car's.
  *
@@ -37,7 +38,7 @@ import { computeSideCarStandIn } from './stateful-abi-resolve.js';
 /** The most recovery calls a probe follows; the transaction's size bounds a real loop far below it. */
 const MAX_RECOVERY_LOOP_ITERATIONS = 64;
 
-/** One input before the loop's triples, with the output the run reads at its index. */
+/** One input of the region the run reads, with the output the run reads at its index. */
 export type RecoveryLoopFrontInput = { input: UnlockableUtxo; recreate: Output };
 
 export interface ResolveStatefulEcrecoverLoopHost {
@@ -79,7 +80,8 @@ const nftOutput = (lock: Uint8Array, commitment: Uint8Array): Output => ({
 
 /**
  * Lay out every call's triple of a recovery loop in a stateful function. `front` holds the inputs between the data
- * NFTs and the end of the block, so the triples start at blockSize; the master is input 0.
+ * NFTs and the end of the block, so the region the run reads starts at blockSize; the master is input 0. `chain` holds
+ * the inputs that region starts with, a chained keccak256's side-cars, which the triples follow.
  */
 export async function resolveStatefulEcrecoverLoop(
   host: ResolveStatefulEcrecoverLoopHost,
@@ -90,12 +92,14 @@ export async function resolveStatefulEcrecoverLoop(
   dataNftUnlockers: readonly Unlocker[],
   front: readonly RecoveryLoopFrontInput[],
   locktime = 0,
+  chain: readonly RecoveryLoopFrontInput[] = [],
 ): Promise<ResolveStatefulEcrecoverLoopResult> {
   const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
   if (blockSize !== 1 + dataNftUtxos.length + front.length) {
     throw new Error('stateful ecrecover loop: the inputs before the loop do not fill the block, so its recovery '
       + 'triples cannot start at the end of the block');
   }
+  const base = blockSize + chain.length;
   const flags = abiFunction.ecrecoverEvmFlags ?? [];
   const evm = flags.length > 0 && flags.every(Boolean);
   if (!evm && flags.some(Boolean)) {
@@ -164,19 +168,19 @@ export async function resolveStatefulEcrecoverLoop(
         : probeTriple(index, witness))),
       ...Array.from({ length: ahead }, (_, offset) => probeTriple(next + offset, undefined)).flat(),
     ];
-    for (const { input } of [...front, ...triples]) probe.addInputs([input]);
+    for (const { input } of [...front, ...chain, ...triples]) probe.addInputs([input]);
     probe.addOutput({
       to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
     });
     dataNftUtxos.forEach((utxo, index) => probe.addOutput({
       to: dataNftUnlockers[index].generateLockingBytecode(), amount: utxo.satoshis, token: utxo.token,
     }));
-    for (const { recreate } of [...front, ...triples]) probe.addOutput(recreate);
+    for (const { recreate } of [...front, ...chain, ...triples]) probe.addOutput(recreate);
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = host.generateLibauthSourceOutputs(probe.inputs);
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
     const reads = extractEcrecoverArgBlobsFromTrace(trace, new Map(
-      Array.from({ length: ahead }, (_, offset) => [blockSize + 3 * (next + offset), next + offset] as const),
+      Array.from({ length: ahead }, (_, offset) => [base + 3 * (next + offset), next + offset] as const),
     ));
     // The run ends, or fails before it, without reading another triple: the loop has made every recovery it makes.
     if (reads.size === 0) break;

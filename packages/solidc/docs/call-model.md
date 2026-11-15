@@ -259,7 +259,7 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   child's master lock, never to `tx.origin`, when the tag is non-empty. The checks above make the child's
   lock a fresh P2SH32 of `pin(X)` and the deployer's own code. A child whose code has no birth trailer is
   never a genesis sender, however it was born: its constructor makes no call.
-- **The callee list:** Deploy<C>'s unlocking carries, immediately after the `create` selector, a push of one
+- **The callee list:** `Deploy<C>`'s unlocking carries, immediately after the `create` selector, a push of one
   2-byte input index per call slot. `create` checks each slot against the call its constructor wrote, and the
   callee checks its own entry, so a call can only answer a constructor slot it belongs to.
 - **The created-children list:** a marked creator (one that runs a deployer `new` of a sender-reading child)

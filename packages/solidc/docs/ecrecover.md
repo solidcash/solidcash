@@ -911,7 +911,7 @@ close the gap but triples the side-car count. It does not affect soundness, only
 `ecrecoverEvm` and `ecrecoverP2pkh`, and bare `ecrecover` in either projection mode, answer the zero address for every
 input the EVM's precompile refuses. They do not abort. The zero address is 20 zero bytes for `ecrecoverEvm` (and `evm`
 mode) and the empty locking bytecode for `ecrecoverP2pkh` (and `p2pkh` mode). High-S is accepted, as the precompile
-accepts it. This holds stateful and stateless, straight-line, in loops, through helpers and in Deploy<C> constructors.
+accepts it. This holds stateful and stateless, straight-line, in loops, through helpers and in `Deploy<C>` constructors.
 Three checks give it.
 
 1. **Range.** Before packing the arguments, the call checks them: `v` must read as 27 or 28 from its own stack item,

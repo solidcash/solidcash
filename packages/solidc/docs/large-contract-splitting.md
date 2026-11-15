@@ -167,7 +167,7 @@ Measured: NativeUsdt's master 9,642 -> 9,108 B, its facet 9,298 -> 7,059 B, and 
 A contract that still does not fit cannot be deployed through the SDK. Every deployment path refuses, before
 anything is broadcast, a lock whose redeem script plus its push prefix exceeds the provider's per-input limit, or
 whose script exceeds its stack-item limit, with `UnspendableContractError`. The paths are `StatefulContract.deploy`,
-`deployFrom`, `ContractFactory`, the Deploy<C> preps and creation, the framed deploys and `upgrade`. Coins sent to
+`deployFrom`, `ContractFactory`, the `Deploy<C>` preps and creation, the framed deploys and `upgrade`. Coins sent to
 such a lock could never move. Under automatic message-bus selection, a bus build over the limit gives way to the direct
 build when that one fits.
 

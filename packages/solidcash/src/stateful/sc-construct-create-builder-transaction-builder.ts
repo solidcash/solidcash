@@ -421,6 +421,47 @@ export function constructCreateBuilderTransactionBuilder(
     }
     return changed;
   };
+  // `__internal__callInputIndex<i>` names the input whose lock the covenant pins to the target of the function's i-th
+  // low-level call: the co-spend `.withCall()` supplied for it (`overrides.calls[i]`). The planned value is the place
+  // right after the caller's data NFTs, which holds only while the caller's inputs keep that order: a payment's
+  // satoshi container, or any other slot that makes the builder place the caller's block densely, puts the co-spend
+  // after the whole block, and a raw `.withCall(utxo)` co-spend had no planned value at all. Name the input the
+  // co-spend lands at on every assembly pass; a call with no co-spend keeps its planned value.
+  const lowLevelCallRows = abiFunction?.lowLevelCalls ?? [];
+  const suppliedLowLevelCalls = (overrides?.calls ?? []) as readonly {
+    type?: string;
+    utxo?: Pick<Utxo, 'txid' | 'vout'>;
+    contract?: { inner?: { lockingBytecode?: string } };
+  }[];
+  const lowLevelCallCoSpend = (callIndex: number): Pick<Utxo, 'txid' | 'vout'> | undefined => {
+    const call = suppliedLowLevelCalls[callIndex];
+    if (call === undefined || lowLevelCallRows[callIndex]?.callMode === 'delegatecall') return undefined;
+    if (call.type === 'raw') return call.utxo;
+    if (call.type !== 'stateful') return undefined;
+    // A stateful co-spend is its callee's master, in the group planned for it: the groups follow the calls' order.
+    const ordinal = suppliedLowLevelCalls.slice(0, callIndex).filter((earlier, index) => earlier.type === 'stateful'
+      && lowLevelCallRows[index]?.callMode !== 'delegatecall').length;
+    const group = lowLevelCallUtxoGroups.filter((candidate) => candidate.callMode !== 'delegatecall')[ordinal];
+    const sameCallee = group !== undefined && (group.externalContract === call.contract
+      || (call.contract?.inner?.lockingBytecode !== undefined
+        && group.externalContract?.inner?.lockingBytecode === call.contract.inner.lockingBytecode));
+    return sameCallee ? group.masterUtxo : undefined;
+  };
+  const refreshTopLevelLowLevelCallInputIndices = (materialized?: TransactionBuilder): void => {
+    if (!abiFunction || suppliedLowLevelCalls.length === 0) return;
+    for (const [position, input] of abiFunction.inputs.entries()) {
+      if (position >= finalArgs.length) break;
+      const witness = /^__internal__callInputIndex(\d*)$/.exec(input.name);
+      if (witness === null) continue;
+      const target = lowLevelCallCoSpend(witness[1] === '' ? 0 : Number(witness[1]));
+      if (target === undefined) continue;
+      const localIndex = materialized
+        ? materialized.inputs.findIndex((candidate) => candidate.txid.toLowerCase() === target.txid.toLowerCase()
+          && candidate.vout === target.vout)
+        : builder.findInputIndexByOutpoint(target);
+      if (localIndex >= 0) finalArgs[position] = BigInt(localIndex + (overrides?.blockBase ?? 0));
+    }
+  };
   // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness
   // and the assembled transaction must name the same output. The planned coordinate is written before the builder
   // places its own outputs, and a callee's block (with the event's slot) can still move afterwards - a shared
@@ -660,6 +701,7 @@ export function constructCreateBuilderTransactionBuilder(
       refreshTopLevelDynamicChunkInputBase?.(materialized);
       refreshTopLevelDynamicChunkOutputBase?.(materialized);
       refreshTopLevelExternalCallInputIndices();
+      refreshTopLevelLowLevelCallInputIndices(materialized);
       refreshTopLevelReturnWitnesses(materialized);
       refreshTopLevelPredOutWitnesses(materialized);
       return buildStateInputUnlocker();

@@ -16,11 +16,12 @@ import { trivialCallee } from '../trivial-callee.js';
 // co-spends each swap target (identity, selector and argument), and preserves it. Soundness is caller-permissive - a
 // wrong witness feeds wrong values into swap, whose co-spent covenant would reject (Router02 K-invariant); the trivial
 // targets here have no covenant, so this exercises the MECHANISM (witness read + co-spend + selector), not the
-// downstream bound.
+// downstream bound. Only a pairFor hashed with keccak256, as the Router02 one is, keeps those witnesses; the compile
+// warns at them (computed-call-target-unverified) and refuses any other target with this shape.
 const SRC = `pragma solidcash >=0.8.0;
 interface IPair { function getReserve() external view returns (int); function swap(int a) external; }
 library L { function pairFor(address a, address b) internal pure returns (address) {
-  return address(uint160(uint256(uint160(a)) + uint256(uint160(b)))); } }
+  return address(uint160(uint256(keccak256(abi.encodePacked(a, b))))); } }
 contract C() {
   function run(address[] p) {
     for (uint i = 0; i < p.length - 1; i++) {
@@ -74,7 +75,7 @@ async function buildTx(sels: [Uint8Array, Uint8Array]): Promise<TransactionBuild
 const SRC_TUPLE = `pragma solidcash >=0.8.0;
 interface IPair { function getReserves() external view returns (int, int, int); function swap(int a) external; }
 library L { function pairFor(address a, address b) internal pure returns (address) {
-  return address(uint160(uint256(uint160(a)) + uint256(uint160(b)))); } }
+  return address(uint160(uint256(keccak256(abi.encodePacked(a, b))))); } }
 contract C() {
   function run(address[] p) {
     for (uint i = 0; i < p.length - 1; i++) {
@@ -90,6 +91,17 @@ describe('R11 multi-use view+mutate: view-witness read + swap co-spend (mechanis
     const tb = await buildTx([SEL, SEL]);
     verifyTransaction(tb);
     expect(tb.inputs.length).toBe(4); // caller + 2 swap targets + funder
+  });
+
+  it('refuses the same loop when its pairFor adds the addresses instead of hashing them', () => {
+    // The address is then one the contract computes, naming a callee whose answers it could read: the view answers
+    // would be the spender's, unchecked, so the compile refuses the shape rather than take them.
+    const arithmetic = SRC.replace('address(uint160(uint256(keccak256(abi.encodePacked(a, b)))))',
+      'address(uint160(uint256(uint160(a)) + uint256(uint160(b))))');
+    expect(arithmetic).not.toBe(SRC);
+    expect(() => compileString(arithmetic)).toThrow(
+      /function 'run' makes 2 calls through the loop local 'pair', whose target is not computed with keccak256/,
+    );
   });
 
   it('handles a TUPLE-return view (getReserves -> 3 witnesses) + swap co-spend (Router02 shape)', async () => {

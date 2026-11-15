@@ -151,9 +151,12 @@ before anything is sent (`DeployerCalleeError`):
 
 In an ordinary call A -> B -> C, B passes its own caller A on as `msg.sender`. The SDK also lays out C's regions:
 - C gets the block a direct callee gets;
-- then come the walk its iteration reads, one shared side-car per turn of its keccak256 loop, and the old chunks
-  its write consumes;
-- B's input base and record indexes for C are read from the assembled transaction;
+- then come, as C's function needs them, the walk its iteration reads, one shared side-car per turn of its keccak256
+  loop, or the old chunks its write consumes. A keccak256 loop never shares a function with a walk or a write: both
+  read the inputs after the block, and the compiler refuses that (`keccak-loop-shares-trailing-band`);
+- B's input base and record indexes for C, C's dynamic-chunk base and its old chunks' unlockers, and the master index
+  of each contract B calls, are read from the assembled transaction, so B may call two or more contracts in one
+  function;
 - a caller's record slot counts before its callees only when the caller publishes the record, that is, a returning
   function sent with `emitReturn`.
 

@@ -726,6 +726,8 @@ require(ecrecoverEvm(digest, v, r, s) == signer);
   it with a coin of the call's signer, returned at its own index. `ecrecoverEvm` adds a keccak side-car. The SDK
   co-spends them; a real network needs them provisioned. Prefer `checkDataSig` when the key is known. See
   https://solidcash.org/docs/language/cryptography and https://solidcash.org/docs/language/computation-sidecars
+- A keccak256 loop cannot share a function with a collection walk or a dynamic-state write: each reads the inputs
+  after the function's block, so the compiler refuses the function (`keccak-loop-shares-trailing-band`).
 - Like the EVM precompile, `ecrecoverEvm` and `ecrecoverP2pkh` (and bare `ecrecover`) return the zero address for
   any input the precompile refuses. That is 20 zero bytes, or the empty lock for `ecrecoverP2pkh`. The refused inputs
   are a `v` other than 27 or 28, an `r` or `s` outside [1, n), an `r` with no curve point, and a key at infinity. So

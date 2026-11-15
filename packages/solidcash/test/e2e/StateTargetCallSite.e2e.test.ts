@@ -1,7 +1,8 @@
 /**
- * A high-level call through a stored target, in a function that also writes the target. The caller checks its
- * co-spent callee after the body, and it used to read the target there, where it holds the value the body wrote last:
- * in `last = IOracle(oracle).price(); oracle = o;` the call was bound to `o`, a parameter, so the spender chose the
+ * A high-level call through a target the function changes after the call: a stored target it writes, a local or a
+ * branch local it reassigns, a parameter it reassigns. The caller checks its co-spent callee after the body, and it
+ * used to read the target there, where it holds the value the body left in it: in
+ * `last = IOracle(oracle).price(); oracle = o;` the call was bound to `o`, a parameter, so the spender chose the
  * contract whose answer the caller had already used. On the EVM the call goes to the value the target held when it
  * ran, which is the written value only when the write comes first. The caller now binds the same value.
  *
@@ -33,6 +34,14 @@ const SOURCE = `pragma solidcash ^0.50.0;
     function read() external { last = IOracle(oracle).price(); }
     function readThenRetarget(address o) external { last = IOracle(oracle).price(); oracle = o; }
     function retargetThenRead(address o) external { oracle = o; last = IOracle(oracle).price(); }
+    function readLocal(address other) external {
+      IOracle feed = IOracle(oracle); last = feed.price(); feed = IOracle(other);
+    }
+    function readBranch(bool go, address other) external {
+      if (go) { IOracle feed = IOracle(oracle); last = feed.price(); feed = IOracle(other); }
+    }
+    function readParam(address target, address other) external { last = IOracle(target).price(); target = other; }
+    function readArg(address target) external { last = IOracle(target).price(); }
   }`;
 
 let serial = 0xc5b1d0;
@@ -177,6 +186,78 @@ for (const form of [{ name: 'native', options: {} }, { name: 'evmCompat', option
       expectRefusedByCaller(await refusal(s, () => callOf(reader, wallet).read().withExternalCall(hostile).send()));
 
       await callOf(reader, wallet).read().withExternalCall(oracle).send();
+      expect(lastSentVerifies(s)).toBe(true);
+      expect(await stateOf(reader, 'last')).toBe(7n);
+      expect(await stateOf(oracle, 'reads')).toBe(1n);
+    }, 300_000);
+  });
+
+  describe(`a call through a local or parameter target its function reassigns (${form.name})`, () => {
+    it('binds a call through a local to the value the local held when the call ran', async () => {
+      const s = setup(form.options);
+      const oracle = await s.deploy('Oracle');
+      const hostile = await s.deploy('Hostile');
+      const reader = await s.deploy('Reader');
+      const wallet = await s.wallet();
+      await callOf(reader, wallet).setOracle(lockOf(oracle)).send();
+
+      // The local named the Oracle when the call ran; the spender names the Hostile contract for its later value.
+      expectRefusedByCaller(await refusal(s, () => callOf(reader, wallet).readLocal(lockOf(hostile))
+        .withExternalCall(hostile).send()));
+      expect(await stateOf(hostile, 'reads')).toBe(0n);
+
+      await callOf(reader, wallet).readLocal(lockOf(hostile)).withExternalCall(oracle).send();
+      expect(lastSentVerifies(s)).toBe(true);
+      expect(await stateOf(reader, 'last')).toBe(7n);
+      expect(await stateOf(oracle, 'reads')).toBe(1n);
+    }, 300_000);
+
+    it('binds a call through a branch local to the value it held when the call ran', async () => {
+      const s = setup(form.options);
+      const oracle = await s.deploy('Oracle');
+      const hostile = await s.deploy('Hostile');
+      const reader = await s.deploy('Reader');
+      const wallet = await s.wallet();
+      await callOf(reader, wallet).setOracle(lockOf(oracle)).send();
+
+      expectRefusedByCaller(await refusal(s, () => callOf(reader, wallet).readBranch(true, lockOf(hostile))
+        .withExternalCall(hostile).send()));
+      expect(await stateOf(hostile, 'reads')).toBe(0n);
+
+      await callOf(reader, wallet).readBranch(true, lockOf(hostile)).withExternalCall(oracle).send();
+      expect(lastSentVerifies(s)).toBe(true);
+      expect(await stateOf(reader, 'last')).toBe(7n);
+      expect(await stateOf(oracle, 'reads')).toBe(1n);
+    }, 300_000);
+
+    it('binds a call through a parameter to the value the parameter held when the call ran', async () => {
+      const s = setup(form.options);
+      const oracle = await s.deploy('Oracle');
+      const hostile = await s.deploy('Hostile');
+      const reader = await s.deploy('Reader');
+      const wallet = await s.wallet();
+
+      expectRefusedByCaller(await refusal(s, () => callOf(reader, wallet).readParam(lockOf(oracle), lockOf(hostile))
+        .withExternalCall(hostile).send()));
+      expect(await stateOf(hostile, 'reads')).toBe(0n);
+
+      await callOf(reader, wallet).readParam(lockOf(oracle), lockOf(hostile)).withExternalCall(oracle).send();
+      expect(lastSentVerifies(s)).toBe(true);
+      expect(await stateOf(reader, 'last')).toBe(7n);
+      expect(await stateOf(oracle, 'reads')).toBe(1n);
+    }, 300_000);
+
+    it('binds a call through a parameter the function does not reassign to its value', async () => {
+      const s = setup(form.options);
+      const oracle = await s.deploy('Oracle');
+      const hostile = await s.deploy('Hostile');
+      const reader = await s.deploy('Reader');
+      const wallet = await s.wallet();
+
+      expectRefusedByCaller(await refusal(s, () => callOf(reader, wallet).readArg(lockOf(oracle))
+        .withExternalCall(hostile).send()));
+
+      await callOf(reader, wallet).readArg(lockOf(oracle)).withExternalCall(oracle).send();
       expect(lastSentVerifies(s)).toBe(true);
       expect(await stateOf(reader, 'last')).toBe(7n);
       expect(await stateOf(oracle, 'reads')).toBe(1n);

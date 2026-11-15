@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, hexToBin, lockingBytecodeToCashAddress,
+  binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, hash160, hexToBin, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
@@ -38,7 +38,8 @@ type Sent = { transaction: ReturnType<typeof decodeTransactionUnsafe>; sourceOut
 interface Setup {
   provider: MockNetworkProvider;
   deploy(artifact: Artifact, args?: unknown[]): Promise<DeployResult<Artifact>>;
-  wallet(): Promise<Signer>;
+  /** A signer holding `coins` plain coins of 200,000 satoshis. */
+  wallet(coins?: number): Promise<Signer>;
   /** Every transaction sent so far, with the outputs its inputs spend. */
   sent: Sent[];
 }
@@ -70,9 +71,9 @@ function setup(): Setup {
       provider, fundingUtxo, funder, changeAddress: change.address, senderLockingBytecode: authorLock,
     } as never);
   };
-  const wallet = async (): Promise<Signer> => {
+  const wallet = async (coins = 4): Promise<Signer> => {
     const signer = new Signer(alicePriv, provider);
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < coins; index += 1) {
       await provider.seedUtxo(signer.getAddress(), { txid: nextTxid(), vout: 0, satoshis: 200_000n });
     }
     return signer;
@@ -354,6 +355,51 @@ const swapIndexes = (sent: Sent, left: number, right: number): Sent => {
     sourceOutputs: swap(sent.sourceOutputs),
     transaction: { ...sent.transaction, inputs: swap(sent.transaction.inputs), outputs: swap(sent.transaction.outputs) },
   };
+};
+
+/** `sent` without inputs and outputs `at` to `at + count - 1`, and the coins those inputs spend. */
+const removeIndexes = (sent: Sent, at: number, count: number): Sent => {
+  const keep = <T>(items: readonly T[]): T[] => items.filter((_item, index) => index < at || index >= at + count);
+  return {
+    sourceOutputs: keep(sent.sourceOutputs),
+    transaction: { ...sent.transaction, inputs: keep(sent.transaction.inputs), outputs: keep(sent.transaction.outputs) },
+  };
+};
+
+/** `sent` with inputs and outputs `to` to `to + count - 1` replaced by those at `from`, with their coins. */
+const copyIndexes = (sent: Sent, from: number, to: number, count: number): Sent => {
+  const copy = <T>(items: readonly T[]): T[] => items.map((item, index) => (
+    index >= to && index < to + count ? items[from + index - to]! : item));
+  return {
+    sourceOutputs: copy(sent.sourceOutputs),
+    transaction: { ...sent.transaction, inputs: copy(sent.transaction.inputs), outputs: copy(sent.transaction.outputs) },
+  };
+};
+
+/** Coins of the shared pool an ecrecoverEvm loop takes: A, B and the stateful keccak side-car, `count` of each. */
+async function seedEvmRecoveryPool(provider: MockNetworkProvider, count: number, tag: number): Promise<void> {
+  const { ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } = await import('@solidcash/utils');
+  const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+  await seedRecoveryPool(provider, count, tag);
+  const lockB = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'B');
+  const lockK = keccakComputeLockingBytecode(new Uint8Array(32), true);
+  for (let index = 0; index < count; index += 1) {
+    await provider.seedUtxo(binToHex(lockB), computeSideCarStandIn(`recovery-loop-b-${tag}`, lockB, index));
+    await provider.seedUtxo(binToHex(lockK), computeSideCarStandIn(`recovery-loop-k-${tag}`, lockK, index));
+  }
+}
+
+/** The EVM address of the key `signed` signs with. */
+async function evmOwner(): Promise<Uint8Array> {
+  const { ethers } = await import('ethers');
+  return hexToBin(new ethers.Wallet(`0x${'44'.repeat(32)}`).address.slice(2));
+}
+
+/** `output` with a byte of the x coordinate its recovery commits flipped: another key. */
+const otherKey = (output: any): any => {
+  const commitment = Uint8Array.from(output.token.nft.commitment);
+  commitment[1] ^= 1;
+  return { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } } };
 };
 
 describe('an ordinary call whose stateful function recovers keys in a loop', () => {
@@ -736,5 +782,151 @@ describe('an ordinary call of a contract whose function hashes in a loop (D call
       .rejects.toThrow(new RegExp('The call of T\\.f cannot be laid out: its keccak256 loop shares the inputs after its '
         + 'block with the chunks of dynamic state it writes'));
     expect(s.sent.length).toBe(before);
+  });
+});
+
+describe('an ordinary call whose recovery loop meets an invalid recovery id', () => {
+  // The loop counts every recovery call it runs, and call k reads its triple at master + blockSize + 3k. An address
+  // projection answers address(0) for a recovery id other than 27 or 28 without reading its triple.
+  const EVM = `${P} contract T(bytes20 owner) { int n; int zeros;
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        int z = 0;
+        for (int i = 0; i < k; i++) {
+          bytes20 a = ecrecoverEvm(h[i], v[i], r[i], s[i]);
+          if (a == bytes20(0)) { z = z + 1; } else { require(a == owner); }
+        }
+        zeros = z; n = n + 1; return true; } }`;
+  const P2PKH = `${P} contract T(bytes owner) { int n; int zeros;
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        int z = 0;
+        for (int i = 0; i < k; i++) {
+          bytes a = ecrecoverP2pkh(h[i], v[i], r[i], s[i]);
+          if (a.length == 0) { z = z + 1; } else { require(a == owner); }
+        }
+        zeros = z; n = n + 1; return true; } }`;
+
+  it('answers the zero address and leaves the call\'s slots to wallet coins, and refuses a recovery laid out as one '
+    + 'or a later triple shifted into them', async () => {
+    const { ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const s = setup();
+    const g0 = await signed('invalid-v-evm-0');
+    const g2 = await signed('invalid-v-evm-2');
+    const t = await s.deploy(compileString(EVM, compileOptions('T')), [await evmOwner()]);
+    await seedEvmRecoveryPool(s.provider, 2, 0xb1);
+    const wallet = await s.wallet(8);
+    // Call 1's recovery id is 30, which no signature has.
+    await (t.contract.connect(wallet) as any).call.f(
+      [g0.h, g0.h, g2.h], [g0.v, 30n, g2.v], [g0.r, g0.r, g2.r], [g0.s, g0.s, g2.s], 3n,
+    ).withMaxFee(100_000n).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(await t.contract.getState()).toMatchObject({ n: 1n, zeros: 1n });
+
+    // Call k holds master + 3 + 3k to master + 5 + 3k: A, B and the keccak side-car for calls 0 and 2, each recreated
+    // at its index, and for call 1, which reads none of them, wallet coins returned at their own index.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    const salt = new Uint8Array(32);
+    const triple = [
+      ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B'),
+      keccakComputeLockingBytecode(salt, true),
+    ];
+    for (const call of [0, 2]) {
+      triple.forEach((lock, slot) => {
+        expect(same(sent.sourceOutputs[master + 3 + 3 * call + slot].lockingBytecode, lock)).toBe(true);
+        expect(same(sent.transaction.outputs[master + 3 + 3 * call + slot]!.lockingBytecode, lock)).toBe(true);
+      });
+    }
+    const walletLock = addressToLockScript(wallet.getAddress());
+    for (const at of [master + 6, master + 7, master + 8]) {
+      expect(same(sent.sourceOutputs[at].lockingBytecode, walletLock)).toBe(true);
+      expect(same(sent.transaction.outputs[at]!.lockingBytecode, walletLock)).toBe(true);
+      expect(sent.transaction.outputs[at]!.valueSatoshis).toBe(sent.sourceOutputs[at].valueSatoshis);
+    }
+    // Call 0 laid out as a call that reads nothing, its triple swapped with call 1's coins: its id is 28 or 27, so it
+    // reads its own slots.
+    const skipped = [0, 1, 2].reduce((tx, slot) => swapIndexes(tx, master + 3 + slot, master + 6 + slot), sent);
+    expect(inputPasses(s.provider, skipped, master)).toBe(false);
+    // Call 2's triple shifted into call 1's slots.
+    expect(inputPasses(s.provider, removeIndexes(sent, master + 6, 3), master)).toBe(false);
+    // Another key in call 0's B recreation: refused by B's covenant and by the master.
+    const forged = withOutput(sent, master + 4, otherKey);
+    expect(inputPasses(s.provider, forged, master + 4)).toBe(false);
+    expect(inputPasses(s.provider, forged, master)).toBe(false);
+    // Another digest in call 2's keccak recreation.
+    expect(inputPasses(s.provider, withOutput(sent, master + 11, bumpCommitment), master)).toBe(false);
+    // Call 2's A and B swapped, and its keccak side-car moved past the region.
+    expect(inputPasses(s.provider, swapIndexes(sent, master + 9, master + 10), master)).toBe(false);
+    expect(inputPasses(s.provider, swapIndexes(sent, master + 11, master + 12), master)).toBe(false);
+  });
+
+  it('reads a triple for each call that repeats a signature, and refuses one triple standing for both', async () => {
+    const s = setup();
+    const g = await signed('invalid-v-evm-repeat');
+    const t = await s.deploy(compileString(EVM, compileOptions('T')), [await evmOwner()]);
+    await seedEvmRecoveryPool(s.provider, 2, 0xb2);
+    await (t.contract.connect(await s.wallet(8)) as any).call.f(
+      [g.h, g.h, g.h], [g.v, 30n, g.v], [g.r, g.r, g.r], [g.s, g.s, g.s], 3n,
+    ).withMaxFee(100_000n).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(await t.contract.getState()).toMatchObject({ n: 1n, zeros: 1n });
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    // Call 0's triple in call 2's slots too: each binds the same arguments, but no transaction spends a coin twice.
+    const reused = copyIndexes(sent, master + 3, master + 9, 3);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(reused as never))
+      .toMatch(/the same outpoint|duplicate/i);
+    // Call 2's triple dropped and call 1's coins in its slots: call 2 reads its own slots.
+    const dropped = copyIndexes(sent, master + 6, master + 9, 3);
+    expect(inputPasses(s.provider, dropped, master)).toBe(false);
+  });
+
+  it('refuses before sending a call whose id is 27 or 28 and whose arguments recover no key, which reads its slots',
+    async () => {
+      const s = setup();
+      const g = await signed('invalid-v-evm-no-key');
+      const t = await s.deploy(compileString(EVM, compileOptions('T')), [await evmOwner()]);
+      await seedEvmRecoveryPool(s.provider, 2, 0xb4);
+      const wallet = await s.wallet(8);
+      const before = s.sent.length;
+      // Call 1's r is 0, which has no inverse mod n: it gets coins no covenant reads, and reads them.
+      await expect((t.contract.connect(wallet) as any).call.f(
+        [g.h, g.h], [g.v, 27n], [g.r, new Uint8Array(32)], [g.s, g.s], 2n,
+      ).withMaxFee(100_000n).send()).rejects.toThrow(/preflight failed at input 0/);
+      expect(s.sent).toHaveLength(before);
+      expect(await t.contract.getState()).toMatchObject({ n: 0n });
+    });
+
+  it('answers an ecrecoverP2pkh call the empty address, and takes no slots after the last recovery', async () => {
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const s = setup();
+    const g0 = await signed('invalid-v-p2pkh-0');
+    const g1 = await signed('invalid-v-p2pkh-1');
+    const owner = Uint8Array.from([0x76, 0xa9, 0x14, ...hash160(g0.key), 0x88, 0xac]);
+    const t = await s.deploy(compileString(P2PKH, compileOptions('T')), [owner]);
+    await seedRecoveryPool(s.provider, 2, 0xb3);
+    const wallet = await s.wallet(8);
+    // Call 0's id is 29, call 2's is 0 (the empty number): only call 1 recovers.
+    await (t.contract.connect(wallet) as any).call.f(
+      [g0.h, g1.h, g0.h], [29n, g1.v, 0n], [g0.r, g1.r, g0.r], [g0.s, g1.s, g0.s], 3n,
+    ).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(await t.contract.getState()).toMatchObject({ n: 1n, zeros: 2n });
+    // Call 0's slots hold wallet coins; call 1 reads A at master + 6 and B2 at master + 8, its middle input a wallet
+    // coin; call 2 takes no slots, so no recovery covenant follows.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    const walletLock = addressToLockScript(wallet.getAddress());
+    for (const at of [master + 3, master + 4, master + 5, master + 7]) {
+      expect(same(sent.sourceOutputs[at].lockingBytecode, walletLock)).toBe(true);
+    }
+    const salt = new Uint8Array(32);
+    expect(same(sent.sourceOutputs[master + 6].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'A'))).toBe(true);
+    expect(same(sent.sourceOutputs[master + 8].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'B2'))).toBe(true);
+    const recoveryLocks = (['A', 'B2', 'M', 'B3'] as const).map((role) => ecrecoverComputeLockingBytecode(salt, role));
+    expect(sent.sourceOutputs.slice(master + 9).some((output) => recoveryLocks.some((lock) => (
+      same(output.lockingBytecode, lock))))).toBe(false);
+    // Call 1's triple shifted into call 0's slots, and another key in its B2 recreation.
+    expect(inputPasses(s.provider, removeIndexes(sent, master + 3, 3), master)).toBe(false);
+    expect(inputPasses(s.provider, withOutput(sent, master + 8, otherKey), master)).toBe(false);
   });
 });

@@ -620,3 +620,100 @@ describe('STATEFUL HELPER RECOVERY: recovery arguments read off a VM probe of th
     await expect(bump(other, g)).rejects.toThrow(VERIFY_FAILED);
   });
 });
+
+// A STATEFUL recovery loop answers each call as Solidity's ecrecover does: the signer for a recovery id of 27 or 28,
+// and address(0) for any other, which reads no triple (an ecrecoverP2pkh answers the empty locking bytecode). The loop
+// still counts that call, so each later call's triple stays at its own index; the call's three slots take wallet coins.
+// Built and checked under the real BCH 2026 limits (the production profile), where no coin is minted.
+describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), every other call its signer', () => {
+  // Each answer is kept in fixed-size state: the address itself, or the SHA-256 of the P2PKH locking bytecode.
+  const source = (projection: 'ecrecoverEvm' | 'ecrecoverP2pkh'): string => {
+    const [type, kept, keep] = projection === 'ecrecoverEvm'
+      ? ['bytes20', 'bytes20', (name: string): string => name]
+      : ['bytes', 'bytes32', (name: string): string => `sha256(${name})`];
+    return `
+    pragma solidcash ^0.50.0;
+    contract T { ${kept} first; ${kept} second; ${kept} third;
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        ${type} a0; ${type} a1; ${type} a2;
+        for (int i = 0; i < k; i++) {
+          ${type} a = ${projection}(h[i], v[i], r[i], s[i]);
+          if (i == 0) { a0 = a; } else { if (i == 1) { a1 = a; } else { a2 = a; } }
+        }
+        first = ${keep('a0')}; second = ${keep('a1')}; third = ${keep('a2')}; return true; } }`;
+  };
+  const deployed = async (artifact: ReturnType<typeof compileString>): Promise<{
+    provider: MockNetworkProvider;
+    contract: { getState(): Promise<Record<string, unknown>> };
+    call: (...args: unknown[]) => Promise<unknown>;
+  }> => {
+    const { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } = await import('@bitauth/libauth');
+    const { SignatureTemplate, Signer } = await import('../../src/index.js');
+    const { alicePkh, alicePriv } = await import('../fixture/vars.js');
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const lock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: lock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const fundingUtxo = { txid: 'e1'.repeat(32), vout: 0, satoshis: 2_000_000n };
+    await provider.seedUtxo(binToHex(lock), fundingUtxo);
+    const { contract } = await StatefulContract.deploy(artifact, [] as never, {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(), changeAddress: change.address,
+      senderLockingBytecode: lock,
+    } as never);
+    // The shared pool (salt 0) the loop's triples come from: A, B2, M and B3 for a native projection; A, B and the
+    // stateful keccak side-car for ecrecoverEvm.
+    const roles = ['A', 'B', 'B2', 'M', 'B3'] as const;
+    for (const [roleIndex, role] of roles.entries()) {
+      for (let index = 0; index < 2; index += 1) {
+        await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, role)), {
+          txid: `e2${roleIndex.toString(16)}${index}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+          token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+        });
+      }
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await provider.seedUtxo(binToHex(keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, true)), {
+        txid: `e3${index}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+        token: { category: SIDECAR_CAT, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    const signer = new Signer(alicePriv, provider);
+    for (let index = 0; index < 8; index += 1) {
+      await provider.seedUtxo(signer.getAddress(), { txid: `e4${index}`.padEnd(64, '0'), vout: 0, satoshis: 200_000n });
+    }
+    const connected = contract.connect(signer) as unknown as {
+      call: { f(...args: unknown[]): { withMaxFee(fee: bigint): { send(): Promise<unknown> } } };
+    };
+    return {
+      provider,
+      contract: contract as never,
+      call: (...args: unknown[]) => connected.call.f(...args).withMaxFee(100_000n).send(),
+    };
+  };
+
+  it('ecrecoverEvm: the zero address for recovery id 30 between two signers, who match ethers', async () => {
+    const g0 = await goodSigner('stateful-loop-evm-0'), g2 = await goodSigner('stateful-loop-evm-2');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g0.h, g0.h, g2.h], [g0.v, 30n, g2.v], [g0.r, g0.r, g2.r], [g0.s, g0.s, g2.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe(g0.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.second)).toBe('00'.repeat(20));
+    expect(binToHex(state.third)).toBe(g2.wallet.address.slice(2).toLowerCase());
+  });
+
+  it('ecrecoverP2pkh: the empty bytecode for recovery ids 0 and 29 around a signer, whose P2PKH lock matches', async () => {
+    const g = await goodSigner('stateful-loop-p2pkh');
+    const { contract, call } = await deployed(compileString(source('ecrecoverP2pkh'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, g.h, g.h], [0n, g.v, 29n], [g.r, g.r, g.r], [g.s, g.s, g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    const { sha256 } = await import('@bitauth/libauth');
+    const empty = binToHex(sha256.hash(new Uint8Array(0)));
+    expect(binToHex(state.first)).toBe(empty);
+    expect(binToHex(state.second)).toBe(binToHex(sha256.hash(hexToBin(`76a914${binToHex(hash160(g.owner))}88ac`))));
+    expect(binToHex(state.third)).toBe(empty);
+  });
+});

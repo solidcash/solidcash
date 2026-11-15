@@ -1,12 +1,21 @@
 /**
  * The recovery triples of a stateful function whose recoveries all run in a loop (`ecrecoverTrailingLoop`).
  *
- * The compiled loop reads iteration k's triple at master + blockSize + 3k, after the block, and checks each input's
- * lock against the shared (salt 0) covenant locks: A, then M or B2 or B3 for a native projection, or A, B and the
- * stateful keccak side-car for `ecrecoverEvm`. It binds A's argument blob to its own (hash, v, r, s) and reads the
- * recovered key from B's recreation, and the keccak digest from the keccak side-car's. The number of iterations and
- * each argument blob are learned from the master's own run: each probe lays out the triples learned so far and one
- * placeholder, and the run's read of the placeholder's A names the next argument blob.
+ * The compiled loop counts the recovery calls it runs: call k reads its triple at master + blockSize + 3k, after the
+ * block. It checks each input's lock against the shared (salt 0) covenant locks: A, then M or B2 or B3 for a native
+ * projection, or A, B and the stateful keccak side-car for `ecrecoverEvm`.
+ * It binds A's argument blob to its own (hash, v, r, s) and reads the recovered key from B's recreation, and the
+ * keccak digest from the keccak side-car's.
+ *
+ * An address projection answers address(0) for a recovery id other than 27 or 28 and reads no triple, but the loop
+ * still counts the call: its three slots hold coins no covenant reads, and the next call's triple stays at its own
+ * index. A call after the last recovery reads nothing, so it takes no slots. A call that reads its triple with
+ * arguments no side-car recovers a key from (`ecrecoverRefusal`) takes such coins too, as a straight-line recovery
+ * does: it reads them and the call fails closed.
+ *
+ * The calls and each argument blob are learned from the master's own run. Each probe lays out the triples learned so
+ * far, then a placeholder triple at every later index: the run stops at the first placeholder it reads, which names
+ * the next argument blob, and the indexes before it that it read nothing at are calls that made no recovery.
  */
 
 import { binToHex } from '@bitauth/libauth/build/lib/format/hex.js';
@@ -21,11 +30,11 @@ import {
   buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, extractEcrecoverArgBlobsFromTrace,
   probeEcrecoverSplit, probeEcrecoverSplit3,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
-import { computeEcrecoverWitness, type EcrecoverWitness } from '../ecrecover/ecrecoverRecovery.js';
+import { computeEcrecoverWitness, ecrecoverRefusal, type EcrecoverWitness } from '../ecrecover/ecrecoverRecovery.js';
 import { buildKeccakComputeSidecar, pushDataBytes } from '../keccak/keccakComputeSidecar.js';
 import { computeSideCarStandIn } from './stateful-abi-resolve.js';
 
-/** The most iterations a probe follows; the transaction's size bounds a real loop far below it. */
+/** The most recovery calls a probe follows; the transaction's size bounds a real loop far below it. */
 const MAX_RECOVERY_LOOP_ITERATIONS = 64;
 
 /** One input before the loop's triples, with the output the run reads at its index. */
@@ -42,8 +51,8 @@ export interface ResolveStatefulEcrecoverLoopHost {
   createVirtualMachine(provider: NetworkProvider): { debug(input: unknown): unknown };
   generateLibauthSourceOutputs(inputs: readonly unknown[]): unknown;
   /**
-   * A coin for a 2-way recovery's middle input, which no covenant reads, and the output that returns its value at the
-   * same index. Undefined when the caller has none.
+   * A coin for an input no covenant reads, and the output that returns its value at the same index: a 2-way recovery's
+   * middle input, or a slot of a call that made no recovery. Undefined when the caller has none.
    */
   takeMiddleCoin(): Promise<RecoveryLoopFrontInput | undefined>;
 }
@@ -69,8 +78,8 @@ const nftOutput = (lock: Uint8Array, commitment: Uint8Array): Output => ({
 });
 
 /**
- * Lay out every iteration's triple of a recovery loop in a stateful function. `front` holds the inputs between the
- * data NFTs and the end of the block, so the triples start at blockSize; the master is input 0.
+ * Lay out every call's triple of a recovery loop in a stateful function. `front` holds the inputs between the data
+ * NFTs and the end of the block, so the triples start at blockSize; the master is input 0.
  */
 export async function resolveStatefulEcrecoverLoop(
   host: ResolveStatefulEcrecoverLoopHost,
@@ -102,7 +111,7 @@ export async function resolveStatefulEcrecoverLoop(
   const redeemA = buildEcrecoverComputeRedeem(salt, 'A');
   const empty = new Uint8Array(0);
 
-  // A probe triple: A carries the argument blob (a learned one, or zeros for the next read), B commits the key the
+  // A probe triple: A carries the argument blob (a learned one, or zeros for a read to learn), B commits the key the
   // blob recovers, and an ecrecoverEvm's keccak side-car carries the uncompressed key and commits its digest. The
   // master's run reads only these; the covenants' own inputs are not run by the probe.
   const probeTriple = (index: number, witness: EcrecoverWitness | undefined): RecoveryLoopFrontInput[] => {
@@ -124,23 +133,37 @@ export async function resolveStatefulEcrecoverLoop(
         { input: k, recreate: nftOutput(lockK, keccak256(key)) },
       ];
     }
-    const m = probeCoin(4, index, Uint8Array.of(0x51), Uint8Array.of(0x51), false);
+    const m = unreadProbe(4, index);
     return [
       { input: a, recreate: nftOutput(lockA, new Uint8Array(32)) },
-      { input: m, recreate: { to: Uint8Array.of(0x51), amount: m.satoshis } },
+      m,
       { input: b, recreate: nftOutput(lockB, q) },
     ];
   };
+  /** A plain probe coin the run reads nothing of, returned at its own index. */
+  function unreadProbe(role: number, index: number): RecoveryLoopFrontInput {
+    const coin = probeCoin(role, index, Uint8Array.of(0x51), Uint8Array.of(0x51), false);
+    return { input: coin, recreate: { to: Uint8Array.of(0x51), amount: coin.satoshis } };
+  }
 
   const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
   const vm = host.createVirtualMachine(host.vmProvider);
-  const witnesses: EcrecoverWitness[] = [];
-  for (let round = 0; round <= MAX_RECOVERY_LOOP_ITERATIONS; round++) {
+  // Each counted call: its witness, or null for a call that made no recovery.
+  const calls: Array<EcrecoverWitness | null> = [];
+  for (;;) {
+    const next = calls.length;
     const probe = new CovenantTransactionBuilder({ provider: host.vmProvider });
     if (locktime > 0) probe.setLocktime(locktime);
     probe.addInput(masterUtxo, stateInputUnlocker);
     dataNftUtxos.forEach((utxo, index) => probe.addInput(utxo, dataNftUnlockers[index]));
-    const triples = [...witnesses, undefined].flatMap((witness, index) => probeTriple(index, witness));
+    // One placeholder past the most calls a probe follows: a run that reads it makes more.
+    const ahead = MAX_RECOVERY_LOOP_ITERATIONS + 1 - next;
+    const triples = [
+      ...calls.flatMap((witness, index) => (witness === null
+        ? [unreadProbe(5, 3 * index), unreadProbe(5, 3 * index + 1), unreadProbe(5, 3 * index + 2)]
+        : probeTriple(index, witness))),
+      ...Array.from({ length: ahead }, (_, offset) => probeTriple(next + offset, undefined)).flat(),
+    ];
     for (const { input } of [...front, ...triples]) probe.addInputs([input]);
     probe.addOutput({
       to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
@@ -152,19 +175,24 @@ export async function resolveStatefulEcrecoverLoop(
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = host.generateLibauthSourceOutputs(probe.inputs);
     const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-    const next = witnesses.length;
-    const reads = extractEcrecoverArgBlobsFromTrace(trace, new Map([[blockSize + 3 * next, next]]));
-    const argBlob = reads.get(next);
-    // The run ends, or fails before it, without reading another triple: the loop has made every recovery it makes.
-    if (argBlob === undefined) break;
-    if (round === MAX_RECOVERY_LOOP_ITERATIONS) {
-      throw new Error(`stateful ecrecover loop: more than ${MAX_RECOVERY_LOOP_ITERATIONS} recoveries`);
-    }
-    witnesses.push(computeEcrecoverWitness(
-      argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
+    const reads = extractEcrecoverArgBlobsFromTrace(trace, new Map(
+      Array.from({ length: ahead }, (_, offset) => [blockSize + 3 * (next + offset), next + offset] as const),
     ));
+    // The run ends, or fails before it, without reading another triple: the loop has made every recovery it makes.
+    if (reads.size === 0) break;
+    const index = Math.min(...reads.keys());
+    if (index >= MAX_RECOVERY_LOOP_ITERATIONS) {
+      throw new Error(`stateful ecrecover loop: more than ${MAX_RECOVERY_LOOP_ITERATIONS} recovery calls`);
+    }
+    // The calls the run passed without a read answered an invalid recovery id.
+    while (calls.length < index) calls.push(null);
+    const argBlob = reads.get(index)!;
+    const [hash, v, r, s] = [argBlob.slice(0, 32), argBlob[32]!, argBlob.slice(33, 65), argBlob.slice(65, 97)];
+    // Arguments no side-car recovers a key from get no triple: the run reads the coins in its slots and stops there.
+    calls.push(ecrecoverRefusal(hash, v, r, s) === undefined ? computeEcrecoverWitness(hash, v, r, s) : null);
   }
-  if (witnesses.length === 0) return { sideCars: [], recreates: [] };
+  if (calls.length === 0) return { sideCars: [], recreates: [] };
+  const recoveries = calls.filter((call) => call !== null).length;
 
   // The shared pool's coins, each taken once. A provider that can mint (a mock) mints the ones it lacks.
   const pools = new Map<string, Utxo[]>();
@@ -186,16 +214,34 @@ export async function resolveStatefulEcrecoverLoop(
     }
     const coin = pool[index];
     if (coin === undefined) {
-      throw new Error(`ecrecoverPubKey needs ${witnesses.length} ${role} recovery side-car UTXO(s) in the shared `
+      throw new Error(`ecrecoverPubKey needs ${recoveries} ${role} recovery side-car UTXO(s) in the shared `
         + `pool for its loop; found ${pool.length}. Deploy one recovery set per loop iteration.`);
     }
     taken.set(key, index + 1);
     return coin;
   };
+  const unread = async (why: string): Promise<RecoveryLoopFrontInput> => {
+    const coin = await host.takeMiddleCoin();
+    if (coin === undefined) {
+      throw new Error(`stateful ecrecover loop: ${why} takes a wallet coin no covenant reads, and the call has `
+        + 'none; connect a signer with a spare coin');
+    }
+    return coin;
+  };
 
   const sideCars: UnlockableUtxo[] = [];
   const recreates: Output[] = [];
-  for (const witness of witnesses) {
+  for (const [call, witness] of calls.entries()) {
+    if (witness === null) {
+      // An invalid recovery id: the call reads none of its three slots. Arguments that recover no key: it reads them,
+      // and fails closed.
+      for (let slot = 0; slot < 3; slot += 1) {
+        const coin = await unread(`recovery call ${call}, whose arguments recover no key, holds three slots and`);
+        sideCars.push(coin.input);
+        recreates.push(coin.recreate);
+      }
+      continue;
+    }
     const coinA = await take('A', lockA);
     if (evm) {
       const coinB = await take('B', lockB);
@@ -234,11 +280,7 @@ export async function resolveStatefulEcrecoverLoop(
     }
     const coinB = await take('B2', lockB);
     const built = buildEcrecoverComputeSidecars(witness, chunkA, salt, coinA, coinB, undefined, 'B2');
-    const middle = await host.takeMiddleCoin();
-    if (middle === undefined) {
-      throw new Error('stateful ecrecover loop: a two-covenant recovery takes a wallet coin for its middle input, '
-        + 'and the call has none; connect a signer with a spare coin');
-    }
+    const middle = await unread('a two-covenant recovery\'s middle input');
     sideCars.push({ ...coinA, unlocker: built.unlockerA }, middle.input, { ...coinB, unlocker: built.unlockerB });
     recreates.push(built.recreateA, middle.recreate, built.recreateB);
   }

@@ -978,8 +978,12 @@ describe('a callee that writes a collection in a loop under keys msg.sender name
   it('keys the loop\'s entry by the child, beside another sender\'s, and refuses a creation that changes it', async () => {
     const s = setup();
     const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
-    // Another sender's entries under the same keys, so the child's is inserted among nodes of the chain.
-    await (t.contract.connect(await s.wallet()) as any).call.put([3n, 4n]).send();
+    // Another sender's entries under the same keys, so the child's is inserted among nodes of the chain. One key a
+    // call: put's value reads its key array, so its loop is not pairwise, and a call with two keys would have to name
+    // them in the covenant's order (LoopCallRewrite.e2e).
+    const other = t.contract.connect(await s.wallet()) as any;
+    await other.call.put([3n]).send();
+    await other.call.put([4n]).send();
     const tLock = addressToLockScript(t.contract.address);
     const c = compileString(SOURCE, compileOptions('C'));
     // The array the constructor builds is no constructor parameter, so the callee's arguments are given.

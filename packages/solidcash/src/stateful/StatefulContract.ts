@@ -12884,9 +12884,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const coinKey = (utxo: Utxo): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
     let middleCoins = 0;
-    // A 2-way recovery's middle input, straight-line or in a loop, is read by no covenant: a coin of the signer fills it
-    // and an output at the same index returns its value; a mock mints a neutral coin where the call has none. The coin
-    // is taken from the wallet's coins once, so no funder of the call spends it again.
+    // A slot of the block no covenant reads (a 2-way recovery's middle input, straight-line or in a loop, and each slot
+    // of a recovery whose arguments recover no key): a coin of the signer fills it and an output at the same index
+    // returns its value; a mock mints a neutral coin where the call has none. The coin is taken from the wallet's coins
+    // once, so no funder of the call spends it again.
     const takeMiddleCoin = async (): Promise<{ input: UnlockableUtxo; recreate: Output } | undefined> => {
       if (this._signer !== undefined) {
         const reserved = new Set((sharedFunderPool ?? []).map(coinKey));

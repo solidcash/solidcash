@@ -13,6 +13,7 @@ import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
   computeEcrecoverWitness, probeEcrecoverSplit, probeEcrecoverSplit3,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
+import { ecrecoverRefusal } from '../ecrecover/ecrecoverRecovery.js';
 import {
   computeSideCarStandIn,
   hasOutpoint,
@@ -56,10 +57,11 @@ export interface ResolveEcrecoverCoSpendsHost {
     };
   };
   /**
-   * A coin for the middle input of a two-covenant recovery, which no covenant reads, and the output that returns its
-   * value at the same index. The call's wallet fills it; a mock mints a neutral coin where the call has no signer.
-   * Undefined when the call has none. Without this member, a host whose transaction is never sent (a probe) or whose
-   * composer funds the slot (a message-bus graph) takes the neutral P2SH32(OP_TRUE) coin.
+   * A coin for a slot of the block no covenant reads, and the output that returns its value at the same index: the
+   * middle input of a two-covenant recovery, and each of the three slots of a recovery whose arguments recover no key.
+   * The call's wallet fills it; a mock mints a neutral coin where the call has no signer. Undefined when the call has
+   * none. Without this member, a host whose transaction is never sent (a probe) or whose composer funds the slot (a
+   * message-bus graph) takes the neutral P2SH32(OP_TRUE) coin.
    */
   readonly takeMiddleCoin?: () => Promise<RecoverySlotCoin | undefined>;
 }
@@ -76,7 +78,11 @@ export type ResolveEcrecoverCoSpendsResult = {
  * optionally deferring unresolved argument blobs for graph probes.
  *
  * Each call takes three block slots. A two-covenant recovery reads A and B2 and leaves the middle slot to a coin no
- * covenant reads; a width-0 recovery reads A, M and B3.
+ * covenant reads; a width-0 recovery reads A, M and B3. Arguments that recover no key (`ecrecoverRefusal`) have no
+ * side-car, so all three slots take coins the function does not read, and the keccak preimage of an `ecrecoverEvm`
+ * call is 64 zero bytes: a recovery that answers the zero address for them (`ecrecoverEvm` and `ecrecoverP2pkh` for a
+ * `v` other than 27 or 28) or a branch the run skips never reads them, and a recovery that reads them refuses the
+ * call, as no side-car can serve it.
  */
 export async function resolveEcrecoverComputeCoSpends(
   host: ResolveEcrecoverCoSpendsHost,
@@ -99,11 +105,12 @@ export async function resolveEcrecoverComputeCoSpends(
   if (calls.length === 0 || !host.categoryId) {
     return { coSpends: [], argBlobs: [], evmPreimages: [], salt };
   }
-  // Each call's arguments: learned later from the run (deferred), or a witness.
+  // Each call's arguments: learned later from the run (deferred), recovering no key (refused), or a witness.
   const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
   const argOf = (p: string | null): unknown => (p ? args[visible.findIndex((x) => x.name === p)] : undefined);
   type CallPlan =
     | { kind: 'deferred' }
+    | { kind: 'refused'; refusal: string; argBlob: Uint8Array }
     | { kind: 'recover'; wit: ReturnType<typeof computeEcrecoverWitness> };
   const plans = calls.map(([hp, vp, rp, sp]): CallPlan => {
     const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
@@ -113,9 +120,12 @@ export async function resolveEcrecoverComputeCoSpends(
       throw new Error('ecrecoverPubKey in a stateful contract requires direct (hash, v, r, s) parameters.');
     }
     const v = typeof vRaw === 'bigint' ? Number(vRaw) : Number(vRaw);
+    const refusal = ecrecoverRefusal(hash, v, r, s);
+    if (refusal !== undefined) return { kind: 'refused', refusal, argBlob: Uint8Array.from([...hash, v & 0xff, ...r, ...s]) };
     return { kind: 'recover', wit: computeEcrecoverWitness(hash, v, r, s) };
   });
-  const poolCalls = plans.length;
+  // Only the calls with a side-car take coins of the pool.
+  const poolCalls = plans.filter((plan) => plan.kind !== 'refused').length;
   // A branded sidecar checks the category at absolute input 0, which is only the owning master for a direct call.
   // Atomic participants can begin later in the transaction, so graph-selected calls use the shared lock;
   // the authenticated argument blob, exact kind-6 endpoints, and the A->M->B commitment chain retain soundness.
@@ -174,6 +184,19 @@ export async function resolveEcrecoverComputeCoSpends(
   let p = 0;
   for (let i = 0; i < calls.length; i++) {
     const plan = plans[i]!;
+    if (plan.kind === 'refused') {
+      // No side-car recovers a key from these arguments. The three slots take coins the function does not read: the
+      // compiled recovery answers the zero address without reading them, or its branch is not run, or it reads them
+      // and the call fails closed.
+      for (let slot = 0; slot < 3; slot++) {
+        const coin = await unreadSlot(0x100 + 3 * i + slot, `slot ${slot} of recovery ${i}, whose arguments recover `
+          + `no key (${plan.refusal}) and which therefore holds coins its function does not read,`);
+        resolved.push({ utxo: coin.utxo, unlocker: coin.utxo.unlocker, recreate: coin.recreate });
+      }
+      argBlobs.push(plan.argBlob);
+      if (evmFlags[i]) evmPreimages.push(new Uint8Array(64));
+      continue;
+    }
     const [coinA, coinB, coinM, coinB3] = [freeA[p], freeB[p], freeM[p], freeB3[p]];
     p += 1;
     if (plan.kind === 'deferred') {

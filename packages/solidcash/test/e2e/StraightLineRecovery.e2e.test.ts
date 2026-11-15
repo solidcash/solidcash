@@ -3,12 +3,18 @@
  * policy, and no coin the network does not already hold.
  *
  * A two-covenant recovery reads A and B2 and leaves its middle slot to a coin no covenant reads, which the call's wallet
- * fills and an output at the same index returns. A width-0 recovery reads A, M and B3. Each sent transaction is checked
- * by the VM; each tamper case changes one part of it and expects the input that binds that part to refuse.
+ * fills and an output at the same index returns. A width-0 recovery reads A, M and B3. Arguments no side-car recovers
+ * from (a `v` other than 27 or 28, an `r` with no inverse mod n or no curve point, a key at infinity) take wallet coins
+ * in all three slots, which the function does not read: `ecrecoverEvm` and `ecrecoverP2pkh` answer the zero address
+ * for such a `v` without reading them, and the other cases read them and refuse the call before it is sent. The
+ * side-cars take `s`, and an `r` in [n, p), reduced mod n, so those build and recover a key where the EVM answers the
+ * zero address. Each sent transaction is checked by the VM; each tamper case changes one part of it and expects the
+ * input that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, decodeTransactionUnsafe, encodeLockingBytecodeP2pkh, hash160, hexToBin, lockingBytecodeToCashAddress,
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
+  encodeLockingBytecodeP2pkh, hash160, hexToBin, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
@@ -220,6 +226,30 @@ const bumpCommitment = (output: any): any => {
   commitment[commitment.length - 1] ^= 1;
   return { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } } };
 };
+
+/**
+ * `sent` with the master's push of the recovery's `v` replaced by a push of `to`. The arguments are pushed last first,
+ * so `v` is the push between those of `r` and of the digest `h`.
+ */
+function withMasterV(sent: Sent, master: number, h: Uint8Array, r: Uint8Array, to: number): Sent {
+  const instructions = decodeAuthenticationInstructions(sent.transaction.inputs[master]!.unlockingBytecode);
+  const pushes = (index: number, data: Uint8Array): boolean => {
+    const instruction = instructions[index] as { data?: Uint8Array } | undefined;
+    return instruction?.data !== undefined && same(instruction.data, data);
+  };
+  const at = instructions.findIndex((_, index) => pushes(index - 1, r) && pushes(index + 1, h));
+  expect(at).toBeGreaterThan(0);
+  const rewritten = instructions.map((instruction, index) => (index === at
+    ? { opcode: 0x01, data: Uint8Array.of(to) } : instruction));
+  const unlockingBytecode = encodeAuthenticationInstructions(rewritten as never);
+  return {
+    sourceOutputs: sent.sourceOutputs,
+    transaction: {
+      ...sent.transaction,
+      inputs: sent.transaction.inputs.map((input, index) => (index === master ? { ...input, unlockingBytecode } : input)),
+    },
+  };
+}
 
 /** The P2PKH locking bytecode of a compressed key: what `ecrecoverP2pkh` answers. */
 const p2pkhOf = (key: Uint8Array): Uint8Array => encodeLockingBytecodeP2pkh(hash160(key));
@@ -443,6 +473,192 @@ describe('an ordinary call that recovers a key straight-line', () => {
   });
 });
 
+/** The secp256k1 group order. */
+const ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+/** A 32-byte little-endian word, the form the recovery takes its scalars in. */
+const leWord = (value: bigint): Uint8Array => {
+  const word = new Uint8Array(32);
+  for (let index = 0, x = value; index < 32; index += 1, x >>= 8n) word[index] = Number(x & 0xffn);
+  return word;
+};
+
+/** The secp256k1 field prime. */
+const PRIME = 2n ** 256n - 2n ** 32n - 977n;
+
+const modulo = (a: bigint, m: bigint): bigint => ((a % m) + m) % m;
+
+const power = (base: bigint, exponent: bigint, m: bigint): bigint => {
+  let result = 1n;
+  for (let b = modulo(base, m), e = exponent; e > 0n; b = (b * b) % m, e >>= 1n) {
+    if ((e & 1n) === 1n) result = (result * b) % m;
+  }
+  return result;
+};
+
+/** A y with y^2 = x^3 + 7 mod p, or undefined when no curve point has x as its x-coordinate. */
+const curveY = (x: bigint): bigint | undefined => {
+  const alpha = modulo(x ** 3n + 7n, PRIME);
+  const y = power(alpha, (PRIME + 1n) / 4n, PRIME);
+  return (y * y) % PRIME === alpha ? y : undefined;
+};
+
+/** The smallest x from `from` on that a curve point has (`onCurve`) or that none has. */
+const firstX = (from: bigint, onCurve: boolean): bigint => {
+  let x = from;
+  while ((curveY(x) !== undefined) !== onCurve) x += 1n;
+  return x;
+};
+
+/** The key the side-cars recover: (s R - z G) / r, with z, r and s taken mod n and R the point at x = r of parity v. */
+async function sideCarKey(h: Uint8Array, v: bigint, r: Uint8Array, s: Uint8Array): Promise<{
+  compressed: Uint8Array; uncompressed: Uint8Array;
+}> {
+  const { secp256k1 } = await import('@noble/curves/secp256k1');
+  const point = secp256k1.ProjectivePoint;
+  const word = (bytes: Uint8Array): bigint => BigInt(`0x${binToHex(Uint8Array.from(bytes).reverse())}`);
+  const x = word(r);
+  let y = curveY(x)!;
+  if ((y & 1n) !== v - 27n) y = PRIME - y;
+  const rinv = power(modulo(x, ORDER), ORDER - 2n, ORDER);
+  const key = point.BASE.multiplyAndAddUnsafe(point.fromAffine({ x, y }), modulo(-word(h) * rinv, ORDER),
+    modulo(word(s) * rinv, ORDER))!;
+  return { compressed: key.toRawBytes(true), uncompressed: key.toRawBytes(false).slice(1) };
+}
+
+describe('a straight-line recovery whose arguments recover no key', () => {
+  const SOURCE = `${P} contract E { bytes20 who; int n;
+      function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
+        who = ecrecoverEvm(h, v, r, s); n = n + 1; return true; } }
+    contract Q { address who; int n;
+      function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
+        who = ecrecoverP2pkh(h, v, r, s); n = n + 1; return true; } }
+    contract K { pubkey who; int n;
+      function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
+        who = ecrecoverPubKey(h, v, r, s); n = n + 1; return true; } }`;
+
+  for (const [primary, zero] of [['E', '00'.repeat(20)], ['Q', '']] as const) {
+    for (const v of [0n, 29n]) {
+      it(`answers the zero address for v = ${v} under ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'}, `
+        + 'reading none of the wallet coins in its slots', async () => {
+        const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+        const s = setup();
+        const g = await signed('straight-line-invalid-v');
+        const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
+        const salt = brand(t.categoryId);
+        await seedPool(s.provider, salt, 1, 0xd0, primary === 'E');
+        const wallet = await s.wallet();
+        await (t.contract.connect(wallet) as any).call.f(g.h, v, g.r, g.s).send();
+        const sent = s.sent[s.sent.length - 1]!;
+        expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+        const state = (await t.contract.getState()) as { who?: Uint8Array; n?: bigint };
+        expect(binToHex(state.who ?? new Uint8Array())).toBe(zero);
+        expect(state.n).toBe(1n);
+        // The three slots hold wallet coins, each returned at its own index; no coin of the recovery pool is spent.
+        const master = inputAt(sent, addressToLockScript(t.contract.address));
+        const a = master + (primary === 'E' ? 3 : 2);
+        const walletLock = addressToLockScript(wallet.getAddress());
+        for (const index of [a, a + 1, a + 2]) {
+          expect(same(sent.sourceOutputs[index].lockingBytecode, walletLock)).toBe(true);
+          expect(same(sent.transaction.outputs[index]!.lockingBytecode, walletLock)).toBe(true);
+          expect(sent.transaction.outputs[index]!.valueSatoshis).toBe(sent.sourceOutputs[index].valueSatoshis);
+        }
+        for (const role of ['A', 'B2', 'M', 'B3'] as const) {
+          expect(inputAt(sent, ecrecoverComputeLockingBytecode(salt, role))).toBe(-1);
+        }
+        // The same transaction with v = 27: the master now reads its side-cars, which these coins are not.
+        expect(inputPasses(s.provider, withMasterV(sent, master, g.h, g.r, 27), master)).toBe(false);
+      });
+    }
+  }
+
+  const g = signed('straight-line-no-key');
+  const GX = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n;
+  const refused: Array<(k: Signed) => [Uint8Array, bigint, Uint8Array, Uint8Array]> = [
+    (k) => [k.h, k.v, leWord(ORDER), k.s], // r = n, which has no inverse mod n
+    (k) => [k.h, k.v, leWord(0n), k.s],
+    (k) => [k.h, 27n, leWord(firstX(1n, false)), k.s], // no curve point has this x
+    (k) => [k.h, 27n, leWord(2n ** 256n - 1n), k.s], // no x-coordinate
+    // R = G, s = 1 and a digest of 1: the recovered key is (G - G)/r, the point at infinity.
+    () => [leWord(1n), 27n, leWord(GX), leWord(1n)],
+  ];
+  for (const primary of ['E', 'Q'] as const) {
+    it(`refuses ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} before sending for an r with no inverse or no `
+      + 'point, and a key at infinity, which its function reads its side-cars for', async () => {
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
+      await seedPool(s.provider, brand(t.categoryId), 1, 0xd1, primary === 'E');
+      const wallet = await s.wallet();
+      const before = s.sent.length;
+      for (const args of refused) {
+        await expect((t.contract.connect(wallet) as any).call.f(...args(await g)).send())
+          .rejects.toThrow(/preflight failed at input 0: Program failed an OP_VERIFY operation/);
+      }
+      expect(s.sent).toHaveLength(before);
+      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(0n);
+    });
+  }
+
+  for (const primary of ['E', 'Q'] as const) {
+    it(`builds ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} for an s outside [1, n) or an r in [n, p), which `
+      + 'the side-cars take reduced mod n, where the EVM answers the zero address', async () => {
+      const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+      const k = await g;
+      const rAbove = firstX(ORDER + 1n, true);
+      const projection = (key: { compressed: Uint8Array; uncompressed: Uint8Array }): string => binToHex(
+        primary === 'E' ? keccak(key.uncompressed).slice(12) : p2pkhOf(key.compressed));
+      for (const args of [
+        [k.h, k.v, k.r, leWord(ORDER)], [k.h, k.v, k.r, leWord(0n)], [k.h, k.v, k.r, leWord(2n ** 256n - 1n)],
+        [k.h, 27n, leWord(rAbove), k.s],
+      ] as Array<[Uint8Array, bigint, Uint8Array, Uint8Array]>) {
+        const s = setup();
+        const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
+        await seedPool(s.provider, brand(t.categoryId), 1, 0xd4, primary === 'E');
+        await (t.contract.connect(await s.wallet()) as any).call.f(...args).send();
+        expect(createVirtualMachineBch2026ForProvider(s.provider).verify(s.sent[s.sent.length - 1]! as never)).toBe(true);
+        const who = binToHex(((await t.contract.getState()) as { who?: Uint8Array }).who ?? new Uint8Array());
+        expect(who).toBe(projection(await sideCarKey(...args)));
+        expect(who).not.toBe(primary === 'E' ? '00'.repeat(20) : '');
+      }
+    });
+  }
+
+  it('refuses ecrecoverPubKey before sending for a v other than 27 or 28, which it reads its side-cars for',
+    async () => {
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('K')));
+      await seedPool(s.provider, brand(t.categoryId), 1, 0xd2);
+      const wallet = await s.wallet();
+      const k = await g;
+      const before = s.sent.length;
+      for (const v of [0n, 29n]) {
+        await expect((t.contract.connect(wallet) as any).call.f(k.h, v, k.r, k.s).send())
+          .rejects.toThrow(/preflight failed at input 0: Program failed an OP_VERIFY operation/);
+      }
+      expect(s.sent).toHaveLength(before);
+      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(0n);
+    });
+
+  it('builds a call whose recovery sits in a branch the run skips, and refuses it when the branch runs', async () => {
+    const source = `${P} contract T(pubkey owner) { int n;
+      function f(bytes32 h, int v, bytes32 r, bytes32 s, int sel) external returns (bool) {
+        if (sel > 0) { require(ecrecoverPubKey(h, v, r, s) == owner); } n = n + 1; return true; } }`;
+    const s = setup();
+    const k = await g;
+    const t = await s.deploy(compileString(source, compileOptions('T')), [k.key]);
+    await seedPool(s.provider, brand(t.categoryId), 1, 0xd3);
+    const wallet = await s.wallet();
+    const zero = new Uint8Array(32);
+    await (t.contract.connect(wallet) as any).call.f(zero, 0n, zero, zero, 0n).send();
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(s.sent[s.sent.length - 1]! as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    const before = s.sent.length;
+    await expect((t.contract.connect(wallet) as any).call.f(zero, 0n, zero, zero, 1n).send())
+      .rejects.toThrow(/preflight failed at input 0/);
+    expect(s.sent).toHaveLength(before);
+  });
+});
+
 describe('a constructor callee that recovers a key straight-line (A7, A14 items 5 and 6)', () => {
   it('fills the middle slot of a callee whose block a run sizes with a creation wallet coin and the filler',
     async () => {
@@ -481,4 +697,34 @@ describe('a constructor callee that recovers a key straight-line (A7, A14 items 
       const created = await s.deploy(c, [], extra);
       expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
     });
+
+  it('creates through a callee whose ecrecoverP2pkh answers the zero address for v = 0', async () => {
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const source = `${P} interface I { function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool); }
+      contract T { address who; int n; function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
+        who = ecrecoverP2pkh(h, v, r, s); n = n + 1; return true; } }
+      contract C { bool ok; constructor(I t, bytes32 h, int v, bytes32 r, bytes32 s) { ok = t.f(h, v, r, s); }
+        function read() { require(ok); } }`;
+    const s = setup();
+    const g = await signed('straight-line-callee-invalid-v');
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const shared = new Uint8Array(32);
+    await seedPool(s.provider, shared, 1, 0xe2);
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(source, compileOptions('C'));
+    const extra = { initArgs: [tLock, g.h, 0n, g.r, g.s], constructorCallees: [{ contract: t.contract }] };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    // No coin of the shared pool: the callee's three recovery slots take creation wallet coins with the filler.
+    for (const role of ['A', 'B2', 'M', 'B3'] as const) {
+      expect(inputAt(captured, ecrecoverComputeLockingBytecode(shared, role))).toBe(-1);
+    }
+    const master = inputAt(captured, tLock);
+    expect(inputPasses(s.provider, withMasterV(captured, master, g.h, g.r, 27), master)).toBe(false);
+    const created = await s.deploy(c, [], extra);
+    expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+    const state = (await t.contract.getState()) as { who?: Uint8Array; n?: bigint };
+    expect(binToHex(state.who ?? new Uint8Array())).toBe('');
+    expect(state.n).toBe(1n);
+  });
 });

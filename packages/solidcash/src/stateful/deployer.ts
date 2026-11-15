@@ -388,13 +388,19 @@ function sharedPoolView(provider: NetworkProvider, spent: ReadonlySet<string>): 
   });
 }
 
-/** One step of an ecrecover side-car group: a shared coin, or `undefined` for a 2-way recovery's middle slot. */
+/**
+ * One step of an ecrecover side-car group: a shared coin, or `undefined` for a slot that reads nothing: a 2-way
+ * recovery's middle slot, or any slot of a recovery whose arguments recover no key.
+ */
 type SidecarStep = { utxo: Utxo; unlocker: Unlocker; recreate: Output } | undefined;
 
 /**
  * The shared ecrecover side-car groups of a function's recoveries (A14 item 6), A, M and B for each, from the salt-0
- * pool. A 2-way recovery's middle slot reads nothing: a wallet coin fills it. Coins in `spent` are skipped; the coins
- * taken are added to it.
+ * pool. A 2-way recovery's middle slot reads nothing: a wallet coin fills it. Arguments that recover no key
+ * (`ecrecoverRefusal`) have no side-car, so each of their three slots takes a wallet coin: the recovery answers the
+ * zero address without reading them (`ecrecoverEvm` and `ecrecoverP2pkh` for a `v` other than 27 or 28), or its branch
+ * is not run, or it reads them and the creation fails its VM check. Coins in `spent` are skipped; the coins taken are
+ * added to it.
  */
 async function sharedEcrecoverSteps(options: {
   calls: ReadonlyArray<readonly [unknown, unknown, unknown, unknown]>;
@@ -408,7 +414,7 @@ async function sharedEcrecoverSteps(options: {
   if (calls.length === 0) return [];
   const salt = new Uint8Array(32);
   const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
-  const { computeEcrecoverWitness } = await import('../ecrecover/ecrecoverRecovery.js');
+  const { computeEcrecoverWitness, ecrecoverRefusal } = await import('../ecrecover/ecrecoverRecovery.js');
   const {
     buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, probeEcrecoverSplit, probeEcrecoverSplit3,
   } = await import('../ecrecover/ecrecoverComputeSidecar.js');
@@ -428,6 +434,10 @@ async function sharedEcrecoverSteps(options: {
       || (typeof v !== 'bigint' && typeof v !== 'number')) {
       refuse('it recovers a key from values that are not its own arguments; the SDK lays out a recovery from its '
         + 'hash, v, r and s arguments');
+    }
+    if (ecrecoverRefusal(hash as Uint8Array, Number(v), r as Uint8Array, s as Uint8Array) !== undefined) {
+      steps.push(undefined, undefined, undefined);
+      continue;
     }
     const witness = computeEcrecoverWitness(hash as Uint8Array, Number(v), r as Uint8Array, s as Uint8Array);
     const coinA = take(coinsA);

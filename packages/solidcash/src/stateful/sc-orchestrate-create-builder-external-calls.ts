@@ -49,6 +49,7 @@ import {
 } from './sc-load-create-builder-nested-callee-prelude.js';
 import {
   assembleCreateBuilderNestedCalleeBlockInputs as assembleCreateBuilderNestedCalleeBlockInputsImpl,
+  type AssembleCreateBuilderNestedCalleeBlockHost,
 } from './sc-assemble-create-builder-nested-callee-block.js';
 import {
   appendCreateBuilderNestedCalleeLoopWrites as appendCreateBuilderNestedCalleeLoopWritesImpl,
@@ -528,6 +529,26 @@ export async function orchestrateCreateBuilderExternalCalls(
       sharedFunderSnapshot = allocated.sharedFunderSnapshot;
     }
 
+    // The host a callee's block is assembled with: its funders come from the shared pool.
+    const nestedBlockHost: AssembleCreateBuilderNestedCalleeBlockHost = {
+      getUtxos: (address: string) => host.inner.provider.getUtxos(address),
+      keysMatch: (...a: any[]) => host.keysMatch(...a),
+      encodeStoredElementSource: (...a: any[]) => host.callerContract._encodeStoredElementSource(...a),
+      sharedBlockOraclePools,
+      hasSigner: Boolean(host.signer),
+      hasSharedFunder: () => Boolean(sharedFunderPool && sharedFunderPool.length > 0),
+      shiftSharedFunder: () => sharedFunderPool?.shift(),
+      markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
+      addUtxo: (lockingBytecodeHex: string, utxo: Utxo) => {
+        if ((host.inner.provider as any).addUtxo) {
+          return (host.inner.provider as any).addUtxo(lockingBytecodeHex, utxo);
+        }
+      },
+      currentGroupCount: () => externalCallUtxoGroups.length,
+      dummyFunderLockingBytecode: DUMMY_FUNDER_LOCKING_BYTECODE,
+      dummyFunderUnlockingBytecode: DUMMY_FUNDER_UNLOCKING_BYTECODE,
+    };
+
     for (let slotIndex = 0; slotIndex < externalCalls.length; slotIndex++) {
       const ec = externalCalls[slotIndex];
       const callInfo = resolvedExternalCalls[slotIndex];
@@ -613,27 +634,7 @@ export async function orchestrateCreateBuilderExternalCalls(
           loopIdxRanges,
           publicSelfIdentity,
         };
-        await assembleCreateBuilderNestedCalleeBlockInputsImpl(
-          {
-            getUtxos: (address: string) => host.inner.provider.getUtxos(address),
-            keysMatch: (...a: any[]) => host.keysMatch(...a),
-            encodeStoredElementSource: (...a: any[]) => host.callerContract._encodeStoredElementSource(...a),
-            sharedBlockOraclePools,
-            hasSigner: Boolean(host.signer),
-            hasSharedFunder: () => Boolean(sharedFunderPool && sharedFunderPool.length > 0),
-            shiftSharedFunder: () => sharedFunderPool?.shift(),
-            markSharedFunder: (utxo: UnlockableUtxo) => markSharedFunder(utxo),
-            addUtxo: (lockingBytecodeHex: string, utxo: Utxo) => {
-              if ((host.inner.provider as any).addUtxo) {
-                return (host.inner.provider as any).addUtxo(lockingBytecodeHex, utxo);
-              }
-            },
-            currentGroupCount: () => externalCallUtxoGroups.length,
-            dummyFunderLockingBytecode: DUMMY_FUNDER_LOCKING_BYTECODE,
-            dummyFunderUnlockingBytecode: DUMMY_FUNDER_UNLOCKING_BYTECODE,
-          },
-          nestedBlockCtx as any,
-        );
+        await assembleCreateBuilderNestedCalleeBlockInputsImpl(nestedBlockHost, nestedBlockCtx as any);
         bBlockInputs = nestedBlockCtx.bBlockInputs;
         bReturnEventInBlock = nestedBlockCtx.bReturnEventInBlock;
         bStreamedEventPlan = nestedBlockCtx.bStreamedEventPlan;

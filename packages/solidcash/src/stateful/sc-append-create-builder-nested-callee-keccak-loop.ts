@@ -49,7 +49,7 @@ const NOT_LAID_OUT = ', and the SDK lays out a callee\'s loop side-cars beside n
  * What else a function can read or write after its block, each by the ABI field that publishes it, and why it is not
  * laid out beside the loop. The chunks of dynamic state the function only reads are laid out after the side-cars.
  */
-const TRAILING_BAND_USERS: ReadonlyArray<readonly [keyof AbiFunction, string, string]> = [
+export const TRAILING_BAND_USERS: ReadonlyArray<readonly [keyof AbiFunction, string, string]> = [
   ['collectionIterations', 'a collection walk', OVERLAPS_INPUTS],
   ['dynamicWrites', 'the chunks of dynamic state it writes', OVERLAPS_OUTPUTS],
   ['entryLoopWrites', 'the entries a loop writes', NOT_LAID_OUT],

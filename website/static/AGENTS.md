@@ -730,8 +730,11 @@ require(ecrecoverEvm(digest, v, r, s) == signer);
   after the function's block, so the compiler refuses the function (`keccak-loop-shares-trailing-band`).
 - Like the EVM precompile, `ecrecoverEvm` and `ecrecoverP2pkh` (and bare `ecrecover`) return the zero address for
   any input the precompile refuses. That is 20 zero bytes, or the empty lock for `ecrecoverP2pkh`. The refused inputs
-  are a `v` other than 27 or 28, an `r` or `s` outside [1, n), an `r` with no curve point, and a key at infinity. So
-  `require(ecrecoverEvm(...) == signer)` fails for them unless `signer` is zero. `ecrecoverPubKey` aborts on them
+  are a `v` other than 27 or 28, an `r` or `s` outside [1, n), an `r` with no curve point, and a key at infinity. As
+  in Solidity, the answer compares equal to `address(0)`: in a Solidity port, and in native code that calls
+  `ecrecoverEvm`, where `==` and `!=` between addresses treat 20 zero bytes as `address(0)`. So check
+  `!= address(0)` before comparing with a signer: a never-set `signer` equals a refused answer. Mapping keys, events,
+  `abi.encodePacked`, `keccak256` and `bytes(...)` keep the 20 bytes. `ecrecoverPubKey` aborts on them
   instead. High-S signatures are accepted. A key at infinity whose R is ±G or ±φ(G) cannot be recovered, and the SDK
   refuses it before sending.
 - A stateful function's loop that recovers keys reads three side-car inputs per call after the function's block. If

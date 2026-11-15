@@ -964,6 +964,23 @@ in an `address`, which the SDK's encoding would spell as the empty push. So the 
 for every value a call leaves as it was, taking a run's derived record first and then the input. The gate's
 Solidity-port flavor runs all 19 inputs.
 
+**Comparing the answer with `address(0)`.** The answer must compare as Solidity's does, equal to `address(0)`:
+- In a Solidity port (`evmCompat`), `==` and `!=` between addresses compare identities, so the 20-zero answer
+  equals `address(0)`. Since `76ba9b42e` this also holds where the call itself is an operand
+  (`ecrecover(h, v, r, s) != address(0)`), which compared exact bytes before, so a port's guard written that way
+  let refused inputs through.
+- In native code `address(0)` is the empty value and `==` compares bytes. Since `28ec568f6`, a native direct
+  program that calls `ecrecoverEvm` treats exactly 20 zero bytes as `address(0)` in every `==` and `!=` between
+  addresses written in its source, so a refused answer equals `address(0)` and any never-set address. Other
+  programs, and the comparisons the compiler builds itself, are unchanged.
+- The answer keeps its 20 bytes elsewhere: in `bytes20` comparisons, mapping keys, events, `abi.encodePacked`,
+  `keccak256` and `bytes(...)`.
+- As in Solidity, `require(ecrecoverEvm(..) == signer)` with a never-set `signer` accepts a refused input. Check
+  `!= address(0)` first.
+
+Tests: `NativeRecoveryAddressZero.e2e` (native, and a port comparing the call with `address(0)` directly, over the
+gate's twelve refused inputs).
+
 **The framed path.** It answers zero for range and off-curve inputs, and for a key at infinity:
 - the body binds V's argument blob to the shifted one first, then to its own, so a computed recovery the composer
   learns from the failed bind is never rebuilt over the shifted digest;

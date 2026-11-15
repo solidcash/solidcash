@@ -40,10 +40,10 @@ import {
 } from './keccak/keccakComputeSidecar.js';
 import {
   buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
-  computeEcrecoverWitness,
+  buildEcrecoverPlaceholderSidecars, computeEcrecoverWitness,
   extractEcrecoverArgBlobsFromTrace, probeEcrecoverSplit, probeEcrecoverSplit3,
 } from './ecrecover/ecrecoverComputeSidecar.js';
-import type { EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
+import { ecrecoverRefusal, type EcrecoverWitness } from './ecrecover/ecrecoverRecovery.js';
 import {
   solidCashOutputToLibauthOutput,
   createOpReturnOutput,
@@ -391,6 +391,11 @@ export class TransactionBuilder {
    * GLV recovery witnesses, and co-spend the recovery side-car PAIR (A checkpoints, B commits the pubkey). The split
    * point is a witnessed liveness parameter the SDK sizes deterministically; see docs/ecrecover.md. Arguments the
    * params cannot supply (a helper's recovery, a computed argument) are read off a VM probe.
+   *
+   * The pairs sit at fixed offsets from the end of the inputs, so a call whose arguments the precompile refuses still
+   * takes a pair: the pool's pair over the placeholder recovery, which the call reads none of, or only A's pad of,
+   * where it carries the proof for an `r` no curve point has. A key at infinity takes the pair over the digest shifted
+   * by -2^128 r mod n. Its keccak side-car, which the call does not read, hashes 64 zero bytes.
    */
   async addRequiredEcrecoverComputeCoSpends(): Promise<this> {
     for (const input of [...this.inputs]) {
@@ -438,9 +443,15 @@ export class TransactionBuilder {
       const evmPreimages: Uint8Array[] = [];   // uncompressed keys for the trailing keccak side-cars (one per evm call)
       for (let c = 0; c < direct.length; c++) {
         const { hash, v, r, s } = direct[c]!;
-        const wit = computeEcrecoverWitness(hash, v, r, s);
+        const refusal = ecrecoverRefusal(hash, v, r, s);
+        if (refusal?.kind === 'unread' || refusal?.kind === 'offCurve') {
+          await this.addEcrecoverPlaceholderCoSpend(salt, refusal.kind === 'offCurve' ? refusal.proof : undefined);
+          if (evmFlags[c]) evmPreimages.push(new Uint8Array(64));
+          continue;
+        }
+        const wit = computeEcrecoverWitness(refusal?.shiftedHash ?? hash, v, r, s);
         await this.addEcrecoverComputeCoSpend(wit, salt);
-        if (evmFlags[c]) evmPreimages.push(wit.uncompressedPubkey);
+        if (evmFlags[c]) evmPreimages.push(refusal === undefined ? wit.uncompressedPubkey : new Uint8Array(64));
       }
       // ecrecoverEvm: after ALL recovery pairs, co-spend one keccak side-car per evm call (over the uncompressed key),
       // in evm-call order. The contract binds compress(preimage) == the recovered key and reads keccak256(key)[12:].
@@ -449,7 +460,16 @@ export class TransactionBuilder {
     return this;
   }
 
-  private async addEcrecoverComputeCoSpend(wit: EcrecoverWitness, salt: Uint8Array): Promise<void> {
+  /** The pool's pair over the placeholder recovery, A's pad opening with `proof` when given: it holds a call's place. */
+  private async addEcrecoverPlaceholderCoSpend(salt: Uint8Array, proof: Uint8Array | undefined): Promise<void> {
+    const [scA, scB] = await this.freeEcrecoverPair(salt);
+    const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverPlaceholderSidecars(salt, scA, scB, proof);
+    this.addInput(scA, unlockerA); this.addOutput(recreateA);
+    this.addInput(scB, unlockerB); this.addOutput(recreateB);
+  }
+
+  /** A free A and B coin of the recovery pool under `salt`. */
+  private async freeEcrecoverPair(salt: Uint8Array): Promise<[Utxo, Utxo]> {
     const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
     const [utxosA, utxosB] = await Promise.all([
       this.provider.getUtxosForLockingBytecode(lockA), this.provider.getUtxosForLockingBytecode(lockB),
@@ -463,6 +483,11 @@ export class TransactionBuilder {
       throw new Error('ecrecover recovery side-car A/B UTXOs not available; deploy a recovery pair per '
         + 'ecrecoverPubKey call in the spent function.');
     }
+    return [scA, scB];
+  }
+
+  private async addEcrecoverComputeCoSpend(wit: EcrecoverWitness, salt: Uint8Array): Promise<void> {
+    const [scA, scB] = await this.freeEcrecoverPair(salt);
     // Deterministic split point: the number of ladder steps A runs. op-cost is a pure function of (covenant, witness),
     // so the SDK VM-probes both covenants across candidate splits and picks the one where both inputs fit their ~8M
     // budget with the smallest peak. chunkA is a liveness parameter (A<->B are bound by the A->B hash), never soundness:
@@ -478,8 +503,10 @@ export class TransactionBuilder {
    * side-car per evm recovery, at the stateless tail (the direct path's layout): real side-cars for the recoveries
    * learned so far, placeholders for the rest. It evaluates the contract input and reads each reached recovery's
    * argBlob at its A side-car read; pair k sits at base + 2k, the compiler's stable recovery ordinal. A learned pair
-   * lets the next probe run on to the following recovery. A recovery no probe reaches is never read, so its pair
-   * reuses a learned witness; when none is reached nothing is co-spent and send() reports the contract's own failure.
+   * lets the next probe run on to the following recovery. Learned arguments the precompile refuses lay out as a direct
+   * call's do: an off-curve `r` takes the placeholder pair, its A's pad carrying the proof, and a key at infinity the
+   * pair over the shifted digest. A recovery no probe reaches is never read, so the placeholder pair holds its place;
+   * when none is reached nothing is co-spent and send() reports the contract's own failure.
    */
   private async addTracedEcrecoverComputeCoSpends(
     input: UnlockableUtxo, salt: Uint8Array, n: number, evmFlags: readonly boolean[],
@@ -502,14 +529,21 @@ export class TransactionBuilder {
     const contractIdx = this.inputs.indexOf(input);
     const base = this.inputs.length;
     const aInputs = new Map(Array.from({ length: n }, (_, k): [number, number] => [base + 2 * k, k]));
-    const witnesses: (EcrecoverWitness | undefined)[] = Array.from({ length: n }, () => undefined);
-    const pairs = new Map<number, ReturnType<typeof buildEcrecoverComputeSidecars>>();
+    // Each recovery's learned arguments: the witness its pair recovers from, or the placeholder pair's, its A's pad
+    // carrying an off-curve proof when there is one.
+    type Learned = EcrecoverWitness | { readonly placeholder: true; readonly proof?: Uint8Array };
+    const witnesses: (Learned | undefined)[] = Array.from({ length: n }, () => undefined);
+    const pairs = new Map<number, Omit<ReturnType<typeof buildEcrecoverComputeSidecars>, 'compressedQ'>>();
     const layOut = (): void => {
       for (let k = 0; k < n; k++) {
         const wit = witnesses[k];
         if (wit && !pairs.has(k)) {
-          const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
-          pairs.set(k, buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]));
+          if ('placeholder' in wit) {
+            pairs.set(k, buildEcrecoverPlaceholderSidecars(salt, freeA[k], freeB[k], wit.proof));
+          } else {
+            const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
+            pairs.set(k, buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]));
+          }
         }
         const pair = pairs.get(k) ?? buildEcrecoverComputePlaceholders(salt, freeA[k], freeB[k]);
         this.addInput(freeA[k], pair.unlockerA); this.addOutput(pair.recreateA);
@@ -517,7 +551,8 @@ export class TransactionBuilder {
       }
       for (let k = 0, e = 0; k < n; k++) {
         if (!evmFlags[k]) continue;
-        const preimage = witnesses[k]?.uncompressedPubkey ?? new Uint8Array(64);
+        const wit = witnesses[k];
+        const preimage = wit !== undefined && !('placeholder' in wit) ? wit.uncompressedPubkey : new Uint8Array(64);
         const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, freeK[e]);
         this.addInput(freeK[e], unlocker); this.addOutput(recreate);
         e += 1;
@@ -537,9 +572,10 @@ export class TransactionBuilder {
         let learned = false;
         for (const [k, argBlob] of extractEcrecoverArgBlobsFromTrace(trace, aInputs)) {
           if (witnesses[k]) continue;
-          witnesses[k] = computeEcrecoverWitness(
-            argBlob.slice(0, 32), argBlob[32], argBlob.slice(33, 65), argBlob.slice(65, 97),
-          );
+          const [hash, v, r, s] = [argBlob.slice(0, 32), argBlob[32]!, argBlob.slice(33, 65), argBlob.slice(65, 97)];
+          const refusal = ecrecoverRefusal(hash, v, r, s);
+          witnesses[k] = refusal?.kind === 'offCurve' ? { placeholder: true, proof: refusal.proof }
+            : computeEcrecoverWitness(refusal?.kind === 'atInfinity' ? refusal.shiftedHash : hash, v, r, s);
           learned = true;
         }
         if (!learned) break;
@@ -548,9 +584,8 @@ export class TransactionBuilder {
       this.inputs = savedInputs;
       this.outputs = savedOutputs;
     }
-    const reached = witnesses.find((wit) => wit !== undefined);
-    if (!reached) return;
-    for (let k = 0; k < n; k++) witnesses[k] ??= reached;
+    if (witnesses.every((wit) => wit === undefined)) return;
+    for (let k = 0; k < n; k++) witnesses[k] ??= { placeholder: true };
     layOut();
   }
 
@@ -623,20 +658,38 @@ export class TransactionBuilder {
     for (let k = 0; k < N; k++) {
       const hash = hs[k] as Uint8Array, r = rs[k] as Uint8Array, s = ss[k] as Uint8Array;
       const v = typeof vs[k] === 'bigint' ? Number(vs[k]) : Number(vs[k]);
-      const wit = computeEcrecoverWitness(hash, v, r, s);
+      // Arguments the precompile refuses: the iteration reads none of its triple, or only A's pad, which the
+      // placeholder triple's A opens with the proof for an `r` no curve point has. A key at infinity takes the triple
+      // over the digest shifted by -2^128 r mod n. The iteration reads neither's keccak side-car.
+      const refusal = ecrecoverRefusal(hash, v, r, s);
+      const placeholder = refusal?.kind === 'unread' || refusal?.kind === 'offCurve';
+      const proof = refusal?.kind === 'offCurve' ? refusal.proof : undefined;
+      const wit = placeholder ? undefined
+        : computeEcrecoverWitness(refusal?.kind === 'atInfinity' ? refusal.shiftedHash : hash, v, r, s);
       if (isEvm) {
-        const chunkA = probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]);
         const {
           unlockerA, recreateA, unlockerB, recreateB,
-        } = buildEcrecoverComputeSidecars(wit, chunkA, salt, freeA[k], freeB[k]);
+        } = wit === undefined ? buildEcrecoverPlaceholderSidecars(salt, freeA[k], freeB[k], proof)
+          : buildEcrecoverComputeSidecars(wit, probeEcrecoverSplit(wit, salt, freeA[k], freeB[k]), salt, freeA[k],
+            freeB[k]);
         sideCars.push({ ...freeA[k], unlocker: unlockerA }, { ...freeB[k], unlocker: unlockerB });
         recreates.push(recreateA, recreateB);
         // K keccak side-car over the 64-byte uncompressed key; the contract binds compress(preimage) == recovered Q.
         const { unlocker: unlockerK, recreate: recreateK } = buildKeccakComputeSidecar(
-          wit.uncompressedPubkey, salt, freeK[k], true,
+          wit === undefined || refusal !== undefined ? new Uint8Array(64) : wit.uncompressedPubkey, salt, freeK[k], true,
         );
         sideCars.push({ ...freeK[k], unlocker: unlockerK });
         recreates.push(recreateK);
+        continue;
+      }
+      if (wit === undefined) {
+        const funderProvider = this.provider as NetworkProvider & {
+          addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
+        };
+        const built = buildEcrecoverPlaceholderSidecars(salt, freeA[k], freeB[k], proof, 'B2');
+        const funder = await ecrecoverLoopFunder(funderProvider, contractIdx * 4096 + k);
+        sideCars.push({ ...freeA[k], unlocker: built.unlockerA }, funder.utxo, { ...freeB[k], unlocker: built.unlockerB });
+        recreates.push(built.recreateA, funder.recreate, built.recreateB);
         continue;
       }
       // Non-evm loop: A/M/B triple. Try the 2-way split first (A + inert M funder + B2); a width-0 signature has an

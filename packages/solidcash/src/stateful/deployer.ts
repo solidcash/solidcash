@@ -2445,6 +2445,13 @@ export function buildDeployerUnlocking(options: BuildDeployerUnlockingOptions): 
  */
 export function assertDeployerCallee(calleeName: string, callee: Artifact, functionName: string): void {
   const fn = callee.abi.find((entry) => entry.name === functionName);
+  // A message-bus build is never record-sound, whatever its arms (A7): its option is the one in the way.
+  if (callee.recordSound !== true && callee.messageBus !== undefined) {
+    throw new DeployerCalleeError(
+      calleeName, functionName,
+      'the callee is a message-bus build, which a constructor cannot call; compile it with messageBus: false',
+    );
+  }
   if (callee.recordSound !== true) {
     throw new DeployerCalleeError(
       calleeName, functionName,

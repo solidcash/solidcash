@@ -10272,10 +10272,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           const initializer = localInitializerFor(expression.name);
           if (initializer) return classifyArg(initializer, seen);
         }
-        if (expression instanceof NullaryOpNode
-          && (expression.operator === NullaryOperator.MSG_SENDER
-            || expression.operator === NullaryOperator.TX_ORIGIN)) {
+        // A nested frame's msg.sender is its caller and its tx.origin the transaction's origin, so the source names
+        // which one it reads; msg.sender keeps the shape it has always published.
+        if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.MSG_SENDER) {
           return { kind: 'msgSender' };
+        }
+        if (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.TX_ORIGIN) {
+          return { kind: 'msgSender', senderOp: 'tx.origin' };
         }
         if (expression instanceof ArrayAccessNode) {
           const arraySource = classifyArg(expression.array, seen);

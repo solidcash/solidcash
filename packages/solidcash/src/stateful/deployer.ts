@@ -609,13 +609,13 @@ async function planCalleeBlockByCall(
   if (typeof stateful.connect !== 'function') {
     refuse('its block is laid out by the ordinary build of its call, which needs the callee as a stateful contract');
   }
-  // An argument msg.sender gives a call the callee makes: the ordinary build resolves it from its signer, where the
-  // callee's run passes the child, so the call the build lays out is not the call the run makes.
+  // An argument msg.sender or tx.origin gives a call the callee makes: the ordinary build resolves it from its signer,
+  // where the callee's run passes the child (msg.sender) or the deploying wallet (tx.origin), so the call the build
+  // lays out is not the call the run makes.
   const namesSender = (value: unknown): boolean => {
     if (Array.isArray(value)) return value.some(namesSender);
     if (value === null || typeof value !== 'object') return false;
-    const node = value as { kind?: unknown; senderOp?: unknown };
-    return (node.kind === 'msgSender' && node.senderOp !== 'tx.origin') || Object.values(value).some(namesSender);
+    return (value as { kind?: unknown }).kind === 'msgSender' || Object.values(value).some(namesSender);
   };
   if ([...(fn.externalCalls ?? []), ...(fn.lowLevelCalls ?? [])].some((made) => namesSender([
     (made as { argSources?: unknown }).argSources, (made as { rawArgSources?: unknown }).rawArgSources,

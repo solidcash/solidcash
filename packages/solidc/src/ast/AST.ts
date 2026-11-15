@@ -3145,6 +3145,8 @@ export interface ExternalCallArgSource {
   expression?: ExternalCallExpression;
   /** Source-level `address(this)`, distinct from physical active-input bytecode introspection. */
   logicalIdentity?: boolean;
+  /** For `msgSender`: 'tx.origin' when the source is `tx.origin`, which a nested frame's `msg.sender` is not. */
+  senderOp?: 'msg.sender' | 'tx.origin';
 }
 
 export interface ExternalCallExpression {

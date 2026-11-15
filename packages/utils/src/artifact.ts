@@ -1444,6 +1444,12 @@ export interface ArgSource {
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
   expression?: ExternalCallExpression;
+  /**
+   * For 'msgSender': 'tx.origin' when the source is `tx.origin`, the transaction's origin in every frame, which a
+   * nested frame's `msg.sender` (its caller) is not. Absent is `msg.sender`, or either in an artifact compiled
+   * before this field.
+   */
+  senderOp?: 'msg.sender' | 'tx.origin';
 }
 
 export interface ExternalCallExpression {

@@ -101,6 +101,12 @@ import {
   isChunkableValueType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
+  controlStackDepth,
+  invocationDepths,
+  literalDefinitions,
+  MAXIMUM_CONTROL_STACK_DEPTH,
+  nestingSafeFunctionIds,
+  type OutlineResult,
   childStateLayoutDigest,
   abiTypeString,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
@@ -2022,6 +2028,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * claiming sites that longer spans would have shared.
    */
   private static readonly OUTLINE_CONSERVATIVE_ID_PUSH_BYTES = 3;
+
+  /**
+   * A dispatched direct program within this many bytes of the per-input limit after outlining is under size
+   * pressure (outlineUnderSizePressure). The limit binds the whole unlocking bytecode, so what is left of it is all
+   * the constructor arguments and a call's pushes get: NativeUsdt's `issue` spend pushes 418 B beside its 9,642 B
+   * program, and the OZ native token's master pushes up to 489 B beside its 9,976 B.
+   */
+  private static readonly DIRECT_SIZE_PRESSURE_MARGIN = 1_000;
+
+  /** The size-pressure pass's search: the direct follow-up pass's window, and the over-limit group budget. */
+  private static readonly SIZE_PRESSURE_WINDOW_ELEMENTS = 8;
+  private static readonly SIZE_PRESSURE_CANDIDATE_GROUPS = 4096;
+  private static readonly SIZE_PRESSURE_ROUNDS = 6;
+
+  /** Conditionals the selector dispatcher holds open around an entry's invocation: receive's, then fallback's. */
+  private static readonly DISPATCHER_OPEN_CONDITIONALS = 2;
 
   /**
    * Script numbers whose push is a single byte, so an id drawn from here costs one byte less at its OP_DEFINE
@@ -9964,6 +9986,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    // A dispatched direct program still near the per-input limit takes the size-pressure pass. A sole entry runs
+    // inline after this point, so its depth is not yet known, and the multi-call entry is defined after it.
+    if (result !== undefined && this.directConvention && !this.framedMaster && !this.currentContractHasMessageBus
+      && !this.currentContractCarriesCallBatch && !largeBodyOutline
+      && this.definedBodyRecords.some((record) => record.selectorHex !== undefined)
+      && scriptToBytecode(this.output).length - result.savedBytes
+        > MAX_INPUT_BYTESIZE - GenerateTargetTraversalWithLocation.DIRECT_SIZE_PRESSURE_MARGIN) {
+      result = this.outlineUnderSizePressure(result, bodies.map((body) => body.anchors)) ?? result;
+    }
     const outcome = result!;
     if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1'
       || (globalThis as any).process?.env?.SOLIDC_PROFILE === '1') {
@@ -10060,6 +10091,130 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(outlined.id, locationData);
       this.emit(Op.OP_DEFINE, locationData);
     }
+  }
+
+  /**
+   * One more outlining pass for a dispatched direct program the passes above leave within
+   * DIRECT_SIZE_PRESSURE_MARGIN of the per-input limit. Undefined when it shares nothing or its depth is unbounded.
+   *
+   * Those passes keep the direct convention's admissions to what measured as a net win, because a direct spend
+   * carries its program: each byte removed takes 800 units off that input's operation-cost budget, while each call
+   * site still costs two evaluated instructions (af1516638). Near the limit the size decides whether the contract
+   * can be spent at all, so this pass spends that headroom on bytes there, and only there: a program further from
+   * the limit compiles exactly as it did.
+   *
+   * It admits what those passes hold back, each part sound on its own:
+   * - an invocation of any helper whose body `nestingSafeFunctionIds` proves nesting-safe, among the compiler's
+   *   helpers and the spans outlined above, matched in either push form of its id: a normalised body pushes a hot
+   *   single-byte id by its opcode, which the data-push match of the passes above never sees;
+   * - alternate-stack use private to the span ('balanced', property 5 of outline.ts);
+   * - the outlined helpers themselves, as bodies a repeat may be shared from.
+   * Sharing a span runs it one frame deeper, so the result is kept only where withinControlStackLimit bounds the
+   * finished program's control stack within BCH 2026's 100.
+   */
+  private outlineUnderSizePressure(
+    result: OutlineResult, anchors: readonly (readonly number[] | undefined)[],
+  ): OutlineResult | undefined {
+    const definitions = literalDefinitions(this.output);
+    const recordAt = new Map(this.definedBodyRecords.map((record, index) => [record.outputIndex, index]));
+    const compilerHelpers = new Set<bigint>([
+      ...GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS, ...this.compactHelperIds.allocated,
+    ]);
+    // Every compiler helper's body as it now stands: the records' as rewritten above, a directly defined one's
+    // (the pushdata decoders) as emitted. User functions and entries are dispatch targets, never callees here.
+    const helperBodies = new Map<number, Script>();
+    for (const [hex, definition] of definitions) {
+      const recordIndex = recordAt.get(definition.bodyIndex);
+      if (recordIndex !== undefined) {
+        const helperId = this.definedBodyRecords[recordIndex].compilerHelperId;
+        if (helperId !== undefined) helperBodies.set(helperId, result.bodies[recordIndex].script);
+        continue;
+      }
+      let id: bigint;
+      try {
+        id = decodeInt(hexToBin(hex));
+      } catch {
+        continue;
+      }
+      if (compilerHelpers.has(id)) helperBodies.set(Number(id), bytecodeToScript(definition.body));
+    }
+    for (const fn of result.functions) helperBodies.set(Number(decodeInt(fn.id)), fn.script);
+    const callable = nestingSafeFunctionIds(helperBodies);
+
+    const pool = this.snapshotCompactHelperIds();
+    const recordCount = result.bodies.length;
+    const pressure = outlineSharedSpans(
+      [
+        ...result.bodies.map((body, index) => ({
+          script: body.script,
+          locationData: body.locationData,
+          anchors: anchors[index]?.map((anchor) => body.indexMap[anchor] ?? anchor),
+        })),
+        ...result.functions.map((fn) => ({ script: fn.script, locationData: fn.locationData })),
+      ],
+      () => encodeInt(this.allocateCompactHelperId()),
+      () => this.peekCompactHelperIdPushBytes(),
+      'savings',
+      GenerateTargetTraversalWithLocation.SIZE_PRESSURE_WINDOW_ELEMENTS,
+      GenerateTargetTraversalWithLocation.SIZE_PRESSURE_CANDIDATE_GROUPS,
+      undefined,
+      GenerateTargetTraversalWithLocation.SIZE_PRESSURE_ROUNDS,
+      callable,
+      'balanced',
+      true,
+    );
+    const outcome: OutlineResult = {
+      bodies: pressure.bodies.slice(0, recordCount).map((body, index) => ({
+        ...body,
+        // Composed, so published instruction pointers stay relative to each original body.
+        indexMap: result.bodies[index].indexMap.map((position) => body.indexMap[position] ?? position),
+      })),
+      functions: [
+        ...pressure.bodies.slice(recordCount).map((body, index) => ({
+          ...result.functions[index], script: body.script, locationData: body.locationData,
+        })),
+        ...pressure.functions,
+      ],
+      savedBytes: result.savedBytes + pressure.savedBytes,
+    };
+    if (pressure.savedBytes <= 0 || pressure.functions.length === 0
+      || !this.withinControlStackLimit(outcome, definitions, recordAt)) {
+      this.restoreCompactHelperIds(pool);
+      return undefined;
+    }
+    return outcome;
+  }
+
+  /**
+   * Whether the program `outcome` finishes keeps its control stack within BCH 2026's bound: its top level, every
+   * definition as `outcome` leaves it (the functions it adds included), and the selector dispatcher still to come,
+   * which holds DISPATCHER_OPEN_CONDITIONALS open around an entry's invocation. False where the code cannot bound
+   * it (an invocation of a computed or unknown identifier, a definition made while running, recursion).
+   */
+  private withinControlStackLimit(
+    outcome: OutlineResult,
+    definitions: ReadonlyMap<string, { bodyIndex: number; body: Uint8Array }>,
+    recordAt: ReadonlyMap<number, number>,
+  ): boolean {
+    const bodies = new Map<string, Script>();
+    for (const [hex, definition] of definitions) {
+      const recordIndex = recordAt.get(definition.bodyIndex);
+      bodies.set(hex, recordIndex === undefined
+        ? bytecodeToScript(definition.body) : outcome.bodies[recordIndex].script);
+    }
+    for (const fn of outcome.functions) bodies.set(binToHex(fn.id), fn.script);
+    const depths = invocationDepths(bodies);
+    let entryDepth = 0;
+    for (const record of this.definedBodyRecords) {
+      if (record.selectorHex === undefined) continue;
+      const depth = depths.get(record.selectorHex);
+      if (depth === undefined) return false;
+      entryDepth = Math.max(entryDepth, depth);
+    }
+    const topLevel = controlStackDepth(this.output, (hex) => depths.get(hex), entryDepth, true);
+    if (topLevel === undefined) return false;
+    const dispatched = topLevel.open + GenerateTargetTraversalWithLocation.DISPATCHER_OPEN_CONDITIONALS + entryDepth;
+    return Math.max(topLevel.deepest, dispatched) <= MAXIMUM_CONTROL_STACK_DEPTH;
   }
 
   /**

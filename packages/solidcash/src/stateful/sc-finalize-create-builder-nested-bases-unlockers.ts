@@ -13,6 +13,7 @@ import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-he
 import { directCallBatchUnlocker } from './direct-call-batch.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
+import { externalReturnParamSlot } from './physical-external-call.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import { resolveLogicalIdentity } from './logical-identity.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
@@ -353,28 +354,28 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         // A nested route's final output coordinate is resolved by its physical layout authority.
         bFinalArgs.push(-1n);
       } else if (paramName.startsWith('__internal__externalReturnOutputIdx')) {
-        // Find child groups with return values, in order
-        const children = getChildGroupIndices();
-        const childReturning: number[] = [];
-        for (const cIdx of children) {
-          if (groupMetas[cIdx].ecSlot.hasReturnValues) {
-            childReturning.push(cIdx);
-          }
-        }
-        if (bReturningSlotIdx < childReturning.length) {
-          const childIdx = childReturning[bReturningSlotIdx];
-          const childRetIdx = returnEventIndexMap.get(childIdx);
-          if (childRetIdx !== undefined) {
-            bFinalArgs.push(BigInt(childRetIdx));
-            // Read where the callee's record lands, as the root's own return witnesses are.
-            if (rebindsAssembledCoordinates) {
-              group.returnWitnessGroups = {
-                ...group.returnWitnessGroups,
-                [paramName]: logicalReturnGroupIndex(externalCallUtxoGroups, childIdx),
-              };
-            }
-          }
+        // An ordinary frame names the record of the call in the slot the witness stands for (its ordinal among the
+        // function's returning calls), matched by callsite: a call this run does not make shifts no later witness
+        // and names none itself (-1). Other frames take their returning callees in order.
+        let childIdx: number | undefined;
+        if (rebindsAssembledCoordinates) {
+          const slot = externalReturnParamSlot(paramName, bAbiFunc?.externalCalls);
+          childIdx = slot === undefined ? undefined : calleeGroupForSlot(slot);
+        } else {
+          childIdx = getChildGroupIndices()
+            .filter((cIdx) => groupMetas[cIdx].ecSlot.hasReturnValues)[bReturningSlotIdx];
           bReturningSlotIdx++;
+        }
+        const childRetIdx = childIdx === undefined ? undefined : returnEventIndexMap.get(childIdx);
+        if (childIdx !== undefined && childRetIdx !== undefined) {
+          bFinalArgs.push(BigInt(childRetIdx));
+          // Read where the callee's record lands, as the root's own return witnesses are.
+          if (rebindsAssembledCoordinates) {
+            group.returnWitnessGroups = {
+              ...group.returnWitnessGroups,
+              [paramName]: logicalReturnGroupIndex(externalCallUtxoGroups, childIdx),
+            };
+          }
         }
       } else if (paramName.startsWith('__internal__loopTargetStride')) {
         // A computed-target loop's occurrences are this caller's child groups. One occurrence's physical width is
@@ -394,16 +395,20 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         bFinalArgs.push(physical === undefined ? 1n
           : BigInt(physical.blockInputs ? physical.blockInputs.length : 1 + physical.dataNftUtxos.length));
       } else if (paramName.startsWith('__internal__externalCallSelector')) {
-        // Resolve selector for child group's target function
+        // Resolve selector for child group's target function. An ordinary frame takes the callee of the slot's
+        // callsite, as two calls can name functions of one name on two contracts; other frames match by name.
         const children = getChildGroupIndices();
         const slotIdx = host.selectorParamSlot(paramName, bAbiFunc?.externalCalls);
         const call = bAbiFunc?.externalCalls?.[slotIdx];
-        const childGroup = children
-          .map((idx) => externalCallUtxoGroups[idx])
-          .find((candidateGroup) => candidateGroup.functionName === call?.functionName
-            || candidateGroup.logicalFunctionName === call?.functionName
-            || candidateGroup.functionName === call?.rawFunctionName)
-          ?? (slotIdx < children.length ? externalCallUtxoGroups[children[slotIdx]] : undefined);
+        const slotCallee = rebindsAssembledCoordinates ? calleeGroupForSlot(slotIdx) : undefined;
+        const childGroup = rebindsAssembledCoordinates
+          ? slotCallee === undefined ? undefined : externalCallUtxoGroups[slotCallee]
+          : children
+            .map((idx) => externalCallUtxoGroups[idx])
+            .find((candidateGroup) => candidateGroup.functionName === call?.functionName
+              || candidateGroup.logicalFunctionName === call?.functionName
+              || candidateGroup.functionName === call?.rawFunctionName)
+            ?? (slotIdx < children.length ? externalCallUtxoGroups[children[slotIdx]] : undefined);
         if (childGroup) {
           const cAbi = childGroup.externalContract.inner.artifact.abi as readonly { name: string; selector?: string }[];
           const cFunc = cAbi.find((f) => f.name === childGroup.functionName);

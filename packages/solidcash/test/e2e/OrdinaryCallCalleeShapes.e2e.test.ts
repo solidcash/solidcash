@@ -1527,8 +1527,8 @@ describe('a call of a contract that calls another, by a function that returns a 
 });
 
 /**
- * In the transaction `builder` holds, the input at `lock` passes and its witness `name` names input `named`; the witness
- * moved by one input either way is refused by that input.
+ * In the transaction `builder` holds, the input at `lock` passes and its witness `name` names index `named` (an input's
+ * or an output's); the witness moved by one index either way is refused by that input.
  */
 function expectWitnessNamesInput(s: Setup, builder: any, lock: Uint8Array, name: string, named: number): void {
   const program = builder.buildLibauthProgram(true) as Sent;
@@ -1716,4 +1716,115 @@ describe('nested coordinates read from the assembled transaction: a callee behin
       expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(18n);
     });
   }
+});
+
+describe('a nested caller\'s calls matched by callsite', () => {
+  it('names nothing for D\'s skipped first call and U\'s master and record for its second, then runs both '
+    + '(A calls D, which calls T when asked, then U)', async () => {
+    const source = `${P} interface IT { function f(int x) external returns (int); }
+      interface IU { function g(int x) external returns (int); }
+      interface ID { function h(IT t, IU u, int x, bool c) external returns (int); }
+      contract T { int calls; function f(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+      contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x + 3; } }
+      contract D { int got; function h(IT t, IU u, int x, bool c) external returns (int) {
+        int a = 0; if (c) { a = t.f(x); } got = a + u.g(x); return got; } }
+      contract A { int got; function k(ID d, IT t, IU u, int x, bool c) external returns (int) {
+        got = d.h(t, u, x, c); return got; } }`;
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const u = await s.deploy(compileString(source, compileOptions('U')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const a = await s.deploy(compileString(source, compileOptions('A')));
+    const wallet = await s.wallet(8);
+    const [tLock, uLock, dLock] = [t, u, d].map((deployed) => addressToLockScript(deployed.contract.address));
+    const dCallee = withCallee(withCallee(d.contract, 'IT', t.contract), 'IU', u.contract);
+    const call = (c: boolean): any => (a.contract.connect(wallet) as any).call.k(dLock, tLock, uLock, 5n, c)
+      .withExternalCall(dCallee);
+
+    // T's call not made: D's witnesses for its first call name nothing, and those for its second name U's master and
+    // U's record, each refused by D moved by one index.
+    const builder = await call(false).build();
+    const program = builder.buildLibauthProgram(true) as Sent;
+    expect(inputAt(program, tLock)).toBe(-1);
+    const frame = builder.inputs[inputAt(program, dLock)].unlocker as {
+      params: unknown[];
+      abiFunction: {
+        inputs: ReadonlyArray<{ name: string }>; externalCalls?: ReadonlyArray<{ interfaceName: string }>;
+      };
+    };
+    expect(frame.abiFunction.externalCalls?.map((made) => made.interfaceName)).toEqual(['IT', 'IU']);
+    const param = (name: string): unknown => frame.params[frame.abiFunction.inputs.findIndex((input) => (
+      input.name === name))];
+    expect(param('__internal__extcallMasterIdx0')).toBe(-1n);
+    expect(param('__internal__externalReturnOutputIdx0')).toBe(-1n);
+    const record = Number(param('__internal__externalReturnOutputIdx1'));
+    expect(binToHex(program.transaction.outputs[record]!.lockingBytecode)).toBe('51');
+    expect(binToHex(program.transaction.outputs[record]!.token!.category)).toBe(u.categoryId);
+    expectWitnessNamesInput(s, builder, dLock, '__internal__extcallMasterIdx1', inputAt(program, uLock));
+    expectWitnessNamesInput(s, builder, dLock, '__internal__externalReturnOutputIdx1', record);
+
+    for (const [c, tCalls, uCalls, got] of [[false, 0n, 1n, 8n], [true, 1n, 2n, 18n]] as const) {
+      await call(c).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await t.contract.getState()) as { calls?: bigint }).calls ?? 0n).toBe(tCalls);
+      expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(uCalls);
+      expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(got);
+      expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(got);
+    }
+  });
+
+  it('names for each of D\'s calls the selector of the function it calls, when the two share a name '
+    + '(A calls D, which calls T.f and U.f)', async () => {
+    const source = `${P} interface IT { function f(int x) external returns (int); function n() external returns (int); }
+      interface IU { function f(int x, int y) external returns (int); function n() external returns (int); }
+      interface ID { function h(IT t, IU u, int x) external returns (int); }
+      contract T { int calls; function f(int x) external returns (int) { calls = calls + 1; return x * 2; }
+        function n() external returns (int) { return calls; } }
+      contract U { int calls; function f(int x, int y) external returns (int) { calls = calls + 1; return x + y; }
+        function n() external returns (int) { return calls; } }
+      contract D { int got; function h(IT t, IU u, int x) external returns (int) { got = t.f(x) + u.f(x, 3); return got; } }
+      contract A { int got; function k(ID d, IT t, IU u, int x) external returns (int) { got = d.h(t, u, x); return got; } }`;
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const u = await s.deploy(compileString(source, compileOptions('U')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const a = await s.deploy(compileString(source, compileOptions('A')));
+    const wallet = await s.wallet(8);
+    const [tLock, uLock, dLock] = [t, u, d].map((deployed) => addressToLockScript(deployed.contract.address));
+    const dCallee = withCallee(withCallee(d.contract, 'IT', t.contract), 'IU', u.contract);
+    const call = (): any => (a.contract.connect(wallet) as any).call.k(dLock, tLock, uLock, 5n)
+      .withExternalCall(dCallee);
+    const selectorOf = (deployed: DeployResult<Artifact>): string => deployed.contract.inner.artifact.abi
+      .find((fn) => fn.name === 'f')!.selector!.toLowerCase();
+    const expected: Record<string, string> = { IT: selectorOf(t), IU: selectorOf(u) };
+    expect(expected.IT).not.toBe(expected.IU);
+
+    // D's selector witness of each call holds the selector of the function that call names: T.f(int) for its first,
+    // U.f(int,int) for its second.
+    const builder = await call().build();
+    const program = builder.buildLibauthProgram(true) as Sent;
+    const frame = builder.inputs[inputAt(program, dLock)].unlocker as {
+      params: unknown[];
+      abiFunction: {
+        inputs: ReadonlyArray<{ name: string }>; externalCalls?: ReadonlyArray<{ interfaceName: string }>;
+      };
+    };
+    const witnesses = frame.abiFunction.inputs.flatMap((input, position) => {
+      const slot = /^__internal__externalCallSelector(\d+)$/.exec(input.name)?.[1];
+      const callee = slot === undefined ? undefined : frame.abiFunction.externalCalls?.[Number(slot)]?.interfaceName;
+      return callee === undefined ? [] : [{ callee, held: binToHex(frame.params[position] as Uint8Array) }];
+    });
+    expect(witnesses.map(({ callee }) => callee)).toEqual(['IT', 'IU']);
+    for (const { callee, held } of witnesses) expect(held).toBe(expected[callee]);
+    expect(inputPasses(s.provider, program, inputAt(program, dLock))).toBe(true);
+
+    await call().send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+    expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+    expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(18n);
+    expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(18n);
+  });
 });

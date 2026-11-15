@@ -1718,7 +1718,7 @@ describe('nested coordinates read from the assembled transaction: a callee behin
   }
 });
 
-describe('a nested caller\'s calls matched by callsite', () => {
+describe('a nested caller\'s calls matched by callsite, and the pool reads of a called contract refused by name', () => {
   it('names nothing for D\'s skipped first call and U\'s master and record for its second, then runs both '
     + '(A calls D, which calls T when asked, then U)', async () => {
     const source = `${P} interface IT { function f(int x) external returns (int); }
@@ -1827,4 +1827,54 @@ describe('a nested caller\'s calls matched by callsite', () => {
     expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(18n);
     expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(18n);
   });
+
+  it('refuses, by name and before sending, a call that reaches a contract whose function reads blockhash(n)',
+    async () => {
+      const source = `${P} interface I { function f(int n) external returns (bool); }
+        interface ID { function g(I t, int n) external returns (bool); }
+        contract T { bytes32 h; function f(int n) external returns (bool) { h = blockhash(n); return true; } }
+        contract D { bool ok; function g(I t, int n) external returns (bool) { ok = t.f(n); return ok; } }
+        contract A { bool ok; function k(ID d, I t, int n) external returns (bool) { ok = d.g(t, n); return ok; } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const [tLock, dLock] = [t, d].map((deployed) => addressToLockScript(deployed.contract.address));
+      const before = s.sent.length;
+      // D calls T, and A calls D, which calls T: in both T's read would find a plain coin at its block-hash slot.
+      const direct = await (d.contract.connect(wallet) as any).call.g(tLock, 5n).withExternalCall(t.contract).send()
+        .then(() => undefined, (error: unknown) => error);
+      const transitive = await (a.contract.connect(wallet) as any).call.k(dLock, tLock, 5n)
+        .withExternalCall(withCallee(d.contract, 'I', t.contract)).send().then(() => undefined, (error: unknown) => error);
+      for (const refusal of [direct, transitive]) {
+        expect((refusal as Error).message).toMatch(/The call of T\.f cannot be laid out: it reads blockhash\(n\), and an /);
+        expect((refusal as Error).message).toMatch(/pass it to T\.f as an argument, or call T\.f directly\./);
+      }
+      expect(s.sent.length).toBe(before);
+    });
+
+  it('refuses, saying what to do, a call whose nested callee reads the block from a pool no contract co-spends',
+    async () => {
+      const source = `${P} interface I { function f() external returns (int); }
+        interface ID { function g(I t) external returns (int); }
+        contract T { int n; function f() external returns (int) { n = int(block.number); return n; } }
+        contract D { int got; function g(I t) external returns (int) { got = t.f(); return got; } }
+        contract A { int got; function k(ID d, I t) external returns (int) { got = d.g(t); return got; } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const pool = (t.contract.inner as unknown as { oraclePool: string }).oraclePool;
+      const [tLock, dLock] = [t, d].map((deployed) => addressToLockScript(deployed.contract.address));
+      const before = s.sent.length;
+      const refusal = await (a.contract.connect(wallet) as any).call.k(dLock, tLock)
+        .withExternalCall(withCallee(d.contract, 'I', t.contract)).send().then(() => undefined, (error: unknown) => error);
+      expect((refusal as Error).message).toContain(`The call of T.f cannot be laid out: it reads the block from oracle pool ${
+        pool}, and no contract in this transaction co-spends an info coin of that pool: a contract that another `
+        + 'contract\'s call reaches has no block of its own to hold one. Read the block from that pool in the contract '
+        + 'the transaction runs, or in a contract it calls directly, and T.f reads that coin; or call T.f directly.');
+      expect(s.sent.length).toBe(before);
+    });
 });

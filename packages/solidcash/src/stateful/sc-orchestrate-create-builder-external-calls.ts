@@ -69,6 +69,7 @@ import {
 import {
   discoverCreateBuilderTransitiveExternalCalls as discoverCreateBuilderTransitiveExternalCallsImpl,
 } from './sc-discover-create-builder-transitive-external-calls.js';
+import { refuseCreateBuilderNestedBlockhashReads } from './sc-refuse-create-builder-nested-blockhash-reads.js';
 import { buildSharedMethodExternalBatch } from './sc-build-shared-method-external-batch.js';
 import {
   finalizeCreateBuilderNestedBasesUnlockers as finalizeCreateBuilderNestedBasesUnlockersImpl,
@@ -918,6 +919,9 @@ export async function orchestrateCreateBuilderExternalCalls(
         },
       ),
     );
+    // No called contract's own blockhash(n) read gets a slot of its oracle pool, only a plain coin at its block-hash
+    // slot: refuse the call by name before a transitive callee's region is laid out or the transaction is derived.
+    refuseCreateBuilderNestedBlockhashReads(externalCallUtxoGroups);
     // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
     // gets the block a direct callee gets, with the region after it. A return probe runs only this function's input.
     if (overrides?.returnProbeOnly !== true) {

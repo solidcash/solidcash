@@ -319,7 +319,16 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           sharedOracleInputs.set(pool, masterInputIndex + ownOffset!);
         }
         const oracleIndex = pool === undefined ? undefined : sharedOracleInputs.get(pool);
-        if (oracleIndex === undefined) throw new Error('nested block oracle reader has no co-spent pool coin');
+        if (oracleIndex === undefined) {
+          const label = `${group.externalContract.inner.artifact.contractName}.${group.functionName}`;
+          throw new Error(pool === undefined
+            ? `The call of ${label} cannot be laid out: it reads the block, and its contract binds no oracle pool`
+            : `The call of ${label} cannot be laid out: it reads the block from oracle pool ${pool}, and no contract `
+              + 'in this transaction co-spends an info coin of that pool: a contract that another contract\'s call '
+              + 'reaches has no block of its own to hold one. Read the block from that pool in the contract the '
+              + `transaction runs, or in a contract it calls directly, and ${label} reads that coin; or call `
+              + `${label} directly.`);
+        }
         bFinalArgs.push(BigInt(oracleIndex));
       } else if (paramName === '__internal__blockhashInputIndex') {
         const firstOracleOffset = group.blockLayout?.slots.find(

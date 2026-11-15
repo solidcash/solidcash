@@ -19,8 +19,9 @@ import {
 } from './stateful-abi-resolve.js';
 import type { GraphEcrecoverCall } from './sc-batch-raw.js';
 
-// A plain balanced funder for the M slot of a normal (2-way) signature. Its input/output carry no token, matching
-// the balanced-slot funder family; the A and B covenants on either side self-preserve their own categories.
+// A neutral coin, P2SH32(OP_TRUE) with no token, for a slot no covenant reads, where the host has no coin of its own:
+// a probe that is never sent, or a message-bus graph whose composer funds such slots with this lock. Only a mock
+// provider can register it; a real network holds no such coin.
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const inertFunderUnlocker: Unlocker = {
   generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
@@ -41,6 +42,9 @@ const inertFunder = async (
   return { utxo, recreate: { to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n } };
 };
 
+/** An input of the block and the output that returns its value at the same index. */
+export type RecoverySlotCoin = { input: UnlockableUtxo; recreate: Output };
+
 export interface ResolveEcrecoverCoSpendsHost {
   readonly categoryId: string;
   /** A14 item 6: a shared-pool salt (all zeros for Deploy<C>) replaces the category-branded one. */
@@ -51,6 +55,13 @@ export interface ResolveEcrecoverCoSpendsHost {
       addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
     };
   };
+  /**
+   * A coin for the middle input of a two-covenant recovery, which no covenant reads, and the output that returns its
+   * value at the same index. The call's wallet fills it; a mock mints a neutral coin where the call has no signer.
+   * Undefined when the call has none. Without this member, a host whose transaction is never sent (a probe) or whose
+   * composer funds the slot (a message-bus graph) takes the neutral P2SH32(OP_TRUE) coin.
+   */
+  readonly takeMiddleCoin?: () => Promise<RecoverySlotCoin | undefined>;
 }
 
 export type ResolveEcrecoverCoSpendsResult = {
@@ -63,6 +74,9 @@ export type ResolveEcrecoverCoSpendsResult = {
 /**
  * Resolve one A+B recovery side-car pair per ecrecover call, provisioning mock UTXOs when needed and
  * optionally deferring unresolved argument blobs for graph probes.
+ *
+ * Each call takes three block slots. A two-covenant recovery reads A and B2 and leaves the middle slot to a coin no
+ * covenant reads; a width-0 recovery reads A, M and B3.
  */
 export async function resolveEcrecoverComputeCoSpends(
   host: ResolveEcrecoverCoSpendsHost,
@@ -85,6 +99,23 @@ export async function resolveEcrecoverComputeCoSpends(
   if (calls.length === 0 || !host.categoryId) {
     return { coSpends: [], argBlobs: [], evmPreimages: [], salt };
   }
+  // Each call's arguments: learned later from the run (deferred), or a witness.
+  const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+  const argOf = (p: string | null): unknown => (p ? args[visible.findIndex((x) => x.name === p)] : undefined);
+  type CallPlan =
+    | { kind: 'deferred' }
+    | { kind: 'recover'; wit: ReturnType<typeof computeEcrecoverWitness> };
+  const plans = calls.map(([hp, vp, rp, sp]): CallPlan => {
+    const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
+      : [argOf(hp as string | null), argOf(vp as string | null), argOf(rp as string | null), argOf(sp as string | null)];
+    if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
+      if (options.deferUnresolved) return { kind: 'deferred' };
+      throw new Error('ecrecoverPubKey in a stateful contract requires direct (hash, v, r, s) parameters.');
+    }
+    const v = typeof vRaw === 'bigint' ? Number(vRaw) : Number(vRaw);
+    return { kind: 'recover', wit: computeEcrecoverWitness(hash, v, r, s) };
+  });
+  const poolCalls = plans.length;
   // A branded sidecar checks the category at absolute input 0, which is only the owning master for a direct call.
   // Atomic participants can begin later in the transaction, so graph-selected calls use the shared lock;
   // the authenticated argument blob, exact kind-6 endpoints, and the A->M->B commitment chain retain soundness.
@@ -105,10 +136,10 @@ export async function resolveEcrecoverComputeCoSpends(
   // without this capability retain the explicit side-car deployment requirement used on real networks.
   const addUtxo = host.inner.provider.addUtxo;
   if (typeof addUtxo === 'function'
-    && (freeA.length < calls.length || freeB.length < calls.length || freeM.length < calls.length
-      || freeB3.length < calls.length)) {
+    && (freeA.length < poolCalls || freeB.length < poolCalls || freeM.length < poolCalls
+      || freeB3.length < poolCalls)) {
     const provision = async (lock: Uint8Array, utxos: readonly Utxo[]): Promise<Utxo[]> => {
-      for (let i = utxos.length; i < calls.length; i++) {
+      for (let i = utxos.length; i < poolCalls; i++) {
         const standIn = computeSideCarStandIn('ecrecover-sidecar', lock, i);
         if (hasOutpoint(utxos, standIn)) continue;
         await addUtxo.call(host.inner.provider, binToHex(lock), standIn);
@@ -120,56 +151,63 @@ export async function resolveEcrecoverComputeCoSpends(
       provision(lockA, freeA), provision(lockB, freeB), provision(lockM, freeM), provision(lockB3, freeB3),
     ]);
   }
-  if (freeA.length < calls.length || freeB.length < calls.length
-    || freeM.length < calls.length || freeB3.length < calls.length) {
-    throw new Error(`ecrecoverPubKey needs ${calls.length} A + B (2-way) + M + B3 (width-0 3-way) recovery `
+  if (freeA.length < poolCalls || freeB.length < poolCalls
+    || freeM.length < poolCalls || freeB3.length < poolCalls) {
+    throw new Error(`ecrecoverPubKey needs ${poolCalls} A + B (2-way) + M + B3 (width-0 3-way) recovery `
       + `side-car UTXO(s) at the branded address; found ${freeA.length} A + ${freeB.length} B + `
       + `${freeM.length} M + ${freeB3.length} B3. Deploy one A/B/M/B3 set per call.`);
   }
-  const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
-  const argOf = (p: string | null): unknown => (p ? args[visible.findIndex((x) => x.name === p)] : undefined);
+  // A slot no covenant reads: the host's coin, or the neutral coin where the host has none of its own.
+  const unreadSlot = async (fallbackIndex: number, purpose: string): Promise<{ utxo: UnlockableUtxo; recreate: Output }> => {
+    if (host.takeMiddleCoin === undefined) return inertFunder(fallbackIndex, host.inner.provider);
+    const coin = await host.takeMiddleCoin();
+    if (coin === undefined) {
+      throw new Error(`ecrecover: ${purpose} takes a wallet coin, returned at its own index, and the call has none `
+        + 'left; connect a signer with a spare coin');
+    }
+    return { utxo: coin.input, recreate: coin.recreate };
+  };
+  const middle = (i: number): string => `recovery ${i}'s middle input, which no covenant reads,`;
   const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
   const argBlobs: Array<Uint8Array | null> = [];
   const evmPreimages: Array<Uint8Array | null> = [];
+  let p = 0;
   for (let i = 0; i < calls.length; i++) {
-    const [hp, vp, rp, sp] = calls[i];
-    const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
-      : [argOf(hp as string | null), argOf(vp as string | null), argOf(rp as string | null), argOf(sp as string | null)];
-    if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
-      if (options.deferUnresolved) {
-        const placeholders = buildEcrecoverComputePlaceholders(salt, freeA[i], freeB[i], 'B2');
-        const funder = await inertFunder(i, host.inner.provider);
-        resolved.push({ utxo: freeA[i], unlocker: placeholders.unlockerA, recreate: placeholders.recreateA });
-        resolved.push({ utxo: funder.utxo, unlocker: funder.utxo.unlocker, recreate: funder.recreate });
-        resolved.push({ utxo: freeB[i], unlocker: placeholders.unlockerB, recreate: placeholders.recreateB });
-        argBlobs.push(null);
-        if (evmFlags[i]) evmPreimages.push(null);
-        continue;
-      }
-      throw new Error('ecrecoverPubKey in a stateful contract requires direct (hash, v, r, s) parameters.');
+    const plan = plans[i]!;
+    const [coinA, coinB, coinM, coinB3] = [freeA[p], freeB[p], freeM[p], freeB3[p]];
+    p += 1;
+    if (plan.kind === 'deferred') {
+      const placeholders = buildEcrecoverComputePlaceholders(salt, coinA, coinB, 'B2');
+      const funder = await unreadSlot(i, middle(i));
+      resolved.push({ utxo: coinA, unlocker: placeholders.unlockerA, recreate: placeholders.recreateA });
+      resolved.push({ utxo: funder.utxo, unlocker: funder.utxo.unlocker, recreate: funder.recreate });
+      resolved.push({ utxo: coinB, unlocker: placeholders.unlockerB, recreate: placeholders.recreateB });
+      argBlobs.push(null);
+      if (evmFlags[i]) evmPreimages.push(null);
+      continue;
     }
-    const wit = computeEcrecoverWitness(hash, typeof vRaw === 'bigint' ? Number(vRaw) : Number(vRaw), r, s);
+    const { wit } = plan;
     let chunkA: number;
     try {
-      chunkA = probeEcrecoverSplit(wit, salt, freeA[i], freeB[i]);
+      chunkA = probeEcrecoverSplit(wit, salt, coinA, coinB);
     } catch {
       // width-0: the 2-covenant window is empty; fall back to the A/M/B3 3-covenant split.
-      const split = probeEcrecoverSplit3(wit, salt, freeA[i], freeM[i], freeB3[i]);
-      const built = buildEcrecoverComputeSidecars3(wit, split.chunkA, split.chunkM, salt, freeA[i], freeM[i], freeB3[i]);
-      resolved.push({ utxo: freeA[i], unlocker: built.unlockerA, recreate: built.recreateA });
-      resolved.push({ utxo: freeM[i], unlocker: built.unlockerM, recreate: built.recreateM });
-      resolved.push({ utxo: freeB3[i], unlocker: built.unlockerB, recreate: built.recreateB });
+      const split = probeEcrecoverSplit3(wit, salt, coinA, coinM, coinB3);
+      const built = buildEcrecoverComputeSidecars3(wit, split.chunkA, split.chunkM, salt, coinA, coinM, coinB3);
+      resolved.push({ utxo: coinA, unlocker: built.unlockerA, recreate: built.recreateA });
+      resolved.push({ utxo: coinM, unlocker: built.unlockerM, recreate: built.recreateM });
+      resolved.push({ utxo: coinB3, unlocker: built.unlockerB, recreate: built.recreateB });
       argBlobs.push(wit.argBlob);
       if (evmFlags[i]) evmPreimages.push(wit.uncompressedPubkey);
       continue;
     }
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
-      wit, chunkA, salt, freeA[i], freeB[i], undefined, 'B2',
+      wit, chunkA, salt, coinA, coinB, undefined, 'B2',
     );
-    const funder = await inertFunder(i, host.inner.provider);
-    resolved.push({ utxo: freeA[i], unlocker: unlockerA, recreate: recreateA });
+    const funder = await unreadSlot(i, middle(i));
+    resolved.push({ utxo: coinA, unlocker: unlockerA, recreate: recreateA });
     resolved.push({ utxo: funder.utxo, unlocker: funder.utxo.unlocker, recreate: funder.recreate });
-    resolved.push({ utxo: freeB[i], unlocker: unlockerB, recreate: recreateB });
+    resolved.push({ utxo: coinB, unlocker: unlockerB, recreate: recreateB });
     argBlobs.push(wit.argBlob);
     if (evmFlags[i]) evmPreimages.push(wit.uncompressedPubkey);
   }

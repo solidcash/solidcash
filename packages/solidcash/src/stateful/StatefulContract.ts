@@ -586,7 +586,9 @@ import {
   sendWithoutLogicalNonce as sendWithoutLogicalNonceImpl,
 } from './sc-send-without-logical-nonce.js';
 import { pushAutoResolvedExternalCall as pushAutoResolvedExternalCallImpl } from './sc-with-external-call.js';
-import { resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl } from './sc-resolve-ecrecover-co-spends.js';
+import {
+  resolveEcrecoverComputeCoSpends as resolveEcrecoverComputeCoSpendsImpl, type ResolveEcrecoverCoSpendsHost,
+} from './sc-resolve-ecrecover-co-spends.js';
 import { resolveStatefulKeccakLoop as resolveStatefulKeccakLoopImpl } from './sc-resolve-stateful-keccak-loop.js';
 import { resolveStatefulEcrecoverLoop as resolveStatefulEcrecoverLoopImpl } from './sc-resolve-stateful-ecrecover-loop.js';
 import {
@@ -5398,6 +5400,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     abiFunction: AbiFunction, args: any[], selectedCalls?: readonly GraphEcrecoverCall[],
     options: { deferUnresolved?: boolean; graphExecution?: boolean } = {},
     sharedSidecarPool?: NetworkProvider,
+    takeMiddleCoin?: ResolveEcrecoverCoSpendsHost['takeMiddleCoin'],
   ): Promise<{
       coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>;
       argBlobs: Array<Uint8Array | null>;
@@ -5405,9 +5408,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       salt: Uint8Array;
     }> {
     return resolveEcrecoverComputeCoSpendsImpl(
-      sharedSidecarPool === undefined
-        ? { categoryId: this.categoryId, inner: this.inner as any }
-        : { categoryId: this.categoryId, sidecarSalt: new Uint8Array(32), inner: { provider: sharedSidecarPool } as any },
+      {
+        categoryId: this.categoryId,
+        ...(sharedSidecarPool === undefined
+          ? { inner: this.inner as any }
+          : { sidecarSalt: new Uint8Array(32), inner: { provider: sharedSidecarPool } as any }),
+        ...(takeMiddleCoin === undefined ? {} : { takeMiddleCoin }),
+      },
       abiFunction, args, selectedCalls, options,
     );
   }
@@ -12875,6 +12882,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         hasCategory: this.categoryId !== undefined,
       });
     }
+    const coinKey = (utxo: Utxo): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
+    let middleCoins = 0;
+    // A 2-way recovery's middle input, straight-line or in a loop, is read by no covenant: a coin of the signer fills it
+    // and an output at the same index returns its value; a mock mints a neutral coin where the call has none. The coin
+    // is taken from the wallet's coins once, so no funder of the call spends it again.
+    const takeMiddleCoin = async (): Promise<{ input: UnlockableUtxo; recreate: Output } | undefined> => {
+      if (this._signer !== undefined) {
+        const reserved = new Set((sharedFunderPool ?? []).map(coinKey));
+        const plain = (utxo: Utxo): boolean => utxo.token === undefined && !consumedSharedFunders.has(coinKey(utxo));
+        const wallet = (earlySignerUtxos ?? await signerFundingCoins(this._signer))
+          .filter((utxo) => plain(utxo) && !reserved.has(coinKey(utxo)))
+          .sort((left, right) => Number(left.vout === 0) - Number(right.vout === 0)
+            || (left.satoshis < right.satoshis ? -1 : left.satoshis > right.satoshis ? 1 : 0));
+        const coin: Utxo | undefined = wallet[0] ?? sharedFunderPool?.find(plain);
+        if (coin !== undefined) {
+          consumedSharedFunders.add(coinKey(coin));
+          const pooled = sharedFunderPool?.findIndex((utxo) => coinKey(utxo) === coinKey(coin)) ?? -1;
+          if (pooled >= 0) sharedFunderPool!.splice(pooled, 1);
+          if (!overrides?.returnProbeOnly) retireSignerUtxos(this._signer, [coin]);
+          const lock = addressToLockScript(this._signer.getAddress());
+          return {
+            input: { ...coin, unlocker: this._signer.unlockP2PKH() },
+            recreate: { to: lock, amount: coin.satoshis },
+          };
+        }
+      }
+      const mint = (this.inner.provider as { addUtxo?: (lock: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
+      if (typeof mint !== 'function') return undefined;
+      middleCoins += 1;
+      const lock = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+      const coin: Utxo = {
+        txid: binToHex(sha256Sync(utf8ToBin(`SolidCash recovery loop middle\0${this.categoryId}:`
+          + `${derivationMasterUtxo.txid}:${derivationMasterUtxo.vout}:${middleCoins}`))),
+        vout: 0, satoshis: 10_000n,
+      };
+      await mint.call(this.inner.provider, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, coin);
+      return {
+        input: {
+          ...coin,
+          unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51) },
+        },
+        recreate: { to: lock, amount: coin.satoshis },
+      };
+    };
     // A recovery loop's triples follow the block; they are laid out with the loop below, after the fixed keccak
     // side-cars a run can read before its loop.
     const recoveryLoop = abiFunction?.ecrecoverTrailingLoop === true;
@@ -12896,12 +12947,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const ecrecoverArgs = ecrecoverAbiFunction === entryAbiFunction ? entryArgs : args;
       const graphRuntime = ecrecoverAbiFunction as MessageBusRuntimeAbiFunction;
       const graphCalls = graphRuntime.graphEcrecoverCalls;
+      const graphExecution = graphRuntime.messageBusGraphExecution === true;
       const resolution = await this._resolveEcrecoverComputeCoSpends(
         ecrecoverAbiFunction, ecrecoverArgs, graphCalls, {
           deferUnresolved: true,
-          graphExecution: graphRuntime.messageBusGraphExecution === true,
+          graphExecution,
         },
         overrides?.sharedSidecarPool,
+        // A message-bus graph's composer funds the slots no covenant reads with its own neutral coin.
+        graphCalls === undefined && !graphExecution ? takeMiddleCoin : undefined,
       );
       ecrecoverComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       ecrecoverComputeRecreates = resolution.coSpends.map((cs) => cs.recreate);
@@ -13092,50 +13146,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
-      const coinKey = (utxo: Utxo): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
-      let middleCoins = 0;
-      // A 2-way recovery's middle input is read by no covenant: a coin of the signer fills it and an output at the same
-      // index returns its value; a mock mints a neutral coin where the call has none. The coin is taken from the
-      // wallet's coins once, so no funder of the call spends it again.
-      const takeMiddleCoin = async (): Promise<{ input: UnlockableUtxo; recreate: Output } | undefined> => {
-        if (this._signer !== undefined) {
-          const reserved = new Set((sharedFunderPool ?? []).map(coinKey));
-          const plain = (utxo: Utxo): boolean => utxo.token === undefined && !consumedSharedFunders.has(coinKey(utxo));
-          const wallet = (earlySignerUtxos ?? await signerFundingCoins(this._signer))
-            .filter((utxo) => plain(utxo) && !reserved.has(coinKey(utxo)))
-            .sort((left, right) => Number(left.vout === 0) - Number(right.vout === 0)
-              || (left.satoshis < right.satoshis ? -1 : left.satoshis > right.satoshis ? 1 : 0));
-          const coin: Utxo | undefined = wallet[0] ?? sharedFunderPool?.find(plain);
-          if (coin !== undefined) {
-            consumedSharedFunders.add(coinKey(coin));
-            const pooled = sharedFunderPool?.findIndex((utxo) => coinKey(utxo) === coinKey(coin)) ?? -1;
-            if (pooled >= 0) sharedFunderPool!.splice(pooled, 1);
-            if (!overrides?.returnProbeOnly) retireSignerUtxos(this._signer, [coin]);
-            const lock = addressToLockScript(this._signer.getAddress());
-            return {
-              input: { ...coin, unlocker: this._signer.unlockP2PKH() },
-              recreate: { to: lock, amount: coin.satoshis },
-            };
-          }
-        }
-        const mint = (this.inner.provider as { addUtxo?: (lock: string, utxo: Utxo) => Promise<Utxo> }).addUtxo;
-        if (typeof mint !== 'function') return undefined;
-        middleCoins += 1;
-        const lock = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
-        const coin: Utxo = {
-          txid: binToHex(sha256Sync(utf8ToBin(`SolidCash recovery loop middle\0${this.categoryId}:`
-            + `${derivationMasterUtxo.txid}:${derivationMasterUtxo.vout}:${middleCoins}`))),
-          vout: 0, satoshis: 10_000n,
-        };
-        await mint.call(this.inner.provider, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, coin);
-        return {
-          input: {
-            ...coin,
-            unlocker: { generateLockingBytecode: () => lock, generateUnlockingBytecode: () => Uint8Array.of(0x01, 0x51) },
-          },
-          recreate: { to: lock, amount: coin.satoshis },
-        };
-      };
       const loop = await resolveStatefulEcrecoverLoopImpl(
         {
           provider: (overrides?.sharedSidecarPool ?? this.inner.provider) as never,

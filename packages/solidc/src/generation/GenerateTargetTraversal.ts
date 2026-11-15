@@ -30782,41 +30782,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const guardSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
       if (guardSlot && !guardSlot.inlineLoopDispatch && !guardSlot.loopArrayVar && !guardSlot.batchInvocations
         && !this.isExternalCallSlotLoopNested(guardSlot)) {
-        this.emitSlotMasterIndex(guardSlot, locationData);
-        // A raw low-level call may have no co-spent callee at all: its target can be a plain account (a value
-        // transfer) or a contract without the requested function (`success = false`). Both are stated as a
-        // negative master-index witness; every other slot still requires a materialized callee here.
-        const absentMayBeZero = guardSlot.interfaceName === '__raw__' && guardSlot.opaqueReturn === true;
-        this.emit(encodeInt(absentMayBeZero ? -1n : 0n), locationData);
-        this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-        this.emit(Op.OP_VERIFY, locationData);
+        if (guardSlot.interfaceName === '__raw__' && guardSlot.opaqueReturn === true) {
+          this.emitRawCallCalleeGuard(node, guardSlot, locationData);
+        } else {
+          this.emitSlotMasterIndex(guardSlot, locationData);
+          this.emit(encodeInt(0n), locationData);
+          this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+          this.emit(Op.OP_VERIFY, locationData);
+        }
       }
     }
 
     // Option-free compat raw call: bind the callee's selector and visible arguments here, where the payload's
-    // parameters are still live; the epilogue pins the target. Stack-neutral.
+    // parameters are still live; the epilogue pins the target. Stack-neutral. The guard above has required the
+    // callee: an abi.encode* payload is never empty, so the call names no absent callee.
     if (batchRow === undefined && node.callInfo && physicalSlot
       && this.isDirectRawCompatBindingSlot(physicalSlot)) {
-      // The payload is built unconditionally so the runtime stack keeps the compiler's model shape even when the
-      // callee is absent and the binding below is skipped.
       const data = node.parameters[0];
       const binding = this.compatCallArguments(data, locationData);
       const edge = this.compatCallEdgeWitness(data, `__internal__callEdgeOutputIdx${physicalSlot.slotIndex}`);
       this.visit(data);
       this.popFromStack();                                   // [.., payload] (untracked)
-      // The binding reads the co-spent callee's script and unlocking bytecode. A negative master index states a
-      // call with no callee, so the binding is skipped and the payload dropped; the opaque return read answers
-      // from the sentinel.
-      this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., payload, idx]
-      this.emit(encodeInt(0n), locationData);
-      this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-      this.emit(Op.OP_IF, locationData);                     // [.., payload]
       this.emitSlotMasterIndex(physicalSlot, locationData);  // [.., payload, idx]
       this.emitCompatCalleeSelectorAndArgs(binding, edge, locationData); // [.., payload, idx] -> [..]
       if (edge !== undefined) this.emitCountPinnedEdge(edge, node, locationData);
-      this.emit(Op.OP_ELSE, locationData);
-      this.emit(Op.OP_DROP, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
     }
 
     // A typed call no record digest binds checks the arguments it names against its callee's unlocking. A SINGLE
@@ -30930,21 +30919,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(0n), locationData);
         this.emit(Op.OP_LESSTHAN, locationData);
         this.emit(Op.OP_IF, locationData);
-        // A return coordinate below -1 states a call that did not execute its callee: EVM's low-level call
-        // answers `(false, "")` (absent selector, reverting callee). -1 keeps the void-callee answer
-        // `(true, "")`. Both leave `[success, returnData]` with the empty blob on top.
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(encodeInt(-1n), locationData);
-        this.emit(Op.OP_LESSTHAN, locationData);
-        this.emit(Op.OP_IF, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emit(Op.OP_0, locationData);    // success = false
-        this.emit(Op.OP_0, locationData);    // empty returndata
-        this.emit(Op.OP_ELSE, locationData);
-        this.emit(Op.OP_DROP, locationData);
-        this.emit(Op.OP_1, locationData);    // success
-        this.emit(Op.OP_0, locationData);    // empty returndata
-        this.emit(Op.OP_ENDIF, locationData);
+        this.emitRawCallRecordlessAnswer(node, physicalSlot, locationData);
         this.emit(Op.OP_ELSE, locationData);
       }
       if (bindsInline) this.emitLoopCallRecordCarrierChecks(locationData);
@@ -32544,6 +32519,91 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (data instanceof StringLiteralNode) return data.value.length === 0;
     if (data instanceof HexLiteralNode) return data.value.length === 0;
     return false;
+  }
+
+  /**
+   * How a raw call's payload decides whether the call may name no callee: `empty` or `non-empty` where the source fixes
+   * it (a literal; an abi.encode* payload holds a selector at least), else the parameter or local holding it, which is
+   * read where the call is made. Any other payload counts as not empty: reading it a second time could run its code.
+   */
+  private rawCallPayloadEmptiness(
+    node: ExternalFunctionCallNode,
+  ): 'empty' | 'non-empty' | { payload: ExpressionNode; holder: IdentifierNode } {
+    const payload = node.parameters.length === 1 ? node.parameters[0] : undefined;
+    let value: ExpressionNode | undefined = payload;
+    while (value instanceof CastNode) value = value.expression;
+    if (value instanceof StringLiteralNode) {
+      return (value.solidityBytes ?? encodeString(value.value)).length === 0 ? 'empty' : 'non-empty';
+    }
+    if (value instanceof HexLiteralNode && value.codegenError === undefined) {
+      return value.value.length === 0 ? 'empty' : 'non-empty';
+    }
+    if (payload === undefined || this.isVisibleCompatEncodePayload(payload)) return 'non-empty';
+    return value instanceof IdentifierNode && value.functionReference === undefined
+      ? { payload, holder: value } : 'non-empty';
+  }
+
+  /**
+   * A raw call's callee guard, where the call is made. A call whose payload has bytes must co-spend its target, so the
+   * call it names runs: a negative master index, which names no callee, is refused for it, or the spender could answer
+   * the call for any target. Only an empty payload, a plain send, may name none (-1): its target can be an account,
+   * where the EVM runs no code. A payload the frame does not hold here counts as not empty. Stack-neutral.
+   */
+  private emitRawCallCalleeGuard(node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData): void {
+    const emptiness = this.rawCallPayloadEmptiness(node);
+    const read = typeof emptiness === 'object' && (this.constantExpressions.has(emptiness.holder.name)
+      || this.getStackIndex(emptiness.holder.name, true) >= 0) ? emptiness.payload : undefined;
+    if (read === undefined) {
+      this.emitSlotMasterIndex(slot, loc);                   // [.., idx]
+      this.emit(encodeInt(emptiness === 'empty' ? -1n : 0n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+    } else {
+      // The lowest index the call may name: 0 for a payload with bytes, -1 for an empty one.
+      this.visit(cloneNode(read));                           // [.., payload]
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(Op.OP_0NOTEQUAL, loc);
+      this.emit(Op.OP_1SUB, loc);                            // [.., floor]
+      this.popFromStack();
+      this.emitSlotMasterIndex(slot, loc);                   // [.., floor, idx]
+      this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    }
+    this.emit(Op.OP_VERIFY, loc);
+  }
+
+  /**
+   * `[.., coordinate]` -> `[.., success, data]` for a raw call whose return coordinate is negative, so it reads no
+   * record and `data` is empty. -1 answers `(true, "")`: a co-spent callee whose function declares no result, or a
+   * plain send that names no callee. Below -1 answers `(false, "")`, a call that ran no callee, so its master index
+   * must name none: a co-spent callee runs. A payload with bytes always names its callee (emitRawCallCalleeGuard), so
+   * it has no `(false, "")` answer.
+   */
+  private emitRawCallRecordlessAnswer(
+    node: ExternalFunctionCallNode, slot: ExternalCallSlot, loc: SingleLocationData,
+  ): void {
+    if (this.rawCallPayloadEmptiness(node) === 'non-empty') {
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      this.emit(Op.OP_1, loc);                               // success
+      this.emit(Op.OP_0, loc);                               // empty returndata
+      return;
+    }
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeInt(-1n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emitSlotMasterIndex(slot, loc);
+    this.emit(encodeInt(0n), loc);
+    this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_VERIFY, loc);
+    this.emit(Op.OP_0, loc);                                 // success = false
+    this.emit(Op.OP_0, loc);                                 // empty returndata
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_1, loc);                                 // success
+    this.emit(Op.OP_0, loc);                                 // empty returndata
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

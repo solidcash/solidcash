@@ -5190,10 +5190,10 @@ export default class SymbolTableTraversal extends AstTraversal {
               }
               continue;
             }
-            // A raw low-level call is the one shape whose callee may legitimately be absent: Solidity `call`
-            // to an address with no matching function returns success=false and to a plain account returns
-            // success=true, both without executing a callee covenant. The SDK states either as a negative
-            // master index, so even a single straight-line raw call needs the runtime witness.
+            // A raw low-level call is the one shape whose callee may legitimately be absent: a call with an empty
+            // payload, a plain send, to an account runs no callee covenant. The SDK states that as a negative
+            // master index, so even a single straight-line raw call needs the runtime witness; the call site
+            // refuses it for a payload with bytes, whose target must be co-spent.
             const rawOpaque = slot.interfaceName === '__raw__' && slot.opaqueReturn === true;
             if (!slot.fnPtrCall && !rawOpaque && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
             const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;

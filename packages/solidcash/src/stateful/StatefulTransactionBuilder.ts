@@ -3,7 +3,7 @@ import {
   type StateLayout,
   parseEntryCommitment,
   getDefaultStateValue,
-  encodeEventPushdataValue,
+  encodeEventParameter,
   type EventDefinitionAbi,
   type StateValue,
   type FunctionBlockLayout,
@@ -4632,7 +4632,8 @@ export class StatefulTransactionBuilder {
         else if (isHex(value)) value = hexToBin(value);
         else throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
       }
-      return encodeEventPushdataValue(value, parameter.type, this.stateLayout.structs);
+      // In the frame the event's covenant emit writes it: a parameter the artifact marks `notation: 'evm'` too.
+      return encodeEventParameter(value, parameter, this.stateLayout.structs);
     });
     const commitment = new Uint8Array(encodedParts.reduce((sum, part) => sum + part.length, 0));
     let cursor = 0;

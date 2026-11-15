@@ -4,7 +4,7 @@ import type {
 import { bytecodeToAsm, Op, type Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
-  ArrayType, BytesType, FixedType, IntType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
+  ArrayType, BytesType, FixedType, IntType, parseType, parseTypeStrict, PrimitiveType, fixedWidthBytes, isFixedWidthType,
   canonicalSelectorType, INVALID_FUNCTION_POINTER_ID, type Type,
 } from './types.js';
 import { cashAddressToLockingBytecode } from '@bitauth/libauth/build/lib/address/locking-bytecode.js';
@@ -701,7 +701,11 @@ function encodePushdataFrame(
       }
     }
   }
-  if (isIntLikeType(type)) {
+  // An enum argument is spelled by its enum's name, which names no built-in type, and holds its member's ordinal, which
+  // a covenant pushes as an integer. A record spells an enum field `bigint`.
+  const enumOrdinal = (typeof primitiveValue === 'bigint' || typeof primitiveValue === 'number')
+    && /^[A-Za-z_]\w*$/.test(type) && parseType(type) === undefined;
+  if (isIntLikeType(type) || enumOrdinal) {
     // ethers-parity: accept a JS `number` for an integer state value by coercing a safe integer to bigint, so
     // `deploy({ initialState: { count: 1 } })` works like ethers (numbers for uint/int).
     if (typeof primitiveValue === 'number' && Number.isSafeInteger(primitiveValue)) {
@@ -723,7 +727,7 @@ function encodePushdataFrame(
         );
       }
     }
-    const scriptBytes = valueToScriptBytes(primitiveValue, type);
+    const scriptBytes = valueToScriptBytes(primitiveValue, enumOrdinal ? 'bigint' : type);
     return encodeGenericPushdataValue(scriptBytes, true);
   }
 

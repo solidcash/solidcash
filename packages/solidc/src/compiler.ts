@@ -16587,6 +16587,14 @@ function compileResolvedAst(
     )) as Ast;
   }
 
+  // A fixed loop whose turns pay, send, transfer tokens or emit unrolls before the source-level proof below and route
+  // admission: a rolled loop's effect has one output register for every turn, so the proof, admission and the route
+  // clone must each see a site per turn, and each turn's recipe reads its counter as a literal. The unroll before
+  // admission below takes a loop whose effect a helper inlined there made. A framed body binds a looped effect where
+  // it makes it.
+  const unrollBusLoopEffects = !!mergedCompilerOptions.messageBus && mergedCompilerOptions.composition !== 'framed';
+  if (unrollBusLoopEffects) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, 'only')) as Ast;
+
   // Capture the source-level fixed-effect proof before returning-helper and storage-pointer lowering can simplify
   // an operand. A materializable expression produced later is not proof that the SDK can replay the original
   // dependency closure. The marker follows cloned effect nodes and keeps this gate based on type/effect/flow
@@ -16785,8 +16793,13 @@ function compileResolvedAst(
   // before kernel route admission clones the body. Otherwise clones snapshot the runtime loop, skip key
   // binding, and fail closed looking up entry[0] on a clone with no block descriptor. The graph path keeps
   // refusing that shape (`verified-mapping-runtime-loop-write-unsupported`) until its own clones unroll.
+  // A fixed loop whose effect a helper inlined above made unrolls here too (`unrollBusLoopEffects`). A legacy route
+  // may admit before its other fixed loops unroll (below), so only such a loop unrolls ahead of it.
+  if (unrollBusLoopEffects && mergedCompilerOptions.messageBusKernel !== true) {
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, 'only')) as Ast;
+  }
   if (mergedCompilerOptions.messageBus && mergedCompilerOptions.messageBusKernel === true) {
-    ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollBusLoopEffects)) as Ast;
     // Counter-keyed `m[i]` must expose `__internal__vmapCounterPerm_*` on the source handler before
     // admission clones it, so the route can pass that hidden witness into the DEFINE body.
     ast = ast.accept(new LowerVMapCounterLoops(true, mergedCompilerOptions.composition === 'framed')) as Ast;
@@ -16939,11 +16952,12 @@ function compileResolvedAst(
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  // Under the direct convention a fixed loop that pays, sends or emits unrolls too: the counter-loop lowering below
-  // admits no literal-bound `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's
-  // effect has one output register for every turn. A framed body binds a looped effect where it makes it; a
-  // message-bus compile keeps the loop its route admission saw.
-  const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed' && !mergedCompilerOptions.messageBus;
+  // A fixed loop that pays, sends or emits unrolls too: the counter-loop lowering below admits no literal-bound
+  // `for`, journals no send and refuses an effect in a nested loop, while a rolled loop's effect has one output
+  // register for every turn. A framed body binds a looped effect where it makes it. A message-bus compile whose route
+  // was synthesized above keeps the loop its route admission saw; those loops unrolled before it (`unrollBusLoopEffects`).
+  const unrollLoopEffects = mergedCompilerOptions.composition !== 'framed'
+    && (!mergedCompilerOptions.messageBus || !synthesizeBatchBeforeLowering);
   if (needsLoop) ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, false, unrollLoopEffects)) as Ast;
 
   // Keep direct compilation's narrow permutation ABI stable. Message-bus compilation still needs the richer

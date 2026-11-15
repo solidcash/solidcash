@@ -63,7 +63,8 @@ const MAX_UNROLL = 64;
  * instantiation, or an indirect external function-pointer call (else unrolling is needless). With `effects`, a
  * payment, send, token transfer or event in the body fires it too: each such site has one output register, which
  * every turn of a rolled loop would fill, so each unrolled turn takes a site of its own, pinned and counted as a
- * hand-written one is, and a branch whose predicate the turn's literal decides keeps only the arm it takes. A body
+ * hand-written one is, and a branch whose predicate the turn's literal decides keeps only the arm it takes. With
+ * `effects: 'only'` such a loop is the only one that unrolls. A body
  * that assigns or redeclares the counter stays rolled, as no literal stands for it. A
  * break/continue is admitted only when substituting each fixed induction value makes every reached escape decision
  * static; returns and runtime-selected escapes remain rolled. Also requires
@@ -94,8 +95,9 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     private readonly indirectCallsOnly = false,
     private readonly expansions?: PointerTableExpansionMap,
     private readonly fixedCollectionIterations = false,
-    // The direct convention: a fixed loop whose body makes an effect unrolls (see the class comment).
-    private readonly effects = false,
+    // A fixed loop whose body makes an effect unrolls (see the class comment); `'only'` leaves every other loop to a
+    // later pass, for a legacy message-bus compile whose route admission runs between the two.
+    private readonly effects: boolean | 'only' = false,
   ) {
     super();
   }
@@ -304,6 +306,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const bodyStmts = all.slice(0, all.length - k);
     const step = this.evalStep(all.slice(all.length - k), varName);
     if (step === undefined || step <= 0n) return undefined;
+    // An effect-only pass leaves a loop without an effect, a dead one included, to the pass after it.
+    if (this.effects === 'only' && !this.hasEffect(bodyStmts)) return undefined;
 
     // Enumerate the iteration values; bail if unbounded or larger than MAX_UNROLL.
     const values: bigint[] = [];
@@ -346,11 +350,12 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // that function's site between the turns, so such a body stays rolled and the generator's guard refuses it.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     const hasMappingWrite = this.hasMappingWrite(bodyStmts);
-    const effectSites = this.effects && !this.indirectCallsOnly && this.hasEffect(bodyStmts)
+    const effectSites = this.effects !== false && !this.indirectCallsOnly && this.hasEffect(bodyStmts)
       && !this.callsEffectfulFunction(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
-        && !this.hasChildDeployment(bodyStmts) && !effectSites)) return undefined;
+      : this.effects === 'only' ? !effectSites
+        : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
+          && !this.hasChildDeployment(bodyStmts) && !effectSites)) return undefined;
     const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
     // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.

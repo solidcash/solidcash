@@ -955,6 +955,11 @@ export class StatefulTransactionBuilder {
   // reconstructed losslessly from the source-level state value map.
   private externalCallStateRawCommitments: Map<string, Map<number, string>> = new Map();
 
+  // The records each callee's run derived (categoryId -> nftIndex -> commitment hex). Their values reach the builder as
+  // state updates; the records only spell the values a rebuilt record leaves as they were, which the SDK's encoding
+  // can spell in other bytes than the covenant (`buildPushdataCommitmentKeeping`).
+  private externalCallDerivedRecords: Map<string, Map<number, string>> = new Map();
+
   // Cross-contract callee (B) vmap sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
   // categoryId -> (B block-slot position si -> commitment hex). The external-call output loop mints B's updated
   // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
@@ -1541,6 +1546,7 @@ export class StatefulTransactionBuilder {
       stateUpdates: this.stateUpdates,
       preserveOwnState: this._preserveOwnStateOnUntakenDelegateEdge(),
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       externalCallStateUpdates: this.externalCallStateUpdates,
       builderOptions: this.builderOptions,
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
@@ -1921,6 +1927,7 @@ export class StatefulTransactionBuilder {
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       iterationEntryInputs: this.iterationEntryInputs,
       iterationChunksPrecedeCallees: this.iterationChunksPrecedeCallees(),
       externalCallUtxoGroups: this.externalCallUtxoGroups,
@@ -1969,6 +1976,7 @@ export class StatefulTransactionBuilder {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       externalCallEntryInserts: this.externalCallEntryInserts,
       externalCallEntryOutputs: this.externalCallEntryOutputs,
       allInputs: this.allInputs,
@@ -2339,6 +2347,7 @@ export class StatefulTransactionBuilder {
       compilerRouteDelegateBlock: this.compilerRouteDelegateBlock,
       externalCallStateUpdates: this.externalCallStateUpdates,
       externalCallStateRawCommitments: this.externalCallStateRawCommitments,
+      externalCallDerivedRecords: this.externalCallDerivedRecords,
       childDeploymentOutputs: this.childDeploymentOutputs,
       builderOptions: this.builderOptions,
     };
@@ -4097,6 +4106,27 @@ export class StatefulTransactionBuilder {
     const group = this.externalCallUtxoGroups.find((candidate) => candidate.categoryId === categoryId);
     const nftIndex = group && stateVariableForUpdateKey(group.stateLayout, name)?.nftIndex;
     if (nftIndex !== undefined) this.externalCallStateRawCommitments.get(categoryId)?.delete(nftIndex);
+    return this;
+  }
+
+  /**
+   * Keep the records a callee's run derived, `records[i]` for `nftIndices[i]`, to spell the values its rebuilt
+   * records leave as they were. The values themselves come from setExternalCallState.
+   */
+  setExternalCallDerivedRecords(
+    categoryId: string,
+    nftIndices: readonly number[],
+    records: readonly string[],
+  ): this {
+    let byNft = this.externalCallDerivedRecords.get(categoryId);
+    if (!byNft) {
+      byNft = new Map();
+      this.externalCallDerivedRecords.set(categoryId, byNft);
+    }
+    for (const [ordinal, record] of records.entries()) {
+      const nftIndex = nftIndices[ordinal];
+      if (nftIndex !== undefined && record.length > 0) byNft.set(nftIndex, record);
+    }
     return this;
   }
 

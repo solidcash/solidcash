@@ -41,6 +41,8 @@ export interface MaterializeOwnerFrontOutputsHost {
   readonly externalOutStateUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
+  /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
+  readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly iterationEntryInputs: readonly UnlockableUtxo[];
   /** Whether the assembled inputs co-spend the iteration chunk run before the callee blocks. */
   readonly iterationChunksPrecedeCallees: boolean;
@@ -239,7 +241,8 @@ export function materializeOwnerFrontOutputs(
       ?? (nftIsImmutable && inputCommitment
         ? inputCommitment
         : buildPushdataCommitmentKeeping(
-          group.stateLayout, bCurrentState, nftIdx, [inputCommitment],
+          group.stateLayout, bCurrentState, nftIdx,
+          [host.externalCallDerivedRecords.get(group.categoryId)?.get(nftIdx), inputCommitment],
           host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
         ));
 

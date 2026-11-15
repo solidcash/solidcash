@@ -49,6 +49,7 @@ export function deriveFullPhase1bOutStateAndLowLevel(
         for (const [name, value] of Object.entries(bState)) {
           stb.setExternalCallState(group.categoryId, name, value);
         }
+        stb.setExternalCallDerivedRecords(group.categoryId, group.requiredDataNftIndices, commitments);
       }
     }
   }
@@ -111,6 +112,7 @@ export function deriveFullPhase1bOutStateAndLowLevel(
         for (const [name, value] of Object.entries(bState)) {
           stb.setExternalCallState(group.categoryId, name, value);
         }
+        stb.setExternalCallDerivedRecords(group.categoryId, group.requiredDataNftIndices, commitments);
       }
     }
   }

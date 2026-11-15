@@ -80,6 +80,8 @@ export interface NestedOutputReassertHost {
    */
   readonly preserveOwnState?: boolean;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
+  /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
+  readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly builderOptions: {
     provider: { consensusLimits?: { maximumNftCommitmentBytes?: number } };
@@ -474,6 +476,8 @@ export function reassertFixedStateOutputs(
     dataNftUtxos: readonly UnlockableUtxo[];
     requiredDataNftIndices: readonly number[];
     rawCommitments: ReadonlyMap<number, string>;
+    /** The records a callee's run derived, which spell the values its rebuilt records leave as they were. */
+    derivedRecords?: ReadonlyMap<number, string>;
     updates?: ReadonlyMap<string, StateValue>;
     /** The commitments a multi-call spend's probe settled, by data record. */
     settled?: ReadonlyMap<number, string>;
@@ -485,6 +489,7 @@ export function reassertFixedStateOutputs(
     dataNftUtxos: group.dataNftUtxos,
     requiredDataNftIndices: group.requiredDataNftIndices,
     rawCommitments: host.externalCallStateRawCommitments.get(group.categoryId) ?? new Map(),
+    derivedRecords: host.externalCallDerivedRecords.get(group.categoryId),
     updates: host.externalCallStateUpdates.get(group.categoryId),
     ...(group.callBatch?.dataCommitments && {
       settled: new Map(group.callBatch.dataCommitments.map((commitment, ordinal) => [
@@ -543,7 +548,7 @@ export function reassertFixedStateOutputs(
         ?? (hasUpdate ? undefined : rawCommitment)
         ?? (owner.preserveUntouched && !hasUpdate && inputCommitment ? inputCommitment : undefined)
         ?? buildPushdataCommitmentKeeping(owner.stateLayout, currentState, nftIndex,
-          [rawCommitment, inputCommitment], commitmentLimit);
+          [rawCommitment, owner.derivedRecords?.get(nftIndex), inputCommitment], commitmentLimit);
       builder.outputs[inputIndex] = {
         to: input.unlocker.generateLockingBytecode(),
         amount: input.satoshis,

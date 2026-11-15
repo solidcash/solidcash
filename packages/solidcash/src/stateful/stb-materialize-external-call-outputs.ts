@@ -50,6 +50,8 @@ export interface MaterializeExternalCallOutputsHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalCallStateUpdates: ReadonlyMap<string, ReadonlyMap<string, StateValue>>;
   readonly externalCallStateRawCommitments: ReadonlyMap<string, ReadonlyMap<number, string>>;
+  /** The records each callee's run derived, by category: they spell its rebuilt records' unchanged values. */
+  readonly externalCallDerivedRecords: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly externalCallEntryInserts: ReadonlyArray<{ categoryId: string; to: Uint8Array; commitment: string }>;
   readonly externalCallEntryOutputs: ReadonlyMap<string, ReadonlyMap<number, string>>;
   readonly allInputs: readonly UnlockableUtxo[];
@@ -253,7 +255,8 @@ export function materializeExternalCallOutputs(
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
       ?? (nftHasUpdate || !inputCommitment
         ? buildPushdataCommitmentKeeping(
-          group.stateLayout, bCurrentState, nftIdx, [inputCommitment],
+          group.stateLayout, bCurrentState, nftIdx,
+          [host.externalCallDerivedRecords.get(group.categoryId)?.get(nftIdx), inputCommitment],
           host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
         )
         : inputCommitment);

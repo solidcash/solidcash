@@ -919,8 +919,15 @@ type CallSiteCapture =
   | { kind: 'state'; stateVariable: StateVariableNode }
   | { kind: 'stack'; names: readonly string[] }
   | { kind: 'expression'; expression: ExpressionNode };
-/** Whether a write of one of `names` can run after a run of `slot`'s call (stackWritesAfterCall). */
-type StackWritesAfterCall = (names: readonly string[], slot: ExternalCallSlot) => boolean;
+/** What a body writes, as collectCallSiteTargets asks it (bodyWrites, stateFieldsWrittenBy). */
+interface CallSiteWrites {
+  /** Whether the body may write this state variable. */
+  state(stateVariable: StateVariableNode): boolean;
+  /** Whether a write of one of `names` (a local, a parameter, a branch capture) can run after a run of the call. */
+  after(names: readonly string[], slot: ExternalCallSlot): boolean;
+  /** The initializer of local `name` when a write of what it reads can land between it and a run of the call. */
+  staleInitializer(name: string, slot: ExternalCallSlot): ExpressionNode | undefined;
+}
 /** A bound route's verifier input index; -1 on a standalone batch. */
 const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
 /** A graph route's physical block size, bound by its verifier to the participant's actual span. */
@@ -53841,22 +53848,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || [FunctionModifier.UNSAFE, FunctionModifier.SPLIT, FunctionModifier.MERGE]
         .some((modifier) => node.modifiers.includes(modifier))) return { targets, selectors };
     let written: Set<string> | 'any' | undefined;
-    const stateWritten = (stateVariable: StateVariableNode): boolean => {
-      written ??= this.stateFieldsWrittenBy(node);
-      return written === 'any' || written.has(`${stateVariable.nftIndex}:${stateVariable.fieldIndex}`);
-    };
-    let stackWrites: StackWritesAfterCall | undefined;
-    const writtenAfter: StackWritesAfterCall = (names, slot) => {
-      stackWrites ??= this.stackWritesAfterCall(body);
-      return stackWrites(names, slot);
+    let positions: Omit<CallSiteWrites, 'state'> | undefined;
+    const writes: CallSiteWrites = {
+      state: (stateVariable) => {
+        written ??= this.stateFieldsWrittenBy(node);
+        return written === 'any' || written.has(`${stateVariable.nftIndex}:${stateVariable.fieldIndex}`);
+      },
+      after: (names, slot) => (positions ??= this.bodyWrites(body)).after(names, slot),
+      staleInitializer: (name, slot) => (positions ??= this.bodyWrites(body)).staleInitializer(name, slot),
     };
     for (const slot of this.externalCallSlots) {
       if (slot.inlineLoopDispatch || slot.loopArrayVar || this.isExternalCallSlotLoopNested(slot)) continue;
       // A batch's later rows run on its owner's callee, which the owner's checks bind for all of them.
       if (this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
         && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) continue;
-      const target = this.callSiteTargetCapture(slot, stateWritten, writtenAfter);
-      const selector = this.callSiteSelectorCapture(slot, stateWritten, writtenAfter);
+      const target = this.callSiteTargetCapture(slot, writes);
+      const selector = this.callSiteSelectorCapture(slot, writes);
       if (target === undefined && selector === undefined) continue;
       // A call the body does not make itself (one an invoked body makes) has no site here to fill a register.
       const runs = this.externalCallRuns(body, slot);
@@ -53878,29 +53885,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * How a call site reads its call's target when the body can change the target after the call, from the source the
    * identity check after the body takes: a state variable, a runtime ternary of stack variables, or the address
-   * variable (an inlined low-level call's own receiver first). undefined when the target cannot change.
+   * variable (an inlined low-level call's own receiver first). A chain the body top read into a compiler local
+   * (SynthesizeExternalAddressLocals: `s.f.m()`, `IFoo(param.x).m()`) is read again where the call runs when a write
+   * of what it reads can land between the two: the local holds the value from before the write, and the call goes to
+   * the written one. undefined when the target the check reads is the one the call ran with.
    */
-  private callSiteTargetCapture(
-    slot: ExternalCallSlot, stateWritten: (stateVariable: StateVariableNode) => boolean,
-    writtenAfter: StackWritesAfterCall,
-  ): CallSiteCapture | undefined {
+  private callSiteTargetCapture(slot: ExternalCallSlot, writes: CallSiteWrites): CallSiteCapture | undefined {
     if (slot.addressIsMsgSender) return undefined;
     const stateVariable = slot.addressStateVar === undefined ? undefined
       : this.stateVariables.find((variable) => variable.name === slot.addressStateVar);
     if (stateVariable !== undefined) {
-      return !stateVariable.isDynamic && stateWritten(stateVariable) ? { kind: 'state', stateVariable } : undefined;
+      return !stateVariable.isDynamic && writes.state(stateVariable) ? { kind: 'state', stateVariable } : undefined;
     }
     const address = slot.sourceCallNode?.addressExpression;
     if (((slot.fnPtrCall && slot.runtimeSelector) || slot.runtimeTernaryAddress) && !slot.addressParam
       && !slot.addressStateVar && address instanceof TernaryOpNode && address.condition instanceof IdentifierNode
       && address.ifTrue instanceof IdentifierNode && address.ifFalse instanceof IdentifierNode) {
       const names = [address.condition.name, address.ifTrue.name, address.ifFalse.name];
-      return writtenAfter(names, slot) ? { kind: 'expression', expression: address } : undefined;
+      return writes.after(names, slot) ? { kind: 'expression', expression: address } : undefined;
     }
     if (!slot.addressParam) return undefined;
+    if (slot.addressParam.startsWith('__extaddr_') && !slot.addressParam.startsWith('__extaddr_ll_')) {
+      const chain = writes.staleInitializer(slot.addressParam, slot);
+      if (chain !== undefined) return { kind: 'expression', expression: chain };
+    }
     const names = slot.addressParam.startsWith('__extaddr_ll_')
       ? [slot.addressParam.slice('__extaddr_ll_'.length), slot.addressParam] : [slot.addressParam];
-    return writtenAfter(names, slot) ? { kind: 'stack', names } : undefined;
+    return writes.after(names, slot) ? { kind: 'stack', names } : undefined;
   }
 
   /**
@@ -53908,10 +53919,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * variable the body writes, or a stack variable written after the call. Only a regular call that verifies its
    * selector reads it after the body (emitSelectorCompare). undefined otherwise.
    */
-  private callSiteSelectorCapture(
-    slot: ExternalCallSlot, stateWritten: (stateVariable: StateVariableNode) => boolean,
-    writtenAfter: StackWritesAfterCall,
-  ): CallSiteCapture | undefined {
+  private callSiteSelectorCapture(slot: ExternalCallSlot, writes: CallSiteWrites): CallSiteCapture | undefined {
     const selector = slot.runtimeSelector;
     if (selector === undefined || !slot.needsSelectorVerification
       || (slot.callMode ?? ExternalCallMode.REGULAR) !== ExternalCallMode.REGULAR) return undefined;
@@ -53922,33 +53930,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const stateVariable = child instanceof StateAccessNode ? child.stateVariable
         : child instanceof IdentifierNode ? this.stateVariables.find((variable) => variable.name === child.name)
           : undefined;
-      if (stateVariable !== undefined && stateWritten(stateVariable)) readsWrittenState = true;
+      if (stateVariable !== undefined && writes.state(stateVariable)) readsWrittenState = true;
       if (child instanceof IdentifierNode) names.push(child.name);
     });
-    return readsWrittenState || (names.length > 0 && writtenAfter(names, slot))
+    return readsWrittenState || (names.length > 0 && writes.after(names, slot))
       ? { kind: 'expression', expression: selector } : undefined;
   }
 
   /**
-   * Whether a write of one of `names` (a local, a parameter, a branch capture) can run after a run of `slot`'s call in
-   * `body`: later in the body, a write landing once its own subtree has run (`t = t.next()` writes after its call), or
-   * in a loop with the call. Assembly may write any of them.
+   * Where `body` writes, by position (walkInvocationAst's order; a write lands once its own subtree has run, so
+   * `t = t.next()` writes after its call; a write in a loop with a call can run on either side of it). `after`: whether
+   * a write of one of `names` (a local, a parameter, a branch capture) can run after a run of `slot`'s call.
+   * `staleInitializer`: the initializer of local `name`, when it reads only scalar state and stack variables and a write
+   * of one of them can land between the declaration and a run of `slot`'s call. A call writes what its callee writes;
+   * assembly, and a call through a function value, may write anything.
    */
-  private stackWritesAfterCall(body: Node): StackWritesAfterCall {
+  private bodyWrites(body: Node): Omit<CallSiteWrites, 'state'> {
     const at = new Map<Node, number>();
-    const writes: { names: readonly string[] | undefined; node: Node }[] = [];
+    const writes: { names: readonly string[] | undefined; roots: ReadonlySet<string> | 'any'; node: Node }[] = [];
     const loops: Node[] = [];
+    const declarations = new Map<string, VariableDefinitionNode>();
+    const calleeRoots = new Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>();
     walkInvocationAst(body, (child) => {
       at.set(child, at.size);
       if (child instanceof WhileNode || child instanceof DoWhileNode || child instanceof CollectionIterationNode) {
         loops.push(child);
       }
+      if (child instanceof VariableDefinitionNode && !declarations.has(child.name)) declarations.set(child.name, child);
       const names = child instanceof AssignNode || child instanceof DeleteLocalNode ? [child.identifier.name]
         : child instanceof TupleAssignmentNode
           ? child.elements.flatMap((element) => (element.name && !element.skip ? [element.name] : []))
           : child instanceof VariableDefinitionNode ? [child.name]
             : child instanceof AssemblyStatementNode ? undefined : [];
-      if (names === undefined || names.length > 0) writes.push({ names, node: child });
+      const roots = this.stateRootsWrittenAt(child, calleeRoots);
+      if (names === undefined || names.length > 0 || roots === 'any' || roots.size > 0) {
+        writes.push({ names, roots, node: child });
+      }
     });
     const subtree = (root: Node): Set<Node> => {
       const nodes = new Set<Node>();
@@ -53962,13 +53979,86 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const landed = writes.map((write) => ({ ...write, end: subtreeEnd(write.node) }));
     const loopBodies = loops.map(subtree);
-    return (names, slot) => {
-      const calls = [...at.keys()].filter((candidate) => candidate instanceof ExternalFunctionCallNode
-        && candidate.callInfo !== undefined && this.externalCallSlots[candidate.callInfo.externalCallSlotIndex] === slot);
-      return landed.some((write) => (write.names === undefined || write.names.some((name) => names.includes(name)))
-        && calls.some((call) => write.end > at.get(call)!
-          || loopBodies.some((inside) => inside.has(write.node) && inside.has(call))));
+    const callsOf = (slot: ExternalCallSlot): Node[] => [...at.keys()].filter((candidate) =>
+      candidate instanceof ExternalFunctionCallNode && candidate.callInfo !== undefined
+      && this.externalCallSlots[candidate.callInfo.externalCallSlotIndex] === slot);
+    const sharesLoop = (write: Node, call: Node): boolean =>
+      loopBodies.some((inside) => inside.has(write) && inside.has(call));
+    return {
+      after: (names, slot) => {
+        const calls = callsOf(slot);
+        return landed.some((write) => (write.names === undefined || write.names.some((name) => names.includes(name)))
+          && calls.some((call) => write.end > at.get(call)! || sharesLoop(write.node, call)));
+      },
+      staleInitializer: (name, slot) => {
+        const declaration = declarations.get(name);
+        const initializer = declaration?.expression;
+        if (declaration === undefined || initializer === undefined) return undefined;
+        const stack = new Set<string>();
+        const roots = new Set<string>();
+        let collection = false;
+        walkInvocationAst(initializer, (inner) => {
+          if (inner instanceof IdentifierNode) stack.add(inner.name);
+          if (inner instanceof StateAccessNode) roots.add(inner.name);
+          // A collection entry read where a write of the collection has landed is left to the entry machinery.
+          if (inner instanceof MappingAccessNode) collection = true;
+        });
+        if (collection) return undefined;
+        const declared = subtreeEnd(declaration);
+        const calls = callsOf(slot);
+        const stale = landed.some((write) => (write.names === undefined || write.roots === 'any'
+          || write.names.some((written) => stack.has(written)) || [...write.roots].some((root) => roots.has(root)))
+          && write.node !== declaration
+          && calls.some((call) => (write.end > declared && write.end < at.get(call)!) || sharesLoop(write.node, call)));
+        return stale ? initializer : undefined;
+      },
     };
+  }
+
+  /**
+   * The state roots (variables and collections, by name) `child` writes itself or through the functions it may call:
+   * the one it names, or any function for a call through a function value. 'any' for assembly. `memo` holds each
+   * function's answer.
+   */
+  private stateRootsWrittenAt(
+    child: Node, memo: Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>,
+  ): ReadonlySet<string> | 'any' {
+    if (child instanceof AssemblyStatementNode) return 'any';
+    if (child instanceof StateAssignNode || child instanceof DeleteStateNode || child instanceof MappingAssignNode
+      || child instanceof MappingFieldAssignNode || child instanceof MappingDeleteNode
+      || child instanceof StateArrayAssignNode || child instanceof StateArrayPushNode
+      || child instanceof StateArrayPopNode || child instanceof StateArrayDeleteNode) return new Set([child.name]);
+    const throughValue = child instanceof IndirectCallNode || (child instanceof FunctionCallNode
+      && child.resolvedFunction?.functionId === undefined && child.identifier?.type instanceof FunctionType);
+    const callees = throughValue ? this.userFunctionList
+      : child instanceof FunctionCallNode && child.resolvedFunction ? [child.resolvedFunction] : [];
+    const roots = new Set<string>();
+    for (const callee of callees) {
+      const written = this.stateRootsWrittenBy(callee, memo);
+      if (written === 'any') return 'any';
+      for (const root of written) roots.add(root);
+    }
+    return roots;
+  }
+
+  /** The state roots a function's body writes (stateRootsWrittenAt), memoized; a recursive call adds nothing more. */
+  private stateRootsWrittenBy(
+    callee: FunctionDefinitionNode, memo: Map<FunctionDefinitionNode, ReadonlySet<string> | 'any'>,
+  ): ReadonlySet<string> | 'any' {
+    const known = memo.get(callee);
+    if (known !== undefined) return known;
+    memo.set(callee, new Set());
+    const roots = new Set<string>();
+    let any = false;
+    walkInvocationAst(callee.body, (inner) => {
+      if (any || inner === callee.body) return;
+      const written = this.stateRootsWrittenAt(inner, memo);
+      if (written === 'any') any = true;
+      else for (const root of written) roots.add(root);
+    });
+    const result = any ? 'any' : roots;
+    memo.set(callee, result);
+    return result;
   }
 
   /**

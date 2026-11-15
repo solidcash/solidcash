@@ -1495,7 +1495,8 @@ function expectWitnessNamesInput(s: Setup, builder: any, lock: Uint8Array, name:
   unlocker.syncEncodedArgsFromParams([position]);
 }
 
-describe('nested coordinates read from the assembled transaction: a callee behind a published record', () => {
+describe('nested coordinates read from the assembled transaction: a callee behind a published record, and a caller of two '
+  + 'contracts', () => {
   it('names T\'s old chunk as its base, and T\'s master to the chunk, behind A\'s record slot (A calls D, which calls T)',
     async () => {
       const source = `${P} interface I { function f(int x) external returns (int); }
@@ -1596,4 +1597,68 @@ describe('nested coordinates read from the assembled transaction: a callee behin
       expect(((await d.contract.getState()) as { n?: bigint }).n).toBe(height);
       expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(height);
     });
+
+  for (const emitReturn of [false, true]) {
+    it(`names the master of each contract D calls, T and U, ${emitReturn ? 'behind A\'s record slot' : 'sent plainly'}, `
+      + 'and refuses either index moved or the two swapped', async () => {
+      const source = `${P} interface IT { function f(int x) external returns (int); }
+        interface IU { function g(int x) external returns (int); }
+        interface ID { function h(IT t, IU u, int x) external returns (int); }
+        contract T { int calls; function f(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+        contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x + 3; } }
+        contract D { int got; function h(IT t, IU u, int x) external returns (int) { got = t.f(x) + u.g(x); return got; } }
+        contract A { int got; function k(ID d, IT t, IU u, int x) external returns (int) { got = d.h(t, u, x); return got; } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const u = await s.deploy(compileString(source, compileOptions('U')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const tLock = addressToLockScript(t.contract.address);
+      const uLock = addressToLockScript(u.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const dCallee = withCallee(withCallee(d.contract, 'IT', t.contract), 'IU', u.contract);
+      const call = (): any => {
+        const built = (a.contract.connect(wallet) as any).call.k(dLock, tLock, uLock, 5n).withExternalCall(dCallee);
+        return emitReturn ? built.emitReturn() : built;
+      };
+      const builder = await call().build();
+      const program = builder.buildLibauthProgram(true) as Sent;
+      const masterOf: Record<string, number> = { IT: inputAt(program, tLock), IU: inputAt(program, uLock) };
+      // D's frame names, for the call in each slot, the master of the contract that call reaches.
+      const dAt = inputAt(program, dLock);
+      const frame = builder.inputs[dAt].unlocker as {
+        params: unknown[];
+        abiFunction: {
+          inputs: ReadonlyArray<{ name: string }>; externalCalls?: ReadonlyArray<{ interfaceName: string }>;
+        };
+        syncEncodedArgsFromParams(indices?: readonly number[]): void;
+      };
+      const witnesses = frame.abiFunction.inputs.flatMap((input, position) => {
+        const slot = /^__internal__extcallMasterIdx(\d+)$/.exec(input.name)?.[1];
+        const callee = slot === undefined ? undefined : frame.abiFunction.externalCalls?.[Number(slot)]?.interfaceName;
+        return callee === undefined ? [] : [{ name: input.name, position, named: masterOf[callee]! }];
+      });
+      expect(witnesses).toHaveLength(2);
+      expect(new Set(witnesses.map(({ named }) => named))).toEqual(new Set([masterOf.IT, masterOf.IU]));
+      for (const { name, named } of witnesses) expectWitnessNamesInput(s, builder, dLock, name, named);
+      // The two swapped: each call's identity check reads the other contract's master.
+      const swap = (): void => {
+        const [left, right] = witnesses.map(({ position }) => position) as [number, number];
+        [frame.params[left], frame.params[right]] = [frame.params[right], frame.params[left]];
+        frame.syncEncodedArgsFromParams([left, right]);
+      };
+      swap();
+      expect(inputPasses(s.provider, builder.buildLibauthProgram(true) as Sent, dAt)).toBe(false);
+      swap();
+
+      await call().send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await t.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+      expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+      expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(18n);
+      expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(18n);
+    });
+  }
 });

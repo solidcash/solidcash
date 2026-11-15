@@ -117,6 +117,17 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     oracleBlockBase += group.blockInputs?.length ?? 1 + group.dataNftUtxos.length;
     oracleBlockBase += group.ordinaryDynamicChunkInputs?.length ?? 0;
   }
+  // The inputs a group takes as the builder flattens it: its block (or its master and records), then the old chunks
+  // its write consumes.
+  const plannedInputWidth = (group: ExternalCallUtxoGroup): number => (group.blockInputs
+    ? group.blockInputs.length : 1 + group.dataNftUtxos.length) + (group.ordinaryDynamicChunkInputs?.length ?? 0);
+  // Every group's planned master, for a caller planned before the callees its witnesses name.
+  const plannedMasterIndices: number[] = [];
+  let plannedBase = externalCallInputBase;
+  for (const group of externalCallUtxoGroups) {
+    plannedMasterIndices.push(plannedBase);
+    plannedBase += plannedInputWidth(group);
+  }
   let currentInputBase = externalCallInputBase;
   const groupMasterIndices: number[] = []; // per co-spend group: its master's absolute input index
   for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
@@ -259,6 +270,19 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
           const physical = externalCallUtxoGroups[externalCallUtxoGroups[firstCallee].sharedGroupIndex ?? firstCallee];
           group.mintingInputWitnessCategories = {
             ...group.mintingInputWitnessCategories, [paramName]: physical.categoryId,
+          };
+        }
+      } else if (rebindsAssembledCoordinates && /^__internal__extcallMasterIdx\d*$/.test(paramName)) {
+        // Each call's own callee master, which a function that makes more than one call reads for every call. A
+        // call this run does not make names no input (-1).
+        const suffix = paramName.slice('__internal__extcallMasterIdx'.length);
+        const callee = calleeGroupForSlot(suffix === '' ? 0 : Number(suffix));
+        const physicalIndex = callee === undefined ? undefined
+          : externalCallUtxoGroups[callee].sharedGroupIndex ?? callee;
+        bFinalArgs.push(physicalIndex === undefined ? -1n : BigInt(plannedMasterIndices[physicalIndex]));
+        if (physicalIndex !== undefined) {
+          group.mintingInputWitnessCategories = {
+            ...group.mintingInputWitnessCategories, [paramName]: externalCallUtxoGroups[physicalIndex].categoryId,
           };
         }
       } else if (paramName.startsWith('__internal__extcallAnchorIdx')) {
@@ -558,8 +582,7 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
 
     // Advance to next group. A full block occupies blockInputs.length slots (its output-only slots each
     // carry a paired funder), which is what the builder's input flattening emits.
-    currentInputBase += (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
-      + (group.ordinaryDynamicChunkInputs?.length ?? 0);
+    currentInputBase += plannedInputWidth(group);
   }
   timing('nested-bases-complete');
   return { currentInputBase, groupMasterIndices };

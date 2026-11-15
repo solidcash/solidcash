@@ -2480,7 +2480,13 @@ export interface DeployerInputRun {
 }
 
 
-/** A14 item 6: the shared ecrecover side-car group for each constructor call, at salt 0, in slot order A/M/B. */
+/**
+ * A14 item 6: the shared ecrecover side-car group for each constructor call, at salt 0, in slot order A/M/B, for the
+ * state-derivation probe. Arguments the precompile refuses lay out as a call's do: a slot the constructor does not read
+ * takes a neutral coin, which the probe, never sent, does not need on the network; an `r` no curve point has takes the
+ * pool's A over the placeholder recovery, whose pad carries the proof; a key at infinity the group over the digest
+ * shifted by -2^128 r mod n.
+ */
 export async function deployerEcrecoverGroups(options: {
   createFn: { ecrecoverArgParams?: readonly (readonly (string | null)[])[] };
   args: Record<string, FunctionArgument>;
@@ -2500,9 +2506,9 @@ export async function deployerEcrecoverGroups(options: {
   const {
     ecrecoverComputeLockingBytecode, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   } = await import('@solidcash/utils');
-  const { computeEcrecoverWitness } = await import('../ecrecover/ecrecoverRecovery.js');
+  const { computeEcrecoverWitness, ecrecoverRefusal } = await import('../ecrecover/ecrecoverRecovery.js');
   const {
-    buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
+    buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, buildEcrecoverPlaceholderSidecars,
     probeEcrecoverSplit, probeEcrecoverSplit3,
   } = await import('../ecrecover/ecrecoverComputeSidecar.js');
   const locks = {
@@ -2521,6 +2527,14 @@ export async function deployerEcrecoverGroups(options: {
     fetchPool(locks.A), fetchPool(locks.B), fetchPool(locks.M), fetchPool(locks.B3),
   ]);
   const funderLock = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
+  const funderUnlocker: Unlocker = {
+    generateLockingBytecode: (): Uint8Array => funderLock,
+    generateUnlockingBytecode: (): Uint8Array => Uint8Array.of(0x01, 0x51),
+  };
+  const neutral = (index: number, slot: number): { utxo: Utxo; unlocker: Unlocker; recreate: Output } => ({
+    utxo: { txid: (0xe100 + 3 * index + slot).toString(16).padStart(64, '0'), vout: 0, satoshis: 10_000n },
+    unlocker: funderUnlocker, recreate: { to: funderLock, amount: 10_000n },
+  });
   const groups: Array<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>> = [];
   for (let index = 0; index < count; index += 1) {
     const [hashName, vName, rName, sName] = calls[index] ?? [];
@@ -2534,7 +2548,22 @@ export async function deployerEcrecoverGroups(options: {
         'A constructor ecrecover needs its hash, v, r and s as byte/int arguments the SDK can resolve',
       );
     }
-    const witness = computeEcrecoverWitness(hash, Number(v), r, s);
+    const refusal = ecrecoverRefusal(hash, Number(v), r, s);
+    if (refusal?.kind === 'unread') {
+      groups.push([neutral(index, 0), neutral(index, 1), neutral(index, 2)]);
+      continue;
+    }
+    if (refusal?.kind === 'offCurve') {
+      const carrier = buildEcrecoverPlaceholderSidecars(salt, coinsA[index]!, coinsA[index]!, refusal.proof, 'B2');
+      groups.push([
+        { utxo: coinsA[index]!, unlocker: carrier.unlockerA, recreate: carrier.recreateA },
+        neutral(index, 1), neutral(index, 2),
+      ]);
+      continue;
+    }
+    const witness = computeEcrecoverWitness(
+      refusal?.kind === 'atInfinity' ? refusal.shiftedHash : hash, Number(v), r, s,
+    );
     let chunkA: number;
     try {
       chunkA = probeEcrecoverSplit(witness, salt, coinsA[index]!, coinsB[index]!);
@@ -2564,14 +2593,7 @@ export async function deployerEcrecoverGroups(options: {
     else if (typeof writable.seedUtxo === 'function') await writable.seedUtxo(binToHex(funderLock), funder);
     groups.push([
       { utxo: coinsA[index]!, unlocker: built.unlockerA, recreate: built.recreateA },
-      {
-        utxo: funder,
-        unlocker: {
-          generateLockingBytecode: (): Uint8Array => funderLock,
-          generateUnlockingBytecode: (): Uint8Array => Uint8Array.of(0x01, 0x51),
-        },
-        recreate: { to: funderLock, amount: 10_000n },
-      },
+      { utxo: funder, unlocker: funderUnlocker, recreate: { to: funderLock, amount: 10_000n } },
       { utxo: coinsB[index]!, unlocker: built.unlockerB, recreate: built.recreateB },
     ]);
   }

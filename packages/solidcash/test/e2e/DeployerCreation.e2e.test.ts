@@ -2,7 +2,7 @@
  * B9.11: a top-level deployment through Deploy<C>, on the production profile.
  */
 import { describe, expect, it } from 'vitest';
-import { encodeLockingBytecodeP2pkh, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh, hash160, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, Signer } from '../../src/index.js';
 import { ContractFactory, StatefulContract } from '../../src/stateful/index.js';
@@ -311,7 +311,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
     const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
     if (typeof change === 'string') throw new Error(change);
-    const deploy = async (source: string, txid: string) => {
+    const deploy = async (source: string, txid: string): Promise<any> => {
       const artifact = compileString(source, { deployer: true, messageBus: false });
       const fundingUtxo: Utxo = { txid, vout: 0, satoshis: 500_000n };
       await provider.seedUtxo(Buffer.from(authorLock).toString('hex'), fundingUtxo);
@@ -408,7 +408,7 @@ describe('a top-level deployment through Deploy<C>', () => {
     const source = `${P} interface I { function f(int x) external returns (bool); }
       contract T { bool ok; function f(int x) external returns (bool) { ok = true; return true; } }
       contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
-    const deploy = async (artifact: any, initArgs: any[] = [], extra: any = {}) => {
+    const deploy = async (artifact: any, initArgs: any[] = [], extra: any = {}): Promise<any> => {
       const fundingUtxo: Utxo = {
         txid: `${Math.floor(Math.random() * 1e9).toString(16).padStart(64, '0')}`, vout: 0, satoshis: 2_000_000n,
       };
@@ -451,7 +451,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract C { bool ok; constructor(IA x, IB y) { ok = x.f(1); y.g(2); }
         function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, args: any[] = [], extra: any = {}) => {
+    const deploy = async (artifact: any, args: any[] = [], extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0x70 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -498,7 +498,7 @@ describe('a top-level deployment through Deploy<C>', () => {
         function g(int x) external returns (bool) { ok = false; return false; } }
       contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0x90 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -537,7 +537,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract R { int x; function register(int v) external { x = v; } }
       contract C { bool ok; constructor(I i) { i.register(7); ok = true; } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0xb0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -577,7 +577,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract T { bool ok; function f(int x) external returns (bool) { ok = true; return true; } }
       contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0x4a + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -614,7 +614,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract R { int x; function register(int v) external { x = v; } }
       contract C { bool ok; constructor(I i) { i.register(7); ok = true; } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0x5a + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -647,7 +647,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract T { bool ok; function f(int x) external unsafe returns (bool) { ok = true; return true; } }
       contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0x6a + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -759,6 +759,76 @@ describe('a top-level deployment through Deploy<C>', () => {
     });
     expect(((await result.contract.getState()) as { n?: bigint }).n).toBe(1n);
   });
+
+
+  it('answers the zero address in a constructor recovery for every argument the precompile refuses (A14 item 6)',
+    async () => {
+      // Deploy<C>'s own ecrecoverP2pkh: a bad v and an s outside [1, n) read no slot, an r no curve point has reads the
+      // pad of the pool's A over the placeholder recovery, and a key at infinity reads the pair over the shifted digest.
+      // Each answers the empty locking bytecode, and the signer's own arguments the signer's P2PKH lock: through the
+      // deployer, whose creation runs the constructor, and through today's genesis, whose state-derivation probe does.
+      const { ethers } = await import('ethers');
+      const { secp256k1 } = await import('@noble/curves/secp256k1');
+      const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+      const order = secp256k1.CURVE.n;
+      const prime = secp256k1.CURVE.p;
+      const word = (value: bigint): Uint8Array => Uint8Array.from(
+        { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+      const power = (base: bigint, exponent: bigint, modulus: bigint): bigint => {
+        let result = 1n;
+        for (let b = base % modulus, e = exponent; e > 0n; b = (b * b) % modulus, e >>= 1n) {
+          if (e & 1n) result = (result * b) % modulus;
+        }
+        return result;
+      };
+      let offCurve = 1n;
+      while (power(offCurve ** 3n + 7n, (prime - 1n) / 2n, prime) === 1n) offCurve += 1n;
+      const z = 0x3b5d7f9e1c3a5b7d9f1e3c5a7b9d1f3e5c7a9b1d3f5e7c9a1b3d5f7e9c1a3b5dn, zs = 0x4b1dn;
+      const point = secp256k1.ProjectivePoint.BASE.multiply((z * power(zs, order - 2n, order)) % order).toAffine();
+      const wallet = new ethers.Wallet(`0x${'24'.repeat(32)}`);
+      const message = 'deployer-constructor-ecrecover-refused';
+      const parsed = ethers.Signature.from(await wallet.signMessage(message));
+      const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+      const [h, v, r, s] = [little(ethers.hashMessage(message)), BigInt(parsed.v), little(parsed.r), little(parsed.s)];
+      const signer = encodeLockingBytecodeP2pkh(hash160(hexToBin(wallet.signingKey.compressedPublicKey.slice(2))));
+      const artifact = compileString(
+        `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s) {
+          address who; int n; constructor() { who = ecrecoverP2pkh(h, v, r, s); n = 1; } }`,
+        { deployer: true, messageBus: false },
+      );
+      const cases: Array<[unknown[], string]> = [
+        [[h, 0n, r, s], ''], [[h, v, r, word(order)], ''], [[h, 27n, word(offCurve), s], ''],
+        [[word(z), 27n + (point.y & 1n), word(point.x), word(zs)], ''], [[h, v, r, s], binToHex(signer)],
+      ];
+      for (const [index, [args, who]] of [...cases.entries(), ...cases.map((entry, at) => [at + 8, entry] as const)]) {
+        const viaDeployer = index < 8;
+        const provider = new MockNetworkProvider({ profile: 'production' });
+        const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+        const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+        if (typeof change === 'string') throw new Error(change);
+        for (const [roleIndex, role] of (['A', 'B2', 'M', 'B3'] as const).entries()) {
+          await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(new Uint8Array(32), role)), {
+            txid: `${(0xa0 + roleIndex).toString(16)}${index}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+            token: { category: 'ed'.repeat(31) + '13', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+          });
+        }
+        // Plain coins at the funder's lock for the slots the recovery does not read.
+        for (let coin = 0; coin < 3; coin += 1) {
+          await provider.seedUtxo(binToHex(authorLock), {
+            txid: `${(0xb0 + coin).toString(16)}${index}`.padEnd(64, '0'), vout: 0, satoshis: 20_000n,
+          });
+        }
+        const fundingUtxo: Utxo = { txid: `6d${index}`.padEnd(64, '0'), vout: 0, satoshis: 500_000n };
+        await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
+        const result = await StatefulContract.deploy(artifact, args as never, {
+          provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+          changeAddress: change.address, senderLockingBytecode: authorLock, ...(viaDeployer ? {} : { viaDeployer: false }),
+        });
+        const state = (await result.contract.getState()) as { who?: Uint8Array; n?: bigint };
+        expect(binToHex(state.who ?? new Uint8Array()), `case ${index}`).toBe(who);
+        expect(state.n).toBe(1n);
+      }
+    });
 
 
   it('refuses a constructor recovery with no shared ecrecover coin (B9.8)', async () => {
@@ -898,7 +968,7 @@ describe('a top-level deployment through Deploy<C>', () => {
         function check() { require(ok); } }
       contract C { bool ok; constructor(I i) { ok = i.f(5); } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0xd0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -935,7 +1005,7 @@ describe('a top-level deployment through Deploy<C>', () => {
         function register(int v) external { x = v; who = msg.sender; } }
       contract C { bool ok; constructor(I i) { i.register(7); ok = true; } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0xc8 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -972,7 +1042,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract U { int sent; function transfer(address to, int amount) external { sent = sent + amount; } }
       contract C { bool ok; constructor(I u) { u.transfer(msg.sender, 5); ok = true; } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0xc0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -1017,7 +1087,7 @@ describe('a top-level deployment through Deploy<C>', () => {
         } }
       contract C { bool ok; constructor(I t) { ok = t.transfer(msg.sender, 5); } function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extra: any = {}) => {
+    const deploy = async (artifact: any, extra: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0xa0 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,
@@ -1058,7 +1128,7 @@ describe('a top-level deployment through Deploy<C>', () => {
       contract C { bool ok; int n; constructor(I i) { ok = i.f(5); } ${extra}
         function read() { require(ok); } }`;
     let serial = 0;
-    const deploy = async (artifact: any, extraOpts: any = {}) => {
+    const deploy = async (artifact: any, extraOpts: any = {}): Promise<any> => {
       serial += 1;
       const fundingUtxo: Utxo = {
         txid: `${(0xe8 + serial).toString(16)}`.repeat(2).padEnd(64, '0'), vout: 0, satoshis: 2_000_000n,

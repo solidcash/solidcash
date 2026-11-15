@@ -7,15 +7,72 @@ import {
   CastNode,
   ExpressionNode,
   FieldAccessNode,
+  HexLiteralNode,
   IdentifierNode,
   IntLiteralNode,
   Node,
+  NullaryOpNode,
   StateAccessNode,
+  StringLiteralNode,
+  TupleIndexOpNode,
   UnaryOpNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
 
 const LENGTH_MINUS_ONE = /^binop:-\((?:unop:\.length|field:length)\(state:[A-Za-z_][\w]*\),lit:1\)$/;
+
+/**
+ * Whether two key expressions of one statement are the same expression: equal node by node, over the forms that read
+ * no state and have no effect (names, literals, element and field reads, operators, casts, msg.sender). Two such keys
+ * evaluate to one value. Any other form, a call among them, compares unequal, so a caller never treats two evaluations
+ * that could differ as one key. `resolve` may first replace a node by the expression a binding gives it.
+ */
+export function sameKeyExpression(
+  leftNode: ExpressionNode, rightNode: ExpressionNode,
+  resolve: (node: ExpressionNode) => ExpressionNode = (node) => node, depth = 0,
+): boolean {
+  if (depth > 32) return false;
+  const left = resolve(leftNode);
+  const right = resolve(rightNode);
+  const same = (a: ExpressionNode, b: ExpressionNode): boolean => sameKeyExpression(a, b, resolve, depth + 1);
+  if (left.constructor !== right.constructor) return false;
+  if (left instanceof IdentifierNode) return left.name === (right as IdentifierNode).name;
+  if (left instanceof StateAccessNode) return left.name === (right as StateAccessNode).name;
+  if (left instanceof IntLiteralNode || left instanceof BoolLiteralNode || left instanceof StringLiteralNode) {
+    return left.value === (right as IntLiteralNode | BoolLiteralNode | StringLiteralNode).value;
+  }
+  if (left instanceof HexLiteralNode) {
+    const other = (right as HexLiteralNode).value;
+    return left.value.length === other.length && left.value.every((byte, index) => byte === other[index]);
+  }
+  if (left instanceof NullaryOpNode) return left.operator === (right as NullaryOpNode).operator;
+  if (left instanceof ArrayAccessNode) {
+    const other = right as ArrayAccessNode;
+    return same(left.array, other.array) && same(left.index, other.index);
+  }
+  if (left instanceof FieldAccessNode) {
+    const other = right as FieldAccessNode;
+    return left.name === other.name && same(left.expression, other.expression);
+  }
+  if (left instanceof TupleIndexOpNode) {
+    const other = right as TupleIndexOpNode;
+    return left.index === other.index && same(left.tuple, other.tuple);
+  }
+  if (left instanceof UnaryOpNode) {
+    const other = right as UnaryOpNode;
+    return left.operator === other.operator && same(left.expression, other.expression);
+  }
+  if (left instanceof BinaryOpNode) {
+    const other = right as BinaryOpNode;
+    return left.operator === other.operator && same(left.left, other.left) && same(left.right, other.right);
+  }
+  if (left instanceof CastNode) {
+    const other = right as CastNode;
+    return left.isUnsafe === other.isUnsafe && left.type.toString() === other.type.toString()
+      && same(left.expression, other.expression);
+  }
+  return false;
+}
 
 /** Canonicalize a mapping-key expression for SDK `evalComputedKey`. */
 export function canonicalizeUpsertKeyExpression(

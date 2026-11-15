@@ -132,7 +132,7 @@ import {
   childDeploymentGenesisState, childDeploymentStructDefinitions, type ChildDeploymentRecipeAnalysis,
 } from '../deploymentRecipes.js';
 import {
-  canonicalizeUpsertKeyExpression,
+  canonicalizeUpsertKeyExpression, sameKeyExpression,
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
 import { hasEffectiveCallValue, hasExternalCallValueEffect, isDirectOwnerTransferNode } from '../semantic/branchOps.js';
@@ -42962,12 +42962,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return effect;
   }
 
+  /**
+   * Whether `read` reads the entry `write` assigns: the same mapping, the whole value, at the same key. Only that read
+   * is the old value a compact `+`/`-` transition takes from the entry it co-spends; a read of another key or another
+   * mapping is an operand the covenant has to evaluate on its own.
+   *
+   * Any one of three facts establishes the key. The keys are the same expression, key by key, where a counter loop that
+   * LowerVMapCounterLoops runs through its permutation names one key two ways: the write as `perm[rank]`, the read
+   * through its logical value, the compiler's single-assign `__internal__vmapCounterLogical_<n> = perm[rank]` (for a
+   * selected stream `selected ? perm[rank] : 0`, whose write runs only where it is selected). Or the symbol pass gave
+   * the two accesses one entry slot, as it does for keys that canonicalize alike through single-assign locals
+   * (`int k = ks[i]; m[k] = m[ks[i]] + v`), and which code generation serves as the entry the loop co-spends. Or
+   * LowerVMapCounterLoops marked the read `messageBusRuntimeLoopTransitionRead` after comparing the keys as written.
+   */
+  private readsOwnEntry(read: ExpressionNode | undefined, write: MappingAssignNode): read is MappingAccessNode {
+    if (!(read instanceof MappingAccessNode) || read.name !== write.name || read.arrayIndex !== undefined
+      || write.arrayIndex !== undefined || read.keys.length !== write.keys.length) return false;
+    if (read.entrySlotIndex >= 0 && read.entrySlotIndex === write.entrySlotIndex) return true;
+    if (read.messageBusRuntimeLoopTransitionRead === true) return true;
+    const body = this.currentFunction.body;
+    const logical = (node: ExpressionNode): ExpressionNode => {
+      if (!(node instanceof IdentifierNode) || !node.name.startsWith('__internal__vmapCounterLogical_')) return node;
+      const value = this.findSingleAssignLocalInit(body, node.name);
+      return (value instanceof TernaryOpNode ? value.ifTrue : value) ?? node;
+    };
+    return read.keys.every((key, index) => sameKeyExpression(key, write.keys[index]!, logical));
+  }
+
   /** Whether a loop body reads the entry its sorted write targets, besides that write's read-modify-write base. */
   private loopReadsWrittenEntry(
     block: Node, write: MappingAssignNode | MappingDeleteNode, slotIndex: number,
   ): boolean {
     const base = write instanceof MappingAssignNode && write.expression instanceof BinaryOpNode
-      && write.expression.left instanceof MappingAccessNode ? write.expression.left : undefined;
+      && this.readsOwnEntry(write.expression.left, write) ? write.expression.left : undefined;
     let reads = false;
     walkInvocationAst(block, (candidate) => {
       if (candidate instanceof MappingAccessNode && candidate !== base && candidate.entrySlotIndex === slotIndex
@@ -43409,6 +43436,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // bounded integer operators are checked, so a PURE two-argument library add/sub is equivalent at this
       // transition boundary (including failure on overflow/underflow) and can use the native vmap RMW generator.
       // Keep this deliberately narrow: arbitrary helpers, non-library calls, and other operators remain unsupported.
+      // The receiver must be the entry this write assigns: `m[k] = m[j].add(v)` stays the call, an absolute value.
       const wrapped = assign.expression;
       if (wrapped instanceof FunctionCallNode
         && wrapped.resolvedFunction?.modifiers.includes(FunctionModifier.PURE)
@@ -43419,7 +43447,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const method = wrapped.identifier.name.split('.').pop();
         const operator = method === 'add' ? BinaryOperator.PLUS
           : method === 'sub' ? BinaryOperator.MINUS : undefined;
-        if (operator !== undefined && wrapped.parameters[0] instanceof MappingAccessNode) {
+        if (operator !== undefined && this.readsOwnEntry(wrapped.parameters[0], assign)) {
           const binary = new BinaryOpNode(wrapped.parameters[0], operator, wrapped.parameters[1]);
           binary.location = wrapped.location;
           binary.type = wrapped.type;
@@ -43434,8 +43462,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Only additive/subtractive old-entry forms have the compact RMW transition represented by `op` below.
       // Other binary expressions (`m[k] * 2`, `/`, shifts, comparisons, ...) are absolute runtime expressions:
-      // treating every non-minus operator as `+` silently changes their semantics.
-      const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode
+      // treating every non-minus operator as `+` silently changes their semantics. The transition takes its old value
+      // from the entry it co-spends, so the left operand must be that entry: `m[k] = m[j] + v` with another key or
+      // another mapping is an absolute value too, which the covenant computes from that read.
+      const isRmw = expr instanceof BinaryOpNode && this.readsOwnEntry(expr.left, assign)
         && (expr.operator === BinaryOperator.PLUS || expr.operator === BinaryOperator.MINUS);
       if (!valueRuntimeLocal && !mutation) {
         op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';

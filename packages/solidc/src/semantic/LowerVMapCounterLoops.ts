@@ -5726,13 +5726,16 @@ export default class LowerVMapCounterLoops extends AstTraversal {
           mappingWrite.expression = readAt(permutedRank);
           mappingWrite.messageBusRuntimeValueTrace = valueTrace;
         }
-        if (expression instanceof BinaryOpNode
+        const transitionRead = expression instanceof BinaryOpNode
           && (expression.operator === BinaryOperator.PLUS || expression.operator === BinaryOperator.MINUS)
-          && collectionAccessOf(expression.left) !== undefined) {
-          // Admission above proved this direct left operand is the same collection/key and that the right side
-          // contains no collection read. Preserve that ownership across the key/value permutation rewrite so the
-          // route census does not invent a fixed witness for a value supplied by the runtime journal entry.
-          expression.left.messageBusRuntimeLoopTransitionRead = true;
+          ? collectionAccessOf(expression.left) : undefined;
+        if (transitionRead !== undefined && transitionRead.name === write.name
+          && transitionRead.keys.map(expressionShape).join('|') === writeKeyShape(write)) {
+          // A direct left operand of the same collection and key is the entry's old value, which the runtime journal
+          // entry supplies. Mark it before the permutation rewrites the two keys apart, so the route census does not
+          // invent a fixed witness for it and code generation still folds the write into the entry. A read of another
+          // key or another collection is an operand of its own, whose authenticated read the route keeps.
+          (expression as BinaryOpNode).left.messageBusRuntimeLoopTransitionRead = true;
         }
         if (generalOldEntryWrites.has(write as ArrayAssignNode | MappingAssignNode)) {
           const mappingWrite = write as ArrayAssignNode | MappingAssignNode;

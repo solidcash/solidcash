@@ -81,8 +81,8 @@ export type ResolveEcrecoverCoSpendsResult = {
  * covenant reads; a width-0 recovery reads A, M and B3. Arguments that recover no key (`ecrecoverRefusal`) have no
  * side-car, so all three slots take coins the function does not read, and the keccak preimage of an `ecrecoverEvm`
  * call is 64 zero bytes: a recovery that answers the zero address for them (`ecrecoverEvm` and `ecrecoverP2pkh` for a
- * `v` other than 27 or 28) or a branch the run skips never reads them, and a recovery that reads them refuses the
- * call, as no side-car can serve it.
+ * `v` other than 27 or 28, or an `r` or `s` outside [1, n)) or a branch the run skips never reads them, and a
+ * recovery that reads them refuses the call, as no side-car can serve it.
  */
 export async function resolveEcrecoverComputeCoSpends(
   host: ResolveEcrecoverCoSpendsHost,

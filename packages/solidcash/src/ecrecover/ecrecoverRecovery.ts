@@ -159,11 +159,11 @@ export function computeEcrecoverWitness(hash: Uint8Array, v: number, r: Uint8Arr
 }
 
 /**
- * Why no recovery side-car recovers a key from (hash, v, r, s), or undefined when one does. Side-car A takes a `v` of
- * 27 or 28 only, needs the inverse of `r` mod n and a curve point with x = r, and B needs a key that is not the point at
- * infinity; an `r` of p or more is no x-coordinate the witness can be computed for. A takes `s`, and an `r` in [n, p),
- * as they come, reduced mod n, where the EVM's precompile answers the zero address for them. `hash`, `r` and `s` are
- * little-endian, as `computeEcrecoverWitness` takes them.
+ * Why no recovery side-car serves (hash, v, r, s), or undefined when a pair recovers the key the EVM's precompile
+ * does. The precompile refuses a `v` other than 27 or 28 and an `r` or `s` outside [1, n), and a compiled address
+ * projection answers the zero address for them without reading its side-cars; side-car A would take an `s`, and an
+ * `r` in [n, p), reduced mod n. A pair also needs a curve point with x = r, and B a key that is not the point at
+ * infinity. `hash`, `r` and `s` are little-endian, as `computeEcrecoverWitness` takes them.
  */
 export function ecrecoverRefusal(hash: Uint8Array, v: number, r: Uint8Array, s: Uint8Array): string | undefined {
   const leBig = (b: Uint8Array): bigint => {
@@ -174,8 +174,8 @@ export function ecrecoverRefusal(hash: Uint8Array, v: number, r: Uint8Array, s: 
   if (v !== 27 && v !== 28) return `v is ${v}, not 27 or 28`;
   if (hash.length !== 32 || r.length !== 32 || s.length !== 32) return 'hash, r and s are not 32 bytes each';
   const rr = leBig(r), ss = leBig(s);
-  if (rr >= P) return 'r is p or more, no x-coordinate';
-  if (mod(rr, N) === 0n) return 'r has no inverse mod n';
+  if (rr === 0n || rr >= N) return 'r is outside [1, n)';
+  if (ss === 0n || ss >= N) return 's is outside [1, n)';
   const alpha = mod(mod(rr * rr, P) * rr + 7n, P);
   let y = 1n;
   for (let base = alpha, exponent = (P + 1n) / 4n; exponent > 0n; base = mod(base * base, P), exponent >>= 1n) {

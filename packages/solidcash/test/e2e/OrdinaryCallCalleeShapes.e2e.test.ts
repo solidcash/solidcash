@@ -880,20 +880,20 @@ describe('an ordinary call whose recovery loop meets an invalid recovery id', ()
     expect(inputPasses(s.provider, dropped, master)).toBe(false);
   });
 
-  it('refuses before sending a call whose id is 27 or 28 and whose arguments recover no key, which reads its slots',
+  it('answers the zero address for a call whose id is 27 or 28 and whose r is 0, reading no triple for it',
     async () => {
       const s = setup();
       const g = await signed('invalid-v-evm-no-key');
       const t = await s.deploy(compileString(EVM, compileOptions('T')), [await evmOwner()]);
       await seedEvmRecoveryPool(s.provider, 2, 0xb4);
       const wallet = await s.wallet(8);
-      const before = s.sent.length;
-      // Call 1's r is 0, which has no inverse mod n: it gets coins no covenant reads, and reads them.
-      await expect((t.contract.connect(wallet) as any).call.f(
+      // Call 1's r is 0, outside [1, n): as the EVM, the call answers the zero address and reads no triple.
+      await (t.contract.connect(wallet) as any).call.f(
         [g.h, g.h], [g.v, 27n], [g.r, new Uint8Array(32)], [g.s, g.s], 2n,
-      ).withMaxFee(100_000n).send()).rejects.toThrow(/preflight failed at input 0/);
-      expect(s.sent).toHaveLength(before);
-      expect(await t.contract.getState()).toMatchObject({ n: 0n });
+      ).withMaxFee(100_000n).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(await t.contract.getState()).toMatchObject({ n: 1n, zeros: 1n });
     });
 
   it('answers an ecrecoverP2pkh call the empty address, and takes no slots after the last recovery', async () => {

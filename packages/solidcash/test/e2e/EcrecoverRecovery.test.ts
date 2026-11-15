@@ -703,6 +703,21 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
     expect(binToHex(state.third)).toBe(g2.wallet.address.slice(2).toLowerCase());
   });
 
+  it('ecrecoverEvm: the zero address for an s of n and an r of 0 around a signer, reading no triple for them', async () => {
+    const order = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const leWord = (value: bigint): Uint8Array => Uint8Array.from(
+      { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+    const g = await goodSigner('stateful-loop-evm-range');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, g.h, g.h], [g.v, g.v, g.v], [g.r, g.r, leWord(0n)], [leWord(order), g.s, g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe('00'.repeat(20));
+    expect(binToHex(state.second)).toBe(g.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.third)).toBe('00'.repeat(20));
+  });
+
   it('ecrecoverP2pkh: the empty bytecode for recovery ids 0 and 29 around a signer, whose P2PKH lock matches', async () => {
     const g = await goodSigner('stateful-loop-p2pkh');
     const { contract, call } = await deployed(compileString(source('ecrecoverP2pkh'), {

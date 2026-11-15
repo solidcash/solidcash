@@ -8,11 +8,11 @@
  * It binds A's argument blob to its own (hash, v, r, s) and reads the recovered key from B's recreation, and the
  * keccak digest from the keccak side-car's.
  *
- * An address projection answers address(0) for a recovery id other than 27 or 28 and reads no triple, but the loop
- * still counts the call: its three slots hold coins no covenant reads, and the next call's triple stays at its own
- * index. A call after the last recovery reads nothing, so it takes no slots. A call that reads its triple with
- * arguments no side-car recovers a key from (`ecrecoverRefusal`) takes such coins too, as a straight-line recovery
- * does: it reads them and the call fails closed.
+ * An address projection answers address(0) for a recovery id other than 27 or 28, or an `r` or `s` outside [1, n),
+ * and reads no triple, but the loop still counts the call: its three slots hold coins no covenant reads, and the next
+ * call's triple stays at its own index. A call after the last recovery reads nothing, so it takes no slots. A call
+ * that reads its triple with arguments no side-car recovers a key from (`ecrecoverRefusal`) takes such coins too, as a
+ * straight-line recovery does: it reads them and the call fails closed.
  *
  * The calls and each argument blob are learned from the master's own run. Each probe lays out the triples learned so
  * far, then a placeholder triple at every later index: the run stops at the first placeholder it reads, which names
@@ -188,7 +188,7 @@ export async function resolveStatefulEcrecoverLoop(
     if (index >= MAX_RECOVERY_LOOP_ITERATIONS) {
       throw new Error(`stateful ecrecover loop: more than ${MAX_RECOVERY_LOOP_ITERATIONS} recovery calls`);
     }
-    // The calls the run passed without a read answered an invalid recovery id.
+    // The calls the run passed without a read answered arguments the precompile's range rules refuse.
     while (calls.length < index) calls.push(null);
     const argBlob = reads.get(index)!;
     const [hash, v, r, s] = [argBlob.slice(0, 32), argBlob[32]!, argBlob.slice(33, 65), argBlob.slice(65, 97)];
@@ -237,8 +237,8 @@ export async function resolveStatefulEcrecoverLoop(
   const recreates: Output[] = [];
   for (const [call, witness] of calls.entries()) {
     if (witness === null) {
-      // An invalid recovery id: the call reads none of its three slots. Arguments that recover no key: it reads them,
-      // and fails closed.
+      // Arguments the range rules refuse: the call reads none of its three slots. Arguments that recover no key: it
+      // reads them, and fails closed.
       for (let slot = 0; slot < 3; slot += 1) {
         const coin = await unread(`recovery call ${call}, whose arguments recover no key, holds three slots and`);
         sideCars.push(coin.input);

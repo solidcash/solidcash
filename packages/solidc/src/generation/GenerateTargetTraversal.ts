@@ -18729,21 +18729,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const zeroOnRefusal = this.framedMaster;
     // An `r` in range that no curve point has is refused by the precompile too; side-car A's pad proves it.
     const offCurveProof = zeroOnRefusal && !loop;
-    // Elsewhere an address-returning recovery answers address(0) for an invalid recovery id alone (the default
-    // composition's rule); a framed compile keeps the refusal handling above.
+    // Elsewhere an address-returning recovery answers address(0), as the EVM's precompile does, for the arguments its
+    // range rules refuse: a recovery id other than 27 or 28, or an `r` or `s` outside [1, n). The side-cars reduce `r`
+    // and `s` mod n, so reading them for such arguments would answer a key. A framed compile keeps the refusal handling
+    // above.
     const zeroOnInvalidV = returnsAddress && this.directConvention;
     if (zeroOnRefusal) {
       this.emitRecoveryAccepted(loc);
       this.emit(Op.OP_IF, loc);
     }
     if (zeroOnInvalidV) {
-      // Address-returning recovery returns address(0) for an invalid recovery id. Test the original v stack item before
-      // packing the arguments: a zero uint8 may use Script's empty encoding, so an offset into argBlob is not
-      // a reliable way to locate it. The invalid branch must not read recovery/keccak side-cars.
-      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_BIN2NUM, loc);
-      this.emit(encodeInt(27n), loc); this.emit(encodeInt(29n), loc);
-      this.emit(Op.OP_WITHIN, loc); this.emit(Op.OP_TOALTSTACK, loc);
+      // Test the arguments before packing them: a zero uint8 may use Script's empty encoding, so an offset into argBlob
+      // is not a reliable way to locate `v`. The refused branch must not read recovery/keccak side-cars.
+      this.emitDirectRecoveryAccepted(loc);
+      this.emit(Op.OP_TOALTSTACK, loc);
     }
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); // [.., argBlob]
     // Sync the tracker to the VM: four argument copies were physically collapsed to one argBlob. Every later
@@ -19044,6 +19043,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(1n), loc); this.emit(encodeInt(SECP256K1_ORDER), loc); this.emit(Op.OP_WITHIN, loc);
       this.emit(Op.OP_BOOLAND, loc);
     }
+  }
+
+  /**
+   * The direct convention's form of the precompile's range rules: `v`, read as a number from its own stack item, is 27
+   * or 28, and `r` and `s`, read as unsigned little-endian words, are in [1, n). One push of n serves both words.
+   * Stack: [hash, v, r, s] -> [hash, v, r, s, accepted].
+   */
+  private emitDirectRecoveryAccepted(loc: SingleLocationData): void {
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
+    this.emit(encodeInt(27n), loc); this.emit(encodeInt(29n), loc); this.emit(Op.OP_WITHIN, loc);
+    this.emitSecp256k1Order(loc);                                                              // [.., okV, n]
+    // s sits under n and the flag.
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emitUnsignedWord(loc);
+    this.emit(encodeInt(1n), loc); this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_WITHIN, loc);
+    this.emit(Op.OP_ROT, loc); this.emit(Op.OP_BOOLAND, loc);                                  // [.., n, ok]
+    // r sits under the flag, n and s.
+    this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc); this.emitUnsignedWord(loc);
+    this.emit(encodeInt(1n), loc); this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_WITHIN, loc);
+    this.emit(Op.OP_BOOLAND, loc); this.emit(Op.OP_NIP, loc);                                  // [.., accepted]
+  }
+
+  /** [word] -> [the word read as an unsigned little-endian number]. */
+  private emitUnsignedWord(loc: SingleLocationData): void {
+    this.emit(hexToBin('00'), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+  }
+
+  /** Pushes the secp256k1 group order n, built as 2^256 - (2^256 - n), which is ten bytes shorter than its push. */
+  private emitSecp256k1Order(loc: SingleLocationData): void {
+    this.emit(encodeInt(1n), loc); this.emit(encodeInt(256n), loc); this.emit(Op.OP_LSHIFTNUM, loc);
+    this.emit(encodeInt((1n << 256n) - SECP256K1_ORDER), loc); this.emit(Op.OP_SUB, loc);
   }
 
   /**

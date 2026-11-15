@@ -16,7 +16,7 @@ import {
 } from '@solidcash/utils';
 import { vmapCounterPermutationSpec } from './sc-batch-raw.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
-import type { FunctionArgument } from '../Argument.js';
+import { type FunctionArgument, eventValueOfSource } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import {
   createDynamicChunkUnlocker,
@@ -700,7 +700,10 @@ export async function loadCreateBuilderDynamicChunks(
               if (value === undefined) throw new Error(
                 `Could not resolve runtime event argument ${argumentIndex} for '${eventSignature}' in '${source.name}'.`,
               );
-              return value as StateValue;
+              // A value the call passes in is emitted as the call passes it.
+              return eventValueOfSource(
+                expression, value as FunctionArgument, eventDefinition.parameters[argumentIndex]!.type,
+              ) as StateValue;
             });
             const encoded = eventDefinition.parameters.length === 0
               ? Uint8Array.of(1)

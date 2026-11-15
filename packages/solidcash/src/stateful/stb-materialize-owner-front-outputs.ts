@@ -4,7 +4,7 @@
  */
 
 import {
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   type FunctionBlockLayout,
   parsePushdataCommitment,
   type StateLayout,
@@ -66,13 +66,15 @@ export function materializeOwnerFrontOutputs(
     token: host.masterUtxo.token,
   });
 
-  // Create data NFT outputs with updated commitments (only for required NFTs)
+  // Create data NFT outputs with updated commitments (only for required NFTs). A record rebuilt from its values keeps
+  // the input's bytes for each value the call leaves as it was, as the covenant does.
   for (let i = 0; i < host.requiredNftIndices.length; i++) {
     const nftIdx = host.requiredNftIndices[i];
     const nftUtxo = host.dataNftUtxos[i];
 
-    const commitment = host.stateRawCommitments.get(nftIdx) ?? buildPushdataCommitment(
-      host.stateLayout, currentState, nftIdx, host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
+    const commitment = host.stateRawCommitments.get(nftIdx) ?? buildPushdataCommitmentKeeping(
+      host.stateLayout, currentState, nftIdx, [nftUtxo.token?.nft?.commitment],
+      host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
     );
 
     builder.addOutput({
@@ -236,8 +238,8 @@ export function materializeOwnerFrontOutputs(
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
       ?? (nftIsImmutable && inputCommitment
         ? inputCommitment
-        : buildPushdataCommitment(
-          group.stateLayout, bCurrentState, nftIdx,
+        : buildPushdataCommitmentKeeping(
+          group.stateLayout, bCurrentState, nftIdx, [inputCommitment],
           host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
         ));
 

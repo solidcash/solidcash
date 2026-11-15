@@ -5761,6 +5761,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     locktime?: number,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
+      stateCommitments?: string[];
       entryCommitments: string[];
       childCommitments: string[];
       returnBlob?: Uint8Array;

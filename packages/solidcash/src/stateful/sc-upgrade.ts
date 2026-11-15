@@ -8,6 +8,7 @@ import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   VALUE_INLINE_LIMIT,
   buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   containerKeepsTokenless,
   containerMasterRetires,
   parsePushdataCommitment,
@@ -530,7 +531,9 @@ export async function upgradeStatefulContract<T extends Artifact>(
       const nftUtxo = filteredDataNftUtxos[i];
       const nftIdx = requiredNftIndices[i];
 
-      const newCommitment = buildPushdataCommitment(newLayout, oldState, nftIdx);
+      // A record whose layout the upgrade keeps keeps its bytes: a value carried over is spelled as the old record holds
+      // it, and the SDK's encoding can spell it otherwise (an `address` of 20 zero bytes encodes as address(0)).
+      const newCommitment = buildPushdataCommitmentKeeping(newLayout, oldState, nftIdx, [nftUtxo.token?.nft?.commitment]);
 
       builder.addOutput({
         to: getDataNftAddress(newContract, categoryId),

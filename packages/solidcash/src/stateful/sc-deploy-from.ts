@@ -12,7 +12,7 @@ import {
   buildEntryCommitment,
   buildEventNftCovenantScript,
   buildInitialStateCommitments,
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   bytecodeToScript,
   childStateLayoutDigest,
   computeEventNameHash,
@@ -2537,7 +2537,8 @@ async function deployFromStatefulContractInner<T extends Artifact>(
   // existing entries, [satoshi container], funding. Outputs: master, data NFTs, entries,
   // [container, value transfer], return event, child outputs.
   const {
-    state: derivedState, entryCommitments, childCommitments: derivedChildCommitments, returnBlob,
+    state: derivedState, stateCommitments: derivedStateCommitments, entryCommitments,
+    childCommitments: derivedChildCommitments, returnBlob,
     keccakCoSpends: derivedKeccakCoSpends, eventCommitments: derivedEventCommitments,
   } = await (factory as any)._deriveCommitments(
     deployFunctionName, finalArgs, requiredNftIndices,
@@ -2718,11 +2719,14 @@ async function deployFromStatefulContractInner<T extends Artifact>(
     },
   });
 
-  // Outputs 1..N: factory data NFTs with updated commitments
+  // Outputs 1..N: factory data NFTs with updated commitments, each value the run leaves as it was keeping the bytes
+  // the run derived or the input holds.
   for (let i = 0; i < filteredDataNftUtxos.length; i++) {
     const nftIdx = requiredNftIndices[i];
     const nftUtxo = filteredDataNftUtxos[i];
-    const commitment = buildPushdataCommitment(factoryLayout, factoryCurrentState, nftIdx);
+    const commitment = buildPushdataCommitmentKeeping(factoryLayout, factoryCurrentState, nftIdx, [
+      (derivedStateCommitments as string[] | undefined)?.[i], nftUtxo.token?.nft?.commitment,
+    ]);
 
     builder.addOutput({
       to: dataNftUnlockers[i].generateLockingBytecode(),

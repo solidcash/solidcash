@@ -7,7 +7,7 @@ import type { AuthenticationProgramStateCommon } from '@bitauth/libauth/build/li
 import {
   type AbiFunction,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   parsePushdataCommitment,
   type StateValue,
 } from '@solidcash/utils';
@@ -73,6 +73,8 @@ export async function deriveCommitments(
   locktime?: number,
 ): Promise<{
     state: Record<string, StateValueType> | undefined;
+    /** The records the run derived, in required-NFT order; undefined when the state was not read from the run. */
+    stateCommitments?: string[];
     entryCommitments: string[];
     childCommitments: string[];
     returnBlob?: Uint8Array;
@@ -257,8 +259,11 @@ export async function deriveCommitments(
 
       // Pass 1: derive data NFT state. Placeholder outputs fail the data NFT verify, but
       // the trace captures the expected values before the failing OP_EQUALVERIFY.
+      // A seeded record keeps the input's bytes for each value the seed leaves as it was.
       const seededCommitmentHexes = probeState
-        ? requiredNftIndices.map((nftIndex) => buildPushdataCommitment(stateLayout, probeState, nftIndex))
+        ? requiredNftIndices.map((nftIndex, i) => buildPushdataCommitmentKeeping(
+          stateLayout, probeState, nftIndex, [filteredDataNftUtxos[i]?.token?.nft?.commitment],
+        ))
         : undefined;
       const fullTrace = runProbe(seededCommitmentHexes);
       const stateOutputRange = { min: 1, max: 1 + requiredNftIndices.length };
@@ -413,6 +418,7 @@ export async function deriveCommitments(
 
       return {
         state: commitmentsToState(commitmentHexes, stateLayout, [...requiredNftIndices]),
+        ...(seededCommitmentHexes === undefined && { stateCommitments: commitmentHexes }),
         entryCommitments,
         childCommitments,
         returnBlob,

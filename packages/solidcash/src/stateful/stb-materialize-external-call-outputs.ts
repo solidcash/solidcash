@@ -9,7 +9,7 @@ import {
   buildChunkCommitment,
   buildEntryNftCovenantScript,
   buildEventNftCovenantScript,
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   computeCollectionHash,
   computeEventNameHash,
   dynamicChunkSignature,
@@ -252,8 +252,8 @@ export function materializeExternalCallOutputs(
       const commitment = group.callBatch?.dataCommitments?.[i] ?? (nftHasUpdate ? undefined
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
       ?? (nftHasUpdate || !inputCommitment
-        ? buildPushdataCommitment(
-          group.stateLayout, bCurrentState, nftIdx,
+        ? buildPushdataCommitmentKeeping(
+          group.stateLayout, bCurrentState, nftIdx, [inputCommitment],
           host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
         )
         : inputCommitment);

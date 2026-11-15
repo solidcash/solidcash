@@ -3,7 +3,7 @@
  */
 
 import {
-  buildPushdataCommitment,
+  buildPushdataCommitmentKeeping,
   parsePushdataCommitment,
   type FunctionBlockLayout,
   type StateValue,
@@ -94,8 +94,8 @@ export function materializeLowLevelCallOutputs(
         : host.externalCallStateRawCommitments.get(group.categoryId)?.get(nftIdx))
         ?? (nftIsImmutable && inputCommitment
           ? inputCommitment
-          : buildPushdataCommitment(
-            group.stateLayout, bCurrentState, nftIdx,
+          : buildPushdataCommitmentKeeping(
+            group.stateLayout, bCurrentState, nftIdx, [inputCommitment],
             host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
           ));
       builder.addOutput({

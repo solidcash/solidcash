@@ -2,9 +2,10 @@
  * A7, A14 item 5: a constructor's callee runs as an ordinary spend inside the creation, so its block holds what its own
  * call would: its satoshi and token containers and their transfers, read-only entries, events under a condition, a wide
  * event's chunks, its keccak256 and ecrecover side-cars, a recovery loop's triples (from the shared pool, A14 item 6),
- * and the child as the msg.sender it stores. Each creation is checked by the VM; each tamper case changes one output of
- * a finished creation and expects the callee's input to refuse it. A callee whose ordinary build would run it on other
- * arguments than the child passes is refused before anything is sent.
+ * and the child as the msg.sender it stores or passes to a contract it calls. Each creation is checked by the VM; each
+ * tamper case changes one output or unlocking of a finished creation and expects the input that binds it to refuse it.
+ * A callee whose ordinary build would run it on other arguments than the child passes, or pass on a tx.origin other
+ * than the creation's, is refused before anything is sent. An ordinary call passes the callee's own caller on.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -830,17 +831,10 @@ describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)'
       expect(sent).toHaveLength(0);
     });
 
-  for (const [form, call] of [
-    ['a typed call', 'last = u.g(msg.sender);'],
-    ['a low-level call', '(bool ok, bytes memory data) = address(u).call(abi.encodeWithSelector(IU.g.selector, msg.sender)); '
-      + 'require(ok && data.length > 0);'],
-  ] as const) {
-    it(`refuses a callee that passes msg.sender on in ${form}, before sending`, async () => {
-      const source = `${P} interface IU { function g(address who) external returns (address); }
-        interface I { function f(IU u) external returns (bool); }
-        contract U { address seen; function g(address who) external returns (address) { seen = who; return who; } }
-        contract T { address last; function f(IU u) external returns (bool) { ${call} return true; } }
-        contract C { bool ok; constructor(I t, IU u) { ok = t.f(u); } function read() { require(ok); } }`;
+  it('refuses a callee that passes tx.origin on, which the creation takes from the deploying wallet, before sending',
+    async () => {
+      // The ordinary build's tx.origin is its own pad coin; the creation's is its first plain P2PKH input.
+      const source = passOnSource('last = u.g(tx.origin);');
       const s = setup();
       const u = await s.deploy(compileString(source, compileOptions('U')));
       const t = await s.deploy(compileString(source, compileOptions('T')));
@@ -856,8 +850,143 @@ describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)'
         constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
       }).then(() => undefined, (error: unknown) => error);
       expect(refusal).toBeInstanceOf(DeployerCalleeError);
-      expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it passes msg\.sender to a contract it calls/);
+      expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it passes tx\.origin to a contract it calls/);
       expect(sent).toHaveLength(0);
     });
+});
+
+/** T passes a sender on to U, which stores it; C's constructor and A's function call T. */
+function passOnSource(call: string): string {
+  return `${P} interface IU { function g(address who) external returns (address); }
+    interface I { function f(IU u) external returns (bool); }
+    contract U { address seen; function g(address who) external returns (address) { seen = who; return who; } }
+    contract T { address last; function f(IU u) external returns (bool) { ${call} return true; } }
+    contract C { bool ok; constructor(I t, IU u) { ok = t.f(u); } function read() { require(ok); } }
+    contract A { bool ok; function h(I t, IU u) external { ok = t.f(u); } }`;
+}
+
+/** `captured` with input `index`'s unlocking bytecode holding `to` wherever it held `from`. */
+function withUnlocking(captured: Captured, index: number, from: Uint8Array, to: Uint8Array): Captured {
+  return {
+    sourceOutputs: captured.sourceOutputs,
+    transaction: {
+      ...captured.transaction,
+      inputs: captured.transaction.inputs.map((input, at) => (at === index ? {
+        ...input,
+        unlockingBytecode: hexToBin(binToHex(input.unlockingBytecode).split(binToHex(from)).join(binToHex(to))),
+      } : input)),
+    },
+  };
+}
+
+describe('a callee that passes msg.sender to a contract it calls (A7, A14 item 5)', () => {
+  /** A 35-byte lock that is neither the child's nor any coin's. */
+  const OTHER = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x5b), 0x87);
+
+  for (const [form, call] of [
+    ['a typed call', 'last = u.g(msg.sender);'],
+    // T stores the sender as well, so both T's and U's outputs hold it.
+    ['a low-level call', '(bool ok, bytes memory data) = address(u).call(abi.encodeWithSelector(IU.g.selector, msg.sender)); '
+      + 'require(ok && data.length > 0); last = msg.sender;'],
+  ] as const) {
+    it(`passes the child on in ${form}, and refuses a creation that passes or stores another lock`, async () => {
+      const source = passOnSource(call);
+      const s = setup();
+      const u = await s.deploy(compileString(source, compileOptions('U')));
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      await s.signer();
+      const tLock = addressToLockScript(t.contract.address);
+      const uLock = addressToLockScript(u.contract.address);
+      const c = compileString(source, compileOptions('C'));
+      const extra = {
+        initArgs: [tLock, uLock], constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
+      };
+      const captured = await s.capture(c, extra);
+      expect(verifies(s.provider, captured)).toBe(true);
+      const tMaster = captured.sourceOutputs.findIndex((output) => same(output.lockingBytecode, tLock));
+      const uMaster = captured.sourceOutputs.findIndex((output) => same(output.lockingBytecode, uLock));
+      expect(uMaster).toBeGreaterThan(tMaster);
+      // The child's master: the P2SH32 output that carries a minting NFT of neither callee's category.
+      const child = Uint8Array.from(captured.transaction.outputs.find((output) => output.token?.nft?.capability === 'minting'
+        && ![t.categoryId, u.categoryId].includes(binToHex(output.token.category))
+        && output.lockingBytecode.length === 35)!.lockingBytecode);
+      // U runs on the child's lock. Run on another, it is refused.
+      expect(binToHex(captured.transaction.inputs[uMaster]!.unlockingBytecode)).toContain(binToHex(child));
+      const reargued = withUnlocking(captured, uMaster, child, OTHER);
+      expect(verifies(s.provider, reargued)).toBe(false);
+      expect(inputPasses(s.provider, reargued.transaction, reargued.sourceOutputs, uMaster)).toBe(false);
+      // T binds a low-level call's callee pushes to its payload's arguments.
+      if (form === 'a low-level call') {
+        expect(inputPasses(s.provider, reargued.transaction, reargued.sourceOutputs, tMaster)).toBe(false);
+      }
+      // Each output of T or U that holds the child's lock, with another lock's there instead: refused by its own input.
+      const [held, other] = [binToHex(child.slice(0, 20)), binToHex(OTHER.slice(0, 20))];
+      const owners = new Map([[t.categoryId, tMaster], [u.categoryId, uMaster]]);
+      const stores = captured.transaction.outputs.flatMap((output, index) => {
+        const owner = output.token === undefined ? undefined : owners.get(binToHex(output.token.category));
+        return owner !== undefined && binToHex(output.token!.nft?.commitment ?? new Uint8Array()).includes(held)
+          ? [[index, owner] as const] : [];
+      });
+      expect(stores.some(([, owner]) => owner === tMaster)).toBe(true);
+      expect(stores.some(([, owner]) => owner === uMaster)).toBe(true);
+      for (const [index, owner] of stores) {
+        const forged = withOutput(captured, index, (output) => ({
+          ...output,
+          token: {
+            ...output.token,
+            nft: {
+              ...output.token.nft, commitment: hexToBin(binToHex(output.token.nft.commitment).split(held).join(other)),
+            },
+          },
+        }));
+        expect(inputPasses(s.provider, forged.transaction, forged.sourceOutputs, owner)).toBe(false);
+      }
+      const created = await s.deploy(c, extra);
+      const lock = binToHex(addressToLockScript(created.contract.address));
+      expect(binToHex(((await u.contract.getState()) as { seen: Uint8Array }).seen)).toBe(lock);
+      expect(binToHex(((await t.contract.getState()) as { last: Uint8Array }).last)).toBe(lock);
+    });
   }
+
+  it('passes its own caller on when a contract calls it, and refuses a call that passes another lock', async () => {
+    // A calls T, which calls U with msg.sender: T's sender is A, not the wallet that signs.
+    const source = passOnSource('last = u.g(msg.sender);');
+    const s = setup();
+    const u = await s.deploy(compileString(source, compileOptions('U')));
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const a = await s.deploy(compileString(source, compileOptions('A')));
+    // StatefulContract.deploy registers no deployment by its address: each caller is given its callee.
+    (a.contract as any)._registerResolvedExternal('I', t.contract);
+    (t.contract as any)._registerResolvedExternal('IU', u.contract);
+    const wallet = await s.signer();
+    const [tLock, uLock, aLock] = [t, u, a].map((deployed) => addressToLockScript(deployed.contract.address));
+    let captured: Captured | undefined;
+    const original = s.provider.sendRawTransaction.bind(s.provider);
+    (s.provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      const transaction = decodeTransactionUnsafe(hexToBin(hex));
+      const sourceOutputs = await Promise.all(transaction.inputs.map(async (input) => {
+        const spent = await s.provider.getLedgerOutput(binToHex(input.outpointTransactionHash), input.outpointIndex);
+        if (spent === undefined) throw new Error('an input of the transaction is not on the ledger');
+        return solidCashOutputToLibauthOutput({
+          to: spent.lockingBytecode, amount: spent.satoshis, ...(spent.token === undefined ? {} : { token: spent.token }),
+        });
+      }));
+      if (sourceOutputs.some((output) => same(output.lockingBytecode, aLock))) captured = { transaction, sourceOutputs };
+      return original(hex);
+    };
+    try {
+      await (a.contract.connect(wallet) as any).call.h(tLock, uLock).send();
+    } finally {
+      (s.provider as any).sendRawTransaction = original;
+    }
+    expect(binToHex(((await u.contract.getState()) as { seen: Uint8Array }).seen)).toBe(binToHex(aLock));
+    expect(binToHex(((await t.contract.getState()) as { last: Uint8Array }).last)).toBe(binToHex(aLock));
+    expect(captured).toBeDefined();
+    expect(verifies(s.provider, captured!)).toBe(true);
+    const uMaster = captured!.sourceOutputs.findIndex((output) => same(output.lockingBytecode, uLock));
+    expect(binToHex(captured!.transaction.inputs[uMaster]!.unlockingBytecode)).toContain(binToHex(aLock));
+    const reargued = withUnlocking(captured!, uMaster, aLock, OTHER);
+    expect(verifies(s.provider, reargued)).toBe(false);
+    expect(inputPasses(s.provider, reargued.transaction, reargued.sourceOutputs, uMaster)).toBe(false);
+  });
 });

@@ -609,19 +609,20 @@ async function planCalleeBlockByCall(
   if (typeof stateful.connect !== 'function') {
     refuse('its block is laid out by the ordinary build of its call, which needs the callee as a stateful contract');
   }
-  // An argument msg.sender or tx.origin gives a call the callee makes: the ordinary build resolves it from its signer,
-  // where the callee's run passes the child (msg.sender) or the deploying wallet (tx.origin), so the call the build
-  // lays out is not the call the run makes.
-  const namesSender = (value: unknown): boolean => {
-    if (Array.isArray(value)) return value.some(namesSender);
+  // A call the callee makes with msg.sender is built for the child, its caller below (`withCallerIdentity`), as the
+  // callee's run passes it. tx.origin is the creation's first plain P2PKH input, the deploying wallet, where the
+  // build's is a pad coin of its own: the call the build lays out with it is not the call the run makes.
+  const namesOrigin = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(namesOrigin);
     if (value === null || typeof value !== 'object') return false;
-    return (value as { kind?: unknown }).kind === 'msgSender' || Object.values(value).some(namesSender);
+    const node = value as { kind?: unknown; senderOp?: unknown };
+    return (node.kind === 'msgSender' && node.senderOp === 'tx.origin') || Object.values(value).some(namesOrigin);
   };
-  if ([...(fn.externalCalls ?? []), ...(fn.lowLevelCalls ?? [])].some((made) => namesSender([
+  if ([...(fn.externalCalls ?? []), ...(fn.lowLevelCalls ?? [])].some((made) => namesOrigin([
     (made as { argSources?: unknown }).argSources, (made as { rawArgSources?: unknown }).rawArgSources,
   ]))) {
-    refuse('it passes msg.sender to a contract it calls, and the ordinary build of its call resolves that argument '
-      + 'from its own signer, not from the child it runs for');
+    refuse('it passes tx.origin to a contract it calls, and the ordinary build of its call resolves tx.origin from '
+      + 'its own pad coin, not from the deploying wallet the creation spends');
   }
   const provider = contract.provider;
   const categoryId = callee.contract.categoryId;
@@ -662,7 +663,8 @@ async function planCalleeBlockByCall(
     }) as never,
     connected as never, functionName, [...call.args], route,
   );
-  // Each build of the call, a call of another contract's among them, keeps the pool and the sender.
+  // Each build of the call, a call of another contract's among them, keeps the pool and the sender. The sender is
+  // named before the calls are resolved: an argument msg.sender gives a call the callee makes resolves to it.
   if (sidecarPool !== undefined) participant._withSharedSidecarPool(sidecarPool);
   if (standIn !== undefined) participant.withCallerIdentity(sender, standIn.category)._withStandInCaller(standIn.caller);
   try {

@@ -40,6 +40,7 @@ export type TransitiveExternalContract = {
     state?: Record<string, unknown>;
     callerInputs?: readonly { type: string }[];
     executionSelfAddress?: FunctionArgument;
+    executionMsgSender?: FunctionArgument;
     externalReturns?: ReadonlyMap<string, FunctionArgument>;
   }): Promise<readonly { args: readonly FunctionArgument[] }[]>;
   _resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
@@ -138,6 +139,10 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
     if (!bAbiFunc?.externalCalls?.length) continue;
     const bSelfIdentity = directGroup.compilerRoute ? undefined : await resolveOrdinarySelfIdentity(bContract, bAbiFunc);
     const bSelfAddress = bSelfIdentity?.unlocker.generateLockingBytecode() ?? hexToBin(bContract.inner.lockingBytecode);
+    // B's msg.sender is the caller that CALLs it, not the transaction's signer: an argument msg.sender gives C is that
+    // caller's lock. A delegatecall runs B for its caller's own caller, which this group does not name.
+    const bIncomingCaller = directGroup.callerIdentity !== undefined && directGroup.callMode !== 'delegatecall'
+      ? hexToBin(directGroup.callerIdentity.lockingBytecode) : undefined;
 
     for (const bEc of bAbiFunc.externalCalls) {
       // A conditional edge the authenticated frame can already prove unreachable does not need a callee group.
@@ -150,6 +155,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
             state: await bContract.getState(),
             callerInputs: bAbiFunc.inputs,
             executionSelfAddress: bSelfAddress,
+            ...(bIncomingCaller !== undefined && { executionMsgSender: bIncomingCaller }),
           });
           if (occurrences.length === 0) continue;
         } catch {
@@ -206,10 +212,10 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
           bAbiFunc.inputs, bSelfAddress,
         );
       }
-      // Resolve C's args from B's compiler-published sources.
+      // Resolve C's args from B's compiler-published sources, for B's own caller.
       const cArgs = bContract._resolveExternalArgs(
         cArgSources, directGroup.functionArgs, bContract.inner.artifact, bState, bAbiFunc.inputs,
-        undefined, 0, false, bSelfAddress,
+        undefined, 0, false, bSelfAddress, bIncomingCaller,
       );
       if (cArgs === undefined && cArgSources?.some((s) => s.kind === 'expression')) {
         throw new Error(

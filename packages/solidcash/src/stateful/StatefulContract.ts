@@ -12108,6 +12108,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }));
     }
     // Handle external function calls (cross-contract calls via interfaces)
+    // An argument msg.sender gives a call this frame makes is the frame's caller: the contract a composition or a
+    // stand-in caller names (`callerLockingBytecode`), else the signer. A resolution that names its own keeps it.
+    const frameCaller = overrides?.callerLockingBytecode;
     const externalCallsOrchestrated = await orchestrateCreateBuilderExternalCallsImpl(
       {
         categoryId: this.categoryId,
@@ -12117,7 +12120,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         callerContract: this,
         // Predicates plan the same authenticated clock and state that stored-value recipes and the VM read.
         getFullState: async () => ({ ...onChainState, state: recipeState }),
-        resolveExternalArgs: (...a: any[]) => (this as any)._resolveExternalArgs(...a),
+        resolveExternalArgs: (...a: any[]) => {
+          if (frameCaller !== undefined && a[9] === undefined) a[9] = frameCaller;
+          return (this as any)._resolveExternalArgs(...a);
+        },
         buildRepeatedExternalBatch: (...a: any[]) => (this as any)._buildRepeatedExternalBatch(...a),
         resolveExternalKeccakSideCars: (...a: any[]) => (this as any)._resolveExternalKeccakSideCars(...a),
         resolveExternalBlockhashCoSpends: (...a: any[]) => (this as any)._resolveExternalBlockhashCoSpends(...a),
@@ -15128,6 +15134,7 @@ export class StatefulFunctionCall {
         {
           externalCallInfos: this.externalCallInfos,
           functionArgs: this.functionArgs,
+          callerLockingBytecode: this.callerLockingBytecode,
           parentContract: this.parentContract as any,
           selectedAbiFunction: () => this._selectedAbiFunction() as any,
         },

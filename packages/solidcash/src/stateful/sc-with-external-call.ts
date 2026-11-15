@@ -19,6 +19,8 @@ export type ExternalCallInfo = {
 export interface WithExternalCallHost {
   readonly externalCallInfos: ExternalCallInfo[];
   readonly functionArgs?: unknown[];
+  /** The lock of the contract that calls this frame (`withCallerIdentity`): the frame's msg.sender. */
+  readonly callerLockingBytecode?: Uint8Array;
   readonly parentContract?: {
     readonly target: string;
     readonly inner: {
@@ -36,6 +38,7 @@ export interface WithExternalCallHost {
       c?: number,
       d?: boolean,
       parentSelfAddress?: Uint8Array,
+      parentCallerAddress?: Uint8Array,
     ): FunctionArgument[] | undefined;
   };
   selectedAbiFunction(): (AbiFunction & {
@@ -108,9 +111,10 @@ export function pushAutoResolvedExternalCall(
   const { functionName, argSources } = ec.interfaceName === '__raw__'
     ? rawCallTarget(externalContract, ec, slotIndex)
     : { functionName: ec.functionName, argSources: ec.argSources };
+  // An argument msg.sender gives is the frame's caller: the declared one, else the signer.
   const resolvedArgs = parent._resolveExternalArgs(
     argSources, host.functionArgs, parent.inner.artifact,
-    undefined, abiFunction?.inputs, undefined, 0, false, parentSelfAddress,
+    undefined, abiFunction?.inputs, undefined, 0, false, parentSelfAddress, host.callerLockingBytecode,
   );
   if (!resolvedArgs) {
     throw new Error(

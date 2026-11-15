@@ -141,10 +141,24 @@ genesis call sits between the record witness and the arguments: `<selector> <rec
 
 The SDK lays out a constructor callee's block with an ordinary build of its call, using the child's lock as a
 stand-in caller (`standInCaller`). Every key, stored copy, chunk and commitment that comes from `msg.sender` is
-therefore the child's 35-byte lock, not a pad's. Two callees are refused before anything is sent
-(`DeployerCalleeError`):
+therefore the child's 35-byte lock, not a pad's. A callee that passes `msg.sender` on to a contract it calls, by a
+typed or a low-level call, passes the child: the SDK resolves a passed-on `msg.sender` from the frame's caller, and
+a passed-on `tx.origin` from the signer (the artifact names it, `senderOp: 'tx.origin'`). Two callees are refused
+before anything is sent (`DeployerCalleeError`):
 - one whose build would run on other arguments, such as a loop key array reordered to the sorted list;
-- one that passes `msg.sender` on to a contract it calls.
+- one that passes `tx.origin` on: the build's `tx.origin` is a pad coin, while the creation's is the deploying
+  wallet.
+
+In an ordinary call A -> B -> C, B passes its own caller A on as `msg.sender`. The SDK also lays out C's regions:
+- C gets the block a direct callee gets;
+- then come the walk its iteration reads, one shared side-car per turn of its keccak256 loop, and the old chunks
+  its write consumes;
+- B's input base and record indexes for C are read from the assembled transaction;
+- a caller's record slot counts before its callees only when the caller publishes the record, that is, a returning
+  function sent with `emitReturn`.
+
+Each remaining shape is refused by name before anything is built: C's block shared with another call, B calling C in
+a loop or as a frame, or C reading another region after its block.
 
 ### What is compile-time vs runtime
 

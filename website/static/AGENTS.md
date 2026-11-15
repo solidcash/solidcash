@@ -844,7 +844,8 @@ bytes code = type(Child).creationCode;         // redeem script (runtimeCode ali
   on chain. The SDK builds each child's prep transaction first, and the child's category is that prep's txid.
   - The constructor may emit, pay, take `value` (`msg.value`) and call contracts. A callee answers through its call
     record, so it must be a direct build compiled with `genesisCalls` (the default). Under automatic selection, a
-    callee that makes external calls of its own compiles on the bus; compile it with `messageBus: false`.
+    callee that makes external calls of its own compiles on the bus; compile it with `messageBus: false`. A callee may
+    pass `msg.sender` (the child) on to a contract it calls. Passing `tx.origin` on is refused.
   - In a child's constructor, `msg.sender` is the creator, or the deploying wallet at top level. Block fields come
     from the transaction's locktime, which is a lower bound.
   - Contract parameters go in `args`. When the constructor takes none, `new C(a1, ...)` still means

@@ -1,4 +1,7 @@
-import { binToHex, cashAddressToLockingBytecode, hexToBin } from '@bitauth/libauth';
+import {
+  bigIntToVmNumber, binToHex, cashAddressToLockingBytecode, decodeAuthenticationInstructions,
+  encodeAuthenticationInstructions, encodeDataPush, hexToBin, vmNumberToBigInt,
+} from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
@@ -138,9 +141,91 @@ contract Multisig {
   function exec(uint256 i) public { T storage t = txs[i]; (bool ok,) = t.to.call{value: t.value}(t.data); require(ok); }
 }`;
 
+/** A send whose value reads the payload it carries: the covenant evaluates the value before the payload. */
+const SENDER = `pragma solidity ^0.8.0;
+contract Sender {
+  uint256 public runs;
+  function exec(address to, bytes memory data) public {
+    (bool ok, ) = to.call{value: data.length * 1000}(data);
+    require(ok, "EXEC_FAILED");
+    runs = runs + 1;
+  }
+}`;
+
+/** The call's target given as a 20-byte identity, which the SDK passes as its P2PKH lock: the call pins that lock and
+ * the payment pays it. */
+const TARGET = hexToBin('44'.repeat(20));
+const TARGET_LOCK = `76a914${'44'.repeat(20)}88ac`;
+
+type Instruction = { opcode: number; data?: Uint8Array };
+
+/** The number an unlocking push carries. */
+function pushedNumber(instruction: Instruction): bigint {
+  if (instruction.opcode === 0x00) return 0n;
+  if (instruction.opcode === 0x4f) return -1n;
+  if (instruction.opcode >= 0x51 && instruction.opcode <= 0x60) return BigInt(instruction.opcode - 0x50);
+  const value = vmNumberToBigInt(instruction.data ?? new Uint8Array());
+  if (typeof value === 'string') throw new Error(value);
+  return value;
+}
+
+/** `transaction` with input 0's unlocking push at `position` replaced by the minimal push of `value`. */
+function withPush(transaction: Spend, position: number, value: bigint): Spend {
+  const copy = structuredClone(transaction);
+  const instructions = decodeAuthenticationInstructions(copy.inputs[0].unlockingBytecode) as Instruction[];
+  instructions[position] = decodeAuthenticationInstructions(encodeDataPush(bigIntToVmNumber(value)))[0] as Instruction;
+  copy.inputs[0].unlockingBytecode = encodeAuthenticationInstructions(instructions as never);
+  return copy;
+}
+
 describe('a {value:} that reads a variable the payload reads after it', () => {
   it('compiles the multisig execute shape, paying from one transfer slot', () => {
     const artifact = compileString(MULTISIG, { evmCompat: true, forceStateful: true });
     expect(artifact.abi.find((fn) => fn.name === 'exec')!.transferCount).toBe(1);
   });
+
+  it('builds the payment beside the co-spent target, which the call input witness names, on the production VM',
+    async () => {
+      const artifact = compileString(SENDER, { evmCompat: true, forceStateful: true });
+      const provider = createTestProvider();
+      const [owner, holder] = await getSigners(2, { provider, fundingUtxos: 8 });
+      const sender: any = await getContractFactory(artifact, owner)
+        .deploy({ initialBalance: 30_000n, initialState: { runs: 0n } });
+      // The co-spent target the call pins: a coin at the target's P2PKH lock, whose unlocking leads with no selector.
+      const target = {
+        txid: 'ab'.repeat(32),
+        vout: 0,
+        satoshis: 5_000n,
+        unlocker: {
+          generateLockingBytecode: (): Uint8Array => hexToBin(TARGET_LOCK),
+          generateUnlockingBytecode: (): Uint8Array => new Uint8Array([0x00]),
+        },
+      };
+
+      const builder = await sender.connect(holder).exec(TARGET, hexToBin('cafe')).withCall(target).build();
+      const transaction: Spend = builder.buildLibauthTransaction();
+      const sourceOutputs: Coins = generateLibauthSourceOutputs(builder.inputs);
+      expect(vaultAccepts(transaction, sourceOutputs)).toBe(true);
+
+      // The witness names the co-spent target's input: the payment's satoshi container places the caller's block
+      // densely, and the target follows the whole block.
+      const inputs = artifact.abi.find((fn) => fn.name === 'exec')!.inputs;
+      const pushes = decodeAuthenticationInstructions(transaction.inputs[0].unlockingBytecode) as Instruction[];
+      const witness = pushes.length - 2 - inputs.findIndex((input) => input.name === '__internal__callInputIndex');
+      const coSpend = pushedNumber(pushes[witness]);
+      expect(binToHex(sourceOutputs[Number(coSpend)].lockingBytecode)).toBe(TARGET_LOCK);
+      expect(vaultAccepts(withPush(transaction, witness, coSpend + 1n), sourceOutputs)).not.toBe(true);
+      expect(vaultAccepts(withPush(transaction, witness, coSpend - 1n), sourceOutputs)).not.toBe(true);
+
+      // Two payload bytes: 2,000 satoshis to the target, which the spend cannot drop or redirect.
+      const paid = transaction.outputs.findIndex((output) => output.valueSatoshis === 2_000n
+        && binToHex(output.lockingBytecode) === TARGET_LOCK);
+      expect(paid).toBeGreaterThanOrEqual(0);
+      const dropped = structuredClone(transaction);
+      dropped.outputs.splice(paid, 1);
+      expect(vaultAccepts(dropped, sourceOutputs)).not.toBe(true);
+      const redirected = structuredClone(transaction);
+      redirected.outputs[paid].lockingBytecode = ELSEWHERE;
+      expect(vaultAccepts(redirected, sourceOutputs)).not.toBe(true);
+    });
 });

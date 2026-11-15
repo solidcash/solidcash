@@ -86,6 +86,18 @@ const CHAINS = `pragma solidcash ^0.50.0;
     function retargetThenRead(address s) external { feed = Feed(IOracle(s), 2); last = feed.source.price(); }
   }`;
 
+// A call through a mapping entry, which the function writes before the call.
+const BOOK = `pragma solidcash ^0.50.0;
+  interface IOracle { function price() external returns (int); }
+  contract Oracle { int reads; function price() external returns (int) { reads = reads + 1; return 7; } }
+  contract Hostile { int reads; function price() external returns (int) { reads = reads + 1; return 1000000; } }
+  contract Book {
+    mapping(int => address) feeds;
+    int last;
+    function setFeed(int k, address s) external { feeds[k] = s; }
+    function retargetThenRead(int k, address s) external { feeds[k] = s; last = IOracle(feeds[k]).price(); }
+  }`;
+
 let serial = 0xc5b1d0;
 const nextTxid = (): string => (serial++).toString(16).padStart(64, '0');
 
@@ -380,5 +392,63 @@ describe('a call through a stored chain its function writes before the call (nat
     expect(lastSentVerifies(s)).toBe(true);
     expect(await stateOf(feeder, 'last')).toBe(7n);
     expect(await stateOf(oracle, 'reads')).toBe(1n);
+  }, 300_000);
+});
+
+describe('a call through a collection entry its function writes before the call (native)', () => {
+  it('binds the entry value written before the call', async () => {
+    const s = setup({}, BOOK);
+    const oracle = await s.deploy('Oracle');
+    const hostile = await s.deploy('Hostile');
+    const book = await s.deploy('Book');
+    const wallet = await s.wallet();
+    await callOf(book, wallet).setFeed(1n, lockOf(oracle)).send();
+
+    // The body points entry 1 at the Hostile contract and then calls through it: the Oracle it held is refused.
+    expectRefusedByCaller(await refusal(s, () => callOf(book, wallet).retargetThenRead(1n, lockOf(hostile))
+      .withExternalCall(oracle).send()));
+    expect(await stateOf(oracle, 'reads')).toBe(0n);
+
+    await callOf(book, wallet).retargetThenRead(1n, lockOf(hostile)).withExternalCall(hostile).send();
+    expect(lastSentVerifies(s)).toBe(true);
+    expect(await stateOf(book, 'last')).toBe(1_000_000n);
+    expect(await stateOf(hostile, 'reads')).toBe(1n);
+  }, 300_000);
+
+  it('refuses at compile time a call whose entry the call cannot read after the write', () => {
+    // The call reads entry k; the function wrote entry j, which may be the same entry.
+    expect(() => compileString(`pragma solidcash ^0.50.0;
+      interface IOracle { function price() external returns (int); }
+      contract Book {
+        mapping(int => address) feeds;
+        int last;
+        function retargetOtherThenRead(int j, int k, address s) external {
+          feeds[j] = s; last = IOracle(feeds[k]).price();
+        }
+      }`, {} as never)).toThrow(/ENTRY_TARGET_WRITTEN_BEFORE_CALL/);
+  });
+});
+
+describe('a builder resolving a callee whose target its function writes before the call (native)', () => {
+  it('publishes the write, and refuses by name to resolve the callee from the current state', async () => {
+    const callsOf = (source: string, contract: string, name: string): any[] => (compileString(
+      source, { primaryContractName: contract } as never,
+    ).abi as any[]).find((entry) => entry.name === name)?.externalCalls ?? [];
+    expect(callsOf(SOURCE, 'Reader', 'retargetThenRead')[0]?.targetWrittenBeforeCall).toBe(true);
+    expect(callsOf(SOURCE, 'Reader', 'readThenRetarget')[0]?.targetWrittenBeforeCall).toBeUndefined();
+    expect(callsOf(SOURCE, 'Reader', 'read')[0]?.targetWrittenBeforeCall).toBeUndefined();
+    expect(callsOf(BOOK, 'Book', 'retargetThenRead')[0]?.targetWrittenBeforeCall).toBe(true);
+
+    const s = setup({});
+    const oracle = await s.deploy('Oracle');
+    const hostile = await s.deploy('Hostile');
+    const reader = await s.deploy('Reader');
+    const wallet = await s.wallet();
+    await callOf(reader, wallet).setOracle(lockOf(oracle)).send();
+
+    // No callee named: the builder would take the Oracle from the current state, which the call no longer runs on.
+    const message = await refusal(s, () => callOf(reader, wallet).retargetThenRead(lockOf(hostile)).send());
+    expect(message).toMatch(/writes the target of its call to IOracle\.price before the call/);
+    expect(message).toMatch(/withExternalCall\(contract\)/);
   }, 300_000);
 });

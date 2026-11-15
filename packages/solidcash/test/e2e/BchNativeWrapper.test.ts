@@ -81,8 +81,11 @@ describe('BchNativeWrapper', () => {
     // what landed after it: fixes B and F1 and the oracle pools (7421 -> 7617). The record lock a direct master
     // rebuilds carries the data-record covenant's authority bind and category, each now defined once (590aca164),
     // and with it the helpers that rebuild it: 66 B (7617 -> 7683). The record count takes in the edge lock, and a
-    // callee reading a contract msg.sender reads that lock too: 12 B (7683 -> 7695).
-    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(7695);
+    // callee reading a contract msg.sender reads that lock too: 12 B (7683 -> 7695). The pin did not follow
+    // deployer-coins 07552ad33, which compiles it to 7800 B. genesisCalls, on by default, gives each record-publishing
+    // entry the genesis call and its checks: 220 B (7800 -> 8020); `genesisCalls: false` gives 7777 B, without the
+    // 23 B record-sound marker.
+    expect(scriptToBytecode(asmToScript(minimal.bytecode)).length).toBe(8020);
     expect(minimal.abi.filter((entry) => entry.name !== '__construct').map((entry) => entry.name).sort()).toEqual([
       'allowance', 'approve', 'balanceOf', 'totalSupply', 'transfer', 'transferFrom', 'underlying', 'unwrap', 'wrap',
     ]);

@@ -30,9 +30,12 @@ describe('BchNativeMultiplier', () => {
     // container mints, security NAMED-MINT-1, 7_568 with always-run sorted writes
     // laid out unconditionally, 7_618 with the containers' destroy arm, 7_514 once
     // only a master that can retire carries it, 7_513 with the scale as an
-    // override of BchNative's `_nativeAmount` hook, and 7_733 with the void call
-    // record and the filler lock its drains pin).
-    expect(artifactBytes).toBeLessThan(7_800);
+    // override of BchNative's `_nativeAmount` hook, 7_733 with the void call
+    // record and the filler lock its drains pin, 7_848 at deployer-coins 07552ad33,
+    // which this budget did not follow, and 8_064 with genesisCalls on by default:
+    // each record-publishing entry takes the genesis call and checks it, 216 B;
+    // `genesisCalls: false` gives 7_825, without the 23 B record-sound marker).
+    expect(artifactBytes).toBeLessThan(8_100);
     expect(artifact.constructorInputs).toEqual([]);
     // The immutables are written at construction: the scale factor is baked in, and the
     // bearer category is the constructor's one argument.

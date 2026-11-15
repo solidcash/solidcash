@@ -2053,6 +2053,7 @@ export class StatefulTransactionBuilder {
       ),
       getRequiredLoopEntryCount: (collection) => this.getRequiredLoopEntryCount(collection),
       getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
+      getRuntimeLoopEventOutputBase: () => this.getRuntimeLoopEventOutputBase(),
     };
   }
 

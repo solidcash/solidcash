@@ -52,6 +52,8 @@ export interface MaterializeRuntimeLoopTrailingHost {
   loopEntryTransitionSatoshis(variable: LoopEntryVar, commitment: string): bigint | undefined;
   getRequiredLoopEntryCount(collection: string): number;
   getLoopEntryOutputBase(): number;
+  /** First output of the runtime-loop event stream, as the covenant addresses it. */
+  getRuntimeLoopEventOutputBase(): number;
 }
 
 /**
@@ -246,6 +248,16 @@ export function materializeRuntimeLoopTrailing(
     // follow that band (the compiler's shifted output coordinate adds the entry output width), before events.
     if (host.keccakLoopFollowsTrailingUser) {
       for (const rec of host.pendingKeccakLoopRecreates(builder)) builder.addOutput(rec);
+    }
+
+    // The covenant addresses the runtime event stream from past the complete fixed block and the entry band it
+    // follows (emitRuntimeLoopEventVerification), while a plain call compacts that entry band into the block's
+    // inactive returnEvent slot (emitTrailingWriteOutputBase). That slot then sits between the entries and the
+    // events: pad it there, at the coordinate this builder computes for the stream, so every event lands on the
+    // output its record is checked against.
+    if (host.runtimeLoopEventOutputs.length > 0) {
+      const eventBase = host.getRuntimeLoopEventOutputBase();
+      while (builder.outputs.length < eventBase) builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
     }
 
     // Runtime-loop events and their fixed peers are source-ordered records, independent of the permutation used

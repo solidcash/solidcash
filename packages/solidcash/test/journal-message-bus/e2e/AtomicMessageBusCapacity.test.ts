@@ -104,29 +104,32 @@ interface CapacityReading {
 // Again when O8's exact-stack check went first in every arm (e7fe44e3a): each participant's route arm gains
 // `OP_DEPTH <n> OP_NUMEQUALVERIFY`, so each participant input is 3 B larger and 309 units dearer and the transaction 6 B
 // larger in each convention; the worst input and its ratio are unchanged.
+// Again when a call through address(0) became a refusal (4030a5bc2): the target check of the first participant drops
+// its empty-target branch, so its input is 8 B smaller and 16 units cheaper (its budget 6,400 units lower) and the
+// transaction 8 B smaller in each convention; the worst input and its ratio are unchanged.
 const EXPECTED_TWO_PARTY: Readonly<Record<'kernel' | 'legacy', CapacityReading>> = Object.freeze({
   kernel: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_503, callManifestBytes: 294,
+    transactionBytes: 24_495, callManifestBytes: 294,
     worstOperationCost: 27_321, worstMaximumOperationCost: 112_800,
     worstRatio: 0.24220744680851064,
     inputOperationCosts: [
-      440_285, 388_424, 695, 957_089, 817_981, 27_321,
+      440_269, 388_424, 695, 957_089, 817_981, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_593_600, 2_001_600, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_587_200, 2_001_600, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   legacy: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 24_993, callManifestBytes: 294,
+    transactionBytes: 24_985, callManifestBytes: 294,
     worstOperationCost: 2_373_927, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.3281442828707287,
     inputOperationCosts: [
-      432_874, 412_982, 695, 2_373_927, 1_864_134, 27_321,
+      432_858, 412_982, 695, 2_373_927, 1_864_134, 27_321,
     ],
     inputMaximumOperationCosts: [
-      2_524_800, 2_462_400, 34_400, 7_234_400, 7_234_400, 112_800,
+      2_518_400, 2_462_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });

@@ -384,6 +384,10 @@ export interface ExternalCallUtxoGroup {
   keccakInputs?: UnlockableUtxo[];
   /** B's keccak256 compute side-car recreation OUTPUTS (both paths), committing each computed R_i. */
   keccakRecreates?: Output[];
+  /** blockInputs index where a direct callee's keccak256 loop side-cars begin (its trailing base). */
+  keccakLoopStart?: number;
+  /** The recreations of those loop side-cars, one per iteration, each at its side-car's own index. */
+  keccakLoopRecreates?: Output[];
   /** B's blockhash(n) oracle co-spend INPUTS (outState path: appended after dataNfts, before keccak side-cars,
    * matching B's block-layout order master < dataNft < blockhashOracle < keccakSideCar). In slot order. */
   blockhashCoSpendUtxos?: UnlockableUtxo[];

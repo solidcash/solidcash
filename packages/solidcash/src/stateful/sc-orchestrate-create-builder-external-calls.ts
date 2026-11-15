@@ -16,7 +16,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import { addressToLockScript } from '../utils.js';
 import { signerFundingCoins } from '../framed/deploy/own-coin.js';
-import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { assertCallSelectorScheme } from './call-record.js';
 import { calleeOutputSpan, calleePinsNoRecord, type ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { consolidateDirectCallBatches, planDirectCallBatches } from './direct-call-batch.js';
@@ -56,6 +56,9 @@ import {
 import {
   appendCreateBuilderNestedCalleeIterations as appendCreateBuilderNestedCalleeIterationsImpl,
 } from './sc-append-create-builder-nested-callee-iterations.js';
+import {
+  appendCreateBuilderNestedCalleeKeccakLoop as appendCreateBuilderNestedCalleeKeccakLoopImpl,
+} from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import {
   pushCreateBuilderDirectExternalCallGroup as pushCreateBuilderDirectExternalCallGroupImpl,
 } from './sc-push-create-builder-direct-external-call-group.js';
@@ -655,6 +658,23 @@ export async function orchestrateCreateBuilderExternalCalls(
         });
       }
 
+      // A direct callee's keccak256 loop reads one shared side-car per iteration right after its block.
+      let bKeccakLoop: { start: number; recreates: Output[] } | undefined;
+      if (bBlockInputs !== undefined && bAbiFunc?.keccakLoopReads === true && compilerRoute === undefined && bSc) {
+        const label = `${callInfo!.externalContract.inner.artifact.contractName}.${bAbiFunc.name}`;
+        const spent = [
+          ...externalCallUtxoGroups.flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]),
+          ...bBlockInputs,
+        ];
+        const loop = await appendCreateBuilderNestedCalleeKeccakLoopImpl({
+          bBlockInputs, bAbiFunc, bSc, masterUtxo: bState.masterUtxo, bDataNfts, args: callInfo!.args, spent,
+          ...(overrides?.sharedSidecarPool !== undefined && { sharedPool: overrides.sharedSidecarPool }),
+          functionLabel: label,
+        });
+        bBlockInputs = loop.bBlockInputs;
+        bKeccakLoop = { start: loop.start, recreates: loop.recreates };
+      }
+
       // A direct view callee must co-spend the chunks it reads after its published block. The
       // callee covenant authenticates their address and order; omitting them leaves its hidden
       // dynamic-input base pointing into another participant's inputs.
@@ -803,6 +823,16 @@ export async function orchestrateCreateBuilderExternalCalls(
           ? materializedGroup : externalCallUtxoGroups[materializedGroup.sharedGroupIndex];
         if (bBatchEntryLockingBytecodes.size > 0 && blockOwner?.blockInputs === bBlockInputs) {
           blockOwner.batchEntryLockingBytecodes = bBatchEntryLockingBytecodes;
+        }
+        if (bKeccakLoop !== undefined) {
+          // Its side-cars ride this block's own inputs, which a second callsite of the same callee does not own.
+          if (blockOwner !== materializedGroup || materializedGroup.blockInputs !== bBlockInputs) {
+            throw new Error(`The call of ${materializedGroup.externalContract.inner.artifact.contractName}.`
+              + `${bAbiFunc!.name} cannot be laid out: another call of the same contract in this transaction owns `
+              + 'its block, so its keccak256 loop has no side-cars of its own');
+          }
+          materializedGroup.keccakLoopStart = bKeccakLoop.start;
+          materializedGroup.keccakLoopRecreates = bKeccakLoop.recreates;
         }
         if (bDynamicChunkResources.length > 0 && bBlockInputs !== undefined) {
           const first = [...bDynamicChunkResources].sort((left, right) => left.blockSlot - right.blockSlot)[0]!;

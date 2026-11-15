@@ -217,10 +217,14 @@ export async function loadCreateBuilderNestedCalleePrelude(
     ? bDirectChunkValues[0].encoded : undefined;
   const bValueChunkOutputCount = bDirectChunkValue && bDirectChunkValue.length > VALUE_HEAD_SIZE
     ? Math.ceil((bDirectChunkValue.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE) : 0;
-  // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them.
-  const bKeccak = await host.resolveExternalKeccakSideCars(
-    bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract,
-  );
+  // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them. A loop's side-cars
+  // ride the band after B's block instead, one per iteration, from the loop's own probe once the block is assembled
+  // (sc-append-create-builder-nested-callee-keccak-loop), as a function's own loop takes no fixed side-car either.
+  const bKeccak = !compilerRoute && bAbiFunc?.keccakLoopReads === true
+    ? { inputs: [], recreates: [] }
+    : await host.resolveExternalKeccakSideCars(
+      bAbiFunc, callInfo.args, externalCategoryId, callInfo.externalContract,
+    );
 
   return {
     externalCategoryId,

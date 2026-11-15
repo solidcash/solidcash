@@ -469,6 +469,14 @@ export function materializeExternalCallOutputs(
           continue;
         }
 
+        // A direct callee's keccak256 loop side-car: its recreation, at its own index, commits the digest.
+        const loopRecreate = group.keccakLoopStart === undefined || si < group.keccakLoopStart
+          ? undefined : group.keccakLoopRecreates?.[si - group.keccakLoopStart];
+        if (loopRecreate !== undefined) {
+          builder.addOutput(loopRecreate);
+          continue;
+        }
+
         // keccak256 side-car slots: recreate with the computed result R_i (from the group's keccakRecreates).
         if (slot?.kind === 'keccakSideCar') {
           const rec = group.keccakRecreates?.[keccakIdx++];

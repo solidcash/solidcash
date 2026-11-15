@@ -4,8 +4,8 @@
  * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
  * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
  * always publishes it. Then the same sized shapes in a contract another contract calls (D calls T, T co-spent in D's
- * transaction): T iterates a collection. Each sent transaction is checked by the VM; each tamper case changes one part
- * of it and expects the covenant that binds that part to refuse.
+ * transaction): T iterates a collection, or hashes in a loop. Each sent transaction is checked by the VM; each tamper
+ * case changes one part of it and expects the covenant that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -469,6 +469,16 @@ describe('an ordinary call whose keccak256 loop runs beside a call of another co
   }
 });
 
+/** `sent` with inputs `left` and `right` swapped, with their coins; every output stays where it was. */
+const swapInputs = (sent: Sent, left: number, right: number): Sent => {
+  const swap = <T>(items: readonly T[]): T[] => items.map((item, at) => (
+    at === left ? items[right]! : at === right ? items[left]! : item));
+  return {
+    sourceOutputs: swap(sent.sourceOutputs),
+    transaction: { ...sent.transaction, inputs: swap(sent.transaction.inputs) },
+  };
+};
+
 /** The indexes of the outputs of `sent` at `lock`. */
 const outputsAt = (sent: Sent, lock: Uint8Array): number[] => sent.transaction.outputs
   .map((output, index) => (same(output.lockingBytecode, lock) ? index : -1)).filter((index) => index >= 0);
@@ -525,3 +535,71 @@ describe('an ordinary call of a contract whose function iterates a collection an
   }
 });
 
+describe('an ordinary call of a contract whose function hashes in a loop (D calls T)', () => {
+  const SOURCE = `${P} interface I { function f(bytes b, int k) external returns (bool); }
+    contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
+      bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
+    contract D { bool ok; function g(I t, bytes b, int k) external returns (bool) { ok = t.f(b, k); return true; } }`;
+
+  it('co-spends a shared side-car per iteration after the callee\'s block, and refuses another digest or a moved one',
+    async () => {
+      const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+      const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+      const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+      const d = await s.deploy(compileString(SOURCE, compileOptions('D')));
+      const wallet = await s.wallet();
+      const tLock = addressToLockScript(t.contract.address);
+      const b = Uint8Array.of(1, 2, 3);
+      // No coin of the shared pool: refused by name before anything is sent.
+      const before = s.sent.length;
+      await expect((d.contract.connect(wallet) as any).call.g(tLock, b, 2n).withExternalCall(t.contract).send())
+        .rejects.toThrow(/The call of T\.f cannot be laid out: its keccak256 loop needs 2 side-car coins of the shared /);
+      expect(s.sent.length).toBe(before);
+
+      const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+      for (const index of [0, 1, 2]) {
+        await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-loop-callee-dt', sharedLock, index));
+      }
+      await (d.contract.connect(wallet) as any).call.g(tLock, b, 2n).withExternalCall(t.contract).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await d.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+      expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+      // The callee's block of master, record and record slot, then one shared side-car per iteration, each recreated
+      // at its own index with the digest.
+      const master = inputAt(sent, tLock);
+      expect(master).toBe(2);
+      const sidecars = outputsAt(sent, sharedLock);
+      expect(sidecars).toEqual([master + 3, master + 4]);
+      for (const index of sidecars) {
+        expect(same(sent.sourceOutputs[index].lockingBytecode, sharedLock)).toBe(true);
+        expect(binToHex(sent.transaction.outputs[index]!.token!.nft!.commitment)).toBe(binToHex(keccak(b)));
+      }
+      // Another digest: refused by the side-car and by the callee, which reads it.
+      const forged = withOutput(sent, master + 4, bumpCommitment);
+      expect(inputPasses(s.provider, forged, master + 4)).toBe(false);
+      expect(inputPasses(s.provider, forged, master)).toBe(false);
+      // A side-car's input moved to the record slot: refused by the callee, which reads a side-car at the loop's index.
+      expect(inputPasses(s.provider, swapInputs(sent, master + 2, master + 3), master)).toBe(false);
+      // Another result in the callee's call record: refused by the caller, which reads it.
+      expect(inputPasses(s.provider, withOutput(sent, master + 2, bumpCommitment), 0)).toBe(false);
+    });
+
+  it('refuses by name a callee loop that shares the inputs after its block with another run', async () => {
+    const source = `${P} interface I { function f(bytes b, int k) external returns (bool); }
+      contract T { bytes32 h; int[] a; function f(bytes b, int k) external returns (bool) {
+        bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; a.push(k); return true; } }
+      contract D { bool ok; function g(I t, bytes b, int k) external returns (bool) { ok = t.f(b, k); return true; } }`;
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const before = s.sent.length;
+    await expect((d.contract.connect(await s.wallet()) as any).call.g(addressToLockScript(t.contract.address),
+      Uint8Array.of(1), 2n).withExternalCall(t.contract).send())
+      .rejects.toThrow(new RegExp('The call of T\\.f cannot be laid out: its keccak256 loop shares the inputs after its '
+        + 'block with the chunks of dynamic state it writes'));
+    expect(s.sent.length).toBe(before);
+  });
+});

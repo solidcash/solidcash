@@ -45,7 +45,9 @@ describe('kernel repeated writes beside a direct-only participant', () => {
         function visit(uint256 key) public {
           Payment memory payment = this.payments[key];
           if (payment.enabled) {
-            (bool success,) = payment.recipient.call{value: payment.amount}("");
+            // A direct-only participant's payment has no route to pay it, so the planner refuses any it declares;
+            // the payment is never enabled here, and a literal 0 keeps the low-level call without one.
+            (bool success,) = payment.recipient.call{value: 0}("");
             require(success);
           }
           this.visits = this.visits + 1;

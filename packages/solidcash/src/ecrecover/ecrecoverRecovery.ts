@@ -167,14 +167,15 @@ export function computeEcrecoverWitness(hash: Uint8Array, v: number, r: Uint8Arr
  * - `offCurve`: `r` is in range but no curve point's x-coordinate, so no side-car serves the call. An address
  *   projection answers the zero address once the pad of the input in its first slot proves it: `proof` is w, with
  *   w^2 = -(r^3 + 7) mod p, as a 32-byte little-endian word.
- * - `refused`: the recovered key would be the point at infinity, which no side-car serves; the call reads its slots and
- *   fails closed.
+ * - `atInfinity`: the recovered key would be the point at infinity, which no side-car commits. A pair over the digest
+ *   shifted by -2^128 r mod n, `shiftedHash` as a 32-byte little-endian word, recovers the key plus 2^128 G, which is
+ *   2^128 G, and an address projection reads that pair and answers the zero address.
  * `ecrecoverPubKey` has no zero key and refuses every one of them.
  */
 export type EcrecoverRefusal =
   | { readonly kind: 'unread'; readonly reason: string }
   | { readonly kind: 'offCurve'; readonly reason: string; readonly proof: Uint8Array }
-  | { readonly kind: 'refused'; readonly reason: string };
+  | { readonly kind: 'atInfinity'; readonly reason: string; readonly shiftedHash: Uint8Array };
 
 /** A value below 2^256 as a 32-byte little-endian word. */
 const leWord = (value: bigint): Uint8Array => {
@@ -221,8 +222,12 @@ export function ecrecoverRefusal(hash: Uint8Array, v: number, r: Uint8Array, s: 
   }
   const Ry = (y & 1n) === BigInt(v - 27) ? y : mod(P - y, P);
   const rinv = inv(rr, N);
+  const z = mod(leBig(hash), N);
   const recovered = Point.BASE.multiplyAndAddUnsafe(
-    Point.fromAffine({ x: rr, y: Ry }), mod(-leBig(hash) * rinv, N), mod(ss * rinv, N),
+    Point.fromAffine({ x: rr, y: Ry }), mod(-z * rinv, N), mod(ss * rinv, N),
   );
-  return recovered === undefined ? { kind: 'refused', reason: 'the recovered key is the point at infinity' } : undefined;
+  if (recovered !== undefined) return undefined;
+  return {
+    kind: 'atInfinity', reason: 'the recovered key is the point at infinity', shiftedHash: leWord(mod(z - (rr << 128n), N)),
+  };
 }

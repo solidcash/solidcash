@@ -83,7 +83,8 @@ export type ResolveEcrecoverCoSpendsResult = {
  * precompile's range rules refuse, all three slots take coins the function does not read: an address projection
  * answers the zero address without reading them. For an `r` no curve point has, the first slot takes a coin of the A
  * pool over the placeholder recovery, whose pad carries the proof an address projection reads before it answers the
- * zero address, and the other two take coins the function does not read. A branch the run skips reads none of them,
+ * zero address, and the other two take coins the function does not read. For a key at infinity, the slots take the
+ * pair over the digest shifted by -2^128 r mod n, which recovers 2^128 G. A branch the run skips reads none of them,
  * and a recovery that reads them for a recovery (`ecrecoverPubKey`) refuses the call, as no side-car can serve it.
  */
 export async function resolveEcrecoverComputeCoSpends(
@@ -113,7 +114,8 @@ export async function resolveEcrecoverComputeCoSpends(
   type CallPlan =
     | { kind: 'deferred' }
     | { kind: 'refused'; refusal: string; argBlob: Uint8Array; proof?: Uint8Array }
-    | { kind: 'recover'; wit: ReturnType<typeof computeEcrecoverWitness> };
+    // `atInfinity` holds the call's own argument blob where the witness recovers from the shifted digest.
+    | { kind: 'recover'; wit: ReturnType<typeof computeEcrecoverWitness>; atInfinity?: Uint8Array };
   const plans = calls.map(([hp, vp, rp, sp]): CallPlan => {
     const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
       : [argOf(hp as string | null), argOf(vp as string | null), argOf(rp as string | null), argOf(sp as string | null)];
@@ -123,6 +125,12 @@ export async function resolveEcrecoverComputeCoSpends(
     }
     const v = typeof vRaw === 'bigint' ? Number(vRaw) : Number(vRaw);
     const refusal = ecrecoverRefusal(hash, v, r, s);
+    if (refusal?.kind === 'atInfinity') {
+      return {
+        kind: 'recover', wit: computeEcrecoverWitness(refusal.shiftedHash, v, r, s),
+        atInfinity: Uint8Array.from([...hash, v & 0xff, ...r, ...s]),
+      };
+    }
     if (refusal !== undefined) {
       return {
         kind: 'refused', refusal: refusal.reason, argBlob: Uint8Array.from([...hash, v & 0xff, ...r, ...s]),
@@ -224,6 +232,9 @@ export async function resolveEcrecoverComputeCoSpends(
       continue;
     }
     const { wit } = plan;
+    // A key at infinity: the call binds its own arguments and reads no keccak preimage.
+    const ownArgBlob = plan.atInfinity ?? wit.argBlob;
+    const evmPreimage = plan.atInfinity === undefined ? wit.uncompressedPubkey : new Uint8Array(64);
     let chunkA: number;
     try {
       chunkA = probeEcrecoverSplit(wit, salt, coinA, coinB);
@@ -234,8 +245,8 @@ export async function resolveEcrecoverComputeCoSpends(
       resolved.push({ utxo: coinA, unlocker: built.unlockerA, recreate: built.recreateA });
       resolved.push({ utxo: coinM, unlocker: built.unlockerM, recreate: built.recreateM });
       resolved.push({ utxo: coinB3, unlocker: built.unlockerB, recreate: built.recreateB });
-      argBlobs.push(wit.argBlob);
-      if (evmFlags[i]) evmPreimages.push(wit.uncompressedPubkey);
+      argBlobs.push(ownArgBlob);
+      if (evmFlags[i]) evmPreimages.push(evmPreimage);
       continue;
     }
     const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
@@ -245,8 +256,8 @@ export async function resolveEcrecoverComputeCoSpends(
     resolved.push({ utxo: coinA, unlocker: unlockerA, recreate: recreateA });
     resolved.push({ utxo: funder.utxo, unlocker: funder.utxo.unlocker, recreate: funder.recreate });
     resolved.push({ utxo: coinB, unlocker: unlockerB, recreate: recreateB });
-    argBlobs.push(wit.argBlob);
-    if (evmFlags[i]) evmPreimages.push(wit.uncompressedPubkey);
+    argBlobs.push(ownArgBlob);
+    if (evmFlags[i]) evmPreimages.push(evmPreimage);
   }
   return { coSpends: resolved, argBlobs, evmPreimages, salt };
 }

@@ -455,6 +455,13 @@ type CompatCallArguments = { format: 'evm'; words: CompatWordKind[] } | { format
 /** The secp256k1 group order; the EVM's `ecrecover` refuses an `r` or `s` outside [1, n). */
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 const SECP256K1_PRIME = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+/**
+ * 2^128 G as a standard compressed key: what a recovery from the digest shifted by -2^128 r mod n gives when the
+ * unshifted one is the point at infinity. A shift by -r would land on G itself, which the side-cars' ladder reaches
+ * through the point at infinity whenever its last step adds G (measured: 15 of 400 such arguments); a multiple of G
+ * that no short tail of the ladder reaches leaves no such step (0 of 400).
+ */
+const SECP256K1_2E128_G_COMPRESSED = hexToBin('028f68b9d2f63b5f339239c1ad981f162ee88c5678723ea3351b7b444c9ec4c0da');
 
 /**
  * Diagnostic switch for compute/participant block-base resolution. A block base is addressed by a stack index,
@@ -18757,6 +18764,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A's pad whole as an unsigned number: zero in an honest pad, and otherwise w, whose square is -(r^3 + 7) mod p,
     // which the call checks after the projection before it answers the zero address.
     const directOffCurveProof = zeroOnInvalidV;
+    // So are arguments that recover the point at infinity, which no side-car pair commits. Their pair recovers from the
+    // digest shifted by -2^128 r mod n instead, which gives the key plus 2^128 G: the call answers the zero address when
+    // that is 2^128 G.
+    const directInfinityProof = zeroOnInvalidV;
+    const bindArgBlob = (): void => {
+      if (directInfinityProof) {
+        // [argBlob, argBlob_A] -> [atInfinity], which the tracked argBlob stands for until the key is read.
+        this.emitRecoveryAtInfinityBind(loc);
+        return;
+      }
+      this.emit(Op.OP_EQUALVERIFY, loc);                                   // bind argBlob_A == argBlob
+      // The bind physically consumed argBlob and argBlob_A. Reconcile the tracked argBlob now, before the
+      // following side-car reads calculate the depth of a scoped compute-block base or another caller value.
+      // Deferring this until the end makes those reads select the item immediately above the real base.
+      this.popFromStack(1);
+    };
     const decodePad = (): void => {
       this.emitGenericPushdataDecode(raw, loc);                            // [argBlob, pad, restA]
       if (!directOffCurveProof) {
@@ -18780,8 +18803,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INPUTBYTECODE, loc);                           // [argBlob, U_A]  (read only to bind argBlob)
       decodePad();                                                   // [argBlob, restA]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_DROP, loc);  // [argBlob, argBlob_A] (drop the rest)
-      this.emit(Op.OP_EQUALVERIFY, loc);                             // bind argBlob_A == argBlob
-      this.popFromStack(1); // argBlob consumed by the bind -> keep the tracker synced
+      bindArgBlob();                                                 // the tracker stays synced to the bind
       // 3. side-car B integrity via OP_UTXOBYTECODE (B is NOT read: only its integrity + output Q matter).
       slotIdx('B'); this.emit(Op.OP_UTXOBYTECODE, loc);              // [lockB]
       if (isEvm) {
@@ -18830,11 +18852,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emitGenericPushdataDecode(raw, loc);                          // [argBlob, argBlob_A, rest2]
       this.emit(Op.OP_TOALTSTACK, loc);                                  // [argBlob, argBlob_A]
-      this.emit(Op.OP_EQUALVERIFY, loc);                                 // bind argBlob_A == argBlob
-      // The bind physically consumed argBlob and argBlob_A. Reconcile the tracked argBlob now, before the
-      // following side-car reads calculate the depth of a scoped compute-block base or another caller value.
-      // Deferring this until the end makes those reads select the item immediately above the real base.
-      this.popFromStack(1);
+      bindArgBlob();
       // A's rest is sharedBlob||aBlob||redeem; V's is its witness blob, then the redeem.
       this.emit(Op.OP_FROMALTSTACK, loc);                                // [rest2]
       this.emitGenericPushdataDecode(raw, loc); this.emit(Op.OP_NIP, loc);  // drop sharedBlob (V: the witness blob)
@@ -18931,6 +18949,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1n), loc); this.emit(Op.OP_SPLIT, loc);            // [parity, Qx33LE]
     this.emitTakeFirst32(loc); // [parity, Qx32LE]
     this.emit(Op.OP_REVERSEBYTES, loc); this.emit(Op.OP_CAT, loc);          // [pubkey33]
+    if (directInfinityProof) {
+      // [atInfinity, pubkey33]: a pair over the shifted digest must have recovered 2^128 G, and the call answers the
+      // zero address; the flag is spent here.
+      this.emit(Op.OP_SWAP, loc);
+      this.popFromStack(1);
+      this.emit(Op.OP_IF, loc);
+      this.emit(SECP256K1_2E128_G_COMPRESSED, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emitDirectZeroAddress(isEvm, loc);
+      this.emit(Op.OP_ELSE, loc);
+    }
 
     // 5. project: pubkey = the compressed key; p2pkh = 0x76a914 || hash160(key) || 0x88ac; evm = keccak256(key)[12:]
     if (node.identifier.name === GlobalFunction.ECRECOVER_P2PKH) {
@@ -19007,6 +19035,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
+    if (directInfinityProof) this.emit(Op.OP_ENDIF, loc);
     if (offCurveProof) {
       // [argBlob, pad, restA]: the pad's first word proves `r` has no point, and the body answers the zero address.
       this.emit(Op.OP_ELSE, loc);
@@ -19087,6 +19116,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1n), loc); this.emit(encodeInt(3n), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_WITHIN, loc);
     this.emit(Op.OP_BOOLAND, loc); this.emit(Op.OP_NIP, loc);                                  // [.., accepted]
+  }
+
+  /**
+   * Binds side-car A's argument blob to the call's own, or to the call's with its digest z shifted by -2^128 r mod n:
+   * the pair then recovers (s R - (z - 2^128 r) G) / r, the call's key plus 2^128 G, and that is 2^128 G exactly when
+   * the call's key is the point at infinity, which the read of the key checks. `r` is in [1, n), so the two blobs
+   * differ. Stack: [argBlob, argBlob_A] -> [atInfinity].
+   */
+  private emitRecoveryAtInfinityBind(loc: SingleLocationData): void {
+    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_SWAP, loc);                                                              // [argBlob_A, argBlob]
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_TUCK, loc); // [.., rest, z32, rest]
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emitTakeFirst32(loc); this.emitUnsignedWord(loc);                                   // [.., rest, z32, r]
+    // z + (n - r) 2^128 is positive, as r < n, and is z - 2^128 r mod n.
+    this.emitSecp256k1Order(loc); this.emit(Op.OP_TUCK, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc);                                   // [.., rest, z32, n, n - r]
+    this.emit(encodeInt(128n), loc); this.emit(Op.OP_LSHIFTNUM, loc);
+    this.emit(Op.OP_ROT, loc); this.emitUnsignedWord(loc); this.emit(Op.OP_ADD, loc);        // [.., rest, n, shifted z]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_MOD, loc);                                   // [.., rest, z']
+    this.emit(encodeInt(33n), loc); this.emit(Op.OP_NUM2BIN, loc); this.emitTakeFirst32(loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);                                   // [argBlob_A, shifted]
+    this.emit(Op.OP_EQUALVERIFY, loc); this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /** The direct convention's zero address: 20 zero bytes for `ecrecoverEvm`, the empty locking bytecode for P2PKH. */

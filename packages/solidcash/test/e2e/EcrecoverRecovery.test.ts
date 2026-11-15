@@ -742,6 +742,30 @@ describe('STATEFUL RECOVERY LOOP: an invalid recovery id answers address(0), eve
     expect(binToHex(state.third)).toBe('00'.repeat(20));
   });
 
+  it('ecrecoverEvm: the zero address for a key at infinity, which a triple recovering 2^128 G from the shifted digest '
+    + 'proves', async () => {
+    // R = (z/s) G, so that s R = z G: the key is the point at infinity.
+    const { secp256k1 } = await import('@noble/curves/secp256k1');
+    const order = secp256k1.CURVE.n;
+    const leWord = (value: bigint): Uint8Array => Uint8Array.from(
+      { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+    const z = 0x1d3a5f0c2b4e6d8f9a1b3c5d7e9f0a2b4c6d8e0f1a3b5c7d9e1f3a5b7c9d1e3fn, s = 0x5eed5n;
+    let inverse = 1n;
+    for (let b = s, e = order - 2n; e > 0n; b = (b * b) % order, e >>= 1n) if (e & 1n) inverse = (inverse * b) % order;
+    const point = secp256k1.ProjectivePoint.BASE.multiply((z * inverse) % order).toAffine();
+    expect(point.x < order).toBe(true);
+    const g = await goodSigner('stateful-loop-evm-infinity');
+    const { contract, call } = await deployed(compileString(source('ecrecoverEvm'), {
+      deployer: true, genesisCalls: true, messageBus: false, primaryContractName: 'T',
+    } as never));
+    await call([g.h, leWord(z), g.h], [g.v, 27n + (point.y & 1n), 0n], [g.r, leWord(point.x), g.r],
+      [g.s, leWord(s), g.s], 3n);
+    const state = await contract.getState() as { first: Uint8Array; second: Uint8Array; third: Uint8Array };
+    expect(binToHex(state.first)).toBe(g.wallet.address.slice(2).toLowerCase());
+    expect(binToHex(state.second)).toBe('00'.repeat(20));
+    expect(binToHex(state.third)).toBe('00'.repeat(20));
+  });
+
   it('ecrecoverP2pkh: the empty bytecode for recovery ids 0 and 29 around a signer, whose P2PKH lock matches', async () => {
     const g = await goodSigner('stateful-loop-p2pkh');
     const { contract, call } = await deployed(compileString(source('ecrecoverP2pkh'), {

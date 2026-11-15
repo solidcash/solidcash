@@ -880,7 +880,7 @@ describe('an ordinary call whose recovery loop meets an invalid recovery id', ()
     expect(inputPasses(s.provider, dropped, master)).toBe(false);
   });
 
-  it('answers the zero address for a call whose id is 27 or 28 and whose r is 0, reading no triple for it',
+  it('answers the zero address for a call whose id is 27 or 28 and whose r is 0, and refuses one no pair serves',
     async () => {
       const s = setup();
       const g = await signed('invalid-v-evm-no-key');
@@ -894,6 +894,17 @@ describe('an ordinary call whose recovery loop meets an invalid recovery id', ()
       const sent = s.sent[s.sent.length - 1]!;
       expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
       expect(await t.contract.getState()).toMatchObject({ n: 1n, zeros: 1n });
+      // Call 1's key at infinity with R = G (a digest and s of 1): the side-cars' table cannot check that R, so no pair
+      // over the shifted digest serves it, and the call is refused before it is sent.
+      const word = (value: bigint): Uint8Array => Uint8Array.from(
+        { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+      const gx = word(0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n);
+      const before = s.sent.length;
+      await expect((t.contract.connect(wallet) as any).call.f(
+        [g.h, word(1n)], [g.v, 27n], [g.r, gx], [g.s, word(1n)], 2n,
+      ).withMaxFee(100_000n).send()).rejects.toThrow(/no two-input split/);
+      expect(s.sent).toHaveLength(before);
+      expect(await t.contract.getState()).toMatchObject({ n: 1n });
     });
 
   it('answers an ecrecoverP2pkh call the empty address, and takes no slots after the last recovery', async () => {

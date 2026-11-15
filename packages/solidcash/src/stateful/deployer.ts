@@ -401,8 +401,8 @@ type SidecarStep = { utxo: Utxo; unlocker: Unlocker; recreate: Output } | undefi
  * zero address without reading them (`ecrecoverEvm` and `ecrecoverP2pkh` for a `v` other than 27 or 28, or an `r` or
  * `s` outside [1, n)), or its branch is not run, or it reads them and the creation fails its VM check. For an `r` no
  * curve point has, the first slot takes an A of the pool over the placeholder recovery, whose pad carries the proof
- * an address projection reads. Coins in `spent` are skipped; the coins taken are
- * added to it.
+ * an address projection reads; for a key at infinity, the group over the digest shifted by -2^128 r mod n, which
+ * recovers 2^128 G. Coins in `spent` are skipped; the coins taken are added to it.
  */
 async function sharedEcrecoverSteps(options: {
   calls: ReadonlyArray<readonly [unknown, unknown, unknown, unknown]>;
@@ -445,11 +445,15 @@ async function sharedEcrecoverSteps(options: {
       steps.push({ utxo: coinA, unlocker: carrier.unlockerA, recreate: carrier.recreateA }, undefined, undefined);
       continue;
     }
-    if (refusal !== undefined) {
+    if (refusal?.kind === 'unread') {
       steps.push(undefined, undefined, undefined);
       continue;
     }
-    const witness = computeEcrecoverWitness(hash as Uint8Array, Number(v), r as Uint8Array, s as Uint8Array);
+    // A key at infinity takes the group over the digest shifted by -2^128 r mod n, whose pair recovers 2^128 G.
+    const witness = computeEcrecoverWitness(
+      refusal?.kind === 'atInfinity' ? refusal.shiftedHash : hash as Uint8Array, Number(v), r as Uint8Array,
+      s as Uint8Array,
+    );
     const coinA = take(coinsA);
     let chunkA: number | undefined;
     try {

@@ -4,11 +4,11 @@
  *
  * A two-covenant recovery reads A and B2 and leaves its middle slot to a coin no covenant reads, which the call's wallet
  * fills and an output at the same index returns. A width-0 recovery reads A, M and B3. `ecrecoverEvm` and
- * `ecrecoverP2pkh` answer the zero address, as the EVM's precompile does, for a `v` other than 27 or 28 or an `r` or
- * `s` outside [1, n), without reading their slots, which take wallet coins, and for an `r` in range that no curve
- * point has, once the pad of the pool's A in the first slot proves it. A key at infinity takes wallet coins, which the
- * function reads, so the call is refused before it is sent. Each sent transaction is checked by the VM; each tamper
- * case changes one part of it and expects the input that binds that part to refuse.
+ * `ecrecoverP2pkh` answer the zero address, as the EVM's precompile does, for every argument it refuses: for a `v`
+ * other than 27 or 28, or an `r` or `s` outside [1, n), without reading their slots, which take wallet coins; for an
+ * `r` in range that no curve point has, once the pad of the pool's A in the first slot proves it; and for a key at
+ * infinity, once a pair over the digest shifted by -2^128 r mod n recovers 2^128 G. Each sent transaction is checked by
+ * the VM; each tamper case changes one part of it and expects the input that binds that part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -25,7 +25,7 @@ import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.j
 import { probeEcrecoverSplit } from '../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { alicePkh, alicePriv } from '../fixture/vars.js';
 import type { Artifact } from '@solidcash/utils';
-import type { Utxo } from '../../src/interfaces.js';
+import type { Output, Unlocker, Utxo } from '../../src/interfaces.js';
 import type { DeployResult } from '../../src/stateful/stateful-lifecycle-types.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 
@@ -276,6 +276,71 @@ function withPad(sent: Sent, index: number, word: Uint8Array): Sent {
 /** A little-endian word read as an unsigned number. */
 const unsignedOf = (word: Uint8Array): bigint => BigInt(`0x${binToHex(Uint8Array.from(word).reverse()) || '0'}`);
 
+/** The digest shifted by -2^128 r mod n: a pair recovers the key of (h, v, r, s) plus 2^128 G from it. */
+const shiftedDigest = (h: Uint8Array, r: Uint8Array): Uint8Array => {
+  const order = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const value = (((unsignedOf(h) - (unsignedOf(r) << 128n)) % order) + order) % order;
+  return Uint8Array.from({ length: 32 }, (_, index) => Number((value >> BigInt(8 * index)) & 0xffn));
+};
+
+/** Arguments whose key is the point at infinity, drawn from `tag`: R = (z/s) G, so that s R = z G. */
+async function infinityArgs(tag: string): Promise<[Uint8Array, bigint, Uint8Array, Uint8Array]> {
+  const { secp256k1 } = await import('@noble/curves/secp256k1');
+  const { sha256, utf8ToBin } = await import('@bitauth/libauth');
+  const order = secp256k1.CURVE.n;
+  const word = (value: bigint): Uint8Array => Uint8Array.from(
+    { length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 0xffn));
+  for (let draw = 0; ; draw += 1) {
+    const drawn = (part: string): bigint => BigInt(`0x${binToHex(sha256.hash(utf8ToBin(`${tag}/${part}/${draw}`)))}`) % order;
+    const z = drawn('z'), s = drawn('s') || 1n;
+    let inverse = 1n;
+    for (let b = s, e = order - 2n; e > 0n; b = (b * b) % order, e >>= 1n) if (e & 1n) inverse = (inverse * b) % order;
+    const point = secp256k1.ProjectivePoint.BASE.multiply((z * inverse) % order).toAffine();
+    if (point.x < order) return [word(z), 27n + (point.y & 1n), word(point.x), word(s)];
+  }
+}
+
+/**
+ * `sent` with a genuine two-covenant pair over `witness` at the A slot `a` and the B2 slot `a + 2`, on the coins
+ * already there, or undefined when the witness's ladder fits no two-covenant split.
+ */
+async function withPair(sent: Sent, a: number, witness: ReturnType<typeof computeEcrecoverWitness>, salt: Uint8Array):
+Promise<Sent | undefined> {
+  const { buildEcrecoverComputeSidecars } = await import('../../src/ecrecover/ecrecoverComputeSidecar.js');
+  const coin = (index: number): Utxo => ({
+    txid: 'cc'.repeat(32), vout: index, satoshis: sent.sourceOutputs[index].valueSatoshis,
+    token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  });
+  let chunkA: number;
+  try {
+    chunkA = probeEcrecoverSplit(witness, salt, coin(a), coin(a + 2));
+  } catch {
+    return undefined;
+  }
+  const pair = buildEcrecoverComputeSidecars(witness, chunkA, salt, coin(a), coin(a + 2), undefined, 'B2');
+  const replaced = new Map<number, { unlocker: Unlocker; recreate: Output }>([
+    [a, { unlocker: pair.unlockerA, recreate: pair.recreateA }],
+    [a + 2, { unlocker: pair.unlockerB, recreate: pair.recreateB }],
+  ]);
+  return {
+    sourceOutputs: sent.sourceOutputs,
+    transaction: {
+      ...sent.transaction,
+      inputs: sent.transaction.inputs.map((input, index) => {
+        const entry = replaced.get(index);
+        return entry === undefined ? input
+          : { ...input, unlockingBytecode: entry.unlocker.generateUnlockingBytecode({} as never) };
+      }),
+      outputs: sent.transaction.outputs.map((output, index) => {
+        const entry = replaced.get(index);
+        if (entry === undefined) return output;
+        const commitment = hexToBin(entry.recreate.token!.nft!.commitment);
+        return { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment } } };
+      }),
+    },
+  };
+}
+
 const PROJECTIONS = [
   { name: 'ecrecoverPubKey', owner: 'pubkey', expected: (g: Signed) => g.key, keccak: false },
   { name: 'ecrecoverP2pkh', owner: 'address', expected: (g: Signed) => p2pkhOf(g.key), keccak: false },
@@ -362,6 +427,17 @@ describe('an ordinary call that recovers a key straight-line', () => {
           const proved = withPad(sent, a, word);
           expect(inputPasses(s.provider, proved, master)).toBe(projection.name === 'ecrecoverPubKey');
           expect(inputPasses(s.provider, proved, a)).toBe(true);
+        }
+
+        // The pair a builder lays out to claim that these arguments recover the point at infinity: a genuine pair over
+        // the digest shifted by -2^128 r mod n. It recovers the signer's key plus 2^128 G, not 2^128 G, so every
+        // projection refuses it, though each side-car of it is valid.
+        const claimed = await withPair(sent, a, computeEcrecoverWitness(shiftedDigest(g.h, g.r), Number(g.v), g.r, g.s),
+          salt);
+        if (claimed !== undefined) {
+          expect(inputPasses(s.provider, claimed, a)).toBe(true);
+          expect(inputPasses(s.provider, claimed, a + 2)).toBe(true);
+          expect(inputPasses(s.provider, claimed, master)).toBe(false);
         }
       });
   }
@@ -589,24 +665,59 @@ describe('a straight-line recovery whose arguments recover no key', () => {
 
   const g = signed('straight-line-no-key');
   const GX = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n;
-  const refused: Array<(k: Signed) => [Uint8Array, bigint, Uint8Array, Uint8Array]> = [
-    // R = G, s = 1 and a digest of 1: the recovered key is (G - G)/r, the point at infinity.
-    () => [leWord(1n), 27n, leWord(GX), leWord(1n)],
-  ];
+  // R = G, s = 1 and a digest of 1: the recovered key is (G - G)/r, the point at infinity. Its R is a base of the
+  // side-cars' GLV table, whose check meets the doubling G + G that its affine additions cannot take, so no pair
+  // serves it, shifted digest or not, as none serves any recovery whose R is G.
   for (const primary of ['E', 'Q'] as const) {
-    it(`refuses ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} before sending for a key at infinity, which its `
-      + 'function reads its side-cars for', async () => {
+    it(`refuses ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} before sending for a key at infinity whose R is `
+      + 'G, which no side-car pair serves', async () => {
       const s = setup();
       const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
-      await seedPool(s.provider, brand(t.categoryId), 1, 0xd1, primary === 'E');
-      const wallet = await s.wallet();
+      await seedPool(s.provider, brand(t.categoryId), 1, 0xd7, primary === 'E');
       const before = s.sent.length;
-      for (const args of refused) {
-        await expect((t.contract.connect(wallet) as any).call.f(...args(await g)).send())
-          .rejects.toThrow(/preflight failed at input 0: Program failed an OP_VERIFY operation/);
-      }
+      await expect((t.contract.connect(await s.wallet()) as any).call.f(leWord(1n), 27n, leWord(GX), leWord(1n)).send())
+        .rejects.toThrow(/no 3-covenant ladder split fits/);
       expect(s.sent).toHaveLength(before);
-      expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(0n);
+    });
+  }
+
+  for (const [primary, zero] of [['E', '00'.repeat(20)], ['Q', '']] as const) {
+    it(`answers the zero address under ${primary === 'E' ? 'ecrecoverEvm' : 'ecrecoverP2pkh'} for a key at infinity, `
+      + 'which a pair recovering 2^128 G from the digest shifted by -2^128 r mod n proves', async () => {
+      const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+      const { secp256k1 } = await import('@noble/curves/secp256k1');
+      const atInfinity = await infinityArgs(`straight-line-infinity-${primary}`);
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions(primary)));
+      const salt = brand(t.categoryId);
+      await seedPool(s.provider, salt, 1, 0xd1, primary === 'E');
+      await (t.contract.connect(await s.wallet()) as any).call.f(...atInfinity).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      const state = (await t.contract.getState()) as { who?: Uint8Array; n?: bigint };
+      expect(binToHex(state.who ?? new Uint8Array())).toBe(zero);
+      expect(state.n).toBe(1n);
+      // The pool's A and B2 hold the first and last slots, A bound to the shifted digest and B2 committing 2^128 G.
+      const master = inputAt(sent, addressToLockScript(t.contract.address));
+      const a = master + (primary === 'E' ? 3 : 2);
+      expect(same(sent.sourceOutputs[a].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'A'))).toBe(true);
+      expect(same(sent.sourceOutputs[a + 2].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'B2'))).toBe(true);
+      const argBlobA = (decodeAuthenticationInstructions(sent.transaction.inputs[a]!.unlockingBytecode)[1] as {
+        data: Uint8Array }).data;
+      expect(binToHex(argBlobA.slice(0, 32))).toBe(binToHex(shiftedDigest(atInfinity[0], atInfinity[2])));
+      expect(binToHex(argBlobA.slice(32)))
+        .toBe(binToHex(Uint8Array.from([Number(atInfinity[1]), ...atInfinity[2], ...atInfinity[3]])));
+      const target = secp256k1.ProjectivePoint.BASE.multiply(1n << 128n).toRawBytes(true);
+      const commitment = sent.transaction.outputs[a + 2]!.token!.nft!.commitment;
+      expect(binToHex(Uint8Array.from([commitment[0]!, ...commitment.slice(1, 33).reverse()]))).toBe(binToHex(target));
+      // Another key in B2's recreation: refused by B2's covenant and by the master, which reads it.
+      const forged = withOutput(sent, a + 2, otherKey);
+      expect(inputPasses(s.provider, forged, a + 2)).toBe(false);
+      expect(inputPasses(s.provider, forged, master)).toBe(false);
+      // The same transaction with the master's s moved by one: its arguments now recover a key, and the pair proves
+      // nothing of them.
+      expect(inputPasses(s.provider, withMasterS(sent, master, atInfinity[2], atInfinity[3], leWord(2n)), master))
+        .toBe(false);
     });
   }
 

@@ -12,9 +12,8 @@
  * and reads no triple, but the loop still counts the call: its three slots hold coins no covenant reads, and the next
  * call's triple stays at its own index. For an `r` in range that no curve point has, it reads only the pad of the A in
  * its first slot, which carries the proof: that slot takes an A of the pool over the placeholder recovery, and the
- * other two coins no covenant reads. A call after the last recovery reads nothing, so it takes no slots. A call that
- * reads its triple with arguments no side-car recovers a key from (`ecrecoverRefusal`) takes such coins too, as a
- * straight-line recovery does: it reads them and the call fails closed.
+ * other two coins no covenant reads. For a key at infinity it reads the triple over the digest shifted by -2^128 r
+ * mod n, whose pair recovers 2^128 G. A call after the last recovery reads nothing, so it takes no slots.
  *
  * The calls and each argument blob are learned from the master's own run. Each probe lays out the triples learned so
  * far, then a placeholder triple at every later index: the run stops at the first placeholder it reads, which names
@@ -210,9 +209,11 @@ export async function resolveStatefulEcrecoverLoop(
     const [hash, v, r, s] = [argBlob.slice(0, 32), argBlob[32]!, argBlob.slice(33, 65), argBlob.slice(65, 97)];
     // Arguments no side-car recovers a key from get no triple: an off-curve r takes the A that carries its proof, and
     // for any other the run reads the coins in its slots and stops there.
+    // A key at infinity takes the triple over the digest shifted by -2^128 r mod n, whose pair recovers 2^128 G.
     const refusal = ecrecoverRefusal(hash, v, r, s);
     calls.push(refusal === undefined ? computeEcrecoverWitness(hash, v, r, s)
-      : refusal.kind === 'offCurve' ? { offCurveProof: refusal.proof } : null);
+      : refusal.kind === 'atInfinity' ? computeEcrecoverWitness(refusal.shiftedHash, v, r, s)
+        : refusal.kind === 'offCurve' ? { offCurveProof: refusal.proof } : null);
   }
   if (calls.length === 0) return { sideCars: [], recreates: [] };
   const recoveries = calls.filter((call) => call !== null).length;

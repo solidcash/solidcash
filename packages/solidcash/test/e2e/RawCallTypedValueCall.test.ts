@@ -1,17 +1,16 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
-import { Contract } from '../../src/index.js';
+import { Contract, RawCallCalleeRequiredError } from '../../src/index.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
-import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { StatefulContract, getSatoshiContainerAddress, registerDeployment } from '../../src/stateful/index.js';
-import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { compileString } from '../direct-compile.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // A low-level call whose payload names a function that declares a result is compiled as the raw external call that
-// reads its callee's record, whatever its options: `{value: v}` stays the call's authenticated payment to the callee,
-// and `{gas: g}` is an inert hint. Each form below that names such a function publishes the record read.
+// reads its callee's record, whatever its options: `{value: v}` stays the call's value, and `{gas: g}` is an inert
+// hint. Each form below that names such a function publishes the record read. A direct build refuses the value: it
+// would pay the call's target, the callee's master lock, where the coin is stuck and the callee never sees it.
 
 const EVM_OPTIONS = { evmCompat: true, forceStateful: true } as const;
 
@@ -75,17 +74,6 @@ const TYPED_FORMS: ReadonlyArray<readonly [string, string]> = [
       ${CHECK} }`],
 ];
 
-/** A real node's 2026 VM: the standard instruction set under BCH's own size limits. */
-const productionVm = createVirtualMachineBch2026ForProvider(new MockNetworkProvider({ profile: 'production' }));
-type Program = Parameters<typeof productionVm.evaluate>[0];
-type Spend = Program['transaction'];
-type Coins = Program['sourceOutputs'];
-
-/** Whether input 0, the caller, accepts its unlocking in `transaction` on the production VM. */
-const callerAccepts = (transaction: Spend, sourceOutputs: Coins): true | string => productionVm.stateSuccess(
-  productionVm.evaluate({ inputIndex: 0, sourceOutputs, transaction }),
-);
-
 type Provider = ReturnType<typeof createTestProvider>;
 type Deployed = { contract: any; address: Uint8Array };
 
@@ -121,44 +109,39 @@ describe('a low-level call whose payload names a function that declares a result
   });
 });
 
-describe('a typed payload sent with {value: v} pays its callee v', () => {
+describe('a typed payload sent with {value: v} to its co-spent callee is refused before building', () => {
   const tokenArtifact = compileString(TOKEN, EVM_OPTIONS);
   const payerArtifact = compileString(VALUE_PAYER, EVM_OPTIONS);
   const VALUE = 2_000n;
 
+  /** The refusal of a raw call's value to its co-spent callee, which names where the value would go. */
+  const isValueRefusal = (error: unknown): boolean => error instanceof RawCallCalleeRequiredError
+    && error.reason === 'value to a co-spent callee' && /satoshi container/.test(error.message);
+
   it.each([
     ['payDirect', 'through call{value: v} on a state-variable target'],
     ['payThroughHelper', 'through an inlined functionCallWithValue'],
-  ])('%s: the callee receives v %s, on the production VM', async (entry) => {
-    expect(payerArtifact.abi.find((fn) => fn.name === entry)!.externalCalls
-      ?.some((call) => (call as { rawReadsRecord?: boolean }).rawReadsRecord === true)).toBe(true);
+  ])('%s: refuses the value sent %s', async (entry) => {
+    const call = payerArtifact.abi.find((fn) => fn.name === entry)!.externalCalls
+      ?.find((candidate) => (candidate as { rawReadsRecord?: boolean }).rawReadsRecord === true);
+    expect(call?.callValueEffect).toBe(true);
     const provider = createTestProvider();
     const token = await deploy(provider, tokenArtifact, { moved: 0n });
     const payer = await deploy(provider, payerArtifact, { token: token.address, paid: 0n }, 50_000n);
 
-    const builder = await payer.contract[entry](5n, VALUE)
-      .withExternalCall(token.contract, 'transfer', [payer.address, 5n]).build();
-    const transaction: Spend = builder.buildLibauthTransaction();
-    const sourceOutputs: Coins = generateLibauthSourceOutputs(builder.inputs);
-    expect(callerAccepts(transaction, sourceOutputs)).toBe(true);
-
-    // The payment: an output of v at the token's lock, and the caller refuses the spend that pays one satoshi less.
-    const paid = transaction.outputs.findIndex((output) => output.valueSatoshis === VALUE
-      && binToHex(output.lockingBytecode) === binToHex(token.address));
-    expect(paid).toBeGreaterThanOrEqual(0);
-    const short = structuredClone(transaction);
-    short.outputs[paid].valueSatoshis = VALUE - 1n;
-    expect(callerAccepts(short, sourceOutputs)).not.toBe(true);
+    const refusal = await payer.contract[entry](5n, VALUE)
+      .withExternalCall(token.contract, 'transfer', [payer.address, 5n]).build().then(() => undefined, (e: unknown) => e);
+    expect(isValueRefusal(refusal)).toBe(true);
   });
 
-  it('auto-resolves the callee of the lowered call and settles the payment', async () => {
+  it('refuses the auto-resolved call the same way, and sends nothing', async () => {
     const provider = createTestProvider();
     const token = await deploy(provider, tokenArtifact, { moved: 0n });
     const payer = await deploy(provider, payerArtifact, { token: token.address, paid: 0n }, 50_000n);
 
-    await payer.contract.payDirect(5n, VALUE).send();
-
-    expect((await token.contract.getState()).moved).toBe(5n);
-    expect((await payer.contract.getState()).paid).toBe(5n);
+    const refusal = await payer.contract.payDirect(5n, VALUE).send().then(() => undefined, (e: unknown) => e);
+    expect(isValueRefusal(refusal)).toBe(true);
+    expect((await token.contract.getState()).moved).toBe(0n);
+    expect((await payer.contract.getState()).paid).toBe(0n);
   });
 });

@@ -6,7 +6,7 @@
  * all-zero address as address(0).
  */
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeDataPush, hexToBin } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import {
   completeEventCommitment,
   encodeEventCommitment,
@@ -63,5 +63,15 @@ describe('an address event argument is pushed as its covenant pushes it', () => 
       .toBe(`00${ZERO20_PUSH}`);
     // A bytes20 argument was already a 20-byte push.
     expect(binToHex(encodeEventParameter(ZERO20, { type: 'bytes20' }))).toBe(ZERO20_PUSH);
+  });
+
+  it('pushes an enum argument, which the ABI spells by its enum\'s name, as its ordinal', () => {
+    // The covenant pushes an enum as an integer, minimally; a record spells the same field `bigint`.
+    for (const ordinal of [0n, 1n, 16n, 17n]) {
+      expect(encodeEventParameter(ordinal, { type: 'Color' })).toEqual(encodeDataPush(bigIntToVmNumber(ordinal)));
+      expect(encodeEventParameter(ordinal, { type: 'Color' })).toEqual(encodePushdataValue(ordinal, 'bigint'));
+    }
+    // A built-in type keeps refusing an integer.
+    expect(() => encodeEventParameter(1n, { type: 'bytes' })).toThrow('Cannot convert value to bytes for type bytes');
   });
 });

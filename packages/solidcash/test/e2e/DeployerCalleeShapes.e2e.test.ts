@@ -3,7 +3,8 @@
  * call would: its satoshi and token containers and their transfers, read-only entries, events under a condition, a wide
  * event's chunks, its keccak256 and ecrecover side-cars, a recovery loop's triples (from the shared pool, A14 item 6),
  * and the child as the msg.sender it stores. Each creation is checked by the VM; each tamper case changes one output of
- * a finished creation and expects the callee's input to refuse it.
+ * a finished creation and expects the callee's input to refuse it. A callee whose ordinary build would run it on other
+ * arguments than the child passes is refused before anything is sent.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -684,4 +685,68 @@ describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)'
     // The refusal comes before the prep, so nothing was sent.
     expect(sent).toHaveLength(0);
   });
+
+  it('refuses a callee whose ordinary build reorders its loop\'s keys, which the child would not pass, before sending',
+    async () => {
+      const source = `${P} interface I { function f(int[] ks) external returns (bool); }
+        contract T { mapping(int => int) m;
+          function f(int[] ks) external returns (bool) { for (int i = 0; i < ks.length; i++) { m[ks[i]] = i + 1; } return true; } }
+        contract C { bool ok; constructor(I t, int a, int b) { ok = t.f([a, b]); } function read() { require(ok); } }`;
+      const { keyToSlot, bytesToSlotValue } = await import('../../src/stateful/SortedList.js');
+      const { bigIntToVmNumber } = await import('@bitauth/libauth');
+      const slot = (key: bigint): bigint => bytesToSlotValue(keyToSlot(bigIntToVmNumber(key)));
+      // Two keys the empty mapping inserts after its head, the first of them above the second: the build puts the
+      // chain's inserts in key order, and so passes the array in another order than the constructor's.
+      const pairs = [1n, 2n, 3n, 4n, 5n].flatMap((a) => [1n, 2n, 3n, 4n, 5n].map((b) => [a, b] as const));
+      const [a, b] = pairs.find(([left, right]) => slot(left) > slot(right))!;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      await s.signer();
+      const sent: string[] = [];
+      const original = s.provider.sendRawTransaction.bind(s.provider);
+      (s.provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+        sent.push(hex);
+        return original(hex);
+      };
+      const { DeployerCalleeError } = await import('../../src/stateful/index.js');
+      const refusal = await s.deploy(compileString(source, compileOptions('C')), {
+        initArgs: [addressToLockScript(t.contract.address), a, b],
+        constructorCallees: [{ contract: t.contract, args: [[a, b]] }],
+      }).then(() => undefined, (error: unknown) => error);
+      expect(refusal).toBeInstanceOf(DeployerCalleeError);
+      expect((refusal as Error).message).toMatch(
+        /'T\.f' cannot be bound: the ordinary build of its call runs it on other arguments than the constructor passes/);
+      expect(sent).toHaveLength(0);
+    });
+
+  for (const [form, call] of [
+    ['a typed call', 'last = u.g(msg.sender);'],
+    ['a low-level call', '(bool ok, bytes memory data) = address(u).call(abi.encodeWithSelector(IU.g.selector, msg.sender)); '
+      + 'require(ok && data.length > 0);'],
+  ] as const) {
+    it(`refuses a callee that passes msg.sender on in ${form}, before sending`, async () => {
+      const source = `${P} interface IU { function g(address who) external returns (address); }
+        interface I { function f(IU u) external returns (bool); }
+        contract U { address seen; function g(address who) external returns (address) { seen = who; return who; } }
+        contract T { address last; function f(IU u) external returns (bool) { ${call} return true; } }
+        contract C { bool ok; constructor(I t, IU u) { ok = t.f(u); } function read() { require(ok); } }`;
+      const s = setup();
+      const u = await s.deploy(compileString(source, compileOptions('U')));
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const sent: string[] = [];
+      const original = s.provider.sendRawTransaction.bind(s.provider);
+      (s.provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+        sent.push(hex);
+        return original(hex);
+      };
+      const { DeployerCalleeError } = await import('../../src/stateful/index.js');
+      const refusal = await s.deploy(compileString(source, compileOptions('C')), {
+        initArgs: [addressToLockScript(t.contract.address), addressToLockScript(u.contract.address)],
+        constructorCallees: [{ contract: t.contract, externalContracts: [u.contract] }],
+      }).then(() => undefined, (error: unknown) => error);
+      expect(refusal).toBeInstanceOf(DeployerCalleeError);
+      expect((refusal as Error).message).toMatch(/'T\.f' cannot be bound: it passes msg\.sender to a contract it calls/);
+      expect(sent).toHaveLength(0);
+    });
+  }
 });

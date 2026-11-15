@@ -595,6 +595,20 @@ async function planCalleeBlockByCall(
   if (typeof stateful.connect !== 'function') {
     refuse('its block is laid out by the ordinary build of its call, which needs the callee as a stateful contract');
   }
+  // An argument msg.sender gives a call the callee makes: the ordinary build resolves it from its signer, where the
+  // callee's run passes the child, so the call the build lays out is not the call the run makes.
+  const namesSender = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(namesSender);
+    if (value === null || typeof value !== 'object') return false;
+    const node = value as { kind?: unknown; senderOp?: unknown };
+    return (node.kind === 'msgSender' && node.senderOp !== 'tx.origin') || Object.values(value).some(namesSender);
+  };
+  if ([...(fn.externalCalls ?? []), ...(fn.lowLevelCalls ?? [])].some((made) => namesSender([
+    (made as { argSources?: unknown }).argSources, (made as { rawArgSources?: unknown }).rawArgSources,
+  ]))) {
+    refuse('it passes msg.sender to a contract it calls, and the ordinary build of its call resolves that argument '
+      + 'from its own signer, not from the child it runs for');
+  }
   const provider = contract.provider;
   const categoryId = callee.contract.categoryId;
   const masterLock = addressToLockScript(callee.contract.address);
@@ -691,6 +705,27 @@ async function planCalleeBlockByCall(
     if (TRANSACTION_INDEX_WITNESS.test(input.name) && typeof value === 'bigint') relocated[input.name] = value;
     else witnesses[input.name] = value;
   });
+  // The child's constructor checks the record of the call it makes, whose digest names its own arguments: a build that
+  // runs the function on others lays out a call the child does not make.
+  const { callRecordDigest } = await import('./call-record.js');
+  const digestOf = (params: readonly unknown[]): string | undefined => {
+    try {
+      const digest = callRecordDigest(fn, params as FunctionArgument[], {
+        structs: artifact.structs ?? artifact.stateLayout?.structs, enums: artifact.enums,
+      });
+      return digest === undefined ? undefined : binToHex(digest);
+    } catch {
+      return undefined;
+    }
+  };
+  const givenArgs = call.args[Symbol.iterator]();
+  const given = digestOf(fn.inputs.map((input) => (input.name.startsWith('__internal__') ? undefined : givenArgs.next().value)));
+  const ran = digestOf(frame.params!);
+  if (given !== undefined && ran !== undefined && given !== ran) {
+    refuse('the ordinary build of its call runs it on other arguments than the constructor passes (as when it orders a '
+      + 'loop\'s keys by where their inserts chain in the sorted list), and the child\'s constructor refuses the record '
+      + 'of another call');
+  }
   const carrier = carrierOffset === undefined ? undefined : built.outputs[carrierOffset];
   if (carrier === undefined || lockHex(carrier.to) !== '51' || carrier.token?.category !== categoryId
     || carrier.token.nft?.capability !== 'none') {

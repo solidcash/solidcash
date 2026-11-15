@@ -930,3 +930,115 @@ describe('an ordinary call whose recovery loop meets an invalid recovery id', ()
     expect(inputPasses(s.provider, withOutput(sent, master + 8, otherKey), master)).toBe(false);
   });
 });
+
+describe('an ordinary call whose stateful function recovers keys in a loop through a helper', () => {
+  const PUBKEY = `${P} contract T(pubkey owner) { int n;
+      function rec(bytes32 h, int v, bytes32 r, bytes32 s) private returns (pubkey) { return ecrecoverPubKey(h, v, r, s); }
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        for (int i = 0; i < k; i++) { require(rec(h[i], v[i], r[i], s[i]) == owner); } n = n + 1; return true; } }`;
+  // A void helper that checks the address another helper recovers.
+  const EVM = `${P} contract T(bytes20 owner) { int n;
+      function signer(bytes32 h, int v, bytes32 r, bytes32 s) private pure returns (bytes20) {
+        return ecrecoverEvm(h, v, r, s); }
+      function check(bytes32 h, int v, bytes32 r, bytes32 s) private { require(signer(h, v, r, s) == owner); }
+      function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+        for (int i = 0; i < k; i++) { check(h[i], v[i], r[i], s[i]); } n = n + 1; return true; } }`;
+
+  it('reads a triple per iteration after the block, each bound to its own iteration\'s arguments', async () => {
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const s = setup();
+    const g0 = await signed('recovery-helper-loop-0');
+    const g1 = await signed('recovery-helper-loop-1');
+    const artifact = compileString(PUBKEY, compileOptions('T'));
+    const fn = artifact.abi.find((entry) => entry.name === 'f')!;
+    expect(fn.ecrecoverTrailingLoop).toBe(true);
+    expect(fn.blockLayout!.slots.map((slot) => slot.kind)).toEqual(['master', 'dataNft', 'returnEvent']);
+    const t = await s.deploy(artifact, [g0.key]);
+    await seedRecoveryPool(s.provider, 2, 0xc1);
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      [g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s], 2n,
+    ).emitReturn().send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    const salt = new Uint8Array(32);
+    for (const k of [0, 1]) {
+      expect(same(sent.sourceOutputs[master + 3 + 3 * k].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'A')))
+        .toBe(true);
+      expect(same(sent.sourceOutputs[master + 5 + 3 * k].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'B2')))
+        .toBe(true);
+    }
+    // The two triples swapped: each iteration meets the other message's arguments in its A.
+    const swapped = [0, 1, 2].reduce((tx, offset) => swapIndexes(tx, master + 3 + offset, master + 6 + offset), sent);
+    expect(inputPasses(s.provider, swapped, master)).toBe(false);
+    // Another key in the second B2's recreation, and that B2 moved past the region.
+    expect(inputPasses(s.provider, withOutput(sent, master + 8, otherKey), master)).toBe(false);
+    expect(inputPasses(s.provider, swapIndexes(sent, master + 8, master + 9), master)).toBe(false);
+  });
+
+  it('hashes each key an ecrecoverEvm helper recovers in its triple\'s keccak side-car', async () => {
+    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const s = setup();
+    const g0 = await signed('recovery-helper-loop-evm-0');
+    const g1 = await signed('recovery-helper-loop-evm-1');
+    const artifact = compileString(EVM, compileOptions('T'));
+    expect(artifact.abi.find((entry) => entry.name === 'f')!.ecrecoverTrailingLoop).toBe(true);
+    const t = await s.deploy(artifact, [await evmOwner()]);
+    await seedEvmRecoveryPool(s.provider, 2, 0xc2);
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      [g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s], 2n,
+    ).withMaxFee(100_000n).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    // A, B and the keccak side-car per iteration, one triple after the other.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    const lockK = keccakComputeLockingBytecode(new Uint8Array(32), true);
+    const keccaks = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, lockK) ? index : -1))
+      .filter((index) => index >= 0);
+    expect(keccaks).toHaveLength(2);
+    expect(keccaks[1]! - keccaks[0]!).toBe(3);
+    // Another digest, another key in the second B's recreation, the triples swapped, and the second keccak side-car
+    // moved past the region.
+    expect(inputPasses(s.provider, withOutput(sent, keccaks[1]!, bumpCommitment), master)).toBe(false);
+    expect(inputPasses(s.provider, withOutput(sent, keccaks[1]! - 1, otherKey), master)).toBe(false);
+    const swapped = [0, 1, 2].reduce((tx, offset) => swapIndexes(tx, keccaks[0]! - 2 + offset, keccaks[1]! - 2 + offset),
+      sent);
+    expect(inputPasses(s.provider, swapped, master)).toBe(false);
+    expect(inputPasses(s.provider, swapIndexes(sent, keccaks[1]!, keccaks[1]! + 1), master)).toBe(false);
+  });
+  // A helper in the loop's condition, behind `&&`: reduced in place, its recovery runs only where the condition reaches
+  // it, as the loop's own call.
+  it('reads the triples of a helper\'s recovery in the loop\'s condition, one per call it makes', async () => {
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const source = `${P} contract T(pubkey owner) { int n;
+        function rec(bytes32 h, int v, bytes32 r, bytes32 s) private returns (pubkey) {
+          return ecrecoverPubKey(h, v, r, s); }
+        function f(bytes32[] h, int[] v, bytes32[] r, bytes32[] s, int k) external returns (bool) {
+          int i = 0;
+          while (i < k && rec(h[i], v[i], r[i], s[i]) == owner) { i = i + 1; }
+          require(i == k); n = n + 1; return true; } }`;
+    const s = setup();
+    const g0 = await signed('recovery-helper-condition-0');
+    const g1 = await signed('recovery-helper-condition-1');
+    const artifact = compileString(source, compileOptions('T'));
+    expect(artifact.abi.find((entry) => entry.name === 'f')!.ecrecoverTrailingLoop).toBe(true);
+    const t = await s.deploy(artifact, [g0.key]);
+    await seedRecoveryPool(s.provider, 2, 0xc3);
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      [g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s], 2n,
+    ).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    // The third check of the condition stops at `i < k`: two triples, after master, record and record slot.
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    const lockA = ecrecoverComputeLockingBytecode(new Uint8Array(32), 'A');
+    expect(sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, lockA) ? index : -1))
+      .filter((index) => index >= 0)).toEqual([master + 3, master + 6]);
+    const swapped = [0, 1, 2].reduce((tx, offset) => swapIndexes(tx, master + 3 + offset, master + 6 + offset), sent);
+    expect(inputPasses(s.provider, swapped, master)).toBe(false);
+    expect(inputPasses(s.provider, withOutput(sent, master + 5, otherKey), master)).toBe(false);
+  });
+});

@@ -16595,7 +16595,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
     // Dynamic ecrecover loop: push a 0-based recovery-pair counter BEFORE OP_BEGIN (forward-region read per iter).
-    const loopHasEcrecover = this.emitLoopEcrecoverSetup(node.block, locationData);
+    const loopHasEcrecover = this.emitLoopEcrecoverSetup(node.block, locationData, node.condition);
 
     // EXISTING LOOP LOGIC (with pre-allocated slots now below stackDepth)
     this.scopeDepth += 1;
@@ -16771,7 +16771,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Dynamic keccak loop: push a 0-based side-car counter BEFORE OP_BEGIN (trailing-region read per iteration).
     const loopHasKeccak = this.emitLoopKeccakSetup(node.block, locationData);
     // Dynamic ecrecover loop: push a 0-based recovery-pair counter BEFORE OP_BEGIN (forward-region read per iter).
-    const loopHasEcrecover = this.emitLoopEcrecoverSetup(node.block, locationData);
+    const loopHasEcrecover = this.emitLoopEcrecoverSetup(node.block, locationData, node.condition);
 
     // WHILE LOOP LOGIC
     // while(cond) { body } ->
@@ -46145,15 +46145,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // from [master+blockSize+3*counter] on, after its block (`ecrecoverTrailingLoop`). Push a 0-based counter before
   // OP_BEGIN; emitEcrecoverComputeCall reads triple `counter`, binds argBlob, reads Q, and increments the counter
   // each iteration.
-  private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData): boolean {
+  private emitLoopEcrecoverSetup(block: Node, loc: SingleLocationData, condition?: Node): boolean {
     if (this.ecrecoverLoopActive) return false;
     if (this.currentFunctionIsMessageBusRoute) return false;
     if (!this.currentFunction.ecrecoverCompute) return false;
-    if (!this.blockHasEcrecoverCall(block)) return false;
+    const fn = this.currentFunction;
+    // The condition runs inside the loop too. A recovery-loop entry counts a recovery there as one of its loop's
+    // (`ecrecoverTrailingLoop`), so it reads its triples from the counter as well.
+    const regions = condition !== undefined && fn.ecrecoverTrailingLoop === true && fn.blockLayout !== undefined
+      && !this.framedMaster ? [block, condition] : [block];
+    if (!regions.some((region) => this.blockHasEcrecoverCall(region))) return false;
     // A stateful entry's loop reads its triples after the block, which the layout leaves free only when every
     // recovery of the entry is a call in its loop (`ecrecoverTrailingLoop`).
-    const fn = this.currentFunction;
-    if (fn.blockLayout && !this.framedMaster && fn.name !== '__construct' && this.blockHasDirectEcrecoverCall(block)) {
+    if (fn.blockLayout && !this.framedMaster && fn.name !== '__construct'
+      && regions.some((region) => this.blockHasDirectEcrecoverCall(region))) {
       const refuse = (reason: string): never => {
         throw new RecoveryLoopSideCarError(block, reason, RECOVERY_LOOP_SIDE_CAR_DETAIL[reason]);
       };

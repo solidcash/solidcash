@@ -868,13 +868,14 @@ export async function planConstructorCalleeBlock(
     refuse('it creates a contract, and a creating entry refuses a genesis call (A7): one run could both create a '
       + 'child and answer its constructor');
   }
-  // A recovery loop whose triples follow the block (ecrecoverTrailingLoop) is laid out by the ordinary build below.
-  // Any other recovery in a loop is a helper's: every iteration reads the helper's one fixed triple, from arguments
-  // that are not the callee's own. An artifact compiled before recovery loops read after the block reads over its
-  // records instead.
+  // A recovery loop whose triples follow the block (ecrecoverTrailingLoop) is laid out by the ordinary build below,
+  // with a recovery a helper makes in the loop among them: the compiler inlines that helper into the loop. Any other
+  // recovery in a loop is a helper's that the compiler keeps out of it (one returning from both arms of a branch, or
+  // an overload sharing another's arity): every iteration reads the helper's one fixed triple, from arguments that are
+  // not the callee's own. An artifact compiled before recovery loops read after the block reads over its records.
   if (fn.ecrecoverLoopReads === true && fn.ecrecoverTrailingLoop !== true) {
-    refuse('it recovers keys in a loop through a helper: every iteration reads the helper\'s one fixed recovery slot, '
-      + 'from arguments that are not the callee\'s own to lay out');
+    refuse('it recovers keys in a loop through a helper the compiler keeps out of the loop: every iteration reads the '
+      + 'helper\'s one fixed recovery slot, from arguments that are not the callee\'s own to lay out');
   }
   // Regions a run sizes (loops, keccak256 and recovery loops, dynamic state, iterations, the callee's own calls and
   // reads, block reads) and deletes are laid out by the ordinary build of the call; the fixed layout below covers the

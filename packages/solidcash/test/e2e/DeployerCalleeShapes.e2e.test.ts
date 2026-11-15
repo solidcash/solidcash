@@ -658,11 +658,91 @@ describe('a callee that recovers keys in a loop (A7, A14 items 5 and 6)', () => 
     });
 });
 
+describe('a callee that recovers keys in a loop through a helper (A7, A14 items 5 and 6)', () => {
+  // Each iteration recovers through the helper with its own signature: the helper is inlined into the loop, so the
+  // loop reads one triple per iteration after the callee's block and binds it to that iteration's arguments.
+  const SOURCE = `${P} interface I { function f(bytes32 h0, int v0, bytes32 r0, bytes32 s0, bytes32 h1, int v1,
+      bytes32 r1, bytes32 s1, int k) external returns (bool); }
+    contract T(pubkey owner) { int n;
+      function rec(bytes32 h, int v, bytes32 r, bytes32 s) private returns (pubkey) { return ecrecoverPubKey(h, v, r, s); }
+      function f(bytes32 h0, int v0, bytes32 r0, bytes32 s0, bytes32 h1, int v1, bytes32 r1, bytes32 s1, int k)
+        external returns (bool) {
+        for (int i = 0; i < k; i++) {
+          if (i == 0) { require(rec(h0, v0, r0, s0) == owner); } else { require(rec(h1, v1, r1, s1) == owner); }
+        }
+        n = n + 1; return true; } }
+    contract C { bool ok;
+      constructor(I t, bytes32 h0, int v0, bytes32 r0, bytes32 s0, bytes32 h1, int v1, bytes32 r1, bytes32 s1) {
+        ok = t.f(h0, v0, r0, s0, h1, v1, r1, s1, 2); }
+      function read() { require(ok); } }`;
+
+  it('co-spends a shared triple per iteration, each bound to its own signature, and refuses another key or the '
+    + 'triples swapped', async () => {
+    const { ethers } = await import('ethers');
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const wallet = new ethers.Wallet(`0x${'44'.repeat(32)}`);
+    const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex.replace(/^0x/, ''))).reverse();
+    const signature = async (message: string): Promise<unknown[]> => {
+      const parsed = ethers.Signature.from(await wallet.signMessage(message));
+      return [little(ethers.hashMessage(message)), BigInt(parsed.v), little(parsed.r), little(parsed.s)];
+    };
+    const expected = hexToBin(wallet.signingKey.compressedPublicKey.replace(/^0x/, ''));
+    const salt = new Uint8Array(32);
+    const s = setup();
+    const t = await s.deploy(compileString(SOURCE, compileOptions('T')), {}, [expected]);
+    const tLock = addressToLockScript(t.contract.address);
+    const c = compileString(SOURCE, compileOptions('C'));
+    const extra = {
+      initArgs: [tLock, ...await signature('callee-helper-loop-0'), ...await signature('callee-helper-loop-1')],
+      constructorCallees: [{ contract: t.contract }],
+    };
+    for (const [roleIndex, role] of (['A', 'B2', 'M', 'B3'] as const).entries()) {
+      for (const index of [0, 1, 2, 3]) {
+        await s.provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
+          txid: `${(0xc0 + roleIndex).toString(16)}${index.toString(16).padStart(2, '0')}`.padEnd(64, '0'), vout: 0,
+          satoshis: 100_000n,
+          token: { category: 'ed'.repeat(31) + '16', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+        });
+      }
+    }
+    const captured = await s.capture(c, extra);
+    expect(verifies(s.provider, captured)).toBe(true);
+    // Iteration k: A at the callee's master + 3 + 3k, B2 two on.
+    const master = captured.sourceOutputs.findIndex((output) => same(output.lockingBytecode, tLock));
+    for (const k of [0, 1]) {
+      expect(same(captured.sourceOutputs[master + 3 + 3 * k].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'A')))
+        .toBe(true);
+      expect(same(captured.sourceOutputs[master + 5 + 3 * k].lockingBytecode, ecrecoverComputeLockingBytecode(salt, 'B2')))
+        .toBe(true);
+    }
+    // Another key in the second B2's recreation.
+    const forged = withOutput(captured, master + 8, (output) => {
+      const commitment = Uint8Array.from(output.token.nft.commitment);
+      commitment[1] ^= 1;
+      return { ...output, token: { ...output.token, nft: { ...output.token.nft, commitment } } };
+    });
+    expect(inputPasses(s.provider, forged.transaction, forged.sourceOutputs, master)).toBe(false);
+    // The two triples swapped: each iteration meets the other signature in its A.
+    const swap = <T>(items: readonly T[]): T[] => items.map((item, at) => (
+      at >= master + 3 && at < master + 6 ? items[at + 3]! : at >= master + 6 && at < master + 9 ? items[at - 3]! : item));
+    expect(inputPasses(s.provider, {
+      ...captured.transaction, inputs: swap(captured.transaction.inputs), outputs: swap(captured.transaction.outputs),
+    }, swap(captured.sourceOutputs), master)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+  });
+});
+
 describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)', () => {
-  it('refuses a callee that recovers keys in a loop through a helper, before building, with the reason', async () => {
+  it('refuses a callee that recovers keys in a loop through a helper kept out of the loop, before building, with the '
+    + 'reason', async () => {
+    // A helper that returns from both arms of a branch is not inlined: the loop reads its fixed triples.
     const source = `${P} interface I { function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool); }
       contract T { int n;
-        function rec(bytes32 h, int v, bytes32 r, bytes32 s) private returns (pubkey) { return ecrecoverPubKey(h, v, r, s); }
+        function rec(bytes32 h, int v, bytes32 r, bytes32 s) private returns (pubkey) {
+          if (v == 27) { return ecrecoverPubKey(h, 27, r, s); } else { return ecrecoverPubKey(h, 28, r, s); } }
         function f(bytes32 h, int v, bytes32 r, bytes32 s, int k) external returns (bool) {
           for (int i = 0; i < k; i++) { require(rec(h, v, r, s) != 0x); } n = n + 1; return true; } }
       contract C { bool ok; constructor(I t, bytes32 h, int v, bytes32 r, bytes32 s) { ok = t.f(h, v, r, s, 2); }

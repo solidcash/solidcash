@@ -69,6 +69,7 @@ import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 import { checksTransactionSignature, namesCalledFrom } from './transactionSignatureCheck.js';
+import { recoveryLoopHelpers } from './recoveryLoopHelpers.js';
 
 /**
  * Inlines internal/private functions that RETURN a value and need their physical caller's context: state-entry
@@ -227,6 +228,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
   private dynamicStateArrays: Set<string> = new Set(); // chunk-packed (isDynamic) state arrays
   private calledNames: Set<string> = new Set(); // functions some body calls by name
+  // Helpers whose recovery runs in a loop of a stateful function once inlined (`recoveryLoopHelpers`).
+  private recoveryLoopHelpers: Set<string> = new Set();
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
 
@@ -458,6 +461,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       (this.overloadsByKey.get(key) ?? this.overloadsByKey.set(key, []).get(key)!).push(fn);
     }
     this.qualifySiblingCalls();
+    // A recovery a helper makes in a loop reads one triple per iteration only once it is the entry's own loop recovery,
+    // which inlining makes it. A framed compile keeps its helpers.
+    this.recoveryLoopHelpers = this.keepSelfMessageCalls ? new Set() : recoveryLoopHelpers(node, this.freeFns);
     // Canonicalize the common single early-return tail before testing inline eligibility:
     // `if (c) return a; return b;` -> `return c ? a : b;`. This is evaluation-equivalent and lets a helper that
     // transitively performs a low-level/external call inline into its entry point instead of becoming an
@@ -491,7 +497,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // evaluation-equivalent (each later guard is reached only when every earlier guard failed).
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (fn.body && fn.returnTypes.length === 1
-        && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn))) {
+        && (this.touchesOwnEntry(fn) || this.touchesScalarState(fn) || this.recoveryLoopHelpers.has(fn.name))) {
         this.normalizeMultiEarlyReturn(fn);
         this.normalizeGuardedEarlyReturn(fn);
         this.analysisNodes.delete(fn);
@@ -526,7 +532,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           || this.containsMsgSender(fn) || this.containsKeccak(fn) || this.statefulHashesThroughFreeFunction(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
           || this.transitivelyContainsEvent(fn) || (calledByName.has(fn.name) && this.checksSignature(fn))
-          || this.writesCalledDynamicStateArray(fn))) {
+          || this.writesCalledDynamicStateArray(fn) || this.recoveryLoopHelpers.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -623,7 +629,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
           || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.freeFunctionHashes(fn)
-          || (this.keepSelfMessageCalls && this.framedLibraryHashes(fn)))) {
+          || (this.keepSelfMessageCalls && this.framedLibraryHashes(fn)) || this.recoveryLoopHelpers.has(fn.name))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -893,7 +899,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.eligibleShape(fn)) return false;
     return this.touchesOwnEntry(fn) || this.touchesScalarState(fn)
       || this.containsLowLevelCall(fn) || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
-      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.writesCalledDynamicStateArray(fn);
+      || this.transitivelyContainsEvent(fn) || this.checksSignature(fn) || this.writesCalledDynamicStateArray(fn)
+      || this.recoveryLoopHelpers.has(fn.name);
   }
 
   /**
@@ -1709,7 +1716,18 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // duplicates effects nor changes order. More complex arguments stay on the ordinary hoist path/fail closed.
     // Literals are effect-free too; a hashing helper takes them, since its subroutine form misaddresses side-cars.
     const hashes = this.containsKeccak(callee) || this.freeFunctionHashes(callee);
-    if (args.some((arg) => !(arg instanceof IdentifierNode || (hashes && arg instanceof LiteralNode)))) {
+    // A helper whose recovery runs in a loop takes literals too, and an element read of a local value (`h[i]`): the
+    // read has no effect but its bounds check, and it is made where the argument would be when the helper reads that
+    // parameter once. Reduced in place, the recovery stays one of the loop's own.
+    const recovers = this.recoveryLoopHelpers.has(callee.name);
+    const local = (expression: ExpressionNode): boolean => expression instanceof LiteralNode
+      || (expression instanceof IdentifierNode && !this.stateVarNames.has(expression.name)
+        && !this.collectionNames.has(expression.name));
+    const readOnce = (name: string): boolean => this.nodesOf(callee)
+      .filter((candidate) => candidate instanceof IdentifierNode && candidate.name === name).length === 1;
+    if (args.some((arg, index) => !(arg instanceof IdentifierNode || ((hashes || recovers) && arg instanceof LiteralNode)
+      || (recovers && arg instanceof ArrayAccessNode && local(arg.array) && local(arg.index)
+        && readOnce(callee.parameters[index]!.name))))) {
       return undefined;
     }
     const cloned = cloneNode(callee) as FunctionDefinitionNode;

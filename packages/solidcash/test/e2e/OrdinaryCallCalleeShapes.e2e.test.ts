@@ -1879,7 +1879,7 @@ describe('a nested caller\'s calls matched by callsite, and the pool reads of a 
     });
 });
 
-describe('a nested caller\'s call edge by callsite', () => {
+describe('a nested caller\'s call edge by callsite, and a nested low-level call refused by name', () => {
   it('pins D\'s edge for its second call, whose callee U records D as its sender, when D skips its conditional first '
     + 'call (A calls D, which calls T when asked, then U)', async () => {
     const source = `${P} interface IT { function f(int x) external returns (int); }
@@ -1928,4 +1928,28 @@ describe('a nested caller\'s call edge by callsite', () => {
     expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(8n);
     expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(8n);
   });
+
+  it('refuses, by name and before sending, a call that reaches a contract whose function makes a low-level call',
+    async () => {
+      const source = `${P} interface ID { function h(address u, bytes data) external returns (bool); }
+        contract U { int calls; function g(int x) external returns (int) { calls = calls + 1; return x; } }
+        contract D { int n; function h(address u, bytes data) external returns (bool) { u.call(data); n = n + 1;
+          return true; } }
+        contract A { bool ok; function k(ID d, address u, bytes data) external returns (bool) { ok = d.h(u, data);
+          return ok; } }`;
+      const s = setup();
+      const u = await s.deploy(compileString(source, compileOptions('U')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const [uLock, dLock] = [u, d].map((deployed) => addressToLockScript(deployed.contract.address));
+      const before = s.sent.length;
+      // Discovery follows D's typed calls only: nothing would co-spend the callee of D's `u.call(data)`.
+      const refusal = await (a.contract.connect(wallet) as any).call.k(dLock, uLock, Uint8Array.of(1, 2, 3))
+        .withExternalCall(d.contract).send().then(() => undefined, (error: unknown) => error);
+      expect((refusal as Error).message).toMatch(
+        /The call of D\.h cannot be laid out: its low-level call 0 \(a call with a payload\) reaches a callee the SDK /);
+      expect((refusal as Error).message).toMatch(/Make the low-level call from the contract the transaction runs/);
+      expect(s.sent.length).toBe(before);
+    });
 });

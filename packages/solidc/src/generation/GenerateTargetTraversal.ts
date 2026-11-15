@@ -55244,13 +55244,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(2n), loc);
     this.emit(Op.OP_PICK, loc);                          // [elem, idx, callee_bc, elem]
     this.emit(Op.OP_EQUALVERIFY, loc);                   // [elem, idx]
-    if (slot.interfaceName === '__raw__') {
-      // A raw call through an empty element, address(0), fails: only an empty-lock coin matches it.
-      this.emit(Op.OP_OVER, loc);
-      this.emit(Op.OP_SIZE, loc);
-      this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_VERIFY, loc);                      // [elem, idx]
-    }
+    // A call through an empty element, address(0), fails: only an empty-lock coin, which a miner can include,
+    // matches it, as the typed straight-line check refuses (emitCalleeIdentityOperands).
+    this.emit(Op.OP_OVER, loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_VERIFY, loc);                        // [elem, idx]
 
     if (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL) {
       // 2. master bytecode preservation (input == output)
@@ -55583,13 +55582,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_addr)') + 1)), loc); // +1: utxobc
     this.emit(Op.OP_PICK, loc);           // [..., utxobc, addr]
     this.emit(Op.OP_EQUALVERIFY, loc);    // [...]
-    if (node.opaqueReturn) {
-      // A raw call through an empty target, address(0), fails: only an empty-lock coin matches it.
-      this.emitPickAt(this.getStackIndex('(ilc_addr)'), loc);
-      this.emit(Op.OP_SIZE, loc);
-      this.emit(Op.OP_NIP, loc);
-      this.emit(Op.OP_VERIFY, loc);
-    }
+    // A call through an empty target, address(0), fails: only an empty-lock coin, which a miner can include, matches
+    // it, as the typed straight-line check refuses (emitCalleeIdentityOperands).
+    this.emitPickAt(this.getStackIndex('(ilc_addr)'), loc);
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(Op.OP_NIP, loc);
+    this.emit(Op.OP_VERIFY, loc);
 
     // 2-3. master bytecode + category preservation (REGULAR + STATICCALL)
     if (callMode === ExternalCallMode.REGULAR || callMode === ExternalCallMode.STATICCALL) {

@@ -90,6 +90,8 @@ export type SolidcDiagnosticCode =
   | 'ENTRY_TARGET_WRITTEN_BEFORE_CALL'
   // An external call left in an invoked function body, where no entry point lays out or binds its callee.
   | 'EXTERNAL_CALL_IN_SUBROUTINE'
+  // A `{value: v}` call whose target no output the covenant checks can be built for, so the payment would drop.
+  | 'CALL_VALUE_RECIPIENT_UNBOUND'
   // F1: an entry reads a contract-caller msg.sender but its call digest is not in scope where the caller edge binds.
   | 'CALLER_EDGE_DIGEST_UNAVAILABLE'
   // A message-bus entry whose looped call only the route binds, where the route does not serve that entry.

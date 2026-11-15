@@ -30901,6 +30901,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // opaqueReturn -> `targets[i].call(data[i])` (Multicall2, reads the return-event); a TYPED call
           // `IFoo(targets[i]).m(..)` over a param array takes the same per-iteration identity co-spend but verifies
           // the callee's selector and has no opaque return-event (emitInlineLoopExternalCall branches on opaqueReturn).
+          // The per-iteration dispatch checks each element's callee and record but emits no payment output.
+          if (node.callOptions?.value && node.valueTransferIndex >= 0) {
+            this.refuseUnpaidCallValue(node, 'to each element of a loop over targets');
+          }
           loopSlot.inlineLoopDispatch = true;
           this.emitInlineLoopExternalCall(node, loopSlot, locationData);
           return node;
@@ -30962,12 +30966,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Handle {value: X} call option - emit a transfer to the callee's address
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
-      if (slot?.addressParam) {
-        // A target the body can change after the call pays the callee the identity check binds: the value captured here.
-        const recipient = this.callSiteTargets.get(slot.slotIndex)?.register ?? slot.addressParam;
+      // A target the body can change after the call pays the callee the identity check binds: the value captured here.
+      const recipient = slot === undefined ? undefined
+        : this.callSiteTargets.get(slot.slotIndex)?.register ?? slot.addressParam;
+      if (recipient !== undefined) {
         node.callOptions.value = this.emitValueTransfer(
           node.valueTransferIndex, node.callOptions.value, recipient, locationData, node,
         );
+      } else if (slot !== undefined && (slot.addressLiteral !== undefined || slot.addressIsMsgSender === true
+        || slot.addressStateVar !== undefined || slot.runtimeTernaryAddress === true)
+        && this.readsAddressAgain(node.addressExpression)) {
+        // A literal, msg.sender, a state variable or a choice between two stable values: the target expression
+        // reads the address the identity check binds, so the payment goes to the callee that check pins.
+        node.callOptions.value = this.emitValueTransferToExpression(
+          node.valueTransferIndex, node.callOptions.value, cloneNode(node.addressExpression) as ExpressionNode,
+          locationData, node,
+        );
+      } else {
+        this.refuseUnpaidCallValue(node, 'to a target the call site holds as no single value');
       }
     }
 
@@ -32683,6 +32699,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (payload === undefined || this.isVisibleCompatEncodePayload(payload)) return 'non-empty';
     return value instanceof IdentifierNode && value.functionReference === undefined
       ? { payload, holder: value } : 'non-empty';
+  }
+
+  /**
+   * Refuses a `{value: v}` call whose payment no output this covenant checks would carry: its target is not a value the
+   * call site can read again (a name, a literal, msg.sender, a state read), so the payment would drop.
+   */
+  private refuseUnpaidCallValue(node: ExternalFunctionCallNode, where: string): never {
+    const start = node.location?.start;
+    const call = node.interfaceName === '__raw__' ? 'the low-level call'
+      : `the call to ${node.interfaceName}.${node.functionName}`;
+    const at = start ? ` at Line ${start.line}, Column ${start.column}` : '';
+    throw new SolidcDiagnosticError(
+      'CALL_VALUE_RECIPIENT_UNBOUND',
+      `${call} in '${this.currentFunction?.name}'${at} sends {value:} ${where}, so no output the covenant checks `
+        + 'would pay it. Hold the target in a local first',
+      { function: this.currentFunction?.name, line: start?.line },
+    );
+  }
+
+  /** An address expression a call site can read a second time: names, literals, msg.sender, state reads. */
+  private readsAddressAgain(expression: ExpressionNode): boolean {
+    if (expression instanceof CastNode) return this.readsAddressAgain(expression.expression);
+    if (expression instanceof FieldAccessNode) return this.readsAddressAgain(expression.expression);
+    if (expression instanceof TernaryOpNode) {
+      return [expression.condition, expression.ifTrue, expression.ifFalse].every((part) => this.readsAddressAgain(part));
+    }
+    return expression instanceof IdentifierNode || expression instanceof HexLiteralNode
+      || expression instanceof IntLiteralNode || expression instanceof NullaryOpNode
+      || expression instanceof StateAccessNode;
   }
 
   /**

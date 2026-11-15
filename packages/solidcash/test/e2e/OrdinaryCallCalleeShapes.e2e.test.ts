@@ -4,8 +4,10 @@
  * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
  * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
  * always publishes it. Then the same sized shapes in a contract another contract calls (D calls T, T co-spent in D's
- * transaction): T pushes onto a dynamic array, iterates a collection, or hashes in a loop. Each sent transaction is
- * checked by the VM; each tamper case changes one part of it and expects the covenant that binds that part to refuse.
+ * transaction): T pushes onto a dynamic array, iterates a collection, or hashes in a loop. Last, the build of a call for
+ * a contract caller its transaction does not hold, as a constructor's callee is built for the child. Each sent
+ * transaction is checked by the VM; each tamper case changes one part of it and expects the covenant that binds that
+ * part to refuse.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -242,6 +244,77 @@ describe('an ordinary call of a sized function that msg.sender keys', () => {
     expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
     expect(await (t.contract as any).owner(addressToLockScript(wallet.getAddress()))).toBe(9n);
   });
+});
+
+describe('an ordinary build for a contract caller its transaction does not hold (A7)', () => {
+  const SOURCE = `${P} contract T { address[] members; function add(address a) public { members.push(a); }
+      function f() external returns (bool) { members.push(msg.sender); return true; } }`;
+  const CALLER = Uint8Array.of(0xaa, 0x20, ...Array.from({ length: 32 }, (_, index) => index + 1), 0x87);
+  const CATEGORY = Array.from({ length: 32 }, (_, index) => (0x80 + index).toString(16)).join('');
+
+  it('sizes what it stores by the caller\'s lock, which its coin names, and binds the call to the caller\'s edge',
+    async () => {
+      const { parseChunkCommitment } = await import('@solidcash/utils');
+      const { callRecordDigest } = await import('../../src/stateful/call-record.js');
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+      const wallet = await s.wallet();
+      // 1 + 26 + 26 + 36 bytes of members: a P2PKH sender's push fits the first chunk, the 35-byte caller's does not.
+      const p2sh32 = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x5a), 0x87);
+      const members = [encodeLockingBytecodeP2pkh(alicePkh), encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(3)), p2sh32];
+      for (const member of members) {
+        await (t.contract.connect(wallet) as any).call.add(member).send();
+      }
+      const identity = {
+        txid: 'c1'.repeat(32), vout: 0, satoshis: 1000n,
+        token: { category: CATEGORY, amount: 0n, nft: { capability: 'minting' as const, commitment: '' } },
+        unlocker: { generateLockingBytecode: () => CALLER, generateUnlockingBytecode: () => new Uint8Array() },
+      };
+      const call = (t.contract.connect(wallet) as any).call.f().emitReturn()
+        .withCallerIdentity(CALLER, CATEGORY)._withStandInCaller({ identity });
+      const built = await call.build();
+      const program = built.buildLibauthProgram(true) as Sent;
+      const vm = createVirtualMachineBch2026ForProvider(s.provider);
+      const passes = (candidate: Sent): boolean => vm.stateSuccess(
+        vm.evaluate({ ...candidate, inputIndex: 0 } as never) as never) === true;
+      expect(passes(program)).toBe(true);
+      // The caller's coin follows every input, and its recreation and its edge every output: none moves a slot of the
+      // block.
+      const last = program.transaction.inputs.length - 1;
+      expect(binToHex(program.transaction.inputs[last]!.outpointTransactionHash)).toBe(identity.txid);
+      const tail = program.transaction.outputs.slice(-2);
+      expect(tail.every((output) => binToHex(output.token!.category) === CATEGORY)).toBe(true);
+      expect(same(tail[0]!.lockingBytecode, CALLER)).toBe(true);
+      const edge = program.transaction.outputs.length - 1;
+      expect(binToHex(program.transaction.outputs[edge]!.lockingBytecode)).toBe('5161');
+      const fn = t.contract.inner.artifact.abi.find((entry: { name: string }) => entry.name === 'f')!;
+      expect(binToHex(program.transaction.outputs[edge]!.token!.nft!.commitment))
+        .toBe(`${binToHex(callRecordDigest(fn, [])!)}03`);
+      // The push is the caller's, which takes a second chunk.
+      const dataLock = addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId));
+      const chunkLock = program.transaction.outputs.find((output) => output.token !== undefined
+        && binToHex(output.token.category) === t.categoryId && output.token.nft?.capability === 'mutable'
+        && !same(output.lockingBytecode, dataLock))?.lockingBytecode;
+      expect(chunkLock).toBeDefined();
+      const chunks = program.transaction.outputs.filter((output) => same(output.lockingBytecode, chunkLock!))
+        .map((output) => parseChunkCommitment(binToHex(output.token!.nft!.commitment)))
+        .sort((left, right) => left.chunkIndex - right.chunkIndex);
+      expect(chunks.map((chunk) => chunk.chunkData.length)).toEqual([120, 5]);
+      const blob = binToHex(Uint8Array.from(chunks.flatMap((chunk) => [...chunk.chunkData])));
+      expect(blob.endsWith(`23${binToHex(CALLER)}`)).toBe(true);
+
+      // Without the edge, or with the coin at another lock, the run refuses the caller.
+      const withoutEdge = withOutput(program, edge, (output) => ({ ...output, token: undefined }));
+      expect(passes(withoutEdge)).toBe(false);
+      const moved: Sent = {
+        transaction: program.transaction,
+        sourceOutputs: program.sourceOutputs.map((output, index) => (index === last
+          ? { ...output, lockingBytecode: p2sh32 } : output)),
+      };
+      expect(passes(moved)).toBe(false);
+      // Such a call serves a block of another transaction: it is never sent.
+      await expect(call.send()).rejects.toThrow(/stand-in caller .* is never sent/);
+    });
 });
 
 type Signed = { h: Uint8Array; v: bigint; r: Uint8Array; s: Uint8Array; key: Uint8Array };

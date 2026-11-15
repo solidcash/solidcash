@@ -171,6 +171,7 @@ import {
   ValueChunkWriteStagingSession,
   valueChunkWriteResourceIdentity,
 } from './StatefulTransactionBuilder.js';
+import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
 import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
 import { type OnChainState, type ParsedEvent, type EventFilter } from './StateReader.js';
 import {
@@ -7012,6 +7013,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
        */
       callerIdentityUtxos?: UnlockableUtxo[];
       /**
+       * A contract caller the transaction does not hold, for a build whose block runs in another transaction (a
+       * constructor's callee block, A7): its coin, spent after every input and recreated after every output, and the
+       * edge record it pins for the call (F1). With `callerLockingBytecode` and `msgSenderCategory` naming it, the
+       * master's run resolves `msg.sender` to the caller's lock, so every key, stored value and size derived from it is
+       * the caller's.
+       */
+      standInCaller?: StandInCaller;
+      /**
        * The shared side-car pool (salt 0) the keccak256 and ecrecover side-cars come from, listed through this view, for
        * a build laid out to run off input 0: a branded side-car is spendable only beside input 0 of its category.
        */
@@ -13467,6 +13476,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     );
     const builder = constructed.builder;
+    // Before the first derivation: its runs read the caller's coin and edge as the final build holds them.
+    builder.setStandInCaller(overrides?.standInCaller);
     finalArgs = constructed.finalArgs;
     const firstRootDynamicChunk = constructed.firstRootDynamicChunk;
     const refreshTopLevelReturnWitnesses = constructed.refreshTopLevelReturnWitnesses;
@@ -14597,6 +14608,19 @@ export class StatefulFunctionCall {
   /** @internal Take this call's keccak256 and ecrecover side-cars from the shared pool, listed through `pool`. */
   _withSharedSidecarPool(pool: NetworkProvider): this {
     this.sharedSidecarPool = pool;
+    return this;
+  }
+
+  /** A contract caller this call's transaction does not hold, which every build of the call carries. */
+  private standInCaller?: StandInCaller;
+
+  /**
+   * @internal Lay this call out for `caller`, a contract caller its transaction does not hold, as `withCallerIdentity`
+   * names it: each build spends its coin and carries its edge record (`_createBuilder`'s `standInCaller`). The call
+   * serves a block placed in another transaction and is never sent.
+   */
+  _withStandInCaller(caller: StandInCaller): this {
+    this.standInCaller = caller;
     return this;
   }
 

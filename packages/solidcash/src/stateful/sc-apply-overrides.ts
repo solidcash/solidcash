@@ -24,6 +24,7 @@ import type {
   StatefulContract,
 } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import type { StandInCaller } from './stb-materialize-caller-edge-outputs.js';
 
 type StateValueType = StateValue;
 
@@ -37,6 +38,8 @@ export interface ApplyOverridesHost {
   callerCategoryId?: string;
   /** The shared side-car pool (salt 0) a build laid out to run off input 0 takes its side-cars from. */
   sharedSidecarPool?: NetworkProvider;
+  /** A contract caller the transaction does not hold, which every build of the call carries. */
+  standInCaller?: StandInCaller;
   functionName?: string;
   functionArgs?: any[];
   stateOverrides: Array<{ name: string; value: StateValueType }>;
@@ -216,6 +219,7 @@ export async function applyOverrides(
         ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
         ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
+        ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
         ...(host.compilerRoute && {
           abiFunction: host.compilerRoute.abiFunction,
           compilerRouteSelector: host.compilerRoute.selector,
@@ -361,6 +365,7 @@ export async function applyOverrides(
         ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
         ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
+        ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
         ...(host.compilerRoute && {
           abiFunction: host.compilerRoute.abiFunction,
           compilerRouteSelector: host.compilerRoute.selector,
@@ -403,6 +408,7 @@ export async function applyOverrides(
           ...(host.callerCategoryId !== undefined
           && { msgSenderCategory: hexToBin(host.callerCategoryId).reverse() }),
           ...(host.sharedSidecarPool !== undefined && { sharedSidecarPool: host.sharedSidecarPool }),
+          ...(host.standInCaller !== undefined && { standInCaller: host.standInCaller }),
           drainTokenContainers: drainedTokenContainers,
           ...(host.compilerRoute && {
             abiFunction: host.compilerRoute.abiFunction,

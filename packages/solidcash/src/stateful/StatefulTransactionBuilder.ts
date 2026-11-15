@@ -558,7 +558,9 @@ import {
   runBuildMidLateThroughTail as runBuildMidLateThroughTailImpl,
   type RunBuildMidLateThroughTailHost,
 } from './stb-run-build-mid-late-through-tail.js';
-import { appendCallerEdges } from './stb-materialize-caller-edge-outputs.js';
+import {
+  appendCallerEdges, appendStandInCaller, type StandInCaller,
+} from './stb-materialize-caller-edge-outputs.js';
 import { refusePaymentsToStatefulMasters } from './master-lock-payment.js';
 import { appendUnslottedPoolCoSpends } from './block-oracle-reader-selection.js';
 import {
@@ -867,6 +869,8 @@ export class StatefulTransactionBuilder {
   private blockInfoCoSpendUtxos: UnlockableUtxo[] = [];
   private delegateBlockInfoOracle = false;
   private unslottedPoolCoSpends: UnlockableUtxo[] = [];
+  /** A contract caller the transaction does not hold, for a block that runs elsewhere (`setStandInCaller`). */
+  private standInCaller?: StandInCaller;
   private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
@@ -6800,6 +6804,16 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /**
+   * Lay this call out for a contract caller its transaction does not hold (`StandInCaller`): every build spends the
+   * caller's coin after its last input, and recreates it and appends the caller's edge record after its last output, so
+   * the master's run resolves `msg.sender` to the caller's lock and no slot moves. Such a build serves a block placed in
+   * another transaction, and is never sent.
+   */
+  setStandInCaller(caller: StandInCaller | undefined): void {
+    this.standInCaller = caller;
+  }
+
   build(): TransactionBuilder {
     if (this.emitReassertAllowed === undefined) {
       this.emitReassertAllowed = this._isPersistedChunkableValueWriteReady()
@@ -6823,6 +6837,7 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       masterUtxo: this.masterUtxo,
     }, result);
+    if (this.standInCaller !== undefined) appendStandInCaller(this.standInCaller, result);
     return result;
   }
 
@@ -7471,6 +7486,9 @@ export class StatefulTransactionBuilder {
     const provider = this.builderOptions.provider;
     if (!provider) {
       throw new Error('No network provider available');
+    }
+    if (this.standInCaller !== undefined) {
+      throw new Error('A call laid out for a stand-in caller serves a block of another transaction and is never sent');
     }
     const sendTiming = createSendTiming();
 

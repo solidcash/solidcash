@@ -65,6 +65,40 @@ export const TRAILING_BAND_USERS: ReadonlyArray<readonly [keyof AbiFunction, str
   ['lowLevelCalls', 'the blocks of the contracts it calls', NOT_LAID_OUT],
 ];
 
+/** The first run of TRAILING_BAND_USERS that `fn` publishes, if any. */
+export function keccakLoopBandSharer(fn: AbiFunction): (typeof TRAILING_BAND_USERS)[number] | undefined {
+  return TRAILING_BAND_USERS.find(([field]) => {
+    const value = fn[field];
+    return Array.isArray(value) ? value.length > 0 : value === true;
+  });
+}
+
+/**
+ * Whether `fn` hashes in a keccak256 loop and lays out nothing after its block but the loop's side-cars and the chunks
+ * of dynamic state it only reads. It reads side-car k at master + blockSize + k and finds the chunks through
+ * DYNAMIC_READ_BASE, so the chunks follow the side-cars, in a call of the function as in a callee's block.
+ */
+export function readChunksFollowKeccakLoop(fn: AbiFunction): boolean {
+  return fn.keccakLoopReads === true && (fn.dynamicReads?.length ?? 0) > 0
+    && fn.inputs.some((parameter) => parameter.name === DYNAMIC_READ_BASE) && keccakLoopBandSharer(fn) === undefined;
+}
+
+/**
+ * The chunks of dynamic state a function only reads, as the run its loop's probe lays out after the side-cars: each is
+ * recreated at its own index, as its read-only covenant keeps it, and `unlockerAt` names the first chunk's input.
+ */
+export function keccakLoopReadSuccessors(
+  reads: readonly UnlockableUtxo[], unlockerAt: (firstInputIndex: number) => Unlocker,
+): KeccakLoopTrailingSuccessors {
+  return {
+    inputs: [...reads],
+    outputs: reads.map((chunk) => ({
+      to: chunk.unlocker.generateLockingBytecode(), amount: chunk.satoshis, ...(chunk.token && { token: chunk.token }),
+    })),
+    unlockerAt,
+  };
+}
+
 const coinKey = (utxo: Pick<Utxo, 'txid' | 'vout'>): string => `${utxo.txid.toLowerCase()}:${utxo.vout}`;
 
 /**
@@ -127,10 +161,7 @@ export async function appendCreateBuilderNestedCalleeKeccakLoop(input: {
   const refuse = (what: string): never => {
     throw new Error(`The call of ${functionLabel} cannot be laid out: ${what}`);
   };
-  const sharer = TRAILING_BAND_USERS.find(([field]) => {
-    const value = bAbiFunc[field];
-    return Array.isArray(value) ? value.length > 0 : value === true;
-  });
+  const sharer = keccakLoopBandSharer(bAbiFunc);
   if (sharer !== undefined) {
     refuse(`its keccak256 loop shares the inputs after its block with ${sharer[1]}${sharer[2]}`);
   }
@@ -169,14 +200,7 @@ export async function appendCreateBuilderNestedCalleeKeccakLoop(input: {
     return bSc.inner.createAbiUnlocker(bAbiFunc)(...frame);
   };
   const unlocker = unlockerAt(undefined);
-  // Each read chunk is recreated at its own index, as its read-only covenant keeps it.
-  const successors: KeccakLoopTrailingSuccessors | undefined = trailingReads.length === 0 ? undefined : {
-    inputs: [...trailingReads],
-    outputs: trailingReads.map((chunk) => ({
-      to: chunk.unlocker.generateLockingBytecode(), amount: chunk.satoshis, ...(chunk.token && { token: chunk.token }),
-    })),
-    unlockerAt: (firstInputIndex) => unlockerAt(firstInputIndex),
-  };
+  const successors = trailingReads.length === 0 ? undefined : keccakLoopReadSuccessors(trailingReads, unlockerAt);
   const plainCoin = (index: number): UnlockableUtxo => ({
     txid: `${'00'.repeat(28)}${(index + 1).toString(16).padStart(8, '0')}`,
     vout: 0,

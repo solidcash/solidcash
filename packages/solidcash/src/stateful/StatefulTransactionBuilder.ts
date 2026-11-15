@@ -510,6 +510,7 @@ import {
   type RepairComputedChunkOutputHost,
 } from './stb-repair-computed-chunk-output.js';
 import { buildInputs, insertBandPadDemand, type BuildInputsHost } from './stb-build-inputs.js';
+import { readChunksFollowKeccakLoop } from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import {
   applyLearnedWriterEvents,
   learnFinalizedDelegateEvents,
@@ -922,6 +923,20 @@ export class StatefulTransactionBuilder {
 
   private get keccakLoopFollowsTrailingUser(): boolean {
     return !this.keccakLoopPrecedesTrailingUser && this.insertLoopPredecessorInputs.length > 0;
+  }
+
+  /**
+   * A keccak256 loop whose band after the block holds its side-cars and the chunks of dynamic state the function only
+   * reads, and nothing else: the loop reads side-car k at master + blockSize + k and the function finds the chunks
+   * through its witness, so the chunks follow the side-cars, as their outputs already do.
+   */
+  private get keccakLoopLeadsReadChunks(): boolean {
+    const abiFunction = (this.masterUtxo?.unlocker as { abiFunction?: AbiFunction } | undefined)?.abiFunction;
+    return abiFunction !== undefined && readChunksFollowKeccakLoop(abiFunction)
+      && this.keccakLoopSideCars.length > 0 && this.iterationEntryInputs.length > 0
+      && this.dynamicChunkInputs.length === 0 && this.insertLoopPredecessorInputs.length === 0
+      && !this.loopEntriesBeforeDynamicChunks
+      && this.externalCallUtxoGroups.length === 0 && this.lowLevelCallUtxoGroups.length === 0;
   }
 
   /** Side-cars a run reads from blockSize on: a keccak chain's or loop's, and a recovery loop's triples. */
@@ -2987,6 +3002,7 @@ export class StatefulTransactionBuilder {
         return (self.masterUtxo?.unlocker as { abiFunction?: { keccakLoopPrecedesTrailingUser?: boolean } })
           ?.abiFunction?.keccakLoopPrecedesTrailingUser === true;
       },
+      get keccakLoopLeadsReadChunks() { return self.keccakLoopLeadsReadChunks; },
       get ecrecoverComputeCoSpendUtxos() { return self.ecrecoverComputeCoSpendUtxos; },
       get lowLevelCallRawInputs() { return self.lowLevelCallRawInputs; },
       get iterationEntryInputs() { return self.iterationEntryInputs; },

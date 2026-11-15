@@ -1,7 +1,8 @@
 /**
  * Ordinary calls of the shapes a constructor's callee takes its block from (A14 item 5): a low-level call whose result
  * the function reads, an entry that iterates a collection, a keccak256 loop on side-cars of the shared pool (salt 0, as
- * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
+ * a callee off input 0 needs), a keccak256 loop beside the chunks of dynamic state the function only reads, a sized
+ * entry msg.sender keys, a stateful function that recovers keys in a loop, and a
  * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
  * always publishes it. Then the same sized shapes in a contract another contract calls (D calls T, T co-spent in D's
  * transaction): T pushes onto a dynamic array, iterates a collection, or hashes in a loop, called by the transaction's
@@ -232,6 +233,67 @@ describe('an ordinary call whose keccak256 loop takes its side-cars from the sha
     expect(sidecars).toEqual([master + 3, master + 4]);
     expect(inputPasses(s.provider, withOutput(sent, sidecars[1]!, bumpCommitment), master)).toBe(false);
   });
+});
+
+describe('an ordinary call whose keccak256 loop reads dynamic state it does not write', () => {
+  // The function reads its array before the loop: its loop probe meets the read first.
+  const SOURCE = `${P} contract T { int[] a; bytes32 h; int seen; function put(int x) public { a.push(x); }
+      function f(bytes b, int k) external returns (int) {
+        int v = a[0]; bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; seen = v; return v; } }`;
+
+  it('lays out the chunks after the loop\'s side-cars, and refuses another digest or a side-car moved into the chunks',
+    async () => {
+      const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+      const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+      const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+      const s = setup();
+      const artifact = compileString(SOURCE, compileOptions('T'));
+      const fn = artifact.abi.find((entry) => entry.name === 'f')!;
+      expect(fn.keccakLoopReads).toBe(true);
+      expect(fn.dynamicReads).toEqual(['a']);
+      expect(fn.dynamicWrites ?? []).toEqual([]);
+      const t = await s.deploy(artifact);
+      const wallet = await s.wallet(6);
+      await (t.contract.connect(wallet) as any).call.put(5n).send();
+      await (t.contract.connect(wallet) as any).call.put(7n).send();
+      // The call co-spends side-cars under the contract's own brand.
+      const lock = keccakComputeLockingBytecode(hexToBin(t.categoryId).slice().reverse(), true);
+      for (const index of [0, 1]) {
+        await s.provider.seedUtxo(binToHex(lock), computeSideCarStandIn('keccak-loop-direct-read', lock, index));
+      }
+      const b = Uint8Array.of(8, 9);
+      await (t.contract.connect(wallet) as any).call.f(b, 2n).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(await t.contract.getState()).toMatchObject({ seen: 5n });
+      expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+
+      // The block, then one side-car per iteration, then the array's chunk, each recreated at its own index: each
+      // side-car with the digest, the chunk as it was.
+      const master = inputAt(sent, addressToLockScript(t.contract.address));
+      const band = master + fn.blockLayout!.blockSize;
+      expect(outputsAt(sent, lock)).toEqual([band, band + 1]);
+      for (const index of [band, band + 1]) {
+        expect(same(sent.sourceOutputs[index].lockingBytecode, lock)).toBe(true);
+        expect(binToHex(sent.transaction.outputs[index]!.token!.nft!.commitment)).toBe(binToHex(keccak(b)));
+      }
+      const chunkLock = addressToLockScript(getDynamicChunkAddress(
+        t.contract.inner as never, t.categoryId, 'a', 'int256[]',
+      ));
+      const chunks = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, chunkLock) ? index : -1))
+        .filter((index) => index >= 0);
+      expect(chunks).toEqual([band + 2]);
+      expect(outputsAt(sent, chunkLock)).toEqual(chunks);
+      expect(binToHex(sent.transaction.outputs[band + 2]!.token!.nft!.commitment))
+        .toBe(binToHex(sent.sourceOutputs[band + 2].token.nft.commitment));
+      // Another digest: refused by the side-car and by the master, which reads it.
+      const forged = withOutput(sent, band + 1, bumpCommitment);
+      expect(inputPasses(s.provider, forged, band + 1)).toBe(false);
+      expect(inputPasses(s.provider, forged, master)).toBe(false);
+      // The last side-car moved into the chunk run, the chunk into the loop's: refused by the master, whose loop and
+      // read each meet the other's input.
+      expect(inputPasses(s.provider, swapIndexes(sent, band + 1, band + 2), master)).toBe(false);
+    });
 });
 
 describe('an ordinary call of a sized function that msg.sender keys', () => {

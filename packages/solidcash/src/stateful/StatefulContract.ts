@@ -482,7 +482,10 @@ import {
 import {
   deriveFullPhase1CalleeDynamicChunks as deriveFullPhase1CalleeDynamicChunksImpl,
 } from './sc-derive-full-phase1-callee-dynamic-chunks.js';
-import { sharedSidecarPoolWithout } from './sc-append-create-builder-nested-callee-keccak-loop.js';
+import {
+  keccakLoopReadSuccessors, readChunksFollowKeccakLoop, sharedSidecarPoolWithout,
+} from './sc-append-create-builder-nested-callee-keccak-loop.js';
+import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import {
   deriveFullPhase1ProgressiveEntries as deriveFullPhase1ProgressiveEntriesImpl,
 } from './sc-derive-full-phase1-progressive-entries.js';
@@ -13171,9 +13174,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
+      // The chunks of dynamic state the function only reads follow the side-cars (stb-build-inputs): the function
+      // finds them through its `__internal__dynamicChunkInputBase` witness. Each probe places them past its own
+      // side-cars, with the witness naming them there as the build encodes it, so a read made before the loop
+      // reaches them. The probe's master is input 0.
+      const readChunks = readChunksFollowKeccakLoop(abiFunction) && dynamicReadChunkInputs.length > 0
+        && topLevelDynamicChunkArgumentIndex >= 0 && overrides?.compilerRouteSelector === undefined
+        ? keccakLoopReadSuccessors(dynamicReadChunkInputs, (firstInputIndex) => {
+          const witness = finalArgs[topLevelDynamicChunkArgumentIndex];
+          finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(firstInputIndex, 0, false);
+          try {
+            return buildStateInputUnlocker();
+          } finally {
+            finalArgs[topLevelDynamicChunkArgumentIndex] = witness;
+          }
+        })
+        : undefined;
       const loop = await this._resolveStatefulKeccakLoop(
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
-        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors, ownSidecarPool,
+        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors, ownSidecarPool, readChunks,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;

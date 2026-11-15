@@ -33,6 +33,12 @@ export interface BuildInputsHost {
   keccakComputeCoSpendUtxos: UnlockableUtxo[];
   keccakLoopSideCars: UnlockableUtxo[];
   keccakLoopPrecedesTrailingUser: boolean;
+  /**
+   * The keccak256 loop's side-cars and the chunks of dynamic state the function only reads (`iterationEntryInputs`)
+   * are the whole band after the block: the loop reads side-car k at master + blockSize + k, and the function finds
+   * the chunks through its witness, so they follow the side-cars.
+   */
+  keccakLoopLeadsReadChunks: boolean;
   ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
   lowLevelCallRawInputs: UnlockableUtxo[];
   iterationEntryInputs: UnlockableUtxo[];
@@ -257,7 +263,7 @@ export function buildInputs(
     // A direct keccak loop and a runtime mapping loop share the trailing band. The compiler seeds each family's
     // counter from the widths accumulated by the families that precede it in source order, so the physical inputs
     // must follow that same order (keccak side-cars first when the keccak loop precedes the mapping loop).
-    const trailingInputs = host.keccakLoopPrecedesTrailingUser
+    const sourceOrderedTrailingInputs = host.keccakLoopPrecedesTrailingUser
       ? [
         ...host.iterationEntryInputs,
         ...host.dynamicChunkInputs,
@@ -272,6 +278,11 @@ export function buildInputs(
         ...host.keccakLoopSideCars,
         ...(host.loopEntriesBeforeDynamicChunks ? loopAlignmentFunders : []),
       ];
+    // A keccak loop beside nothing but the chunks of dynamic state the function only reads takes the band's start: the
+    // chunks are found through the function's witness, wherever they sit.
+    const trailingInputs = host.keccakLoopLeadsReadChunks
+      ? [...host.keccakLoopSideCars, ...host.iterationEntryInputs]
+      : sourceOrderedTrailingInputs;
     let trailingIdx = 0;
     let trailingDisposalIdx = 0;
     const trailingDisposalOffsets = new Set(
@@ -921,7 +932,10 @@ export function buildInputs(
     ...orderedFrontRegionCoSpends(host.blockLayout, host.dataNftUtxos.length, host),
     ...externalOutStateInputs, ...externalCallInputs,
     ...lowLevelCallInputs, ...host.lowLevelCallRawInputs,
-    ...entryInputs, ...host.iterationEntryInputs, ...trailingLoopInputs,
+    ...entryInputs,
+    ...(host.keccakLoopLeadsReadChunks
+      ? [...trailingLoopInputs, ...host.iterationEntryInputs]
+      : [...host.iterationEntryInputs, ...trailingLoopInputs]),
     ...host.dynamicChunkInputs, ...host.trailingDisposalInputs,
     ...tokenContainerInputs, ...satoshiContainerInputs,
     ...host.funderUtxos,

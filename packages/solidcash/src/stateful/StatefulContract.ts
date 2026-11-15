@@ -55,6 +55,7 @@ import {
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
 import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
+import { boundedIntegerRange, givenOrderRangeBreak, upsertLoopRewriteReason } from './upsert-loop-rewrites.js';
 import { encodeEvmInvocationResult } from './evm-abi-result.js';
 import {
   buildKeccakComputeSidecar, learnKeccakPreimages, scanKeccakPreimageReads,
@@ -10495,6 +10496,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`vmap upsert loop ${info.collection}: recipients/amounts length mismatch`);
         }
         const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
+        // Below, the SDK rewrites the call's own arrays to reach the order the covenant folds: it merges a repeated key,
+        // groups a repeated scalar key's turns, nets the sender's own credit out, and orders a gap's new keys. The
+        // rewritten call means what the caller's call means only when each turn's own pair fixes all the turn does
+        // (`pairwise`, and `senderDebit` for a net-out). Otherwise a call the covenant folds as given is built as given,
+        // and any other is refused by name. A lowered counter loop's permutation is compiler-owned, the covenant's own
+        // to order, and authenticated as a permutation of the turns it runs.
+        const publicKeys = !info.varyingArrayParam.startsWith('__internal__');
+        const rewriteReason = (): string => upsertLoopRewriteReason(info);
+        const givenKeys = Array.isArray(keysArr) ? [...keysArr as unknown[]] : [];
+        const givenValues = Array.isArray(valsArr) ? [...valsArr as unknown[]] : undefined;
+        let rangeChecked = false;
+        // Under the EVM the call runs its turns as given. A bounded integer the given order takes past its type's range
+        // reverts that call; a merged, reordered or shortened call adds the same values in other partial sums, and need
+        // not. Refuse such a call before rewriting it, rather than send a rewrite that succeeds.
+        const refuseGivenOrderRangeBreak = (): void => {
+          if (rangeChecked) return;
+          rangeChecked = true;
+          const range = boundedIntegerRange(collection.valueType);
+          if (!info.pairwise || range === undefined || (info.op !== '+' && info.op !== '-')) return;
+          let sender: Uint8Array | undefined;
+          if (info.senderDebit && this._signer) {
+            try {
+              sender = keyToSlotMulti([...fixedBins, addressToLockScript(this._signer.getAddress())], collection);
+            } catch { sender = undefined; }
+          }
+          const slots = new Map<string, Uint8Array>(sender === undefined ? [] : [[binToHex(sender), sender]]);
+          const turns = givenKeys.map((key, turn) => {
+            const slot = slotForKey(key);
+            slots.set(binToHex(slot), slot);
+            return { slotHex: binToHex(slot), amount: scalarAmt ?? toBig(givenValues?.[turn]) };
+          });
+          const broken = givenOrderRangeBreak({
+            op: info.op, range, turns, senderSlotHex: sender === undefined ? undefined : binToHex(sender),
+            current: (slotHex) => {
+              const entry = list.find(slots.get(slotHex)!);
+              return entry ? vmNumberToBigInt(entry.value, { requireMinimalEncoding: false }) as bigint : 0n;
+            },
+          });
+          if (broken !== undefined) {
+            throw new Error(`vmap upsert loop ${info.collection}: under the EVM this call reverts: ${broken}, outside `
+              + `${collection.valueType}; the SDK would rewrite '${info.varyingArrayParam}' to the order the covenant `
+              + 'takes, which need not revert, so it refuses the call');
+          }
+        };
         // A repeated key whose turns are observable cannot be merged: when a turn reads the entry it writes, a later
         // occurrence reads what an earlier one wrote; a value computed at run time is the last occurrence's, not the
         // first's; and a per-turn effect (an event, a require, another write) runs once per turn, which the merge
@@ -10522,7 +10567,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && !info.valueArrayIndexParam && (isDelete || perKey || info.op === 'set')) {
           const kArr = keysArr as unknown[];
           const slotHexes = kArr.map((key) => binToHex(slotForKey(key)));
-          if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+          const repeat = slotHexes.findIndex((h, i) => slotHexes.indexOf(h) !== i);
+          if (repeat >= 0) {
+            // The merge runs a repeated key as one turn, its last value or its sum, which is the key's every turn only
+            // when the pair alone fixes each turn.
+            if (!info.pairwise) {
+              throw new Error(`vmap upsert loop ${info.collection}: key ${repeat} of '${info.varyingArrayParam}' repeats `
+                + `an earlier key, and ${rewriteReason()}, so its turns cannot be merged; pass each key once`);
+            }
+            refuseGivenOrderRangeBreak();
             const seen = new Set<string>();
             const order: number[] = [];
             const merged = new Map<string, unknown>();
@@ -10560,15 +10613,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (!groups.has(h)) { groups.set(h, []); firstOrder.push(h); }
               groups.get(h)!.push(i);
             });
-            keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
-            const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-            if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
+            const grouped = firstOrder.flatMap((h) => groups.get(h)!);
+            if (grouped.some((source, target) => source !== target)) {
+              if (publicKeys && !info.pairwise) {
+                const repeat = slotHexes.findIndex((h, i) => slotHexes.indexOf(h) !== i);
+                throw new Error(`vmap upsert loop ${info.collection}: key ${repeat} of '${info.varyingArrayParam}' repeats `
+                  + 'an earlier key, whose turns the covenant adds only one after another, so it takes '
+                  + `'${info.varyingArrayParam}' only in the order of indices [${grouped.join(', ')}]; the SDK would `
+                  + `reorder the call to that order, but ${rewriteReason()}, so the reordered call need not mean what `
+                  + "this one means. Pass a repeated key's turns together if that is the call you mean.");
+              }
+              keysArr = grouped.map((i) => kArr[i]);
+              const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
+              if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
+            }
           }
         }
         // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
-        // Since the debit and the credit share amounts[i], dropping that entry from recipients+amounts leaves the debit
-        // summing (total - own) and never credits msg.sender separately - the identical net, with msg.sender co-spent
-        // ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches it.
+        // When the debit and the credit share amounts[i] (`senderDebit`), dropping that entry from recipients+amounts
+        // leaves the debit summing (total - own) and never credits msg.sender separately - the identical net, with
+        // msg.sender co-spent ONCE (the debit) instead of twice. Solidity allows a self-transfer in a batch; this matches
+        // it. A loop whose debit is not the turn's own, or whose turn its pair alone does not fix, is refused instead.
         if (!info.mutation && foldActive && this._signer && Array.isArray(keysArr) && keysArr.length > 0) {
           const debitE = entryNfts.find((e) => e.collection === info.collection && e.exists && e.utxo);
           let senderKey: Uint8Array | null = null;
@@ -10585,7 +10650,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               throw new Error(`vmap upsert loop ${info.collection}: a credit to the sender itself cannot be netted out `
                 + 'because each turn has its own effect; send it as its own call');
             }
+            if (keepIdx.length < kArr.length && !(info.pairwise && info.senderDebit)) {
+              const own = kArr.findIndex((_key, i) => !keepIdx.includes(i));
+              throw new Error(`vmap upsert loop ${info.collection}: element ${own} of '${info.varyingArrayParam}' credits `
+                + "the sender itself; the covenant co-spends the sender's entry once, for this call's own write to it, so "
+                + 'the SDK would leave that turn out, but '
+                + `${info.pairwise ? 'the loop is not proven to debit the sender by the value it credits' : rewriteReason()}`
+                + ", so the shorter call need not mean what this one means. Send the sender's own credit in a call of "
+                + 'its own.');
+            }
             if (keepIdx.length < kArr.length) {
+              refuseGivenOrderRangeBreak();
               keysArr = keepIdx.map((i) => kArr[i]);
               const recipIdx = loopAbiFunction.inputs.findIndex((p) => p.name === info.varyingArrayParam);
               if (!runtimeFiltered && recipIdx >= 0) replaceLoopArgument(recipIdx, keysArr as FunctionArgument);
@@ -10602,10 +10677,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
         // CASE (b) ADJACENCY REORDER: the covenant folds a new recipient into a credited predecessor P only when P is
-        // processed IMMEDIATELY before it. The multiTransfer result is order-independent, so reorder recipients+amounts
-        // (as a PAIR, preserving each recipient's amount) to place each such new recipient right after P. Chains /
-        // two-in-gap can't be made adjacent and stay fail-closed. Crediting loops only (foldActive); write back to args
-        // so the encoded tx argument matches the commitment order the covenant verifies.
+        // processed IMMEDIATELY before it. A pairwise loop's result (a multiTransfer's) is order-independent, so reorder
+        // recipients+amounts (as a PAIR, preserving each recipient's amount) to place each such new recipient right
+        // after P; any other loop is refused unless the call is already in that order. Crediting loops only
+        // (foldActive); write back to args so the encoded tx argument matches the commitment order the covenant
+        // verifies.
         if (foldActive && Array.isArray(keysArr) && keysArr.length > 1) {
           const kArr = keysArr as unknown[];
           const slotsB = kArr.map((key) => slotForKey(key));
@@ -10623,12 +10699,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             insertsByPred.get(ph)!.push(i);
           });
           // Reorder only when it changes something: a gap with >1 insert (chain) or an insert bracketed by a credited
-          // update (case-b adjacency). Result is order-independent, so this is transparent.
+          // update (case-b adjacency), and only a pairwise loop's call, whose result is order-independent.
           let needsReorder = false;
           for (const [ph, arr] of insertsByPred) if (arr.length > 1 || updBySlot.has(ph)) needsReorder = true;
           if (needsReorder) {
             for (const [, arr] of insertsByPred) {
-              arr.sort((a, b) => (bytesToSlotValue(slotsB[a]) < bytesToSlotValue(slotsB[b]) ? -1 : 1));
+              // Stable: equal slots, a key a counter loop repeats, keep the order its turns were given in.
+              arr.sort((a, b) => {
+                const [left, right] = [bytesToSlotValue(slotsB[a]), bytesToSlotValue(slotsB[b])];
+                return left < right ? -1 : left > right ? 1 : 0;
+              });
             }
             const order: number[] = [];
             const placed = new Set<number>();
@@ -10645,10 +10725,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               emitGap(ph); // untouched / HEAD gap: place the whole ascending group here
             }
             for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
-            if (runtimeFiltered && order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex)) {
+            const permutes = order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex);
+            if (runtimeFiltered && permutes) {
               throw new Error(`vmap upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
               + 'split the action sequence so each selected mapping transition is already adjacent.');
             }
+            // An order the covenant already folds is written back unchanged; any other is a rewrite of the call.
+            if (permutes && publicKeys && !info.pairwise) {
+              throw new Error(`vmap upsert loop ${info.collection}: the covenant takes '${info.varyingArrayParam}' only in `
+                + `the order of indices [${order.join(', ')}], a gap's new keys one after another in ascending slot `
+                + 'order and each right after the credited entry it follows; the SDK would reorder the call to that order, '
+                + `but ${rewriteReason()}, so the reordered call need not mean what this one means. Pass `
+                + `'${info.varyingArrayParam}' in that order if that is the call you mean.`);
+            }
+            if (permutes) refuseGivenOrderRangeBreak();
             keysArr = order.map((i) => kArr[i]);
             // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
             // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx

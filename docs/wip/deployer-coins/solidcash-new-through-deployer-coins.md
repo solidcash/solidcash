@@ -122,17 +122,34 @@ once (D12), and the regressions it found are fixed.
   message-bus compile is now never record-sound (A7).
 - A constructor header whose `Name(args)` names a modifier failed.
 
-**Still refused before sending:**
-- a constructor callee that passes `msg.sender` on to a contract it calls;
-- `tx.origin` in a callee laid out by its ordinary build;
-- transitive dynamic callees (A calling B, which calls C);
-- a callee's keccak loop beside other runs after its block;
-- a recovery whose R is ±G or ±φ(G);
-- a Solidity port's refused recovery inputs;
-- a key at infinity on the framed path.
+**Lifted and fixed later the same day:**
+- A constructor callee that passes `msg.sender` on to a contract it calls builds for the child. An ordinary nested
+  call passes the frame's caller, and the artifact names a passed-on `tx.origin` (`senderOp`).
+- An ordinary A -> B -> C builds when C walks a collection, writes dynamic state or hashes in a loop. B's coordinates
+  for C are read from the assembled transaction.
+- A callee's keccak loop beside the chunks of dynamic state it only reads builds.
+- A sorted loop that pays BCH every turn settles.
+- A Solidity port's refused recovery inputs answer the zero address. The SDK republishes a record's bytes for every
+  value a call leaves as it was.
+- A key at infinity on the framed path answers the zero address.
+- The SDK refuses to deploy a contract no input can spend (`UnspendableContractError`). Automatic message-bus
+  selection gives way to the direct build when the bus build is over the limit.
+- NativeUsdt and the unsplit OZ native token fit the 10,000-byte input again: a size-pressure outlining pass runs on
+  direct programs within 1,000 B of the configured limit (D12).
 
-**Failing before this branch, and still failing:** NativeUsdt and the unsplit OZ native token exceed the
-10,000-byte input limit, as they already did at `07552ad33` (D12).
+**Still refused before sending:**
+- `tx.origin` in a callee laid out by its ordinary build, whether read or passed on.
+- A callee's keccak loop beside a walk or a dynamic write. No transaction can satisfy both, though the compiler
+  accepts the function.
+- A callee's keccak loop beside per-turn payments or events. The SDK lays out no callee per-turn effects.
+- An A -> B -> C whose C reads another region after its block, whose C shares its block with another call, or whose
+  B calls C in a loop or as a frame.
+- A recovery whose R is ±G or ±φ(G).
+
+**Found and open:**
+- Under `emitReturn`, a nested callee's other absolute input witnesses are planned one input early: the dynamic-chunk
+  base, the blockhash index and the block-oracle index.
+- A nested caller that calls two contracts leaves `__internal__extcallMasterIdx<slot>` at 0.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -5002,8 +5019,9 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
           - `OzBchNativeInheritance` (3 tests): the unsplit token's master input is 10,447 B (10,081 B at
             `07552ad33`), and its 9,550 B budget is exceeded.
 
-          These two contracts exceed the 10,000-byte input limit and stay failing. Master (`56602295f`) compiles
-          both of them larger still: NativeUsdt's master to 9,871 B and the OZ token to 9,678 B.
+          These two contracts exceeded the 10,000-byte input limit. Master (`56602295f`) compiles both of them
+          larger still: NativeUsdt's master to 9,871 B and the OZ token to 9,678 B. Both pass since the
+          size-pressure pass (`b999940c8`, see below).
       - **The final targeted run, at `bbff35733`**, covered every test file the changes since `7bb1fdefc` touched,
         the agents' neighbour sets, all 100 of solidc's message-bus journal files, the size and hash tripwires and
         the classified files.
@@ -5012,6 +5030,17 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
         - solidcash: 145 files and 1,534 tests. 1,513 passed, 16 failed and 5 were skipped. The 16 failures are the
           NativeUsdt and `OzBchNativeInheritance` cases above.
         - bch-next's deployer tests: 16 of 16 passed in the sandbox.
+      - **After the later items of 2026-11-15**, the union runs on `deployer-spec`, each on rebuilt dists:
+        - At `b999940c8`, solidc ran whole, by a slip in the run's file list: 525 files and 8,052 tests, 8,046
+          passed, 0 failed and 6 skipped. solidcash's targeted set: 150 files and 1,564 tests, 1,559 passed,
+          0 failed and 5 skipped. utils 163 of 163, bch-next's deployer tests 16 of 16. `NativeUsdt` and
+          `OzBchNativeInheritance` pass: the size-pressure pass brings both under the limit.
+        - At `d93e9e71c`, after the `address(0)` refusal: solidc 196 files and 4,666 tests, 4,660 passed, 0 failed
+          and 6 skipped; solidcash 159 files and 1,619 tests, 1,612 passed and 5 skipped. The 2 failures were
+          `AtomicMessageBusCapacity`'s two-party pins, which moved by 8 B and are re-pinned (`b4c543227`).
+        - At `89460cf59`, after the call-site binding: the neighbour lists and the pinned size and hash tripwires,
+          solidc 32 files and 1,635 tests (1,634 passed, 1 skipped), solidcash 38 files and 581 tests (580
+          passed, 1 skipped).
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes. Measured 2026-11-14 with the transaction survey on production-profile creations whose callee

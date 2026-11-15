@@ -1108,6 +1108,15 @@ function comparesAddresses(left: Type | undefined, right: Type | undefined): boo
   return (left instanceof AddressType || right instanceof AddressType) && address(left) && address(right);
 }
 
+/**
+ * `==` or `!=` between an address and a 20-byte EVM identity that converts to one, such as the address `ecrecoverEvm`
+ * (bare `ecrecover` in `evm` mode) answers. A hex literal beside an address is already cast to one.
+ */
+function comparesAddressWithEvmIdentity(left: Type | undefined, right: Type | undefined): boolean {
+  const identity = (type: Type | undefined): boolean => type instanceof AddressBytesType && type.bound === 20;
+  return (left instanceof AddressType && identity(right)) || (right instanceof AddressType && identity(left));
+}
+
 /** `address(0)` written as a literal, which is the empty zero itself. */
 function isZeroAddressLiteral(expression: ExpressionNode): boolean {
   return expression instanceof CastNode && !expression.isUnsafe && expression.type instanceof AddressType
@@ -21839,9 +21848,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the `msg.sender` it was recorded from, so both operands are normalized to the identity first. A 32-byte word
     // is that identity only when its first 12 bytes are zero. The graph-call lane still takes the last 20 of a
     // script hash; this comparison does not. The native language keeps its exact-byte address equality.
+    // On the direct convention an address compared with the 20-byte identity a recovery answers (`ecrecover` in `evm`
+    // mode, typed as a value that converts to an address) is normalized too: a refused recovery's 20 zero bytes are
+    // address(0)'s identity, as the EVM's zero address is.
     if ((this.compilerOptions.evmCompat)
       && (node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE)
-      && node.left.type instanceof AddressType && node.right.type instanceof AddressType) {
+      && ((node.left.type instanceof AddressType && node.right.type instanceof AddressType)
+        || (this.directConvention && comparesAddressWithEvmIdentity(node.left.type, node.right.type)))) {
       const identityLocation = { location: node.location, positionHint: PositionHint.END };
       node.left = this.visit(node.left);
       for (const operation of compileAddressToEvmIdentity()) this.emit(operation, identityLocation);

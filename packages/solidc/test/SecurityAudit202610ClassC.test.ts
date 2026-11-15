@@ -62,10 +62,10 @@ function redeemUnlock(
 ): Uint8Array {
   const args = fn.inputs.map((entry) => {
     // Fix B void record (returnOutputIdx) and F1 call edge (callEdgeOutputIdx<n>) default to a standalone compact
-    // spend (-1): no output named, nothing pinned.
+    // spend (-1): no output named, nothing pinned. An ordinary spend's genesis call is empty (B6.5).
     const value = values[entry.name] ?? (
       entry.name === '__internal__returnOutputIdx' || /^__internal__callEdgeOutputIdx\d+$/.test(entry.name)
-        ? num(-1n) : undefined);
+        ? num(-1n) : entry.name === '__internal__genesisCall' ? new Uint8Array() : undefined);
     if (value === undefined) throw new Error(`no value for ${fn.name}.${entry.name}`);
     return value;
   }).reverse();

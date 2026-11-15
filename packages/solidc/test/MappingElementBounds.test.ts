@@ -56,6 +56,8 @@ function updateWitness(name: string): Uint8Array | undefined {
   // Fix B: an ordinary void entry carries a universal void call record at this witness; a standalone VM spend
   // compacts it and names no output (witness -1).
   if (name === '__internal__returnOutputIdx') return encodeIntegerValue(-1n);
+  // B6.5: an ordinary spend's genesis call is empty.
+  if (name === '__internal__genesisCall') return EMPTY;
   return undefined;
 }
 

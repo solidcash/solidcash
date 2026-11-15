@@ -18567,7 +18567,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Record each (hash,v,r,s) arg for the SDK co-spend: a direct param -> its name; an unrolled-loop array element
     // h[<literal>] -> "h[<literal>]" (the SDK reads that array param at that index); anything else -> null (computed).
     const isParam = (name: string): boolean => fn.parameters.some((fp) => fp.name === name);
-    fn.ecrecoverArgParams.push(node.parameters.map((p) => {
+    // evmCompat reverses h, r and s into the little-endian words the side-cars take (below), so their parameters are
+    // not what the call binds: published as computed, the direct convention's SDK learns the bound words from the
+    // run. The framed composer reads its own argument pushes and keeps its records.
+    const reversedByCall = (index: number): boolean => this.compilerOptions.evmCompat === true && index !== 1
+      && this.directConvention;
+    fn.ecrecoverArgParams.push(node.parameters.map((p, index) => {
+      if (reversedByCall(index)) return null;
       if (p instanceof IdentifierNode && isParam(p.name)) return p.name;
       if (p instanceof ArrayAccessNode && p.array instanceof IdentifierNode && isParam(p.array.name)) {
         // Dynamic loop `h[i]` (i = the loop variable) -> "h[]": the SDK iterates the h array param, one pair per element.

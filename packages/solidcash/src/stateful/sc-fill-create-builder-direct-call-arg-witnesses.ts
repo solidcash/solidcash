@@ -74,7 +74,7 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
     topLevelAnchorFillPositions: CreateBuilderAnchorFillPosition[];
     topLevelReturnWitnessPlan: bigint[];
     topLevelReturnWitnessGroups: number[];
-    /** Published ABI slots whose raw call co-spends no callee; the value is whether the call failed. */
+    /** Published ABI slots whose empty-payload raw call co-spends no callee; the value is whether the call failed. */
     absentCalleeSlots?: ReadonlyMap<number, boolean>;
   },
 ): Promise<FunctionArgument[]> {
@@ -177,8 +177,8 @@ export async function fillCreateBuilderDirectCallArgWitnesses(
           : Number((master ?? anchor)![1]);
       const groupIndex = slot === undefined ? undefined : groupBySlot.get(slot);
       const group = groupIndex === undefined ? undefined : externalCallUtxoGroups[groupIndex];
-      // A raw call with no callee answers `(success, "")` from its published slot alone; the SDK states the
-      // outcome by the return coordinate. -2 is `success = false`, -1 is `success = true`.
+      // A raw call with an empty payload and no callee answers `(success, "")` from its published slot alone; the
+      // SDK states the outcome by the return coordinate. -2 is `success = false`, -1 is `success = true`.
       const absentFails = slot === undefined ? undefined : absentCalleeSlots?.get(slot);
       let value: FunctionArgument = defaultInternalFunctionArg(input);
       if (groupIndex !== undefined && group) {

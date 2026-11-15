@@ -317,6 +317,34 @@ export class UnspendableContractError extends Error {
   }
 }
 
+/**
+ * Why a raw call's target cannot run it: no deployment is at the target (a wallet, or address(0)), none of its functions
+ * takes the payload, or the one that does fails.
+ */
+export type RawCallCalleeRequiredReason = 'no contract at the target' | 'no matching function' | 'callee fails';
+
+/**
+ * A raw low-level call refused before anything is built: its payload is not empty, so the caller's covenant requires
+ * the target co-spent, running the call, and the planner has no callee that runs it. Only an empty payload, a plain
+ * send, is answered without a callee; EVM's `(false, "")` for a call that ran nothing has no spend that proves it.
+ */
+export class RawCallCalleeRequiredError extends Error {
+  constructor(
+    public readonly reason: RawCallCalleeRequiredReason,
+    /** The call as its caller's ABI publishes it: the payload's function or selector, when the source names one. */
+    public readonly call: string,
+    /** The callee's own failure, for `callee fails`. */
+    public readonly calleeError?: string,
+  ) {
+    const why = reason === 'no contract at the target' ? 'no contract deployment is at the target'
+      : reason === 'no matching function' ? 'the target deployment has no function for the payload'
+        : `the target fails the call${calleeError === undefined ? '' : ` (${calleeError})`}`;
+    super(`Raw call ${call} cannot be built: its payload is not empty, so its target must be co-spent and run the `
+      + `call, and ${why}. Only an empty-payload call, a plain send, is answered without a callee.`);
+    this.name = 'RawCallCalleeRequiredError';
+  }
+}
+
 export class InputMissingLockingBytecodeError extends Error {
   constructor() {
     super('Input UTXO is missing its lockingBytecode. UTXOs fetched from a network provider include it automatically; '

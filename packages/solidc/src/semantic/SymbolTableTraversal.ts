@@ -18047,10 +18047,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     // `Interface.method.selector` / `Contract.method.selector` -> the method's 4-byte selector (bytes4), computed
     // from its signature. Mirrors `this.<fn>.selector` for own functions. Also handles a contract- or interface-
     // typed variable `v.method.selector` (v's declared type names the contract/interface).
+    // `x.f.selector` with `x` a name (an interface, contract, parameter, local or state variable), or a state variable
+    // read as `this.x`.
     if (node.name === 'selector' && node.expression instanceof FieldAccessNode
-      && node.expression.expression instanceof IdentifierNode) {
+      && (node.expression.expression instanceof IdentifierNode || node.expression.expression instanceof StateAccessNode)) {
       const fa = node.expression;
-      const baseName = (fa.expression as IdentifierNode).name;
+      const stateRead = fa.expression instanceof StateAccessNode;
+      const baseName = (fa.expression as IdentifierNode | StateAccessNode).name;
       // One method of the name, or the overload a compiler-built member names by its parameter types.
       const method = (name: string): InterfaceFunctionNode | FunctionDefinitionNode | undefined => {
         const iface = this.interfaceMap.get(name);
@@ -18067,12 +18070,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
       // just 'address'); look it up in the scope chain, then the state vars.
       let varType: Type | undefined;
-      for (let i = this.symbolTables.length - 1; i >= 0 && !varType; i -= 1) {
+      for (let i = this.symbolTables.length - 1; i >= 0 && !varType && !stateRead; i -= 1) {
         varType = this.symbolTables[i]?.get(baseName)?.type;
       }
       varType = varType ?? this.stateVariableMap.get(baseName)?.type;
       const varContract = varType instanceof AddressType ? varType.interfaceName : undefined;
-      const named = method(baseName) ?? (varContract ? method(varContract) : undefined);
+      const named = (stateRead ? undefined : method(baseName)) ?? (varContract ? method(varContract) : undefined);
       if (named) {
         const sig = this.selectorSignatureFor(fa.name, named.parameters.map((p) => p.type));
         const lit = new HexLiteralNode(this.computeAbiSelector(sig));
@@ -19482,15 +19485,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         }).__messageBusMode;
         const graphRawCallsRequested = this.compilerOptions.messageBus === true
           || requestedMessageBusMode === 'enabled' || requestedMessageBusMode === 'required';
-        // A payload naming a function that declares a result takes the raw external call with its `{value:}` too:
-        // only that call reads its callee's record, where the low-level form answers with no result read.
+        // A payload naming a function that declares a result takes the raw external call with its options too: only
+        // that call reads its callee's record, where the low-level form answers with no result read. Its `gas` is an
+        // inert hint, dropped below, and its `value` is the call's authenticated transfer.
+        const readsRecord = this.compilerOptions.composition !== 'framed' && node.callOptions?.salt === undefined
+          && this.payloadNamesReturningFunction(data);
         const graphRawValueCall = node.methodName === 'call'
-          && (graphRawCallsRequested || (this.compilerOptions.composition !== 'framed'
-            && this.payloadNamesReturningFunction(data)))
+          && (graphRawCallsRequested || readsRecord)
           && node.callOptions?.value !== undefined
           && node.callOptions.salt === undefined;
+        const gasOnlyRecordRead = readsRecord && node.callOptions?.value === undefined;
         if ((node.methodName === 'call' || node.methodName === 'staticcall')
-          && (!node.callOptions || graphRawValueCall)) {
+          && (!node.callOptions || graphRawValueCall || gasOnlyRecordRead)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
           callNode.resultArrayOutput = node.resultArrayOutput;
@@ -19923,7 +19929,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     const valueCall = node.callMode === 'call'
       && node.callOptions?.value !== undefined
       && node.callOptions.salt === undefined;
-    if (node.callOptions && !valueCall) return undefined;
+    // A `{gas: g}` hint alone is inert: a payload naming a function that declares a result still reads its record.
+    const gasOnlyRecordRead = node.callOptions?.value === undefined && node.callOptions?.salt === undefined
+      && this.compilerOptions.composition !== 'framed' && this.payloadNamesReturningFunction(node.data);
+    if (node.callOptions && !valueCall && !gasOnlyRecordRead) return undefined;
 
     const call = new ExternalFunctionCallNode('__raw__', node.targetExpression, '__raw__', [node.data]);
     call.sourceEffectOrdinal = node.sourceEffectOrdinal;

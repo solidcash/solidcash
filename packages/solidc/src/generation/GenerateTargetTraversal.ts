@@ -18750,6 +18750,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // is not a reliable way to locate `v`. The refused branch must not read recovery/keccak side-cars.
       this.emitDirectRecoveryAccepted(loc);
       this.emit(Op.OP_TOALTSTACK, loc);
+    } else if (this.directConvention && !returnsAddress) {
+      // ecrecoverPubKey has no zero key, so it refuses the arguments the precompile's range rules refuse. Side-car A
+      // takes an `s`, and an `r` in [n, p), reduced mod n, and reads a `v` of two bytes as a recovery id followed by the
+      // first byte of `r`, so a pair recovers a key from each of them.
+      this.emitDirectRecoveryAccepted(loc);
+      this.emit(Op.OP_VERIFY, loc);
     }
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); // [.., argBlob]
     // Sync the tracker to the VM: four argument copies were physically collapsed to one argBlob. Every later

@@ -899,6 +899,83 @@ describe('a straight-line recovery whose arguments recover no key', () => {
       expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(0n);
     });
 
+  it('refuses ecrecoverPubKey for arguments the precompile refuses, though a genuine pair for them holds its slots',
+    async () => {
+      // ecrecoverPubKey has no zero key, so it refuses what the precompile refuses. Side-car A takes an s of 0 as it
+      // comes, and reads a two-byte v's first byte as the recovery id and its second as r's first: a pair recovers a
+      // key from each, which the call would answer if it bound the pair alone.
+      const { secp256k1 } = await import('@noble/curves/secp256k1');
+      const source = `${P} contract K { int n;
+        function g(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) external returns (bool) {
+          require(ecrecoverPubKey(h, v, r, s) == expected); n = n + 1; return true; } }`;
+      // A signature with recovery id 27 whose r's low byte is below 0x80, so that v = 27 + 256 r[0] takes two bytes,
+      // and whose s = 0 counterpart's ladder splits over two covenants as its own does.
+      const splits = (witness: ReturnType<typeof computeEcrecoverWitness>): boolean => {
+        const coin = { txid: 'aa'.repeat(32), vout: 0, satoshis: 100_000n,
+          token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } } };
+        try {
+          probeEcrecoverSplit(witness, new Uint8Array(32), coin, { ...coin, txid: 'bb'.repeat(32) });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      let k: Signed | undefined;
+      for (let attempt = 0; k === undefined; attempt += 1) {
+        const drawn = await signed(`straight-line-pubkey-refuses-${attempt}`);
+        if (drawn.v === 27n && drawn.r[0]! < 0x80 && splits(computeEcrecoverWitness(drawn.h, 27, drawn.r, leWord(0n)))) {
+          k = drawn;
+        }
+      }
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('K')));
+      const salt = brand(t.categoryId);
+      await seedPool(s.provider, salt, 1, 0xd8);
+      await (t.contract.connect(await s.wallet()) as any).call.g(k.h, k.v, k.r, k.s, k.key).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      const master = inputAt(sent, addressToLockScript(t.contract.address));
+      const a = master + 2;
+      /** `sent` with the master's pushes `from` (in order) replaced by `to`. */
+      const withPushes = (from: Uint8Array[], to: Uint8Array[]): Sent => {
+        const instructions = decodeAuthenticationInstructions(sent.transaction.inputs[master]!.unlockingBytecode);
+        const at = instructions.findIndex((_, index) => from.every((data, offset) => {
+          const pushed = (instructions[index + offset] as { data?: Uint8Array } | undefined)?.data;
+          return pushed !== undefined && same(pushed, data);
+        }));
+        expect(at).toBeGreaterThanOrEqual(0);
+        const rewritten = [...instructions.slice(0, at), ...to.map((data) => ({ opcode: data.length, data })),
+          ...instructions.slice(at + from.length)];
+        const unlockingBytecode = encodeAuthenticationInstructions(rewritten as never);
+        return {
+          sourceOutputs: sent.sourceOutputs,
+          transaction: {
+            ...sent.transaction,
+            inputs: sent.transaction.inputs.map((input, index) => (
+              index === master ? { ...input, unlockingBytecode } : input)),
+          },
+        };
+      };
+      // An s of 0: the pair recovers (-z/r) G, which the call is told to expect.
+      const zeroS = computeEcrecoverWitness(k.h, 27, k.r, leWord(0n));
+      const keyOfZeroS = Uint8Array.from([zeroS.compressedQ[0]!, ...zeroS.compressedQ.slice(1, 33).reverse()]);
+      const sZero = await withPair(withPushes([k.key, k.s], [keyOfZeroS, leWord(0n)]), a, zeroS, salt);
+      // v = 27 + 256 r[0]: the call's blob is 98 bytes, which A parses as the signature itself.
+      const blob = Uint8Array.from([...k.h, 27, k.r[0]!, ...k.r.slice(1), k.s[0]!, ...k.s.slice(1), 0]);
+      const twoByteV = await withPair(
+        withPushes([k.s, k.r, Uint8Array.of(27)], [Uint8Array.from([...k.s.slice(1), 0]),
+          Uint8Array.from([...k.r.slice(1), k.s[0]!]), Uint8Array.of(27, k.r[0]!)]),
+        a, { ...computeEcrecoverWitness(k.h, 27, k.r, k.s), argBlob: blob }, salt,
+      );
+      expect(sZero).toBeDefined();
+      expect(twoByteV).toBeDefined();
+      for (const hostile of [sZero!, twoByteV!]) {
+        expect(inputPasses(s.provider, hostile, a)).toBe(true);
+        expect(inputPasses(s.provider, hostile, a + 2)).toBe(true);
+        expect(inputPasses(s.provider, hostile, master)).toBe(false);
+      }
+      expect(secp256k1.ProjectivePoint.fromHex(keyOfZeroS).equals(secp256k1.ProjectivePoint.fromHex(k.key))).toBe(false);
+    });
+
   it('builds a call whose recovery sits in a branch the run skips, and refuses it when the branch runs', async () => {
     const source = `${P} contract T(pubkey owner) { int n;
       function f(bytes32 h, int v, bytes32 r, bytes32 s, int sel) external returns (bool) {

@@ -136,20 +136,39 @@ once (D12), and the regressions it found are fixed.
   selection gives way to the direct build when the bus build is over the limit.
 - NativeUsdt and the unsplit OZ native token fit the 10,000-byte input again: a size-pressure outlining pass runs on
   direct programs within 1,000 B of the configured limit (D12).
+- Under `emitReturn`, a nested callee's old chunks, and the dynamic-chunk base its run reads them from, follow its
+  master in the assembled transaction (`632be5cb3`). A nested caller that calls two or more contracts names each
+  callee's master (`ecdea966a`).
+- A direct call of a function whose keccak256 loop reads dynamic state it does not write builds: the side-cars come
+  first and the chunks after them (`766c03afc`).
+
+**Call targets, found and fixed the same day** (`docs/security/security-audit-2026-10-16.md`, "Call targets
+(2026-11-15)"):
+- TARGET-1: a call through a target holding `address(0)` accepted any callee. It now fails, as on the EVM.
+- TARGET-2: a call was bound to its target's final value, so a function that rewrote or reassigned its target
+  after the call let the spender pick the callee. It is now bound where the call runs.
+- TARGET-3: a computed call target is the spender's choice by design. It now warns
+  (`computed-call-target-unverified`).
 
 **Still refused before sending:**
 - `tx.origin` in a callee laid out by its ordinary build, whether read or passed on.
-- A callee's keccak loop beside a walk or a dynamic write. No transaction can satisfy both, though the compiler
-  accepts the function.
 - A callee's keccak loop beside per-turn payments or events. The SDK lays out no callee per-turn effects.
 - An A -> B -> C whose C reads another region after its block, whose C shares its block with another call, or whose
   B calls C in a loop or as a frame.
 - A recovery whose R is ±G or ±φ(G).
 
+**Refused at compile time:** a keccak256 loop beside a collection walk or a dynamic-state write
+(`keccak-loop-shares-trailing-band`, `267b570b7`). The two runs read the same inputs after the block, so no
+transaction could satisfy both, though the compiler used to accept the function.
+
 **Found and open:**
-- Under `emitReturn`, a nested callee's other absolute input witnesses are planned one input early: the dynamic-chunk
-  base, the blockhash index and the block-oracle index.
-- A nested caller that calls two contracts leaves `__internal__extcallMasterIdx<slot>` at 0.
+- A nested ordinary callee's direct `blockhash(n)` read gets no oracle coin, and nothing refuses it by name.
+- The SDK maps a nested caller's return witnesses by position among the calls that run, and its callees' selectors
+  by function name, so a skipped conditional call shifts the witnesses after it.
+- A keccak256 chain (`keccakChainReads`) beside a walk or a dynamic write collides as the loop did and is not
+  refused. Beside chunks it only reads, its direct build may still put the chunks first.
+- A keccak256 loop beside chunks it only reads and also a mapping loop, per-turn payments or events, or an external
+  call keeps the old input order; not checked.
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs

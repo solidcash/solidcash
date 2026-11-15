@@ -2897,12 +2897,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const fail = (detail: string): never => {
       throw new DeployerInternalError(node, detail);
     };
-    // O5: the arms of the master, for the walk once the contract is known to be record-sound.
+    // O5: the arms of the master, for the walk once the contract is known to be record-sound. A body that ends in a
+    // revert never reaches the end of its arm, where the count is emitted: it cannot succeed, so it settles no carrier.
     if (!this.framedMaster && node.name !== '__construct' && node.genesisMode !== true
       && (node.isEntryPoint === true || node.isReceive === true || node.isFallback === true)
       && !node.graphEmissionHandler && node.messageBusRoute !== true) {
       const previous = this.armFacts.get(node.name);
-      this.armFacts.set(node.name, { carrierCount: (previous?.carrierCount ?? true) && record.carrierCount });
+      const counted = record.carrierCount || this.blockEndsWithRevert(node.body);
+      this.armFacts.set(node.name, { carrierCount: (previous?.carrierCount ?? true) && counted });
     }
     // O6: an entry that takes the genesis call emitted every check its rule needs. A creating entry requires it empty;
     // a body that also runs as a frame requires it empty there. A body that ends in a revert cannot succeed.

@@ -6,7 +6,7 @@
  * same sources compile. O7 is checked against a real source construct: a constructor that reads its own input.
  */
 import { describe, expect, it } from 'vitest';
-import { compileString } from './direct-compile.js';
+import { compileString, compileStringSplit } from './direct-compile.js';
 
 const P = 'pragma solidcash ^0.50.0;';
 const CHILD = 'contract Child { int n; constructor() payable { n = 1; } function f() public payable { n = n + 1; } }';
@@ -203,6 +203,32 @@ describe('O5 and O6: record-sound callees', () => {
 
   it('O5: stops when an arm of a record-sound contract does not count its carriers', () => {
     expect(() => callee('skip-carrier-count')).toThrow(/O5: the arm '[fg]' does not count/);
+  });
+
+  it('O5: takes an arm that always reverts as settling no carrier, in a whole and in a split compile', () => {
+    // The arm never reaches its end, where the count is emitted, so it cannot succeed.
+    const reverting = `${P} contract T { int n;
+      function f(int x) external returns (int) { n = x; return n; }
+      function g() public returns (int) { n = 1; revert(); } }`;
+    expect((compileString(reverting, { messageBus: false, genesisCalls: true }) as { recordSound?: boolean })
+      .recordSound).toBe(true);
+    const bundle = compileStringSplit(
+      'contract BrokenRewarder { uint touched;'
+      + ' function pending() public returns (uint[] memory amounts) { touched = 1; revert(); }'
+      + ' function notify() public { require(true); } }',
+      { evmCompat: true, forceSplit: true },
+    );
+    expect(bundle.manifest.routes.find((route) => route.function === 'pending')?.target).not.toBe('root');
+  });
+
+  it('O5: still stops when an arm that ends in a revert may return before it', () => {
+    const mayReturn = `${P} contract T { int n;
+      function g(int x) public returns (int) { if (x > 0) { n = x; return n; } revert(); } }`;
+    expect((compileString(mayReturn, { messageBus: false, genesisCalls: true }) as { recordSound?: boolean })
+      .recordSound).toBe(true);
+    expect(() => compileString(mayReturn, {
+      messageBus: false, genesisCalls: true, __deployerTestBox: { obligationHook: 'skip-carrier-count' },
+    } as never)).toThrow(/O5: the arm 'g' does not count/);
   });
 
   it('O6: stops when a tagged entry does not check that g_in spends (X, 0)', () => {

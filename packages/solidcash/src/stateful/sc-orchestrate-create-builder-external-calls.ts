@@ -1084,11 +1084,13 @@ export async function orchestrateCreateBuilderExternalCalls(
       // side-car recreation, an ecrecover side-car, and the caller's own return event. The master + data-NFT
       // prefix below does not count them, so a caller that hashes before its external calls used to place the
       // callee blocks - and the planned return-event index - early enough to collide with a callee's data NFT.
-      // A void entry's returnEvent slot is its call record, which a plain send compacts.
+      // The returnEvent slot holds the caller's call record only when its run publishes one: a returning function
+      // sent with `emitReturn`. A plain send, and every void entry, compacts the slot (its record index is -1).
       const returnsValues = (abiFunction?.outputs?.length ?? 0) > 0;
+      const publishesOwnRecord = returnsValues && overrides?.emitReturn === true;
       const fixedExtraBlockSlotCount = (abiFunction?.blockLayout?.slots ?? []).filter((slot) => (
         slot.kind === 'keccakSideCar' || slot.kind === 'ecrecoverSideCar'
-        || (slot.kind === 'returnEvent' && returnsValues)
+        || (slot.kind === 'returnEvent' && publishesOwnRecord)
       )).length;
       const baseOutputOffset = 1 + requiredNftIndices.length
       + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount

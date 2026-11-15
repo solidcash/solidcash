@@ -1359,3 +1359,113 @@ describe('an ordinary call of a contract whose callee pushes, iterates or hashes
       expect(inputPasses(s.provider, swapInputs(sent, tMaster + 2, tMaster + 3), tMaster)).toBe(false);
     });
 });
+
+/**
+ * In the transaction `builder` holds, the contract at `callerLock` names the master of the contract it calls (at
+ * `calleeLock`) as the base of its calls and that contract's record as its result's index; either one moved by one
+ * input or output is refused by the caller.
+ */
+function expectCalleeCoordinatesBound(
+  s: Setup, builder: any, callerLock: Uint8Array, calleeLock: Uint8Array, calleeCategory: string,
+): void {
+  const program = builder.buildLibauthProgram(true) as Sent;
+  const caller = inputAt(program, callerLock);
+  expect(inputPasses(s.provider, program, caller)).toBe(true);
+  const unlocker = builder.inputs[caller].unlocker as {
+    params: unknown[];
+    abiFunction: { inputs: ReadonlyArray<{ name: string }> };
+    syncEncodedArgsFromParams(indices?: readonly number[]): void;
+  };
+  const at = (pattern: RegExp): number => unlocker.abiFunction.inputs.findIndex((input) => pattern.test(input.name));
+  const base = at(/^__internal__externalCallInputBase$/);
+  const result = at(/^__internal__externalReturnOutputIdx\d*$/);
+  expect(unlocker.params[base]).toBe(BigInt(inputAt(program, calleeLock)));
+  const record = program.transaction.outputs[Number(unlocker.params[result])]!;
+  expect(binToHex(record.lockingBytecode)).toBe('51');
+  expect(binToHex(record.token!.category)).toBe(calleeCategory);
+  for (const index of [base, result]) {
+    const placed = unlocker.params[index] as bigint;
+    for (const moved of [placed - 1n, placed + 1n]) {
+      unlocker.params[index] = moved;
+      unlocker.syncEncodedArgsFromParams([index]);
+      expect(inputPasses(s.provider, builder.buildLibauthProgram(true) as Sent, caller)).toBe(false);
+    }
+    unlocker.params[index] = placed;
+    unlocker.syncEncodedArgsFromParams([index]);
+  }
+}
+
+describe('a call of a contract that calls another, by a function that returns a value (A calls D, which calls T)', () => {
+  const SOURCE = `${P} interface I { function f(int x) external returns (int); }
+    interface ID { function g(I t, int x) external returns (int); }
+    contract T { int calls; function f(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+    contract D { int got; function g(I t, int x) external returns (int) { got = t.f(x); return got + 1; } }
+    contract A { int got; function h(ID d, I t, int x) external returns (int) { got = d.g(t, x); return got; } }`;
+
+  for (const emitReturn of [false, true]) {
+    it(`binds D's base and result index for T to the transaction ${emitReturn ? 'that publishes A\'s record' : 'sent plainly'}, `
+      + 'and refuses either one moved', async () => {
+      const s = setup();
+      const t = await s.deploy(compileString(SOURCE, compileOptions('T')));
+      const d = await s.deploy(compileString(SOURCE, compileOptions('D')));
+      const a = await s.deploy(compileString(SOURCE, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const dCallee = withCallee(d.contract, 'I', t.contract);
+      const call = (): any => {
+        const built = (a.contract.connect(wallet) as any).call.h(dLock, tLock, 5n).withExternalCall(dCallee);
+        return emitReturn ? built.emitReturn() : built;
+      };
+      expectCalleeCoordinatesBound(s, await call().build(), dLock, tLock, t.categoryId);
+
+      await call().send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(11n);
+      expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(10n);
+      expect(((await t.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+    });
+  }
+
+  for (const emitReturn of [false, true]) {
+    it(`co-spends T's walk after its block for a caller that returns a value ${emitReturn ? 'and publishes its record'
+      : 'sent plainly'}, and refuses a walk missing an entry`, async () => {
+      const source = `${P} interface I { function f() external returns (int); }
+        interface ID { function g(I t) external returns (int); }
+        contract T { int total; enumerable mapping(bytes20 => int) bal; function put(bytes20 k, int v) public { bal[k] = v; }
+          function f() external returns (int) { int sum = 0; for (int value of this.bal) { sum = sum + value; } total = sum; return sum; } }
+        contract D { int got; function g(I t) external returns (int) { got = t.f(); return got; } }
+        contract A { int got; function h(ID d, I t) external returns (int) { got = d.g(t); return got; } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(1), 5n).send();
+      await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(2), 7n).send();
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const dCallee = withCallee(d.contract, 'I', t.contract);
+      const call = (): any => {
+        const built = (a.contract.connect(wallet) as any).call.h(dLock, tLock).withExternalCall(dCallee);
+        return emitReturn ? built.emitReturn() : built;
+      };
+      expectCalleeCoordinatesBound(s, await call().build(), dLock, tLock, t.categoryId);
+
+      await call().send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(12n);
+      expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(12n);
+      expect(((await t.contract.getState()) as { total?: bigint }).total).toBe(12n);
+      // T's block of master, record and record slot, then the walk; an entry left out is refused by T.
+      const tMaster = inputAt(sent, tLock);
+      const entryLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'bal'));
+      const walked = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, entryLock) ? index : -1))
+        .filter((index) => index >= 0);
+      expect(walked).toEqual([tMaster + 3, tMaster + 4, tMaster + 5]);
+      expect(inputPasses(s.provider, removeIndexes(sent, tMaster + 4, 1), tMaster)).toBe(false);
+    });
+  }
+});

@@ -65,18 +65,74 @@ bounds (D22); B8.8's `value` through creating calls; A14 item 4, a creating call
 NFTs, the trailing outputs after a loop of `new` per B8.9, and each child's budget pad); one top-level creation
 path in which constructor calls combine with collection writes, events, sends and side-cars, with ERC20-,
 USDT- and registry-shaped callees, and callees that iterate a collection, make a low-level call, hash or recover
-keys in a loop (side-cars from the shared salt-0 pool), or key a sorted mapping by `msg.sender` from a run-sized
-block (a callee that recovers keys through a helper inside a loop stays refused: every turn would read the
-helper's one fixed slot); and a live block reader created through Deploy<C>. This backend has no
-per-instance oracle row: a block read names an oracle pool by the contract argument `__oraclePool`, which A
-carries, so C's code is constant and the pool is minted first in transactions of its own; a child that reads
-block data is still refused (A15). The pre-B10 SDK tests were updated by the rules of Part C's "Regression".
-Every direct contract's code changes (O8 and `genesisCalls`), so dependants such as `bch-next` rebuild their
-artifacts. Found while testing and outside this plan, and fixed on the same branch: fixed and runtime-loop BCH
+keys in a loop (side-cars from the shared salt-0 pool, including through a helper, which is inlined there), or
+key a sorted mapping by `msg.sender` from a run-sized block; and a live block reader created through Deploy<C>.
+This backend has no per-instance oracle row: a block read names an oracle pool by the contract argument
+`__oraclePool`, which A carries, so C's code is constant and the pool is minted first in transactions of its own; a
+child that reads block data is still refused (A15). The pre-B10 SDK tests were updated by the rules of Part C's
+"Regression". Every direct contract's code changes (O8 and `genesisCalls`), so dependants such as `bch-next` rebuild
+their artifacts. Found while testing and outside this plan, and fixed on the same branch: fixed and runtime-loop BCH
 transfers in one function failed the conservation check; an `emit` in a plain runtime loop, and every payment or
 event of a constant-bound loop, kept one output for all its turns (constant-bound loops are now unrolled, and a
 loop that stays rolled fails its second turn instead); a framed contract's address took payments it can never
 spend (the SDK now refuses them).
+
+Status on branch `deployer-spec`, 2026-11-15: the open items noted on 2026-11-14 are built. Each full suite was run
+once (D12), and the regressions it found are fixed.
+
+**Built.**
+- An ordinary call to a callee now builds when the callee:
+  - iterates a collection: the call co-spends the walk the callee reads;
+  - hashes in a keccak256 loop: the call lays the loop on side-cars of the shared pool;
+  - writes dynamic state: the call learns from the callee's run the chunks its write pins.
+
+  A constructor's callee may call such a contract.
+- A constructor callee whose block depends on `msg.sender` is laid out for the child as its sender, with
+  `standInCaller`. Its keys and stored copies are the child's 35-byte lock, not a 25-byte pad.
+- A recovery that a helper makes in a loop is inlined there and reads one triple per call. A recovery loop lays its
+  triples after the keccak256 chain of an unbounded parameter.
+- A straight-line recovery's middle input is a wallet coin, returned at its own index, so stateful recoveries build on
+  the production profile.
+- `ecrecoverEvm` and `ecrecoverP2pkh` answer the zero address for every input the EVM precompile refuses, as the gate
+  in `packages/solidc/docs/ecrecover.md` requires (`EcrecoverEvmConformance.e2e`). `ecrecoverPubKey` aborts on those
+  inputs.
+
+**Fixed while testing.**
+- A Deploy<C> creation through a callee laid out by its call paid 10,000 satoshis to an anyone-can-spend
+  P2SH32(OP_TRUE) output.
+- The SDK rewrote the arrays of a sorted-loop call (merging keys, netting out the sender's credit, reordering a gap)
+  even where the result depends on more than each turn's pair. It therefore built a different call from the one
+  asked for. It now rewrites them only under the compiler's `pairwise` and `senderDebit` flags; otherwise it builds
+  the call as given or refuses it.
+- A sorted-loop write whose value reads another entry (`bal[ks[i]] = bal[7] + 1`) compiled as an increment of
+  its own entry. It stored 6 where the EVM stores 51; it is now an absolute write.
+- A sorted loop that emits every turn failed on every call. The SDK now places its events where the covenant
+  reads them.
+- A framed recovery's off-curve branch left an item on the alt stack.
+- In a message-bus build, a `for` loop with a literal bound whose turns emit or pay kept one output for every turn.
+  Before this branch it dropped every event but the last. This branch's guard then refused its second turn. Such a
+  loop now unrolls before route admission, as it does in a direct build.
+
+**Regressions found on this day, by targeted runs and by the full suites (D12), all fixed.** Most came from
+`genesisCalls` being on by default.
+- A call through a received function pointer into a record-sound callee failed.
+- O5 refused an arm that always reverts.
+- A nested delegate callee's call, and hand-built spends, lacked the empty genesis call.
+- A message-bus compile whose route admits nothing took the genesis call and fell back to the direct convention. A
+  message-bus compile is now never record-sound (A7).
+- A constructor header whose `Name(args)` names a modifier failed.
+
+**Still refused before sending:**
+- a constructor callee that passes `msg.sender` on to a contract it calls;
+- `tx.origin` in a callee laid out by its ordinary build;
+- transitive dynamic callees (A calling B, which calls C);
+- a callee's keccak loop beside other runs after its block;
+- a recovery whose R is ±G or ±φ(G);
+- a Solidity port's refused recovery inputs;
+- a key at infinity on the framed path.
+
+**Failing before this branch, and still failing:** NativeUsdt and the unsplit OZ native token exceed the
+10,000-byte input limit, as they already did at `07552ad33` (D12).
 
 What this document specifies, in one paragraph: a stateful contract C of the direct convention gets a generated
 deployer contract, Deploy<C>. A new C is created by spending a one-shot coin locked to Deploy<C>, which runs
@@ -1292,6 +1348,13 @@ signatures with one selector are one function to the callee, here as there.
   `create` fails at step 10 whatever else the transaction holds. The SDK reads `recordSound` from the
   callee's artifact and fails before it builds anything, with `DeployerCalleeError`, which names the callee,
   the function, and the option to compile with or the arm that stands in the way.
+- **Message-bus builds.** A message-bus compile is never record-sound, including a stub whose route admits
+  nothing. A compile counts as one whenever `messageBus` is set: explicitly, as required, with or without the
+  kernel, or on a bus rung of automatic selection. It takes no genesis call, its code carries no marker, and its
+  artifact says `recordSound: false`. Under automatic selection a contract with an external call compiles on the
+  bus. To make such a contract a constructor's callee, compile it with `messageBus: false`; the SDK's refusal names
+  that option. The direct fallback of automatic selection compiles with `messageBus: false` and stays
+  record-sound.
 - **What stays as today.** A callee function that does not read `msg.sender` does the same for every caller,
   and anyone may call it in the creating transaction as in any other. After its birth the child is an
   ordinary contract, and section 9 of the call model applies to its calls as to all.
@@ -4884,8 +4947,17 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
 - [x] **D11.** (B0.6, B8.12) What the second compile costs where it runs: the compile time of a creator with
       one `new` against the same creator with the `new` removed, the compile time of C with and without
       `deployer: true`, and the bytes one `DeployerAbi` adds to an artifact file: 35.4 ms against 13.6 ms,
-      33.2 ms against 14.7 ms (10-compile means), 4,733 B. The solidc suite's time was not re-measured after
-      the final changes.
+      33.2 ms against 14.7 ms (10-compile means), 4,733 B.
+      Re-measured on 2026-11-15 on branch `deployer-spec`, at load 5, as three runs of 10-compile means after
+      two warm-ups. The sources are D2's minimal C and a factory whose `create` checks a signature and runs
+      `new C()`.
+      - The factory compiles in 40.7 to 41.4 ms, and in 31.2 to 32.8 ms with the `new` removed.
+      - C compiles in 31.9 to 35.8 ms with `deployer: true`, and in 16.8 to 17.9 ms without it.
+      - C's `DeployerAbi` is 6,060 B of compact JSON. It grows the pretty-printed artifact from 16,701 B to
+        23,958 B, that is by 7,257 B.
+
+      Each full suite was run once, at `cc3bdcec4` (D12): solidc took 17.5 minutes for 8,021 tests on 3 workers,
+      and solidcash 185 minutes for 10,834 tests, at load 17 to 26.
 - [x] **D12.** (B10.3) The suites against the baseline, and the list of artifacts that carry `deployer` or
       `childDeployers`: with the switch off the solidc suite was 7,826/7,826 and solidcash 6,303 passed with 0
       failed (baseline 7,615 solidc). At the final acceptance on this branch the full solidc suite is
@@ -4902,6 +4974,44 @@ each "estimated" in Part A with the result (B0.8). Each line names the item that
       refusals, payments) is 61/61, and two fresh `DeployerCreation.e2e` captures are 34/34 each. The root build
       regenerates no testing-suite artifact beyond `updatedAt`. Only artifacts the new deployer tests ask for
       carry `deployer`.
+      On 2026-11-15 each full suite was run once more on branch `deployer-spec`, at `cc3bdcec4`, with the
+      user's approval, and every failure was re-run at deployer-coins `07552ad33`.
+      - **solidc:** 522 files and 8,021 tests. 7,983 passed, 32 failed in 10 files and 6 were skipped, in 17.5
+        minutes. All 32 passed at `07552ad33`, so all were regressions of this branch, and all are fixed:
+        - 21 hand-built spends lacked the empty genesis call (`16e333c3d`);
+        - two pinned direct-path identity hashes moved by `genesisCalls` were re-pinned with their cause
+          (`0d9a7cd7b`);
+        - four constructor headers whose `Name(args)` names a modifier failed (`130e24126`);
+        - a scalar-journal size budget took the 71 B `genesisCalls` adds (`59b2b6e09`);
+        - three kernel admissions fell back to the direct convention because a message-bus compile took the
+          genesis call (`8846210d3`);
+        - one case timed out under the suite's load; it passes alone.
+      - **solidcash:** 1,763 files and 10,834 tests. 10,568 passed, 28 failed in 15 files, 230 were skipped and 8
+        are todo, in 185 minutes.
+        - Fixed by commits after `cc3bdcec4`: the same constructor headers (four files, `130e24126`) and the
+          loop-reorder refusal case (`dd3d3129b`). One file timed out under load and passes alone.
+        - Regressions, fixed:
+          - a full internals list without the genesis call (`19d086837`);
+          - a value call that pays a stateful master lock, now refused at send (`f1027596b`, A8);
+          - a seeding call whose loop is not pairwise (`5591ea960`);
+          - a message-bus loop with a literal bound that emits: it dropped events at `07552ad33`, and this
+            branch's guard refused it (`226cbef22`, `bbff35733`).
+        - Failing at `07552ad33` already:
+          - three size pins, re-pinned with their causes (`27296d9b4`);
+          - `NativeUsdt` (13 tests): an input of 10,060 B, 10,076 B at `07552ad33`;
+          - `OzBchNativeInheritance` (3 tests): the unsplit token's master input is 10,447 B (10,081 B at
+            `07552ad33`), and its 9,550 B budget is exceeded.
+
+          These two contracts exceed the 10,000-byte input limit and stay failing. Master (`56602295f`) compiles
+          both of them larger still: NativeUsdt's master to 9,871 B and the OZ token to 9,678 B.
+      - **The final targeted run, at `bbff35733`**, covered every test file the changes since `7bb1fdefc` touched,
+        the agents' neighbour sets, all 100 of solidc's message-bus journal files, the size and hash tripwires and
+        the classified files.
+        - solidc: 193 files and 4,643 tests. 4,637 passed, 0 failed and 6 were skipped.
+        - utils: 125 of 125 passed.
+        - solidcash: 145 files and 1,534 tests. 1,513 passed, 16 failed and 5 were skipped. The 16 failures are the
+          NativeUsdt and `OzBchNativeInheritance` cases above.
+        - bch-next's deployer tests: 16 of 16 passed in the sandbox.
 - [x] **D13.** (B9.12) The genesis step when it runs: its operation cost, the digest iterations the callee
       spends against its limit for a C of 2 kB and one near 6 kB, and the shortest callee unlocking that
       still passes. Measured 2026-11-14 with the transaction survey on production-profile creations whose callee

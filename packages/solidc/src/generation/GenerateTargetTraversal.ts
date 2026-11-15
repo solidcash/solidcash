@@ -53634,11 +53634,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Authenticate an expected address against the candidate locking bytecode beneath it.
-   * A 20-byte imported-Solidity identity is the canonical projection of that candidate, never a placeholder
-   * which may be discarded. The empty legacy sentinel continues to select the already-authenticated candidate.
+   * `[candidateLbc, expected]` -> the pair the caller's OP_EQUALVERIFY binds: a 20-byte imported-Solidity identity and
+   * the candidate's canonical projection, or any other expected address and the candidate itself.
+   *
+   * The zero address names no contract, so a call through it fails here, as a high-level call to an account without
+   * code reverts on the EVM. Its empty form is refused outright. Its 20-byte form is the projection of an empty
+   * candidate, and of no other lock a spender can unlock, so an empty candidate is refused as well. An empty expected
+   * address used to select the candidate itself: a target holding address(0) (a state variable never set or zeroed,
+   * a parameter, a literal) then accepted whatever contract the spender co-spent, and the caller used its answer.
    */
-  private emitPreferLockingBytecode(locationData: SingleLocationData): void {
+  private emitCalleeIdentityOperands(locationData: SingleLocationData): void {
     if (this.compilerOptions.evmCompat) {
       // Struct fields and authenticated return values retain the canonical Solidity ABI address word.
       // Prove its zero padding before using the same identity check as a raw 20-byte address below.
@@ -53653,26 +53658,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.emit(Op.OP_ENDIF, locationData);
     }
-    this.emit(Op.OP_DUP, locationData);
+    // [candidateLbc, expected] -> [candidateLbc, expected, isIdentity]. An empty expected address fails the VERIFY.
     this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
     this.emit(encodeInt(20n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
-    // [candidateLbc, expected20] -> [expected20, projectedCandidate]. The caller's EQUALVERIFY binds them.
+    // [candidateLbc, expected20] -> [expected20, projectedCandidate]. An empty candidate fails the VERIFY.
     this.emit(Op.OP_SWAP, locationData);
-    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
-    this.emit(Op.OP_NIP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    // After DROP the top is the already-pushed locking bytecode (physical master or identity lock).
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
     this.emit(Op.OP_ENDIF, locationData);
   }
 
@@ -53944,11 +53941,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_SWAP, locationData);          // [idx, target20, lbc] = [identity, lock]
         this.emitCompatAddressMatch(locationData);    // consumes both, EQUALVERIFY inside
         this.emit(Op.OP_ELSE, locationData);
-        this.emitPreferLockingBytecode(locationData);
+        this.emitCalleeIdentityOperands(locationData); // address(0) refused
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.emit(Op.OP_ENDIF, locationData);         // [idx]
       } else if (anchorParamIdx < 0) {
-        this.emitPreferLockingBytecode(locationData);
+        this.emitCalleeIdentityOperands(locationData); // address(0) refused
         this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       } else {
         // [idx, physicalLbc, logicalLbc]. A non-negative witness names the
@@ -53964,7 +53961,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_LESSTHAN, locationData);
         this.emit(Op.OP_IF, locationData);
         this.emit(Op.OP_DROP, locationData);          // drop anchorIdx
-        this.emitPreferLockingBytecode(locationData); // empty/HASH160 -> physical LBC
+        this.emitCalleeIdentityOperands(locationData); // identity or exact lock -> physical LBC; address(0) refused
         this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
         this.emit(Op.OP_ELSE, locationData);
         // Proxy-route anchors encode their framing bit by adding this value;
@@ -53980,7 +53977,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_UTXOBYTECODE, locationData);
         this.emit(encodeInt(2n), locationData);
         this.emit(Op.OP_PICK, locationData);          // logicalLbc
-        this.emitPreferLockingBytecode(locationData); // empty/HASH160 -> identity LBC
+        this.emitCalleeIdentityOperands(locationData); // identity or exact lock -> anchor LBC; address(0) refused
         this.emit(Op.OP_EQUALVERIFY, locationData);
 
         this.emit(Op.OP_DUP, locationData);
@@ -55815,7 +55812,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_UTXOBYTECODE, loc);
     this.emit(Op.OP_ROT, loc);             // [.., idx, lock, target]
     this.popFromStack();
-    this.emitPreferLockingBytecode(loc);
+    this.emitCalleeIdentityOperands(loc);  // address(0) refused
     this.emit(Op.OP_EQUALVERIFY, loc);     // [.., idx]
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
     this.emitTakeFirst32(loc);

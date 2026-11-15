@@ -856,7 +856,10 @@ export async function planConstructorCalleeBlock(
   if (sized.some((field) => Array.isArray(fn[field]) && (fn[field] as unknown[]).length > 0)
     || fn.keccakLoopReads === true || fn.ecrecoverTrailingLoop === true
     || layout.slots.some((slot) => !fixedKinds.has(slot.kind) || slot.softDelete === true)
-    || (fn.entryAccesses ?? []).some((access) => access.operations.includes('delete'))) {
+    || (fn.entryAccesses ?? []).some((access) => access.operations.includes('delete'))
+    // A value of variable width (a struct, bytes or string mapping value) takes the old value as a witness, and the
+    // chunks it runs past the inline limit into, which the run sizes from the value it writes.
+    || fn.inputs.some((input) => /^__internal__(?:valueWitness|leadingPushValue)_\d+$/.test(input.name))) {
     return planCalleeBlockByCall(call, sender, { spent }, refuse);
   }
 

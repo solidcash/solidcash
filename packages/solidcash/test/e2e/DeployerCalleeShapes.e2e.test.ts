@@ -1,9 +1,9 @@
 /**
  * A7, A14 item 5: a constructor's callee runs as an ordinary spend inside the creation, so its block holds what its own
  * call would: its satoshi and token containers and their transfers, read-only entries, events under a condition, a wide
- * event's chunks, its keccak256 and ecrecover side-cars, and a recovery loop's triples (from the shared pool, A14 item
- * 6). Each creation is checked by the VM; each tamper case changes one output of a finished creation and expects the
- * callee's input to refuse it.
+ * event's chunks, its keccak256 and ecrecover side-cars, a recovery loop's triples (from the shared pool, A14 item 6),
+ * and the child as the msg.sender it stores. Each creation is checked by the VM; each tamper case changes one output of
+ * a finished creation and expects the callee's input to refuse it.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -454,6 +454,65 @@ describe('a callee that hashes or recovers through side-cars of the shared pool 
     expect(((await t.contract.getState()) as { ok?: boolean }).ok).toBe(true);
     expect(((await c.contract.getState()) as { ok?: boolean }).ok).toBe(true);
   });
+});
+
+describe('a callee that stores msg.sender in an entry or a record (A7, A14 item 5)', () => {
+  /** A 35-byte lock that is neither the child's nor any coin's. */
+  const OTHER = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x5b), 0x87);
+  // The first is a fixed layout. A struct value takes its old value as a witness, which the ordinary build of the call
+  // lays out, the second one past the inline limit as well: 36 + 31 bytes for the child, 26 + 31 for a P2PKH sender.
+  const SHAPES: Array<{ name: string; body: string; args: unknown[]; read: (t: any) => Promise<Uint8Array> }> = [
+    { name: 'a mapping value', body: 'mapping(int => address) owners; function f(int x, bytes note) external returns (bool) { owners[x] = msg.sender; return true; }',
+      args: [5n, new Uint8Array()], read: async (t) => t.owners(5n) },
+    { name: 'a struct field of a mapping value', body: 'struct Rec { address who; int x; } mapping(int => Rec) recs; function f(int x, bytes note) external returns (bool) { recs[x] = Rec(msg.sender, x); return true; }',
+      args: [5n, new Uint8Array()], read: async (t) => (await t.recs(5n)).who },
+    { name: 'a struct field its lock takes past the inline limit', body: 'struct Rec { address who; bytes note; } mapping(int => Rec) recs; function f(int x, bytes note) external returns (bool) { recs[x] = Rec(msg.sender, note); return true; }',
+      args: [5n, new Uint8Array(30).fill(7)], read: async (t) => (await t.recs(5n)).who },
+    { name: 'a struct field of a record', body: 'struct Rec { address who; int x; } Rec last; function f(int x, bytes note) external returns (bool) { last = Rec(msg.sender, x); return true; }',
+      args: [5n, new Uint8Array()], read: async (t) => (await t.getState()).last.who },
+  ];
+  for (const shape of SHAPES) {
+    it(`stores the child as ${shape.name}, and refuses a creation that stores another lock`, async () => {
+      const source = `${P} interface I { function f(int x, bytes note) external returns (bool); } contract T { ${shape.body} }
+        contract C { bool ok; constructor(I t, int x, bytes note) { ok = t.f(x, note); } function read() { require(ok); } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      await s.signer();
+      const tLock = addressToLockScript(t.contract.address);
+      const c = compileString(source, compileOptions('C'));
+      const extra = { initArgs: [tLock, ...shape.args], constructorCallees: [{ contract: t.contract }] };
+      const captured = await s.capture(c, extra);
+      expect(verifies(s.provider, captured)).toBe(true);
+      const master = captured.sourceOutputs.findIndex((output) => same(output.lockingBytecode, tLock));
+      // The child's master: the P2SH32 output that carries a minting NFT of its own category.
+      const child = Uint8Array.from(captured.transaction.outputs.find((output) => output.token?.nft?.capability === 'minting'
+        && binToHex(output.token.category) !== t.categoryId && output.lockingBytecode.length === 35)!.lockingBytecode);
+      expect(captured.transaction.outputs.some((output) => binToHex(output.lockingBytecode) === '5161')).toBe(false);
+      // Each output of T that holds the child's lock, or its first 20 bytes where the value runs on into a chunk, with
+      // another lock's there instead: refused.
+      const [held, other] = [binToHex(child.slice(0, 20)), binToHex(OTHER.slice(0, 20))];
+      const stores = captured.transaction.outputs.map((output, index) => (output.token !== undefined
+        && binToHex(output.token.category) === t.categoryId
+        && binToHex(output.token.nft?.commitment ?? new Uint8Array()).includes(held) ? index : -1))
+        .filter((index) => index >= 0);
+      expect(stores.length).toBeGreaterThan(0);
+      for (const index of stores) {
+        const forged = withOutput(captured, index, (output) => ({
+          ...output,
+          token: {
+            ...output.token,
+            nft: {
+              ...output.token.nft, commitment: hexToBin(binToHex(output.token.nft.commitment).split(held).join(other)),
+            },
+          },
+        }));
+        expect(inputPasses(s.provider, forged.transaction, forged.sourceOutputs, master)).toBe(false);
+      }
+      const created = await s.deploy(c, extra);
+      const lock = addressToLockScript(created.contract.address);
+      expect(binToHex(await shape.read(t.contract))).toBe(binToHex(lock));
+    });
+  }
 });
 
 describe('a callee that writes an entry under a condition (A7, A14 item 5)', () => {

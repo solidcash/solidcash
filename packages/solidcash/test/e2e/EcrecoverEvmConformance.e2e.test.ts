@@ -6,8 +6,8 @@
  * and messages with v in {27, 28}, the same address for each signature's high-S counterpart (the precompile has no
  * low-S rule), the golden vector, and the zero address, not an abort, for every input the precompile refuses: a bad v,
  * an r or s outside [1, n), an r no curve point has, and a key at infinity. Each sent transaction is checked by the VM.
- * It runs for ecrecoverEvm and for bare ecrecover in evm mode, and the accepted inputs for a Solidity port compiled
- * with evmCompat, whose big-endian words the compiled recovery reverses.
+ * It runs for ecrecoverEvm, for bare ecrecover in evm mode, and for a Solidity port compiled with evmCompat, whose
+ * big-endian words the compiled recovery reverses.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -195,29 +195,26 @@ describe('ecrecover conformance: ethers.js == the EVM precompile == solidc, on t
     },
     {
       // A port's scalars are big-endian words, which the compiled recovery reverses, so the SDK learns the words the
-      // call binds from its run. It runs the accepted inputs: for a refused one the call's state derivation, which
-      // learns that run's arguments too, publishes the record before the answer, and the call is refused before it
-      // is sent.
+      // call binds from its run. Its `who` is an `address`, whose SDK encoding spells 20 zero bytes as address(0)'s
+      // empty push: a refused recovery stores the 20 bytes, and the SDK publishes the record as the run derived it.
       name: 'a Solidity port under evmCompat',
       source: 'pragma solidity ^0.8.0; contract G { address public who; uint256 public n; '
         + 'function f(bytes32 h, uint8 v, bytes32 r, bytes32 s) external returns (bool) { '
         + 'who = ecrecover(h, v, r, s); n = n + 1; return true; } }',
       options: { ...COMPILE, primaryContractName: 'G', ecrecover: 'evm', evmCompat: true },
       bigEndian: true,
-      acceptedOnly: true,
     },
   ] as const;
 
   for (const projection of projections) {
-    const refusedToo = 'acceptedOnly' in projection ? '' : ' and every refused input';
-    it(`${projection.name}: random keys, their high-S counterparts, the golden vector${refusedToo}`,
+    it(`${projection.name}: random keys, their high-S counterparts, the golden vector and every refused input`,
       async () => {
         const signed = await Promise.all([0, 1, 2, 3].map((index) => signedByRandomKey(index)));
         const inputs: Array<{ input: EvmInput; expected: string }> = [
           ...signed.map(({ input, address }) => ({ input, expected: address })),
           ...signed.slice(0, 2).map(({ input, address }) => ({ input: highS(input), expected: address })),
           { input: GOLDEN, expected: GOLDEN_ADDRESS },
-          ...('acceptedOnly' in projection ? [] : refusedAround(signed[0]!.input).map((input) => ({ input, expected: ZERO }))),
+          ...refusedAround(signed[0]!.input).map((input) => ({ input, expected: ZERO })),
         ];
         const contract = await deployed(compileString(projection.source, projection.options as never));
         for (const { input, expected } of inputs) {

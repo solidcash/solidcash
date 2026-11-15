@@ -458,10 +458,30 @@ export function reassertNestedSameIndexMutables(
 }
 
 /**
+ * Whether a data record holds the values of `rebuilt`, the record the SDK encodes from the owner's state. The encoding
+ * is not one-to-one: an `address` of 20 zero bytes, which a refused EVM recovery answers, encodes as `address(0)`,
+ * the empty push. A covenant that stores that answer writes the 20 bytes, so its record holds the rebuilt values in
+ * other bytes.
+ */
+function recordHoldsValues(
+  layout: StateLayout, nftIndex: number, record: string, rebuilt: string, commitmentLimit: number | undefined,
+): boolean {
+  if (record === rebuilt) return true;
+  try {
+    return buildPushdataCommitment(
+      layout, parsePushdataCommitment(record, layout, nftIndex), nftIndex, commitmentLimit,
+    ) === rebuilt;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Recreate every participant's fixed data-NFT state at the coordinate authenticated by its input outpoint.
  * Later entry/event/tail materializers can temporarily occupy those coordinates, but fixed state retains
  * structural ownership. Derive commitments from the owner's layout and updates; commitment bytes are opaque
- * state, so neither ownership nor preservation may depend on application-specific prefixes.
+ * state, so neither ownership nor preservation may depend on application-specific prefixes. A record the run
+ * derived keeps its bytes while it holds the updated values (`recordHoldsValues`).
  */
 export function reassertFixedStateOutputs(
   host: NestedOutputReassertHost,
@@ -510,6 +530,7 @@ export function reassertFixedStateOutputs(
     .map(groupOwner));
   owners.push(...host.lowLevelCallUtxoGroups.map(groupOwner));
 
+  const commitmentLimit = host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes;
   const seenOutpoints = new Set<string>();
   for (const owner of owners) {
     const currentState: Record<string, StateValue> = {};
@@ -533,17 +554,22 @@ export function reassertFixedStateOutputs(
       if (nftIndex === undefined) continue;
       const inputCommitment = input.token.nft.commitment;
       const hasUpdate = stateUpdatesTouchNft(owner.stateLayout, owner.updates, nftIndex);
+      let rebuiltCommitment: string | undefined;
+      const rebuild = (): string => {
+        rebuiltCommitment ??= buildPushdataCommitment(owner.stateLayout, currentState, nftIndex, commitmentLimit);
+        return rebuiltCommitment;
+      };
+      // An updated record is rebuilt from its values unless the run derived one that holds them: the derived record
+      // is the one the covenant wrote, and the rebuild can spell the same values in other bytes.
+      const rawCommitment = owner.rawCommitments.get(nftIndex);
       const exactCommitment = owner.settled?.get(nftIndex)
-        ?? (hasUpdate ? undefined : owner.rawCommitments.get(nftIndex));
+        ?? (rawCommitment !== undefined && (!hasUpdate
+          || recordHoldsValues(owner.stateLayout, nftIndex, rawCommitment, rebuild(), commitmentLimit))
+          ? rawCommitment : undefined);
       const commitment = exactCommitment
         ?? (owner.preserveUntouched && !hasUpdate && inputCommitment
           ? inputCommitment
-          : buildPushdataCommitment(
-            owner.stateLayout,
-            currentState,
-            nftIndex,
-            host.builderOptions.provider.consensusLimits?.maximumNftCommitmentBytes,
-          ));
+          : rebuild());
       builder.outputs[inputIndex] = {
         to: input.unlocker.generateLockingBytecode(),
         amount: input.satoshis,

@@ -18895,9 +18895,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const requirePredecessorCovenant = (
           offset: bigint, argCount: number, covenantHash: string,
         ): void => {
+          // The predecessor's index is computed once, with only tracked items above it, and kept on the alt stack for
+          // the lock bind: a slot a helper or a constructor locates by the stack is read where it is.
           slotIdx('B');
           this.emit(encodeInt(offset), loc);
           this.emit(Op.OP_SUB, loc);
+          this.emit(Op.OP_DUP, loc); this.emit(Op.OP_TOALTSTACK, loc);
           this.emit(Op.OP_INPUTBYTECODE, loc);
           for (let field = 0; field < argCount; field += 1) {
             this.emitGenericPushdataDecode(raw, loc);
@@ -18909,18 +18912,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // unlocking script alone let any bare input publish `0x20 || salt || M_redeem` and stand in for the
           // covenant without ever executing it. Bind the full redeem to the P2SH32 lock
           // `OP_HASH256 <hash256(redeem)> OP_EQUAL`, then check the role from the covenant-only hash below.
-          this.emit(Op.OP_DUP, loc);
-          this.emit(Op.OP_HASH256, loc);
-          this.emit(hexToBin('aa20'), loc);
-          this.emit(Op.OP_SWAP, loc);
-          this.emit(Op.OP_CAT, loc);
-          this.emit(hexToBin('87'), loc);
-          this.emit(Op.OP_CAT, loc);
-          slotIdx('B');
-          this.emit(encodeInt(offset), loc);
-          this.emit(Op.OP_SUB, loc);
-          this.emit(Op.OP_UTXOBYTECODE, loc);
-          this.emit(Op.OP_EQUALVERIFY, loc);
+          this.emitBindAltStackedRedeemLock(loc);
           this.emit(encodeInt(BigInt(ECRECOVER_COMPUTE_SALT_PREFIX_LENGTH)), loc);
           this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
           this.emit(Op.OP_HASH256, loc);
@@ -18931,8 +18923,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(hexToBin(ECRECOVER_COMPUTE_B3_COVENANT_HASH), loc);
         this.emit(Op.OP_EQUAL, loc);
         this.emit(Op.OP_IF, loc);                                       // [hB]
+        // hB is tracked while the predecessors are located: a threaded or stack-relative slot index picks past it.
+        this.pushToStack('(value)');
         requirePredecessorCovenant(1n, 4, ECRECOVER_COMPUTE_M_COVENANT_HASH);
         requirePredecessorCovenant(2n, 4, ECRECOVER_COMPUTE_A_COVENANT_HASH);
+        this.popFromStack(1);
         this.emit(Op.OP_ELSE, loc);
         this.emit(Op.OP_DUP, loc);                                      // [hB, hB]
         this.emit(hexToBin(ECRECOVER_COMPUTE_B2_COVENANT_HASH), loc);

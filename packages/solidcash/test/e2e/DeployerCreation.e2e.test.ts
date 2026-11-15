@@ -831,6 +831,46 @@ describe('a top-level deployment through Deploy<C>', () => {
     });
 
 
+  it('co-spends A, M and B3 for a constructor recovery whose ladder fits no two-covenant split', async () => {
+    // A measured width-0 signature. The constructor locates its side-car group by the stack, past the hash of B's
+    // covenant that the B3 predecessor checks hold.
+    const width0 = {
+      digest: '398eed067d4a815e6ba5220239bf7ebf7b4fcf2c51faee52f0db375644c0aa67', v: 27,
+      r: 'd94a22918b3e004b321a8d499c70d153be8a3bd7c85591c5709bf8013e8af39c',
+      s: '6a8ff1cd7003b7480a579bbd9d5ba68e17a04e0d3842226b6cb651176def9d32',
+    };
+    const { ethers } = await import('ethers');
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const provider = new MockNetworkProvider({ profile: 'production' });
+    const authorLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const change = lockingBytecodeToCashAddress({ bytecode: authorLock, prefix: 'bchtest' });
+    if (typeof change === 'string') throw new Error(change);
+    const little = (hex: string): Uint8Array => Uint8Array.from(hexToBin(hex)).reverse();
+    const expected = hexToBin(ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(
+      `0x${width0.digest}`, ethers.Signature.from({ r: `0x${width0.r}`, s: `0x${width0.s}`, v: width0.v })), true).slice(2));
+    for (const [index, role] of (['A', 'B2', 'M', 'B3'] as const).entries()) {
+      await provider.seedUtxo(binToHex(ecrecoverComputeLockingBytecode(new Uint8Array(32), role)), {
+        txid: `${(0xc0 + index).toString(16)}`.padEnd(64, '0'), vout: 0, satoshis: 100_000n,
+        token: { category: 'ed'.repeat(31) + '14', amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+      });
+    }
+    const artifact = compileString(
+      `${P} contract C(bytes32 h, int v, bytes32 r, bytes32 s, pubkey expected) {
+        int n; constructor() { require(ecrecoverPubKey(h, v, r, s) == expected); n = 1; } }`,
+      { deployer: true, messageBus: false },
+    );
+    const fundingUtxo: Utxo = { txid: '6e'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.seedUtxo(binToHex(authorLock), fundingUtxo);
+    const result = await StatefulContract.deploy(artifact, [
+      little(width0.digest), BigInt(width0.v), little(width0.r), little(width0.s), expected,
+    ], {
+      provider, fundingUtxo, funder: new SignatureTemplate(alicePriv).unlockP2PKH(),
+      changeAddress: change.address, senderLockingBytecode: authorLock,
+    });
+    expect(((await result.contract.getState()) as { n?: bigint }).n).toBe(1n);
+  });
+
+
   it('refuses a constructor recovery with no shared ecrecover coin (B9.8)', async () => {
     const provider = new MockNetworkProvider({ profile: 'production' });
     const authorLock = encodeLockingBytecodeP2pkh(alicePkh);

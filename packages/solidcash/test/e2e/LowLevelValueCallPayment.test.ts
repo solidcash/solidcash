@@ -129,3 +129,18 @@ describe('a low-level {value:} call, a transfer and a send pay their target', ()
     expect(stateless.abi.find((fn) => fn.name === 'f')!.transferCount).toBe(1);
   });
 });
+
+/** A multisig's execute: the target, the value and the payload all read the element `txs[i]`. */
+const MULTISIG = `pragma solidity ^0.8.0;
+contract Multisig {
+  struct T { address to; uint256 value; bytes data; }
+  T[] txs;
+  function exec(uint256 i) public { T storage t = txs[i]; (bool ok,) = t.to.call{value: t.value}(t.data); require(ok); }
+}`;
+
+describe('a {value:} that reads a variable the payload reads after it', () => {
+  it('compiles the multisig execute shape, paying from one transfer slot', () => {
+    const artifact = compileString(MULTISIG, { evmCompat: true, forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'exec')!.transferCount).toBe(1);
+  });
+});

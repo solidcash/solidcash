@@ -11,7 +11,7 @@ import type {
   StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
-import { RawCallCalleeRequiredError } from '../Errors.js';
+import { ExternalCallTargetWrittenBeforeCallError, RawCallCalleeRequiredError } from '../Errors.js';
 import { ExternalExpressionUnresolvedConditionError } from '../message-bus/result-evaluation-path.js';
 import { connectedContractMatchesExactAddress, exactAddressLockingBytecodeHex } from './deployment-registry.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
@@ -438,6 +438,13 @@ export async function expandResolveCreateBuilderExternalCalls(
       const ec = externalCalls[eci];
       // Array-element call: the callee instance was already resolved during expansion.
       if (presetResolved?.[eci]) { autoResolved.push(presetResolved[eci]!); continue; }
+      // The function writes this call's target before the call: the state and arguments below name the callee from
+      // before the write, which the caller's identity check refuses. Only the author knows the callee the call runs on.
+      if (ec.targetWrittenBeforeCall === true) {
+        throw new ExternalCallTargetWrittenBeforeCallError(
+          abiFunction?.name ?? '<function>', ec.interfaceName, ec.functionName,
+        );
+      }
       // A published address is authoritative. A connected interface entry may still supply the instance,
       // but only when its known physical or logical address is exactly the published target.
       let pinned: unknown;

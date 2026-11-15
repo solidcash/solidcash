@@ -28,6 +28,18 @@ export class MixedCompileModeCallError extends Error {
   }
 }
 
+/**
+ * A call whose target the function writes before the call runs on a callee the caller's current state and the
+ * call's arguments do not name (ABI `targetWrittenBeforeCall`), so the builder cannot resolve it from them.
+ */
+export class ExternalCallTargetWrittenBeforeCallError extends Error {
+  constructor(functionName: string, interfaceName: string, methodName: string) {
+    super(`'${functionName}' writes the target of its call to ${interfaceName}.${methodName} before the call, so the `
+      + 'call runs on a callee the contract\'s current state and the call\'s arguments do not name. Pass the callee '
+      + 'the call runs on with withExternalCall(contract).');
+  }
+}
+
 export class UndefinedInputError extends Error {
   constructor() {
     super('Input is undefined');

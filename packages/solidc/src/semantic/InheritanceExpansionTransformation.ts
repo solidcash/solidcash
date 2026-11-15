@@ -396,19 +396,22 @@ export default function expandInheritance(ast: SourceFileNode, evmCompat = false
   // A root contract still needs override validation. A bare `override` cannot override anything, while an
   // explicit list (notably `override(LibraryName)`) is handled by the normal base-list resolver below.
   if (ast.contract.implements.length === 0) {
-    if (evmCompat && ast.contract.parentInvocations.length > 0) {
+    // A root contract has no base constructor to call, in either mode: `Name(args)` in its constructor's header
+    // invokes a modifier, in its place among the header's modifiers, and any other name is an error. A native
+    // constructor's such modifier used to be dropped without a word.
+    if (ast.contract.parentInvocations.length > 0) {
       const modifierNames = new Set(ast.contract.modifierDefinitions.map((modifier) => modifier.name));
       for (const invocation of ast.contract.parentInvocations) {
         if (!modifierNames.has(invocation.parentName)) {
           throw new UndefinedParentInvocationError(ast.contract, invocation.parentName);
         }
-        if (ast.contract.constructorDef) {
-          ast.contract.constructorDef.customModifiers.push({
-            name: invocation.parentName,
-            args: invocation.args,
-            location: invocation.location,
-          });
-        }
+      }
+      if (ast.contract.constructorDef) {
+        ast.contract.constructorDef.customModifiers = [
+          ...ast.contract.constructorDef.customModifiers,
+          ...ast.contract.parentInvocations.map((pi) => ({ name: pi.parentName, args: pi.args, location: pi.location })),
+        ].sort((a, b) => a.location.start.line - b.location.start.line
+          || a.location.start.column - b.location.start.column);
       }
       ast.contract.parentInvocations = [];
     }

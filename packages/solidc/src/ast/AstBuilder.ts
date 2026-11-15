@@ -2265,30 +2265,17 @@ export default class AstBuilder
     block.location = Location.fromCtx(ctx);
 
     // Parse parent invocations
+    // `Name(args)` items stay parent invocations here: whether Name is a base's constructor or a modifier is decided
+    // once the inheritance is known (InheritanceExpansionTransformation).
     const piCtxList = ctx.parentInvocation_list();
-    // `Name(args)` in a constructor's header calls a base's constructor only when Name is a base; any other name
-    // invokes a modifier, which applies in its place among the header's modifiers, as Solidity applies it.
-    const headerModifiers: CustomModifierInvocation[] = (piCtxList ?? [])
-      .filter((piCtx: ParentInvocationContext) => !this.currentContractBaseNames.has(piCtx.Identifier().getText()))
-      .map((piCtx: ParentInvocationContext): CustomModifierInvocation => ({
-        name: piCtx.Identifier().getText(),
-        args: this.buildCallArguments(piCtx.expressionList()!),
-        location: Location.fromCtx(piCtx),
-      }));
-    const withHeaderModifiers = (node: FunctionDefinitionNode): void => {
-      if (headerModifiers.length === 0) return;
-      const at = (invocation: CustomModifierInvocation): number => invocation.location.start.line * 1_000_000
-        + invocation.location.start.column;
-      node.customModifiers = [...node.customModifiers, ...headerModifiers].sort((a, b) => at(a) - at(b));
-    };
     if (piCtxList && piCtxList.length > 0) {
-      this.pendingParentInvocations = piCtxList
-        .filter((piCtx: ParentInvocationContext) => this.currentContractBaseNames.has(piCtx.Identifier().getText()))
-        .map((piCtx: ParentInvocationContext): ParentInvocation => ({
+      this.pendingParentInvocations = piCtxList.map(
+        (piCtx: ParentInvocationContext): ParentInvocation => ({
           parentName: piCtx.Identifier().getText(),
           args: this.buildCallArguments(piCtx.expressionList()!),
           location: Location.fromCtx(piCtx),
-        }));
+        }),
+      );
       // Native pattern: the constructor's params MIRROR the contract-level params (already in scope) - drop
       // those to avoid VariableRedefinitionError; the body reads the contract params. Solidity pattern:
       // `constructor(uint256 _x) Base(_x)` declares its OWN params with no contract-level equivalent - keep
@@ -2297,7 +2284,6 @@ export default class AstBuilder
       const functionDefinition = new FunctionDefinitionNode('__construct', ownParams, block);
       functionDefinition.location = Location.fromCtx(ctx);
       this.applyConstructorModifiers(ctx, functionDefinition);
-      withHeaderModifiers(functionDefinition);
       return functionDefinition;
     }
 

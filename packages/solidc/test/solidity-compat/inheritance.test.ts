@@ -138,6 +138,18 @@ describe('constructor-list invocation compatibility', () => {
   it('preserves genuine custom modifiers on constructors', () => {
     expect(cc('contract C { modifier m(uint x) { require(x == 1); _; } constructor() m(1) {} }')).toBe('C');
   });
+
+  it('reads a native root contract\'s constructor header the same way', () => {
+    // A native constructor's `m()` used to be dropped without a word; it is a modifier, and any other name is refused.
+    const native = (src: string): string => compileString(`pragma solidcash >=0.8.0; ${src}`).contractName;
+    expect(native('contract C { int n; modifier m(int x) { require(x == 1); _; } constructor() m(1) { n = 1; } '
+      + 'function f() public { require(n == 1); } }')).toBe('C');
+    expect(() => native('contract X { int n; function f() public { require(n == 0); } } '
+      + 'contract C { int n; constructor() X(5) { n = 1; } function f() public { require(n == 1); } }'))
+      .toThrow(/parent invocation references 'X'/i);
+    expect(() => native('contract C { int n; constructor() m(1) { n = 1; } function f() public { require(n == 1); } }'))
+      .toThrow(/parent invocation references 'm'/i);
+  });
 });
 
 describe('Solidity base-constructor argument validation', () => {

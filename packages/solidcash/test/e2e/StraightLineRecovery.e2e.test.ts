@@ -565,6 +565,72 @@ describe('an ordinary call that recovers a key straight-line', () => {
     expect(inputPasses(s.provider, withOutput(sent, master + 5, otherKey), master)).toBe(false);
   });
 
+  it('learns a helper\'s width-0 recovery from the run and switches its slots to A, M and B3', async () => {
+    const { ethers } = await import('ethers');
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const signature = ethers.Signature.from({ r: `0x${WIDTH0.r}`, s: `0x${WIDTH0.s}`, v: WIDTH0.v });
+    const owner = hexToBin(ethers.SigningKey.computePublicKey(
+      ethers.SigningKey.recoverPublicKey(`0x${WIDTH0.digest}`, signature), true).slice(2));
+    const source = `${P} contract T(pubkey owner) { int n;
+      function key(bytes32 digest, int vv, bytes32 rr, bytes32 ss) private pure returns (pubkey) {
+        return ecrecoverPubKey(digest, vv, rr, ss); }
+      function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
+        require(key(h, v, r, s) == owner); n = n + 1; return true; } }`;
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')), [owner]);
+    const salt = brand(t.categoryId);
+    await seedPool(s.provider, salt, 1, 0xc8);
+    await (t.contract.connect(await s.wallet()) as any).call.f(
+      little(WIDTH0.digest), BigInt(WIDTH0.v), little(WIDTH0.r), little(WIDTH0.s),
+    ).send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
+    const master = inputAt(sent, addressToLockScript(t.contract.address));
+    (['A', 'M', 'B3'] as const).forEach((role, offset) => expect(same(sent.sourceOutputs[master + 2 + offset].lockingBytecode,
+      ecrecoverComputeLockingBytecode(salt, role))).toBe(true));
+    expect(inputPasses(s.provider, withOutput(sent, master + 4, otherKey), master)).toBe(false);
+  });
+
+  it('answers the zero address through a helper for every argument the precompile refuses', async () => {
+    // A helper's arguments are learned from the run: those the range rules refuse are never read, so the pair laid
+    // out before the run (the placeholder recovery's) holds their slots; an r no point has and a key at infinity are
+    // read, and their slots are laid out as a direct call's are.
+    const { ecrecoverComputeLockingBytecode } = await import('@solidcash/utils');
+    const source = `${P} contract T { bytes20 who; int n;
+      function signer(bytes32 digest, int vv, bytes32 rr, bytes32 ss) private pure returns (bytes20) {
+        return ecrecoverEvm(digest, vv, rr, ss); }
+      function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {
+        who = signer(h, v, r, s); n = n + 1; return true; } }`;
+    const k = await signed('straight-line-helper-refused');
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const salt = brand(t.categoryId);
+    await seedPool(s.provider, salt, 2, 0xc9, true);
+    const wallet = await s.wallet();
+    const cases: Array<[[Uint8Array, bigint, Uint8Array, Uint8Array], string]> = [
+      [[k.h, 0n, k.r, k.s], '00'.repeat(20)], [[k.h, k.v, k.r, leWord(ORDER)], '00'.repeat(20)],
+      [[k.h, 27n, leWord(firstX(1n, false)), k.s], '00'.repeat(20)],
+      [await infinityArgs('straight-line-helper-infinity'), '00'.repeat(20)],
+      [[k.h, k.v, k.r, k.s], binToHex(k.address)],
+    ];
+    for (const [index, [args, who]] of cases.entries()) {
+      await (t.contract.connect(wallet) as any).call.f(...args).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never), `case ${index}`).toBe(true);
+      const state = (await t.contract.getState()) as { who?: Uint8Array; n?: bigint };
+      expect(binToHex(state.who ?? new Uint8Array()), `case ${index}`).toBe(who);
+      expect(state.n).toBe(BigInt(index + 1));
+      if (index === 2) {
+        // The off-curve r: the first slot's A carries the proof.
+        const a = inputAt(sent, ecrecoverComputeLockingBytecode(salt, 'A'));
+        const w = unsignedOf(padOf(sent, a));
+        const x = firstX(1n, false);
+        expect(modulo(w * w + x ** 3n + 7n, PRIME)).toBe(0n);
+      }
+    }
+  });
+
   it('refuses before sending when the call has no signer to fill the middle input', async () => {
     const source = `${P} contract T(pubkey owner) { int n;
       function f(bytes32 h, int v, bytes32 r, bytes32 s) external returns (bool) {

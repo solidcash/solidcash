@@ -13,7 +13,7 @@ import type {
   StateLayout,
 } from '@solidcash/utils';
 import { computeCollectionHash } from '@solidcash/utils';
-import type { Output, UnlockableUtxo } from '../interfaces.js';
+import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilderOptions } from '../TransactionBuilder.js';
 import { absoluteValueChunkOutputBaseFromResolve } from '../message-bus/layout-resolver.js';
 import {
@@ -330,6 +330,8 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
     argBlobs: Array<Uint8Array | null>;
     /** Per recovery call, index in deferredKeccakCompute.preimages; -1 for non-EVM projections. */
     evmKeccakPreimageIndices: number[];
+    /** Per recovery call, the M and B3 coins a width-0 recovery's slots switch to; null for a call that has none. */
+    width0Coins?: Array<{ m: Utxo; b3: Utxo } | null>;
   };
   ecrecoverComputeCoSpendUtxos?: UnlockableUtxo[]; // recovery A/B side-cars (2 per call, flat A0,B0,A1,B1..) at slots
   ecrecoverComputeRecreates?: Output[];       // parallel recreation OUTPUTS (A commits H_A, B commits the pubkey Q)

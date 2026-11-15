@@ -10,8 +10,8 @@ import {
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
-  buildEcrecoverComputePlaceholders, buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3,
-  buildEcrecoverPlaceholderSidecars, computeEcrecoverWitness, probeEcrecoverSplit, probeEcrecoverSplit3,
+  buildEcrecoverComputeSidecars, buildEcrecoverComputeSidecars3, buildEcrecoverPlaceholderSidecars,
+  computeEcrecoverWitness, probeEcrecoverSplit, probeEcrecoverSplit3,
 } from '../ecrecover/ecrecoverComputeSidecar.js';
 import { ecrecoverRefusal } from '../ecrecover/ecrecoverRecovery.js';
 import {
@@ -71,6 +71,8 @@ export type ResolveEcrecoverCoSpendsResult = {
   argBlobs: Array<Uint8Array | null>;
   evmPreimages: Array<Uint8Array | null>;
   salt: Uint8Array;
+  /** Per call, the M and B3 coins a deferred call takes if its learned recovery is width-0; null for any other. */
+  width0Coins: Array<{ m: Utxo; b3: Utxo } | null>;
 };
 
 /**
@@ -106,7 +108,7 @@ export async function resolveEcrecoverComputeCoSpends(
     ? new Uint8Array(32)
     : hexToBin(host.categoryId).slice().reverse());
   if (calls.length === 0 || !host.categoryId) {
-    return { coSpends: [], argBlobs: [], evmPreimages: [], salt };
+    return { coSpends: [], argBlobs: [], evmPreimages: [], salt, width0Coins: [] };
   }
   // Each call's arguments: learned later from the run (deferred), recovering no key (refused), or a witness.
   const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
@@ -196,9 +198,11 @@ export async function resolveEcrecoverComputeCoSpends(
   const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
   const argBlobs: Array<Uint8Array | null> = [];
   const evmPreimages: Array<Uint8Array | null> = [];
+  const width0Coins: Array<{ m: Utxo; b3: Utxo } | null> = [];
   let p = 0;
   for (let i = 0; i < calls.length; i++) {
     const plan = plans[i]!;
+    width0Coins.push(plan.kind === 'deferred' ? { m: freeM[p]!, b3: freeB3[p]! } : null);
     if (plan.kind === 'refused') {
       // No side-car recovers a key from these arguments. The slots take coins the function does not read: the
       // compiled recovery answers the zero address without reading them, or its branch is not run, or it reads them
@@ -222,7 +226,9 @@ export async function resolveEcrecoverComputeCoSpends(
     const [coinA, coinB, coinM, coinB3] = [freeA[p], freeB[p], freeM[p], freeB3[p]];
     p += 1;
     if (plan.kind === 'deferred') {
-      const placeholders = buildEcrecoverComputePlaceholders(salt, coinA, coinB, 'B2');
+      // The placeholder recovery's genuine pair: a run that never reads the call (arguments the range rules refuse, or
+      // a branch it skips) sends it as it is, and a run that reads it names the arguments the pair is rebuilt over.
+      const placeholders = buildEcrecoverPlaceholderSidecars(salt, coinA, coinB, undefined, 'B2');
       const funder = await unreadSlot(i, middle(i));
       resolved.push({ utxo: coinA, unlocker: placeholders.unlockerA, recreate: placeholders.recreateA });
       resolved.push({ utxo: funder.utxo, unlocker: funder.utxo.unlocker, recreate: funder.recreate });
@@ -259,5 +265,5 @@ export async function resolveEcrecoverComputeCoSpends(
     argBlobs.push(ownArgBlob);
     if (evmFlags[i]) evmPreimages.push(evmPreimage);
   }
-  return { coSpends: resolved, argBlobs, evmPreimages, salt };
+  return { coSpends: resolved, argBlobs, evmPreimages, salt, width0Coins };
 }

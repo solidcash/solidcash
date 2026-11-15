@@ -5412,6 +5412,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       argBlobs: Array<Uint8Array | null>;
       evmPreimages: Array<Uint8Array | null>;
       salt: Uint8Array;
+      width0Coins: Array<{ m: Utxo; b3: Utxo } | null>;
     }> {
     return resolveEcrecoverComputeCoSpendsImpl(
       {
@@ -12090,7 +12091,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } | undefined;
     let deferredEcrecoverCompute: {
       salt: Uint8Array; argBlobs: Array<Uint8Array | null>;
-      evmKeccakPreimageIndices: number[];
+      evmKeccakPreimageIndices: number[]; width0Coins?: Array<{ m: Utxo; b3: Utxo } | null>;
     } | undefined;
     let delegateComputeResources = false;
     let ecrecoverComputeCoSpendUtxos: UnlockableUtxo[] = [];
@@ -13085,6 +13086,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           salt: resolution.salt,
           argBlobs: resolution.argBlobs,
           evmKeccakPreimageIndices,
+          width0Coins: resolution.width0Coins,
         };
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process

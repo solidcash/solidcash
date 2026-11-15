@@ -885,6 +885,7 @@ export class StatefulTransactionBuilder {
     salt: Uint8Array;
     argBlobs: Array<Uint8Array | null>;
     evmKeccakPreimageIndices: number[];
+    width0Coins?: Array<{ m: Utxo; b3: Utxo } | null>;
   };
 
   private ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
@@ -1128,6 +1129,8 @@ export class StatefulTransactionBuilder {
         argBlob === null ? null : Uint8Array.from(argBlob)
       )),
       evmKeccakPreimageIndices: [...options.deferredEcrecoverCompute.evmKeccakPreimageIndices],
+      ...(options.deferredEcrecoverCompute.width0Coins === undefined ? {}
+        : { width0Coins: [...options.deferredEcrecoverCompute.width0Coins] }),
     };
     this.ecrecoverComputeCoSpendUtxos = options.ecrecoverComputeCoSpendUtxos ?? [];
     this.ecrecoverComputeRecreates = options.ecrecoverComputeRecreates ?? [];

@@ -18782,10 +18782,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // digest shifted by -2^128 r mod n instead, which gives the key plus 2^128 G: the call answers the zero address when
     // that is 2^128 G.
     const directInfinityProof = zeroOnInvalidV;
+    // A framed body's V proves the same over the shifted digest, and the body answers its own zero address.
+    const framedInfinityProof = offCurveProof;
+    const infinityProof = directInfinityProof || framedInfinityProof;
     const bindArgBlob = (): void => {
-      if (directInfinityProof) {
+      if (infinityProof) {
         // [argBlob, argBlob_A] -> [atInfinity], which the tracked argBlob stands for until the key is read.
-        this.emitRecoveryAtInfinityBind(loc);
+        if (framedInfinityProof) this.emitFramedRecoveryAtInfinityBind(loc);
+        else this.emitRecoveryAtInfinityBind(loc);
         return;
       }
       this.emit(Op.OP_EQUALVERIFY, loc);                                   // bind argBlob_A == argBlob
@@ -18958,14 +18962,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(1n), loc); this.emit(Op.OP_SPLIT, loc);            // [parity, Qx33LE]
     this.emitTakeFirst32(loc); // [parity, Qx32LE]
     this.emit(Op.OP_REVERSEBYTES, loc); this.emit(Op.OP_CAT, loc);          // [pubkey33]
-    if (directInfinityProof) {
-      // [atInfinity, pubkey33]: a pair over the shifted digest must have recovered 2^128 G, and the call answers the
-      // zero address; the flag is spent here.
+    if (infinityProof) {
+      // [atInfinity, pubkey33]: a pair over the shifted digest, or a framed body's V, must have recovered 2^128 G, and
+      // the call answers the zero address, empty in a framed body as its `address(0)` is; the flag is spent here.
       this.emit(Op.OP_SWAP, loc);
       this.popFromStack(1);
       this.emit(Op.OP_IF, loc);
       this.emit(SECP256K1_2E128_G_COMPRESSED, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emitDirectZeroAddress(isEvm, loc);
+      if (framedInfinityProof) this.emit(Op.OP_0, loc);
+      else this.emitDirectZeroAddress(isEvm, loc);
       this.emit(Op.OP_ELSE, loc);
     }
 
@@ -19044,7 +19049,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
-    if (directInfinityProof) this.emit(Op.OP_ENDIF, loc);
+    if (infinityProof) this.emit(Op.OP_ENDIF, loc);
     if (offCurveProof) {
       // [argBlob, pad, restA]: the pad's first word proves `r` has no point, and the body answers the zero address.
       // The read stashed V's index for the redeem bind this branch never reaches; drop it, so the alt stack stays
@@ -19142,19 +19147,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_0, loc);
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_SWAP, loc);                                                              // [argBlob_A, argBlob]
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_TUCK, loc); // [.., rest, z32, rest]
-    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
-    this.emitTakeFirst32(loc); this.emitUnsignedWord(loc);                                   // [.., rest, z32, r]
-    // z + (n - r) 2^128 is positive, as r < n, and is z - 2^128 r mod n.
-    this.emitSecp256k1Order(loc); this.emit(Op.OP_TUCK, loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc);                                   // [.., rest, z32, n, n - r]
-    this.emit(encodeInt(128n), loc); this.emit(Op.OP_LSHIFTNUM, loc);
-    this.emit(Op.OP_ROT, loc); this.emitUnsignedWord(loc); this.emit(Op.OP_ADD, loc);        // [.., rest, n, shifted z]
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_MOD, loc);                                   // [.., rest, z']
-    this.emit(encodeInt(33n), loc); this.emit(Op.OP_NUM2BIN, loc); this.emitTakeFirst32(loc);
-    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);                                   // [argBlob_A, shifted]
+    this.emitShiftedRecoveryBlob(loc);                                                       // [argBlob_A, shifted]
     this.emit(Op.OP_EQUALVERIFY, loc); this.emit(Op.OP_1, loc);
     this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * A framed body's form of the bind above, for its side-car V. It tests the shifted blob first, so a V over neither
+   * blob fails at the bind of the body's own, with the body's blob under V's: the close a composer reads to learn a
+   * computed argument. Stack: [argBlob, argBlob_V] -> [atInfinity].
+   */
+  private emitFramedRecoveryAtInfinityBind(loc: SingleLocationData): void {
+    this.emit(Op.OP_OVER, loc); this.emitShiftedRecoveryBlob(loc);                           // [.., argBlob_V, shifted]
+    this.emit(Op.OP_OVER, loc); this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_1, loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_EQUALVERIFY, loc); this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /** [argBlob] -> [the blob with its digest z replaced by z - 2^128 r mod n, a 32-byte little-endian word]. */
+  private emitShiftedRecoveryBlob(loc: SingleLocationData): void {
+    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_TUCK, loc); // [rest, z32, rest]
+    this.emit(Op.OP_1, loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc);
+    this.emitTakeFirst32(loc); this.emitUnsignedWord(loc);                                   // [rest, z32, r]
+    // z + (n - r) 2^128 is positive, as r < n, and is z - 2^128 r mod n.
+    this.emitSecp256k1Order(loc); this.emit(Op.OP_TUCK, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_SUB, loc);                                   // [rest, z32, n, n - r]
+    this.emit(encodeInt(128n), loc); this.emit(Op.OP_LSHIFTNUM, loc);
+    this.emit(Op.OP_ROT, loc); this.emitUnsignedWord(loc); this.emit(Op.OP_ADD, loc);        // [rest, n, shifted z]
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_MOD, loc);                                   // [rest, z']
+    this.emit(encodeInt(33n), loc); this.emit(Op.OP_NUM2BIN, loc); this.emitTakeFirst32(loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_CAT, loc);                                   // [shifted]
   }
 
   /** The direct convention's zero address: 20 zero bytes for `ecrecoverEvm`, the empty locking bytecode for P2PKH. */

@@ -39,7 +39,9 @@ import { publishedRefusals } from './refused-entry.js';
  * a point at `r`), so the framed body tests them itself: for a `v` outside 27/28, or an `r` or `s` outside [1, n), it
  * answers the zero address, empty as `address(0)` is, without reading the side-car the composer co-spends there. An
  * `r` in range but off the curve has no side-car either: its pad then holds w, whose square is -(r^3 + 7) mod p,
- * which the body checks before it answers the zero address. A recovery at infinity is still open.
+ * which the body checks before it answers the zero address. Nor has a key at infinity: the body binds its side-car to
+ * its own arguments or to the same with the digest z shifted to z - 2^128 r mod n, over which the side-car recovers
+ * the key plus 2^128 G, and for the shifted bind answers the zero address once the side-car commits 2^128 G.
  *
  * The direct-convention control compiles the same valid source, where the call is served and marked as recovery
  * compute - so what the framed cases below show is the framed convention's own behaviour.
@@ -510,4 +512,149 @@ describe('the EVM invalid-input rule on the framed path', () => {
     expect(verdicts(spend, [V_INDEX])).toStrictEqual({ [V_INDEX]: false });
   });
 
+});
+
+/** A 32-byte big-endian word, the form ethers takes a private key in. */
+const beWord = (value: bigint): Uint8Array => leWord(value).reverse();
+
+/** A little-endian word read as an unsigned number. */
+const unsignedOf = (word: Uint8Array): bigint => word.reduceRight((value, byte) => (value << 8n) | BigInt(byte), 0n);
+
+/** k G as a standard compressed key, for a k in [1, n). */
+const pointOf = (k: bigint): Uint8Array => hexToBin(ethers.SigningKey.computePublicKey(beWord(k), true).slice(2));
+
+/** k^-1 mod n, for a k in [1, n). */
+function inverseModOrder(k: bigint): bigint {
+  let result = 1n;
+  for (let base = k % ORDER, exponent = ORDER - 2n; exponent > 0n; base = (base * base) % ORDER, exponent >>= 1n) {
+    if ((exponent & 1n) === 1n) result = (result * base) % ORDER;
+  }
+  return result;
+}
+
+/** The scalars the builtin recovers from, little-endian. */
+interface RecoveryArguments {
+  readonly h: Uint8Array;
+  readonly v: number;
+  readonly r: Uint8Array;
+  readonly s: Uint8Array;
+}
+
+/**
+ * Arguments whose key is the point at infinity: R = (z/s) G, so that s R = z G and (s R - z G) / r is no point. A draw
+ * whose R has an x-coordinate of n or more, which `r` cannot name, is redrawn.
+ */
+function infinityArguments(): RecoveryArguments {
+  for (let draw = 0; ; draw += 1) {
+    const drawn = (part: string): bigint =>
+      BigInt(`0x${binToHex(sha256(new TextEncoder().encode(`framed recovery at infinity ${part} ${draw}`)))}`) % ORDER;
+    const z = drawn('z') || 1n;
+    const s = drawn('s') || 1n;
+    const point = pointOf((z * inverseModOrder(s)) % ORDER);
+    const x = BigInt(`0x${binToHex(point.slice(1))}`);
+    if (x < ORDER) return { h: leWord(z), v: 27 + point[0]! - 2, r: leWord(x), s: leWord(s) };
+  }
+}
+
+/** The digest the side-car of a key at infinity recovers from: z - 2^128 r mod n, a little-endian word. */
+const shiftedDigest = (args: RecoveryArguments): Uint8Array =>
+  leWord((((unsignedOf(args.h) - (unsignedOf(args.r) << 128n)) % ORDER) + ORDER) % ORDER);
+
+/** The side-car witness over the arguments with the digest shifted by -2^128 r mod n. */
+const shiftedWitness = (args: RecoveryArguments): EcrecoverVerifyWitness =>
+  computeEcrecoverVerifyWitness(shiftedDigest(args), args.v, args.r, args.s);
+
+/** A side-car's committed key, parity || Qx as a 33-byte little-endian number, as a standard compressed key. */
+const standardKey = (commitment: Uint8Array): Uint8Array =>
+  Uint8Array.from([commitment[0]!, ...commitment.slice(1, 33).reverse()]);
+
+/** A `bytes32` literal of a little-endian word, as a Solidity port writes the big-endian word the call reverses. */
+const portWord = (word: Uint8Array): string => `bytes32(0x${binToHex(word.slice().reverse())})`;
+
+describe('a key at infinity on the framed path', () => {
+  let atInfinity: RecoveryArguments;
+  let car: SideCar;
+  let witness: EcrecoverVerifyWitness;
+
+  beforeAll(() => {
+    atInfinity = infinityArguments();
+    witness = shiftedWitness(atInfinity);
+    car = carFor(witness);
+  });
+
+  it('answers the zero address once the side-car over the shifted digest commits 2^128 G', () => {
+    // No side-car recovers the point at infinity; over the shifted digest it recovers the key plus 2^128 G.
+    expect(() => computeEcrecoverVerifyWitness(atInfinity.h, atInfinity.v, atInfinity.r, atInfinity.s))
+      .toThrow(/point at infinity/);
+    expect(binToHex(standardKey(car.commitment))).toBe(binToHex(pointOf(1n << 128n)));
+    const spend = buildSpend(zeroProgram(atInfinity), [car]);
+    expect(verdicts(spend, [MASTER_INDEX, V_INDEX])).toStrictEqual({ [MASTER_INDEX]: true, [V_INDEX]: true });
+    // The answer leaves the alternate stack as an accepted recovery does.
+    const accepted = buildSpend(
+      compileRecoverySource(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'), [signerCarOnce()],
+    );
+    expect(finalAltDepth(spend, MASTER_INDEX)).toBe(finalAltDepth(accepted, MASTER_INDEX));
+  });
+
+  it('answers the zero address through the EVM projection, which reads no keccak side-car for it', () => {
+    // The keccak side-car over the key V commits holds its place unread. The framed zero address is empty, and a `0x`
+    // compared with a bytes20 reads as its 20 zero bytes, so the answer is compared as unbounded `bytes`.
+    const word = (value: Uint8Array): string => `bytes32(0x${binToHex(value)})`;
+    const artifacts = compileFramed('pragma solidcash ^0.50.0;'
+      + ' contract Auth {'
+      + '   function check() {'
+      + `     require(bytes(ecrecoverEvm(${word(atInfinity.h)}, ${atInfinity.v}, ${word(atInfinity.r)}, `
+      + `${word(atInfinity.s)})) == 0x);`
+      + '   }'
+      + ' }');
+    expect(publishedRefusals(artifacts)).toStrictEqual([]);
+    const spend = buildSpend(masterProgram(artifacts, 'Auth'), [car, keccakCar(witness.uncompressedPubkey)]);
+    expect(verdicts(spend, [MASTER_INDEX, V_INDEX, K_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: true, [V_INDEX]: true, [K_INDEX]: true,
+    });
+  });
+
+  it('answers address(0) through the bare name in P2PKH mode, as a Solidity port compares it', () => {
+    const artifacts = compileFramed('pragma solidity ^0.8.0;'
+      + ' contract Auth {'
+      + '   function check() public pure {'
+      + `     require(ecrecover(${portWord(atInfinity.h)}, ${atInfinity.v}, ${portWord(atInfinity.r)}, `
+      + `${portWord(atInfinity.s)}) == address(0));`
+      + '   }'
+      + ' }', { evmCompat: true, ecrecover: 'p2pkh' });
+    expect(publishedRefusals(artifacts)).toStrictEqual([]);
+    expect(verdicts(buildSpend(masterProgram(artifacts, 'Auth'), [car]), [MASTER_INDEX]))
+      .toStrictEqual({ [MASTER_INDEX]: true });
+  });
+
+  it('refuses another key in the side-car\'s recreation, and the same side-car beside arguments that recover a key', () => {
+    // A forged key: the side-car's covenant refuses it, and so does the body, which reads it.
+    const forged = { ...car, commitment: signerCarOnce().commitment };
+    expect(verdicts(buildSpend(zeroProgram(atInfinity), [forged]), [MASTER_INDEX, V_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: false, [V_INDEX]: false,
+    });
+    // The arguments with `s` moved by one recover a key, and the side-car proves nothing of them.
+    const moved = zeroProgram({ ...atInfinity, s: leWord(unsignedOf(atInfinity.s) + 1n) });
+    expect(verdicts(buildSpend(moved, [car]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+  });
+
+  it('refuses the side-car over a valid signature\'s shifted digest, which commits the key plus 2^128 G', () => {
+    // A genuine side-car, bound as the shifted blob, so every projection refuses it.
+    const signerWitness = shiftedWitness(signer);
+    const shifted = carFor(signerWitness);
+    expect(binToHex(standardKey(shifted.commitment))).not.toBe(binToHex(pointOf(1n << 128n)));
+    const owner = compileRecoverySource(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
+    for (const program of [zeroProgram(signer), owner]) {
+      expect(verdicts(buildSpend(program, [shifted]), [MASTER_INDEX, V_INDEX])).toStrictEqual({
+        [MASTER_INDEX]: false, [V_INDEX]: true,
+      });
+    }
+    const evm = buildSpend(
+      compileRecoverySource(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm'),
+      [shifted, keccakCar(signerWitness.uncompressedPubkey)],
+    );
+    expect(verdicts(evm, [MASTER_INDEX, V_INDEX, K_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: false, [V_INDEX]: true, [K_INDEX]: true,
+    });
+  });
 });

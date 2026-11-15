@@ -333,10 +333,11 @@ export class UnspendableContractError extends Error {
  * Why a raw call cannot be built. A payload with bytes: no deployment is at the target (a wallet, or address(0)), none of
  * its functions takes the payload, the one that does fails, or it names a function that declares a result and the
  * callee's run pins no record to read. An empty payload: the target is a contract deployment, which a plain send that
- * co-spends no callee cannot answer for.
+ * co-spends no callee cannot answer for. A payload with bytes sent with a `{value:}` to its co-spent callee: a direct
+ * build has nowhere to pay it that the callee would see.
  */
 export type RawCallCalleeRequiredReason = 'no contract at the target' | 'no matching function' | 'callee fails'
-  | 'no record to read' | 'plain send to a contract';
+| 'no record to read' | 'plain send to a contract' | 'value to a co-spent callee';
 
 /** The sentence a refusal of `reason` gives after the call's name. */
 function rawCallRefusal(reason: RawCallCalleeRequiredReason, detail: string | undefined): string {
@@ -352,6 +353,14 @@ function rawCallRefusal(reason: RawCallCalleeRequiredReason, detail: string | un
     case 'no record to read':
       return 'its payload names a function that declares a result, so the caller reads its callee\'s record, and '
         + `the callee's run pins none${detail === undefined ? '' : ` (${detail})`}.`;
+    case 'value to a co-spent callee':
+      return `its payload is not empty, so its target is co-spent and runs the call${detail === undefined ? ''
+        : ` (${detail})`}, and it sends {value:}. A direct build pays that value to the call's target address, which `
+        + 'names the callee\'s master, not its satoshi container: the master spends only a coin that carries its '
+        + 'minting NFT, so the payment could never be spent (a send refuses such an output, '
+        + 'StatefulMasterPaymentError), and the callee reads msg.value from its satoshi container, so it would run '
+        + 'as if sent nothing. Pay the callee\'s satoshi container with a transfer of its own, or call without '
+        + '{value:}.';
     case 'plain send to a contract':
     default:
       return 'its payload is empty and its target is a contract deployment. A call that co-spends no callee answers '
@@ -370,7 +379,10 @@ export class RawCallCalleeRequiredError extends Error {
     public readonly reason: RawCallCalleeRequiredReason,
     /** The call as its caller's ABI publishes it: the payload's function or selector, when the source names one. */
     public readonly call: string,
-    /** The callee's own failure for `callee fails`, the callee's function for `no record to read`. */
+    /**
+     * The callee's own failure for `callee fails`, the callee's function for `no record to read`, the callee and its
+     * function for `value to a co-spent callee`.
+     */
     public readonly calleeError?: string,
   ) {
     super(`Raw call ${call} cannot be built: ${rawCallRefusal(reason, calleeError)}`);

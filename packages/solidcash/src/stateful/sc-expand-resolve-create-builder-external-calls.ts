@@ -190,7 +190,7 @@ function rawCallPayloadIsEmpty(ec: ExternalCallAbi): boolean {
 }
 
 /** A raw call as its caller's ABI names it: the payload's function or selector, when the source names one. */
-function rawCallName(ec: ExternalCallAbi): string {
+export function rawCallName(ec: ExternalCallAbi): string {
   if (ec.rawFunctionName !== undefined) return `'${ec.rawFunctionName}'`;
   return ec.rawSelector === undefined ? 'with an opaque payload' : `with selector 0x${ec.rawSelector}`;
 }

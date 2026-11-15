@@ -41,6 +41,7 @@ import {
 } from './ValueChunkProducerIdentity.js';
 import {
   expandResolveCreateBuilderExternalCalls as expandResolveCreateBuilderExternalCallsImpl,
+  rawCallName,
 } from './sc-expand-resolve-create-builder-external-calls.js';
 import {
   allocateCreateBuilderSharedFunders as allocateCreateBuilderSharedFundersImpl,
@@ -559,6 +560,17 @@ export async function orchestrateCreateBuilderExternalCalls(
       const ec = externalCalls[slotIndex];
       const callInfo = resolvedExternalCalls[slotIndex];
       if (callInfo) assertCallSelectorScheme(ec, host.inner.artifact, callInfo.externalContract.inner.artifact);
+      // A raw call's `{value:}` pays the call's target address, the co-spent callee's master lock, where the coin is
+      // stuck, and the callee reads msg.value from its satoshi container, which the payment never reaches. Refuse it
+      // before a layout is planned. A message-bus participant settles its value edge in its route; a send of that one
+      // refuses the master-lock output itself.
+      if (callInfo && ec.interfaceName === '__raw__' && ec.callValueEffect === true
+        && host.inner.artifact.messageBus === undefined) {
+        const callee = callInfo.externalContract.inner.artifact.contractName;
+        throw new RawCallCalleeRequiredError(
+          'value to a co-spent callee', rawCallName(ec), `${callee}.${callInfo.functionName}`,
+        );
+      }
 
       const nestedPrelude = await loadCreateBuilderNestedCalleePreludeImpl(
         {

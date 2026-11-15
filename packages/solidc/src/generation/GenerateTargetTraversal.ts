@@ -54124,36 +54124,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * `[.., blob] -> [..]`: pins a received pointer's co-spent pushes (selector split off) to its `args` declared
    * arguments and the redeem, so a run-time selector naming a wider method, whose extra parameters the caller never
-   * binds, is refused. A returning pointer's callee also takes its record witness: a method without one settles no
-   * record for the caller to read. A void pointer reads no record, so that witness, the first push, must name none
-   * (OP_1NEGATE), and a callee taking no witness pushes just the arguments. A method with one extra parameter and no
-   * witness then runs on that constant, never on a spender-chosen value.
+   * binds, is refused. Ahead of the arguments a callee takes up to two hidden witnesses, in this order: its record
+   * witness, then, in a record-sound callee (genesisCalls, A7), its genesis call. This call is not a constructor's,
+   * so a genesis call is empty: the second hidden push must be OP_0.
+   * A returning pointer's callee takes the record witness: a method without one settles no record for the caller to
+   * read. A void pointer reads no record, so that witness, the first push, must name none (OP_1NEGATE), and a callee
+   * taking no witness pushes just the arguments. A method with extra parameters and no witness then runs on those
+   * constants, never on a spender-chosen value.
    */
   private emitRequirePointerCalleePushes(args: number, slot: ExternalCallSlot, loc: SingleLocationData): void {
-    if (slot.hasReturnValues) {
-      this.emitCountPushes(loc);                          // [.., count]
-      this.emit(encodeInt(BigInt(args + 2)), loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);               // [..]
-      return;
+    const witnessed = slot.hasReturnValues === true;
+    // What the pinned hidden pushes spell, h of them: for a void pointer the record witness naming none, then the
+    // empty genesis call; for a returning one the empty genesis call after a record witness that is free.
+    const pinned = witnessed ? Uint8Array.of(Op.OP_0) : Uint8Array.of(Op.OP_1NEGATE, Op.OP_0);
+    this.emit(Op.OP_DUP, loc);
+    this.emitCountPushes(loc);                            // [.., blob, count]
+    this.emit(encodeInt(BigInt(args + (witnessed ? 2 : 1))), loc);
+    this.emit(Op.OP_SUB, loc);                            // [.., blob, h]
+    if (witnessed) {
+      this.emit(Op.OP_SWAP, loc);                         // [.., h, blob]
+      this.emitGenericPushdataDecode(new BytesType(), loc); // [.., h, witness, rest]
+      this.emit(Op.OP_NIP, loc);                          // [.., h, rest]
+      this.emit(Op.OP_OVER, loc);                         // [.., h, rest, h]
+    } else {
+      this.emit(Op.OP_TUCK, loc);                         // [.., h, blob, h]
     }
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(1n), loc);
+    // A count below the arguments, or more hidden pushes than `pinned` names, fails one of the two splits.
     this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);                           // [.., blob, first]
-    this.emit(Op.OP_SWAP, loc);                           // [.., first, blob]
-    this.emitCountPushes(loc);                            // [.., first, count]
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(BigInt(args + 2)), loc);
-    this.emit(Op.OP_NUMEQUAL, loc);                       // [.., first, count, witnessed]
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);                           // [.., first]
-    this.emit(Uint8Array.of(Op.OP_1NEGATE), loc);
+    this.emit(Op.OP_DROP, loc);                           // [.., h, hidden]
+    this.emit(pinned, loc);
+    this.emit(Op.OP_ROT, loc);                            // [.., hidden, pinned, h]
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);                           // [.., hidden, pinned[0:h]]
     this.emit(Op.OP_EQUALVERIFY, loc);                    // [..]
-    this.emit(Op.OP_ELSE, loc);
-    this.emit(Op.OP_NIP, loc);                            // [.., count]
-    this.emit(encodeInt(BigInt(args + 1)), loc);
-    this.emit(Op.OP_NUMEQUALVERIFY, loc);                 // [..]
-    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**

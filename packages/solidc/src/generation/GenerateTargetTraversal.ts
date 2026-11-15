@@ -33707,7 +33707,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the route covenant authenticates the complete batch. Single low-level calls retain the direct prefix proof.
    */
   private isCompilerRoutedLowLevelBatch(_node: LowLevelCallNode | LowLevelCallStatementNode): boolean {
-    return this.externalCallSlots.some((slot) => slot.interfaceName === '__raw__');
+    // Only a build that lowers raw calls to message-bus edges routes them. A direct build's raw external call (an
+    // option-free one, or one whose payload names a function that declares a result) routes nothing, and a
+    // low-level call beside it keeps its own pin.
+    const messageBusMode = (this.compilerOptions as { __messageBusMode?: 'auto' | 'enabled' | 'required' })
+      .__messageBusMode;
+    const routesRawCalls = this.compilerOptions.messageBus === true
+      || messageBusMode === 'enabled' || messageBusMode === 'required';
+    return routesRawCalls && this.externalCallSlots.some((slot) => slot.interfaceName === '__raw__');
   }
 
   // ===== Mapping (Entry NFT) Support =====

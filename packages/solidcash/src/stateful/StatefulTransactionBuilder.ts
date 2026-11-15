@@ -3,7 +3,7 @@ import {
   type StateLayout,
   parseEntryCommitment,
   getDefaultStateValue,
-  encodePushdataValue,
+  encodeEventPushdataValue,
   type EventDefinitionAbi,
   type StateValue,
   type FunctionBlockLayout,
@@ -4632,7 +4632,7 @@ export class StatefulTransactionBuilder {
         else if (isHex(value)) value = hexToBin(value);
         else throw new Error(`Invalid event argument at index ${i}: expected a hex string, got '${value}'`);
       }
-      return encodePushdataValue(value, parameter.type, this.stateLayout.structs);
+      return encodeEventPushdataValue(value, parameter.type, this.stateLayout.structs);
     });
     const commitment = new Uint8Array(encodedParts.reduce((sum, part) => sum + part.length, 0));
     let cursor = 0;

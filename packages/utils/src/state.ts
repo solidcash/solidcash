@@ -563,6 +563,32 @@ export function encodePushdataValue(
   structs?: readonly StructDefinitionInfo[],
   _visited?: Set<string>,
 ): Uint8Array {
+  return encodePushdataFrame(value, type, structs, _visited, false);
+}
+
+/**
+ * Encode one event argument in the platform pushdata frame, as a covenant's emit pushes it. An address given as bytes
+ * is pushed as those bytes, in a struct field or an array element too: 20 zero bytes, which a refused `ecrecoverEvm`
+ * answers, stay a 20-byte push. `encodePushdataValue`, which state records use, reads any all-zero address as
+ * `address(0)`, the empty push. Any other spelling of an address (a CashAddress, a hex string, ethers' zero address, an
+ * integer) is read as `encodePushdataValue` reads it.
+ */
+export function encodeEventPushdataValue(
+  value: StateValue,
+  type: string,
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  return encodePushdataFrame(value, type, structs, undefined, true);
+}
+
+/** `encodePushdataValue`, which keeps an address given as bytes as those bytes when `addressBytesAsPushed` is set. */
+function encodePushdataFrame(
+  value: StateValue,
+  type: string,
+  structs: readonly StructDefinitionInfo[] | undefined,
+  _visited: Set<string> | undefined,
+  addressBytesAsPushed: boolean,
+): Uint8Array {
   if (structs) {
     const structDef = structs.find((s) => s.name === type);
     if (structDef) {
@@ -579,7 +605,7 @@ export function encodePushdataValue(
       structDef.fields.forEach((field, i) => {
         const fieldValue = (positional ? tuple[i] : record[field.name])
           ?? getDefaultStateValue(field.type, structs);
-        parts.push(encodePushdataValue(fieldValue, field.type, structs, visited));
+        parts.push(encodePushdataFrame(fieldValue, field.type, structs, visited, addressBytesAsPushed));
       });
       const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
       const result = new Uint8Array(totalLen);
@@ -605,7 +631,7 @@ export function encodePushdataValue(
       parts.push(packFixedWidthArray(arr as PrimitiveStateValue[], arrInfo.elementType));
     } else {
       for (const elem of arr) {
-        parts.push(encodePushdataValue(elem, arrInfo.elementType, structs));
+        parts.push(encodePushdataFrame(elem, arrInfo.elementType, structs, undefined, addressBytesAsPushed));
       }
     }
     const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
@@ -661,9 +687,12 @@ export function encodePushdataValue(
     if (typeof primitiveValue === 'string' && /^(0x)?0*$/i.test(primitiveValue)) {
       primitiveValue = new Uint8Array(0);
     } else {
+      // An event argument given as bytes is the push its covenant made, so all-zero bytes stay as they are there.
+      const keepsBytes = addressBytesAsPushed && primitiveValue instanceof Uint8Array;
       primitiveValue = lockingBytecodeFromAddressValue(primitiveValue);
       if (
-        primitiveValue instanceof Uint8Array
+        !keepsBytes
+        && primitiveValue instanceof Uint8Array
         && primitiveValue.length > 0
         && primitiveValue.every((byte) => byte === 0)
       ) {
@@ -741,7 +770,7 @@ export function encodeEventParameter(
 ): Uint8Array {
   return parameter.notation === 'evm'
     ? encodeEvmNotationEventValue(value, parameter.type)
-    : encodePushdataValue(value, parameter.type, structs);
+    : encodeEventPushdataValue(value, parameter.type, structs);
 }
 
 /**

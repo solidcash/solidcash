@@ -114,7 +114,10 @@ export interface CompilerOptions {
    * value) or `'all'` (void entries too). Framed and message-bus compiles accept only `'returning'`.
    */
   callRecords?: 'returning' | 'all';
-  /** Compile direct contracts with the constructor-genesis (O6) mechanisms. Defaults to on. */
+  /**
+   * Compile direct contracts with the constructor-genesis (O6) mechanisms. Defaults to on. A framed compile and a
+   * message-bus compile take none: a constructor calls only a direct contract.
+   */
   genesisCalls?: boolean;
   /** Encode an NFT-index tag even when fixed state occupies only one data NFT. Opt-in wire-layout choice. */
   tagSingletonDataNfts?: boolean;
@@ -2448,7 +2451,7 @@ export interface Artifact {
   genesisCalls?: boolean;
   /**
    * True: compiled as record-sound (its code marker says so). False: a record-publishing entry meets an arm that
-   * prevents it.
+   * prevents it, or the contract is a message-bus build.
    */
   recordSound?: boolean;
   /** True for a marked creator: a contract that creates a sender-reading child. */

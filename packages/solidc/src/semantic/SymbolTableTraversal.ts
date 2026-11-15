@@ -144,7 +144,9 @@ import {
   computeBranchOps, countBranchOps, countTransfersMinMax, hasEffectiveCallValue, isDirectOwnerTransferNode,
 } from './branchOps.js';
 import { describeFunctionLowLevelCallsites } from './LowLevelCallShapes.js';
-import { hasRecordSoundArms, isRecordMaster, publishesCallRecord } from './RecordSound.js';
+import {
+  hasRecordSoundArms, isMessageBusCompile, isRecordMaster, publishesCallRecord,
+} from './RecordSound.js';
 import { KERNEL_JOURNAL_ACCESS_STREAMS } from './LowerVMapCounterLoops.js';
 import { blockEndsWithReturn, nestedStatementLists } from './EarlyReturnTransformation.js';
 import { isReturnFlag } from './ConfineReturns.js';
@@ -16333,8 +16335,10 @@ export default class SymbolTableTraversal extends AstTraversal {
    * region the creator binds is exactly the values `create` reads.
    */
   private injectGenesisCallParameter(node: FunctionDefinitionNode): void {
-    // On by default (A7); `genesisCalls: false` is the switch.
-    if (this.compilerOptions.genesisCalls === false || this.compilerOptions.composition === 'framed') return;
+    // On by default (A7); `genesisCalls: false` is the switch. A framed compile and a message-bus compile emit no
+    // record-sound master, whatever their route admits.
+    if (this.compilerOptions.genesisCalls === false || this.compilerOptions.composition === 'framed'
+      || isMessageBusCompile(this.compilerOptions)) return;
     // Nothing of B6.4 to B6.7 is emitted in a master that is not record-sound: such an entry cannot answer a
     // constructor, so it takes no genesis parameter. Code generation decides the same from the same facts.
     const contract = this.currentContract;

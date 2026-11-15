@@ -139,7 +139,7 @@ import { hasEffectiveCallValue, hasExternalCallValueEffect, isDirectOwnerTransfe
 import { checksTransactionSignature, inlinesSignatureChecks } from '../semantic/transactionSignatureCheck.js';
 import { CALL_BATCH_CONTEXT, CALL_BATCH_ROW_SHIFT, CALL_BATCH_SELECTOR } from '../semantic/CallBatch.js';
 import {
-  hasRecordSoundArms, isOrdinaryRecordArm, isRecordMaster, publishesCallRecord,
+  hasRecordSoundArms, isMessageBusCompile, isOrdinaryRecordArm, isRecordMaster, publishesCallRecord,
 } from '../semantic/RecordSound.js';
 import { deployerNewBindsPool, takesOraclePool } from '../semantic/SynthesizeBlockOracle.js';
 import {
@@ -5051,11 +5051,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const delegatecall = (fn: FunctionDefinitionNode): boolean => (fn.lowLevelCalls ?? [])
       .some((call) => call.callMode === 'delegatecall');
     // Every ordinary entry publishes a record (a void one its void record). Records are carriers of the contract's
-    // own category, so only a master publishes them. With `genesisCalls: false` no contract is record-sound (A7).
+    // own category, so only a master publishes them. With `genesisCalls: false` no contract is record-sound (A7), and a
+    // message-bus compile never is, with a route arm or without one: the semantic pass gave it no genesis call.
     const publishing = this.compilerOptions.genesisCalls !== false
       && isRecordMaster(node, this.compilerOptions.forceStateful ?? false)
       && node.functions.some((fn) => isOrdinaryRecordArm(fn, delegatecall));
-    const recordSound = publishing ? hasRecordSoundArms(node, delegatecall) : undefined;
+    const recordSound = publishing
+      ? !isMessageBusCompile(this.compilerOptions) && hasRecordSoundArms(node, delegatecall) : undefined;
     this.verifyRecordSoundObligations(node, recordSound === true);
     const markedCreator = node.createsSenderReadingChildren === true;
     const flags = (recordSound === true ? 2 : 0) | (markedCreator ? 1 : 0);

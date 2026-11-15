@@ -12,6 +12,18 @@ export function isMessageBusRouteFunction(fn: FunctionDefinitionNode): boolean {
 }
 
 /**
+ * A compile that builds the message-bus route: `messageBus` is set, with the kernel or without, as an explicit request
+ * sets it and as automatic selection sets it for a contract with an external call until its direct fallback. No master
+ * it emits is record-sound (A7). A constructor calls only a direct master, whose spend the SDK lays out through the arm
+ * it calls (A14 item 5), and a route binds a callee's result its own way (B6.2). That holds also where the route admits
+ * no handler and the master keeps no route arm, so whether a contract can answer a constructor does not turn on what
+ * its route admits.
+ */
+export function isMessageBusCompile(options: { readonly messageBus?: boolean }): boolean {
+  return options.messageBus === true;
+}
+
+/**
  * A master that gets its code tail and whose records are carriers of its own category: one with state, collections or
  * a block read, or one stateful through its effects that also emits events.
  */

@@ -3713,9 +3713,38 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     } catch {
       // The direct convention refuses the contract, so the message-bus build stands with those entries refused.
     }
+  } else if (auto && artifact.compiler.options?.messageBus === true && overInputLimit(artifact, compilerOptions)
+    // A split shard or facet is a projected tree, which `code` does not compile to.
+    && internal.__functionSplitPrepared !== true && internal.__parsedAst?.contract.isSplitFacet !== true) {
+    // A default build the bus made too large for any input to spend is compiled direct when that build fits. When the
+    // direct build is over too, or refuses the contract, the message-bus build stands with its size diagnostic.
+    const direct = directBuildWithinInputLimit(code, compilerOptions);
+    if (direct !== undefined) return direct;
   }
   replay();
   return unserved.length === 0 ? artifact : refuseUnservedEntries(artifact, unserved);
+}
+
+/** The script is over the per-input limit the compile names: the subject of the `contract-size-limit` diagnostic. */
+function overInputLimit(artifact: Artifact, compilerOptions: CompileOptions): boolean {
+  return asmToBytecode(artifact.bytecode).length > (compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE);
+}
+
+/** A default compile's direct build when it fits the per-input limit; its warnings are emitted only then. */
+function directBuildWithinInputLimit(code: string, compilerOptions: CompileOptions): Artifact | undefined {
+  const options = { ...compilerOptions, messageBus: false } as InternalCompilerOptions;
+  delete options.__parsedAst;
+  const held: string[] = [];
+  let direct: Artifact;
+  try {
+    direct = withWarningListener(({ message }) => { held.push(message); },
+      () => compileStringUnchecked(code, options as CompileOptions));
+  } catch {
+    return undefined;
+  }
+  if (overInputLimit(direct, compilerOptions)) return undefined;
+  for (const message of held) emitCompilerWarning(message);
+  return direct;
 }
 
 /**
@@ -20273,7 +20302,8 @@ function compileResolvedAst(
       ...(artifact.diagnostics ?? []),
       { severity: 'error', code: 'contract-size-limit', message },
     ];
-    // A compiler warning is diagnostic only; the actual refusal remains at the spend boundary.
+    // A compiler warning is diagnostic only. The SDK refuses to deploy code no input can spend on its provider's
+    // network, and a spend of it fails at consensus. A default compile takes the direct build when that one fits.
     console.warn(`Error: ${message}`);
   }
   // B8.10: the deployer of every child type this contract creates, by contract name.

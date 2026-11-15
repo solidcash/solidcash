@@ -25634,7 +25634,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitAddressTransferStatement(node: AddressTransferStatementNode): Node {
     this.emitGraphStaticDirty(node);
-    // The address value IS the locking bytecode to send to.
+    // The address value IS the locking bytecode to send to; a Solidity address identity pays its P2PKH lock, as a
+    // `{value:}` call's does.
+    const recipientLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       // Pre-allocated path: use emitReplace to update the dummy slots
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
@@ -25645,6 +25647,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Visit address expression
       node.addressExpression = this.visit(node.addressExpression);
+      this.emitSolidityValueRecipientLockingBytecode(recipientLoc);
       this.emitReplace(this.getStackIndex(lbName), node);
       this.popFromStack();
 
@@ -25656,6 +25659,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       // Normal path (outside branches)
       node.addressExpression = this.visit(node.addressExpression);
+      this.emitSolidityValueRecipientLockingBytecode(recipientLoc);
       this.popFromStack();
       const lbStackName = `__internal__transfer_lb_${node.transferIndex}`;
       this.pushToStack(lbStackName);
@@ -25680,7 +25684,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
     // Same as AddressTransferStatement but push OP_1 (true) as the expression result.
-    // The address value IS the locking bytecode to send to.
+    // The address value IS the locking bytecode to send to; a Solidity address identity pays its P2PKH lock.
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
       const amtName = `__internal__transfer_amt_${node.transferIndex}`;
@@ -25689,6 +25693,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       node.addressExpression = this.visit(node.addressExpression);
+      this.emitSolidityValueRecipientLockingBytecode(locationData);
       this.emitReplace(this.getStackIndex(lbName), node);
       this.popFromStack();
 
@@ -25698,6 +25703,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitFramedValueCallAtSource(node.transferIndex, node);
     } else {
       node.addressExpression = this.visit(node.addressExpression);
+      this.emitSolidityValueRecipientLockingBytecode(locationData);
       this.popFromStack();
       const lbStackName = `__internal__transfer_lb_${node.transferIndex}`;
       this.pushToStack(lbStackName);

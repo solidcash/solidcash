@@ -420,7 +420,7 @@ the oracles; no solc run. It covers `ecrecoverEvm` and bare `ecrecover` in `evm`
 messages, two high-S counterparts, the golden vector (itself high-S) and twelve refused inputs (`v` = 0, 26, 29;
 `r` = 0, n, an x in [n, p), 2^256 - 1; `s` = 0, n, 2^256 - 1; an off-curve `r`; a key at infinity). Each refused
 input answers the zero address and none aborts. A Solidity-port flavor (`pragma solidity`, `uint8 v`, `evmCompat`) runs
-the accepted inputs only (see the last section).
+the same 19 inputs.
 
 ## Removal of the 3-argument verify-with-pubkey `ecrecover` (it aliased `checkDataSig` - now misleading)
 
@@ -959,16 +959,24 @@ shapes. Framed recoveries and all 343 corpus contracts are byte-identical.
   but the artifact named the unreversed parameters. `ecrecoverArgParams` now publishes `null` for those three, and
   the SDK learns the words from the run.
 
-**Not covered:**
-- A key at infinity whose R is ±G or ±φ(G) is refused before sending. The side-cars' table check needs an addition
-  with no inverse at those R, so no pair exists, shifted or not. The same holds for any signature with such an R, for
-  example one with nonce 1.
-- A Solidity port's refused inputs are refused before sending. Its state derivation publishes the result empty while
-  the call computes 20 zero bytes. The accepted inputs match ethers.js.
-- On the framed path a key at infinity is still refused: its V side-car has no shifted-digest proof. That path
-  already answered zero for range and off-curve inputs before this change. Its zero for `ecrecoverEvm` is empty,
-  as its `address(0)` is. Its off-curve branch used to leave V's stashed input index on the alt stack; it now drops
-  it, at a cost of 1 B.
+**Solidity ports** answer the zero address for the refused inputs too. Their state holds the answer as 20 zero bytes
+in an `address`, which the SDK's encoding would spell as the empty push. So the SDK now republishes a record's bytes
+for every value a call leaves as it was, taking a run's derived record first and then the input. The gate's
+Solidity-port flavor runs all 19 inputs.
+
+**The framed path.** It answers zero for range and off-curve inputs, and for a key at infinity:
+- the body binds V's argument blob to the shifted one first, then to its own, so a computed recovery the composer
+  learns from the failed bind is never rebuilt over the shifted digest;
+- a shifted V must commit exactly 2^128 G, and the body then answers the empty zero address;
+- the composer lays out V over the shifted digest for such arguments.
+
+Every bound framed recovery computes the shift: framed straight-line recoveries grew by 108 to 112 B, while framed
+loops and the direct convention are byte-identical. Its zero for `ecrecoverEvm` is empty, as its `address(0)` is. Its
+off-curve branch used to leave V's stashed input index on the alt stack; it now drops it, at a cost of 1 B.
+
+**Not covered:** a key at infinity whose R is ±G or ±φ(G) is refused before sending, on both paths. The side-cars'
+table check needs an addition with no inverse at those R, so no pair or V exists, shifted or not. The same holds for
+any signature with such an R, for example one with nonce 1.
 
 Tests:
 - `EcrecoverEvmConformance.e2e` (the gate above);

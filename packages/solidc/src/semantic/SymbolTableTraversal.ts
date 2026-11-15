@@ -6023,6 +6023,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.valueTransferIndex });
     }
+    // The same expression once it is a low-level call node, as the body's visit leaves it in a direct build: its
+    // payment needs a transfer slot as well, or it would drop.
+    if (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+      node.valueTransferIndex = transferInfos.length;
+      transferInfos.push({ transferIndex: node.valueTransferIndex });
+    }
     if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
       || hasEffectiveCallValue(node.callOptions?.value))) {
       if (this.recordCarriesCallValue(node)) {
@@ -6225,6 +6231,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       return startIndex + 1;
     }
     if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+      node.valueTransferIndex = startIndex;
+      return startIndex + 1;
+    }
+    if (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
       node.valueTransferIndex = startIndex;
       return startIndex + 1;
     }
@@ -7314,6 +7324,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           || (current instanceof LowLevelCallStatementNode && hasEffectiveCallValue(current.callOptions?.value))
           || (current instanceof MethodCallStatementNode && hasEffectiveCallValue(current.call.callOptions?.value))
           || (current instanceof MethodCallNode && hasEffectiveCallValue(current.callOptions?.value))
+          || (current instanceof LowLevelCallNode && hasEffectiveCallValue(current.callOptions?.value))
           || (current instanceof ExternalFunctionCallNode && (current.rawValueTransferOnly
             || hasEffectiveCallValue(current.callOptions?.value)))
           || (current instanceof InstantiationNode && hasEffectiveCallValue(current.callOptions?.value))) {

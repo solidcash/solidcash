@@ -32705,10 +32705,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Refuses a `{value: v}` call whose payment no output this covenant checks would carry: its target is not a value the
    * call site can read again (a name, a literal, msg.sender, a state read), so the payment would drop.
    */
-  private refuseUnpaidCallValue(node: ExternalFunctionCallNode, where: string): never {
+  private refuseUnpaidCallValue(
+    node: ExternalFunctionCallNode | LowLevelCallNode | LowLevelCallStatementNode, where: string,
+  ): never {
     const start = node.location?.start;
-    const call = node.interfaceName === '__raw__' ? 'the low-level call'
-      : `the call to ${node.interfaceName}.${node.functionName}`;
+    const call = node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
+      ? `the call to ${node.interfaceName}.${node.functionName}` : 'the low-level call';
     const at = start ? ` at Line ${start.line}, Column ${start.column}` : '';
     throw new SolidcDiagnosticError(
       'CALL_VALUE_RECIPIENT_UNBOUND',
@@ -32716,6 +32718,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         + 'would pay it. Hold the target in a local first',
       { function: this.currentFunction?.name, line: start?.line },
     );
+  }
+
+  /**
+   * Pays a low-level call's `{value: v}` to its target: the parameter or local naming it, else the target expression
+   * where the call site can read it again (`msg.sender`, `payable(msg.sender)`, a literal, a state read), which is the
+   * address the call runs on. Any other target is refused by name rather than leave the payment unpaid.
+   */
+  private emitLowLevelCallValue(node: LowLevelCallNode | LowLevelCallStatementNode, loc: SingleLocationData): void {
+    if (!node.callOptions?.value) return;
+    if (node.valueTransferIndex < 0) {
+      // A payment the semantic pass gave no transfer slot would drop. A framed body settles its sends itself.
+      if (hasEffectiveCallValue(node.callOptions.value) && !this.framedMaster) {
+        this.refuseUnpaidCallValue(node, 'with no transfer slot to carry it');
+      }
+      return;
+    }
+    const addrParam = this.getAddressParamFromTarget(node.targetExpression);
+    if (addrParam) {
+      node.callOptions.value = this.emitValueTransfer(
+        node.valueTransferIndex, node.callOptions.value, addrParam, loc, node,
+      );
+    } else if (this.readsAddressAgain(node.targetExpression)) {
+      node.callOptions.value = this.emitValueTransferToExpression(
+        node.valueTransferIndex, node.callOptions.value, cloneNode(node.targetExpression) as ExpressionNode, loc, node,
+      );
+    } else {
+      this.refuseUnpaidCallValue(node, 'to a target the call site holds as no single value');
+    }
   }
 
   /** An address expression a call site can read a second time: names, literals, msg.sender, state reads. */
@@ -33438,14 +33468,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Handle {value: X} call option
-    if (node.callOptions?.value && node.valueTransferIndex >= 0) {
-      const addrParam = this.getAddressParamFromTarget(node.targetExpression);
-      if (addrParam) {
-        node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, addrParam, locationData, node,
-        );
-      }
-    }
+    this.emitLowLevelCallValue(node, locationData);
 
     if (node.callMode === 'delegatecall' || this.isCompilerRoutedLowLevelBatch(node)) {
       // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles
@@ -33492,14 +33515,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Handle {value: X} call option
-    if (node.callOptions?.value && node.valueTransferIndex >= 0) {
-      const addrParam = this.getAddressParamFromTarget(node.targetExpression);
-      if (addrParam) {
-        node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, addrParam, locationData, node,
-        );
-      }
-    }
+    this.emitLowLevelCallValue(node, locationData);
 
     if (node.callMode === 'delegatecall') {
       // C1/piece-3: FORCE + PIN the delegate co-spend. The input at __internal__delegateInputIndex must have

@@ -7,6 +7,7 @@ import {
   TransferStatementNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
+  LowLevelCallNode,
   LowLevelCallStatementNode,
   MethodCallNode,
   MethodCallStatementNode,
@@ -124,6 +125,7 @@ function isValueTransferNode(node: Node): boolean {
     || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
     || (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value))
     || (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value))
+    || (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value))
     || (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
       || hasEffectiveCallValue(node.callOptions?.value)))
     // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer. A
@@ -198,6 +200,10 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     result.transfers++;
   }
   if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+    result.transfers++;
+  }
+  // The same returning low-level expression once the body's visit has made it a low-level call node.
+  if (node instanceof LowLevelCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
     result.transfers++;
   }
   if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly

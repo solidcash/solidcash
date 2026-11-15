@@ -130,10 +130,10 @@ by `LowerVMapCounterLoops` to full-width slot order.
   6 where the EVM stores 51 (2026-11-15). The same happened to another mapping (`other[ks[i]] + 1`), the using-for
   forms (`bal[7].add(1)`), another key of the array, and counter loops (`slots[i] = slots[7] + amount`). Tests:
   `UpsertLoopOwnEntryRead` in solidc and solidcash.
-- A sorted loop that emits every turn settles. Its events come one output past the entry band and the block's
-  inactive return-event slot, where the covenant reads them, and the SDK pads up to that index
-  (`UpsertLoopEventPerTurn.e2e`). Per-turn BCH transfers beside a sorted-loop write still fail preflight: the builder
-  places the entry one output late.
+- A sorted loop that emits or pays BCH every turn settles. On a plain call the covenant mints the loop's entries into
+  the block's inactive return-event slot. It reads the events or payments from past the whole fixed block plus the
+  entry band, so one tokenless output sits between them, and the SDK pads it (`UpsertLoopEventPerTurn.e2e`,
+  `UpsertLoopPaymentPerTurn.e2e`).
 - The authoritative fail-closed feature list is `verified-mappings.md` §10.1.
 
 ## Verified

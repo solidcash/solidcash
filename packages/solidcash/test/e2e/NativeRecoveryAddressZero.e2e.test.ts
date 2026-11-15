@@ -4,7 +4,8 @@
  * two as one zero, as Solidity's do: `require(who != address(0))` refuses every input the precompile refuses and passes
  * a signer's, and `who == address(0)`, or `who` against an address never set, holds for each refused input and fails
  * for a signer's address, stateful and stateless, straight-line and through a helper. A Solidity port under evmCompat,
- * the control, keeps its recovery's 20 zero bytes and compares them equal to address(0) by its own identity rule.
+ * the control, keeps its recovery's 20 zero bytes and compares them equal to address(0) by its own identity rule, also
+ * when it compares the recovery's answer with address(0) directly.
  *
  * On the production profile, and each sent transaction is checked by the VM. The refused inputs are those of
  * EcrecoverEvmConformance.e2e (stateful) and of EcrecoverRecovery's stateless describe, which also builds them around
@@ -348,4 +349,28 @@ describe('the evmCompat control', () => {
       expect(state.n).toBe(BigInt(index + 1));
     }
   });
+
+  it('a Solidity port that compares the recovery with address(0) directly sees it equal for every refused input',
+    async () => {
+      // `ecrecover(..) == address(0)`: the call's answer, a 20-byte identity that converts to an address, is read by
+      // the port's identity rule as the other operand is, so a refused recovery's 20 zero bytes equal address(0).
+      const { input } = await signedByRandomKey(4);
+      const source = 'pragma solidity ^0.8.0; contract PD { bool public isZero; uint256 public n; '
+        + 'function f(bytes32 h, uint8 v, bytes32 r, bytes32 s) external returns (bool) { '
+        + 'isZero = ecrecover(h, v, r, s) == address(0); n = n + 1; return true; } }';
+      const contract = await deployed(compileString(source, {
+        ...COMPILE, primaryContractName: 'PD', ecrecover: 'evm', evmCompat: true,
+      } as never));
+      const cases = [
+        ...refusedAround(input).map((refused) => ({ input: refused, zero: true })),
+        { input, zero: false },
+      ];
+      for (const [index, { input: args, zero }] of cases.entries()) {
+        await contract.call(bigEndian(args));
+        expect(contract.verify(contract.sent[contract.sent.length - 1]!), args.label).toBe(true);
+        const state = await contract.state();
+        expect(state.isZero, args.label).toBe(zero);
+        expect(state.n).toBe(BigInt(index + 1));
+      }
+    });
 });

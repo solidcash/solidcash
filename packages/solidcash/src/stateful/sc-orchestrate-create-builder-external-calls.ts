@@ -1236,9 +1236,10 @@ export async function orchestrateCreateBuilderExternalCalls(
 
 
   // F1: tag each co-spent call with its caller and the slot it occupies in that caller, so the builder pins each
-  // caller's edge in the caller's own category. A top-level call's slot is its published callsite: a skipped
-  // conditional call or a loop's reached calls part groups from slots. A nested call's slot is its position among
-  // its parent's co-spent callees.
+  // caller's edge in the caller's own category. A call's slot is its published callsite (the slot index its caller's
+  // edge witness is named by): a skipped conditional call or a loop's reached calls part groups from slots, at the top
+  // level as in a nested caller. A nested call of an artifact that publishes no callsite takes its position among its
+  // parent's co-spent callees.
   {
     const siblingSlot = new Map<number, number>();
     for (let i = 0; i < externalCallUtxoGroups.length; i++) {
@@ -1248,7 +1249,8 @@ export async function orchestrateCreateBuilderExternalCalls(
         externalCallUtxoGroups[i].edgeEcSlot = externalCallUtxoGroups[i].sourceCallsiteId ?? i;
       } else {
         const next = siblingSlot.get(parent) ?? 0;
-        externalCallUtxoGroups[i].edgeEcSlot = next;
+        const callsite = (allGroupEcSlots[i] as { callsiteId?: number } | undefined)?.callsiteId;
+        externalCallUtxoGroups[i].edgeEcSlot = callsite ?? next;
         siblingSlot.set(parent, next + 1);
       }
     }

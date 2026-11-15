@@ -1878,3 +1878,54 @@ describe('a nested caller\'s calls matched by callsite, and the pool reads of a 
       expect(s.sent.length).toBe(before);
     });
 });
+
+describe('a nested caller\'s call edge by callsite', () => {
+  it('pins D\'s edge for its second call, whose callee U records D as its sender, when D skips its conditional first '
+    + 'call (A calls D, which calls T when asked, then U)', async () => {
+    const source = `${P} interface IT { function f(int x) external returns (int); }
+      interface IU { function g(int x) external returns (int); }
+      interface ID { function h(IT t, IU u, int x, bool c) external returns (int); }
+      contract T { int calls; function f(int x) external returns (int) { calls = calls + 1; return x * 2; } }
+      contract U { address who; int calls; function g(int x) external returns (int) {
+        who = msg.sender; calls = calls + 1; return x + 3; } }
+      contract D { int got; function h(IT t, IU u, int x, bool c) external returns (int) {
+        int a = 0; if (c) { a = t.f(x); } got = a + u.g(x); return got; } }
+      contract A { int got; function k(ID d, IT t, IU u, int x, bool c) external returns (int) {
+        got = d.h(t, u, x, c); return got; } }`;
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const u = await s.deploy(compileString(source, compileOptions('U')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const a = await s.deploy(compileString(source, compileOptions('A')));
+    const wallet = await s.wallet(8);
+    const [tLock, uLock, dLock] = [t, u, d].map((deployed) => addressToLockScript(deployed.contract.address));
+    const dCallee = withCallee(withCallee(d.contract, 'IT', t.contract), 'IU', u.contract);
+    const call = (): any => (a.contract.connect(wallet) as any).call.k(dLock, tLock, uLock, 5n, false)
+      .withExternalCall(dCallee);
+
+    // T's call not made: D's edge for its call of U, in its slot 1, is a record of D's category at the index D's
+    // witness names, which U reads as its sender's edge; the index moved by one is refused by D.
+    const builder = await call().build();
+    const program = builder.buildLibauthProgram(true) as Sent;
+    expect(inputAt(program, tLock)).toBe(-1);
+    const frame = builder.inputs[inputAt(program, dLock)].unlocker as {
+      params: unknown[];
+      abiFunction: { inputs: ReadonlyArray<{ name: string }> };
+    };
+    const edge = Number(frame.params[frame.abiFunction.inputs.findIndex((input) => (
+      input.name === '__internal__callEdgeOutputIdx1'))]);
+    expect(binToHex(program.transaction.outputs[edge]!.lockingBytecode)).toBe('5161');
+    expect(binToHex(program.transaction.outputs[edge]!.token!.category)).toBe(d.categoryId);
+    expectWitnessNamesInput(s, builder, dLock, '__internal__callEdgeOutputIdx1', edge);
+    expect(inputPasses(s.provider, program, inputAt(program, uLock))).toBe(true);
+
+    await call().send();
+    const sent = s.sent[s.sent.length - 1]!;
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+    expect(binToHex(((await u.contract.getState()) as { who: Uint8Array }).who)).toBe(binToHex(dLock));
+    expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
+    expect(((await t.contract.getState()) as { calls?: bigint }).calls ?? 0n).toBe(0n);
+    expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(8n);
+    expect(((await a.contract.getState()) as { got?: bigint }).got).toBe(8n);
+  });
+});

@@ -321,11 +321,13 @@ describe('state-backed external-call expected address', () => {
     const fn = artifact.abi.find((candidate) => candidate.name === 'f');
     expect(fn?.externalCalls?.[0]?.addressStateVar).toBe('data');
     expect(fn?.externalCalls?.[0]?.addressParam).toBe('__extaddr_data');
-    // The 20-byte identity path projects the co-spent master's locking bytecode; the empty legacy sentinel
-    // duplicates that already-authenticated bytecode. Neither path copies an unrelated master/anchor index.
+    // An empty expected address (address(0)) is refused (OP_SIZE OP_DUP OP_VERIFY), as a call to it reverts on the
+    // EVM; the 20-byte identity path then refuses an empty co-spent lock and projects the master's locking bytecode.
+    // The empty legacy sentinel, which compared the co-spent lock with itself, is gone. Neither path copies an
+    // unrelated master/anchor index.
     const bytecode = artifact.bytecode.replace(/\s+/g, '');
-    expect(bytecode).toContain('01149c637c82008763');
-    expect(bytecode).toContain('77009c63757668');
+    expect(bytecode).toContain('82766901149c637c8269');
+    expect(bytecode).not.toContain('77009c63757668');
   });
 });
 

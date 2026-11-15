@@ -766,33 +766,64 @@ describe('callee shapes a constructor\'s call does not lay out (A7, A14 item 5)'
     expect(sent).toHaveLength(0);
   });
 
-  it('refuses a callee whose ordinary build reorders its loop\'s keys, which the child would not pass, before sending',
+  // Two keys the empty mapping inserts after its head, the first of them above the second: the covenant takes the
+  // chain's inserts in key order, so a build of the call must pass the keys in another order than the constructor's.
+  const reversedPair = async (): Promise<readonly [bigint, bigint]> => {
+    const { keyToSlot, bytesToSlotValue } = await import('../../src/stateful/SortedList.js');
+    const { bigIntToVmNumber } = await import('@bitauth/libauth');
+    const slot = (key: bigint): bigint => bytesToSlotValue(keyToSlot(bigIntToVmNumber(key)));
+    const pairs = [1n, 2n, 3n, 4n, 5n].flatMap((a) => [1n, 2n, 3n, 4n, 5n].map((b) => [a, b] as const));
+    return pairs.find(([left, right]) => slot(left) > slot(right))!;
+  };
+
+  /** Deploys T, then C through Deploy<C> with T as its constructor's callee, and returns the refusal and what was sent. */
+  const refuseCreation = async (
+    source: string, initArgs: (a: bigint, b: bigint) => unknown[], calleeArgs: (a: bigint, b: bigint) => unknown[],
+  ): Promise<{ refusal: unknown; sent: string[] }> => {
+    const [a, b] = await reversedPair();
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    await s.signer();
+    const sent: string[] = [];
+    const original = s.provider.sendRawTransaction.bind(s.provider);
+    (s.provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      sent.push(hex);
+      return original(hex);
+    };
+    const refusal = await s.deploy(compileString(source, compileOptions('C')), {
+      initArgs: [addressToLockScript(t.contract.address), ...initArgs(a, b)],
+      constructorCallees: [{ contract: t.contract, args: calleeArgs(a, b) }],
+    }).then(() => undefined, (error: unknown) => error);
+    return { refusal, sent };
+  };
+
+  it('refuses a callee whose loop\'s turns read their position, which no build may reorder, before sending',
     async () => {
+      // `m[ks[i]] = i + 1` is not fixed by each turn's own pair, so the ordinary build refuses to reorder the keys
+      // (the rewrite rules of LoopCallRewrite.e2e), and the creation is refused with that reason.
       const source = `${P} interface I { function f(int[] ks) external returns (bool); }
         contract T { mapping(int => int) m;
           function f(int[] ks) external returns (bool) { for (int i = 0; i < ks.length; i++) { m[ks[i]] = i + 1; } return true; } }
         contract C { bool ok; constructor(I t, int a, int b) { ok = t.f([a, b]); } function read() { require(ok); } }`;
-      const { keyToSlot, bytesToSlotValue } = await import('../../src/stateful/SortedList.js');
-      const { bigIntToVmNumber } = await import('@bitauth/libauth');
-      const slot = (key: bigint): bigint => bytesToSlotValue(keyToSlot(bigIntToVmNumber(key)));
-      // Two keys the empty mapping inserts after its head, the first of them above the second: the build puts the
-      // chain's inserts in key order, and so passes the array in another order than the constructor's.
-      const pairs = [1n, 2n, 3n, 4n, 5n].flatMap((a) => [1n, 2n, 3n, 4n, 5n].map((b) => [a, b] as const));
-      const [a, b] = pairs.find(([left, right]) => slot(left) > slot(right))!;
-      const s = setup();
-      const t = await s.deploy(compileString(source, compileOptions('T')));
-      await s.signer();
-      const sent: string[] = [];
-      const original = s.provider.sendRawTransaction.bind(s.provider);
-      (s.provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
-        sent.push(hex);
-        return original(hex);
-      };
       const { DeployerCalleeError } = await import('../../src/stateful/index.js');
-      const refusal = await s.deploy(compileString(source, compileOptions('C')), {
-        initArgs: [addressToLockScript(t.contract.address), a, b],
-        constructorCallees: [{ contract: t.contract, args: [[a, b]] }],
-      }).then(() => undefined, (error: unknown) => error);
+      const { refusal, sent } = await refuseCreation(source, (a, b) => [a, b], (a, b) => [[a, b]]);
+      expect(refusal).toBeInstanceOf(DeployerCalleeError);
+      expect((refusal as Error).message).toMatch(
+        /'T\.f' cannot be bound: the ordinary build of its call, which lays out its block, fails: vmap upsert loop m: /);
+      expect((refusal as Error).message).toMatch(/the covenant takes 'ks' only in the order of indices \[1, 0\]/);
+      expect(sent).toHaveLength(0);
+    });
+
+  it('refuses a callee whose ordinary build reorders its loop\'s keys, which the child would not pass, before sending',
+    async () => {
+      // `m[ks[i]] = vs[i]` is fixed by each turn's own pair, so the ordinary build may pass both arrays reordered;
+      // the child's call names the constructor's order, so that build lays out another call.
+      const source = `${P} interface I { function f(int[] ks, int[] vs) external returns (bool); }
+        contract T { mapping(int => int) m;
+          function f(int[] ks, int[] vs) external returns (bool) { for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; } return true; } }
+        contract C { bool ok; constructor(I t, int a, int b) { ok = t.f([a, b], [7, 9]); } function read() { require(ok); } }`;
+      const { DeployerCalleeError } = await import('../../src/stateful/index.js');
+      const { refusal, sent } = await refuseCreation(source, (a, b) => [a, b], (a, b) => [[a, b], [7n, 9n]]);
       expect(refusal).toBeInstanceOf(DeployerCalleeError);
       expect((refusal as Error).message).toMatch(
         /'T\.f' cannot be bound: the ordinary build of its call runs it on other arguments than the constructor passes/);

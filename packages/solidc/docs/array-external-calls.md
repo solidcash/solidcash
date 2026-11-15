@@ -204,13 +204,19 @@ opaque MultiCall builder). Layout: input 0 = caller (preserved at output 0); inp
 (preserved at outputs 1..N); input N+1 = funder; output N+1 = change. Sets
 `__internal__externalCallInputBase = 1` and `__internal__loopTargets<n>` = the encoded targets.
 
-Soundness: the witness is caller-chosen and identity-verified per iteration (`input[base+i].bytecode ==
-witness[i]`), so a mismatching claim is rejected by the covenant. This is caller-permissive - the same argument
-as `extcall-target-pinning.md` and the array-element form: the caller routes its own funds through targets it
-chooses, and each co-spent target still enforces its own covenant. No author-pinned target is lifted: a witness
-stands for a target only when the target's per-iteration part reads elements of the function's parameters. A target
-read from a local or state array, a mapping or another contract's result keeps its on-chain value, which the
-witness must equal, and a multi-use receiver of such a target runs its views as calls instead of view witnesses.
+Soundness (as of 2026-11-15): the co-spent callee is identity-verified per iteration against the witness
+(`input[base+i].bytecode == witness[i]`). Whether the witness is itself checked depends on the target:
+- A target computed with keccak256 (a CREATE2 `pairFor`) can equal no BCH lock, so its witness is the spender's
+  choice and is never compared with the computed value. Routers work, and the spender may name any contract as
+  each turn's callee. Each such call warns, `[computed-call-target-unverified]`: before relying on the callee's
+  answers to release funds, call through an address the contract stores (a registry lookup) instead of a computed
+  one.
+- Any other target, including a plain element of a parameter array (`IFoo t = IFoo(targets[i]); t.m()`) and a
+  per-turn target computed without a hash, is checked: the witness must equal the target the contract evaluates, so
+  a check on `targets[i]` or on the local binds the callee (`a2daffa5e`). Before that commit a plain element's
+  witness was never compared with the element, so a registry check on `targets[i]` did not bind the callee.
+- A target read from a local or state array, a mapping or another contract's result keeps its on-chain value, which
+  the witness must equal.
 
 A loop-body LOCAL receiver `IPair pair = IPair(pairFor(.., path[i], ..)); pair.m()` (SEAL leaves the local
 un-hoisted - a loop-body local is not single-assign - and it is loop-consumed, so unreadable at the epilogue) is
@@ -227,8 +233,11 @@ the selectors). A MULTI-method interface (Uniswap's `IUniswapV2Pair` shape) work
 shared selector param (checked against each co-spent element), filled once at the range start. Router02 is stateful,
 so its entry functions use this path. e2e: `StatefulComputedLoopDispatch.test.ts` (single- and multi-method).
 
-Known gap - a MULTI-use local receiver (`pair.getReserves(); pair.swap(..)`, Router02's
-`_swapSupportingFeeOnTransferTokens`): the read + the write must share ONE co-spend (getReserves reads the input
-commitment, swap constrains the output), which needs a new one-co-spend-serves-read+write dispatch mode in
-`GenerateTargetTraversal` - deferred (fails closed). The stateless builder + deriveTypedLoopCoSpends + the stateful
-autoderivation are the proven core.
+A MULTI-use local receiver (`pair.getReserves(); pair.swap(..)`, Router02's `_swapSupportingFeeOnTransferTokens`)
+cannot co-spend its callee once per call, since one master input runs one call per transaction.
+`rewriteMultiUseViewCalls` replaces each view call with a per-turn witness the spender supplies
+(`__internal__viewReturn<n>`), which nothing checks, and keeps the one state-changing call. Since 2026-11-15 it does
+so only for a keccak256-computed target, whose callee the spender already chooses, and warns at each view call
+(`ab06c65cf`). Two or more calls through any other loop local are refused at compile time
+(`LoopLocalRepeatedCallsError`): before, a plain element of a parameter array took the rewrite too, so its view
+answers were the spender's even when the contract checked the element against a registry.

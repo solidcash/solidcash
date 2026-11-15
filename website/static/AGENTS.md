@@ -980,7 +980,7 @@ uint256 r = ICounter(counter).add(5);                 // typed call (mutating th
 ICounter(counter).add.call(5);                        // explicit stateful mode, return not consumed
 ICounter(counter).ping.staticcall();                  // read-only: callee state must be preserved
 ICounter(counter).deposit{value: amount}();           // plus an authenticated BCH output to the callee
-(bool ok, bytes memory data) = target.call(payload);  // low-level: opaque bytes; ok is always true
+(bool ok, bytes memory data) = target.call(payload);  // low-level: a payload co-spends and runs target
 target.staticcall(payload);                           // low-level read-only; delegatecall: see proxies
 ```
 
@@ -989,10 +989,16 @@ target.staticcall(payload);                           // low-level read-only; de
   instance; a 32-byte category id is not a call target. Targets come from a constructor or function parameter,
   state or a literal (`UnpinnedExternalCallTargetError`). Interface-typed handles work (`contract C(IERC20 token)`).
 - A call is bound to the value its target holds where the call runs, also when the function writes or reassigns
-  the target afterwards. A typed call through `address(0)` fails, as it reverts on the EVM. A target computed with
-  keccak256 (a CREATE2 address such as `pairFor(factory, a, b)`) is a witness the spender chooses, since no BCH lock
-  equals it; the compiler warns (`computed-call-target-unverified`). Check such a callee against a registry the
-  contract stores before relying on its answer.
+  the target afterwards. When the function can write the target before the call, the SDK does not resolve the
+  callee itself (`ExternalCallTargetWrittenBeforeCallError`): pass it with `.withExternalCall(contract)`. A call
+  through a collection entry written before it in a branch, a loop or under another key does not compile
+  (`ENTRY_TARGET_WRITTEN_BEFORE_CALL`). A typed call through `address(0)` fails, as it reverts on the EVM.
+- A target computed with keccak256 (a CREATE2 address such as `pairFor(factory, a, b)`) is a witness the spender
+  chooses, since no BCH lock equals it, and the compiler warns (`computed-call-target-unverified`). In a loop that
+  calls such a target more than once, its view calls (`getReserves()`) take answers the spender supplies. Before
+  relying on such answers to release funds, call through an address the contract stores (a registry lookup). Any
+  other loop target, such as `targets[i]`, is checked like a straight-line one, and two or more calls through one
+  such loop local do not compile (`LoopLocalRepeatedCallsError`).
 - SDK: connect instances by category, `StatefulContract.withCategory(inner, categoryId, { externals: { ICounter:
   counterSc } })`, or per call with `.withExternalCall(counterSc)`. The SDK finds inputs; the covenants enforce
   target, selector and arguments.
@@ -1003,6 +1009,17 @@ target.staticcall(payload);                           // low-level read-only; de
   `abi.encodeWithSignature` or `abi.encodeCall` expression (directly or through a once-written local), the caller
   also binds the callee's selector and arguments to it; an opaque `bytes` payload binds neither. Prefer a typed
   interface when dispatch identity matters. Void typed calls over an address array work in loops.
+- A low-level call with a non-empty payload co-spends its target, so the call runs; a payload through `address(0)`
+  fails. Only an empty payload (a plain send, `to.call{value: v}("")`) may co-spend nothing, and it answers
+  `(true, "")`. When the payload names an interface function that returns a value (`abi.encodeCall(token.transfer,
+  (to, v))`, `abi.encodeWithSelector(IERC20.transfer.selector, ...)`), the caller reads the callee's record, so a
+  token's `false` cannot be hidden. An opaque `bytes` payload or an `abi.encodeWithSignature` string does not: there
+  an empty answer does not prove the callee's function returned nothing.
+- `{value: v}` pays the target where the call site can read it again (a parameter, a local, a state variable, a
+  literal, `msg.sender`); any other target does not compile (`CALL_VALUE_RECIPIENT_UNBOUND`). Under `evmCompat`,
+  `{value:}`, `transfer` and `send` pay a 20-byte address's P2PKH lock. A payment to a co-spent contract would land
+  at its master lock, so the SDK refuses a typed call with value to one (`RawCallCalleeRequiredError`, reason
+  `value to a co-spent callee`), as it refuses any output paying a master lock.
 - `msg.sender` in a callee is the calling contract's address, or `tx.origin` (the first non-token P2PKH input) when
   no contract calls it. It is derived from the transaction's inputs, not a call frame: authorize with `checkSig`.
 

@@ -13,7 +13,9 @@ ring depth; see "Block oracle hardening (2026-11-03)" at the end. Oracle pools (
 `feat/oracle-pools-sushi`) supersede the per-contract mechanisms of ORACLE-2, -4 and -6 to -8, and fix ORACLE-1, -2
 and -5 on master; see "Oracle pools (2026-11-04)" at the end. Call targets (2026-11-15): TARGET-1 and TARGET-2, two
 ways a spender could choose the callee of a call whose answer the caller uses, are fixed; TARGET-3, the computed
-target, is spender-chosen by design and now warned; see "Call targets (2026-11-15)" at the end.
+target, is spender-chosen by design and now warned; TARGET-4, unchecked loop witnesses and view answers for targets
+the contract could check, and TARGET-5, raw calls answered without their callee and value calls that paid nothing,
+are fixed; see "Call targets (2026-11-15)" at the end.
 
 Summary of the pass: DYN-1 (CRITICAL, direct and route builds), ECR-1 (CRITICAL, fixed with a VM test),
 FRAMED-CONT-1 (HIGH, framed), MERGE-1 (MEDIUM-HIGH), CONT-1 (MEDIUM), MIG-1 (MEDIUM, design),
@@ -1780,6 +1782,48 @@ profile.
   Where one slot's call runs more than once on one callee, a later run must see the value the first saw. Test:
   `StateTargetCallSite.e2e.test.ts`, native and `evmCompat`: a state target rewritten after and before the call, a
   reassigned local, branch local and parameter, each with the old and the new value's callee, and controls.
+- **TARGET-4** (HIGH, source-traced; `ab06c65cf`, `a2daffa5e`, tests `23dbb5288`, `40526da88`). Loop witnesses that
+  stood for targets the contract could check were never compared with them.
+  - `rewriteMultiUseViewCalls` replaced the view calls through a loop local called more than once
+    (`IOracle o = IOracle(oracles[i]); p = o.price(); d = o.decimals();`) with per-turn answers the spender supplies
+    (`__internal__viewReturn<n>`), which nothing checks; an all-view loop co-spent nothing at all. It applied to any
+    element of a parameter array, not only to computed targets.
+  - A single call through a loop local holding a plain element (`IFoo t = IFoo(targets[i]); t.m()`) took its callee
+    from a witness never compared with the element.
+
+  So a registry check such as `require(trusted[address(o)])` or `require(trusted[targets[i]])` did not bind the
+  callee or its answers, and a contract that paid or credited on them could be drained. The user chose to keep the
+  unchecked witness and the view answers only for keccak256-computed targets (TARGET-3), and to warn there. Any
+  other loop target is checked against its witness, and two or more calls through one such loop local are refused
+  at compile time (`LoopLocalRepeatedCallsError`). SDK fixtures that stood in an arithmetic `pairFor` for Router02's
+  CREATE2 one now hash with keccak256. Tests: `ComputedCallTargetWarning.test.ts`, `expressions-control-flow.test.ts`
+  (the refusal), `MultiUseViewMutate.test.ts` and `LoopTargetProvenance.test.ts` (a trusted element whose witness
+  names another contract is refused on the VM).
+- **TARGET-5** (HIGH, VM-confirmed; `493d22364` to `ce3d0f599`). Raw low-level calls, answered and paid without
+  their callee:
+  - A raw call (`(bool ok, bytes d) = token.call(payload)`) could name no co-spent callee and answer `(true, "")`
+    or `(false, "")` for any target and payload, so a SafeERC20-style `transfer` could be claimed successful while
+    no transfer ran. By the user's decision a non-empty payload now co-spends its target, and a payload through
+    `address(0)` fails; only an empty payload (a plain send) may co-spend nothing, and it answers `(true, "")`
+    only, as the EVM's call to an address with no code does.
+  - Return coordinate -1 let the spender answer a co-spent callee as if its function returned nothing, hiding a
+    token's `false`. By the user's decision a payload that names an interface function declaring a result
+    (`abi.encodeCall`, `abi.encodeWithSelector(I.f.selector, ..)`) reads the callee's record. Opaque `bytes`,
+    selector literals and `abi.encodeWithSignature` strings keep the record-less answer for a void callee, which
+    is documented.
+  - A `{value: v}` call's payment was dropped silently: the expression form had no transfer slot at all, and the
+    statement form paid only a target held in a parameter or local, so `msg.sender.call{value: amt}("")` and
+    OpenZeppelin's `Address.sendValue` paid nothing (`45f85306e`). Each now pays a target the call site can read
+    again, or is refused at compile time (`CALL_VALUE_RECIPIENT_UNBOUND`).
+  - Under `evmCompat`, `transfer` and `send` paid an output locked by an address's raw 20 bytes; they now pay its
+    P2PKH lock (`8cc077665`).
+  - In a direct build, a low-level call beside any raw external call skipped its own pin and answered
+    `(true, "")` unchecked (`6b9315d3b`).
+
+  The SDK refuses by name (`RawCallCalleeRequiredError`) what it cannot lay out honestly, including a typed call
+  with value to a co-spent contract, whose payment would land at the callee's master lock. Tests:
+  `RawCallPayloadCoSpend`, `RawCallTypedPayloadRead`, `RawCallTypedValueCall`, `LowLevelValueCallPayment` and
+  `RawCallEmptyReturn`.
 
 ### By design, with a warning
 
@@ -1789,28 +1833,33 @@ profile.
   (`__internal__computedCallTarget<N>`, `__internal__loopTargets<n>`) and never compares it with the computed value,
   so routers work, and the spender may name any contract. A contract that releases its own funds on such a callee's
   answer can be drained. The user chose to keep the witness and warn: every such call compiles with
-  `Warning: [computed-call-target-unverified] ...`, which `suppressWarnings` silences. Check such a callee against a
-  registry the contract stores, or another value it trusts, before relying on its answer. A loop witness checked
-  against a value the contract computes itself, and a computed target with no hash, are not warned: both keep their
-  check. The framed composition checks the call against the computed value and takes no witness.
-
+  `Warning: [computed-call-target-unverified] ...`, which `suppressWarnings` silences. In a loop that calls such a
+  target more than once, its view calls take answers the spender supplies; each is warned too (`ab06c65cf`). The
+  source cannot name the witness, so the advice is to call through an address the contract stores (a registry
+  lookup) instead of a computed one before relying on the callee's answers. Only a keccak256-computed target is
+  taken this way (TARGET-4). The framed composition checks the call against the computed value and takes no
+  witness.
 ### Open
 
-- A call made after a write of its target binds the body-top input value when the target is a chain through a
-  collection entry (`IFoo(ss[i].x).m()`), a raw value-only call or an `__extaddr_ll_` target. It calls a contract
-  the EVM would not call, though the spender cannot choose it. A stored chain that reads no collection entry
-  (`s.f.m()`, `feed.source.price()`) is read again at the call since `e675d87e9`. The SDK resolves a stored target
-  from the input state, so a call after such a write needs `withExternalCall`.
+- A call made after a write of its target binds the body-top input value when it is a raw value-only call or an
+  `__extaddr_ll_` target. It calls a contract the EVM would not call, though the spender cannot choose it. A stored
+  chain is read again at the call (`e675d87e9`), and a collection-entry chain too after a straight-line write of
+  the same entry; any other write before such a call is refused (`842860db9`). The SDK refuses to resolve a callee
+  whose target the function can write before the call (`ExternalCallTargetWrittenBeforeCallError`), so the author
+  passes it with `withExternalCall`.
 - The genesis body's check after the body still reads the variable, so a constructor that writes its target after
   the call fails closed.
 - Two calls through one variable reassigned between them share one callee identity and are refused when the two
   values differ (fail closed).
 - A `{value:}` payment through a call-site register has no test of its own: no e2e sends a typed `{value:}` call
   to a stateful callee. The selector and runtime ternary registers are tested (`da0fa686b`).
-- A loop whose caller-chosen target only takes view calls is not warned: `rewriteMultiUseViewCalls` replaces those
-  calls with returns the spender supplies (`__internal__viewReturn<n>`).
 - (LOW, needs a miner) Outputs whose locking bytecode is empty, or 20 bytes long, are non-standard but valid in a
-  block. An empty-lock coin matches an empty target in the low-level call pins' exact compare
-  (`emitLowLevelCallVerification`, `emitCompatTargetIdentity`). Under `evmCompat`, `emitCompatAddressMatch` maps an
-  empty lock to the zero identity, and `compileAddressToEvmIdentity` projects a 20-byte lock to itself, so a coin a
-  miner includes could stand for an EVM address.
+  block. The low-level call pins, the compat identity check and every loop dispatch now refuse an empty target or
+  element (`b3a9ae4a4`, `aede82dd5`). Under `evmCompat`, `compileAddressToEvmIdentity` still projects a 20-byte lock
+  to itself, so a 20-byte coin a miner includes could stand for an EVM address.
+- A message-bus participant compiled direct-only cannot pay: no route binds its value, and compose lays out no
+  satoshi container or payment outputs for it, so the graph planner refuses a function of it that declares a
+  payment. Before `45f85306e` such a payment was dropped silently and the composition built.
+- An opaque `bytes`, selector-literal or `abi.encodeWithSignature` payload can still hide a callee's `false` behind
+  `(true, "")` (TARGET-5, by decision). `deploymentRecipes.ts` records a transfer's recipient as written, not as the
+  P2PKH lock the covenant pays under `evmCompat`.

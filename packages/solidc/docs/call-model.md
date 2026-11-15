@@ -207,7 +207,31 @@ no-option form parses as a namespaced function call; the `{value:}`/`{gas:}` for
 - `delegatecall`: no calldata verification (the delegate self-verifies via `_proxyMasterIndex`); returns a
   placeholder `(true, "")`.
 - `{value: sats}`: `emitValueTransfer` adds a satoshi-transfer output to the target - the BCH equivalent of
-  sending ether. Works on parameter, local, and state-variable addresses.
+  sending ether. It pays the target where the call site can read it again: a parameter, a local, a state variable,
+  a literal or `msg.sender`. Any other target is refused at compile time (`CALL_VALUE_RECIPIENT_UNBOUND`). Under
+  `evmCompat` a 20-byte address is paid at its P2PKH lock, and so are `transfer` and `send`.
+
+**The expression form and its answer (2026-11-15).** `(bool ok, bytes memory d) = addr.call(payload)` compiles
+to a raw external call (`__raw__`), checked after the body like a typed call; the statement form `addr.call(data);`
+stays the low-level call above. Its rules, set by the user's decisions (TARGET-5 in
+`docs/security/security-audit-2026-10-16.md`):
+- A non-empty payload co-spends its target, so the call runs, and a payload through `address(0)` fails. Only an
+  empty payload, a plain send, may name no callee, and it answers `(true, "")` only, as the EVM's call to an
+  address with no code does.
+- A payload that names an interface function declaring a result (`abi.encodeCall(I.f, (..))`,
+  `abi.encodeWithSelector(I.f.selector, ..)`, `x.f.selector`, through a local, a parameter or a state variable)
+  must read the callee's record, so a `false` cannot be hidden behind `(true, "")`. Such a call with a
+  `{value:}` or `{gas:}` option is compiled the same way. An opaque `bytes` payload, a selector literal or an
+  `abi.encodeWithSignature` string keeps the record-less answer for a void callee: there `(true, "")` does not
+  prove the callee's function is void.
+- The SDK refuses before building (`RawCallCalleeRequiredError`) a call it cannot lay out honestly: `no contract at
+  the target`, `no matching function`, `callee fails`, `no record to read`, `plain send to a contract`, and `value
+  to a co-spent callee` (the payment would land at the callee's master lock, which no contract can spend from).
+- In a direct build a low-level call beside a raw external call keeps its own pin; only a message-bus route
+  shares one.
+
+Before these rules, a raw call could claim `(true, "")` or `(false, "")` with nothing co-spent, and the expression
+form of a `{value:}` call had no transfer slot, so it paid nothing (OpenZeppelin's `Address.sendValue` included).
 
 ## 6. `delegatecall` (proxy + implementation)
 
@@ -226,7 +250,8 @@ logic. There is no source-level `delegate` modifier.
 
 ## 7. Call options `{value, gas, salt}`
 
-- `value`: a satoshi transfer to the call target (real; pre-scanned to a `valueTransferIndex`).
+- `value`: a satoshi transfer to the call target (real; pre-scanned to a `valueTransferIndex`, in the expression
+  form too since 2026-11-15; see section 5 for the recipients it pays).
 - `gas`: accepted for Solidity-source compatibility; BCH has no gas metering (cost is a per-tx op-budget), so
   it is a no-op.
 - `salt`: CREATE2/CREATE3-style deployment salt (used by `deployFrom` / deploy-modifier functions).

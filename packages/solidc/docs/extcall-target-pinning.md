@@ -341,8 +341,8 @@ These are not design weaknesses but MUST be enforced or they reintroduce risk:
   it is a completeness gap, not a soundness one. Consider a compile-time diagnostic when a function
   contains a provably-un-satisfiable literal call.
 - **Same-tx read of `sv`.** The call is bound to the value `sv` holds where it runs, a value written earlier in
-  the function included (§12). A chain through a collection entry, such as `IFoo(ss[i].x).m()`, still binds the
-  input value.
+  the function included (§12). A chain through a collection entry is read again at the call, or the function is
+  refused (§12).
 
 ### Merge gate
 
@@ -372,9 +372,15 @@ let the spender pick the callee through `o` (TARGET-2 in `docs/security/security
 A chain target is read into a compiler local at the top of the body. When the function writes what the chain reads
 before the call (`feed = Feed(IOracle(s), 2); feed.source.price();`), the call site reads the chain again into a
 register (`e675d87e9`), so the call goes where the EVM's would. A chain through a collection entry
-(`IFoo(ss[i].x).m()`) still binds the input value: it may call a contract the EVM would not, though the spender
-cannot choose it. The SDK resolves a stored callee from the caller's input state, so a call after such a write
-needs its callee passed explicitly, `withExternalCall(contract)`.
+(`IOracle(feeds[k]).price()`) is read again at the call when every write before it is a straight-line write of that
+same entry. Any other write before the call, in a branch or a loop, of another key or through a function it calls,
+is refused at compile time, `ENTRY_TARGET_WRITTEN_BEFORE_CALL` (`842860db9`): there the read would take the
+entry from before the write.
+
+The artifact marks each call whose target the function can write before it (`externalCalls[i].targetWrittenBeforeCall`).
+The SDK resolves a stored callee from the caller's input state, so it refuses to resolve such a callee itself,
+`ExternalCallTargetWrittenBeforeCallError`: pass it with `withExternalCall(contract)`. The flag is static, so a call
+whose earlier write sits in a branch needs the callee passed even on a run that skips the write.
 
 **`address(0)` fails.** The check refuses an empty expected address, and an empty candidate lock on the 20-byte
 path, as the EVM's call reverts. Before `4030a5bc2` an empty target was taken for a delegate's legacy sentinel, and
@@ -383,10 +389,18 @@ the check compared the co-spent lock with itself, so any callee passed (TARGET-1
 **Computed targets are the spender's choice.** `IPair(pairFor(factory, a, b)).swap(...)` names a CREATE2 address,
 which no BCH lock equals. The contract takes the callee from a witness (`__internal__computedCallTarget<N>`, or
 `__internal__loopTargets<n>` in a loop) and never compares it with the computed value, so routers work and the
-spender may name any contract. Each such call warns, `[computed-call-target-unverified]` (TARGET-3): before relying
-on such a callee's answer to release funds, check it against a registry the contract stores or another value it
-trusts. A loop witness checked against a value the contract computes itself (`P p = factory.pair(a); p.swap(n)`),
-and a computed target with no hash, keep their check and are not warned.
+spender may name any contract. In a loop that calls such a target more than once, its view calls take answers the
+spender supplies (`__internal__viewReturn<n>`), which nothing checks. Each such call, and each such view call,
+warns, `[computed-call-target-unverified]` (TARGET-3): before relying on the callee's answers to release funds, call
+through an address the contract stores (a registry lookup) instead of a computed one. Only a target computed with
+keccak256 is taken this way. Any other loop target, a plain element of a parameter array included, is checked
+against the witness, and two or more calls through one such loop local are refused at compile time,
+`LoopLocalRepeatedCallsError` (TARGET-4).
+
+**Low-level calls** pin their target the same way, and refuse an empty one. Whether a raw call must co-spend its
+target, read its callee's record, or may answer with nothing co-spent is set in `call-model.md` section 5
+(TARGET-5).
 
 Tests: `ZeroAddressCallTarget.e2e.test.ts`, `StateTargetCallSite.e2e.test.ts` (state, local, parameter, branch,
-ternary, pointer-selector and stored-chain targets) and `ComputedCallTargetWarning.test.ts`.
+ternary, pointer-selector, stored-chain and collection-entry targets), `ComputedCallTargetWarning.test.ts` and
+`LoopTargetProvenance.test.ts` (a plain element checked against a registry).

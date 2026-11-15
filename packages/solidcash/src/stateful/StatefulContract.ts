@@ -480,6 +480,7 @@ import {
 import {
   deriveFullPhase1CalleeDynamicChunks as deriveFullPhase1CalleeDynamicChunksImpl,
 } from './sc-derive-full-phase1-callee-dynamic-chunks.js';
+import { sharedSidecarPoolWithout } from './sc-append-create-builder-nested-callee-keccak-loop.js';
 import {
   deriveFullPhase1ProgressiveEntries as deriveFullPhase1ProgressiveEntriesImpl,
 } from './sc-derive-full-phase1-progressive-entries.js';
@@ -12872,6 +12873,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       maxBhLocktime = slots.reduce((max, slot) => Math.max(max, slot.locktime), maxBhLocktime);
     }
 
+    // This function's own side-cars of a shared pool skip the coins the blocks of the contracts it calls already
+    // spend: a callee's keccak256 loop takes its side-cars from the same pool.
+    const ownSidecarPool = overrides?.sharedSidecarPool === undefined ? undefined
+      : sharedSidecarPoolWithout(overrides.sharedSidecarPool, [...externalCallUtxoGroups, ...lowLevelCallUtxoGroups]
+        .flatMap((group) => [...(group.blockInputs ?? []), ...(group.keccakInputs ?? [])]));
+
     // Recovery runs first because an EVM projection contributes its verified uncompressed public key to the
     // ordinary batched keccak side-cars. Computed recovery arguments remain deferred; the full routed trace later
     // replaces both the A/B pair and that batch member atomically.
@@ -12961,7 +12968,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           deferUnresolved: true,
           graphExecution,
         },
-        overrides?.sharedSidecarPool,
+        ownSidecarPool,
         // A message-bus graph's composer funds the slots no covenant reads with its own neutral coin.
         graphCalls === undefined && !graphExecution ? takeMiddleCoin : undefined,
       );
@@ -13053,7 +13060,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const loop = await this._resolveStatefulKeccakLoop(
         abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
-        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors, overrides?.sharedSidecarPool,
+        keccakLoopFrontRegion, maxBhLocktime, reversedTrailingPredecessors, ownSidecarPool,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
@@ -13065,7 +13072,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, slotInputs: keccakProbeSlotInputs,
         locktime: maxBhLocktime,
-      }, overrides?.sharedSidecarPool);
+      }, ownSidecarPool);
       keccakLoopSideCars = resolution.chain?.sideCars ?? [];
       keccakLoopRecreates = resolution.chain?.recreates ?? [];
     } else if ((abiFunction?.keccakCompute || entryAbiFunction?.keccakCompute
@@ -13107,7 +13114,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ...(delegatedKeccak && {
           artifactBytecode: executingGroup?.externalContract.inner.bytecode,
         }),
-      }, overrides?.sharedSidecarPool);
+      }, ownSidecarPool);
       keccakComputeCoSpendUtxos = resolution.coSpends.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       keccakComputeCommitments = resolution.coSpends.map((cs) => binToHex(cs.commitment));
       if (resolution.preimages.some((preimage) => preimage === null)) {
@@ -13156,7 +13163,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const loop = await resolveStatefulEcrecoverLoopImpl(
         {
-          provider: (overrides?.sharedSidecarPool ?? this.inner.provider) as never,
+          provider: (ownSidecarPool ?? this.inner.provider) as never,
           vmProvider: this.inner.provider,
           createVirtualMachine: (provider) => createVirtualMachineBch2026ForProvider(provider as never),
           generateLibauthSourceOutputs: (inputs) => generateLibauthSourceOutputs(inputs as never),

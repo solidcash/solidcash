@@ -638,9 +638,10 @@ async function planCalleeBlockByCall(
   const connected = stateful.connect(padder);
   // Its keccak256 and ecrecover side-cars, in a loop or not, come from the shared pool (salt 0): a side-car under the
   // callee's brand is spendable only beside input 0 of its category, which a callee's master never is in a creation
-  // (A14 item 6). The callee's run binds each side-car by its covenant and its arguments, not by its salt.
+  // (A14 item 6). The callee's run binds each side-car by its covenant and its arguments, not by its salt. The contracts
+  // it calls take theirs from the same pool, through the same view, so no coin the creation spends is taken twice.
   const sidecars = fn.keccakCompute === true || fn.keccakLoopReads === true || fn.keccakChainReads === true
-    || fn.ecrecoverCompute === true;
+    || fn.ecrecoverCompute === true || (callee.externalContracts ?? []).length > 0;
   const sidecarPool = sidecars ? sharedPoolView(provider, context.spent) : undefined;
   const route = { abiFunction: fn, emitReturn: true };
   const { StatefulFunctionCall } = await import('./StatefulContract.js');
@@ -666,6 +667,12 @@ async function planCalleeBlockByCall(
     const message = (error as Error).message;
     if (sidecarPool !== undefined && /keccak256 .*needs .*side-car UTXO|side-car UTXO not found/.test(message)) {
       throw new DeployerSidecarError('keccak', `the callee '${artifact.contractName}.${functionName}'`);
+    }
+    // A loop of a contract the callee calls (sc-append-create-builder-nested-callee-keccak-loop).
+    const nestedLoop = message.match(/^The call of (\S+) cannot be laid out: its keccak256 loop needs \d+ side-car coins/);
+    if (sidecarPool !== undefined && nestedLoop !== null) {
+      throw new DeployerSidecarError('keccak', `the callee '${artifact.contractName}.${functionName}' (its call of `
+        + `${nestedLoop[1]})`);
     }
     if (sidecarPool !== undefined && /ecrecoverPubKey needs .* recovery side-car UTXO/.test(message)) {
       throw new DeployerSidecarError('ecrecover', `the callee '${artifact.contractName}.${functionName}'`);

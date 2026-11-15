@@ -3,9 +3,10 @@
  * of its ordinary call's build: the entries, inserts, payments and events of a loop, a dynamic array's chunks, an entry a
  * branch deletes (DS-6), a collection's walk, the blocks of the contracts it calls or reads (a low-level call's among
  * them), the oracle pool coins its block reads co-spend, and a keccak256 loop's side-cars from the shared pool (A14
- * item 6), before the block of a contract it calls. An entry msg.sender keys is the child's, as the genesis step
- * resolves it. Each creation is checked by the VM; each tamper case changes one part of a finished creation and expects
- * the input that binds it to refuse.
+ * item 6), before the block of a contract it calls; and the chunks, walk and loop side-cars of a contract it calls that
+ * pushes, iterates or hashes in a loop. An entry msg.sender keys is the child's, as the genesis step resolves it. Each
+ * creation is checked by the VM; each tamper case changes one part of a finished creation and expects the input that
+ * binds it to refuse.
  *
  * The ordinary build of a loop's payments fails on the production profile (the same call fails as an ordinary call
  * there), so those cases run on the relaxed mock, whose minted coins only pad the build: the creation spends none.
@@ -794,4 +795,187 @@ describe('a callee that makes a low-level call and reads its result (A7, A14 ite
     expect(((await t.contract.getState()) as { n?: bigint }).n).toBe(1n);
     expect(((await u.contract.getState()) as { calls?: bigint }).calls).toBe(1n);
   });
+});
+
+describe('a callee whose function calls a contract that pushes, iterates or hashes in a loop (A7, A14 items 5 and 6)', () => {
+  it('lays out the nested callee\'s new chunks, and refuses a creation whose chunk or result is another', async () => {
+    const source = `${P} interface I { function f(int x) external returns (int); }
+      interface ID { function g(I t, int x) external returns (int); }
+      contract T { int[] a; function f(int x) external returns (int) { a.push(x); a.push(x + 1); return a.length; } }
+      contract D { int got; function g(I t, int x) external returns (int) { got = t.f(x); return got; } }
+      contract C { int got; constructor(ID d, I t, int x) { got = d.g(t, x); } function read() { require(got > 0); } }`;
+    const { getDynamicChunkAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const tLock = addressToLockScript(t.contract.address);
+    const dLock = addressToLockScript(d.contract.address);
+    const c = compileString(source, compileOptions('C'));
+    const extra = {
+      initArgs: [dLock, tLock, 5n], constructorCallees: [{ contract: d.contract, externalContracts: [t.contract] }],
+    };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    // The nested callee's block of master, record and record slot, then its chunk.
+    const dMaster = masterInput(captured, dLock);
+    const tMaster = masterInput(captured, tLock);
+    expect(tMaster).toBeGreaterThan(dMaster);
+    const chunks = outputsAt(captured, addressToLockScript(getDynamicChunkAddress(
+      t.contract.inner as never, t.categoryId, 'a', 'int256[]')));
+    expect(chunks).toEqual([tMaster + 3]);
+    expect(inputPasses(s.provider, withOutput(captured, chunks[0]!, bumpCommitment), tMaster)).toBe(false);
+    // Another result in the nested call's record: refused by the callee that reads it.
+    expect(inputPasses(s.provider, withOutput(captured, tMaster + 2, bumpCommitment), dMaster)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { got?: bigint }).got).toBe(2n);
+    expect(((await t.contract.getState()) as { a?: bigint[] }).a).toEqual([5n, 6n]);
+  });
+
+  it('co-spends the nested callee\'s walk, and refuses a creation whose entry or sum is another', async () => {
+    const source = `${P} interface I { function f() external returns (int); }
+      interface ID { function g(I t) external returns (int); }
+      contract T { int total; enumerable mapping(bytes20 => int) bal; function put(bytes20 k, int v) public { bal[k] = v; }
+        function f() external returns (int) { int sum = 0; for (int value of this.bal) { sum = sum + value; } total = sum; return sum; } }
+      contract D { int got; function g(I t) external returns (int) { got = t.f(); return got; } }
+      contract C { int got; constructor(ID d, I t) { got = d.g(t); } function read() { require(got > 0); } }`;
+    const { getDataNftAddress, getEntryNftAddress } = await import('../../src/stateful/covenant-helpers.js');
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const wallet = await s.wallet();
+    await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(1), 5n).send();
+    await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(2), 7n).send();
+    const tLock = addressToLockScript(t.contract.address);
+    const dLock = addressToLockScript(d.contract.address);
+    const c = compileString(source, compileOptions('C'));
+    const extra = {
+      initArgs: [dLock, tLock], constructorCallees: [{ contract: d.contract, externalContracts: [t.contract] }],
+    };
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const dMaster = masterInput(captured, dLock);
+    const tMaster = masterInput(captured, tLock);
+    // The walk follows the nested callee's block of master, record and record slot, each entry at its own index.
+    const entryLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'bal'));
+    const walked = captured.sourceOutputs.map((output, index) => (same(output.lockingBytecode, entryLock) ? index : -1))
+      .filter((index) => index >= 0);
+    expect(walked).toEqual([tMaster + 3, tMaster + 4, tMaster + 5]);
+    expect(outputsAt(captured, entryLock)).toEqual(walked);
+    expect(inputPasses(s.provider, withOutput(captured, tMaster + 4, bumpCommitment), tMaster)).toBe(false);
+    const [tRecord] = outputsAt(captured, addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId)));
+    expect(inputPasses(s.provider, withOutput(captured, tRecord!, bumpCommitment), tMaster)).toBe(false);
+    expect(inputPasses(s.provider, withOutput(captured, tMaster + 2, bumpCommitment), dMaster)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { got?: bigint }).got).toBe(12n);
+    expect(((await t.contract.getState()) as { total?: bigint }).total).toBe(12n);
+  });
+
+  it('co-spends the nested callee\'s loop side-cars from the shared pool, and refuses another digest', async () => {
+    const source = `${P} interface I { function f(bytes b, int k) external returns (bool); }
+      interface ID { function g(I t, bytes b, int k) external returns (bool); }
+      contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
+        bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
+      contract D { bool ok; function g(I t, bytes b, int k) external returns (bool) { ok = t.f(b, k); return ok; } }
+      contract C { bool ok; constructor(ID d, I t, bytes b, int k) { ok = d.g(t, b, k); } function read() { require(ok); } }`;
+    const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+    const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+    const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+    const { DeployerSidecarError } = await import('../../src/stateful/deployer.js');
+    const s = setup();
+    const t = await s.deploy(compileString(source, compileOptions('T')));
+    const d = await s.deploy(compileString(source, compileOptions('D')));
+    const tLock = addressToLockScript(t.contract.address);
+    const dLock = addressToLockScript(d.contract.address);
+    const b = Uint8Array.of(1, 2);
+    const c = compileString(source, compileOptions('C'));
+    const extra = {
+      initArgs: [dLock, tLock, b, 2n], constructorCallees: [{ contract: d.contract, externalContracts: [t.contract] }],
+    };
+    // No coin of the shared pool: refused before anything is sent.
+    const sentBefore = s.sent.length;
+    const refusal = await s.deploy(c, extra).then(() => undefined, (error: unknown) => error);
+    expect(refusal).toBeInstanceOf(DeployerSidecarError);
+    expect((refusal as Error).message)
+      .toMatch(/No shared keccak sidecar coin was found for the callee 'D\.g' \(its call of T\.f\)/);
+    expect(s.sent.length).toBe(sentBefore);
+
+    const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+    for (const index of [0, 1, 2, 3]) {
+      await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-loop-nested-callee', sharedLock, index));
+    }
+    const captured = await s.capture(c, extra);
+    expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+    expect([...p2pkhPaid(captured)]).toEqual([walletLock]);
+    const dMaster = masterInput(captured, dLock);
+    const tMaster = masterInput(captured, tLock);
+    const sidecars = outputsAt(captured, sharedLock);
+    expect(sidecars).toEqual([tMaster + 3, tMaster + 4]);
+    for (const index of sidecars) {
+      expect(same(captured.sourceOutputs[index].lockingBytecode, sharedLock)).toBe(true);
+      expect(binToHex(captured.transaction.outputs[index]!.token!.nft!.commitment)).toBe(binToHex(keccak(b)));
+    }
+    const forged = withOutput(captured, tMaster + 4, bumpCommitment);
+    expect(inputPasses(s.provider, forged, tMaster + 4)).toBe(false);
+    expect(inputPasses(s.provider, forged, tMaster)).toBe(false);
+    expect(inputPasses(s.provider, withOutput(captured, tMaster + 2, bumpCommitment), dMaster)).toBe(false);
+
+    const created = await s.deploy(c, extra);
+    expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+    expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+  });
+
+  it('gives the callee\'s own side-car and its nested callee\'s loop side-cars distinct coins of the shared pool',
+    async () => {
+      const source = `${P} interface I { function f(bytes b, int k) external returns (bool); }
+        interface ID { function g(I t, bytes32 c, bytes b, int k) external returns (bool); }
+        contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
+          bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
+        contract D { bytes32 hd; bool ok; function g(I t, bytes32 c, bytes b, int k) external returns (bool) {
+          hd = keccak256(c); ok = t.f(b, k); return ok; } }
+        contract C { bool ok; constructor(ID d, I t, bytes32 c, bytes b, int k) { ok = d.g(t, c, b, k); }
+          function read() { require(ok); } }`;
+      const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+      const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+      const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+      for (const index of [0, 1, 2, 3, 4]) {
+        await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-callee-and-nested', sharedLock, index));
+      }
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const word = new Uint8Array(32).fill(9);
+      const b = Uint8Array.of(1, 2);
+      const c = compileString(source, compileOptions('C'));
+      const extra = {
+        initArgs: [dLock, tLock, word, b, 2n],
+        constructorCallees: [{ contract: d.contract, externalContracts: [t.contract] }],
+      };
+      const captured = await s.capture(c, extra);
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(captured as never)).toBe(true);
+      const dMaster = masterInput(captured, dLock);
+      const tMaster = masterInput(captured, tLock);
+      // The callee's side-car in its block, the nested callee's two after its own block: three distinct coins.
+      const sidecars = outputsAt(captured, sharedLock);
+      expect(sidecars).toHaveLength(3);
+      expect(sidecars[0]!).toBeLessThan(tMaster);
+      expect(sidecars.slice(1)).toEqual([tMaster + 3, tMaster + 4]);
+      const coins = sidecars.map((index) => `${binToHex(captured.transaction.inputs[index]!.outpointTransactionHash)}:`
+        + `${captured.transaction.inputs[index]!.outpointIndex}`);
+      expect(new Set(coins).size).toBe(3);
+      expect(binToHex(captured.transaction.outputs[sidecars[0]!]!.token!.nft!.commitment)).toBe(binToHex(keccak(word)));
+      // Another digest in either: refused by the contract that reads it.
+      expect(inputPasses(s.provider, withOutput(captured, sidecars[0]!, bumpCommitment), dMaster)).toBe(false);
+      expect(inputPasses(s.provider, withOutput(captured, sidecars[2]!, bumpCommitment), tMaster)).toBe(false);
+
+      const created = await s.deploy(c, extra);
+      expect(((await created.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+      expect(binToHex(((await d.contract.getState()) as { hd?: Uint8Array }).hd!)).toBe(binToHex(keccak(word)));
+    });
 });

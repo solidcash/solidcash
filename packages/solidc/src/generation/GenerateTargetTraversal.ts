@@ -908,6 +908,11 @@ interface RouteMintBound { slots: number; span: boolean }
  * `verifierByIndex` the pin skips the input at the route's verifier index instead of every input at that lock.
  */
 interface CountedRecordPin { span: number; verifierLock?: Uint8Array; verifierByIndex?: boolean }
+/**
+ * A call through a state variable its body also writes: the register its call site fills with the value the variable
+ * holds there, the variable, and whether the slot's call may run more than once (a batch's rows, a loop).
+ */
+interface CallSiteTarget { register: string; stateVariable: StateVariableNode; repeats: boolean }
 /** A bound route's verifier input index; -1 on a standalone batch. */
 const ACTIVE_VERIFIER_INDEX = '__internal__activeVerifierIndex';
 /** A graph route's physical block size, bound by its verifier to the participant's actual span. */
@@ -2641,6 +2646,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // External call tracking
   private externalCallSlots: ExternalCallSlot[] = [];
+  // By slot index, the calls whose target is a state variable the body also writes (collectCallSiteTargets), each with
+  // the register that holds the value the variable had where the call ran.
+  private callSiteTargets: Map<number, CallSiteTarget> = new Map();
   private graphStraightRuntimeRows: string[] = [];
   private graphStraightRuntimeMode = false;
   private deferredGraphEmissionRows = 0;
@@ -10563,6 +10571,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    this.callSiteTargets = new Map();
     this.callBatchFrame = false;
     this.callBatchRecordViews = false;
     this.ecrecoverLoopsEmitted = 0;
@@ -11843,6 +11852,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickTrackedFromBottom(list, { location: node.location, positionHint: PositionHint.START });
         this.pushToStack(this.loopIndexCursorName(slot));
       }
+    }
+    // A call through a state variable the body also writes is bound to the value the variable holds where the call
+    // runs. Its register starts empty; the call site fills it and the identity check after the body reads it.
+    this.callSiteTargets = this.collectCallSiteTargets(node);
+    for (const target of this.callSiteTargets.values()) {
+      this.emit(Op.OP_0, { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(target.register);
     }
     this.refuseStaleSortedReads(node);
     // A helper body borrows its keccak side-car slot through a hidden bottom frame item. Addressing that item by
@@ -30464,6 +30480,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     const slot = node.callInfo === undefined ? undefined : this.externalCallSlots[node.callInfo.externalCallSlotIndex];
+    const callSiteTarget = slot === undefined ? undefined : this.callSiteTargets.get(slot.slotIndex);
+    if (callSiteTarget !== undefined) this.emitCallSiteTargetCapture(node, callSiteTarget);
     const genesisSite = this.inGenesisMode && this.currentFunction?.deployerTemplate !== undefined && slot !== undefined;
     if (!genesisSite) return this.visitExternalFunctionCallBody(node);
     // A4.3 step 10, before the call runs: the callee input, its lock and its record-sound code, and the slot's bit.
@@ -30806,8 +30824,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.callOptions?.value && node.valueTransferIndex >= 0 && node.callInfo) {
       const slot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
       if (slot?.addressParam) {
+        // A target the body also writes pays the callee the identity check binds: the value the call site captured.
+        const recipient = this.callSiteTargets.get(slot.slotIndex)?.register ?? slot.addressParam;
         node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, slot.addressParam, locationData, node,
+          node.valueTransferIndex, node.callOptions.value, recipient, locationData, node,
         );
       }
     }
@@ -41577,7 +41597,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // its receiver inline (or through the existing dynamic-array preservation path), so retaining a scalar
       // journal cell for it would leak that cell past the function epilogue.
       if (slot.inlineLoopDispatch || slot.loopArrayVar || this.isExternalCallSlotLoopNested(slot)) continue;
-      if (!slot.addressStateVar) continue;
+      // A call through a target the body writes reads its call-site register instead (collectCallSiteTargets).
+      if (!slot.addressStateVar || this.callSiteTargets.has(slot.slotIndex)) continue;
       const stateVariable = this.stateVariables.find((candidate) => candidate.name === slot.addressStateVar);
       if (!stateVariable) continue;
       const stackName = this.pendingStateWrites.get(
@@ -41815,9 +41836,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.callBatchRecordViews) this.emitStandaloneFrameRecordSettlement(locationData);
 
     // Clean up pending state-write values from the stack. A contract-typed state field can also be the expected
-    // receiver of a later external-call identity check (`target = replacement; target.f()`). Keep exactly those
-    // post-write values until that check runs; re-reading the input commitment would authenticate the stale
-    // pre-state receiver, while dropping the journal cell here makes visitStateAccess address a missing slot.
+    // receiver of a later external-call identity check that reads it after the body, where its call has no call-site
+    // register (collectCallSiteTargets). Keep exactly those post-write values until that check runs; dropping the
+    // journal cell here makes visitStateAccess address a missing slot.
     const externalCallReceivers = this.externalCallReceiverStateWrites(node);
     for (const [, stackName] of this.pendingStateWrites) {
       if (externalCallReceivers.has(stackName)) continue;
@@ -53783,6 +53804,116 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * The calls whose identity check (emitExternalCallVerification) would read a state variable the body also writes.
+   * That check runs after the body, where the variable holds the last value written to it: in `IFoo(t).f(); t = x;`
+   * it bound the call to `x`, so with `x` a parameter the spender chose the contract whose answer the call had
+   * already used. On the EVM the call goes to the value `t` held when it ran, the written one only when the write
+   * came first. Each such call gets a register: its call site fills it with that value (emitCallSiteTargetCapture)
+   * and the check reads it. A target the body does not write keeps the read after the body, which gives the same
+   * value. The slots are those the check itself verifies: it leaves a while loop's calls to the loop or the route.
+   */
+  private collectCallSiteTargets(node: FunctionDefinitionNode): Map<number, CallSiteTarget> {
+    const targets = new Map<number, CallSiteTarget>();
+    if (!node.body || this.isDefineSubTraversal || this.framedMaster || this.inGenesisMode || node.graphEmissionHandler
+      || (node.returnTypes.length > 0 && !node.isEntryPoint)
+      || [FunctionModifier.UNSAFE, FunctionModifier.SPLIT, FunctionModifier.MERGE]
+        .some((modifier) => node.modifiers.includes(modifier))) return targets;
+    let written: Set<string> | 'any' | undefined;
+    for (const slot of this.externalCallSlots) {
+      if (slot.addressStateVar === undefined || slot.inlineLoopDispatch || slot.loopArrayVar
+        || this.isExternalCallSlotLoopNested(slot)) continue;
+      // A batch's later rows run on its owner's callee, which the owner's check binds for all of them.
+      if (this.externalCallSlots.some((candidate) => candidate.slotIndex < slot.slotIndex
+        && candidate.addressParam === slot.addressParam && candidate.batchInvocations)) continue;
+      const stateVariable = this.stateVariables.find((variable) => variable.name === slot.addressStateVar);
+      if (stateVariable === undefined || stateVariable.isDynamic) continue;
+      written ??= this.stateFieldsWrittenBy(node);
+      if (written !== 'any' && !written.has(`${stateVariable.nftIndex}:${stateVariable.fieldIndex}`)) continue;
+      // A call the body does not make itself (one an invoked body makes) has no site here to fill a register.
+      const runs = this.externalCallRuns(node.body, slot);
+      if (runs === 0) continue;
+      targets.set(slot.slotIndex, {
+        register: `__internal__extcallTarget${slot.slotIndex}`, stateVariable, repeats: runs > 1,
+      });
+    }
+    return targets;
+  }
+
+  /**
+   * The state fields `node` may write, keyed as `pendingStateWrites` is: its own writes, those of the functions it calls
+   * (any function, through a function value) and the journal slots its invoked handlers write. 'any' when it runs
+   * assembly, whose writes this walk cannot place.
+   */
+  private stateFieldsWrittenBy(node: FunctionDefinitionNode): Set<string> | 'any' {
+    const keys = new Set(this.activeJournalSlots.map((sv) => `${sv.nftIndex}:${sv.fieldIndex}`));
+    const walked = new Set<FunctionDefinitionNode>([node]);
+    const pending: Node[] = node.body ? [node.body] : [];
+    let any = false;
+    const visit = (child: Node): void => {
+      if (child instanceof AssemblyStatementNode) any = true;
+      if ((child instanceof StateAssignNode || child instanceof DeleteStateNode) && child.stateVariable) {
+        keys.add(`${child.stateVariable.nftIndex}:${child.stateVariable.fieldIndex}`);
+      }
+      const throughValue = child instanceof IndirectCallNode || (child instanceof FunctionCallNode
+        && child.resolvedFunction?.functionId === undefined && child.identifier?.type instanceof FunctionType);
+      const callees = throughValue ? this.userFunctionList
+        : child instanceof FunctionCallNode && child.resolvedFunction ? [child.resolvedFunction] : [];
+      for (const callee of callees) {
+        if (!callee.body || walked.has(callee)) continue;
+        walked.add(callee);
+        pending.push(callee.body);
+      }
+    };
+    while (pending.length > 0 && !any) walkInvocationAst(pending.pop(), visit);
+    return any ? 'any' : keys;
+  }
+
+  /**
+   * How often `body` may run the call of an external-call slot: 0 when it makes none itself, 1 for one call site run
+   * at most once, 2 for more (a batch's rows, a cloned exit, a site in a loop).
+   */
+  private externalCallRuns(body: Node, slot: ExternalCallSlot): number {
+    const looped = new Set<Node>();
+    let runs = 0;
+    walkInvocationAst(body, (child) => {
+      if (child instanceof WhileNode || child instanceof DoWhileNode || child instanceof CollectionIterationNode) {
+        walkInvocationAst(child, (inner) => { looped.add(inner); });
+      }
+      if (child instanceof ExternalFunctionCallNode && child.callInfo !== undefined
+        && this.externalCallSlots[child.callInfo.externalCallSlotIndex] === slot) runs += looped.has(child) ? 2 : 1;
+    });
+    return Math.min(runs, 2);
+  }
+
+  /**
+   * Fills a call's target register (collectCallSiteTargets) with the value its state variable holds here, where the
+   * call runs. Where the slot's call may run more than once, on one callee, a run after the first must see the value
+   * the first saw, and none may see address(0), which the empty register stands for. Stack-neutral.
+   */
+  private emitCallSiteTargetCapture(node: ExternalFunctionCallNode, target: CallSiteTarget): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const access = new StateAccessNode(target.stateVariable.name);
+    access.stateVariable = target.stateVariable;
+    access.type = target.stateVariable.type;
+    access.location = node.location;
+    this.visitStateAccess(access);                       // [.., value]
+    if (target.repeats) {
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_VERIFY, loc);                      // a call through address(0) fails, as it reverts on the EVM
+      this.emitPickAt(this.getStackIndex(target.register), loc); // [.., value, register]
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_OVER, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_ENDIF, loc);                       // [.., value]
+    }
+    this.emitReplace(this.getStackIndex(target.register), node);
+    this.popFromStack();
+  }
+
+  /**
    * Emit covenant checks for external function calls:
    * 1. Verify B's token category matches the expected category parameter
    * 2. Verify B's master locking bytecode is preserved (input == output)
@@ -53896,6 +54027,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // co-spent UTXO is the genuine master holding genuine state - no caller-side category check.
       this.emit(Op.OP_UTXOBYTECODE, locationData);  // [B_master_inputIdx, B_master_bytecode]
       // Source the EXPECTED address (a value the caller cannot choose - see docs/extcall-target-pinning.md):
+      //   - a state var the body also writes -> PICK the register its call site filled with the value the var
+      //     held there: this check runs after the body, and the call is to the value the target had when it ran;
       //   - an interface-typed state var -> re-read the data-NFT field at the epilogue so the value is
       //     locking bytecode (23/25/35), not a consumed/empty/HASH160 PICK of `__extaddr_*`;
       //   - a param / synthesized __extaddr_ local -> PICK it off the stack;
@@ -53912,7 +54045,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const addrName = slot.addressIsMsgSender
         ? msgSenderTemp!
         : rtAddrTemps.get(slot.slotIndex) ?? inlinedLowLevelTarget ?? slot.addressParam;
-      if (stateTarget) {
+      const callSiteTarget = this.callSiteTargets.get(slot.slotIndex);
+      if (callSiteTarget) {
+        // Re-reading the variable here would take the value the body left in it: a write after the call (from a
+        // parameter, say) would choose the contract whose answer the call already used.
+        this.emitPickTrackedFromBottom(callSiteTarget.register, locationData);
+      } else if (stateTarget) {
         // External-call targets are state, so delegates must resolve them from the authenticated proxy owner.
         // `address(this)` remains execution context (OP_INPUTINDEX OP_UTXOBYTECODE), but storage never moves to
         // the implementation input. Reuse the ordinary state read so direct delegates, message-bus routes, and
@@ -54188,6 +54326,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // identity was checked above. They are now dead and must not widen the function's final stack frame.
     for (const stackName of this.externalCallReceiverStateWrites(node)) {
       this.emitDropSettlementValue(stackName, locationData, node);
+    }
+    // The call-site target registers are read too.
+    for (const target of this.callSiteTargets.values()) {
+      this.emitDropSettlementValue(target.register, locationData, node);
     }
   }
 

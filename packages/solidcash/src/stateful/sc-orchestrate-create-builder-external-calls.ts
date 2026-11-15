@@ -52,6 +52,9 @@ import {
   type AssembleCreateBuilderNestedCalleeBlockHost,
 } from './sc-assemble-create-builder-nested-callee-block.js';
 import {
+  appendCreateBuilderTransitiveCalleeRegions as appendCreateBuilderTransitiveCalleeRegionsImpl,
+} from './sc-append-create-builder-transitive-callee-regions.js';
+import {
   appendCreateBuilderNestedCalleeLoopWrites as appendCreateBuilderNestedCalleeLoopWritesImpl,
 } from './sc-append-create-builder-nested-callee-loop-writes.js';
 import {
@@ -915,6 +918,17 @@ export async function orchestrateCreateBuilderExternalCalls(
         },
       ),
     );
+    // A transitive callee whose run reads a region right after its block (a walk, loop side-cars, the chunks it writes)
+    // gets the block a direct callee gets, with the region after it. A return probe runs only this function's input.
+    if (overrides?.returnProbeOnly !== true) {
+      await appendCreateBuilderTransitiveCalleeRegionsImpl(
+        {
+          block: nestedBlockHost,
+          ...(overrides?.sharedSidecarPool !== undefined && { sharedSidecarPool: overrides.sharedSidecarPool }),
+        },
+        externalCallUtxoGroups, groupMetas, directGroupCount,
+      );
+    }
 
     // _externalCallInputBase: runtime param (needed for mutual A<->B calls)
     // When the function reads a dynamic-storage array, its chunk run precedes the callees only in the legacy

@@ -4,7 +4,8 @@
  * a callee off input 0 needs), a sized entry msg.sender keys, a stateful function that recovers keys in a loop, and a
  * keccak256 loop beside a call of another contract, each with its call record published, as a constructor's call
  * always publishes it. Then the same sized shapes in a contract another contract calls (D calls T, T co-spent in D's
- * transaction): T pushes onto a dynamic array, iterates a collection, or hashes in a loop. Last, the build of a call for
+ * transaction): T pushes onto a dynamic array, iterates a collection, or hashes in a loop, called by the transaction's
+ * own contract or by a contract that contract calls (A calls D, which calls T). Last, the build of a call for
  * a contract caller its transaction does not hold, as a constructor's callee is built for the child. Each sent
  * transaction is checked by the VM; each tamper case changes one part of it and expects the covenant that binds that
  * part to refuse.
@@ -1200,4 +1201,161 @@ describe('an ordinary call whose recovery loop runs beside a keccak256 of an unb
     expect(inputPasses(s.provider, withOutput(sent, master + 11, otherKey), master)).toBe(false);
     expect(inputPasses(s.provider, swapIndexes(sent, master + 11, master + 12), master)).toBe(false);
   });
+});
+
+/** `handle`, whose functions' calls through interface `name` reach `callee`. */
+function withCallee<T>(handle: T, name: string, callee: unknown): T {
+  (handle as unknown as { _registerResolvedExternal(name: string, contract: unknown): void })
+    ._registerResolvedExternal(name, callee);
+  return handle;
+}
+
+describe('an ordinary call of a contract whose callee pushes, iterates or hashes in a loop (A calls D, which calls T)', () => {
+  it('lays out the chunks the transitive callee\'s run pins after its block, and refuses another chunk or result',
+    async () => {
+      const source = `${P} interface I { function f(int x) external returns (int); }
+        interface ID { function g(I t, int x) external; }
+        contract T { int[] a; function f(int x) external returns (int) { a.push(x); a.push(x + 1); return a.length; } }
+        contract D { int got; function g(I t, int x) external { got = t.f(x); } }
+        contract A { int n; function h(ID d, I t, int x) external { n = n + 1; d.g(t, x); } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const chunkLock = addressToLockScript(getDynamicChunkAddress(t.contract.inner as never, t.categoryId, 'a', 'int256[]'));
+      const dCallee = withCallee(d.contract, 'I', t.contract);
+      // The first call writes one chunk; the second spends it and writes two, for four elements.
+      for (const [x, length, written, spent, calls] of [[5n, 2n, 1, 0, 1n], [7n, 4n, 2, 1, 2n]] as const) {
+        await (a.contract.connect(wallet) as any).call.h(dLock, tLock, x).withExternalCall(dCallee).send();
+        const sent = s.sent[s.sent.length - 1]!;
+        expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+        expect(((await a.contract.getState()) as { n?: bigint }).n).toBe(calls);
+        expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(length);
+        // T's block of master, record and record slot follows D's, then T's new chunks; the old chunk is spent there.
+        const dMaster = inputAt(sent, dLock);
+        const tMaster = inputAt(sent, tLock);
+        expect(tMaster).toBeGreaterThan(dMaster);
+        const chunks = outputsAt(sent, chunkLock);
+        expect(chunks).toEqual(Array.from({ length: written }, (_, index) => tMaster + 3 + index));
+        const old = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, chunkLock) ? index : -1))
+          .filter((index) => index >= 0);
+        expect(old).toEqual(Array.from({ length: spent }, (_, index) => tMaster + 3 + index));
+        // Another chunk: refused by T, whose run pins it. Two chunks swapped.
+        for (const index of chunks) {
+          expect(inputPasses(s.provider, withOutput(sent, index, bumpCommitment), tMaster)).toBe(false);
+        }
+        if (written > 1) expect(inputPasses(s.provider, swapOutputs(sent, chunks[0]!, chunks[1]!), tMaster)).toBe(false);
+        // Another result in T's call record: refused by D, which reads it, and by T.
+        expect(sent.transaction.outputs[tMaster + 2]!.token?.nft?.capability).toBe('none');
+        expect(inputPasses(s.provider, withOutput(sent, tMaster + 2, bumpCommitment), dMaster)).toBe(false);
+        expect(inputPasses(s.provider, withOutput(sent, tMaster + 2, bumpCommitment), tMaster)).toBe(false);
+        // The old chunk swapped with T's record-slot input: T reads another coin as the old value.
+        if (spent > 0) expect(inputPasses(s.provider, swapInputs(sent, tMaster + 2, tMaster + 3), tMaster)).toBe(false);
+      }
+      expect(((await t.contract.getState()) as { a?: bigint[] }).a).toEqual([5n, 6n, 7n, 8n]);
+    });
+
+  it('co-spends the transitive callee\'s walk after its block, and refuses a walk missing an entry or another entry',
+    async () => {
+      const source = `${P} interface I { function f() external returns (int); }
+        interface ID { function g(I t) external; }
+        contract T { int total; enumerable mapping(bytes20 => int) bal; function put(bytes20 k, int v) public { bal[k] = v; }
+          function f() external returns (int) { int sum = 0; for (int value of this.bal) { sum = sum + value; } total = sum; return sum; } }
+        contract D { int got; function g(I t) external { got = t.f(); } }
+        contract A { int n; function h(ID d, I t) external { n = n + 1; d.g(t); } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(1), 5n).send();
+      await (t.contract.connect(wallet) as any).call.put(new Uint8Array(20).fill(2), 7n).send();
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      await (a.contract.connect(wallet) as any).call.h(dLock, tLock).withExternalCall(withCallee(d.contract, 'I', t.contract))
+        .send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await a.contract.getState()) as { n?: bigint }).n).toBe(1n);
+      expect(((await d.contract.getState()) as { got?: bigint }).got).toBe(12n);
+      expect(((await t.contract.getState()) as { total?: bigint }).total).toBe(12n);
+
+      // T's block of master, record and record slot follows D's, then the walk: the HEAD and both entries, each
+      // recreated as it was at its own index.
+      const dMaster = inputAt(sent, dLock);
+      const tMaster = inputAt(sent, tLock);
+      expect(tMaster).toBeGreaterThan(dMaster);
+      const entryLock = addressToLockScript(getEntryNftAddress(t.contract.inner as never, t.categoryId, 'bal'));
+      const walked = sent.sourceOutputs.map((output, index) => (same(output.lockingBytecode, entryLock) ? index : -1))
+        .filter((index) => index >= 0);
+      expect(walked).toEqual([tMaster + 3, tMaster + 4, tMaster + 5]);
+      expect(outputsAt(sent, entryLock)).toEqual(walked);
+      // The walk missing an entry, its input and its recreation left out: refused by T.
+      expect(inputPasses(s.provider, removeIndexes(sent, tMaster + 4, 1), tMaster)).toBe(false);
+      // An entry recreated with another value, and the two entries swapped with their outputs.
+      expect(inputPasses(s.provider, withOutput(sent, tMaster + 4, bumpCommitment), tMaster)).toBe(false);
+      expect(inputPasses(s.provider, swapIndexes(sent, tMaster + 4, tMaster + 5), tMaster)).toBe(false);
+      // Another sum in T's record: refused by T. Another result in its call record: refused by D, which reads it.
+      const [tRecord] = outputsAt(sent, addressToLockScript(getDataNftAddress(t.contract.inner as never, t.categoryId)));
+      expect(inputPasses(s.provider, withOutput(sent, tRecord!, bumpCommitment), tMaster)).toBe(false);
+      expect(inputPasses(s.provider, withOutput(sent, tMaster + 2, bumpCommitment), dMaster)).toBe(false);
+    });
+
+  it('co-spends a shared side-car per iteration after the transitive callee\'s block, and refuses another digest',
+    async () => {
+      const { keccakComputeLockingBytecode } = await import('@solidcash/utils');
+      const { computeSideCarStandIn } = await import('../../src/stateful/stateful-abi-resolve.js');
+      const { keccak_256: keccak } = await import('@noble/hashes/sha3.js');
+      const source = `${P} interface I { function f(bytes b, int k) external returns (bool); }
+        interface ID { function g(I t, bytes b, int k) external; }
+        contract T { bytes32 h; function f(bytes b, int k) external returns (bool) {
+          bytes32 x = 0x; for (int i = 0; i < k; i++) { x = keccak256(b); } h = x; return true; } }
+        contract D { bool ok; function g(I t, bytes b, int k) external { ok = t.f(b, k); } }
+        contract A { int n; function h(ID d, I t, bytes b, int k) external { n = n + 1; d.g(t, b, k); } }`;
+      const s = setup();
+      const t = await s.deploy(compileString(source, compileOptions('T')));
+      const d = await s.deploy(compileString(source, compileOptions('D')));
+      const a = await s.deploy(compileString(source, compileOptions('A')));
+      const wallet = await s.wallet(8);
+      const tLock = addressToLockScript(t.contract.address);
+      const dLock = addressToLockScript(d.contract.address);
+      const dCallee = withCallee(d.contract, 'I', t.contract);
+      const b = Uint8Array.of(1, 2, 3);
+      // No coin of the shared pool: refused by name before anything is sent.
+      const before = s.sent.length;
+      await expect((a.contract.connect(wallet) as any).call.h(dLock, tLock, b, 2n).withExternalCall(dCallee).send())
+        .rejects.toThrow(/The call of T\.f cannot be laid out: its keccak256 loop needs 2 side-car coins of the shared /);
+      expect(s.sent.length).toBe(before);
+
+      const sharedLock = keccakComputeLockingBytecode(new Uint8Array(32), true);
+      for (const index of [0, 1, 2]) {
+        await s.provider.seedUtxo(binToHex(sharedLock), computeSideCarStandIn('keccak-loop-transitive', sharedLock, index));
+      }
+      await (a.contract.connect(wallet) as any).call.h(dLock, tLock, b, 2n).withExternalCall(dCallee).send();
+      const sent = s.sent[s.sent.length - 1]!;
+      expect(createVirtualMachineBch2026ForProvider(s.provider).verify(sent as never)).toBe(true);
+      expect(((await a.contract.getState()) as { n?: bigint }).n).toBe(1n);
+      expect(((await d.contract.getState()) as { ok?: boolean }).ok).toBe(true);
+      expect(binToHex(((await t.contract.getState()) as { h?: Uint8Array }).h!)).toBe(binToHex(keccak(b)));
+      // T's block of master, record and record slot follows D's, then one shared side-car per iteration, each
+      // recreated at its own index with the digest.
+      const dMaster = inputAt(sent, dLock);
+      const tMaster = inputAt(sent, tLock);
+      expect(tMaster).toBeGreaterThan(dMaster);
+      const sidecars = outputsAt(sent, sharedLock);
+      expect(sidecars).toEqual([tMaster + 3, tMaster + 4]);
+      for (const index of sidecars) {
+        expect(same(sent.sourceOutputs[index].lockingBytecode, sharedLock)).toBe(true);
+        expect(binToHex(sent.transaction.outputs[index]!.token!.nft!.commitment)).toBe(binToHex(keccak(b)));
+      }
+      // Another digest: refused by the side-car and by T, which reads it.
+      const forged = withOutput(sent, tMaster + 4, bumpCommitment);
+      expect(inputPasses(s.provider, forged, tMaster + 4)).toBe(false);
+      expect(inputPasses(s.provider, forged, tMaster)).toBe(false);
+      // A side-car's input moved to T's record slot: refused by T, which reads a side-car at the loop's index.
+      expect(inputPasses(s.provider, swapInputs(sent, tMaster + 2, tMaster + 3), tMaster)).toBe(false);
+    });
 });

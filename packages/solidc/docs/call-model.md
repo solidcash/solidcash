@@ -160,8 +160,12 @@ In an ordinary call A -> B -> C, B passes its own caller A on as `msg.sender`. T
 - a caller's record slot counts before its callees only when the caller publishes the record, that is, a returning
   function sent with `emitReturn`.
 
+Each of B's calls takes its record, selector and call-edge witnesses by its callsite, so a conditional call B skips
+leaves the later calls' witnesses where they were.
+
 Each remaining shape is refused by name before anything is built: C's block shared with another call, B calling C in
-a loop or as a frame, or C reading another region after its block.
+a loop or as a frame, C reading another region after its block, a called contract's own `blockhash(n)` read (no
+oracle slot is co-spent for it), and a called contract's low-level call (its callee is never discovered).
 
 ### What is compile-time vs runtime
 

@@ -54,6 +54,11 @@ export interface MaterializeRuntimeLoopTrailingHost {
   getLoopEntryOutputBase(): number;
   /** First output of the runtime-loop event stream, as the covenant addresses it. */
   getRuntimeLoopEventOutputBase(): number;
+  /**
+   * First output of a segmented effect stream the covenant reads apart from the entry band before it (a direct
+   * call's entries compact into the block's inactive returnEvent slot, its effects do not), else undefined.
+   */
+  detachedRuntimeLoopEffectOutputBase(): number | undefined;
 }
 
 /**
@@ -198,6 +203,15 @@ export function materializeRuntimeLoopTrailing(
           appendLoopEntry(variable, commitments[index]!);
         }
       }
+    }
+    // A direct call's covenant mints the entry band from emitTrailingWriteOutputBase, compacted into the block's
+    // inactive returnEvent slot, and reads the effect stream from past the complete fixed block
+    // (emitRuntimeLoopEffectVerification). The slot then sits between the entries and the first event or payment:
+    // pad it there, at the coordinate this builder computes for the stream. Such a plan places no entry segment, so
+    // the band above is complete.
+    const detachedEffectBase = host.detachedRuntimeLoopEffectOutputBase();
+    while (detachedEffectBase !== undefined && builder.outputs.length < detachedEffectBase) {
+      builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
     }
     for (const segment of host.runtimeLoopTrailingSegments) {
       if (segment.kind === 'events') {

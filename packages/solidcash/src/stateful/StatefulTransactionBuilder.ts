@@ -2054,6 +2054,7 @@ export class StatefulTransactionBuilder {
       getRequiredLoopEntryCount: (collection) => this.getRequiredLoopEntryCount(collection),
       getLoopEntryOutputBase: () => this.getLoopEntryOutputBase(),
       getRuntimeLoopEventOutputBase: () => this.getRuntimeLoopEventOutputBase(),
+      detachedRuntimeLoopEffectOutputBase: () => this._detachedRuntimeLoopEffectOutputBase(),
     };
   }
 
@@ -6399,6 +6400,39 @@ export class StatefulTransactionBuilder {
     return loopEntryTransitionSatoshis(this._delegateLoopEntriesHost(), variable, commitment);
   }
 
+  /**
+   * Outputs a direct call's covenant takes out of its runtime-loop entry band but not out of the effect stream
+   * after it: the block's inactive returnEvent slot. A plain call materializes nothing there, so the loop mints its
+   * entries from emitTrailingWriteOutputBase, which steps down past the slot while the call's own
+   * `__internal__returnOutputIdx` is negative, while emitRuntimeLoopEffectVerification reads the loop's events and
+   * payments from past the complete fixed block. The slot then sits between the entries and the effects. A segment
+   * plan that also places entries (a route's rows), a kernel journal's band and a delegate's frame keep their
+   * published coordinates, so they take nothing out.
+   */
+  private _runtimeLoopEntryBandCompaction(): number {
+    if (this.runtimeLoopTrailingSegments.some((segment) => segment.kind === 'entries')
+      || this.kernelJournalSettlementOutputPlan.length > 0 || this.kernelJournalEagerOutputPlan.length > 0
+      || this.delegateEntriesAfterLowLevel || this.compilerRouteDelegateBlock || this.keccakSideCarsFollowBlock) {
+      return 0;
+    }
+    const master = this.masterUtxo?.unlocker;
+    return this._unmaterializedReturnEventCompact(
+      this.blockLayout, master !== undefined && isContractUnlocker(master) ? master : undefined,
+    );
+  }
+
+  /**
+   * The first output of a segmented runtime-loop effect stream when the covenant reads it apart from the entry band
+   * before it (`_runtimeLoopEntryBandCompaction`), or undefined when the two bands are contiguous.
+   */
+  private _detachedRuntimeLoopEffectOutputBase(): number | undefined {
+    if (this._runtimeLoopEntryBandCompaction() === 0) return undefined;
+    const first = this.runtimeLoopTrailingSegments.find((segment) => segment.kind !== 'entries');
+    if (first === undefined) return undefined;
+    return first.kind === 'events'
+      ? this.getRuntimeLoopEventOutputIndex(first.offset)
+      : this.getRuntimeLoopTransferOutputIndex(first.offset);
+  }
 
   /**
    * Output index where loop entry NFTs begin. They share the trailing region with dynamic chunks (mutually
@@ -6411,7 +6445,7 @@ export class StatefulTransactionBuilder {
       if (this.runtimeLoopTrailingSegments.length > 0) {
         return this.getChunkOutputBase()
           - this._trailingLoopEntryOutputCount() - this.runtimeLoopEventOutputs.length
-          - this.runtimeLoopTransferOutputs.length;
+          - this.runtimeLoopTransferOutputs.length - this._runtimeLoopEntryBandCompaction();
       }
       // Legacy direct loops co-spend their predecessor before a nested callee. The compiler verifies the
       // predecessor recreation at that input's output coordinate; the later callee block must not move it.

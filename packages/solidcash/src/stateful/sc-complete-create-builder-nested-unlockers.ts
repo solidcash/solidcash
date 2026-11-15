@@ -488,6 +488,8 @@ export async function completeCreateBuilderNestedUnlockers(
       }
       // F1: -1 names no edge; appendCallerEdges fills the index on the final builder.
       if (/^__internal__(?:lowLevelC|c)allEdgeOutputIdx\d+$/.test(input.name)) return -1n;
+      // A7: an ordinary call's genesis call is empty; only a constructor's call carries a tag.
+      if (input.name === '__internal__genesisCall') return new Uint8Array();
       throw new Error(
         `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
       );

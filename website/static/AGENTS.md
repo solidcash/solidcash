@@ -1337,8 +1337,11 @@ Minimum relay fee              1 sat/byte
 
 - SolidCash bytecode is larger than the equivalent EVM bytecode, because emulating EVM primitives and effects on
   the BCH VM costs bytes and operations. Check sizes with `solidc <file> --size`.
-- An oversized stateful contract can compile into a split bundle: a state-owning root plus delegate facets
-  (`compileFileSplit`, `solidc <file> --split size`).
+- A direct contract within 1,000 bytes of the input limit, on either side, gets an extra outlining pass that shares
+  more code across its functions. An oversized stateful contract can compile into a split bundle: a state-owning root
+  plus delegate facets (`compileFileSplit`, `solidc <file> --split size`). The SDK refuses to deploy a contract whose
+  script no input can carry (`UnspendableContractError`, measured against the provider's limits), since coins sent to
+  it could never move.
 - A loop-heavy function in a short script can run out of operation budget. The deploy-time `salt` option pads the
   script to buy budget.
 - A contract's state UTXO can be spent once, so concurrent users of one contract conflict. Use `split`/`merge`

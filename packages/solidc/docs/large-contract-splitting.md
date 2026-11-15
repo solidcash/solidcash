@@ -147,6 +147,30 @@ delegate hop is not enabled. Facet replacement is therefore not an implicit
 upgrade mechanism; v1 links are immutable. Existing small-contract
 `deployProxy(implementation)` behavior remains unchanged.
 
+## Before splitting: size-pressure outlining, and the deployment refusal
+
+Since 2026-11-15, a dispatched direct program within 1,000 B of the configured `maximumInputBytes`, on either side, takes
+one more outlining pass before the compiler reports its size. The size is measured before later passes trim the
+program, which is why the window reaches over the limit.
+- The pass shares instruction runs across function bodies that the default outliner keeps inline: runs that call a
+  helper the compiler proves nesting-safe, and runs whose alternate-stack use is private and balanced. See the rules
+  in `packages/utils/src/outline.ts`.
+- It repeats up to 3 times. It is kept only when a static bound keeps the control stack within the VM's 100.
+- A spend carries its program, so every byte removed takes 800 units off that input's operation-cost budget. That is
+  why the pass runs only where size decides whether the contract can be spent.
+- Message-bus, framed, multi-call and sole-inline-entry programs are untouched, and so is a program far over the
+  limit.
+
+Measured: NativeUsdt's master 9,642 -> 9,108 B, its facet 9,298 -> 7,059 B, and the OZ native token
+9,976 -> 9,508 B. Both contracts' spends fit the 10,000-byte input again.
+
+A contract that still does not fit cannot be deployed through the SDK. Every deployment path refuses, before
+anything is broadcast, a lock whose redeem script plus its push prefix exceeds the provider's per-input limit, or
+whose script exceeds its stack-item limit, with `UnspendableContractError`. The paths are `StatefulContract.deploy`,
+`deployFrom`, `ContractFactory`, the Deploy<C> preps and creation, the framed deploys and `upgrade`. Coins sent to
+such a lock could never move. Under automatic message-bus selection, a bus build over the limit gives way to the direct
+build when that one fits.
+
 ## Current deliberate limits
 
 - no nested/runtime inter-facet calls or message settlement;

@@ -19045,7 +19045,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (directInfinityProof) this.emit(Op.OP_ENDIF, loc);
     if (offCurveProof) {
       // [argBlob, pad, restA]: the pad's first word proves `r` has no point, and the body answers the zero address.
+      // The read stashed V's index for the redeem bind this branch never reaches; drop it, so the alt stack stays
+      // balanced under a value a body keeps there across the call.
       this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
       this.emit(Op.OP_DROP, loc);
       this.emitOffCurveProof(loc);
       this.emit(Op.OP_0, loc);

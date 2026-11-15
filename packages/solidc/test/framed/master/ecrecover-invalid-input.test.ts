@@ -315,6 +315,13 @@ function verdicts(spend: { transaction: VmTransaction; sourceOutputs: VmProgram[
   ]));
 }
 
+/** How many items an input's run leaves on the alternate stack. */
+function finalAltDepth(spend: { transaction: VmTransaction; sourceOutputs: VmProgram['sourceOutputs'] }, index: number): number {
+  return compositionMachine().evaluate({
+    inputIndex: index, sourceOutputs: spend.sourceOutputs, transaction: spend.transaction,
+  }).alternateStack.length;
+}
+
 /** Compiles one recovery source with the given literal `(h, v, r, s)` and comparison, and returns its master. */
 function compileRecoverySource(args: { h: Uint8Array; v: number; r: Uint8Array; s: Uint8Array }, comparison: string, projection: 'pubkey' | 'evm'): Uint8Array {
   const call = projection === 'pubkey' ? 'ecrecoverPubKey' : 'ecrecoverEvm';
@@ -458,6 +465,38 @@ describe('the EVM invalid-input rule on the framed path', () => {
     expect(verdicts(buildSpend(program, [wrong]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
     expect(verdicts(buildSpend(zeroProgram(signer), [proven]), [MASTER_INDEX]))
       .toStrictEqual({ [MASTER_INDEX]: false });
+  });
+
+  it('leaves the alternate stack as an accepted recovery does when the pad proves an r off the curve', () => {
+    // The read stashes side-car V's index on the alternate stack for its redeem bind, which the proof's branch never
+    // reaches, so that branch drops it: an item left there would sit above a value a body keeps on the alternate
+    // stack across the call, such as delegatecall's master index.
+    let x = 1n;
+    const offCurve = (): boolean => {
+      try {
+        computeEcrecoverVerifyWitness(signer.h, 27, leWord(x), signer.s);
+        return false;
+      } catch (error) {
+        return /no curve point/.test(String(error));
+      }
+    };
+    while (!offCurve()) x += 1n;
+    const prime = 2n ** 256n - 2n ** 32n - 977n;
+    const power = (base: bigint, exponent: bigint): bigint => {
+      let result = 1n;
+      for (let b = base % prime, e = exponent; e > 0n; b = (b * b) % prime, e >>= 1n) {
+        if ((e & 1n) === 1n) result = (result * b) % prime;
+      }
+      return result;
+    };
+    const w = power(prime - ((x ** 3n + 7n) % prime), (prime + 1n) / 4n);
+    const proven = buildSpend(zeroProgram({ ...signer, v: 27, r: leWord(x) }), [carFor(signer.witness, leWord(w))]);
+    const accepted = buildSpend(
+      compileRecoverySource(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'), [signerCarOnce()],
+    );
+    expect(verdicts(proven, [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: true });
+    expect(verdicts(accepted, [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: true });
+    expect(finalAltDepth(proven, MASTER_INDEX)).toBe(finalAltDepth(accepted, MASTER_INDEX));
   });
 
   it('has no side-car for a recovery id outside 27/28: the covenant refuses it', () => {

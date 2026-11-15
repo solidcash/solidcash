@@ -42826,6 +42826,222 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return reads;
   }
 
+  /**
+   * Whether each turn of a sorted-loop upsert is fixed by its own pair of the call's arrays, so that the result does not
+   * depend on the turns' order or on how many turns a key takes: the facts behind `SortedUpsertLoopAbi.pairwise` and
+   * `senderDebit`, which the SDK needs before it rewrites a call's arrays.
+   *
+   * The loop must be `for (c = 0; c < keys.length; c++)` (or `< values.length`) among the function's own statements,
+   * outside any branch or other loop. A turn may define locals that name an element, a parameter, a literal or an entry
+   * cache, run this write, and, for a `+` credit only, debit msg.sender's entry of the same mapping by the value it
+   * credits, as the compiler's entry cache holds that debit. The write's key must be `keys[c]` in one position and
+   * loop-invariant in the others, its value `values[c]`, `values[c] + literal`, a parameter the function never assigns,
+   * or a literal, and a `+` or `-` must read-modify-write the entry it writes. Outside the turn the function may name
+   * `c`, `keys` and `values` only in the loop's condition and in `require(keys.length == values.length)`.
+   */
+  private pairwiseUpsertLoop(block: Node, write: MappingAssignNode | MappingDeleteNode, facts: {
+    op: string; keys: string; values?: string; scalar?: string; constant?: string; offset?: string;
+  }): { pairwise: boolean; senderDebit: boolean } {
+    const none = { pairwise: false, senderDebit: false };
+    const fn = this.currentFunction;
+    const parameters = new Set(fn.parameters.map((parameter) => parameter.name));
+    const { keys, values } = facts;
+    if (facts.op === 'read' || keys.startsWith('__internal__') || !parameters.has(keys)
+      || (values !== undefined && (values === keys || values.startsWith('__internal__') || !parameters.has(values)))
+      || (facts.scalar !== undefined && !parameters.has(facts.scalar))) return none;
+    const backReferences = new Set(['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction',
+      'definition', 'referencedContract', 'stateVariable', 'functionReference', 'keySources']);
+    const reaches = (root: Node, test: (node: Node) => boolean, seen = new WeakSet<object>()): boolean => {
+      if (seen.has(root)) return false;
+      seen.add(root);
+      if (test(root)) return true;
+      return Object.entries(root).some(([field, value]) => !backReferences.has(field) && (
+        (value instanceof Node && reaches(value, test, seen))
+        || (Array.isArray(value) && value.some((item) => item instanceof Node && reaches(item, test, seen)))));
+    };
+    // The loop, among statements reached through plain blocks only.
+    type Found = { statements: readonly StatementNode[]; at: number; loop: WhileNode };
+    const findLoop = (statements: readonly StatementNode[]): Found | undefined => {
+      for (const [at, statement] of statements.entries()) {
+        if (statement instanceof WhileNode && statement.block === block) return { statements, at, loop: statement };
+        const nested = statement instanceof BlockNode ? findLoop(statement.statements ?? []) : undefined;
+        if (nested !== undefined) return nested;
+      }
+      return undefined;
+    };
+    const found = findLoop(fn.body.statements ?? []);
+    if (found === undefined) return none;
+    const { condition } = found.loop;
+    if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.LT
+      || !(condition.left instanceof IdentifierNode) || !(condition.right instanceof UnaryOpNode)
+      || condition.right.operator !== UnaryOperator.SIZE || !(condition.right.expression instanceof IdentifierNode)
+      || (condition.right.expression.name !== keys && condition.right.expression.name !== values)) return none;
+    const counter = condition.left.name;
+    const init = found.statements[found.at - 1];
+    if (!(init instanceof VariableDefinitionNode) || init.name !== counter
+      || !(init.expression instanceof IntLiteralNode) || init.expression.value !== 0n) return none;
+    const increments = (statement: StatementNode | undefined): boolean => {
+      if (statement instanceof UncheckedNode || statement instanceof BlockNode) {
+        const inner = statement instanceof UncheckedNode ? statement.block.statements : statement.statements;
+        return inner?.length === 1 && increments(inner[0]);
+      }
+      return statement instanceof AssignNode && statement.identifier.name === counter
+        && statement.expression instanceof BinaryOpNode && statement.expression.operator === BinaryOperator.PLUS
+        && statement.expression.left instanceof IdentifierNode && statement.expression.left.name === counter
+        && statement.expression.right instanceof IntLiteralNode && statement.expression.right.value === 1n;
+    };
+    const statements = [...(found.loop.block.statements ?? [])];
+    if (!increments(statements.pop())) return none;
+    const turn: StatementNode[] = [];
+    const flatten = (list: readonly StatementNode[]): void => {
+      for (const statement of list) {
+        if (statement instanceof BlockNode) flatten(statement.statements ?? []);
+        else turn.push(statement);
+      }
+    };
+    flatten(statements);
+    // The compiler's entry caches: `T __vmapcache_<m>_<n> = m[...]`, read before the loop and written back after it.
+    const caches = new Map<string, MappingAccessNode>();
+    reaches(fn.body, (node) => {
+      if (node instanceof VariableDefinitionNode && node.name.startsWith('__vmapcache_')
+        && node.expression instanceof MappingAccessNode) caches.set(node.name, node.expression);
+      return false;
+    });
+    const locals = new Map<string, ExpressionNode>();
+    const resolve = (expression: ExpressionNode, depth = 0): ExpressionNode => (depth < 16
+      && expression instanceof IdentifierNode && locals.has(expression.name)
+      ? resolve(locals.get(expression.name)!, depth + 1) : expression);
+    const element = (expression: ExpressionNode, array: string | undefined): boolean => {
+      const resolved = resolve(expression);
+      return array !== undefined && resolved instanceof ArrayAccessNode && resolved.array instanceof IdentifierNode
+        && resolved.array.name === array && resolved.index instanceof IdentifierNode && resolved.index.name === counter;
+    };
+    const assigned = (name: string): boolean => reaches(fn.body, (node) => (node instanceof AssignNode
+      && node.identifier.name === name) || (node instanceof TupleAssignmentNode
+      && node.elements.some((target) => target.name === name)));
+    let written = false;
+    let debit: AssignNode | undefined;
+    let debitFirst = false;
+    for (const statement of turn) {
+      if (statement === write && !written) {
+        written = true;
+        continue;
+      }
+      if (statement instanceof VariableDefinitionNode && statement.expression !== undefined
+        && ![counter, keys, values].includes(statement.name) && !locals.has(statement.name)
+        && !caches.has(statement.name)) {
+        // A local of the turn names an element, a parameter, a literal, another local or a cache: it evaluates
+        // nothing that could fail or differ between turns on its own.
+        const source = statement.expression;
+        if (!element(source, keys) && !element(source, values) && !(source instanceof IntLiteralNode)
+          && !(source instanceof BoolLiteralNode) && !(source instanceof IdentifierNode && (parameters.has(source.name)
+            || locals.has(source.name) || caches.has(source.name)))) return none;
+        locals.set(statement.name, source);
+        continue;
+      }
+      if (statement instanceof AssignNode && debit === undefined && caches.has(statement.identifier.name)) {
+        debit = statement;
+        debitFirst = !written;
+        continue;
+      }
+      if (statement instanceof AssignNode && debit !== undefined
+        && statement.identifier.name === `${debit.identifier.name}_dirty`
+        && statement.expression instanceof BoolLiteralNode && statement.expression.value) continue;
+      return none;
+    }
+    if (!written) return none;
+    // An expression a turn reads besides its pair, for the write's other keys and anything outside the turn.
+    const named = new Set([counter, keys, ...(values === undefined ? [] : [values]), ...locals.keys(), ...caches.keys()]);
+    const mentions = (root: Node): boolean => reaches(root, (node) => (node instanceof IdentifierNode
+      && named.has(node.name)) || (node instanceof MappingAccessNode && node.name === write.name));
+    const varying = write.keys.findIndex((key) => element(key, keys));
+    if (varying < 0 || write.keys.some((key, at) => at !== varying && mentions(key))) return none;
+    const credits = (expression: ExpressionNode): boolean => {
+      const value = resolve(expression);
+      if (values !== undefined && facts.offset === undefined) return element(value, values);
+      if (values !== undefined) {
+        const offset = value instanceof BinaryOpNode ? resolve(value.right) : undefined;
+        return value instanceof BinaryOpNode && value.operator === BinaryOperator.PLUS && element(value.left, values)
+          && offset instanceof IntLiteralNode && offset.value.toString() === facts.offset;
+      }
+      if (facts.scalar !== undefined) {
+        return value instanceof IdentifierNode && value.name === facts.scalar && !assigned(facts.scalar);
+      }
+      return facts.constant !== undefined && ((value instanceof IntLiteralNode
+        && value.value.toString() === facts.constant)
+        || (value instanceof BoolLiteralNode && (value.value ? '1' : '0') === facts.constant));
+    };
+    // A key or value's canonical form, through the turn's locals; undefined where it is not a plain expression.
+    const shape = (expression: ExpressionNode): string | undefined => {
+      const value = resolve(expression);
+      return value instanceof NullaryOpNode ? `op:${value.operator}`
+        : canonicalizeUpsertKeyExpression(value, new Set(), (name) => locals.get(name));
+    };
+    let credit: ExpressionNode | undefined;
+    if (write instanceof MappingAssignNode) {
+      if (write.arrayIndex !== undefined || write.arrayPush || write.arrayPop) return none;
+      const value = resolve(write.expression);
+      if (facts.op === '+' || facts.op === '-') {
+        const operator = facts.op === '+' ? BinaryOperator.PLUS : BinaryOperator.MINUS;
+        const base = value instanceof BinaryOpNode ? value.left : undefined;
+        if (!(value instanceof BinaryOpNode) || value.operator !== operator || !(base instanceof MappingAccessNode)
+          || base.name !== write.name || base.keys.length !== write.keys.length
+          || base.keys.some((key, at) => shape(key) === undefined || shape(key) !== shape(write.keys[at]!))
+          || !credits(value.right)) return none;
+        credit = value.right;
+      } else if (facts.op !== 'set' || !credits(value)) return none;
+    } else if (facts.op !== 'delete') return none;
+    // msg.sender's debit by the value the turn credits, as the compiler's entry cache holds it. The SDK checks a
+    // self-credit's net-out against the sender's balance as the chain holds it (`senderDebit`): the debit runs before the
+    // credit, nothing else writes the cache, and no other cache of the mapping could be the sender's entry spelled
+    // another way.
+    let senderDebit = false;
+    if (debit !== undefined) {
+      const statement = debit;
+      const cache = caches.get(statement.identifier.name)!;
+      const value = resolve(statement.expression);
+      const from = value instanceof BinaryOpNode ? resolve(value.left) : undefined;
+      const debits = facts.op === '+' && credit !== undefined && cache.name === write.name
+        && cache.keys.length === write.keys.length
+        && cache.keys.every((key, at) => (at === varying
+          ? key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER
+          : shape(key) !== undefined && shape(key) === shape(write.keys[at]!)))
+        && value instanceof BinaryOpNode && value.operator === BinaryOperator.MINUS
+        && from instanceof IdentifierNode && from.name === statement.identifier.name
+        && credits(value.right) && shape(value.right) === shape(credit);
+      if (!debits) return none;
+      senderDebit = debitFirst
+        && !reaches(fn.body, (node) => node instanceof AssignNode && node !== statement
+          && node.identifier.name === statement.identifier.name)
+        && ![...caches].some(([name, access]) => name !== statement.identifier.name && access.name === write.name);
+    }
+    // Outside the turn the function names the counter only in the loop's condition, until a later loop declares its
+    // own, and names the two arrays only there and in `require(keys.length == values.length)`.
+    const lengthsAgree = (statement: StatementNode): boolean => values !== undefined && statement instanceof RequireNode
+      && statement.expression instanceof BinaryOpNode && statement.expression.operator === BinaryOperator.EQ
+      && [statement.expression.left, statement.expression.right].every((side) => side instanceof UnaryOpNode
+        && side.operator === UnaryOperator.SIZE && side.expression instanceof IdentifierNode
+        && (side.expression.name === keys || side.expression.name === values));
+    const arrays = new Set([keys, ...(values === undefined ? [] : [values])]);
+    const readsOutside = (list: readonly StatementNode[], counterInScope: boolean): boolean => {
+      let inScope = counterInScope;
+      return list.some((statement) => {
+        if (statement === found.loop) {
+          inScope = list === found.statements;
+          return false;
+        }
+        if (statement === init || lengthsAgree(statement)) return false;
+        if (statement instanceof VariableDefinitionNode && statement.name === counter) inScope = false;
+        if (statement instanceof BlockNode) return readsOutside(statement.statements ?? [], inScope);
+        const scoped = inScope;
+        return reaches(statement, (node) => node instanceof IdentifierNode
+          && (arrays.has(node.name) || (scoped && node.name === counter)));
+      });
+    };
+    if (readsOutside(fn.body.statements ?? [], false)) return none;
+    return { pairwise: true, senderDebit };
+  }
+
   private emitSortedUpsertLoopSetup(
     block: Node, loc: SingleLocationData, excludedStreams: ReadonlySet<string> = new Set(),
   ): boolean {
@@ -43178,6 +43394,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const siblingEffect = this.compilerOptions.composition !== 'framed'
       && this.loopBodyHasSiblingEffect(block, writeNode);
     if (existingInfo && siblingEffect) existingInfo.siblingEffect = true;
+    // The SDK reorders, merges or shortens a call's arrays only where each turn is fixed by its own pair. A stream an
+    // earlier visit published keeps the facts only while every write it carries has them.
+    const turns = this.compilerOptions.composition !== 'framed' && !readsWrittenEntry && !siblingEffect
+      && !valueRuntimeExpression && valueRuntimeLocal === undefined && mutation === undefined
+      && decodedKeyRecipe === undefined && valueArrayIndexParam === undefined && valueTraceWitness === undefined
+      && prefixCountTrace === undefined
+      ? this.pairwiseUpsertLoop(block, writeNode, {
+        op, keys: varyingArrayParam, values: valueArrayParam, scalar: valueScalarParam, constant: valueConst,
+        offset: valueArrayOffset,
+      })
+      : { pairwise: false, senderDebit: false };
+    if (existingInfo && !turns.pairwise) delete existingInfo.pairwise;
+    if (existingInfo && !turns.senderDebit) delete existingInfo.senderDebit;
     if (!existingInfo) {
       const condition = this.currentFunction.runtimeCounterLoopConditions?.get(varyingArrayParam);
       const iteration = this.currentFunction.runtimeCounterLoopIterationConditions?.get(varyingArrayParam);
@@ -43258,6 +43487,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(readsWrittenEntry && { readsWrittenEntry: true }),
         ...(siblingEffect && { siblingEffect: true }),
+        ...(turns.pairwise && { pairwise: true }),
+        ...(turns.senderDebit && { senderDebit: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
         ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
         ...(writeNode instanceof MappingAssignNode && writeNode.messageBusRuntimeOldValueWitness

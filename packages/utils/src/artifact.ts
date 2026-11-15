@@ -1263,6 +1263,27 @@ export interface SortedUpsertLoopAbi {
    * runs once per turn. Merging a repeated key's turns would run it one time fewer, so the SDK refuses the repeat.
    */
   siblingEffect?: boolean;
+  /**
+   * Each turn of the loop is fixed by its own pair of the call's arrays. A turn upserts the key
+   * `varyingArrayParam[i]` (its other keys loop-invariant) by `valueArrayParam[i]` (plus `valueArrayOffset`), by a
+   * parameter the function never assigns, or by a literal, or deletes it; a `+` or `-` reads only the entry it writes.
+   * The turn does nothing else, except that a `+` credit may also debit msg.sender's entry of this mapping by the value
+   * it credits. The loop runs `i` from 0 over the whole array, and the function reads `i` and the two arrays nowhere
+   * else, besides `require(keys.length == values.length)`.
+   *
+   * The call's result then depends on its (key, value) pairs alone: running the turns in another order, or merging a
+   * repeated key's turns (`+` and `-` summed, `=` its last value), leaves it unchanged. The SDK rewrites a call's
+   * arrays to reach the order the covenant folds only under this flag; without it the call is built as given, or
+   * refused by name. Published for the direct convention.
+   */
+  pairwise?: boolean;
+  /**
+   * With `pairwise` on a `+` credit: each turn first debits msg.sender's entry of this mapping, under the same other
+   * keys, by the value it credits (`bal[msg.sender] -= v[i]; bal[k[i]] += v[i]`), and nothing else in the function writes
+   * that entry. A turn crediting msg.sender then nets to nothing, and the sender's balance at the loop is the chain's: the
+   * SDK may leave that turn out, as it must when the sender's entry is co-spent once for the debit.
+   */
+  senderDebit?: boolean;
   /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */
   valueTraceWitnessParam?: string;
   valueTraceLocal?: string;

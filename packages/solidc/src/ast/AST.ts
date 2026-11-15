@@ -712,6 +712,10 @@ export class FunctionDefinitionNode extends Node implements Named {
     readsWrittenEntry?: boolean;
     /** The loop body has a per-turn effect besides this write (event, require, another write), so no repeat can merge. */
     siblingEffect?: boolean;
+    /** Each turn is fixed by its own (key, value) pair, so the SDK may reorder or merge the call's arrays. */
+    pairwise?: boolean;
+    /** With `pairwise`: each turn first debits msg.sender, and only it, by the value it credits; a self-credit nets out. */
+    senderDebit?: boolean;
     /** Source-ordered values for a loop-carried expression, authenticated in the executable source loop. */
     valueTraceWitnessParam?: string;
     valueTraceLocal?: string;

@@ -2041,6 +2041,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly SIZE_PRESSURE_WINDOW_ELEMENTS = 8;
   private static readonly SIZE_PRESSURE_CANDIDATE_GROUPS = 4096;
   private static readonly SIZE_PRESSURE_ROUNDS = 6;
+  /** At most this many repetitions of the size-pressure pass, each admitting the helpers the one before made. */
+  private static readonly SIZE_PRESSURE_REPETITIONS = 3;
 
   /** Conditionals the selector dispatcher holds open around an entry's invocation: receive's, then fallback's. */
   private static readonly DISPATCHER_OPEN_CONDITIONALS = 2;
@@ -10111,12 +10113,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * - the outlined helpers themselves, as bodies a repeat may be shared from.
    * Sharing a span runs it one frame deeper, so the result is kept only where withinControlStackLimit bounds the
    * finished program's control stack within BCH 2026's 100.
+   *
+   * The pass repeats while it shares, up to SIZE_PRESSURE_REPETITIONS times. A repetition admits the helpers the
+   * one before it made once the same proof accepts their bodies, so a repeat that merely holds a call of one is
+   * shared too, as the framed composition's follow-up pass does for its first pass's helpers. Each repetition is
+   * kept only under the same depth bound, and the first that shares nothing ends the pass.
    */
   private outlineUnderSizePressure(
     result: OutlineResult, anchors: readonly (readonly number[] | undefined)[],
   ): OutlineResult | undefined {
     const definitions = literalDefinitions(this.output);
     const recordAt = new Map(this.definedBodyRecords.map((record, index) => [record.outputIndex, index]));
+    let outcome: OutlineResult | undefined;
+    for (let repetition = 0; repetition < GenerateTargetTraversalWithLocation.SIZE_PRESSURE_REPETITIONS;
+      repetition += 1) {
+      const next = this.sizePressureRepetition(outcome ?? result, anchors, definitions, recordAt);
+      if (next === undefined) break;
+      outcome = next;
+    }
+    return outcome;
+  }
+
+  /** One repetition of outlineUnderSizePressure over `result`; undefined when it shares nothing it may keep. */
+  private sizePressureRepetition(
+    result: OutlineResult,
+    anchors: readonly (readonly number[] | undefined)[],
+    definitions: ReadonlyMap<string, { bodyIndex: number; body: Uint8Array }>,
+    recordAt: ReadonlyMap<number, number>,
+  ): OutlineResult | undefined {
     const compilerHelpers = new Set<bigint>([
       ...GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS, ...this.compactHelperIds.allocated,
     ]);
